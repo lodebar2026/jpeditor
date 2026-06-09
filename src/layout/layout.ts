@@ -114,7 +114,7 @@ export class PageItem {
   }
 }
 
-type PathSeg = { op: "M" | "L" | "C" | "Z"; pts: number[] };
+export type PathSeg = { op: "M" | "L" | "C" | "Z"; pts: number[] };
 
 export class GraphicPath extends PageItem {
   segs: PathSeg[] = [];

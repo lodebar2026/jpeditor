@@ -1,6 +1,7 @@
 // Export: PNG (rasterize page SVG), MIDI (SMF). PPTX added later.
 import type { App } from "./app";
 import { scoreToMidi } from "../score/midi";
+import { buildPptx } from "./pptx";
 import { saveBytes } from "./fileio";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -72,6 +73,15 @@ export async function exportMidi(app: App): Promise<void> {
   await saveBytes(bytes, `${baseName(app)}.mid`, "audio/midi");
 }
 
+export async function exportPptx(app: App): Promise<void> {
+  const bytes = await buildPptx(app.painter);
+  await saveBytes(
+    bytes,
+    `${baseName(app)}.pptx`,
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  );
+}
+
 export function showExportDialog(app: App): void {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
@@ -99,6 +109,7 @@ export function showExportDialog(app: App): void {
     list.append(btn);
   };
   item("PNG（当前页）", () => exportCurrentPagePng(app));
+  item("PPTX（矢量）", () => exportPptx(app));
   item("MIDI", () => exportMidi(app));
 
   const footer = document.createElement("div");
