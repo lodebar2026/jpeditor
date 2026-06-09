@@ -2,7 +2,7 @@
 name = "jpeditor"
 version = "0.1.0"
 description = "简谱编辑器"
-authors = ["lodebar2026"]
+authors = []
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
