@@ -102,8 +102,6 @@ export class JinpuPainter {
   renderPage(pageIndex: number): SVGSVGElement {
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("class", "score-page");
-    svg.setAttribute("width", String(this.pageWidth));
-    svg.setAttribute("height", String(this.pageHeight));
     svg.setAttribute("viewBox", `0 0 ${this.pageWidth} ${this.pageHeight}`);
     const pg = this.layout.pages[pageIndex];
     svg.appendChild(renderPageItem(pg, this.nodeMap));

@@ -19,7 +19,7 @@ export class App {
   painter: JinpuPainter;
   view!: EditorView;
   scorePane: HTMLElement;
-  pageEls: SVGSVGElement[] = [];
+  pageEls: HTMLElement[] = [];
   pageIndex = 0;
   filePath: string | null = null;
   // render settings (app-level, not part of the .jpwabc document)
@@ -133,12 +133,13 @@ export class App {
     this.selectedEl = null;
     for (let i = 0; i < this.painter.pageCount; i++) {
       const svg = this.painter.renderPage(i);
-      svg.style.width = `${this.pageW}px`;
-      svg.style.maxWidth = "100%";
+      const wrap = document.createElement("div");
+      wrap.className = "score-page-wrap";
+      wrap.appendChild(svg);
       const idx = i;
       svg.addEventListener("click", (e) => this.onPageClick(idx, svg, e));
-      this.scorePane.appendChild(svg);
-      this.pageEls.push(svg);
+      this.scorePane.appendChild(wrap);
+      this.pageEls.push(wrap);
     }
     this.pageIndex = Math.min(this.pageIndex, Math.max(0, this.pageEls.length - 1));
   }
