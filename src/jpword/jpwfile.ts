@@ -46,9 +46,9 @@ export class LayoutSection extends Section {
       const low = l.toLowerCase();
       const arr = low.split("=");
       if (arr.length !== 2) return false;
-      switch (arr[0]) {
-        case "linesperpage": this.linesPerPage = arr[1]; break;
-        case "breakpoints": this.breakPoints = arr[1]; break;
+      switch (arr[0].trim()) {
+        case "linesperpage": this.linesPerPage = arr[1].trim(); break;
+        case "breakpoints": this.breakPoints = arr[1].trim(); break;
         default: return false;
       }
     }

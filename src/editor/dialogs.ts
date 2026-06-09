@@ -1,0 +1,83 @@
+// Minimal modal dialogs (replacing options.fxml / SimpleLayout.fxml).
+import type { App } from "./app";
+
+function modal(title: string, body: HTMLElement, onOk: () => void): void {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  const box = document.createElement("div");
+  box.className = "modal-box";
+  const h = document.createElement("div");
+  h.className = "modal-title";
+  h.textContent = title;
+  const footer = document.createElement("div");
+  footer.className = "modal-footer";
+  const ok = document.createElement("button");
+  ok.textContent = "确定";
+  const cancel = document.createElement("button");
+  cancel.textContent = "取消";
+  footer.append(cancel, ok);
+  box.append(h, body, footer);
+  overlay.append(box);
+  document.body.append(overlay);
+
+  const close = () => overlay.remove();
+  cancel.onclick = close;
+  overlay.onclick = (e) => {
+    if (e.target === overlay) close();
+  };
+  ok.onclick = () => {
+    onOk();
+    close();
+  };
+  (body.querySelector("input,select") as HTMLElement | null)?.focus();
+}
+
+function labeled(label: string, el: HTMLElement): HTMLElement {
+  const row = document.createElement("label");
+  row.className = "modal-row";
+  const span = document.createElement("span");
+  span.textContent = label;
+  row.append(span, el);
+  return row;
+}
+
+/** 页面行数 — edit LinesPerPage in the .Layout section. */
+export function showLayoutDialog(app: App): void {
+  const body = document.createElement("div");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "例如 4 或 4|3|3（留空=自动）";
+  input.value = app.getLinesPerPage();
+  body.append(labeled("每页行数", input));
+  modal("页面行数", body, () => app.setLinesPerPage(input.value.trim()));
+}
+
+const RATIOS: Record<string, [number, number]> = {
+  "16:9": [960, 540],
+  "4:3": [720, 540],
+  A4: [595, 842],
+};
+
+/** 选项 — page ratio + base font size. */
+export function showOptionsDialog(app: App): void {
+  const body = document.createElement("div");
+  const sel = document.createElement("select");
+  for (const k of Object.keys(RATIOS)) {
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = k;
+    if (RATIOS[k][0] === app.pageW && RATIOS[k][1] === app.pageH) o.selected = true;
+    sel.append(o);
+  }
+  const fs = document.createElement("input");
+  fs.type = "number";
+  fs.min = "12";
+  fs.max = "72";
+  fs.value = String(app.fontSize);
+  body.append(labeled("谱面比例", sel), labeled("基础字号", fs));
+  modal("选项", body, () => {
+    const [w, h] = RATIOS[sel.value] ?? [app.pageW, app.pageH];
+    const fontSize = parseInt(fs.value, 10) || app.fontSize;
+    app.applyRenderSettings({ pageW: w, pageH: h, fontSize });
+  });
+}

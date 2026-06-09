@@ -21,6 +21,8 @@ export class JinpuPainter {
   score = new Score();
   pageWidth = 0;
   pageHeight = 0;
+  /** PageItem -> rendered <g>, populated each renderPage (for DOM picking). */
+  nodeMap = new WeakMap<PageItem, SVGGElement>();
 
   constructor(fontSize: number) {
     this.layout = new Layout(fontSize);
@@ -104,8 +106,18 @@ export class JinpuPainter {
     svg.setAttribute("height", String(this.pageHeight));
     svg.setAttribute("viewBox", `0 0 ${this.pageWidth} ${this.pageHeight}`);
     const pg = this.layout.pages[pageIndex];
-    svg.appendChild(renderPageItem(pg));
+    svg.appendChild(renderPageItem(pg, this.nodeMap));
     return svg;
+  }
+
+  /** Walk up from a picked item to its enclosing "entry" group (else the item). */
+  entryGroupOf(item: PageItem): PageItem {
+    let cur: PageItem | null = item;
+    while (cur) {
+      if (cur.classes.has("entry")) return cur;
+      cur = cur.parent;
+    }
+    return item;
   }
 
   get pageCount(): number {
@@ -181,12 +193,16 @@ export class JinpuPainter {
 
 // Recursively build an SVG <g> for a PageItem (matrix transform + self shape +
 // children), mirroring draw.kt's drawPageItem (save/concat/drawTo/recurse).
-export function renderPageItem(item: PageItem): SVGGElement {
+export function renderPageItem(
+  item: PageItem,
+  nodeMap?: WeakMap<PageItem, SVGGElement>,
+): SVGGElement {
   const g = document.createElementNS(SVG_NS, "g");
   if (!item.matrix.isIdentity) g.setAttribute("transform", item.matrix.toSvg());
   const self = renderSelf(item);
   if (self) g.appendChild(self);
-  for (const ch of item.children) g.appendChild(renderPageItem(ch));
+  for (const ch of item.children) g.appendChild(renderPageItem(ch, nodeMap));
+  nodeMap?.set(item, g);
   return g;
 }
 

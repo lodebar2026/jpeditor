@@ -62,6 +62,57 @@ html, body { margin: 0; height: 100%; }
   overflow: hidden;
 }
 
+/* selection highlight — recolor without re-rendering (presentation attrs are
+   overridden by these CSS rules) */
+.score-page g.selected [fill]:not([fill="none"]) { fill: #1565ff; }
+.score-page g.selected [stroke] { stroke: #1565ff; }
+.score-page g.selected { cursor: pointer; }
+.score-page text, .score-page path, .score-page line { cursor: default; }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-box {
+  background: #fff;
+  border-radius: 6px;
+  min-width: 280px;
+  padding: 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+}
+.modal-title { font-weight: bold; margin-bottom: 12px; }
+.modal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0;
+}
+.modal-row span { color: #444; }
+.modal-row input, .modal-row select { padding: 4px 6px; min-width: 160px; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.modal-footer button { padding: 4px 14px; cursor: pointer; }
+
+#status {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #555;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  min-height: 22px;
+}
+
 /* ---- .jpwabc syntax highlight classes (ported from editor.css) ---- */
 .note { color: #0000ff; }
 .break { color: #800000; }

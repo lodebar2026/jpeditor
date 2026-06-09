@@ -2,6 +2,7 @@ import "./styles.css";
 import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
 import { App } from "./editor/app";
+import { showLayoutDialog, showOptionsDialog } from "./editor/dialogs";
 import { decodeJpwabc, isTauriRuntime } from "./editor/fileio";
 
 // Built-in sample (圣哉，圣哉，圣哉) — same content as CodeEditor.kt `scr`.
@@ -40,6 +41,8 @@ async function boot() {
   on("btn-saveas", () => void app.saveFileAs());
   on("btn-prev", () => app.prevPage());
   on("btn-next", () => app.nextPage());
+  on("btn-lines", () => showLayoutDialog(app));
+  on("btn-options", () => showOptionsDialog(app));
   // export/play/stop wired in later phases
   const addOpen = document.getElementById("btn-open");
   addOpen?.addEventListener("click", () => void app.openFile());

@@ -8,24 +8,46 @@ import { jpwHighlighter } from "./highlight";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
 import { JinpuPainter } from "../layout/painter";
+import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/layout";
+import { Point } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 
-const PAGE_W = 960;
-const PAGE_H = 540;
-
 export class App {
-  painter = new JinpuPainter(28);
+  painter: JinpuPainter;
   view!: EditorView;
   scorePane: HTMLElement;
   pageEls: SVGSVGElement[] = [];
   pageIndex = 0;
   filePath: string | null = null;
+  // render settings (app-level, not part of the .jpwabc document)
+  pageW = 960;
+  pageH = 540;
+  fontSize = 28;
+  private meta: MetaData;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private selectedEl: SVGGElement | null = null;
+  statusEl: HTMLElement | null = null;
 
   constructor(meta: MetaData, scorePane: HTMLElement) {
+    this.meta = meta;
+    this.painter = new JinpuPainter(this.fontSize);
     this.painter.layout.options.smuflMeta = meta;
     this.scorePane = scorePane;
+  }
+
+  /** Apply page-size / font-size render settings and re-render. */
+  applyRenderSettings(opts: { pageW?: number; pageH?: number; fontSize?: number }): void {
+    if (opts.pageW) this.pageW = opts.pageW;
+    if (opts.pageH) this.pageH = opts.pageH;
+    if (opts.fontSize && opts.fontSize !== this.fontSize) {
+      this.fontSize = opts.fontSize;
+      const score = this.painter.score;
+      this.painter = new JinpuPainter(this.fontSize);
+      this.painter.layout.options.smuflMeta = this.meta;
+      this.painter.score = score;
+    }
+    this.reload(this.getText());
   }
 
   mountEditor(parent: HTMLElement, initialText: string): void {
@@ -91,7 +113,7 @@ export class App {
     this.painter.score = score;
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
     try {
-      this.painter.resize(PAGE_W, PAGE_H, breakDesc);
+      this.painter.resize(this.pageW, this.pageH, breakDesc);
     } catch (e) {
       console.error("layout failed", e);
       return false;
@@ -103,14 +125,47 @@ export class App {
   private renderPages(): void {
     this.scorePane.replaceChildren();
     this.pageEls = [];
+    this.selectedEl = null;
     for (let i = 0; i < this.painter.pageCount; i++) {
       const svg = this.painter.renderPage(i);
-      svg.style.width = `${PAGE_W}px`;
+      svg.style.width = `${this.pageW}px`;
       svg.style.maxWidth = "100%";
+      const idx = i;
+      svg.addEventListener("click", (e) => this.onPageClick(idx, svg, e));
       this.scorePane.appendChild(svg);
       this.pageEls.push(svg);
     }
     this.pageIndex = Math.min(this.pageIndex, Math.max(0, this.pageEls.length - 1));
+  }
+
+  // ---------------- picking / selection ----------------
+  private onPageClick(pageIndex: number, svg: SVGSVGElement, ev: MouseEvent): void {
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
+    const picked = this.painter.pickPage(pageIndex, new Point(pt.x, pt.y));
+    this.deselect();
+    if (!picked) {
+      this.setStatus("");
+      return;
+    }
+    const target = picked.selectable ? picked : this.painter.entryGroupOf(picked);
+    const el = this.painter.nodeMap.get(target);
+    if (el) {
+      el.classList.add("selected");
+      this.selectedEl = el;
+    }
+    this.setStatus(describePick(picked));
+  }
+
+  private deselect(): void {
+    this.selectedEl?.classList.remove("selected");
+    this.selectedEl = null;
+  }
+
+  private setStatus(s: string): void {
+    if (!this.statusEl) this.statusEl = document.getElementById("status");
+    if (this.statusEl) this.statusEl.textContent = s;
   }
 
   // ---------------- paging ----------------
@@ -192,4 +247,50 @@ export class App {
     this.filePath = path;
     this.setText(text);
   }
+
+  /** Set LinesPerPage in the document's .Layout section (empty string clears it). */
+  setLinesPerPage(value: string): void {
+    this.setText(upsertLayoutLines(this.getText(), value));
+  }
+
+  /** Current LinesPerPage value from the document, if any. */
+  getLinesPerPage(): string {
+    const f = JpwFile.fromString(this.getText());
+    return f?.getSection(LayoutSection)?.linesPerPage?.trim() ?? "";
+  }
+}
+
+/** Insert/update/remove `LinesPerPage = N` within a `.Layout` section. */
+function upsertLayoutLines(doc: string, value: string): string {
+  const lines = doc.split("\n");
+  const isSection = (l: string) => l.startsWith(".");
+  let layoutAt = lines.findIndex((l) => l.trim().toLowerCase() === ".layout");
+
+  if (layoutAt < 0) {
+    if (!value) return doc;
+    const block = lines[lines.length - 1] === "" ? "" : "\n";
+    return doc + `${block}.Layout\nLinesPerPage = ${value}\n`;
+  }
+  // find section body bounds
+  let end = layoutAt + 1;
+  while (end < lines.length && !isSection(lines[end])) end++;
+  let lpIdx = -1;
+  for (let i = layoutAt + 1; i < end; i++) {
+    if (lines[i].toLowerCase().includes("linesperpage")) lpIdx = i;
+  }
+  if (!value) {
+    if (lpIdx >= 0) lines.splice(lpIdx, 1);
+    return lines.join("\n");
+  }
+  if (lpIdx >= 0) lines[lpIdx] = `LinesPerPage = ${value}`;
+  else lines.splice(layoutAt + 1, 0, `LinesPerPage = ${value}`);
+  return lines.join("\n");
+}
+
+function describePick(item: PageItem): string {
+  if (item instanceof LayoutLyric) return `歌词: ${item.text}`;
+  if (item instanceof JpNumber) return `音符: ${item.text}`;
+  if (item instanceof TextFrame) return `文本: ${item.text}`;
+  const cls = [...item.classes].filter((c) => c !== "entry");
+  return cls.length ? `已选: ${cls.join(",")}` : "已选: 元素";
 }
