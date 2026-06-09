@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>简谱编辑器</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div id="app">
+      <div id="toolbar">
+        <button id="btn-save">保存</button>
+        <button id="btn-saveas">另存为</button>
+        <button id="btn-export">导出</button>
+        <span class="sep"></span>
+        <button id="btn-play">播放</button>
+        <button id="btn-stop">停止</button>
+        <span class="sep"></span>
+        <button id="btn-prev">上一页</button>
+        <button id="btn-next">下一页</button>
+      </div>
+      <div id="body">
+        <div id="code-pane"></div>
+        <div id="score-pane"></div>
+      </div>
+    </div>
+    <!-- hidden off-screen svg used for getBBox/getComputedTextLength measurement -->
+    <svg id="measure-svg" width="0" height="0" aria-hidden="true"></svg>
+  </body>
+</html>

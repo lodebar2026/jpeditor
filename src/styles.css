@@ -1,0 +1,78 @@
+@font-face {
+  font-family: "Bravura";
+  src: url("/redist/Bravura.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+}
+
+:root {
+  --bg: #f5f5f5;
+  --panel: #ffffff;
+  --border: #d0d0d0;
+  font-family: "PingFang SC", "Microsoft YaHei", "微软雅黑", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; height: 100%; }
+
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+#toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+#toolbar button { padding: 4px 10px; cursor: pointer; }
+#toolbar .sep { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
+
+#body { flex: 1 1 auto; display: flex; min-height: 0; }
+
+#code-pane {
+  flex: 0 0 38%;
+  border-right: 1px solid var(--border);
+  overflow: auto;
+  background: var(--panel);
+}
+
+#score-pane {
+  flex: 1 1 auto;
+  overflow: auto;
+  background: var(--bg);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.score-page {
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
+}
+
+#measure-svg {
+  position: absolute;
+  left: -9999px;
+  top: -9999px;
+  overflow: hidden;
+}
+
+/* ---- .jpwabc syntax highlight classes (ported from editor.css) ---- */
+.note { color: #0000ff; }
+.break { color: #800000; }
+.barline { color: #ff00ff; }
+.comment { color: #808080; }
+.text { color: #008000; }
+.lrc { color: #333; }
+.slash { color: #999; }
+.lrcspec { color: #aa00aa; }
+.metakey { color: #b8860b; }
+.metaval { color: #2e8b57; }
+.unknown { color: #c00; }
+.section { font-weight: bold; color: #444; }
+.space { }
