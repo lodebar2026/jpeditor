@@ -1,9 +1,8 @@
 import "./styles.css";
 import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
-import { JpwFile } from "./jpword/jpwfile";
-import { fromJpw } from "./score/jpwimport";
-import { JinpuPainter } from "./layout/painter";
+import { App } from "./editor/app";
+import { decodeJpwabc, isTauriRuntime } from "./editor/fileio";
 
 // Built-in sample (圣哉，圣哉，圣哉) — same content as CodeEditor.kt `scr`.
 const SAMPLE = `// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************
@@ -20,9 +19,6 @@ W1@1,1:
 {1.[圣]}哉，圣哉，圣哉！全能大主宰！清晨欢悦歌咏高声颂主圣恩，圣哉，圣哉，圣哉！恩慈永无更改，荣耀与赞美，归三一真神。
 `;
 
-const PAGE_W = 960;
-const PAGE_H = 540;
-
 async function boot() {
   await ensureFontsReady([
     { family: "Bravura", size: 40 },
@@ -31,34 +27,55 @@ async function boot() {
   const meta = await MetaData.load();
 
   const codePane = document.getElementById("code-pane")!;
-  const pre = document.createElement("pre");
-  pre.style.cssText = "margin:0;padding:8px;white-space:pre-wrap;font-size:13px";
-  pre.textContent = SAMPLE;
-  codePane.appendChild(pre);
-
   const scorePane = document.getElementById("score-pane")!;
 
-  const f = JpwFile.fromString(SAMPLE);
-  if (!f) {
-    scorePane.textContent = "解析失败";
-    return;
-  }
-  const score = fromJpw(f);
-  if (!score) {
-    scorePane.textContent = "导入失败";
-    return;
-  }
+  const app = new App(meta, scorePane);
+  app.mountEditor(codePane, SAMPLE);
+  (window as unknown as { __app: App }).__app = app; // dev/test handle
 
-  const painter = new JinpuPainter(28);
-  painter.layout.options.smuflMeta = meta;
-  painter.score = score;
-  painter.resize(PAGE_W, PAGE_H, null);
+  // toolbar
+  const on = (id: string, fn: () => void) =>
+    document.getElementById(id)?.addEventListener("click", fn);
+  on("btn-save", () => void app.saveFile());
+  on("btn-saveas", () => void app.saveFileAs());
+  on("btn-prev", () => app.prevPage());
+  on("btn-next", () => app.nextPage());
+  // export/play/stop wired in later phases
+  const addOpen = document.getElementById("btn-open");
+  addOpen?.addEventListener("click", () => void app.openFile());
 
-  for (let i = 0; i < painter.pageCount; i++) {
-    const svg = painter.renderPage(i);
-    svg.style.width = `${PAGE_W}px`;
-    svg.style.maxWidth = "100%";
-    scorePane.appendChild(svg);
+  // paging keys
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "PageDown") app.nextPage();
+    else if (e.key === "PageUp") app.prevPage();
+    else if (e.key === "Home" && e.ctrlKey) app.goToPage(0);
+    else if (e.key === "End" && e.ctrlKey) app.goToPage(1e9);
+  });
+
+  await wireDragDrop(app, scorePane);
+}
+
+async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
+  if (isTauriRuntime()) {
+    const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+    const { readFile } = await import("@tauri-apps/plugin-fs");
+    await getCurrentWebview().onDragDropEvent(async (event) => {
+      if (event.payload.type === "drop") {
+        const path = event.payload.paths[0];
+        if (!path || !/\.jpwabc$/i.test(path)) return;
+        const bytes = await readFile(path);
+        app.loadText(decodeJpwabc(bytes), path);
+      }
+    });
+  } else {
+    dropTarget.addEventListener("dragover", (e) => e.preventDefault());
+    dropTarget.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      const buf = new Uint8Array(await file.arrayBuffer());
+      app.loadText(decodeJpwabc(buf), file.name);
+    });
   }
 }
 
