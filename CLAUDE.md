@@ -82,7 +82,6 @@ java -jar /tmp/antlr-4.13.2-complete.jar -Dlanguage=TypeScript -o /tmp/gen -visi
 - Tauri 能力在 `src-tauri/capabilities/default.json`；新增插件要同时改 Cargo.toml、
   `src-tauri/src/lib.rs`、capabilities、`package.json`。
 - 提交信息用简要中文，不要 `Co-Authored-By` 尾注。
-- 该仓库本地已配置用 gh 凭据（账号 lodebar2026）推送，远程 `lodebar2026/jpeditor-web`。
 
 ## 进度
 
