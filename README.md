@@ -64,12 +64,15 @@ public/redist/  Bravura 字体与元数据
 - [x] 脚手架、字体/测量基础设施
 - [x] 解析 → 模型 → 导入 → 排版 → SVG 渲染
 - [x] 编辑器 + 实时重排 + 文件读写 + 翻页
-- [x] 点选/选中高亮 + 页面行数/选项对话框
-- [ ] 导出 MIDI / PNG / PPTX
-- [ ] Rust 端 MusicXML 导入 → `.jpwabc`
-- [ ] 选项面板完善、跨平台打包
+- [x] 点选/选中高亮 + 页面行数/选项（比例/字号/颜色）对话框
+- [x] 导出 PNG / 矢量 PPTX / MIDI
+- [x] MusicXML 导入 → `.jpwabc`（TypeScript，DOMParser）
+- [x] 跨平台打包（`npm run tauri build`）
 
-> 已放弃原项目的 JAXB（MusicXML 改由 Rust 解析）与 IDML 导出。
+打包产物（Apple Silicon）：`jpeditor.app` ≈ 11MB、`.dmg` ≈ 4.6MB
+（原 JVM + JavaFX + Skija 版含 JRE 通常 100MB+）。
+
+> 已放弃原项目的 JAXB（MusicXML 改为 TypeScript 解析）与 IDML 导出。
 
 ## 许可
 
