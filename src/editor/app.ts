@@ -26,6 +26,7 @@ export class App {
   pageW = 960;
   pageH = 540;
   fontSize = 28;
+  color = 0xff000000; // ARGB
   private meta: MetaData;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private selectedEl: SVGGElement | null = null;
@@ -38,10 +39,11 @@ export class App {
     this.scorePane = scorePane;
   }
 
-  /** Apply page-size / font-size render settings and re-render. */
-  applyRenderSettings(opts: { pageW?: number; pageH?: number; fontSize?: number }): void {
+  /** Apply page-size / font-size / color render settings and re-render. */
+  applyRenderSettings(opts: { pageW?: number; pageH?: number; fontSize?: number; color?: number }): void {
     if (opts.pageW) this.pageW = opts.pageW;
     if (opts.pageH) this.pageH = opts.pageH;
+    if (opts.color !== undefined) this.color = opts.color;
     if (opts.fontSize && opts.fontSize !== this.fontSize) {
       this.fontSize = opts.fontSize;
       const score = this.painter.score;
@@ -49,6 +51,7 @@ export class App {
       this.painter.layout.options.smuflMeta = this.meta;
       this.painter.score = score;
     }
+    this.painter.layout.options.color = this.color;
     this.reload(this.getText());
   }
 
