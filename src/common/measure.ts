@@ -40,13 +40,19 @@ export interface TextMetrics {
 // same glyphs/sizes thousands of times; caching avoids repeated reflows.
 const textCache = new Map<string, TextMetrics>();
 
+// Canvas context used for tight glyph bounds via actualBoundingBox*.
+// SVG getBBox() returns the full line box for CJK fonts, not the tight glyph
+// outline. Canvas actualBoundingBoxAscent/Descent matches Skija getPath bounds.
+let glyphCtx: CanvasRenderingContext2D | null = null;
+
 export function measureGlyphText(
   text: string,
   fontFamily: string,
   fontSizePx: number,
   fontWeight: "normal" | "bold" = "normal",
 ): TextMetrics {
-  const key = `${fontFamily}${fontWeight}${fontSizePx}${text}`;
+  const sep = "\x01";
+  const key = `${fontFamily}${sep}${fontWeight}${sep}${fontSizePx}${sep}${text}`;
   const cached = textCache.get(key);
   if (cached) return cached;
 
@@ -64,10 +70,31 @@ export function measureGlyphText(
   t.textContent = text;
 
   const width = t.getComputedTextLength();
-  const b = t.getBBox();
+
+  // Use Canvas actualBoundingBox* for tight vertical glyph bounds.
+  // getBBox() on SVG <text> returns the full em/line box for CJK fonts (e.g.
+  // "." in PingFang SC measures the same height as "1"), causing octave dots
+  // to be placed far above their correct position.
+  let bboxTop: number;
+  let bboxBottom: number;
+  if (!glyphCtx) {
+    const c = document.createElement("canvas");
+    glyphCtx = c.getContext("2d");
+  }
+  if (glyphCtx) {
+    glyphCtx.font = `${fontWeight} ${fontSizePx}px "${fontFamily}"`;
+    const cm = glyphCtx.measureText(text);
+    bboxTop = -(cm.actualBoundingBoxAscent ?? fontSizePx * 0.8);
+    bboxBottom = cm.actualBoundingBoxDescent ?? fontSizePx * 0.2;
+  } else {
+    const b = t.getBBox();
+    bboxTop = b.y;
+    bboxBottom = b.y + b.height;
+  }
+
   const m: TextMetrics = {
     width,
-    bbox: new Rect(b.x, b.y, b.x + b.width, b.y + b.height),
+    bbox: new Rect(0, bboxTop, width, bboxBottom),
   };
   textCache.set(key, m);
   return m;
@@ -102,7 +129,8 @@ export function measureFontMetrics(
   fontSizePx: number,
   fontWeight: "normal" | "bold" = "normal",
 ): { ascent: number; descent: number } {
-  const key = `${fontFamily}${fontWeight}${fontSizePx}`;
+  const sep = "\x01";
+  const key = `${fontFamily}${sep}${fontWeight}${sep}${fontSizePx}`;
   const cached = metricsCache.get(key);
   if (cached) return cached;
   if (!metricsCtx) {

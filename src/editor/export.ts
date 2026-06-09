@@ -62,7 +62,9 @@ function baseName(app: App): string {
 }
 
 export async function exportCurrentPagePng(app: App): Promise<void> {
-  const svg = app.pageEls[app.pageIndex];
+  const wrap = app.pageEls[app.pageIndex];
+  if (!wrap) return;
+  const svg = wrap.querySelector("svg") as SVGSVGElement | null;
   if (!svg) return;
   const bytes = await svgToBytes(svg, 2);
   await saveBytes(bytes, `${baseName(app)}-第${app.pageIndex + 1}页.png`, "image/png");
