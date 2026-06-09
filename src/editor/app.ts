@@ -11,6 +11,8 @@ import { JinpuPainter } from "../layout/painter";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/layout";
 import { Point } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
+import { loadMusicXml } from "../score/musicxml";
+import { scoreToJpwabc } from "../score/jpscore";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 
 export class App {
@@ -182,28 +184,42 @@ export class App {
   }
 
   // ---------------- file I/O ----------------
+  /** Decode bytes by extension: .xml/.musicxml -> import to .jpwabc; else UTF-16 .jpwabc. */
+  importBytes(bytes: Uint8Array, name: string): void {
+    if (/\.(xml|musicxml)$/i.test(name)) {
+      const xml = new TextDecoder(
+        bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
+      ).decode(bytes);
+      const score = loadMusicXml(xml);
+      this.filePath = null; // imported; save as new .jpwabc
+      this.setText(scoreToJpwabc(score));
+    } else {
+      this.setText(decodeJpwabc(bytes));
+    }
+  }
+
   async openFile(): Promise<void> {
     if (isTauriRuntime()) {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const { readFile } = await import("@tauri-apps/plugin-fs");
       const sel = await open({
         multiple: false,
-        filters: [{ name: "简谱", extensions: ["jpwabc", "JPWABC"] }],
+        filters: [{ name: "简谱 / MusicXML", extensions: ["jpwabc", "JPWABC", "xml", "musicxml"] }],
       });
       if (typeof sel !== "string") return;
       const bytes = await readFile(sel);
-      this.filePath = sel;
-      this.setText(decodeJpwabc(bytes));
+      this.importBytes(bytes, sel);
+      if (!/\.(xml|musicxml)$/i.test(sel)) this.filePath = sel;
     } else {
       const input = document.createElement("input");
       input.type = "file";
-      input.accept = ".jpwabc";
+      input.accept = ".jpwabc,.xml,.musicxml";
       input.onchange = async () => {
         const file = input.files?.[0];
         if (!file) return;
         const buf = new Uint8Array(await file.arrayBuffer());
-        this.filePath = file.name;
-        this.setText(decodeJpwabc(buf));
+        this.importBytes(buf, file.name);
+        if (!/\.(xml|musicxml)$/i.test(file.name)) this.filePath = file.name;
       };
       input.click();
     }

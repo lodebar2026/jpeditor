@@ -4,7 +4,7 @@ import { ensureFontsReady } from "./common/measure";
 import { App } from "./editor/app";
 import { showLayoutDialog, showOptionsDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
-import { decodeJpwabc, isTauriRuntime } from "./editor/fileio";
+import { isTauriRuntime } from "./editor/fileio";
 
 // Built-in sample (圣哉，圣哉，圣哉) — same content as CodeEditor.kt `scr`.
 const SAMPLE = `// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************
@@ -67,9 +67,9 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
     await getCurrentWebview().onDragDropEvent(async (event) => {
       if (event.payload.type === "drop") {
         const path = event.payload.paths[0];
-        if (!path || !/\.jpwabc$/i.test(path)) return;
+        if (!path || !/\.(jpwabc|xml|musicxml)$/i.test(path)) return;
         const bytes = await readFile(path);
-        app.loadText(decodeJpwabc(bytes), path);
+        app.importBytes(bytes, path);
       }
     });
   } else {
@@ -79,7 +79,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
       const buf = new Uint8Array(await file.arrayBuffer());
-      app.loadText(decodeJpwabc(buf), file.name);
+      app.importBytes(buf, file.name);
     });
   }
 }
