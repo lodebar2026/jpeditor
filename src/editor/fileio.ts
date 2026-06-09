@@ -31,6 +31,30 @@ export function decodeJpwabc(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(bytes);
 }
 
+/** Save bytes to disk: Tauri save dialog + writeFile, else browser download. */
+export async function saveBytes(
+  bytes: Uint8Array,
+  defaultName: string,
+  mime = "application/octet-stream",
+): Promise<void> {
+  if (isTauriRuntime()) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const dest = await save({ defaultPath: defaultName });
+    if (!dest) return;
+    const { writeFile } = await import("@tauri-apps/plugin-fs");
+    await writeFile(dest, bytes);
+  } else {
+    const ab = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(ab).set(bytes);
+    const blob = new Blob([ab], { type: mime });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = defaultName;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+}
+
 export function encodeJpwabc(text: string): Uint8Array {
   const units = text.length;
   const out = new Uint8Array(2 + units * 2);
