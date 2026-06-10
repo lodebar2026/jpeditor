@@ -38,6 +38,7 @@ async function boot() {
   const scorePane = document.getElementById("score-pane")!;
 
   const app = new App(meta, scorePane);
+  app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
   (window as unknown as { __app: App }).__app = app; // dev/test handle
 

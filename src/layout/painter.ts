@@ -66,7 +66,7 @@ export class JinpuPainter {
     const fonts: Font[] = [];
     for (const it of this.score.credit) {
       const isTitle = it.type === "title";
-      const sz = isTitle ? 48 : 36;
+      const sz = isTitle ? opt.titleSize : opt.creditSize;
       if (isTitle) {
         titleCount++;
         texts.unshift(it.text);
@@ -80,7 +80,7 @@ export class JinpuPainter {
       if (this.score.title.trim().length > 0) {
         titleCount = 1;
         texts.unshift(this.score.title);
-        fonts.unshift(fnt.makeWithSize(48));
+        fonts.unshift(fnt.makeWithSize(opt.titleSize));
       }
     }
     if (titleCount !== 1) console.error("title count error!");

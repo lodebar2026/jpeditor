@@ -1330,6 +1330,8 @@ export class LayoutOptions {
   numberFont: Font;
   smuflFont: Font;
   smuflMeta = new MetaData();
+  titleSize = 48;
+  creditSize = 36;
 
   smuflAsPath = false;
   halfWidthPunct = true;

@@ -26,11 +26,15 @@ export class App {
   pageW = 960;
   pageH = 540;
   fontSize = 28;
+  titleSize = 48;
+  creditSize = 36;
   color = 0xff000000; // ARGB
   private meta: MetaData;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private selectedEl: SVGGElement | null = null;
   statusEl: HTMLElement | null = null;
+
+  private static readonly SETTINGS_KEY = "jpeditor-render-settings";
 
   constructor(meta: MetaData, scorePane: HTMLElement) {
     this.meta = meta;
@@ -39,11 +43,13 @@ export class App {
     this.scorePane = scorePane;
   }
 
-  /** Apply page-size / font-size / color render settings and re-render. */
-  applyRenderSettings(opts: { pageW?: number; pageH?: number; fontSize?: number; color?: number }): void {
+  /** Apply page-size / font-size / title-size / credit-size / color render settings and re-render. */
+  applyRenderSettings(opts: { pageW?: number; pageH?: number; fontSize?: number; titleSize?: number; creditSize?: number; color?: number }): void {
     if (opts.pageW) this.pageW = opts.pageW;
     if (opts.pageH) this.pageH = opts.pageH;
     if (opts.color !== undefined) this.color = opts.color;
+    if (opts.titleSize !== undefined) this.titleSize = opts.titleSize;
+    if (opts.creditSize !== undefined) this.creditSize = opts.creditSize;
     if (opts.fontSize && opts.fontSize !== this.fontSize) {
       this.fontSize = opts.fontSize;
       const score = this.painter.score;
@@ -52,7 +58,54 @@ export class App {
       this.painter.score = score;
     }
     this.painter.layout.options.color = this.color;
+    this.painter.layout.options.titleSize = this.titleSize;
+    this.painter.layout.options.creditSize = this.creditSize;
+    this.saveSettings();
     this.reload(this.getText());
+  }
+
+  /** Restore persisted render settings; call before mountEditor() so first render uses them. */
+  loadSettings(): void {
+    try {
+      const raw = localStorage.getItem(App.SETTINGS_KEY);
+      if (!raw) return;
+      const s = JSON.parse(raw) as Partial<{
+        pageW: number; pageH: number; fontSize: number;
+        titleSize: number; creditSize: number; color: number;
+      }>;
+      if (s.pageW) this.pageW = s.pageW;
+      if (s.pageH) this.pageH = s.pageH;
+      if (s.titleSize !== undefined) this.titleSize = s.titleSize;
+      if (s.creditSize !== undefined) this.creditSize = s.creditSize;
+      if (s.color !== undefined) this.color = s.color;
+      if (s.fontSize && s.fontSize !== this.fontSize) {
+        this.fontSize = s.fontSize;
+        const score = this.painter.score;
+        this.painter = new JinpuPainter(this.fontSize);
+        this.painter.layout.options.smuflMeta = this.meta;
+        this.painter.score = score;
+      }
+      this.painter.layout.options.color = this.color;
+      this.painter.layout.options.titleSize = this.titleSize;
+      this.painter.layout.options.creditSize = this.creditSize;
+    } catch {
+      // corrupt storage — ignore
+    }
+  }
+
+  private saveSettings(): void {
+    try {
+      localStorage.setItem(App.SETTINGS_KEY, JSON.stringify({
+        pageW: this.pageW,
+        pageH: this.pageH,
+        fontSize: this.fontSize,
+        titleSize: this.titleSize,
+        creditSize: this.creditSize,
+        color: this.color,
+      }));
+    } catch {
+      // storage unavailable — ignore
+    }
   }
 
   mountEditor(parent: HTMLElement, initialText: string): void {

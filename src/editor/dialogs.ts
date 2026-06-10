@@ -74,14 +74,32 @@ export function showOptionsDialog(app: App): void {
   fs.min = "12";
   fs.max = "72";
   fs.value = String(app.fontSize);
+  const titleSz = document.createElement("input");
+  titleSz.type = "number";
+  titleSz.min = "12";
+  titleSz.max = "120";
+  titleSz.value = String(app.titleSize);
+  const creditSz = document.createElement("input");
+  creditSz.type = "number";
+  creditSz.min = "12";
+  creditSz.max = "120";
+  creditSz.value = String(app.creditSize);
   const color = document.createElement("input");
   color.type = "color";
   color.value = "#" + ((app.color >>> 0) & 0xffffff).toString(16).padStart(6, "0");
-  body.append(labeled("谱面比例", sel), labeled("基础字号", fs), labeled("颜色", color));
+  body.append(
+    labeled("谱面比例", sel),
+    labeled("基础字号", fs),
+    labeled("标题字号", titleSz),
+    labeled("词曲信息字号", creditSz),
+    labeled("颜色", color),
+  );
   modal("选项", body, () => {
     const [w, h] = RATIOS[sel.value] ?? [app.pageW, app.pageH];
     const fontSize = parseInt(fs.value, 10) || app.fontSize;
+    const titleSize = parseInt(titleSz.value, 10) || app.titleSize;
+    const creditSize = parseInt(creditSz.value, 10) || app.creditSize;
     const argb = 0xff000000 | (parseInt(color.value.slice(1), 16) & 0xffffff);
-    app.applyRenderSettings({ pageW: w, pageH: h, fontSize, color: argb >>> 0 });
+    app.applyRenderSettings({ pageW: w, pageH: h, fontSize, titleSize, creditSize, color: argb >>> 0 });
   });
 }
