@@ -35,6 +35,10 @@ function txt(parent: Element, tag: string): string | null {
   const e = elem(parent, tag);
   return e ? (e.textContent ?? "") : null;
 }
+function normText(s: string | null): string | null {
+  const t = s?.trim() ?? "";
+  return t.length > 0 ? t : null;
+}
 function intOf(parent: Element, tag: string): number | null {
   const t = txt(parent, tag);
   return t === null || t.trim() === "" ? null : parseInt(t.trim(), 10);
@@ -312,6 +316,22 @@ function updateRefrain(score: Score, refrainPos: Fraction): void {
   }
 }
 
+function extractScoreTitle(root: Element): string {
+  for (const cr of elems(root, "credit")) {
+    if (normText(txt(cr, "credit-type")) !== "title") continue;
+    const creditTitle = normText(txt(cr, "credit-words"));
+    if (creditTitle) return creditTitle;
+  }
+
+  const work = elem(root, "work");
+  const workTitle = normText(work ? txt(work, "work-title") : null);
+  if (workTitle) return workTitle;
+
+  const movementTitle = normText(txt(root, "movement-title"));
+  if (movementTitle) return movementTitle;
+  return "";
+}
+
 // ---------------- top-level ----------------
 export function loadMusicXml(xmlText: string): Score {
   const doc = new DOMParser().parseFromString(xmlText, "application/xml");
@@ -320,8 +340,7 @@ export function loadMusicXml(xmlText: string): Score {
   const root = doc.documentElement; // score-partwise
   const score = new Score();
 
-  const work = elem(root, "work");
-  score.title = (work ? txt(work, "work-title") : null) ?? txt(root, "movement-title") ?? "";
+  score.title = extractScoreTitle(root);
 
   const ident = elem(root, "identification");
   if (ident) {
