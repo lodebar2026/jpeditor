@@ -1049,6 +1049,16 @@ function drawBarline(eng: MixedOptions, container: Group, sys: Sys): void {
       const stb = sys.staves[last];
       const top = sys.ypos(first);
       const bot = sys.ypos(last) + stb.height();
+
+      // mixed jp-staff barline segment above main staff
+      const firstSt = sys.staves[first];
+      if (firstSt.part().staves[0].getNotation(sys.measures[0].offset) === Notation.Mixed) {
+        const miny = firstSt.minY;
+        const mixTop = miny + top - eng.mixStaffHeight - eng.mixStaffDist;
+        const mixBot = mixTop + eng.mixStaffHeight;
+        drawBarlineItem(eng, container, st, x, mixTop, mixBot);
+      }
+
       drawBarlineItem(eng, container, st, x, top, bot);
     }
 
@@ -1096,6 +1106,246 @@ function drawPartGroups(container: Group, sys: Sys): void {
 // -----------------------------------------------------------------------
 // drawSysStaff
 
+// -----------------------------------------------------------------------
+// M4: 简谱混排层（drawNotesJianPu / drawJpBeams / drawAccidentalJianPu /
+//               drawJpTimeSignature）
+
+/** Draw jianpu number layer for one measure（render.cpp::drawNotesJianPu）。 */
+function drawNotesJianPu(
+  eng: MixedOptions,
+  container: Group,
+  md: MeasureData,
+  subStaff: number,
+  mix: boolean,
+): void {
+  const staffHeight = mix ? eng.mixStaffHeight : 40;
+  const sc = staffHeight / 40;
+  const font = mix ? eng.mixFont : eng.jianpuFont;
+  const mif = md.measureInfo;
+  const meta = eng.meta;
+
+  for (const ch of md.chords) {
+    if (ch.slash) continue;
+    for (const n of ch.notes) {
+      if (n.staff !== subStaff) continue;
+      if (!n.visible) continue;
+      if (mix) {
+        if (n.layer !== 1) continue;
+        if (ch.cue) continue;
+      }
+
+      let x: number;
+      let measureRest = false;
+      if (ch.rest) {
+        if (ch.measureRest) measureRest = true;
+        const dur = ch.dur;
+        if (dur.compareTo(mif.dur) === 0) measureRest = true;
+      }
+
+      if (measureRest) {
+        x = mif.dataPos + 5;
+      } else {
+        x = n.cx(meta);
+        if (n.x < 0) continue;
+      }
+
+      const num = n.number();
+      const str = String(num);
+      const nw = font.measureText(str);
+      x -= nw / 2;
+
+      const ypos = font.size;
+      const t = new TextFrame();
+      t.text = str;
+      t.font = font;
+      t.color = 0xff000000;
+      t.x = x;
+      t.y = ypos;
+      container.add(t);
+
+      // octave dots
+      const oct = n.octaveJp(eng.addOctaveJpForKeyA);
+      if (oct !== 0) {
+        let octY: number;
+        if (oct > 0) {
+          octY = 3 - eng.jpTopDy;
+        } else {
+          octY = staffHeight + eng.beamDistJP * ch.jpBeamCount();
+          octY -= 2;
+        }
+        const dotStr = ".";
+        const dotW = font.measureText(dotStr);
+        for (let i = 0; i < Math.abs(oct); i++) {
+          const dd = new TextFrame();
+          dd.text = dotStr;
+          dd.font = font;
+          dd.color = 0xff000000;
+          dd.x = x + nw / 2 - dotW / 2;
+          dd.y = octY + i * eng.octaveDotDist * sc;
+          container.add(dd);
+        }
+      }
+
+      // duration extensions / dots
+      const noteType = ch.noteType;
+      const one = new Fraction(1);
+      if (noteType.compareTo(one) > 0) {
+        // noteType > 1 (half, whole, etc.): draw dashes
+        const dur = ch.dur;
+        const end = dur.plus(ch.offset);
+        const endPos = mif.getEntPos(end);
+        const cnt = Math.round(dur.toFloat());
+        const dx = cnt > 0 ? (endPos - x) / cnt : 0;
+        for (let c = 1; c < cnt; c++) {
+          const xx = x + dx * c;
+          const dig = ch.rest ? "0" : "-";
+          const rep = new TextFrame();
+          rep.text = dig;
+          rep.font = font;
+          rep.color = 0xff000000;
+          rep.x = xx;
+          rep.y = ypos;
+          container.add(rep);
+        }
+      } else {
+        // noteType <= 1: draw augmentation dots
+        for (let d = 0; d < ch.dot; d++) {
+          const dd = new TextFrame();
+          dd.text = ".";
+          dd.font = font;
+          dd.color = 0xff000000;
+          const dotDx = (nw / 2 + 10) * (mix ? 0.75 : 1);
+          dd.x = x + dotDx;
+          dd.y = font.size * 0.75;
+          container.add(dd);
+        }
+      }
+    }
+  }
+}
+
+/** Draw jp beam underlines for one measure（render.cpp::BeamLevelData::drawJianPu）。 */
+function drawJpBeams(
+  eng: MixedOptions,
+  container: Group,
+  md: MeasureData,
+  mix: boolean,
+): void {
+  const staffHeight = mix ? eng.mixStaffHeight : 40;
+  const sc = staffHeight / 40;
+  const diff = 40 - staffHeight;
+  const font = mix ? eng.mixFont : eng.jianpuFont;
+  const meta = eng.meta;
+
+  for (const grp of md.jpBeams) {
+    if (grp.chords.length === 0) continue;
+    // skip cue groups
+    if (grp.chords.some((ch) => ch.cue)) continue;
+
+    // find max beam count in group
+    let maxLevel = 0;
+    for (const ch of grp.chords) {
+      const lev = ch.jpBeamCount();
+      if (lev > maxLevel) maxLevel = lev;
+    }
+
+    for (let lev = 0; lev < maxLevel; lev++) {
+      // find first and last chord with jpBeamCount > lev
+      let first: import("./model").MChord | null = null;
+      let last: import("./model").MChord | null = null;
+      for (const ch of grp.chords) {
+        if (ch.jpBeamCount() > lev) {
+          if (!first) first = ch;
+          last = ch;
+        }
+      }
+      if (!first || !last) continue;
+
+      // get the note for this chord
+      const ntL = first.notes.find((n) => n.layer === 1 || !mix) ?? first.notes[0];
+      const ntR = last.notes.find((n) => n.layer === 1 || !mix) ?? last.notes[0];
+
+      const numL = String(ntL.number());
+      const numR = String(ntR.number());
+      const lx = ntL.cx(meta) - font.measureText(numL) / 2;
+      const rx = ntR.cx(meta) + font.measureText(numR) / 2;
+      const y = lev * eng.beamDistJP * sc + 35 - diff * 0.8;
+
+      addLine(container, lx, y, rx, y, eng.lineWidths.jpBeam);
+    }
+  }
+}
+
+/** Draw accidentals for jp layer（render.cpp::drawAccidentalJianPu）。 */
+function drawAccidentalJianPu(
+  eng: MixedOptions,
+  container: Group,
+  md: MeasureData,
+  subStaff: number,
+): void {
+  const meta = eng.meta;
+  const sc = 0.75;
+  for (const ch of md.chords) {
+    if (ch.rest) continue;
+    for (const n of ch.notes) {
+      if (n.staff !== subStaff) continue;
+      if (!n.visible) continue;
+      if (n.layer !== 1) continue;
+      if (n.x < 0) continue;
+      if (!n.acc) continue;
+      const w = smuflWidth(meta, n.acc);
+      const grp2 = new Group();
+      const m = new Matrix33();
+      m.setAffine([sc, 0, 0, sc, n.x - w * sc - 2, 20]);
+      grp2.matrix = m;
+      addSmufl(grp2, n.acc, 0, 0, eng.musicFont.size);
+      container.add(grp2);
+    }
+  }
+}
+
+/** Draw time signature for jp/mixed staff（render.cpp::drawTime Mixed branch）。 */
+function drawJpTimeSignature(
+  eng: MixedOptions,
+  container: Group,
+  mif: import("./model").MeasureInfo,
+  ps: import("./model").PartStaff,
+  x: number,
+): void {
+  const time = ps.getTime(mif.offset);
+  const staffHeight = eng.mixStaffHeight;
+  const sc = staffHeight / 40;
+  const font = eng.mixFont;
+
+  const beats = String(time.beats);
+  const beatType = String(time.beatType);
+  const w1 = font.measureText(beats);
+  const w2 = font.measureText(beatType);
+  const lineW = Math.max(w1, w2) + 2;
+
+  const grp = translated(x, 0);
+
+  const dy = 4;
+  const t1 = new TextFrame();
+  t1.text = beats;
+  t1.font = font;
+  t1.color = 0xff000000;
+  t1.x = 0;
+  t1.y = sc * (20 - dy);
+  grp.add(t1);
+
+  const t2 = new TextFrame();
+  t2.text = beatType;
+  t2.font = font;
+  t2.color = 0xff000000;
+  t2.x = 0;
+  t2.y = sc * (40 + dy);
+  grp.add(t2);
+
+  addLine(grp, -1, staffHeight / 2, lineW, staffHeight / 2, 1.5);
+  container.add(grp);
+}
+
 function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): void {
   const scr = sys.score;
   const eng = scr.options;
@@ -1139,7 +1389,7 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
       }
     }
 
-    // notes, beams (skip JianPu — handled by M4 mixed layer)
+    // notes, beams, lyrics, harmony
     if (!isJp) {
       const md = ps.part.measures[m.index];
       if (md) {
@@ -1147,6 +1397,29 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
         drawBeams(grp, md, ps.subIndex);
         drawLrc(eng, grp, md, ps.subIndex);
         drawHarmony(eng, grp, md, ps.subIndex, scr.scaling);
+      }
+    }
+
+    // M4: 简谱混排层（只在 Mixed 通知第一 sub-staff 时绘制）
+    if (nota === Notation.Mixed && ps.subIndex === 0) {
+      const md = ps.part.measures[m.index];
+      if (md) {
+        const jpOffY = st.minY - eng.mixStaffDist - eng.mixStaffHeight;
+        const grpJp = translated(0, jpOffY);
+        grp.add(grpJp);
+
+        // jp time signature at first measure of system
+        if (nsys && m.timePos !== null) {
+          drawJpTimeSignature(eng, grpJp, m, ps, m.timePos);
+        }
+        // jp time change
+        if (!nsys && ps.timeChange(m.offset) && m.timePos !== null) {
+          drawJpTimeSignature(eng, grpJp, m, ps, m.timePos);
+        }
+
+        drawNotesJianPu(eng, grpJp, md, ps.subIndex, true);
+        drawAccidentalJianPu(eng, grpJp, md, ps.subIndex);
+        drawJpBeams(eng, grpJp, md, true);
       }
     }
 
