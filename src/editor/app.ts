@@ -42,6 +42,7 @@ export class App {
   statusEl: HTMLElement | null = null;
 
   private static readonly SETTINGS_KEY = "jpeditor-render-settings";
+  private static readonly LAST_FILE_KEY = "jpeditor-last-file";
 
   constructor(meta: MetaData, scorePane: HTMLElement) {
     this.meta = meta;
@@ -371,6 +372,46 @@ export class App {
     this.pageIndex = 0;
   }
 
+  /** 记住上次打开/保存的文件路径（仅 Tauri：浏览器路径不可复读）。 */
+  rememberLastFile(path: string): void {
+    try {
+      localStorage.setItem(App.LAST_FILE_KEY, path);
+    } catch {
+      // storage unavailable — ignore
+    }
+  }
+
+  private clearLastFile(): void {
+    try {
+      localStorage.removeItem(App.LAST_FILE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
+  /** 启动时尝试复读上次打开的文件（仅 Tauri）。返回 true 表示已加载，false 则保持示例文本。 */
+  async tryRestoreLastFile(): Promise<boolean> {
+    if (!isTauriRuntime()) return false;
+    let path: string | null;
+    try {
+      path = localStorage.getItem(App.LAST_FILE_KEY);
+    } catch {
+      return false;
+    }
+    if (!path) return false;
+    try {
+      const { readFile } = await import("@tauri-apps/plugin-fs");
+      const bytes = await readFile(path);
+      this.importBytes(bytes, path);
+      if (!/\.(xml|musicxml)$/i.test(path)) this.filePath = path;
+      return true;
+    } catch {
+      // 文件已被移动/删除/不可读 — 忘掉它，回退到示例
+      this.clearLastFile();
+      return false;
+    }
+  }
+
   async openFile(): Promise<void> {
     if (isTauriRuntime()) {
       const { open } = await import("@tauri-apps/plugin-dialog");
@@ -383,6 +424,7 @@ export class App {
       const bytes = await readFile(sel);
       this.importBytes(bytes, sel);
       if (!/\.(xml|musicxml)$/i.test(sel)) this.filePath = sel;
+      this.rememberLastFile(sel);
     } else {
       const input = document.createElement("input");
       input.type = "file";
@@ -414,6 +456,7 @@ export class App {
       if (!dest) return;
       await this.writeTo(dest);
       this.filePath = dest;
+      this.rememberLastFile(dest);
     } else {
       const blob = new Blob([encodeJpwabc(this.getText())], {
         type: "application/octet-stream",

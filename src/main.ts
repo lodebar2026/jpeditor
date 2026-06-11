@@ -137,6 +137,9 @@ async function boot() {
   });
 
   await wireDragDrop(app, scorePane);
+
+  // 自动加载上次打开的文件（仅 Tauri；失败则保持示例文本）
+  await app.tryRestoreLastFile();
 }
 
 async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
@@ -149,6 +152,8 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
         if (!path || !/\.(jpwabc|xml|musicxml)$/i.test(path)) return;
         const bytes = await readFile(path);
         app.importBytes(bytes, path);
+        if (!/\.(xml|musicxml)$/i.test(path)) app.filePath = path;
+        app.rememberLastFile(path);
       }
     });
   } else {
