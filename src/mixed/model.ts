@@ -207,6 +207,24 @@ export class NotationItem {
   dx = 0;
   y = 0;
   above = true;
+
+  /** model.cpp:1096 NotationItem::isFermata */
+  isFermata(): boolean {
+    return this.symbol === GlyphCodes.fermataBelow || this.symbol === GlyphCodes.fermataAbove;
+  }
+
+  /** model.cpp:1100 NotationItem::setAbove —— 翻转上/下时同时换字形。 */
+  setAbove(ab: boolean): void {
+    if (this.above === ab) return;
+    this.above = ab;
+    const rev = NotationItem.revertMap[this.symbol];
+    if (rev) this.symbol = rev;
+  }
+
+  private static revertMap: Record<string, string> = {
+    [GlyphCodes.fermataAbove]: GlyphCodes.fermataBelow,
+    [GlyphCodes.fermataBelow]: GlyphCodes.fermataAbove,
+  };
 }
 
 export class MNote {
@@ -339,6 +357,17 @@ export class MChord {
 
   hasNotation(above: boolean): boolean {
     return this.notations.some((it) => it.above === above);
+  }
+
+  /** 时值区间是否相交（model.cpp:1825 Chord::overlape）。 */
+  overlape(ch: MChord): boolean {
+    const t0 = this.tick();
+    const t1 = t0.plus(this.dur);
+    const t2 = ch.tick();
+    const t3 = t2.plus(ch.dur);
+    if (t0.compareTo(t3) >= 0) return false;
+    if (t1.compareTo(t2) <= 0) return false;
+    return true;
   }
 
   /** 简谱减时线条数。 */
@@ -1363,6 +1392,56 @@ export class MeasureData {
 
     this.fixPitchForRest();
     for (const ent of this.noteEntries) ent.layout(meta, sibelius);
+  }
+
+  /**
+   * 记号（fermata 等）上/下与纵向位置（model.cpp:968 MusicData::layoutNotations）。
+   * 须在 stem/beam 信息就绪后调用。当前仅 fermata 走了 loader，articulation 字形未移植。
+   */
+  layoutNotations(): void {
+    const notaChords = this.chords.filter((ch) => ch.notations.length > 0);
+    const part2 = this.part.pid === "P2";
+
+    for (const ch of notaChords) {
+      let minv = Infinity;
+      let maxv = -Infinity;
+      for (const ch2 of this.chords) {
+        if (!ch2.overlape(ch)) continue;
+        minv = Math.min(minv, ch2.voice);
+        maxv = Math.max(maxv, ch2.voice);
+      }
+      const single = minv === maxv;
+      const above = single ? !ch.stemUp : ch.voice === minv;
+
+      let noteSide = single;
+      const nt = above ? ch.notes[ch.notes.length - 1] : ch.notes[0];
+      const hasStem = fLt(ch.noteType, new Fraction(4));
+      if (!(hasStem && ch.stemUp === above)) noteSide = true;
+
+      for (const it of ch.notations) {
+        // musicpp 以「原始字形是否 fermataAbove」判定，setAbove 之前取值。
+        const fermata = it.symbol === GlyphCodes.fermataAbove;
+        if (fermata) {
+          it.setAbove(single ? !part2 : above);
+          noteSide = it.above !== ch.stemUp;
+        } else {
+          it.setAbove(above);
+        }
+
+        const inc = it.above ? -1 : 1;
+        let y = noteSide ? nt.cy() + 5 * inc : ch.tailY(false);
+        y += 5 * inc;
+        if (fermata) {
+          // staff 外
+          if (it.above) {
+            if (y > -10) y = -10;
+          } else if (!noteSide) {
+            it.dx -= 5;
+          }
+        }
+        it.y = y;
+      }
+    }
   }
 
   /** 休止符纵向位置（MusicData::fixPitchForRest）。 */

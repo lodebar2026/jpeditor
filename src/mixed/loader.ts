@@ -27,6 +27,7 @@ import {
   MixedScore,
   MNote,
   MPage,
+  NotationItem,
   PartGroup,
   PartStaff,
   Sys,
@@ -375,6 +376,7 @@ class PartLoader {
 
     md.splitLayer();
     md.layoutNotes(this.score.options.meta, this.score.encoder === Encoder.Sibelius);
+    md.layoutNotations(); // stem/beam 信息就绪后（parser.cpp:2914）
     return div;
   }
 
@@ -622,6 +624,13 @@ class PartLoader {
 
   private processNotations(noteEl: Element, ch: MChord, _mif: MeasureInfo): void {
     for (const notEl of elems(noteEl, "notations")) {
+      // fermata（parser.cpp:1446 processNotations）。type=inverted → 下方。
+      for (const ferEl of elems(notEl, "fermata")) {
+        const item = new NotationItem();
+        item.above = ferEl.getAttribute("type") !== "inverted";
+        item.symbol = item.above ? GlyphCodes.fermataAbove : GlyphCodes.fermataBelow;
+        ch.notations.push(item);
+      }
       for (const slurEl of elems(notEl, "slur")) {
         const ty = slurEl.getAttribute("type");
         const num = attrInt(slurEl, "number") ?? 1;

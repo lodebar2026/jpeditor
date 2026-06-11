@@ -169,6 +169,20 @@ export function drawNotesNormal(
     addLine(container, sx, sy, sx, ty, eng.lineWidths.stem);
   }
 
+  // ---- notations (fermata 等) —— render.cpp:328 drawChord 非简谱分支 ----
+  for (const ch of md.chords) {
+    if (ch.notations.length === 0 || ch.notes.length === 0) continue;
+    if (ch.notes[0].staff !== subStaff) continue;
+    const stemX = ch.stemX();
+    for (const nota of ch.notations) {
+      let x = stemX + nota.dx;
+      if (ch.stemUp && ch.noteType.compareTo(new Fraction(4)) < 0) {
+        x -= ch.noteheadWidth(meta);
+      }
+      addSmufl(container, nota.symbol, x, nota.y, fs);
+    }
+  }
+
   // ---- ledger lines, dots, accidentals from NoteEntries ----
   for (const ent of md.noteEntries) {
     if (ent.subStaff !== subStaff) continue;
