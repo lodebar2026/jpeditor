@@ -70,6 +70,16 @@ export const GlyphCodes = {
   tuplet3: String.fromCharCode(0xe883),
   // Articulations / ornaments
   fermataAbove: String.fromCharCode(0xe4c0),
+  // Dynamics (单字母组合成 mf/sfz 等；见 loader.ts::convertDynamicsStr)
+  dynamicPiano: String.fromCharCode(0xe520),
+  dynamicMezzo: String.fromCharCode(0xe521),
+  dynamicForte: String.fromCharCode(0xe522),
+  dynamicRinforzando: String.fromCharCode(0xe523),
+  dynamicSforzando: String.fromCharCode(0xe524),
+  dynamicZ: String.fromCharCode(0xe525),
+  dynamicNiente: String.fromCharCode(0xe526),
+  // Metronome（节拍记号音符）
+  metNoteQuarterUp: String.fromCharCode(0xeca5),
 };
 
 const codeToName: Record<string, string> = {
@@ -123,6 +133,14 @@ const codeToName: Record<string, string> = {
   [GlyphCodes.tuplet0]: "tuplet0",
   [GlyphCodes.tuplet3]: "tuplet3",
   [GlyphCodes.fermataAbove]: "fermataAbove",
+  [GlyphCodes.dynamicPiano]: "dynamicPiano",
+  [GlyphCodes.dynamicMezzo]: "dynamicMezzo",
+  [GlyphCodes.dynamicForte]: "dynamicForte",
+  [GlyphCodes.dynamicRinforzando]: "dynamicRinforzando",
+  [GlyphCodes.dynamicSforzando]: "dynamicSforzando",
+  [GlyphCodes.dynamicZ]: "dynamicZ",
+  [GlyphCodes.dynamicNiente]: "dynamicNiente",
+  [GlyphCodes.metNoteQuarterUp]: "metNoteQuarterUp",
 };
 
 export function glyphCodeName(c: string): string | undefined {
