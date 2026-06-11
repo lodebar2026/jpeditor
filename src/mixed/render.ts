@@ -17,7 +17,6 @@ import {
   MeasureData,
   MixedOptions,
   MixedPart,
-  MixedScore,
   MLyric,
   Notation,
   Slur,
@@ -748,18 +747,46 @@ export function drawHarmony(
   scaling: number,
 ): void {
   const fontsz = eng.harmonySize / (scaling > 0 ? scaling : 0.45);
-  const font = new Font(eng.wordFont, fontsz);
+  const wordFont = new Font(eng.wordFont, fontsz);
+  const musicFont = new Font("Bravura", fontsz); // SMuFL csym 字形（升降号/和弦质量）
   for (const h of data.harmonies) {
     if (h.staff !== subStaff) continue;
-    const text = h.asPlainText();
-    const width = font.measureText(text);
-    const t = new TextFrame();
-    t.text = text;
-    t.font = font;
-    t.color = 0xff000000;
-    t.x = h.x - width / 2 + 6.5;
-    t.y = -h.y;
-    container.add(t);
+    const segs = h.asText();
+
+    // 总宽：未缩放的 advance 之和（对齐 musicpp TextBlock::width 的居中口径）
+    let width = 0;
+    for (const s of segs) width += (s.music ? musicFont : wordFont).measureText(s.text);
+
+    const grp = new Group();
+    let xpos = 0;
+    for (const s of segs) {
+      const font = s.music ? musicFont : wordFont;
+      const t = new TextFrame();
+      t.text = s.text;
+      t.font = font;
+      t.color = 0xff000000;
+      let scl = 1;
+      if (s.superscript === 1 || s.superscript === -1) {
+        scl = 0.75;
+        const dy = s.superscript === 1 ? -font.size / 4 : font.size / 4;
+        const g = new Group();
+        const m = new Matrix33();
+        m.setAffine([scl, 0, 0, scl, xpos, dy]);
+        g.matrix = m;
+        g.add(t);
+        grp.add(g);
+      } else {
+        t.x = xpos;
+        t.y = s.dy;
+        grp.add(t);
+      }
+      xpos += font.measureText(s.text) * scl;
+    }
+
+    const m = new Matrix33();
+    m.setAffine([1, 0, 0, 1, h.x - width / 2 + 6.5, -h.y + wordFont.metrics.descent]);
+    grp.matrix = m;
+    container.add(grp);
   }
 }
 
@@ -876,7 +903,7 @@ function drawKeyAccid(
   xOff: number,
   fontSize: number,
 ): void {
-  const inc = 4;
+  const inc = num > 0 ? 4 : 3; // 降号步进为 3（render.cpp drawKeyAccid）
   const initStep = num > 0 ? 52 : 48;
   const maxStep = num > 0 ? 46 : 44;
   const sk = Math.abs(skip);
@@ -970,30 +997,30 @@ function drawBarlineItem(
   top: number,
   bot: number,
 ): void {
+  // 整组小节线右缘对齐到 x（向左生长），与谱线右端接齐（render.cpp drawBarlineItem）。
   const lw = eng.lineWidths;
+  const light = lw.lightBarline;
+  const thick = lw.heavyBarline;
+  const dist = eng.barlineDist;
+  const widths: number[] = [];
   switch (style) {
-    case BarGlyph.Single:
-      addLine(container, x, top, x, bot, lw.lightBarline);
-      break;
-    case BarGlyph.Double:
-      addLine(container, x, top, x, bot, lw.lightBarline);
-      addLine(container, x + lw.lightBarline + eng.barlineDist, top, x + lw.lightBarline + eng.barlineDist, bot, lw.lightBarline);
-      break;
-    case BarGlyph.Final:
-      addLine(container, x, top, x, bot, lw.lightBarline);
-      addLine(container, x + lw.lightBarline + eng.barlineDist + lw.heavyBarline / 2, top, x + lw.lightBarline + eng.barlineDist + lw.heavyBarline / 2, bot, lw.heavyBarline);
-      break;
-    case BarGlyph.ReverseFinal:
-      addLine(container, x + lw.heavyBarline / 2, top, x + lw.heavyBarline / 2, bot, lw.heavyBarline);
-      addLine(container, x + lw.heavyBarline + eng.barlineDist, top, x + lw.heavyBarline + eng.barlineDist, bot, lw.lightBarline);
-      break;
-    case BarGlyph.HeavyHeavy:
-      addLine(container, x + lw.heavyBarline / 2, top, x + lw.heavyBarline / 2, bot, lw.heavyBarline);
-      addLine(container, x + lw.heavyBarline + eng.barlineDist + lw.heavyBarline / 2, top, x + lw.heavyBarline + eng.barlineDist + lw.heavyBarline / 2, bot, lw.heavyBarline);
-      break;
+    case BarGlyph.Single: widths.push(light); break;
+    case BarGlyph.Double: widths.push(light, light); break;
+    case BarGlyph.HeavyHeavy: widths.push(thick, thick); break;
+    case BarGlyph.Final: widths.push(light, thick); break;
+    case BarGlyph.ReverseFinal: widths.push(thick, light); break;
     case BarGlyph.None:
     default:
-      break;
+      return;
+  }
+  let w = 0;
+  for (const ww of widths) w += ww;
+  w += (widths.length - 1) * dist;
+  let xx = x - w;
+  for (const ww of widths) {
+    const cx = xx + ww / 2;
+    addLine(container, cx, top, cx, bot, ww);
+    xx += dist + ww;
   }
 }
 
@@ -1346,6 +1373,85 @@ function drawJpTimeSignature(
   container.add(grp);
 }
 
+/** Draw jianpu key indicator「1=X」for jp/mixed staff（render.cpp::drawKey JianPu/Mixed 分支）。 */
+function drawJpKey(
+  eng: MixedOptions,
+  container: Group,
+  mif: import("./model").MeasureInfo,
+  ps: import("./model").PartStaff,
+  st: SysStaff,
+): void {
+  const key = ps.getKey(mif.offset);
+  const cur = key.fifths;
+  const names = "CGDAEBFC";
+
+  let name = mif.index !== 0 ? "转" : "";
+  name += "1=";
+  let keyName: string;
+  let acc = 0;
+  if (cur >= 0) {
+    keyName = names[cur] ?? "C";
+    if (cur >= 6) acc = 1;
+  } else {
+    keyName = names[7 + cur] ?? "C";
+    if (cur < -1) acc = -1;
+  }
+
+  let x = (mif.keyPos ?? 0) - mif.sibKeyOffset;
+  if (mif.keyOffestJP !== null) x += mif.keyOffestJP;
+  let center = true;
+  if (mif === mif.system.measures[0]) {
+    center = false;
+    x = 0;
+  }
+
+  // y relative to main staff top line (negative = above); Mixed branch
+  let y = -70;
+  if (mif.index === 0) y -= 30; // 避开和弦
+  else y = -st.harmonyY;
+
+  const jpFont = eng.jianpuFont;
+  if (acc !== 0) {
+    const grp = new Group();
+    const str1 = new TextFrame();
+    str1.text = name;
+    str1.font = jpFont;
+    str1.color = 0xff000000;
+    grp.add(str1);
+    let w = jpFont.measureText(name) + 7;
+
+    const accSym = acc < 0 ? GlyphCodes.accidentalFlat : GlyphCodes.accidentalSharp;
+    const sc = jpFont.size / 40;
+    addSmuflScaled(grp, accSym, w, -10, eng.musicFont.size, sc, sc);
+    w += 12;
+
+    const str2 = new TextFrame();
+    str2.text = keyName;
+    str2.font = jpFont;
+    str2.color = 0xff000000;
+    str2.x = w;
+    grp.add(str2);
+    w += jpFont.measureText(keyName);
+
+    if (center) x -= w / 2;
+    const m = new Matrix33();
+    m.setAffine([1, 0, 0, 1, x, y]);
+    grp.matrix = m;
+    container.add(grp);
+  } else {
+    name += keyName;
+    const ff = new Font(eng.wordFont, jpFont.size * 0.75);
+    const t = new TextFrame();
+    t.text = name;
+    t.font = ff;
+    t.color = 0xff000000;
+    if (center) x -= ff.measureText(name) / 2;
+    t.x = x;
+    t.y = y;
+    container.add(t);
+  }
+}
+
 function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): void {
   const scr = sys.score;
   const eng = scr.options;
@@ -1408,6 +1514,11 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
         const grpJp = translated(0, jpOffY);
         grp.add(grpJp);
 
+        // jianpu key「1=X」at first measure overall or on key change (drawn in main group)
+        if (eng.showKeyChangeJp && (m.index === 0 || ps.keyChange(m.offset)) && m.keyPos !== null) {
+          drawJpKey(eng, grp, m, ps, st);
+        }
+
         // jp time signature at first measure of system
         if (nsys && m.timePos !== null) {
           drawJpTimeSignature(eng, grpJp, m, ps, m.timePos);
@@ -1428,7 +1539,7 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
 }
 
 // -----------------------------------------------------------------------
-// drawSystem / drawPage
+// drawSystem
 
 export function drawSystem(container: Group, sys: Sys): Group {
   const scr = sys.score;
@@ -1451,19 +1562,3 @@ export function drawSystem(container: Group, sys: Sys): Group {
   }
   return res;
 }
-
-export function drawPage(score: MixedScore, pageIndex: number): Group {
-  const pg = score.pages[pageIndex];
-  const defs = score.defaults;
-  const res = new Group();
-
-  for (const sys of pg.systems) {
-    const gr = drawSystem(res, sys);
-    const m = new Matrix33();
-    m.setAffine([1, 0, 0, 1, defs.leftMargin + sys.leftMargin, defs.topMargin + sys.distance]);
-    gr.matrix = m;
-  }
-
-  return res;
-}
-

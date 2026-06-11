@@ -89,24 +89,25 @@ function calcSoundPitch(noteEl: Element): number {
 
 // ---------------- Note type ----------------
 
+// noteType 以四分音符为单位（musicpp parser.cpp:625-665）：quarter=1、whole=4、eighth=1/2…
 const NOTE_TYPE_MAP: Record<string, Fraction> = {
-  "1024th": new Fraction(1, 1024),
-  "512th": new Fraction(1, 512),
-  "256th": new Fraction(1, 256),
-  "128th": new Fraction(1, 128),
-  "64th": new Fraction(1, 64),
-  "32nd": new Fraction(1, 32),
-  "16th": new Fraction(1, 16),
-  eighth: new Fraction(1, 8),
-  quarter: new Fraction(1, 4),
-  half: new Fraction(1, 2),
-  whole: new Fraction(1),
-  breve: new Fraction(2),
-  long: new Fraction(4),
+  "1024th": new Fraction(1, 256),
+  "512th": new Fraction(1, 128),
+  "256th": new Fraction(1, 64),
+  "128th": new Fraction(1, 32),
+  "64th": new Fraction(1, 16),
+  "32nd": new Fraction(1, 8),
+  "16th": new Fraction(1, 4),
+  eighth: new Fraction(1, 2),
+  quarter: new Fraction(1),
+  half: new Fraction(2),
+  whole: new Fraction(4),
+  breve: new Fraction(8),
+  long: new Fraction(16),
 };
 
 function noteTypeFraction(typeName: string): Fraction {
-  return NOTE_TYPE_MAP[typeName] ?? new Fraction(1, 4);
+  return NOTE_TYPE_MAP[typeName] ?? new Fraction(1);
 }
 
 // ---------------- Clef / Key / Time constructors ----------------
@@ -188,6 +189,8 @@ class PartLoader {
   tupletStarts = new Map<number, TupletRef>();
   // lrc linking: num → [MLyric list in order]
   lrcByNum = new Map<string, MLyric[]>();
+  // lyric extend (melisma) points, paired 2-by-2 in processLrcExtend
+  lrcExtendPts: { note: MNote; lrc: MLyric; tick: Fraction; stop: boolean }[] = [];
 
   constructor(part: MixedPart, score: MixedScore, partEl: Element) {
     this.part = part;
@@ -223,6 +226,7 @@ class PartLoader {
     this.calcStemLen();
     this.processTied();
     this.processEnding();
+    this.processLrcExtend();
     this.part.guessTiedPlacement();
   }
 
@@ -375,18 +379,20 @@ class PartLoader {
       ch.voice = (intOf(noteEl, "voice") ?? 1) - 1;
       ch.dot = elems(noteEl, "dot").length;
 
+      // timeModification 单独累乘；noteType 纯由 <type> 决定（musicpp parser.cpp:620-665）
+      const tm = elem(noteEl, "time-modification");
+      if (tm) {
+        const actual = intOf(tm, "actual-notes") ?? 1;
+        const normal = intOf(tm, "normal-notes") ?? 1;
+        ch.timeModification = new Fraction(normal, actual);
+      }
       const typeName = txt(noteEl, "type");
       if (typeName) {
         ch.noteType = noteTypeFraction(typeName);
-        const tm = elem(noteEl, "time-modification");
-        if (tm) {
-          const actual = intOf(tm, "actual-notes") ?? 1;
-          const normal = intOf(tm, "normal-notes") ?? 1;
-          ch.timeModification = new Fraction(normal, actual);
-          ch.noteType = ch.noteType.times(ch.timeModification);
-        }
-      } else if (!ch.rest) {
-        ch.noteType = new Fraction(1);
+      } else {
+        // 无 <type>：整小节休止（noteType=4 全休止符字形）
+        ch.noteType = new Fraction(4);
+        ch.measureRest = true;
       }
 
       this.processBeam(ch, noteEl, md);
@@ -513,7 +519,40 @@ class PartLoader {
       arr.push(lrc);
       this.lrcByNum.set(lrc.num, arr);
 
-      void LrcExtend; // lrcExtend wired in M4
+      // lyric extend (melisma): collect points, paired later
+      const extEl = elem(lrcEl, "extend");
+      if (extEl) {
+        const stop = extEl.getAttribute("type") === "stop";
+        this.lrcExtendPts.push({ note: nt, lrc, tick: ch.tick(), stop });
+      }
+    }
+  }
+
+  /** Pair lyric extend points 2-by-2 (musicpp parser.cpp:753 processLrcExtend)。 */
+  processLrcExtend(): void {
+    const pts = [...this.lrcExtendPts];
+    const numOf = (s: string) => {
+      const n = parseInt(s, 10);
+      return isNaN(n) ? 0 : n;
+    };
+    pts.sort((a, b) => {
+      const na = numOf(a.lrc.num);
+      const nb = numOf(b.lrc.num);
+      if (na !== nb) return na - nb;
+      const c = a.tick.compareTo(b.tick);
+      if (c !== 0) return c;
+      return (a.stop ? 1 : 0) - (b.stop ? 1 : 0);
+    });
+    for (let i = 0; i + 1 < pts.length; i += 2) {
+      const pa = pts[i];
+      const pb = pts[i + 1];
+      const ext: LrcExtend = this.part.newLrcExtend();
+      ext.startNote = pa.note;
+      ext.endNote = pb.note;
+      ext.startTick = pa.note.chord.tick();
+      ext.endTick = pb.note.chord.tick();
+      ext.start = pa.lrc;
+      ext.stop = pb.lrc;
     }
   }
 

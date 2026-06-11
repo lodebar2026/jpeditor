@@ -1,4 +1,5 @@
-// PAO（Praise as One）混排 pipeline: formatScorePao + MixedPainter。
+// 混排（五线谱+简谱）排版/分页/绘制入口: formatMixedScore + MixedPainter。
+// 页面尺寸/边距以 MusicXML <defaults> 为准（不固定画布），适用于所有混排乐谱。
 // 从 musicpp util/pao.cpp 移植（formatScorePAO + paoSingleScore，不含 fixPaoScore 逐曲 hack）。
 
 import { MetaData } from "../smufl/smufl";
@@ -6,14 +7,14 @@ import { Fraction } from "../common/fraction";
 import { Matrix33 } from "../common/geom";
 import { Font } from "../layout/font";
 import { GraphicLine, GraphicPath, Group, PageItem, TextFrame } from "../layout/layout";
-import { MixedOptions, MixedScore, Notation, ScoreCredit, Sys } from "./model";
+import { LCR, MixedOptions, MixedScore, Notation, ScoreCredit, Sys } from "./model";
 import { loadMixedXml } from "./loader";
 import { drawSystem } from "./render";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 // -----------------------------------------------------------------------
-// formatScorePao（formatScorePAO port, without per-song hacks）
+// formatMixedScore（formatScorePAO port, without per-song hacks）
 
 /**
  * Post-process the loaded MixedScore to set up Mixed notation on the first part:
@@ -22,7 +23,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  * - Move harmonies to harmonyY
  * - Scale P2 lyric font × 0.8
  */
-export function formatScorePao(score: MixedScore): void {
+export function formatMixedScore(score: MixedScore): void {
   if (score.parts.length === 0) return;
 
   const p = score.parts[0];
@@ -60,12 +61,12 @@ export function formatScorePao(score: MixedScore): void {
 // -----------------------------------------------------------------------
 // M5: 分页+标题块（paoSingleScore 的 getFrames/flowLayout/drawFrames 移植）
 
-const PAO_PAGE_HEIGHT = 1870;
-const PAO_MARGIN = 75;
-const PAO_FRAME_GAP = 20;
-const PAO_TITLE_OFFSET = 170; // hh(150) + 20
+// 页面高度/边距来自 MusicXML <defaults>（score.defaults）；以下仅作未提供时的回退。
+const PAGE_HEIGHT_FALLBACK = 1870;
+const FRAME_GAP = 20;
+const TITLE_OFFSET = 170; // hh(150) + 20
 
-interface PaoFrameItem {
+interface FrameItem {
   system: Sys;
   topY: number;
   bottomY: number;
@@ -74,65 +75,17 @@ interface PaoFrameItem {
   credits: ScoreCredit[];
 }
 
-interface PaoLayoutFrame {
+interface LayoutFrame {
   height: number;
   ypos: number;
   newPage: boolean;
 }
 
-/** 计算 system 内容的上下边界（相对于 system group y=0 = 第一谱表顶线）。 */
-function sysGetYBound(sys: Sys, _eng: MixedOptions): [number, number] {
-  let firstStIdx = -1, lastStIdx = -1;
-  for (let i = 0; i < sys.staves.length; i++) {
-    if (sys.staves[i].staffVisible) {
-      if (firstStIdx < 0) firstStIdx = i;
-      lastStIdx = i;
-    }
-  }
-  if (firstStIdx < 0) return [60, -100];
-
-  const firstSt = sys.staves[firstStIdx];
-  const lastSt = sys.staves[lastStIdx];
-  const t0 = sys.measures[0].offset;
-
-  // Top: extent above first staff y=0 (positive = above)
-  let topY = 60;
-  const nota = firstSt.partStaff.getNotation(t0);
-  if (nota === Notation.Mixed) {
-    // JP layer top = minY - mixStaffDist - mixStaffHeight; topY = -(that)
-    topY = Math.max(topY, -firstSt.minY + 35);
-  }
-  const firstPart = firstSt.part();
-  for (const m of sys.measures) {
-    const md = firstPart.measures[m.index];
-    if (!md) continue;
-    for (const h of md.harmonies) {
-      topY = Math.max(topY, h.y + 10);
-    }
-  }
-
-  // Bottom: extent below last staff (negative, relative to system y=0)
-  let botFromLastStaff = -60; // default: 60 below last staff top
-  const lastPart = lastSt.part();
-  for (const m of sys.measures) {
-    const md = lastPart.measures[m.index];
-    if (!md) continue;
-    for (const lrc of md.lyrics) {
-      const y = lrc.y - 10;
-      if (y < botFromLastStaff) botFromLastStaff = y;
-    }
-  }
-  const lastStYpos = sys.ypos(lastStIdx);
-  const bottomY = botFromLastStaff - lastStYpos;
-
-  return [topY, bottomY];
-}
-
-function paoGetFrames(score: MixedScore): PaoFrameItem[] {
-  const eng = score.options;
-  const items: PaoFrameItem[] = [];
+function getFrames(score: MixedScore): FrameItem[] {
+  const items: FrameItem[] = [];
   for (const sys of score.systems) {
-    const [topY, bottomY] = sysGetYBound(sys, eng);
+    // System::getYBound（model.ts）：忠实移植，topY 为上方延伸量，bottomY 为下方（负）。
+    const [topY, bottomY] = sys.getYBound();
     items.push({
       system: sys,
       topY,
@@ -145,15 +98,15 @@ function paoGetFrames(score: MixedScore): PaoFrameItem[] {
   return items;
 }
 
-function paoFlowLayout(items: PaoFrameItem[], ph: number): PaoLayoutFrame[] {
-  const result: PaoLayoutFrame[] = [];
+function flowLayout(items: FrameItem[], ph: number): LayoutFrame[] {
+  const result: LayoutFrame[] = [];
   let ypos = ph * 2; // force newPage on first frame
   let lastMrg = 0;
   for (const frm of items) {
-    const mrg = Math.max(lastMrg, PAO_FRAME_GAP);
+    const mrg = Math.max(lastMrg, FRAME_GAP);
     const bot = ypos + frm.height;
     const np = bot + mrg > ph;
-    const lf: PaoLayoutFrame = { height: frm.height, ypos: 0, newPage: np };
+    const lf: LayoutFrame = { height: frm.height, ypos: 0, newPage: np };
     if (np) {
       lastMrg = 0;
       ypos = 0;
@@ -162,17 +115,19 @@ function paoFlowLayout(items: PaoFrameItem[], ph: number): PaoLayoutFrame[] {
     }
     lf.ypos = ypos;
     ypos += frm.height;
-    lastMrg = PAO_FRAME_GAP;
+    lastMrg = FRAME_GAP;
     result.push(lf);
   }
   return result;
 }
 
-function drawPaoFrames(
+function drawFrames(
   score: MixedScore,
-  items: PaoFrameItem[],
-  lf: PaoLayoutFrame[],
-  margin: number,
+  items: FrameItem[],
+  lf: LayoutFrame[],
+  leftMargin: number,
+  topMargin: number,
+  pageHeight: number,
   pageWidthTenths: number,
 ): Group[] {
   const pages: Group[] = [];
@@ -188,25 +143,37 @@ function drawPaoFrames(
       pages.push(page);
     }
 
-    // Credits (title block text) for this frame
+    // Credits (title block text) for this frame. credit-words 可含换行 → 逐行排版。
+    const pg = page; // non-null here (ensured above); capture for closure
     for (const cr of data.credits) {
-      const tf = new TextFrame();
-      tf.text = cr.text;
       const fntSz = cr.fontSize > 0 ? cr.fontSize / score.scaling : 20;
-      tf.font = new Font(cr.fontSize > 0 ? score.defaults.lyricFont.family : "PingFang SC", fntSz);
-      // MusicXML y from page bottom → SVG top-down: y = pageHeight - cr.y
-      const m = new Matrix33();
-      m.setAffine([1, 0, 0, 1, cr.x > 0 ? cr.x : pageWidthTenths / 2, PAO_PAGE_HEIGHT - cr.y]);
-      tf.matrix = m;
-      page.add(tf);
+      const family = cr.fontSize > 0 ? score.defaults.lyricFont.family : "PingFang SC";
+      const font = new Font(family, fntSz);
+      const anchorX = cr.x > 0 ? cr.x : pageWidthTenths / 2;
+      const baseY = pageHeight - cr.y; // MusicXML y from page bottom → SVG top-down
+      const lineH = fntSz * 1.2;
+      const lines = cr.text.split(/\r?\n/);
+      lines.forEach((line, li) => {
+        const tf = new TextFrame();
+        tf.text = line;
+        tf.font = font;
+        let x = anchorX;
+        const w = font.measureText(line);
+        if (cr.justify === LCR.Center) x -= w / 2;
+        else if (cr.justify === LCR.Right) x -= w;
+        const m = new Matrix33();
+        m.setAffine([1, 0, 0, 1, x, baseY + li * lineH]);
+        tf.matrix = m;
+        pg.add(tf);
+      });
     }
 
-    // System group positioned at (margin+leftMargin, margin+ypos+topY+musicYOffset)
+    // System group positioned at (leftMargin+sys.leftMargin, topMargin+ypos+topY+musicYOffset)
     const sysGrp = drawSystem(page, sys);
     const m = new Matrix33();
     m.setAffine([1, 0, 0, 1,
-      margin + sys.leftMargin,
-      margin + it.ypos + data.topY + data.musicYOffset,
+      leftMargin + sys.leftMargin,
+      topMargin + it.ypos + data.topY + data.musicYOffset,
     ]);
     sysGrp.matrix = m;
   }
@@ -226,9 +193,9 @@ export class MixedPainter {
   get pageWidthTenths(): number {
     return this.score?.defaults.pageWidth ?? 1200;
   }
-  /** Height of one page in tenths. */
+  /** Height of one page in tenths (from MusicXML <page-layout>). */
   get pageHeightTenths(): number {
-    return PAO_PAGE_HEIGHT;
+    return this.score?.defaults.pageHeight ?? PAGE_HEIGHT_FALLBACK;
   }
 
   /** Width in PDF points (A4 ≈ 595 pt). */
@@ -237,11 +204,16 @@ export class MixedPainter {
   }
   /** Height in PDF points (A4 ≈ 842 pt). */
   get pageHeightPt(): number {
-    return PAO_PAGE_HEIGHT * (this.score?.scaling ?? 0.4505);
+    return this.pageHeightTenths * (this.score?.scaling ?? 0.4505);
   }
 
   get pageCount(): number {
     return this._pages.length;
+  }
+
+  /** Score title (first line), for export filenames. */
+  get title(): string {
+    return this.score?.title.split("\n")[0] ?? "";
   }
 
   /** Load and format a MusicXML string. Must be called before renderPage. */
@@ -251,20 +223,24 @@ export class MixedPainter {
     }
     const options = new MixedOptions(this.meta);
     const score = loadMixedXml(xmlText, options);
-    formatScorePao(score);
+    formatMixedScore(score);
     this.score = score;
 
     // M5: flow layout
-    const items = paoGetFrames(score);
+    const items = getFrames(score);
     if (items.length > 0) {
       // Add title block (credits) to first frame
       items[0].credits = score.credits.filter(c => c.page === 0);
-      items[0].musicYOffset = PAO_TITLE_OFFSET;
-      items[0].height += PAO_TITLE_OFFSET;
+      items[0].musicYOffset = TITLE_OFFSET;
+      items[0].height += TITLE_OFFSET;
     }
-    const ph = PAO_PAGE_HEIGHT - PAO_MARGIN * 2;
-    const layout = paoFlowLayout(items, ph);
-    this._pages = drawPaoFrames(score, items, layout, PAO_MARGIN, this.pageWidthTenths);
+    const d = score.defaults;
+    const pageHeight = this.pageHeightTenths;
+    const ph = pageHeight - d.topMargin - d.bottomMargin;
+    const layout = flowLayout(items, ph);
+    this._pages = drawFrames(
+      score, items, layout, d.leftMargin, d.topMargin, pageHeight, this.pageWidthTenths,
+    );
   }
 
   /**

@@ -368,7 +368,7 @@ export class MChord {
     }
     if (this.slash) {
       if (fLe(nt, new Fraction(1))) return GlyphCodes.noteheadSlashVerticalEnds;
-      return GlyphCodes.noteheadSlashVerticalEnds;
+      return GlyphCodes.noteheadSlashDiamondWhite; // half/whole slash
     }
     if (fLe(nt, new Fraction(1))) return GlyphCodes.noteheadBlack;
     if (nt.equals(2)) return GlyphCodes.noteheadHalf;
@@ -817,11 +817,25 @@ export class MLyric {
     return this.text.length === 0;
   }
 
-  /** [prefixWidth, cjkWidth, suffixWidth]（Lyric::widthInfo 简化：前缀 + 正文）。 */
+  /** [前导非CJK宽, CJK段宽, 尾随非CJK宽]（Lyric::widthInfo 移植）。
+   *  注意：前缀（段落号）不计入，由 drawLrc 单独按固定偏移摆放。 */
   widthInfo(): [number, number, number] {
-    const pw = this.prefix ? this.font.measureText(this.prefix) : 0;
-    const tw = this.font.measureText(this.text);
-    return [pw, tw, 0];
+    const chars = [...this.text];
+    if (chars.length === 0) return [0, 0, 0];
+    const widths = chars.map((c) => this.font.measureText(c));
+    const punct = "「」（），。！；：、“”？｡";
+    const isCjk = (ch: string) => ch.charCodeAt(0) > 0x80 && !punct.includes(ch);
+    let first = 0;
+    let last = chars.length - 1;
+    for (let i = 0; i < chars.length; i++) if (isCjk(chars[i])) { first = i; break; }
+    for (let i = chars.length - 1; i >= 0; i--) if (isCjk(chars[i])) { last = i; break; }
+    let prev = 0, cjk = 0, extra = 0;
+    for (let i = 0; i < widths.length; i++) {
+      if (i < first) prev += widths[i];
+      else if (i <= last) cjk += widths[i];
+      else extra += widths[i];
+    }
+    return [prev, cjk, extra];
   }
 
   /** 解析后计算 xOffset/width（parser.cpp processLrc 尾部）。 */
@@ -868,7 +882,7 @@ export class MHarmony {
     this.measure = measure;
   }
 
-  /** 纯文本形式（Harmony 文本化，用于 calcMixedStaffY 的宽度判断与渲染）。 */
+  /** 纯文本形式（仅用于 calcMixedStaffY 的宽度粗估）。 */
   asPlainText(): string {
     let res = this.root.step;
     if (this.root.alter === 1) res += "#";
@@ -884,6 +898,124 @@ export class MHarmony {
     }
     return res;
   }
+
+  /** 富文本分段（Harmony::asText 移植）：升降号用 SMuFL csym 字形，后缀上标。 */
+  asText(): HarmonySeg[] {
+    const segs: HarmonySeg[] = [];
+    const stepAlter = (sa: HarmonyStepAlter) => {
+      segs.push({ text: sa.step, music: false, superscript: 0, dy: 0 });
+      if (sa.alter === 1) segs.push({ text: GlyphCodes.csymAccidentalSharp, music: true, superscript: 0, dy: 0 });
+      else if (sa.alter === -1) segs.push({ text: GlyphCodes.csymAccidentalFlat, music: true, superscript: 0, dy: 0 });
+    };
+    stepAlter(this.root);
+
+    let kt = "";
+    let useSym = false;
+    let sym = "";
+    if (this.kindText !== null && this.kindText !== "") {
+      kt = this.kindText;
+    } else if (this.kind === "half-diminished") {
+      useSym = true; sym = GlyphCodes.csymHalfDiminished;
+    } else if (this.kind === "augmented") {
+      useSym = true; sym = GlyphCodes.csymAugmented;
+    } else if (this.kind === "diminished-seventh" || this.kind === "diminished") {
+      useSym = true; sym = GlyphCodes.csymDiminished;
+    } else if (this.kind === "power") {
+      kt = "5";
+    } else {
+      const abbr = abbrKindText(this.kind);
+      if (abbr) kt = abbr;
+      else if (this.kind === "major" || this.kind === "") { /* no suffix */ }
+      else { kt = "<" + this.kind + ">"; console.warn("unknown harmony kind:", this.kind); }
+    }
+
+    // 前导 m 留在基线，其余后缀上标
+    if (kt === "m" || kt === "m7" || kt === "m9" || kt === "m6") {
+      segs.push({ text: "m", music: false, superscript: 0, dy: 0 });
+      kt = kt.substring(1);
+    }
+    if (kt) {
+      segs.push({ text: kt, music: false, superscript: 1, dy: 0 });
+    } else if (useSym) {
+      segs.push({ text: sym, music: true, superscript: 1, dy: 0 });
+      if (this.kind === "diminished-seventh" || this.kind === "half-diminished") {
+        segs.push({ text: "7", music: false, superscript: 1, dy: 0 });
+      }
+    }
+
+    // degrees（add / alter / sus4）
+    if (this.degree.length > 1) {
+      let deg = "";
+      if (isSus4(this.degree)) deg = "sus4";
+      if (deg) {
+        if (this.parenthesesDegrees) segs.push({ text: "(", music: false, superscript: 1, dy: 0 });
+        segs.push({ text: deg, music: false, superscript: 1, dy: 0 });
+        if (this.parenthesesDegrees) segs.push({ text: ")", music: false, superscript: 1, dy: 0 });
+      }
+    } else if (this.degree.length === 1) {
+      const d = this.degree[0];
+      let deg = "";
+      if (d.type === HarmonyDegreeType.Add) {
+        deg = "add";
+      } else if (d.type === HarmonyDegreeType.Alter) {
+        if (this.parenthesesDegrees) segs.push({ text: "(", music: false, superscript: 0, dy: 0 });
+        if (d.alter === -1) segs.push({ text: GlyphCodes.csymAccidentalFlat, music: true, superscript: 0, dy: 7.5 });
+        else if (d.alter === 1) segs.push({ text: GlyphCodes.csymAccidentalSharp, music: true, superscript: 0, dy: 7.5 });
+        segs.push({ text: String(d.value), music: false, superscript: 0, dy: 0 });
+        if (this.parenthesesDegrees) segs.push({ text: ")", music: false, superscript: 0, dy: 0 });
+      }
+      if (kt === "6" && d.type === HarmonyDegreeType.Add && d.value === 9) {
+        // 6/9：合并到上一段后缀
+        const last = segs[segs.length - 1];
+        if (last) last.text += "/9";
+      } else if (deg) {
+        deg += String(d.value);
+        if (this.parenthesesDegrees) deg = "(" + deg + ")";
+        segs.push({ text: deg, music: false, superscript: 1, dy: 0 });
+      }
+    }
+
+    if (this.bass) {
+      segs.push({ text: "/", music: false, superscript: 0, dy: 0 });
+      stepAlter(this.bass);
+    }
+    return segs;
+  }
+}
+
+/** Harmony 文本分段：music=用 SMuFL 字形；superscript=±1 上/下标；dy=基线偏移。 */
+export interface HarmonySeg {
+  text: string;
+  music: boolean;
+  superscript: number;
+  dy: number;
+}
+
+/** MusicXML kind → 缩写（Harmony::abbrKindText 移植）。 */
+function abbrKindText(kind: string): string {
+  switch (kind) {
+    case "minor-seventh": return "m7";
+    case "major-seventh": return "maj7";
+    case "major-ninth": return "maj9";
+    case "diminished-seventh": return "dim7";
+    case "suspended-fourth": return "(sus4)";
+    case "dominant": return "7";
+    case "dominant-ninth": return "9";
+    case "major-sixth": return "6";
+    case "minor": return "m";
+    case "minor-ninth": return "m9";
+    case "minor-sixth": return "m6";
+    case "major": return "";
+    default: return "";
+  }
+}
+
+function isSus4(degree: { value: number; type: HarmonyDegreeType }[]): boolean {
+  if (degree.length < 2) return false;
+  return (
+    degree[0].type === HarmonyDegreeType.Add && degree[0].value === 4 &&
+    degree[1].type === HarmonyDegreeType.Subtract && degree[1].value === 3
+  );
 }
 
 /** MusicXML harmony kind → 习惯后缀（覆盖语料常见 kind，未知的回退 kindText）。 */
@@ -2170,7 +2302,7 @@ export class MixedOptions {
 
   hideBarNumber = true;
   initialKeyTime = true;
-  showKeyChangeJp = false;
+  showKeyChangeJp = true; // PAO 混排显示简谱调号「1=X」（util/pao.cpp:999）
   lineWidths: LineWidths = {
     staff: 1,
     jpBeam: 1,

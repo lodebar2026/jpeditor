@@ -87,7 +87,7 @@ export async function exportPptx(app: App): Promise<void> {
 /** Export mixed-mode pages to PDF via Tauri svg2pdf command or browser print dialog. */
 export async function exportMixedPdf(app: App): Promise<void> {
   if (!app["_mixedPainter"] || app.mode !== "mixed") return;
-  const painter = app["_mixedPainter"] as import("../mixed/pao").MixedPainter;
+  const painter = app["_mixedPainter"] as import("../mixed/painter").MixedPainter;
   const wPt = painter.pageWidthPt;
   const hPt = painter.pageHeightPt;
 
@@ -95,7 +95,7 @@ export async function exportMixedPdf(app: App): Promise<void> {
     // Tauri path: serialize SVGs and invoke Rust export_pdf command
     const { invoke } = await import("@tauri-apps/api/core");
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const title = app.mixedXmlText ? "混排" : "混排";
+    const title = painter.title || "混排";
     const outPath = await save({ defaultPath: `${title}.pdf`, filters: [{ name: "PDF", extensions: ["pdf"] }] });
     if (!outPath) return;
     const pages: string[] = [];

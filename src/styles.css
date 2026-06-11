@@ -39,21 +39,24 @@ html, body { margin: 0; height: 100%; }
   background: var(--panel);
 }
 
+/* Mixed mode is read-only render; hide the code editor entirely. */
+#body.mixed #code-pane { display: none; }
+
 #score-pane {
   flex: 1 1 auto;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: auto;
   background: var(--bg);
   padding: 16px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: safe center;
   gap: 12px;
 }
 
 .score-page-wrap {
-  width: min(960px, 100%);
+  width: calc(min(960px, 100%) * var(--score-zoom, 1));
   aspect-ratio: 960 / 540;
+  flex: 0 0 auto;
   position: relative;
   background: #fff;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);

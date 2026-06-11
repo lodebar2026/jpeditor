@@ -14,7 +14,7 @@ import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";
 import { scoreToJpwabc } from "../score/jpscore";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
-import { MixedPainter } from "../mixed/pao";
+import { MixedPainter } from "../mixed/painter";
 
 export class App {
   painter: JinpuPainter;
@@ -35,6 +35,7 @@ export class App {
   titleSize = 48;
   creditSize = 36;
   color = 0xff000000; // ARGB
+  zoom = 1; // 谱面显示缩放（应用到 #score-pane 的 --score-zoom）
   private meta: MetaData;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private selectedEl: SVGGElement | null = null;
@@ -77,13 +78,15 @@ export class App {
       if (!raw) return;
       const s = JSON.parse(raw) as Partial<{
         pageW: number; pageH: number; fontSize: number;
-        titleSize: number; creditSize: number; color: number;
+        titleSize: number; creditSize: number; color: number; zoom: number;
       }>;
       if (s.pageW) this.pageW = s.pageW;
       if (s.pageH) this.pageH = s.pageH;
       if (s.titleSize !== undefined) this.titleSize = s.titleSize;
       if (s.creditSize !== undefined) this.creditSize = s.creditSize;
       if (s.color !== undefined) this.color = s.color;
+      if (s.zoom) this.zoom = s.zoom;
+      this._applyZoom();
       if (s.fontSize && s.fontSize !== this.fontSize) {
         this.fontSize = s.fontSize;
         const score = this.painter.score;
@@ -108,10 +111,28 @@ export class App {
         titleSize: this.titleSize,
         creditSize: this.creditSize,
         color: this.color,
+        zoom: this.zoom,
       }));
     } catch {
       // storage unavailable — ignore
     }
+  }
+
+  // ---------------- zoom ----------------
+  /** 设置谱面缩放（夹在 [0.25, 4]），持久化。 */
+  setZoom(z: number): void {
+    this.zoom = Math.min(4, Math.max(0.25, z));
+    this._applyZoom();
+    this.saveSettings();
+  }
+  zoomBy(factor: number): void {
+    this.setZoom(this.zoom * factor);
+  }
+  resetZoom(): void {
+    this.setZoom(1);
+  }
+  private _applyZoom(): void {
+    this.scorePane.style.setProperty("--score-zoom", String(this.zoom));
   }
 
   mountEditor(parent: HTMLElement, initialText: string): void {
@@ -258,10 +279,27 @@ export class App {
       this.mixedXmlText = xml;
       this._mixedPainter = null; // reset so next toggleMixed re-loads
       if (this._mixedBtnEl) this._mixedBtnEl.disabled = false;
-      if (this.mode === "mixed") {
+
+      // 多声部（SATB 等）歌谱默认进入混排模式
+      const autoMixed = this.mode !== "mixed" && isMultiPartXml(xml);
+      if (this.mode === "mixed" || autoMixed) {
+        if (autoMixed) {
+          this.mode = "mixed";
+          this._setMixedLayout(true);
+          if (this._mixedBtnEl) this._mixedBtnEl.textContent = "简谱";
+        }
+        // 仍填充编辑器的简谱转换文本，便于切回「简谱」（best-effort）
+        try {
+          const score = loadMusicXml(xml);
+          this.filePath = null;
+          this.setText(scoreToJpwabc(score));
+        } catch (e) {
+          console.error("jp import (for toggle) failed", e);
+        }
         void this._renderMixedPages();
         return;
       }
+
       const score = loadMusicXml(xml);
       this.filePath = null; // imported; save as new .jpwabc
       this.setText(scoreToJpwabc(score));
@@ -271,7 +309,7 @@ export class App {
       if (this._mixedBtnEl) this._mixedBtnEl.disabled = true;
       if (this.mode === "mixed") {
         this.mode = "jp";
-        this._setEditorReadOnly(false);
+        this._setMixedLayout(false);
         if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
       }
       this.setText(decodeJpwabc(bytes));
@@ -288,21 +326,23 @@ export class App {
     if (!this.mixedXmlText) return;
     if (this.mode === "jp") {
       this.mode = "mixed";
-      this._setEditorReadOnly(true);
+      this._setMixedLayout(true);
       if (this._mixedBtnEl) this._mixedBtnEl.textContent = "简谱";
       await this._renderMixedPages();
     } else {
       this.mode = "jp";
-      this._setEditorReadOnly(false);
+      this._setMixedLayout(false);
       if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
       this.reload(this.getText());
     }
   }
 
-  private _setEditorReadOnly(ro: boolean): void {
+  /** Mixed mode: editor read-only + hide the code pane entirely. */
+  private _setMixedLayout(on: boolean): void {
     this.view.dispatch({
-      effects: this._readOnlyCompartment.reconfigure(EditorState.readOnly.of(ro)),
+      effects: this._readOnlyCompartment.reconfigure(EditorState.readOnly.of(on)),
     });
+    document.getElementById("body")?.classList.toggle("mixed", on);
   }
 
   private async _renderMixedPages(): Promise<void> {
@@ -312,6 +352,8 @@ export class App {
     if (this.mixedXmlText) {
       await this._mixedPainter.load(this.mixedXmlText);
     }
+    // Portrait paper sized from the MusicXML page dimensions.
+    const aspect = `${this._mixedPainter.pageWidthTenths} / ${this._mixedPainter.pageHeightTenths}`;
     this.scorePane.replaceChildren();
     this.pageEls = [];
     for (let i = 0; i < this._mixedPainter.pageCount; i++) {
@@ -320,6 +362,8 @@ export class App {
       svg.style.display = "block";
       const wrap = document.createElement("div");
       wrap.className = "score-page-wrap";
+      wrap.style.aspectRatio = aspect;
+      wrap.style.width = "calc(min(620px, 100%) * var(--score-zoom, 1))";
       wrap.appendChild(svg);
       this.scorePane.appendChild(wrap);
       this.pageEls.push(wrap);
@@ -438,4 +482,24 @@ function describePick(item: PageItem): string {
   if (item instanceof TextFrame) return `文本: ${item.text}`;
   const cls = [...item.classes].filter((c) => c !== "entry");
   return cls.length ? `已选: ${cls.join(",")}` : "已选: 元素";
+}
+
+/** 判断 MusicXML 是否多声部（≥2 part、单 part 多谱表、或 ≥2 voice）→ 默认混排。 */
+function isMultiPartXml(xml: string): boolean {
+  try {
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length > 0) return false;
+    if (doc.getElementsByTagName("score-part").length >= 2) return true;
+    for (const s of Array.from(doc.getElementsByTagName("staves"))) {
+      if (parseInt(s.textContent ?? "1", 10) >= 2) return true;
+    }
+    const voices = new Set<string>();
+    for (const v of Array.from(doc.getElementsByTagName("voice"))) {
+      const t = v.textContent?.trim();
+      if (t) voices.add(t);
+    }
+    return voices.size >= 2;
+  } catch {
+    return false;
+  }
 }

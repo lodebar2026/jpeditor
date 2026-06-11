@@ -5,7 +5,7 @@ import { App } from "./editor/app";
 import { showLayoutDialog, showOptionsDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
 import { isTauriRuntime } from "./editor/fileio";
-import { MixedPainter } from "./mixed/pao";
+import { MixedPainter } from "./mixed/painter";
 
 // Built-in sample (圣哉，圣哉，圣哉) — same content as CodeEditor.kt `scr`.
 const SAMPLE = `// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************
@@ -64,9 +64,73 @@ async function boot() {
   const addOpen = document.getElementById("btn-open");
   addOpen?.addEventListener("click", () => void app.openFile());
 
-  // paging keys
+  // zoom controls
+  const zoomLabel = document.getElementById("btn-zoom-reset");
+  const updateZoom = () => {
+    if (zoomLabel) zoomLabel.textContent = `${Math.round(app.zoom * 100)}%`;
+  };
+  on("btn-zoom-in", () => { app.zoomBy(1.2); updateZoom(); });
+  on("btn-zoom-out", () => { app.zoomBy(1 / 1.2); updateZoom(); });
+  on("btn-zoom-reset", () => { app.resetZoom(); updateZoom(); });
+  updateZoom();
+  // 指针锚定缩放：缩放后调整滚动，让光标下的内容点保持不动。
+  const zoomAt = (clientX: number, clientY: number, factor: number) => {
+    const before = app.zoom;
+    app.zoomBy(factor);
+    const ratio = app.zoom / before;
+    if (ratio !== 1) {
+      const r = scorePane.getBoundingClientRect();
+      const px = scorePane.scrollLeft + (clientX - r.left);
+      const py = scorePane.scrollTop + (clientY - r.top);
+      scorePane.scrollLeft += px * (ratio - 1);
+      scorePane.scrollTop += py * (ratio - 1);
+    }
+    updateZoom();
+  };
+
+  // Chromium/Edge：捏合与 Ctrl+滚轮都表现为 ctrlKey 的 wheel 事件。
+  scorePane.addEventListener("wheel", (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+  }, { passive: false });
+
+  // WebKit/WKWebView（Tauri macOS）：触控板双指捏合走 gesture* 事件，带绝对 scale。
+  let gestureBase = 1;
+  let gestureCx = 0;
+  let gestureCy = 0;
+  type GEvt = Event & { scale: number; clientX: number; clientY: number };
+  scorePane.addEventListener("gesturestart", (ev) => {
+    const e = ev as GEvt;
+    e.preventDefault();
+    gestureBase = app.zoom;
+    gestureCx = e.clientX;
+    gestureCy = e.clientY;
+  });
+  scorePane.addEventListener("gesturechange", (ev) => {
+    const e = ev as GEvt;
+    e.preventDefault();
+    const before = app.zoom;
+    app.setZoom(gestureBase * e.scale);
+    const ratio = app.zoom / before;
+    if (ratio !== 1) {
+      const r = scorePane.getBoundingClientRect();
+      const px = scorePane.scrollLeft + (gestureCx - r.left);
+      const py = scorePane.scrollTop + (gestureCy - r.top);
+      scorePane.scrollLeft += px * (ratio - 1);
+      scorePane.scrollTop += py * (ratio - 1);
+    }
+    updateZoom();
+  });
+  scorePane.addEventListener("gestureend", (ev) => ev.preventDefault());
+
+  // paging / zoom keys
   window.addEventListener("keydown", (e) => {
-    if (e.key === "PageDown") app.nextPage();
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); app.zoomBy(1.2); updateZoom(); }
+    else if (mod && e.key === "-") { e.preventDefault(); app.zoomBy(1 / 1.2); updateZoom(); }
+    else if (mod && e.key === "0") { e.preventDefault(); app.resetZoom(); updateZoom(); }
+    else if (e.key === "PageDown") app.nextPage();
     else if (e.key === "PageUp") app.prevPage();
     else if (e.key === "Home" && e.ctrlKey) app.goToPage(0);
     else if (e.key === "End" && e.ctrlKey) app.goToPage(1e9);

@@ -14,6 +14,7 @@ export const GlyphCodes = {
   noteheadHalf: String.fromCharCode(0xe0a3),
   noteheadBlack: String.fromCharCode(0xe0a4),
   noteheadSlashVerticalEnds: String.fromCharCode(0xe100),
+  noteheadSlashDiamondWhite: String.fromCharCode(0xe104),
   // Flags
   flag8thUp: String.fromCharCode(0xe240),
   flag8thDown: String.fromCharCode(0xe241),
@@ -48,6 +49,13 @@ export const GlyphCodes = {
   accidentalNatural: String.fromCharCode(0xe261),
   accidentalSharp: String.fromCharCode(0xe262),
   accidentalDoubleSharp: String.fromCharCode(0xe263),
+  // Chord-symbol accidentals/qualities (sit on the text baseline).
+  csymDiminished: String.fromCharCode(0xe870),
+  csymHalfDiminished: String.fromCharCode(0xe871),
+  csymAugmented: String.fromCharCode(0xe872),
+  csymAccidentalFlat: String.fromCharCode(0xed60),
+  csymAccidentalNatural: String.fromCharCode(0xed61),
+  csymAccidentalSharp: String.fromCharCode(0xed62),
   accidentalDoubleFlat: String.fromCharCode(0xe264),
   accidentalParensLeft: String.fromCharCode(0xe26a),
   accidentalParensRight: String.fromCharCode(0xe26b),
