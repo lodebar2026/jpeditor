@@ -20,6 +20,7 @@ import {
   MChord,
   MeasureData,
   MeasureInfo,
+  MeasureText,
   MLyric,
   MixedOptions,
   MixedPart,
@@ -160,6 +161,33 @@ function barGlyphFromStyle(style: string): BarGlyph | null {
   }
 }
 
+/** 力度元素名（如「mf」「sfz」）逐字母 → Bravura 力度字形串，对齐 loader.cpp::convertDynamicsStr。 */
+function convertDynamicsStr(s: string): string {
+  const map: Record<string, string> = {
+    p: GlyphCodes.dynamicPiano,
+    m: GlyphCodes.dynamicMezzo,
+    f: GlyphCodes.dynamicForte,
+    r: GlyphCodes.dynamicRinforzando,
+    s: GlyphCodes.dynamicSforzando,
+    z: GlyphCodes.dynamicZ,
+    n: GlyphCodes.dynamicNiente,
+  };
+  let res = "";
+  for (const c of s) {
+    const g = map[c];
+    if (g === undefined) return ""; // 非标准力度名（musicpp 此处 assert），忽略
+    res += g;
+  }
+  return res;
+}
+
+/** <beat-unit> 音符类型 → 节拍记号字形，对齐 loader.cpp::makeMetronomeStr（仅四分音符）。 */
+function metNoteGlyph(noteType: string): string {
+  // musicpp 只实现了四分音符；其余暂以四分音符字形兜底。
+  if (noteType !== "quarter") console.warn("metronome beat-unit not supported:", noteType);
+  return GlyphCodes.metNoteQuarterUp;
+}
+
 function parseEndingNums(s: string): Set<number> {
   const res = new Set<number>();
   for (const part of s.split(",")) {
@@ -215,12 +243,18 @@ class PartLoader {
       this.part.staves.push(ps);
     }
 
+    // 绝对 tick 必须在 loadMeasure 之前就设到 mif.offset，否则 processAttributes 记录的
+    // clef/key/time 变化全落在 tick 0、互相覆盖（对齐 musicpp parser.cpp:1291，offset 在
+    // loadAttributes 之前赋值）。后面 1312 行的全局 offset pass 会再统一一次（多声部规范化）。
     let div = 1;
+    let runTick = new Fraction(0);
     for (let mid = 0; mid < this.measureEls.length; mid++) {
       const mea = this.measureEls[mid];
       const mif = this.score.measures[mid];
       if (!mif) continue;
+      mif.offset = runTick;
       div = this.loadMeasure(mea, mif, div);
+      runTick = runTick.plus(mif.dur);
     }
 
     this.calcStemLen();
@@ -328,6 +362,8 @@ class PartLoader {
         curChord = this.processNote(it, md, mif, tick, durs.get(it) ?? new Fraction(0), curChord);
       } else if (tag === "harmony") {
         this.processHarmony(it, md, tick);
+      } else if (tag === "direction") {
+        this.processDirection(it, md, tick);
       } else if (tag === "barline") {
         this.processBarline(it, mif);
       }
@@ -633,6 +669,99 @@ class PartLoader {
     }
   }
 
+  /** <direction> 文本（words / dynamics / metronome），对应 musicpp loader.cpp::processDirection。 */
+  private processDirection(dirEl: Element, md: MeasureData, tick: Fraction): void {
+    const blk = md.newText();
+    blk.offset = tick;
+    blk.staff = (intOf(dirEl, "staff") ?? 1) - 1;
+    let hasText = false;
+    for (const dt of elems(dirEl, "direction-type")) {
+      for (const child of Array.from(dt.children)) {
+        switch (child.tagName) {
+          case "words":
+            if (this.processWords(blk, child as Element)) hasText = true;
+            break;
+          case "dynamics":
+            if (this.processDynamic(blk, child as Element)) hasText = true;
+            break;
+          case "metronome":
+            if (this.processMetronome(blk, child as Element)) hasText = true;
+            break;
+        }
+      }
+    }
+    if (!hasText) md.textBlocks.pop();
+  }
+
+  /** <words> 文本（如「(副歌)」），对应 loader.cpp::processWords。 */
+  private processWords(blk: MeasureText, wEl: Element): boolean {
+    const dy = attrFloat(wEl, "default-y");
+    if (dy !== null) blk.y = dy;
+    const rx = attrFloat(wEl, "relative-x");
+    if (rx !== null) blk.x = rx;
+    const just = wEl.getAttribute("justify");
+    if (just === "right") blk.justify = LCR.Right;
+    else if (just === "center") blk.justify = LCR.Center;
+    const text = wEl.textContent ?? "";
+    if (!text) return false;
+    blk.add(text, this.makeWordsFont(wEl));
+    return true;
+  }
+
+  /** <dynamics>（如 <mf/>、<sfz/>、<other-dynamics>），对应 loader.cpp::processDynamic。
+   *  标准力度子元素名逐字母转成 Bravura 力度字形；<other-dynamics> 用其原文。 */
+  private processDynamic(blk: MeasureText, dynEl: Element): boolean {
+    const dy = attrFloat(dynEl, "default-y");
+    if (dy !== null) blk.y = dy;
+    const rx = attrFloat(dynEl, "relative-x");
+    if (rx !== null) blk.x = rx;
+    let any = false;
+    const font = new Font("Bravura", 16 / this.score.scaling);
+    for (const child of Array.from(dynEl.children)) {
+      if (child.tagName === "other-dynamics") {
+        const text = child.textContent ?? "";
+        if (text) {
+          blk.add(text, this.makeWordsFont(child as Element));
+          any = true;
+        }
+      } else {
+        const glyphs = convertDynamicsStr(child.tagName);
+        if (glyphs) {
+          blk.add(glyphs, font, true);
+          any = true;
+        }
+      }
+    }
+    return any;
+  }
+
+  /** <metronome>（<beat-unit> + <per-minute>），对应 loader.cpp::processMetronome。 */
+  private processMetronome(blk: MeasureText, metEl: Element): boolean {
+    const wordFont = this.makeWordsFont(metEl);
+    const noteFont = new Font("BravuraText", wordFont.size);
+    let any = false;
+    for (const child of Array.from(metEl.children)) {
+      if (child.tagName === "beat-unit") {
+        const gl = metNoteGlyph(child.textContent?.trim() ?? "quarter");
+        blk.add(gl, noteFont, true);
+        any = true;
+      } else if (child.tagName === "per-minute") {
+        blk.add(" = " + (child.textContent?.trim() ?? ""), wordFont);
+        any = true;
+      }
+    }
+    return any;
+  }
+
+  /** MusicXML <words> 字体 → tenths 空间字号（pt / scaling，对齐 loader.cpp::makeFont）。 */
+  private makeWordsFont(wEl: Element): Font {
+    const fam = wEl.getAttribute("font-family") ?? "Times New Roman";
+    const szAttr = wEl.getAttribute("font-size");
+    const sz = szAttr ? parseFloat(szAttr) : 16;
+    const bold = wEl.getAttribute("font-weight") === "bold";
+    return new Font(fam, sz / this.score.scaling, bold);
+  }
+
   private processHarmony(harmEl: Element, md: MeasureData, tick: Fraction): void {
     const h = md.newHarmony();
     h.offset = tick;
@@ -734,26 +863,39 @@ class PartLoader {
     }
   }
 
+  /** 对齐 musicpp parser.cpp::processEnding：收集所有反复记号端点（按绝对 tick），排序后
+   *  相邻两两配对。左反复记号（start）在小节起点，右反复记号（stop/discontinue）在小节末端。
+   *  此处 mif.offset 已在 PartLoader 主循环里赋为绝对 tick，可直接取用。 */
   private processEnding(): void {
-    const starts: { mif: MeasureInfo; nums: Set<number> }[] = [];
+    type EndingPt = { tick: Fraction; mif: MeasureInfo; nums: Set<number>; stop: boolean };
+    const pts: EndingPt[] = [];
     for (const mif of this.score.measures) {
       if (mif.leftEndingType === EndingType.Start) {
-        starts.push({ mif, nums: mif.endingNum });
+        pts.push({ tick: mif.offset, mif, nums: mif.endingNum, stop: false });
       }
       if (
         mif.rightEndingType === EndingType.Stop ||
         mif.rightEndingType === EndingType.Discontinue
       ) {
-        const ref = starts[starts.length - 1];
-        if (ref) {
-          const end = this.part.newEnding();
-          end.startMeasure = ref.mif;
-          end.endMeasure = mif;
-          end.number = [...ref.nums].sort((a, b) => a - b).join(",");
-          end.hasStop = mif.rightEndingType === EndingType.Stop;
-          starts.pop();
-        }
+        pts.push({
+          tick: mif.endTick(),
+          mif,
+          nums: mif.endingNum,
+          stop: mif.rightEndingType === EndingType.Stop,
+        });
       }
+    }
+    pts.sort((a, b) => a.tick.compareTo(b.tick));
+    for (let i = 0; i + 1 < pts.length; i += 2) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const end = this.part.newEnding();
+      end.startTick = a.tick;
+      end.endTick = b.tick;
+      end.startMeasure = a.mif;
+      end.endMeasure = b.mif;
+      end.number = [...a.nums].sort((x, y) => x - y).join(",");
+      end.hasStop = b.stop;
     }
   }
 }
@@ -991,6 +1133,9 @@ function updateDataXPos(score: MixedScore): void {
       const md = part.measures[i];
       if (!md) continue;
       for (const h of md.harmonies) h.x = mif.getEntPos(h.offset);
+      for (const t of md.textBlocks) {
+        if (t.data.length) t.x += mif.getEntPos(t.offset);
+      }
     }
   }
 }
@@ -1187,6 +1332,28 @@ export function loadMixedXml(xmlText: string, options: MixedOptions): MixedScore
   for (const mif of score.measures) {
     mif.offset = tick;
     tick = tick.plus(mif.dur);
+  }
+
+  // 跨小节对象的 startTick/endTick 必须在 mif.offset 赋值后再算：slur/tied 在
+  // PartLoader 阶段解析（那时 mif.offset 还是 0），故此处用真实绝对 tick 重算，
+  // 否则系统归属判定（drawSlur/drawTied 的 begin/end 比较）全错，slur/tie 会错画到
+  // 第一小节。对应 musicpp mxml/loader.cpp::processSlur（在整 part 加载后统一解析）。
+  for (const part of score.parts) {
+    for (const sl of part.slurs) {
+      sl.startTick = sl.startChord().tick();
+      sl.endTick = sl.endChord().tick();
+    }
+    for (const t of part.tied) {
+      t.startTick = t.startChord().tick();
+      t.endTick = t.endChord().tick();
+    }
+    // ending 同理：startMeasure/endMeasure 在 PartLoader 阶段就确定，但其绝对 tick
+    // 依赖 mif.offset（此处才赋值）。左反复记号 tick = 起始小节 offset，右反复记号
+    // tick = 结束小节末端，对齐 musicpp parser.cpp 用 offsets[bl]+mif->offset 配对。
+    for (const e of part.endings) {
+      e.startTick = e.startMeasure.offset;
+      e.endTick = e.endMeasure.endTick();
+    }
   }
 
   // processJpBeam

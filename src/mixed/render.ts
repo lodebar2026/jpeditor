@@ -13,8 +13,10 @@ import {
   ClefSig,
   Ending,
   GroupSymbol,
+  LCR,
   LrcExtend,
   MeasureData,
+  MeasureText,
   MixedOptions,
   MixedPart,
   MLyric,
@@ -470,10 +472,11 @@ function drawSlur(
   let nota = refCh.notes[0].partStaff().getNotation(refCh.tick());
   if (forceNota !== undefined) nota = forceNota;
 
-  const above = slur.above;
+  let above = slur.above;
   let plx = 0, ply = 0, prx = 0, pry = 0;
 
   if (nota === Notation.JianPu) {
+    above = true; // 简谱层 slur 一律朝上（render.cpp::drawSlur）
     if (!chr || !chl) return;
     const [pl, pr] = slurTiedPosForJp(eng, chl, chr, true);
     plx = pl.x; ply = pl.y;
@@ -649,10 +652,10 @@ function drawEnding(container: Group, obj: Ending, sys: Sys, mixed: boolean): vo
     bpath.lineTo(right, y0 + vlen);
   }
 
-  const grp = translated(0, yPos ?? 0);
+  const grp = translated(0, yPos !== null ? yPos - vlen : 0);
   grp.add(bpath);
 
-  const numFont = new Font(eng.wordFont, 20 / (scr.scaling > 0 ? scr.scaling : 0.45));
+  const numFont = new Font(eng.wordFont, 20);
   const numT = new TextFrame();
   numT.text = obj.number;
   numT.font = numFont;
@@ -787,6 +790,71 @@ export function drawHarmony(
     m.setAffine([1, 0, 0, 1, h.x - width / 2 + 6.5, -h.y + wordFont.metrics.descent]);
     grp.matrix = m;
     container.add(grp);
+  }
+}
+
+// -----------------------------------------------------------------------
+// drawTextBlock（render.cpp::drawTextBlock）— <direction> 文本（如「(副歌)」）
+
+/** 绘制单个 TextBlock（逐行 justify，对齐 render.cpp::drawTextBlock 非 useTextArea 分支）。 */
+function drawTextBlock(container: Group, t: MeasureText): void {
+  if (t.data.length === 0) return;
+
+  // 逐行宽/高
+  const lineW: number[] = [];
+  const lineH: number[] = [];
+  let w = 0;
+  let h = 0;
+  for (const it of t.data) {
+    if (it.text === "\n") {
+      lineW.push(w);
+      lineH.push(h);
+      w = 0;
+      h = 0;
+      continue;
+    }
+    w += it.font.measureText(it.text);
+    const fm = it.font.metrics;
+    h = Math.max(h, fm.descent - fm.ascent);
+  }
+  lineW.push(w);
+  lineH.push(h);
+  const totalW = Math.max(...lineW);
+
+  let line = 0;
+  let xpos = 0;
+  let ypos = 0;
+  let first = true;
+  for (const it of t.data) {
+    const content = it.text;
+    if (content === "\n") {
+      line += 1;
+      if (line >= lineH.length) break;
+      ypos += lineH[line] * 1.444;
+    }
+    if (first || content === "\n") {
+      const diff = totalW - lineW[line];
+      xpos = t.justify === LCR.Right ? diff : t.justify === LCR.Center ? diff / 2 : 0;
+    }
+    first = false;
+    if (content === "\n") continue;
+
+    const tf = new TextFrame();
+    tf.text = content;
+    tf.font = it.font;
+    tf.color = 0xff000000;
+    const m = new Matrix33();
+    m.setAffine([1, 0, 0, 1, t.x + xpos, -t.y + ypos]);
+    tf.matrix = m;
+    container.add(tf);
+    xpos += it.font.measureText(content);
+  }
+}
+
+function drawTextBlocks(container: Group, data: MeasureData, subStaff: number): void {
+  for (const t of data.textBlocks) {
+    if (t.staff !== subStaff) continue;
+    drawTextBlock(container, t);
   }
 }
 
@@ -996,22 +1064,28 @@ function drawBarlineItem(
   x: number,
   top: number,
   bot: number,
-): void {
+  repForBack = false,
+): number {
   // 整组小节线右缘对齐到 x（向左生长），与谱线右端接齐（render.cpp drawBarlineItem）。
   const lw = eng.lineWidths;
   const light = lw.lightBarline;
   const thick = lw.heavyBarline;
   const dist = eng.barlineDist;
   const widths: number[] = [];
-  switch (style) {
-    case BarGlyph.Single: widths.push(light); break;
-    case BarGlyph.Double: widths.push(light, light); break;
-    case BarGlyph.HeavyHeavy: widths.push(thick, thick); break;
-    case BarGlyph.Final: widths.push(light, thick); break;
-    case BarGlyph.ReverseFinal: widths.push(thick, light); break;
-    case BarGlyph.None:
-    default:
-      return;
+  if (repForBack) {
+    // 反复结束/双向反复：light-heavy-light（与左侧 Final 合并的情况）。
+    widths.push(light, thick, light);
+  } else {
+    switch (style) {
+      case BarGlyph.Single: widths.push(light); break;
+      case BarGlyph.Double: widths.push(light, light); break;
+      case BarGlyph.HeavyHeavy: widths.push(thick, thick); break;
+      case BarGlyph.Final: widths.push(light, thick); break;
+      case BarGlyph.ReverseFinal: widths.push(thick, light); break;
+      case BarGlyph.None:
+      default:
+        return 0;
+    }
   }
   let w = 0;
   for (const ww of widths) w += ww;
@@ -1022,12 +1096,29 @@ function drawBarlineItem(
     addLine(container, cx, top, cx, bot, ww);
     xx += dist + ww;
   }
+  return w;
 }
 
-function drawRepeatDots(eng: MixedOptions, container: Group, sys: Sys, x: number): void {
-  for (const st of sys.staves) {
+/** 反复双点。主谱画两个 repeatDot（第 2、3 间），混排谱在上方简谱层再画一组缩小版。
+ *  对齐 render.cpp::drawRepeatDots（mixStaves 分支）。 */
+function drawRepeatDots(
+  eng: MixedOptions,
+  container: Group,
+  sys: Sys,
+  x: number,
+  mixStaves: Set<number>,
+): void {
+  for (let i = 0; i < sys.staves.length; i++) {
+    const st = sys.staves[i];
     if (!st.staffVisible) continue;
-    const y0 = sys.ypos(st.partStaff.order);
+    const y0 = sys.ypos(i);
+    if (mixStaves.has(i)) {
+      const yoff = st.minY - eng.mixStaffHeight - eng.mixStaffDist;
+      const sc = eng.mixStaffHeight / 40;
+      const fs = eng.musicFont.size;
+      addSmuflScaled(container, GlyphCodes.repeatDot, x, y0 + yoff + 15 * sc, fs, sc, sc);
+      addSmuflScaled(container, GlyphCodes.repeatDot, x, y0 + yoff + 25 * sc, fs, sc, sc);
+    }
     addSmufl(container, GlyphCodes.repeatDot, x, y0 + 15, eng.musicFont.size);
     addSmufl(container, GlyphCodes.repeatDot, x, y0 + 25, eng.musicFont.size);
   }
@@ -1055,46 +1146,62 @@ function drawBarline(eng: MixedOptions, container: Group, sys: Sys): void {
   if (sys.timeChangeWidth > 0) xpos[xpos.length - 1] -= sys.timeChangeWidth + 5;
   if (sys.keyChangeWidth > 0) xpos[xpos.length - 1] -= sys.keyChangeWidth + 5;
 
-  // merge left barlines into styles array
+  // merge left barlines into styles array（lightHeavyLight：左 Final 与右 Final 合并成
+  // light-heavy-light 的双向反复，render.cpp drawBarline）。
+  const lightHeavyLight = new Set<number>();
   for (let idx = 0; idx < sys.measures.length; idx++) {
     const m = sys.measures[idx];
     if (m.leftBarline !== null) {
       const orig = styles[idx];
       if (orig === null || orig === BarGlyph.Single) styles[idx] = m.leftBarline;
+      else if (orig === BarGlyph.Final) lightHeavyLight.add(idx);
     }
   }
 
   const grps = sys.barlineGroups();
   const scr = sys.score;
 
+  // 混排谱所在的 staff 下标集合 + 其 minY（render.cpp drawBarline）。
+  const t0 = sys.measures[0].offset;
+  const mixStaves = new Set<number>();
+  let miny = 0;
+  for (let i = 0; i < sys.staves.length; i++) {
+    if (sys.staves[i].partStaff.getNotation(t0) === Notation.Mixed) {
+      miny = sys.staves[i].minY;
+      mixStaves.add(i);
+    }
+  }
+
   for (let i = 0; i < styles.length; i++) {
     const st = styles[i];
     if (st === null) continue;
-    const x = xpos[i];
+    let x = xpos[i];
+    const rep = lightHeavyLight.has(i);
+    let width = 0;
 
     for (const [first, last] of grps) {
       const stb = sys.staves[last];
       const top = sys.ypos(first);
       const bot = sys.ypos(last) + stb.height();
 
+      if (rep) x += 15;
+
       // mixed jp-staff barline segment above main staff
-      const firstSt = sys.staves[first];
-      if (firstSt.part().staves[0].getNotation(sys.measures[0].offset) === Notation.Mixed) {
-        const miny = firstSt.minY;
+      if (mixStaves.has(first)) {
         const mixTop = miny + top - eng.mixStaffHeight - eng.mixStaffDist;
         const mixBot = mixTop + eng.mixStaffHeight;
-        drawBarlineItem(eng, container, st, x, mixTop, mixBot);
+        drawBarlineItem(eng, container, st, x, mixTop, mixBot, rep);
       }
 
-      drawBarlineItem(eng, container, st, x, top, bot);
+      width = drawBarlineItem(eng, container, st, x, top, bot, rep);
     }
 
     const mid = i + sys.firstMeasure;
     if (i < styles.length - 1 && mid < scr.measures.length && scr.measures[mid].forward) {
-      drawRepeatDots(eng, container, sys, x + 7);
+      drawRepeatDots(eng, container, sys, x + 7, mixStaves);
     }
     if (i > 0 && mid > 0 && scr.measures[mid - 1].backward) {
-      drawRepeatDots(eng, container, sys, x - 12);
+      drawRepeatDots(eng, container, sys, x - (width + 7), mixStaves);
     }
   }
 
@@ -1503,6 +1610,7 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
         drawBeams(grp, md, ps.subIndex);
         drawLrc(eng, grp, md, ps.subIndex);
         drawHarmony(eng, grp, md, ps.subIndex, scr.scaling);
+        drawTextBlocks(grp, md, ps.subIndex);
       }
     }
 
@@ -1519,13 +1627,20 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
           drawJpKey(eng, grp, m, ps, st);
         }
 
-        // jp time signature at first measure of system
-        if (nsys && m.timePos !== null) {
+        // jp 拍号：曲首及任何拍号变更处（对齐 render.cpp drawSysStaff mixed 分支，
+        // 条件统一为 timeChange——layoutAttr 仅在变更时分配 timePos）。
+        if (ps.timeChange(m.offset) && m.timePos !== null) {
           drawJpTimeSignature(eng, grpJp, m, ps, m.timePos);
         }
-        // jp time change
-        if (!nsys && ps.timeChange(m.offset) && m.timePos !== null) {
-          drawJpTimeSignature(eng, grpJp, m, ps, m.timePos);
+        // 系统末尾的预告拍号（下一系统起始的新拍号）——与主谱 trailing 一致，
+        // 对齐 render.cpp:2361-2363 的 if(mixed) drawTime(...Mixed...)。
+        if (
+          m === sys.measures[sys.measures.length - 1] &&
+          sys.timeChangeWidth > 0 &&
+          m.index + 1 < scr.measures.length
+        ) {
+          const next = scr.measures[m.index + 1];
+          drawJpTimeSignature(eng, grpJp, next, ps, m.width - sys.timeChangeWidth - 5);
         }
 
         drawNotesJianPu(eng, grpJp, md, ps.subIndex, true);
