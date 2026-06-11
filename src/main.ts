@@ -5,6 +5,7 @@ import { App } from "./editor/app";
 import { showLayoutDialog, showOptionsDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
 import { isTauriRuntime } from "./editor/fileio";
+import { MixedPainter } from "./mixed/pao";
 
 // Built-in sample (圣哉，圣哉，圣哉) — same content as CodeEditor.kt `scr`.
 const SAMPLE = `// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************
@@ -40,7 +41,9 @@ async function boot() {
   const app = new App(meta, scorePane);
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
-  (window as unknown as { __app: App }).__app = app; // dev/test handle
+  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter };
+  win.__app = app;
+  win.__mixedPainter = new MixedPainter();
 
   // toolbar
   const on = (id: string, fn: () => void) =>
