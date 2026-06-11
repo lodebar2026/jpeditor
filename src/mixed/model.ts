@@ -381,7 +381,7 @@ export class MChord {
 
   voice = 0;
   dot = 0;
-  stemLen = 35;
+  stemLen = 0; // 无符干（全音符）默认 0，与 musicpp 一致；有符干者在 calcStemLen 赋值
   stemUp = true;
 
   dur = new Fraction(0);

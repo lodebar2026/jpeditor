@@ -210,6 +210,7 @@ class PartLoader {
   partEl: Element;
   measureEls: Element[];
   stemYMap = new Map<MNote, number>(); // note → stem default-y
+  stemNotes = new Set<MNote>(); // 有 <stem> 元素的音符（parser.cpp stemDir）
   transposeSteps = 0;
 
   tieStarts: TieRef[] = [];
@@ -469,6 +470,7 @@ class PartLoader {
     const stemEl = elem(noteEl, "stem");
     if (stemEl) {
       ch.stemUp = stemEl.textContent?.trim() === "up";
+      this.stemNotes.add(nt);
       const sy = attrFloat(stemEl, "default-y");
       if (sy !== null) this.stemYMap.set(nt, sy);
     }
@@ -634,8 +636,16 @@ class PartLoader {
       for (const slurEl of elems(notEl, "slur")) {
         const ty = slurEl.getAttribute("type");
         const num = attrInt(slurEl, "number") ?? 1;
+        // parser.cpp::processSlur —— placement 优先，缺省时退回 orientation
+        // （Sibelius 导出用 orientation="over/under"，无 placement）。
         const pl = slurEl.getAttribute("placement");
-        const above = pl === "above" ? true : pl === "below" ? false : null;
+        const ori = slurEl.getAttribute("orientation");
+        const above =
+          pl === "above" ? true
+          : pl === "below" ? false
+          : ori === "over" ? true
+          : ori === "under" ? false
+          : null;
         if (ty === "start") {
           this.slurStarts.set(num, { num, chord: ch, above });
         } else if (ty === "stop") {
@@ -844,11 +854,17 @@ class PartLoader {
   }
 
   private calcStemLen(): void {
+    // parser.cpp::calcStemLen —— 仅有 <stem> 的音符算符干长；有 default-y 用之，
+    // 否则回退 35（grace 乘 cueSize）。无符干（全音符）保持默认 0。
     const cueSize = this.score.options.cueSize;
-    for (const [nt, sy] of this.stemYMap) {
+    for (const nt of this.stemNotes) {
       const ch = nt.chord;
-      ch.stemLen = Math.abs(-nt.cy() - sy);
-      if (ch.grace) ch.stemLen *= cueSize;
+      const sy = this.stemYMap.get(nt);
+      if (sy !== undefined) {
+        ch.stemLen = Math.abs(-nt.cy() - sy);
+      } else {
+        ch.stemLen = ch.grace ? 35 * cueSize : 35;
+      }
     }
   }
 
