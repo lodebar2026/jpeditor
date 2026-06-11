@@ -5,19 +5,22 @@
 
 import { Fraction } from "../common/fraction";
 import { Matrix33, Point } from "../common/geom";
-import { GraphicLine, Group, TextFrame } from "../layout/layout";
+import { GraphicLine, GraphicPath, Group, TextFrame } from "../layout/layout";
 import { Font } from "../layout/font";
 import { GlyphCodes } from "../smufl/smufl";
 import {
   BarGlyph,
+  BeamVal,
   ClefSig,
   GroupSymbol,
+  MeasureData,
   MixedOptions,
   MixedScore,
   Notation,
   Sys,
   SysStaff,
   TimeSig,
+  smuflWidth,
 } from "./model";
 
 // -----------------------------------------------------------------------
@@ -61,14 +64,249 @@ function addSmuflScaled(
   g.add(grp);
 }
 
-function addTextStr(g: Group, text: string, font: Font, x: number, y: number): void {
-  const t = new TextFrame();
-  t.text = text;
-  t.font = font;
-  t.color = 0xff000000;
-  t.x = x;
-  t.y = y;
-  g.add(t);
+function addFilledQuad(
+  g: Group,
+  lx: number, ly: number,
+  rx: number, ry: number,
+  thick: number,
+): void {
+  const p = new GraphicPath();
+  p.fill = true;
+  p.stroke = false;
+  p.fillColor = 0xff000000;
+  p.moveTo(lx, ly);
+  p.lineTo(lx, ly + thick);
+  p.lineTo(rx, ry + thick);
+  p.lineTo(rx, ry);
+  p.close();
+  g.add(p);
+}
+
+// -----------------------------------------------------------------------
+// drawNotesNormal（render.cpp:953 drawNotesNormal + drawChord stem/flag）
+
+export function drawNotesNormal(
+  eng: MixedOptions,
+  container: Group,
+  md: MeasureData,
+  subStaff: number,
+): void {
+  const fs = eng.musicFont.size;
+  const meta = eng.meta;
+
+  // ---- noteheads, rests, stems, flags ----
+  for (const ch of md.chords) {
+    const code = ch.sym();
+    if (!code) continue;
+
+    for (const n of ch.notes) {
+      if (n.staff !== subStaff) continue;
+      if (!n.visible) continue;
+
+      let x: number;
+      const cue = ch.cue || ch.grace;
+      const scale = cue ? eng.cueSize : 1;
+
+      if (ch.measureRest) {
+        const mif = md.measureInfo;
+        const endPos = mif.getEntPos(mif.dur);
+        x = (mif.dataPos + endPos) / 2 - 7;
+      } else {
+        x = n.x;
+        if (cue) {
+          x = ch.stemX();
+          if (!n.rightSide()) x -= smuflWidth(meta, code) * scale;
+          if (ch.noteType.compareTo(new Fraction(1)) >= 0) x += 5;
+        }
+        if (x < 0) continue;
+      }
+
+      let y = n.cy();
+      if (code === GlyphCodes.restWhole) y -= 10;
+
+      if (scale !== 1) {
+        addSmuflScaled(container, code, x, y, fs, scale, scale);
+      } else {
+        addSmufl(container, code, x, y, fs);
+      }
+    }
+
+    // stem and flag (skip rests, whole notes, half notes with beams)
+    if (ch.rest) continue;
+    if (ch.noteType.compareTo(new Fraction(4)) >= 0) continue; // whole: no stem
+
+    const sx = ch.stemX();
+    // stemY local = stemY() - md.staffY(subStaff) but for sub=0 staffY=0
+    const sy = ch.stemY() - md.staffY(subStaff);
+    const ty = ch.tailY(true) - md.staffY(subStaff);
+
+    // flag (only if unbeamed)
+    if (ch.beams.length === 0) {
+      const flagCode = ch.tailSym(ch.stemUp);
+      if (flagCode) {
+        const scale = ch.cue ? eng.cueSize : 1;
+        if (scale !== 1) {
+          addSmuflScaled(container, flagCode, sx, ty, fs, scale, scale);
+        } else {
+          addSmufl(container, flagCode, sx, ty, fs);
+        }
+      }
+    }
+
+    addLine(container, sx, sy, sx, ty, eng.lineWidths.stem);
+  }
+
+  // ---- ledger lines, dots, accidentals from NoteEntries ----
+  for (const ent of md.noteEntries) {
+    if (ent.subStaff !== subStaff) continue;
+
+    for (const [ledgerLine, [lx1, lx2]] of ent.leger.ranges) {
+      const ly = -ledgerLine * 5;
+      addLine(container, lx1 - 3, ly, lx2 + 3, ly, eng.lineWidths.leger);
+    }
+
+    if (md.chords.some((ch) => ch.dot > 0 && !ch.rest)) {
+      for (const dotLine of ent.dot.dots) {
+        addSmufl(container, GlyphCodes.augmentationDot, ent.dot.dotPos, -5 * dotLine, fs);
+      }
+    }
+
+    for (const it of ent.acc.accidentals) {
+      if (it.xpos === null) continue;
+      let ax = it.xpos - 1;
+      const ay = -it.line * 5;
+      const sc = it.scale;
+      for (const sym of it.symbols) {
+        if (sc !== 1) {
+          addSmuflScaled(container, sym, ax, ay, fs, sc, sc);
+        } else {
+          addSmufl(container, sym, ax, ay, fs);
+        }
+        ax += smuflWidth(meta, sym) * sc;
+      }
+    }
+  }
+}
+
+// -----------------------------------------------------------------------
+// drawBeams（render.cpp BeamLevelData::drawNormal + drawBeam）
+
+/** One item of a beam run: start/end chord (null = hook), level. */
+interface BeamItem {
+  start: import("./model").MChord | null;
+  end: import("./model").MChord | null;
+  level: number;
+}
+
+function buildBeamItems(
+  chords: import("./model").MChord[],
+): BeamItem[] {
+  const items: BeamItem[] = [];
+  for (let lev = 0; lev < 10; lev++) {
+    let start: import("./model").MChord | null = null;
+    let last: import("./model").MChord | null = null;
+    let found = false;
+    for (const ch of chords) {
+      if (lev >= ch.beams.length) continue;
+      const bv = ch.beams[lev];
+      switch (bv) {
+        case BeamVal.Continue:
+          last = ch;
+          break;
+        case BeamVal.End:
+          items.push({ start, end: ch, level: lev });
+          found = true;
+          start = null; last = null;
+          break;
+        case BeamVal.Backward:
+          items.push({ start: null, end: ch, level: lev });
+          found = true;
+          break;
+        case BeamVal.Forward:
+          items.push({ start: ch, end: null, level: lev });
+          found = true;
+          break;
+        case BeamVal.Begin:
+          start = ch;
+          break;
+      }
+    }
+    if (!found && start && last) {
+      items.push({ start, end: last, level: lev });
+      found = true;
+    }
+    if (!found) break;
+  }
+  return items;
+}
+
+function drawBeamGroup(
+  container: Group,
+  chords: import("./model").MChord[],
+  stfY: number,
+  scale: number,
+): void {
+  const items = buildBeamItems(chords);
+  if (items.length === 0) return;
+
+  const first = chords[0];
+  const last = chords[chords.length - 1];
+  const x1g = first.stemX();
+  const y1g = first.tailY(true) - stfY;
+  const x2g = last.stemX();
+  const y2g = last.tailY(true) - stfY;
+  const slope = x2g !== x1g ? (y2g - y1g) / (x2g - x1g) : 0;
+  const hookLen = 12;
+  const thick = 5.0 * scale;
+
+  for (const it of items) {
+    let lx: number, ly: number, rx: number, ry: number;
+    const up = it.start?.stemUp ?? it.end?.stemUp ?? true;
+    const dy = -(it.level * 8) * (up ? -1 : 1) + (up ? 0 : -5);
+
+    if (it.start) {
+      lx = it.start.stemX();
+      ly = it.start.tailY(true) - stfY;
+    } else {
+      rx = it.end!.stemX();
+      ry = it.end!.tailY(true) - stfY;
+      lx = rx - hookLen;
+      ly = ry - hookLen * slope;
+    }
+    if (it.end) {
+      rx = it.end.stemX();
+      ry = it.end.tailY(true) - stfY;
+    } else {
+      rx = lx + hookLen;
+      ry = ly + hookLen * slope;
+    }
+
+    ly += dy * scale;
+    ry += dy * scale;
+    addFilledQuad(container, lx, ly, rx, ry, thick);
+  }
+}
+
+export function drawBeams(
+  container: Group,
+  md: MeasureData,
+  subStaff: number,
+): void {
+  const stfY = md.staffY(subStaff);
+  for (const grp of md.beams) {
+    const relevantChords = grp.chords.filter((ch) =>
+      ch.notes.some((n) => n.staff === subStaff),
+    );
+    if (relevantChords.length === 0) continue;
+    drawBeamGroup(container, grp.chords, stfY, 1);
+  }
+  for (const grp of md.graceBeams) {
+    const relevantChords = grp.chords.filter((ch) =>
+      ch.notes.some((n) => n.staff === subStaff),
+    );
+    if (relevantChords.length === 0) continue;
+    drawBeamGroup(container, grp.chords, stfY, 0.8);
+  }
 }
 
 function translated(x: number, y: number): Group {
@@ -380,6 +618,15 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
       }
     }
 
+    // notes, beams (skip JianPu — handled by M4 mixed layer)
+    if (!isJp) {
+      const md = ps.part.measures[m.index];
+      if (md) {
+        drawNotesNormal(eng, grp, md, ps.subIndex);
+        drawBeams(grp, md, ps.subIndex);
+      }
+    }
+
     xpos += m.width;
   }
 }
@@ -421,5 +668,3 @@ export function drawPage(score: MixedScore, pageIndex: number): Group {
   return res;
 }
 
-// addTextStr is used by future note/lyric rendering
-void (addTextStr as unknown);
