@@ -16,9 +16,11 @@ import {
   HarmonyDegreeType,
   KeySig,
   LCR,
+  LrcExtend,
   MChord,
   MeasureData,
   MeasureInfo,
+  MLyric,
   MixedOptions,
   MixedPart,
   MixedScore,
@@ -184,6 +186,8 @@ class PartLoader {
   tieStops: TieRef[] = [];
   slurStarts = new Map<number, SlurRef>();
   tupletStarts = new Map<number, TupletRef>();
+  // lrc linking: num → [MLyric list in order]
+  lrcByNum = new Map<string, MLyric[]>();
 
   constructor(part: MixedPart, score: MixedScore, partEl: Element) {
     this.part = part;
@@ -430,6 +434,7 @@ class PartLoader {
 
     this.processTieEl(noteEl, nt, ch.tick());
     this.processNotations(noteEl, ch, mif);
+    if (!ch.rest) this.processLrc(noteEl, md, ch, nt);
     void mif;
     return ch;
   }
@@ -460,6 +465,68 @@ class PartLoader {
     } else {
       const arr = ch.grace ? md.graceBeams : md.beams;
       if (arr.length > 0) arr[arr.length - 1].chords.push(ch);
+    }
+  }
+
+  private processLrc(noteEl: Element, md: MeasureData, ch: MChord, nt: MNote): void {
+    for (const lrcEl of elems(noteEl, "lyric")) {
+      const lrc = md.newLyric();
+      lrc.chord = ch;
+      lrc.offset = ch.offset;
+      lrc.num = lrcEl.getAttribute("number") ?? "1";
+      lrc.name = lrcEl.getAttribute("name") ?? "";
+      lrc.staff = nt.staff;
+      lrc.x = nt.x;
+
+      let y = attrFloat(lrcEl, "default-y") ?? -1;
+      const ry = attrFloat(lrcEl, "relative-y");
+      if (ry !== null) y += ry;
+      lrc.y = y;
+
+      const just = lrcEl.getAttribute("justify");
+      if (just === "right") lrc.halign = LCR.Right;
+      else if (just === "left") lrc.halign = LCR.Left;
+      else lrc.halign = LCR.Center;
+
+      const syllabic = txt(lrcEl, "syllabic") ?? "single";
+      lrc.begin = syllabic === "single" || syllabic === "begin";
+      lrc.end = syllabic === "single" || syllabic === "end";
+
+      let text = "";
+      for (const textEl of elems(lrcEl, "text")) {
+        text += textEl.textContent?.trim() ?? "";
+      }
+      if (text.length > 0 && /^\d/.test(text)) {
+        const dotPos = text.indexOf(".");
+        if (dotPos >= 0) {
+          lrc.prefix = text.slice(0, dotPos + 1);
+          text = text.slice(dotPos + 1);
+        }
+      }
+      lrc.text = text;
+      lrc.font = this.score.defaults.lyricFont;
+
+      lrc.updateWidth(this.score.options.meta);
+
+      // register for prev/next linking
+      const arr = this.lrcByNum.get(lrc.num) ?? [];
+      arr.push(lrc);
+      this.lrcByNum.set(lrc.num, arr);
+
+      void LrcExtend; // lrcExtend wired in M4
+    }
+  }
+
+  linkLyrics(): void {
+    for (const arr of this.lrcByNum.values()) {
+      for (let i = 1; i < arr.length; i++) {
+        const prev = arr[i - 1];
+        const cur = arr[i];
+        if (prev.end) continue;
+        if (cur.begin) continue;
+        prev.next = cur;
+        cur.prev = prev;
+      }
     }
   }
 
@@ -1067,7 +1134,9 @@ export function loadMixedXml(xmlText: string, options: MixedOptions): MixedScore
 
   // Load per-part data
   for (let i = 0; i < partEls.length; i++) {
-    new PartLoader(score.parts[i], score, partEls[i]).load();
+    const pl = new PartLoader(score.parts[i], score, partEls[i]);
+    pl.load();
+    pl.linkLyrics();
   }
 
   // Staff order

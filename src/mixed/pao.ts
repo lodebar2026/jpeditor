@@ -3,7 +3,7 @@
 
 import { MetaData } from "../smufl/smufl";
 import { Fraction } from "../common/fraction";
-import { GraphicLine, Group, PageItem, TextFrame } from "../layout/layout";
+import { GraphicLine, GraphicPath, Group, PageItem, TextFrame } from "../layout/layout";
 import { MixedOptions, MixedScore, Notation } from "./model";
 import { loadMixedXml } from "./loader";
 import { drawPage } from "./render";
@@ -155,5 +155,33 @@ function renderItem(item: PageItem): SVGElement | null {
     el.setAttribute("transform", item.matrix.toSvg()); // matrix contains x,y translation
     return el;
   }
+  if (item instanceof GraphicPath) {
+    const el = document.createElementNS(SVG_NS, "path") as SVGPathElement;
+    el.setAttribute("d", item.d);
+    if (item.fill) {
+      const c = item.fillColor;
+      el.setAttribute("fill", argbToCss(c));
+    } else {
+      el.setAttribute("fill", "none");
+    }
+    if (item.stroke) {
+      const c = item.strokeColor;
+      el.setAttribute("stroke", argbToCss(c));
+      el.setAttribute("stroke-width", String(item.strokeWidth));
+    } else {
+      el.setAttribute("stroke", "none");
+    }
+    if (!item.matrix.isIdentity) el.setAttribute("transform", item.matrix.toSvg());
+    return el;
+  }
   return null;
+}
+
+function argbToCss(argb: number): string {
+  const r = (argb >> 16) & 0xff;
+  const g = (argb >> 8) & 0xff;
+  const b = argb & 0xff;
+  const a = ((argb >>> 24) & 0xff) / 255;
+  if (a >= 1) return `rgb(${r},${g},${b})`;
+  return `rgba(${r},${g},${b},${a.toFixed(3)})`;
 }
