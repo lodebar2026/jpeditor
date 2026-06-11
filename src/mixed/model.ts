@@ -106,6 +106,57 @@ export class KeySig {
   cancel = 0;
 }
 
+/** model.cpp::accidentalSym — acc 取 -1/0/1，csym 时用小号字形。 */
+export function accidentalSym(acc: number, csym: boolean): string {
+  if (csym) {
+    if (acc === 1) return GlyphCodes.csymAccidentalSharp;
+    if (acc === -1) return GlyphCodes.csymAccidentalFlat;
+    return GlyphCodes.csymAccidentalNatural;
+  }
+  if (acc === 1) return GlyphCodes.accidentalSharp;
+  if (acc === -1) return GlyphCodes.accidentalFlat;
+  return GlyphCodes.accidentalNatural;
+}
+
+/**
+ * 小节内临时记号推算（model.cpp::AccidentalStat）。简谱临时记号要按调号推算，
+ * 而非直接照搬 MusicXML 的 <accidental>：例如 1=♭B 调里 E♮ 相对音阶第 4 级
+ * （E♭）升高半音，应显示 ♯4 而非 ♮4。
+ */
+export class AccidentalStat {
+  fifths: number;
+  private alter = new Map<number, number>();
+  constructor(fifths = 0) {
+    this.fifths = fifths;
+  }
+  /** 返回需要绘制的记号值（-1/0/1），null 表示无需绘制。 */
+  process(step: number, alt: number): number | null {
+    step = ((step % 7) + 7) % 7;
+    const sign = this.fifths === 0 ? 0 : this.fifths > 0 ? 1 : -1;
+    let cur: number;
+    let changed = false;
+    if (this.alter.has(step)) {
+      cur = this.alter.get(step)!;
+      changed = true;
+    } else {
+      cur = 0;
+      if (this.fifths !== 0) {
+        for (let i = 1; i <= Math.abs(this.fifths); i++) {
+          const v = ((i * 4 - 2) * sign + 1 + 35) % 7;
+          if (v === step % 7) {
+            cur = sign;
+            break;
+          }
+        }
+      }
+    }
+    if (cur === alt) return null;
+    this.alter.set(step, alt);
+    const diff = alt - cur;
+    return changed ? 0 : diff;
+  }
+}
+
 export class TimeSig {
   beats = 4;
   beatType = 4;

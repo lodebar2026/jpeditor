@@ -8,6 +8,8 @@ import { Matrix33, Point } from "../common/geom";
 import { GraphicLine, GraphicPath, Group, TextFrame } from "../layout/layout";
 import { GlyphCodes } from "../smufl/smufl";
 import {
+  AccidentalStat,
+  accidentalSym,
   BarGlyph,
   BeamVal,
   ClefSig,
@@ -20,6 +22,7 @@ import {
   MixedOptions,
   MixedPart,
   MLyric,
+  MNote,
   Notation,
   Slur,
   Sys,
@@ -1433,6 +1436,10 @@ function drawAccidentalJianPu(
 ): void {
   const meta = eng.meta;
   const sc = 0.75;
+  // 收集本子谱号、本小节的简谱层音符，按时值排序后用 AccidentalStat 推算临时记号
+  // （render.cpp::drawAccidentalJianPu）——简谱记号要按调号推算，不能直接照搬
+  // MusicXML 的 <accidental>。
+  const notes: MNote[] = [];
   for (const ch of md.chords) {
     if (ch.rest) continue;
     for (const n of ch.notes) {
@@ -1440,15 +1447,26 @@ function drawAccidentalJianPu(
       if (!n.visible) continue;
       if (n.layer !== 1) continue;
       if (n.x < 0) continue;
-      if (!n.acc) continue;
-      const w = smuflWidth(meta, n.acc);
-      const grp2 = new Group();
-      const m = new Matrix33();
-      m.setAffine([sc, 0, 0, sc, n.x - w * sc - 2, 20]);
-      grp2.matrix = m;
-      addSmufl(grp2, n.acc, 0, 0, eng.musicFont.size);
-      container.add(grp2);
+      notes.push(n);
     }
+  }
+  notes.sort((a, b) => a.chord.offset.compareTo(b.chord.offset));
+
+  const ps = md.part.staves[subStaff];
+  const key = ps.getKey(md.measureInfo.offset);
+  const stat = new AccidentalStat(key.fifths);
+
+  for (const n of notes) {
+    const alt = stat.process(n.writtenPitch % 7, n.alter);
+    if (alt === null) continue;
+    const sym = accidentalSym(alt, true);
+    const w = smuflWidth(meta, sym);
+    const grp2 = new Group();
+    const m = new Matrix33();
+    m.setAffine([sc, 0, 0, sc, n.x - w * sc - 2, 20]);
+    grp2.matrix = m;
+    addSmufl(grp2, sym, 0, 0, eng.musicFont.size);
+    container.add(grp2);
   }
 }
 
