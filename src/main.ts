@@ -55,6 +55,11 @@ async function boot() {
   on("btn-lines", () => showLayoutDialog(app));
   on("btn-options", () => showOptionsDialog(app));
   on("btn-export", () => showExportDialog(app));
+  const mixedBtn = document.getElementById("btn-mixed") as HTMLButtonElement | null;
+  if (mixedBtn) {
+    app.setMixedBtn(mixedBtn);
+    mixedBtn.addEventListener("click", () => void app.toggleMixed());
+  }
   // export/play/stop wired in later phases
   const addOpen = document.getElementById("btn-open");
   addOpen?.addEventListener("click", () => void app.openFile());

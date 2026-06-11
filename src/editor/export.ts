@@ -1,8 +1,8 @@
-// Export: PNG (rasterize page SVG), MIDI (SMF). PPTX added later.
+// Export: PNG (rasterize page SVG), MIDI (SMF), PPTX, Mixed PDF.
 import type { App } from "./app";
 import { scoreToMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
-import { saveBytes } from "./fileio";
+import { isTauriRuntime, saveBytes } from "./fileio";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -84,6 +84,56 @@ export async function exportPptx(app: App): Promise<void> {
   );
 }
 
+/** Export mixed-mode pages to PDF via Tauri svg2pdf command or browser print dialog. */
+export async function exportMixedPdf(app: App): Promise<void> {
+  if (!app["_mixedPainter"] || app.mode !== "mixed") return;
+  const painter = app["_mixedPainter"] as import("../mixed/pao").MixedPainter;
+  const wPt = painter.pageWidthPt;
+  const hPt = painter.pageHeightPt;
+
+  if (isTauriRuntime()) {
+    // Tauri path: serialize SVGs and invoke Rust export_pdf command
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const title = app.mixedXmlText ? "混排" : "混排";
+    const outPath = await save({ defaultPath: `${title}.pdf`, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+    if (!outPath) return;
+    const pages: string[] = [];
+    for (let i = 0; i < painter.pageCount; i++) {
+      const svg = painter.renderPage(i);
+      svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      svg.setAttribute("width", `${wPt}pt`);
+      svg.setAttribute("height", `${hPt}pt`);
+      pages.push(new XMLSerializer().serializeToString(svg));
+    }
+    await invoke("export_pdf_cmd", { pagesSvg: pages, widthPt: wPt, heightPt: hPt, outPath });
+  } else {
+    // Browser path: open print window with embedded font
+    const bravuraUrl = await bravuraDataUrl();
+    const win = window.open("", "_blank", "width=800,height=900");
+    if (!win) return;
+    const d = win.document;
+    const wMm = (wPt * 25.4 / 72).toFixed(1);
+    const hMm = (hPt * 25.4 / 72).toFixed(1);
+    d.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+@font-face{font-family:"Bravura";src:url("${bravuraUrl}") format("woff2");}
+@page{size:${wMm}mm ${hMm}mm;margin:0}
+body{margin:0;padding:0;background:#fff}
+svg{display:block;width:100%;page-break-after:always}
+</style></head><body>`);
+    for (let i = 0; i < painter.pageCount; i++) {
+      const svg = painter.renderPage(i);
+      svg.setAttribute("xmlns", SVG_NS);
+      svg.setAttribute("width", `${wPt}pt`);
+      svg.setAttribute("height", `${hPt}pt`);
+      d.write(new XMLSerializer().serializeToString(svg));
+    }
+    d.write("</body></html>");
+    d.close();
+    setTimeout(() => win.print(), 500);
+  }
+}
+
 export function showExportDialog(app: App): void {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
@@ -110,9 +160,13 @@ export function showExportDialog(app: App): void {
     };
     list.append(btn);
   };
-  item("PNG（当前页）", () => exportCurrentPagePng(app));
-  item("PPTX（矢量）", () => exportPptx(app));
-  item("MIDI", () => exportMidi(app));
+  if (app.mode === "mixed") {
+    item("混排 PDF", () => exportMixedPdf(app));
+  } else {
+    item("PNG（当前页）", () => exportCurrentPagePng(app));
+    item("PPTX（矢量）", () => exportPptx(app));
+    item("MIDI", () => exportMidi(app));
+  }
 
   const footer = document.createElement("div");
   footer.className = "modal-footer";

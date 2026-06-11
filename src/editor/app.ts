@@ -2,7 +2,7 @@
 // Mirrors EditorController in CodeEditor.kt (doBind/tryLoad/updateLayout/paint/load/doSave).
 
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { jpwHighlighter } from "./highlight";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
@@ -14,6 +14,7 @@ import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";
 import { scoreToJpwabc } from "../score/jpscore";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
+import { MixedPainter } from "../mixed/pao";
 
 export class App {
   painter: JinpuPainter;
@@ -22,6 +23,11 @@ export class App {
   pageEls: HTMLElement[] = [];
   pageIndex = 0;
   filePath: string | null = null;
+  mode: "jp" | "mixed" = "jp";
+  mixedXmlText: string | null = null;
+  private _mixedPainter: MixedPainter | null = null;
+  private _mixedBtnEl: HTMLButtonElement | null = null;
+  private _readOnlyCompartment = new Compartment();
   // render settings (app-level, not part of the .jpwabc document)
   pageW = 960;
   pageH = 540;
@@ -122,6 +128,7 @@ export class App {
           keymap.of([...defaultKeymap, ...historyKeymap]),
           jpwHighlighter,
           updateListener,
+          this._readOnlyCompartment.of(EditorState.readOnly.of(false)),
           EditorView.lineWrapping,
           EditorView.theme({
             "&": { height: "100%", fontSize: "13px" },
@@ -152,6 +159,7 @@ export class App {
 
   /** parse -> import -> layout -> render. Returns false on parse failure (text kept). */
   reload(text: string): boolean {
+    if (this.mode === "mixed") return true;
     let f: JpwFile | null;
     try {
       f = JpwFile.fromString(text);
@@ -247,12 +255,76 @@ export class App {
       const xml = new TextDecoder(
         bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
       ).decode(bytes);
+      this.mixedXmlText = xml;
+      this._mixedPainter = null; // reset so next toggleMixed re-loads
+      if (this._mixedBtnEl) this._mixedBtnEl.disabled = false;
+      if (this.mode === "mixed") {
+        void this._renderMixedPages();
+        return;
+      }
       const score = loadMusicXml(xml);
       this.filePath = null; // imported; save as new .jpwabc
       this.setText(scoreToJpwabc(score));
     } else {
+      this.mixedXmlText = null;
+      this._mixedPainter = null;
+      if (this._mixedBtnEl) this._mixedBtnEl.disabled = true;
+      if (this.mode === "mixed") {
+        this.mode = "jp";
+        this._setEditorReadOnly(false);
+        if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
+      }
       this.setText(decodeJpwabc(bytes));
     }
+  }
+
+  /** Register the #btn-mixed element so App can enable/disable it. */
+  setMixedBtn(el: HTMLButtonElement): void {
+    this._mixedBtnEl = el;
+  }
+
+  /** Toggle between JP mode and Mixed (五线谱+简谱) mode. */
+  async toggleMixed(): Promise<void> {
+    if (!this.mixedXmlText) return;
+    if (this.mode === "jp") {
+      this.mode = "mixed";
+      this._setEditorReadOnly(true);
+      if (this._mixedBtnEl) this._mixedBtnEl.textContent = "简谱";
+      await this._renderMixedPages();
+    } else {
+      this.mode = "jp";
+      this._setEditorReadOnly(false);
+      if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
+      this.reload(this.getText());
+    }
+  }
+
+  private _setEditorReadOnly(ro: boolean): void {
+    this.view.dispatch({
+      effects: this._readOnlyCompartment.reconfigure(EditorState.readOnly.of(ro)),
+    });
+  }
+
+  private async _renderMixedPages(): Promise<void> {
+    if (!this._mixedPainter) {
+      this._mixedPainter = new MixedPainter();
+    }
+    if (this.mixedXmlText) {
+      await this._mixedPainter.load(this.mixedXmlText);
+    }
+    this.scorePane.replaceChildren();
+    this.pageEls = [];
+    for (let i = 0; i < this._mixedPainter.pageCount; i++) {
+      const svg = this._mixedPainter.renderPage(i);
+      svg.style.width = "100%";
+      svg.style.display = "block";
+      const wrap = document.createElement("div");
+      wrap.className = "score-page-wrap";
+      wrap.appendChild(svg);
+      this.scorePane.appendChild(wrap);
+      this.pageEls.push(wrap);
+    }
+    this.pageIndex = 0;
   }
 
   async openFile(): Promise<void> {
