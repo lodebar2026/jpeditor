@@ -620,24 +620,96 @@ class PartLoader {
       const n = parseInt(s, 10);
       return isNaN(n) ? 0 : n;
     };
-    pts.sort((a, b) => {
-      const na = numOf(a.lrc.num);
-      const nb = numOf(b.lrc.num);
-      if (na !== nb) return na - nb;
-      const c = a.tick.compareTo(b.tick);
-      if (c !== 0) return c;
-      return (a.stop ? 1 : 0) - (b.stop ? 1 : 0);
-    });
-    for (let i = 0; i + 1 < pts.length; i += 2) {
-      const pa = pts[i];
-      const pb = pts[i + 1];
+    // 仅当存在显式 <extend type="stop"> 时才按 start/stop 两两配对（musicpp parser.cpp:753）。
+    // Sibelius 等导出全用裸 <extend/>（无 type），此时每个都是独立 melisma 的起点，
+    // 不能两两配对（否则线会跨过中间音节连到后一个歌词上）。
+    const hasStop = pts.some((p) => p.stop);
+    if (hasStop) {
+      pts.sort((a, b) => {
+        const na = numOf(a.lrc.num);
+        const nb = numOf(b.lrc.num);
+        if (na !== nb) return na - nb;
+        const c = a.tick.compareTo(b.tick);
+        if (c !== 0) return c;
+        return (a.stop ? 1 : 0) - (b.stop ? 1 : 0);
+      });
+      for (let i = 0; i + 1 < pts.length; i += 2) {
+        const pa = pts[i];
+        const pb = pts[i + 1];
+        const ext: LrcExtend = this.part.newLrcExtend();
+        ext.startNote = pa.note;
+        ext.endNote = pb.note;
+        ext.startTick = pa.note.chord.tick();
+        ext.endTick = pb.note.chord.tick();
+        ext.start = pa.lrc;
+        ext.stop = pb.lrc;
+      }
+      return;
+    }
+
+    // 裸 extend：melisma 终点 = 同一 verse 的下一个音节起点；但若中途遇到休止符
+    // （该声部停唱），melisma 即结束，终点取休止前最后一个续腔音，不得跨过休止连到
+    // 休止之后的歌词。先按全局 tick 收集本声部各谱表的全部和弦用于边界扫描。
+    const seqByStaff = new Map<number, MChord[]>();
+    for (const md of this.part.measures) {
+      for (const ch of md.chords) {
+        const staff = ch.notes[0]?.staff ?? 0;
+        let arr = seqByStaff.get(staff);
+        if (!arr) {
+          arr = [];
+          seqByStaff.set(staff, arr);
+        }
+        arr.push(ch);
+      }
+    }
+    for (const arr of seqByStaff.values()) {
+      arr.sort((a, b) => a.tick().compareTo(b.tick()));
+    }
+
+    for (const pt of pts) {
+      const list = this.lrcByNum.get(pt.lrc.num) ?? [];
+      const idx = list.indexOf(pt.lrc);
+      const nextLrc = idx >= 0 ? list[idx + 1] : null;
+      const startTick = pt.note.chord.tick();
+      const nextTick = nextLrc?.chord ? nextLrc.chord.tick() : null;
+
+      // 扫描本声部（同谱表）起始音之后、下一个音节之前，寻首个休止符。
+      const seq = seqByStaff.get(pt.note.staff) ?? [];
+      let lastMelisma: MNote | null = null;
+      let restBefore = false;
+      for (const ch of seq) {
+        const t = ch.tick();
+        if (t.compareTo(startTick) <= 0) continue;
+        if (nextTick && t.compareTo(nextTick) >= 0) break;
+        if (ch.rest) {
+          restBefore = true;
+          break;
+        }
+        lastMelisma = ch.notes[0] ?? lastMelisma;
+      }
+
       const ext: LrcExtend = this.part.newLrcExtend();
-      ext.startNote = pa.note;
-      ext.endNote = pb.note;
-      ext.startTick = pa.note.chord.tick();
-      ext.endTick = pb.note.chord.tick();
-      ext.start = pa.lrc;
-      ext.stop = pb.lrc;
+      ext.startNote = pt.note;
+      ext.start = pt.lrc;
+      ext.startTick = startTick;
+      if (restBefore) {
+        // 被休止打断：止于休止前最后一个续腔音（其右缘，见 drawLrcExtend）。
+        // 若休止紧跟在带 extend 的音之后（无续腔音），则不画。
+        if (!lastMelisma) {
+          this.part.lrcExtends.pop();
+          continue;
+        }
+        ext.endNote = lastMelisma;
+        ext.stop = null;
+        ext.endTick = lastMelisma.chord.tick();
+      } else if (nextLrc?.chord) {
+        ext.endNote = nextLrc.chord.notes[0];
+        ext.stop = nextLrc;
+        ext.endTick = nextTick!;
+      } else {
+        // 无续腔音也无下一音节 → 撤销
+        this.part.lrcExtends.pop();
+      }
     }
   }
 
@@ -1071,9 +1143,17 @@ class PartLoader {
   private formatBeams(): void {
     for (const md of this.part.measures) {
       for (const g of md.beams) {
-        const up = g.chords[0]?.stemUp ?? true;
-        g.doubleDir = g.chords.some((ch) => ch.stemUp !== up);
-        if (g.chords.length > 0) g.format(0);
+        if (g.chords.length === 0) continue;
+        // beam-over-rest：符杠内的休止符无 <stem>，stemUp 取默认 true。若两侧音符均为
+        // stem-down，会被误判 doubleDir；而 doubleDir 的 calcSlopeLen 分支不做「下符头避让」
+        // （非 doubleDir 分支才有 +35 最小符干），导致八度等宽和弦的符杠穿过下符头。
+        // 休止符不画符干，把方向对齐到本组首个真实音符即可消除假 doubleDir。
+        const ref = g.chords.find((ch) => !ch.rest) ?? g.chords[0];
+        for (const ch of g.chords) {
+          if (ch.rest) ch.stemUp = ref.stemUp;
+        }
+        g.doubleDir = g.chords.some((ch) => ch.stemUp !== ref.stemUp);
+        g.format(0);
       }
     }
   }
