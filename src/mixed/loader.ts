@@ -5,6 +5,7 @@ import { Fraction } from "../common/fraction";
 import { Font } from "../layout/font";
 import { GlyphCodes } from "../smufl/smufl";
 import {
+  Arpeggiate,
   BeamGroup,
   BeamVal,
   BarGlyph,
@@ -224,6 +225,26 @@ class PartLoader {
   // 避免反复记号在每个声部都被画一遍。
   endingPts: { mif: MeasureInfo; nums: Set<number>; start: boolean; stop: boolean }[] = [];
 
+  // 琶音：当前小节内按 offset 聚合的音符（loadMeasure 末尾成组）。
+  arpegNotes = new Map<string, MNote[]>();
+  // wedge/pedal 端点（parser.cpp processWedge/processPedal：全声部收集后配对）。
+  wedgePts: {
+    mif: MeasureInfo;
+    tick: Fraction;
+    staff: number;
+    type: "crescendo" | "diminuendo" | "stop";
+    relX: number | null;
+    defY: number | null;
+  }[] = [];
+  pedalPts: {
+    mif: MeasureInfo;
+    tick: Fraction;
+    staff: number;
+    line: boolean;
+    stop: boolean;
+    ypos: number;
+  }[] = [];
+
   constructor(part: MixedPart, score: MixedScore, partEl: Element) {
     this.part = part;
     this.score = score;
@@ -265,6 +286,8 @@ class PartLoader {
     this.formatBeams();
     this.processTied();
     this.processEnding();
+    this.pairWedges();
+    this.pairPedals();
     this.processLrcExtend();
     this.part.guessTiedPlacement();
   }
@@ -354,6 +377,7 @@ class PartLoader {
     const md = this.part.newMeasure();
     md.measureInfo = mif;
 
+    this.arpegNotes.clear();
     let curChord: MChord | null = null;
 
     for (const it of Array.from(mea.children)) {
@@ -381,6 +405,15 @@ class PartLoader {
     md.splitLayer();
     md.layoutNotes(this.score.options.meta, this.score.encoder === Encoder.Sibelius);
     md.layoutNotations(); // stem/beam 信息就绪后（parser.cpp:2914）
+
+    // 琶音成组（parser.cpp:1972）：同 offset 一组，按 staff、line 排序后回填 nt.arpeg。
+    for (const notes of this.arpegNotes.values()) {
+      const arp = new Arpeggiate();
+      notes.sort((a, b) => (a.staff !== b.staff ? a.staff - b.staff : a.line() - b.line()));
+      for (const n of notes) n.arpeg = arp;
+      arp.notes = notes;
+      md.arpegs.push(arp);
+    }
     return div;
   }
 
@@ -485,7 +518,13 @@ class PartLoader {
     if (nhEl?.textContent?.trim() === "slash") ch.slash = true;
 
     this.processTieEl(noteEl, nt, ch.tick());
-    this.processNotations(noteEl, ch, mif);
+    const arp = this.processNotations(noteEl, ch, mif);
+    if (arp) {
+      const key = `${ch.offset.numerator}/${ch.offset.denominator}`;
+      const arr = this.arpegNotes.get(key) ?? [];
+      arr.push(nt);
+      this.arpegNotes.set(key, arr);
+    }
     if (!ch.rest) this.processLrc(noteEl, md, ch, nt);
     void mif;
     return ch;
@@ -630,7 +669,8 @@ class PartLoader {
     }
   }
 
-  private processNotations(noteEl: Element, ch: MChord, _mif: MeasureInfo): void {
+  private processNotations(noteEl: Element, ch: MChord, _mif: MeasureInfo): boolean {
+    let arp = false;
     for (const notEl of elems(noteEl, "notations")) {
       // fermata（parser.cpp:1446 processNotations）。type=inverted → 下方。
       for (const ferEl of elems(notEl, "fermata")) {
@@ -638,6 +678,37 @@ class PartLoader {
         item.above = ferEl.getAttribute("type") !== "inverted";
         item.symbol = item.above ? GlyphCodes.fermataAbove : GlyphCodes.fermataBelow;
         ch.notations.push(item);
+      }
+      // arpeggiate（parser.cpp:1461）—— 实际上下竖波浪线在 loadMeasure 末尾成组。
+      if (elems(notEl, "arpeggiate").length > 0) arp = true;
+      // articulations（parser.cpp:1463）—— 重音/断奏/保持音/marcato/staccatissimo。
+      // above/symbol 初始按上方字形，最终上下由 layoutNotations::setAbove 决定。
+      for (const artEl of elems(notEl, "articulations")) {
+        for (const a of Array.from(artEl.children)) {
+          const item = new NotationItem();
+          switch (a.tagName) {
+            case "strong-accent":
+              item.above = a.getAttribute("type") !== "down";
+              item.symbol = item.above ? GlyphCodes.articMarcatoAbove : GlyphCodes.articMarcatoBelow;
+              break;
+            case "accent":
+              item.symbol = GlyphCodes.articAccentAbove;
+              break;
+            case "staccato":
+              item.symbol = GlyphCodes.articStaccatoAbove;
+              break;
+            case "tenuto":
+              item.symbol = GlyphCodes.articTenutoAbove;
+              break;
+            case "staccatissimo":
+              item.symbol = GlyphCodes.articStaccatissimoAbove;
+              break;
+            default:
+              // spiccato/stress/breath-mark/caesura 等：musicpp 未绘制，忽略。
+              continue;
+          }
+          ch.notations.push(item);
+        }
       }
       for (const slurEl of elems(notEl, "slur")) {
         const ty = slurEl.getAttribute("type");
@@ -692,6 +763,7 @@ class PartLoader {
         }
       }
     }
+    return arp;
   }
 
   /** <direction> 文本（words / dynamics / metronome），对应 musicpp loader.cpp::processDirection。 */
@@ -720,6 +792,12 @@ class PartLoader {
             this.processSegno(blk, true);
             hasText = true;
             break;
+          case "wedge":
+            this.collectWedge(child as Element, md, tick, blk.staff);
+            break;
+          case "pedal":
+            this.collectPedal(child as Element, md, tick, blk.staff);
+            break;
         }
       }
     }
@@ -728,6 +806,93 @@ class PartLoader {
       blk.x -= blk.width();
     }
     if (!hasText) md.textBlocks.pop();
+  }
+
+  /** <wedge>（渐强/渐弱松叶）端点收集，配对在 pairWedges（parser.cpp:1069 processWedge）。 */
+  private collectWedge(el: Element, md: MeasureData, tick: Fraction, staff: number): void {
+    const ty = el.getAttribute("type");
+    if (ty !== "crescendo" && ty !== "diminuendo" && ty !== "stop") return;
+    this.wedgePts.push({
+      mif: md.measureInfo,
+      tick: md.measureInfo.offset.plus(tick),
+      staff,
+      type: ty,
+      relX: attrFloat(el, "relative-x"),
+      defY: attrFloat(el, "default-y"),
+    });
+  }
+
+  /** <pedal>（踏板线）端点收集，配对在 pairPedals（parser.cpp:1150 processPedal）。 */
+  private collectPedal(el: Element, md: MeasureData, tick: Fraction, staff: number): void {
+    const ty = el.getAttribute("type");
+    // 仅处理 start/stop 配对（sostenuto/change 等不绘制）。
+    if (ty !== "start" && ty !== "stop") return;
+    const line = el.getAttribute("line") === "yes";
+    const dy = attrFloat(el, "default-y");
+    this.pedalPts.push({
+      mif: md.measureInfo,
+      tick: md.measureInfo.offset.plus(tick),
+      staff,
+      line,
+      stop: ty === "stop",
+      ypos: dy !== null ? -dy : 0,
+    });
+  }
+
+  /** wedge 端点按 staff 配对成 Wedge（parser.cpp:1069）。 */
+  private pairWedges(): void {
+    const staves = this.part.staves.length;
+    for (let s = 0; s < staves; s++) {
+      const pts = this.wedgePts.filter((p) => p.staff === s);
+      let start: (typeof pts)[number] | null = null;
+      for (const p of pts) {
+        if (p.type === "stop") {
+          if (!start) continue;
+          const w = this.part.newWedge();
+          w.staff = s;
+          w.crescendo = start.type === "crescendo";
+          w.startTick = start.tick;
+          w.endTick = p.tick;
+          w.startMeasure = start.mif;
+          w.endMeasure = p.mif;
+          if (start.relX !== null) w.dxLeft = start.relX;
+          if (p.relX !== null) w.dxRight = p.relX;
+          if (start.defY !== null) w.ypos = -start.defY;
+          start = null;
+        } else {
+          start = p;
+        }
+      }
+    }
+  }
+
+  /** pedal 端点排序后两两配对成 PedalLine（parser.cpp:1150）。 */
+  private pairPedals(): void {
+    const pts = [...this.pedalPts].sort((a, b) => {
+      if (a.staff !== b.staff) return a.staff - b.staff;
+      if (a.line !== b.line) return (a.line ? 1 : 0) - (b.line ? 1 : 0);
+      const c = a.tick.compareTo(b.tick);
+      if (c !== 0) return c;
+      return (a.stop ? 1 : 0) - (b.stop ? 1 : 0);
+    });
+    for (let i = 1; i < pts.length; ) {
+      const prev = pts[i - 1];
+      const cur = pts[i];
+      if (prev.stop || !cur.stop || prev.line !== cur.line) {
+        i++;
+        continue;
+      }
+      const ln = this.part.newPedalLine();
+      ln.sign = false;
+      ln.line = prev.line;
+      ln.startTick = prev.tick;
+      ln.startMeasure = prev.mif;
+      ln.endMeasure = cur.mif;
+      ln.endTick = cur.tick;
+      ln.ypos = prev.ypos;
+      ln.staff = prev.staff;
+      i += 2;
+    }
   }
 
   /** <segno> / <coda> 记号（parser.cpp::processSegno / processCoda）。
@@ -785,7 +950,9 @@ class PartLoader {
   /** <metronome>（<beat-unit> + <per-minute>），对应 loader.cpp::processMetronome。 */
   private processMetronome(blk: MeasureText, metEl: Element): boolean {
     const wordFont = this.makeWordsFont(metEl);
-    const noteFont = new Font("BravuraText", wordFont.size);
+    // webview 只注册了 "Bravura" @font-face（styles.css）；"BravuraText" 未注册会回退成
+    // 缺字形的方框。Bravura 含同一套 metNote 字形，故用 Bravura。
+    const noteFont = new Font("Bravura", wordFont.size);
     let any = false;
     for (const child of Array.from(metEl.children)) {
       if (child.tagName === "beat-unit") {
@@ -1011,6 +1178,57 @@ function buildSystemsAndPages(score: MixedScore, xmlParts: Element[]): void {
       score.pages.push(pg);
     } else {
       score.pages[score.pages.length - 1].systems.push(sys);
+    }
+  }
+}
+
+/**
+ * 空谱表隐藏：MusicXML 用 <attributes><staff-details print-object="no/yes"> 切换某谱表可见性，
+ * 状态跨系统延续（loader.cpp::processStaffDetails + updateSystemLayout 的 visPrev）。
+ * 在每个 system 的 firstMeasure 处应用累积可见性快照。
+ */
+function applyStaffVisibility(score: MixedScore, xmlParts: Element[]): void {
+  // measureIdx → (全局谱表序号 → 可见)
+  const changes = new Map<number, Map<number, boolean>>();
+  let stfOff = 0;
+  let pid = 0;
+  for (const ptEl of xmlParts) {
+    const part = score.parts[pid++];
+    let mid = 0;
+    for (const mea of elems(ptEl, "measure")) {
+      for (const at of elems(mea, "attributes")) {
+        for (const det of elems(at, "staff-details")) {
+          const po = det.getAttribute("print-object");
+          if (po === null) continue;
+          const num = (attrInt(det, "number") ?? 1) - 1;
+          const g = stfOff + num;
+          let m = changes.get(mid);
+          if (!m) {
+            m = new Map();
+            changes.set(mid, m);
+          }
+          m.set(g, po !== "no");
+        }
+      }
+      mid++;
+    }
+    stfOff += part.staves.length;
+  }
+  if (changes.size === 0) return;
+
+  const total = stfOff;
+  const sysByFirst = new Map<number, Sys>();
+  for (const sys of score.systems) sysByFirst.set(sys.firstMeasure, sys);
+
+  const visPrev = new Array<boolean>(total).fill(true);
+  for (let mid = 0; mid < score.measures.length; mid++) {
+    const ch = changes.get(mid);
+    if (ch) for (const [g, v] of ch) visPrev[g] = v;
+    const sys = sysByFirst.get(mid);
+    if (sys) {
+      for (let i = 0; i < sys.staves.length && i < total; i++) {
+        sys.staves[i].staffVisible = visPrev[i];
+      }
     }
   }
 }
@@ -1442,6 +1660,7 @@ export function loadMixedXml(xmlText: string, options: MixedOptions): MixedScore
 
   // Layout pass
   buildSystemsAndPages(score, partEls);
+  applyStaffVisibility(score, partEls);
   updateLayoutByPrint(score, partEls);
   layoutAttr(score);
   updateEntPos(score);
