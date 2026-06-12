@@ -154,7 +154,9 @@ export function drawNotesNormal(
     const sx = ch.stemX();
     // stemY local = stemY() - md.staffY(subStaff) but for sub=0 staffY=0
     const sy = ch.stemY() - md.staffY(subStaff);
-    const ty = ch.tailY(true) - md.staffY(subStaff);
+    // 符干末端含 stemExtra（render.cpp:401-406：跨谱表符杠延伸符干以接到符杠）。
+    const extra = ch.stemUp ? -ch.stemExtra : ch.stemExtra;
+    const ty = ch.tailY(true) + extra - md.staffY(subStaff);
 
     // flag (only if unbeamed)
     if (ch.beams.length === 0) {
