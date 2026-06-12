@@ -71,6 +71,9 @@ export const GlyphCodes = {
   // Articulations / ornaments
   fermataAbove: String.fromCharCode(0xe4c0),
   fermataBelow: String.fromCharCode(0xe4c1),
+  // Repeats / navigation
+  segno: String.fromCharCode(0xe047),
+  coda: String.fromCharCode(0xe048),
   // Dynamics (单字母组合成 mf/sfz 等；见 loader.ts::convertDynamicsStr)
   dynamicPiano: String.fromCharCode(0xe520),
   dynamicMezzo: String.fromCharCode(0xe521),
@@ -138,6 +141,8 @@ const codeToName: Record<string, string> = {
   [GlyphCodes.tuplet3]: "tuplet3",
   [GlyphCodes.fermataAbove]: "fermataAbove",
   [GlyphCodes.fermataBelow]: "fermataBelow",
+  [GlyphCodes.segno]: "segno",
+  [GlyphCodes.coda]: "coda",
   [GlyphCodes.dynamicPiano]: "dynamicPiano",
   [GlyphCodes.dynamicMezzo]: "dynamicMezzo",
   [GlyphCodes.dynamicForte]: "dynamicForte",

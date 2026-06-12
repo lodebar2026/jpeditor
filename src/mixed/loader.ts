@@ -706,10 +706,32 @@ class PartLoader {
           case "metronome":
             if (this.processMetronome(blk, child as Element)) hasText = true;
             break;
+          case "segno":
+            this.processSegno(blk, false);
+            hasText = true;
+            break;
+          case "coda":
+            this.processSegno(blk, true);
+            hasText = true;
+            break;
         }
       }
     }
+    // Sibelius 右对齐文本以右边缘为锚点（parser.cpp::parse 尾部 isSib 分支）。
+    if (this.score.encoder === Encoder.Sibelius && blk.justify === LCR.Right) {
+      blk.x -= blk.width();
+    }
     if (!hasText) md.textBlocks.pop();
+  }
+
+  /** <segno> / <coda> 记号（parser.cpp::processSegno / processCoda）。
+   *  位置不取 default-x：本工程文本块统一由 updateDataXPos 按 offset 的 getEntPos 定位，
+   *  与 musicpp 直接用 default-x 的策略不同；这里只保留 y=45 与 +15 的小幅右移。 */
+  private processSegno(blk: MeasureText, coda: boolean): void {
+    blk.y = 45; // todo: parser.cpp 同样硬编码
+    blk.x += 15;
+    const font = new Font("Bravura", this.score.defaults.musicTextFont.size / this.score.scaling);
+    blk.add(coda ? GlyphCodes.coda : GlyphCodes.segno, font, true);
   }
 
   /** <words> 文本（如「(副歌)」），对应 loader.cpp::processWords。 */
