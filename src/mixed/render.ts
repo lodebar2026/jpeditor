@@ -546,7 +546,7 @@ function drawSlur(
 
 function drawLrcExtend(
   sys: Sys,
-  _eng: MixedOptions,
+  eng: MixedOptions,
   container: Group,
   ext: LrcExtend,
 ): void {
@@ -555,7 +555,8 @@ function drawLrcExtend(
   if (fGe(ext.startTick, end)) return;
   if (fLt(ext.endTick, begin)) return;
 
-  if (!ext.start || !ext.stop) return;
+  // stop 为空＝melisma 被休止打断，终点取 endNote（休止前最后续腔音）；否则取下一音节。
+  if (!ext.start || (!ext.stop && !ext.endNote)) return;
 
   const hasPrev = fLt(ext.startTick, begin);
   const hasNext = fGe(ext.endTick, end);
@@ -579,7 +580,13 @@ function drawLrcExtend(
     right = sysRight;
   } else {
     const mifR = ext.endChord().measure.measureInfo;
-    right = ext.stop.x + mifR.xpos() + ext.stop.xOffset;
+    if (ext.stop) {
+      right = ext.stop.x + mifR.xpos() + ext.stop.xOffset;
+    } else {
+      // 休止打断：止于最后续腔音的右缘
+      const en = ext.endNote!;
+      right = en.x + smuflWidth(eng.meta, en.chord.sym()) + mifR.xpos();
+    }
   }
 
   const y = -ext.start.y;
