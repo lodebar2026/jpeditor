@@ -455,6 +455,9 @@ class PartLoader {
     }
 
     nt.x = attrFloat(noteEl, "default-x") ?? -1;
+    // 每音符显示尺寸（<type size="cue">）——musicpp Note::size==1（render.cpp:963）。
+    const typeEl = elem(noteEl, "type");
+    if (typeEl && typeEl.getAttribute("size") === "cue") nt.size = 1;
 
     const accEl = elem(noteEl, "accidental");
     if (accEl) {

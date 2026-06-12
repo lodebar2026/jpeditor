@@ -35,6 +35,8 @@ import {
   fLt,
   slurTiedPos,
   slurTiedPosForJp,
+  smuflBottom,
+  smuflTop,
   smuflWidth,
 } from "./model";
 import { Font } from "../layout/font";
@@ -120,7 +122,7 @@ export function drawNotesNormal(
       if (!n.visible) continue;
 
       let x: number;
-      const cue = ch.cue || ch.grace;
+      const cue = n.size === 1 || ch.cue || ch.grace;
       const scale = cue ? eng.cueSize : 1;
 
       if (ch.measureRest) {
@@ -132,7 +134,7 @@ export function drawNotesNormal(
         if (cue) {
           x = ch.stemX();
           if (!n.rightSide()) x -= smuflWidth(meta, code) * scale;
-          if (ch.noteType.compareTo(new Fraction(1)) >= 0) x += 5;
+          if (ch.noteType.compareTo(new Fraction(4)) >= 0) x += 5;
         }
         if (x < 0) continue;
       }
@@ -563,8 +565,11 @@ function drawTuplet(eng: MixedOptions, container: Group, obj: Tuplet): void {
   if (nota === Notation.JianPu) {
     const ntl = chl.notes[0];
     const ntr = chr.notes[0];
-    plx = ntl.x + chl.measure.xpos();
-    prx = ntr.x + chr.measure.xpos();
+    // 端点对齐到简谱数字中心（render.cpp:1393：ntl->x + 数字宽/2）。
+    const wl = eng.jianpuFont.measureText(ntl.number());
+    const wr = eng.jianpuFont.measureText(ntr.number());
+    plx = ntl.x + wl / 2 + chl.measure.xpos();
+    prx = ntr.x + wr / 2 + chr.measure.xpos();
     const dot = Math.max(
       ntl.octaveJp(eng.addOctaveJpForKeyA),
       ntr.octaveJp(eng.addOctaveJpForKeyA),
@@ -615,9 +620,12 @@ function drawTuplet(eng: MixedOptions, container: Group, obj: Tuplet): void {
   const cx = (plx + prx) / 2;
   const cy = (ply + pry) / 2;
   const numStr = Tuplet.makeNumber(obj.timeModification.denominator);
-  const numW = TimeSig.width(eng.meta, obj.timeModification.denominator) *
-    (eng.musicFont.size / 40);
-  addSmufl(container, numStr, cx - numW / 2, cy + eng.musicFont.size * 0.3, eng.musicFont.size);
+  const fsScale = eng.musicFont.size / 40;
+  const numW = TimeSig.width(eng.meta, obj.timeModification.denominator) * fsScale;
+  // 数字垂直居中：cy + 字形高/2（render.cpp:1455-1457 txt->height/2）。
+  const g0 = numStr[0] ?? "";
+  const numH = (smuflTop(eng.meta, g0) - smuflBottom(eng.meta, g0)) * fsScale;
+  addSmufl(container, numStr, cx - numW / 2, cy + numH / 2, eng.musicFont.size);
 }
 
 // -----------------------------------------------------------------------
@@ -767,12 +775,20 @@ export function drawHarmony(
   data: MeasureData,
   subStaff: number,
   scaling: number,
+  mixed: boolean,
 ): void {
   const fontsz = eng.harmonySize / (scaling > 0 ? scaling : 0.45);
   const wordFont = new Font(eng.wordFont, fontsz);
-  const musicFont = new Font("Bravura", fontsz); // SMuFL csym 字形（升降号/和弦质量）
+  // SMuFL csym 字形（升降号/和弦质量）。musicpp（render.cpp:541）用 "Bravura Text" 内联变体，
+  // 但本工程 webview 只注册了 "Bravura"（styles.css @font-face），且其含同一套记号字形，故用 Bravura。
+  const musicFont = new Font("Bravura", fontsz);
+  // 整小节休止的混排小节，offset==0 的和弦标记右移 15（render.cpp:504-515）。
+  const measureRest =
+    mixed && data.chords.length === 1 && data.chords[0].measureRest;
   for (const h of data.harmonies) {
     if (h.staff !== subStaff) continue;
+    const mixedOffsetForRest =
+      measureRest && h.offset.compareTo(new Fraction(0)) === 0 ? 15 : 0;
     const segs = h.asText();
 
     // 总宽：未缩放的 advance 之和（对齐 musicpp TextBlock::width 的居中口径）
@@ -806,7 +822,11 @@ export function drawHarmony(
     }
 
     const m = new Matrix33();
-    m.setAffine([1, 0, 0, 1, h.x - width / 2 + 6.5, -h.y + wordFont.metrics.descent]);
+    m.setAffine([
+      1, 0, 0, 1,
+      h.x - width / 2 + 6.5 + mixedOffsetForRest,
+      -h.y + wordFont.metrics.descent,
+    ]);
     grp.matrix = m;
     container.add(grp);
   }
@@ -1156,6 +1176,16 @@ function drawBarline(eng: MixedOptions, container: Group, sys: Sys): void {
 
   for (let idx = 0; idx < sys.measures.length; idx++) {
     const m = sys.measures[idx];
+    // 小节号（render.cpp:1706-1712）。默认 hideBarNumber=true 时不显示。
+    if (m.showBarNumber && !eng.hideBarNumber) {
+      const num = new TextFrame();
+      num.text = m.number;
+      num.font = new Font(eng.wordFont, 20);
+      num.color = 0xff000000;
+      num.x = m.xpos();
+      num.y = -25;
+      container.add(num);
+    }
     let dx = 0;
     if (idx + 1 < sys.measures.length) dx = -sys.measures[idx + 1].sibKeyOffset;
     styles.push(m.rightBarline ?? BarGlyph.Single);
@@ -1297,6 +1327,10 @@ function drawNotesJianPu(
 
       if (measureRest) {
         x = mif.dataPos + 5;
+        // 宽小节再右移 10（render.cpp:834-839）。
+        const dataWidth = mif.dataEnd - mif.dataPos;
+        const numw = font.measureText("0") * mif.dur.toInt();
+        if (dataWidth > 2 * numw) x += 10;
       } else {
         x = n.cx(meta);
         if (n.x < 0) continue;
@@ -1307,14 +1341,32 @@ function drawNotesJianPu(
       const nw = font.measureText(str);
       x -= nw / 2;
 
-      const ypos = font.size;
-      const t = new TextFrame();
-      t.text = str;
-      t.font = font;
-      t.color = 0xff000000;
-      t.x = x;
-      t.y = ypos;
-      container.add(t);
+      // grace：数字缩小并整体上移（render.cpp:856-869）。
+      const graceSc = ch.grace ? eng.jpGraceScale : 1;
+      const graceDy = ch.grace ? -30 : 0;
+      let ypos = font.size;
+      if (ch.grace) ypos *= 0.1;
+
+      if (ch.grace) {
+        const g = new Group();
+        const m = new Matrix33();
+        m.setAffine([graceSc, 0, 0, graceSc, x, ypos]);
+        g.matrix = m;
+        const t = new TextFrame();
+        t.text = str;
+        t.font = font;
+        t.color = 0xff000000;
+        g.add(t);
+        container.add(g);
+      } else {
+        const t = new TextFrame();
+        t.text = str;
+        t.font = font;
+        t.color = 0xff000000;
+        t.x = x;
+        t.y = ypos;
+        container.add(t);
+      }
 
       // octave dots
       const oct = n.octaveJp(eng.addOctaveJpForKeyA);
@@ -1329,13 +1381,28 @@ function drawNotesJianPu(
         const dotStr = ".";
         const dotW = font.measureText(dotStr);
         for (let i = 0; i < Math.abs(oct); i++) {
-          const dd = new TextFrame();
-          dd.text = dotStr;
-          dd.font = font;
-          dd.color = 0xff000000;
-          dd.x = x + nw / 2 - dotW / 2;
-          dd.y = octY + i * eng.octaveDotDist * sc;
-          container.add(dd);
+          const dx0 = x + nw / 2 - dotW / 2;
+          const dy0 = octY + i * eng.octaveDotDist * sc * graceSc + graceDy;
+          if (ch.grace) {
+            const g = new Group();
+            const m = new Matrix33();
+            m.setAffine([graceSc, 0, 0, graceSc, dx0, dy0]);
+            g.matrix = m;
+            const dd = new TextFrame();
+            dd.text = dotStr;
+            dd.font = font;
+            dd.color = 0xff000000;
+            g.add(dd);
+            container.add(g);
+          } else {
+            const dd = new TextFrame();
+            dd.text = dotStr;
+            dd.font = font;
+            dd.color = 0xff000000;
+            dd.x = dx0;
+            dd.y = dy0;
+            container.add(dd);
+          }
         }
       }
 
@@ -1347,7 +1414,9 @@ function drawNotesJianPu(
         const dur = ch.dur;
         const end = dur.plus(ch.offset);
         const endPos = mif.getEntPos(end);
-        const cnt = Math.round(dur.toFloat());
+        // 截断取整（对齐 boost::rational_cast<int>），整小节休止用小节时值分子（render.cpp:920-923）。
+        let cnt = dur.toInt();
+        if (measureRest) cnt = mif.dur.numerator;
         const dx = cnt > 0 ? (endPos - x) / cnt : 0;
         for (let c = 1; c < cnt; c++) {
           const xx = x + dx * c;
@@ -1395,36 +1464,66 @@ function drawJpBeams(
     // skip cue groups
     if (grp.chords.some((ch) => ch.cue)) continue;
 
-    // find max beam count in group
-    let maxLevel = 0;
-    for (const ch of grp.chords) {
-      const lev = ch.jpBeamCount();
-      if (lev > maxLevel) maxLevel = lev;
-    }
-
-    for (let lev = 0; lev < maxLevel; lev++) {
-      // find first and last chord with jpBeamCount > lev
-      let first: import("./model").MChord | null = null;
-      let last: import("./model").MChord | null = null;
+    for (let lev = 0; lev < 10; lev++) {
+      // 收集本层的连续减时线段（render.cpp:32-58 processLevelJp）——同层可有多段，
+      // 不能用全局首/尾连成一条。
+      type MChord = import("./model").MChord;
+      const runs: [MChord, MChord][] = [];
+      let start: MChord | null = null;
+      let end: MChord | null = null;
       for (const ch of grp.chords) {
-        if (ch.jpBeamCount() > lev) {
-          if (!first) first = ch;
-          last = ch;
+        if (ch.jpBeamCount() <= lev) {
+          if (start && end) runs.push([start, end]);
+          start = null;
+          end = null;
+          continue;
         }
+        if (!start) start = ch;
+        end = ch;
       }
-      if (!first || !last) continue;
+      if (start && end) runs.push([start, end]);
+      if (runs.length === 0) break;
 
-      // get the note for this chord
-      const ntL = first.notes.find((n) => n.layer === 1 || !mix) ?? first.notes[0];
-      const ntR = last.notes.find((n) => n.layer === 1 || !mix) ?? last.notes[0];
+      for (const [first, last] of runs) {
+        const ntL = first.notes.find((n) => n.layer === 1 || !mix) ?? first.notes[0];
+        const ntR = last.notes.find((n) => n.layer === 1 || !mix) ?? last.notes[0];
 
-      const numL = String(ntL.number());
-      const numR = String(ntR.number());
-      const lx = ntL.cx(meta) - font.measureText(numL) / 2;
-      const rx = ntR.cx(meta) + font.measureText(numR) / 2;
-      const y = lev * eng.beamDistJP * sc + 35 - diff * 0.8;
+        const grace = first.grace;
+        const graceSc = grace ? eng.jpGraceScale : 1;
+        const numL = ntL.number();
+        const numR = ntR.number();
+        // 端点 = 数字中心 ±数字宽/2（grace 整体按 jpGraceScale 缩放，render.cpp:146-160）。
+        const lx =
+          ntL.x + (first.noteheadWidth(meta) / 2 - font.measureText(numL) / 2) * graceSc;
+        const rx =
+          ntR.x + (last.noteheadWidth(meta) / 2 + font.measureText(numR) / 2) * graceSc;
+        let y = lev * eng.beamDistJP * sc + 35 - diff * 0.8;
 
-      addLine(container, lx, y, rx, y, eng.lineWidths.jpBeam);
+        if (grace) {
+          // grace 减时线上移并加尾钩（render.cpp:165-186）。
+          y -= 29;
+          const cx = (rx + lx) / 2;
+          const hook = new GraphicPath();
+          hook.fill = false;
+          hook.stroke = true;
+          hook.strokeColor = 0xff000000;
+          hook.strokeWidth = 1;
+          hook.moveTo(cx, y);
+          hook.lineTo(cx, y + 5);
+          hook.cubicTo(cx, y + 10, cx, y + 10, cx + 10, y + 10);
+          hook.lineTo(cx + 10, y + 10);
+          const oct = ntL.octaveJp(eng.addOctaveJpForKeyA);
+          if (oct < 0 && ntL === ntR) {
+            const g = translated(0, 10);
+            g.add(hook);
+            container.add(g);
+          } else {
+            container.add(hook);
+          }
+        }
+
+        addLine(container, lx, y, rx, y, eng.lineWidths.jpBeam);
+      }
     }
   }
 }
@@ -1489,11 +1588,12 @@ function drawJpTimeSignature(
   const beatType = String(time.beatType);
   const w1 = font.measureText(beats);
   const w2 = font.measureText(beatType);
-  const lineW = Math.max(w1, w2) + 2;
+  const lineW = Math.max(w1, w2) + 1;
 
   const grp = translated(x, 0);
 
-  const dy = 4;
+  // 数字垂直偏移 = jianpuFont 降部 × 缩放（render.cpp:2085-2088 Mixed 分支）。
+  const dy = eng.jianpuFont.metrics.descent * sc;
   const t1 = new TextFrame();
   t1.text = beats;
   t1.font = font;
@@ -1643,7 +1743,7 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
         drawNotesNormal(eng, grp, md, ps.subIndex);
         drawBeams(grp, md, ps.subIndex);
         drawLrc(eng, grp, md, ps.subIndex);
-        drawHarmony(eng, grp, md, ps.subIndex, scr.scaling);
+        drawHarmony(eng, grp, md, ps.subIndex, scr.scaling, nota === Notation.Mixed);
         drawTextBlocks(grp, md, ps.subIndex);
       }
     }

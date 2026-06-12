@@ -287,6 +287,8 @@ export class MNote {
   writtenPitch = -1;
   alter = 0;
   staff = 0;
+  /** 显示尺寸：1=cue（小符头），0=正常（MusicXML <type size="cue">）。 */
+  size = 0;
 
   tieBegin = false;
   tieEnd = false;
