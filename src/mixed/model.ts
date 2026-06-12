@@ -190,6 +190,35 @@ export function smuflBottom(fm: MetaData, glyph: string): number {
   const box = fm.getBBox(glyph);
   return box ? box.bBoxSW[1] * 10 : 0;
 }
+
+/**
+ * 各行视觉高度（用于 getYBound 的垂直延伸估算）：音乐字形按真实包围盒
+ * （smuflTop/Bottom 以 em=musicEm 为基准，再按字号缩放），文本按字体 ascent/descent。
+ * 修正 TextBlock.height() 用 Bravura 字体度量导致力度/节拍记号虚高、撑大谱表间距的问题。
+ */
+function tightLineHeights(t: TextBlock, meta: MetaData, musicEm: number): number[] {
+  const h: number[] = [];
+  let lineH = 0;
+  for (const it of t.data) {
+    if (it.text === "\n") {
+      h.push(lineH);
+      lineH = 0;
+      continue;
+    }
+    let ih: number;
+    if (it.music) {
+      let gh = 0;
+      for (const ch of it.text) gh = Math.max(gh, smuflTop(meta, ch) - smuflBottom(meta, ch));
+      ih = gh * (musicEm > 0 ? it.font.size / musicEm : 1);
+    } else {
+      const fm = it.font.metrics;
+      ih = fm.descent - fm.ascent;
+    }
+    if (ih > lineH) lineH = ih;
+  }
+  if (lineH > 0) h.push(lineH);
+  return h;
+}
 export function smuflCutOut(
   fm: MetaData,
   glyph: string,
@@ -2405,9 +2434,11 @@ export class SysStaff {
         if (y < minY) minY = y;
       }
       for (const t of mea.textBlocks) {
-        const h: number[] = [];
-        const hh = t.height(h);
+        // 文本垂直延伸：音乐字形（力度/节拍记号）用真实包围盒，避免 Bravura 字体 em 框
+        // 虚高（descent-ascent 可达 ~14 个 staff space）把谱表间距撑大；文本用字体度量。
+        const h = tightLineHeights(t, sys.score.options.meta, sys.score.options.musicFont.size);
         if (h.length === 0) continue;
+        const hh = h.reduce((a, b) => a + b, 0);
         let y = t.y + h[0];
         if (y > maxY) maxY = y;
         y = t.y - hh;

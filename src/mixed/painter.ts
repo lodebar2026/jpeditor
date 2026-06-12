@@ -7,7 +7,7 @@ import { Fraction } from "../common/fraction";
 import { Matrix33 } from "../common/geom";
 import { Font } from "../layout/font";
 import { GraphicLine, GraphicPath, Group, PageItem, TextFrame } from "../layout/layout";
-import { LCR, MixedOptions, MixedScore, Notation, ScoreCredit, Sys } from "./model";
+import { LCR, MixedOptions, MixedScore, Notation, ScoreCredit, Sys, SysStaff } from "./model";
 import { loadMixedXml } from "./loader";
 import { drawSystem } from "./render";
 
@@ -55,6 +55,28 @@ export function formatMixedScore(score: MixedScore): void {
     const refFont = score.defaults.lyricFont;
     const fnt2 = refFont.scaled(0.8);
     lastPart.setLyricFont(fnt2);
+  }
+
+  // 相邻可见谱表的最小净空：MusicXML 的 staff-distance 仅按原始五线谱版面给出，未计入
+  // 混排追加的简谱层/歌词；且隐藏中间空谱表后，间距会塌缩到下方谱表自身的小间距，导致
+  // 上方谱表的歌词与下方谱表的符杠/音符重叠。按实际内容包围盒（getYBound）求两谱表所需
+  // 最小间距，不足则抬高（仅增不减，保留 MusicXML 已给的较大值）。须在 calcMixedStaffY
+  // 之后（minY/harmonyY 就绪）、getFrames 之前执行。
+  // 仅对「不同声部之间」的间距做兜底——歌词只挂在声部自己的谱表下方，跨声部才有重叠风险。
+  // 同一声部内的子谱表（如钢琴大谱表的两行）没有歌词，间距保持 MusicXML 原值（不抬高）。
+  const GAP_MARGIN = 12;
+  for (const sys of score.systems) {
+    let prev: SysStaff | null = null;
+    for (const st of sys.staves) {
+      if (!st.staffVisible) continue;
+      if (prev !== null && prev.part() !== st.part()) {
+        const [, prevBot] = prev.getYBound(sys); // 上方谱表向下延伸（负值）
+        const [curTop] = st.getYBound(sys); // 下方谱表向上延伸（正值）
+        const need = -prevBot + curTop - prev.height() + GAP_MARGIN;
+        if (need > st.distance) st.distance = need;
+      }
+      prev = st;
+    }
   }
 }
 
