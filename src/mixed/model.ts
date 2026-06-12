@@ -383,6 +383,7 @@ export class MChord {
   dot = 0;
   stemLen = 0; // 无符干（全音符）默认 0，与 musicpp 一致；有符干者在 calcStemLen 赋值
   stemUp = true;
+  stemExtra = 0; // 跨谱表符杠时符干延伸量（model.hpp stemExtra / styler.cpp calcSlopeLen）
 
   dur = new Fraction(0);
   noteType = new Fraction(1);
@@ -1215,6 +1216,180 @@ export class BeamGroup {
   chords: MChord[] = [];
   jp = false;
   doubleDir = false;
+
+  /** 最小二乘斜率（styler.cpp::leastSquare）。 */
+  private static leastSquare(pts: { x: number; y: number }[]): number {
+    let t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+    for (const p of pts) {
+      t1 += p.x * p.x;
+      t2 += p.x;
+      t3 += p.x * p.y;
+      t4 += p.y;
+    }
+    const n = pts.length;
+    return (t3 * n - t2 * t4) / (t1 * n - t2 * t2);
+  }
+
+  /** 音高走向位掩码（styler.cpp::pitchDirection）：bit0=同高 bit1=降 bit2=升。 */
+  pitchDirection(): number {
+    const noteCnt = new Set<number>();
+    for (const ch of this.chords) noteCnt.add(ch.notes.length);
+    let res = 0;
+    if (noteCnt.size === 1) {
+      const first = this.chords[0];
+      let nts = [...first.notes];
+      MNote.sortByPitchWr(nts);
+      for (const ch of this.chords) {
+        if (ch === first) continue;
+        const nts2 = [...ch.notes];
+        MNote.sortByPitchWr(nts2);
+        for (let i = 0; i < nts.length; i++) {
+          const n2 = nts2[i];
+          const n1 = nts[i];
+          let bit: number;
+          if (n1.writtenPitch === n2.writtenPitch) bit = 0;
+          else if (n1.writtenPitch < n2.writtenPitch) bit = 2;
+          else bit = 1;
+          res |= 1 << bit;
+          if (res === 7) return res;
+        }
+        nts = nts2;
+      }
+      return res;
+    }
+
+    const refChords: MChord[] = [this.chords[0]];
+    if (this.chords.length >= 3) refChords.push(this.chords[this.chords.length - 1]);
+    for (const refCh of refChords) {
+      const nts = [...refCh.notes];
+      MNote.sortByPitchWr(nts);
+      const refs: MNote[] = [nts[0]];
+      if (nts.length > 1) refs.push(nts[nts.length - 1]);
+      for (const ref of refs) {
+        for (const ch of this.chords) {
+          if (ch === refCh) continue;
+          for (const nt of ch.notes) {
+            let bit = 0;
+            if (nt.writtenPitch === ref.writtenPitch) bit = 0;
+            else if (nt.writtenPitch < ref.writtenPitch) bit = 1;
+            else bit = 2;
+            if (ch.offset.compareTo(refCh.offset) > 0) {
+              // keep
+            } else {
+              if (bit === 1) bit = 2;
+              else if (bit === 2) bit = 1;
+            }
+            res |= 1 << bit;
+            if (res === 7) return res;
+          }
+        }
+      }
+    }
+    return res;
+  }
+
+  /** 是否跨谱表（styler.cpp::crossStaff）。 */
+  crossStaff(): boolean {
+    const staves = new Set<number>();
+    for (const ch of this.chords) {
+      for (const nt of ch.notes) {
+        staves.add(nt.staff);
+        if (staves.size > 1) return true;
+      }
+    }
+    return false;
+  }
+
+  /** 按斜率求各和弦符干长（styler.cpp::calcSlopeLen）。 */
+  private calcSlopeLen(dy: number): void {
+    const pts: { x: number; y: number }[] = [];
+    for (const ch of this.chords) {
+      const nt = ch.tailNote();
+      let y = nt.cy();
+      if (nt.staff === 1) y += dy;
+      pts.push({ x: ch.stemX(), y });
+    }
+    let slope = BeamGroup.leastSquare(pts);
+    const thres = 0.3;
+    if (slope > thres) slope = thres;
+    else if (slope < -thres) slope = -thres;
+
+    if (this.doubleDir) {
+      let minYUp = Infinity, maxYDown = -Infinity, downId = -1, upId = -1;
+      for (let idx = 0; idx < this.chords.length; idx++) {
+        const up = this.chords[idx].stemUp;
+        const y = pts[idx].y;
+        if (up) {
+          if (y < minYUp) { minYUp = y; upId = idx; }
+        } else {
+          if (y > maxYDown) { maxYDown = y; downId = idx; }
+        }
+      }
+      const cy = (maxYDown + minYUp) / 2 - 2.5;
+      const cx = (pts[upId].x + pts[downId].x) / 2;
+      for (let tr = 0; tr < 2; tr++) {
+        let minLen = Infinity;
+        for (let idx = 0; idx < this.chords.length; idx++) {
+          const ch = this.chords[idx];
+          const up = ch.stemUp;
+          const inc = up ? -1 : 1;
+          const flipped = up !== this.chords[0].stemUp;
+          if (flipped) ch.stemExtra = inc * ch.beams.length * 8 - 3;
+          const ypos = (pts[idx].x - cx) * slope + cy;
+          ch.stemLen = inc * (ypos - pts[idx].y);
+          minLen = Math.min(minLen, ch.stemLen);
+        }
+        if (minLen < 35) slope = 0;
+        else break;
+      }
+    } else {
+      let minLen = Infinity;
+      for (let idx = 0; idx < this.chords.length; idx++) {
+        const ch = this.chords[idx];
+        const up = ch.stemUp;
+        const inc = up ? -1 : 1;
+        const dx = pts[idx].x - pts[0].x;
+        const ypos = dx * slope + pts[0].y;
+        const len = inc * (ypos - pts[idx].y) + 35;
+        if (len < minLen) minLen = len;
+        ch.stemLen = len;
+      }
+      const diff = 35 - minLen;
+      for (const ch of this.chords) ch.stemLen += diff;
+    }
+  }
+
+  /** 计算符杠组各符干长度与延伸（styler.cpp::BeamGroup::format）。 */
+  format(dy: number): void {
+    const dir = this.pitchDirection();
+    if (!this.crossStaff()) dy = 0;
+    if (this.doubleDir || dir === 2 || dir === 4) {
+      this.calcSlopeLen(dy);
+    } else if ((dir === 3 || dir === 5) && this.chords.length === 2) {
+      this.calcSlopeLen(dy);
+    } else {
+      // 水平符杠
+      let minP = 1000, maxP = -1;
+      for (const ch of this.chords) {
+        for (const n of ch.notes) {
+          if (n.writtenPitch < minP) minP = n.writtenPitch;
+          if (n.writtenPitch > maxP) maxP = n.writtenPitch;
+        }
+      }
+      const up = this.chords[0].stemUp;
+      if (up) {
+        for (const ch of this.chords) {
+          const tn = ch.tailNote();
+          ch.stemLen = (maxP + 7 - tn.writtenPitch) * 5;
+        }
+      } else {
+        for (const ch of this.chords) {
+          const tn = ch.tailNote();
+          ch.stemLen = (tn.writtenPitch - (minP - 7)) * 5;
+        }
+      }
+    }
+  }
 }
 
 // ---------------- MeasureData（声部内单小节内容，dolce::MusicData） ----------------

@@ -10,7 +10,6 @@ import {
   BarGlyph,
   ClefSig,
   Encoder,
-  EndingType,
   fEq,
   GroupSymbol,
   HarmonyDegreeType,
@@ -221,6 +220,9 @@ class PartLoader {
   lrcByNum = new Map<string, MLyric[]>();
   // lyric extend (melisma) points, paired 2-by-2 in processLrcExtend
   lrcExtendPts: { note: MNote; lrc: MLyric; tick: Fraction; stop: boolean }[] = [];
+  // 本声部自己的 ending 端点（print-object="no" 不计入），对齐 musicpp 按 part 收集，
+  // 避免反复记号在每个声部都被画一遍。
+  endingPts: { mif: MeasureInfo; nums: Set<number>; start: boolean; stop: boolean }[] = [];
 
   constructor(part: MixedPart, score: MixedScore, partEl: Element) {
     this.part = part;
@@ -260,6 +262,7 @@ class PartLoader {
     }
 
     this.calcStemLen();
+    this.formatBeams();
     this.processTied();
     this.processEnding();
     this.processLrcExtend();
@@ -860,16 +863,18 @@ class PartLoader {
       else mif.forward = true;
     }
     const endingEl = elem(blEl, "ending");
-    if (endingEl) {
+    // print-object="no" 的 ending 不参与绘制（parser.cpp::processEnding 1232）；ending 端点按
+    // 本声部收集（musicpp 逐声部读 barline），否则全局 MeasureInfo 会让每个声部都画一遍。
+    if (endingEl && endingEl.getAttribute("print-object") !== "no") {
       const nums = parseEndingNums(endingEl.getAttribute("number") ?? "");
       if (nums.size > 0) {
-        mif.endingNum = nums;
         const ty = endingEl.getAttribute("type");
         if (loc === "left") {
-          mif.leftEndingType = ty === "start" ? EndingType.Start : EndingType.None;
+          if (ty === "start") this.endingPts.push({ mif, nums, start: true, stop: false });
         } else {
-          if (ty === "stop") mif.rightEndingType = EndingType.Stop;
-          else if (ty === "discontinue") mif.rightEndingType = EndingType.Discontinue;
+          if (ty === "stop") this.endingPts.push({ mif, nums, start: false, stop: true });
+          else if (ty === "discontinue")
+            this.endingPts.push({ mif, nums, start: false, stop: false });
         }
       }
     }
@@ -886,6 +891,19 @@ class PartLoader {
         ch.stemLen = Math.abs(-nt.cy() - sy);
       } else {
         ch.stemLen = ch.grace ? 35 * cueSize : 35;
+      }
+    }
+  }
+
+  /** 符杠组符干长度/斜率（styler.cpp BeamGroup::format，经 guessStemDir/parser 2911 调用）。
+   *  先按 stemUp 差异标记 doubleDir，再 format(0)。跨谱表的 dy 需系统排版后才知，此处用 0；
+   *  本工程混排谱的符杠均在单一谱表内，crossStaff() 为假，format 内部也会把 dy 归零。 */
+  private formatBeams(): void {
+    for (const md of this.part.measures) {
+      for (const g of md.beams) {
+        const up = g.chords[0]?.stemUp ?? true;
+        g.doubleDir = g.chords.some((ch) => ch.stemUp !== up);
+        if (g.chords.length > 0) g.format(0);
       }
     }
   }
@@ -915,23 +933,12 @@ class PartLoader {
    *  此处 mif.offset 已在 PartLoader 主循环里赋为绝对 tick，可直接取用。 */
   private processEnding(): void {
     type EndingPt = { tick: Fraction; mif: MeasureInfo; nums: Set<number>; stop: boolean };
-    const pts: EndingPt[] = [];
-    for (const mif of this.score.measures) {
-      if (mif.leftEndingType === EndingType.Start) {
-        pts.push({ tick: mif.offset, mif, nums: mif.endingNum, stop: false });
-      }
-      if (
-        mif.rightEndingType === EndingType.Stop ||
-        mif.rightEndingType === EndingType.Discontinue
-      ) {
-        pts.push({
-          tick: mif.endTick(),
-          mif,
-          nums: mif.endingNum,
-          stop: mif.rightEndingType === EndingType.Stop,
-        });
-      }
-    }
+    const pts: EndingPt[] = this.endingPts.map((p) => ({
+      tick: p.start ? p.mif.offset : p.mif.endTick(),
+      mif: p.mif,
+      nums: p.nums,
+      stop: p.stop,
+    }));
     pts.sort((a, b) => a.tick.compareTo(b.tick));
     for (let i = 0; i + 1 < pts.length; i += 2) {
       const a = pts[i];
@@ -1136,6 +1143,28 @@ function layoutAttr(score: MixedScore): void {
         const last = psys.measures[psys.measures.length - 1];
         if (last) last.width += timeWidth + 5;
       }
+    }
+
+    // 宽右小节线（终止线/双线等）占的横向宽度从 dataEnd 扣除，使 ending 括号右端与
+    // 反复记号留出间隙（parser.cpp:2828-2848）。
+    if (mif.rightBarline !== null) {
+      const lws = score.options.lineWidths;
+      const dist = score.options.barlineDist;
+      let blw = 0;
+      switch (mif.rightBarline) {
+        case BarGlyph.Final:
+          blw = lws.heavyBarline + lws.lightBarline + dist;
+          break;
+        case BarGlyph.Double:
+          blw = lws.lightBarline * 2 + dist;
+          break;
+        case BarGlyph.HeavyHeavy:
+          blw = lws.heavyBarline * 2 + dist;
+          break;
+        default:
+          break;
+      }
+      mif.dataEnd -= blw;
     }
   }
 }
