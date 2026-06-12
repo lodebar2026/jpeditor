@@ -275,6 +275,16 @@ export class NotationItem {
   private static revertMap: Record<string, string> = {
     [GlyphCodes.fermataAbove]: GlyphCodes.fermataBelow,
     [GlyphCodes.fermataBelow]: GlyphCodes.fermataAbove,
+    [GlyphCodes.articAccentAbove]: GlyphCodes.articAccentBelow,
+    [GlyphCodes.articAccentBelow]: GlyphCodes.articAccentAbove,
+    [GlyphCodes.articStaccatoAbove]: GlyphCodes.articStaccatoBelow,
+    [GlyphCodes.articStaccatoBelow]: GlyphCodes.articStaccatoAbove,
+    [GlyphCodes.articTenutoAbove]: GlyphCodes.articTenutoBelow,
+    [GlyphCodes.articTenutoBelow]: GlyphCodes.articTenutoAbove,
+    [GlyphCodes.articStaccatissimoAbove]: GlyphCodes.articStaccatissimoBelow,
+    [GlyphCodes.articStaccatissimoBelow]: GlyphCodes.articStaccatissimoAbove,
+    [GlyphCodes.articMarcatoAbove]: GlyphCodes.articMarcatoBelow,
+    [GlyphCodes.articMarcatoBelow]: GlyphCodes.articMarcatoAbove,
   };
 }
 
@@ -295,6 +305,8 @@ export class MNote {
   parenthesesAcc = false;
   visible = true;
   flipped = false;
+  /** 所属琶音组（无则 null）。 */
+  arpeg: Arpeggiate | null = null;
 
   /** 显式临时记号（SMuFL 字形，"" 表示无）。 */
   acc = "";
@@ -1404,6 +1416,7 @@ export class MeasureData {
   lyrics: MLyric[] = [];
   harmonies: MHarmony[] = [];
   textBlocks: MeasureText[] = [];
+  arpegs: Arpeggiate[] = [];
 
   beams: BeamGroup[] = [];
   graceBeams: BeamGroup[] = [];
@@ -1658,7 +1671,15 @@ export class MeasureData {
 
         const inc = it.above ? -1 : 1;
         let y = noteSide ? nt.cy() + 5 * inc : ch.tailY(false);
+        const tenuto =
+          it.symbol === GlyphCodes.articTenutoBelow || it.symbol === GlyphCodes.articTenutoAbove;
         y += 5 * inc;
+        if (tenuto) {
+          if (y % 10 === 0 && noteSide) {
+            const ln = nt.line();
+            if (ln < 0 && ln > -8) y += 5 * inc;
+          }
+        }
         if (fermata) {
           // staff 外
           if (it.above) {
@@ -1868,6 +1889,32 @@ export class Ending extends SpanObj {
   hasStop = false;
 }
 
+/** 渐强/渐弱松叶（model.hpp:860 Wedge）。 */
+export class Wedge extends SpanObj {
+  startMeasure!: MeasureInfo;
+  endMeasure!: MeasureInfo;
+  crescendo = false;
+  staff = 0;
+  ypos = 0;
+  dxLeft = 0;
+  dxRight = 0;
+}
+
+/** 踏板线（model.hpp:873 PedalLine）。 */
+export class PedalLine extends SpanObj {
+  startMeasure!: MeasureInfo;
+  endMeasure!: MeasureInfo;
+  sign = false;
+  line = false;
+  staff = 0;
+  ypos = 0;
+}
+
+/** 琶音（model.hpp:435 Arpeggiate）：同一 offset 上的一组音符。 */
+export class Arpeggiate {
+  notes: MNote[] = [];
+}
+
 export class LrcExtend extends SpanOverNotes {
   start: MLyric | null = null;
   stop: MLyric | null = null;
@@ -1885,6 +1932,8 @@ export class MixedPart {
   tied: Tied[] = [];
   tuplets: Tuplet[] = [];
   endings: Ending[] = [];
+  wedges: Wedge[] = [];
+  pedalLines: PedalLine[] = [];
   lrcExtends: LrcExtend[] = [];
 
   newMeasure(): MeasureData {
@@ -1915,6 +1964,18 @@ export class MixedPart {
     const s = new Ending();
     s.part = this;
     this.endings.push(s);
+    return s;
+  }
+  newWedge(): Wedge {
+    const s = new Wedge();
+    s.part = this;
+    this.wedges.push(s);
+    return s;
+  }
+  newPedalLine(): PedalLine {
+    const s = new PedalLine();
+    s.part = this;
+    this.pedalLines.push(s);
     return s;
   }
   newLrcExtend(): LrcExtend {
@@ -2607,7 +2668,7 @@ export class MixedOptions {
   beamDistJP = 5;
   harmonyYPos = -60;
 
-  hideBarNumber = true;
+  hideBarNumber = false; // 对齐 musicpp model.hpp:1062（默认显示小节号）
   initialKeyTime = true;
   showKeyChangeJp = true; // PAO 混排显示简谱调号「1=X」（util/pao.cpp:999）
   lineWidths: LineWidths = {

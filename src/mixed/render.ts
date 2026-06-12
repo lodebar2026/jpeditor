@@ -24,12 +24,14 @@ import {
   MLyric,
   MNote,
   Notation,
+  PedalLine,
   Slur,
   Sys,
   SysStaff,
   Tied,
   TimeSig,
   Tuplet,
+  Wedge,
   calcSlurPoints,
   fGe,
   fLt,
@@ -187,6 +189,26 @@ export function drawNotesNormal(
         x -= ch.noteheadWidth(meta);
       }
       addSmufl(container, nota.symbol, x, nota.y, fs);
+    }
+  }
+
+  // ---- arpeggio（render.cpp:2234 drawMeasureMeta）：竖向波浪线，整 part 画一次 ----
+  if (subStaff === 0) {
+    for (const arp of md.arpegs) {
+      if (arp.notes.length === 0) continue;
+      const n0 = arp.notes[0];
+      const n1 = arp.notes[arp.notes.length - 1];
+      const y0 = md.staffY(n0.staff) + n0.cy() + 5;
+      const y1 = md.staffY(n1.staff) + n1.cy() - 5;
+      const cnt = Math.max(1, Math.ceil((y0 - y1) / 12.0));
+      const str = GlyphCodes.wiggleTrillSlow.repeat(cnt);
+      const x = md.measureInfo.getEntPos(n0.chord.offset) - 12;
+      const grp = new Group();
+      const m = new Matrix33();
+      m.setAffine([0, 1, -1, 0, x, y1]); // translate(x,y1) ∘ rotate(90°)
+      grp.matrix = m;
+      addSmufl(grp, str, 0, 0, fs);
+      container.add(grp);
     }
   }
 
@@ -533,17 +555,35 @@ function drawLrcExtend(
   if (fGe(ext.startTick, end)) return;
   if (fLt(ext.endTick, begin)) return;
 
+  if (!ext.start || !ext.stop) return;
+
   const hasPrev = fLt(ext.startTick, begin);
   const hasNext = fGe(ext.endTick, end);
-  if (hasPrev || hasNext) return;
 
-  if (!ext.start || !ext.stop) return;
-  const mifL = ext.startChord().measure.measureInfo;
-  const mifR = ext.endChord().measure.measureInfo;
-  const lrcLeft = ext.start.x + mifL.xpos() + ext.start.xOffset + ext.start.width;
-  const lrcRight = ext.stop.x + mifR.xpos() + ext.stop.xOffset;
+  // 跨系统时分段：musicpp render.cpp:1262-1265 留作 //todo，此处补全——
+  // 续接段从本系统内容起点画，跨出段画到本系统末尾（对齐 Sibelius 原谱）。
+  const m0 = sys.measures[0];
+  const mLast = sys.measures[sys.measures.length - 1];
+  const sysLeft = m0.xpos() + m0.dataPos;
+  const sysRight = mLast.xpos() + mLast.width;
+
+  let left: number;
+  let right: number;
+  if (hasPrev) {
+    left = sysLeft;
+  } else {
+    const mifL = ext.startChord().measure.measureInfo;
+    left = ext.start.x + mifL.xpos() + ext.start.xOffset + ext.start.width;
+  }
+  if (hasNext) {
+    right = sysRight;
+  } else {
+    const mifR = ext.endChord().measure.measureInfo;
+    right = ext.stop.x + mifR.xpos() + ext.stop.xOffset;
+  }
+
   const y = -ext.start.y;
-  addLine(container, lrcLeft, y, lrcRight, y, 1);
+  addLine(container, left, y, right, y, 1);
 }
 
 // -----------------------------------------------------------------------
@@ -692,6 +732,64 @@ function drawEnding(container: Group, obj: Ending, sys: Sys, mixed: boolean): vo
   grp.add(numT);
 
   container.add(grp);
+}
+
+// -----------------------------------------------------------------------
+// drawWedge / drawPedalLine（render.cpp::drawWedge / drawPedalLine）
+// container 已平移到 part 顶（yposPart(p,0)）；ypos 加上 staff 内偏移。
+
+function partStaffOffset(sys: Sys, p: MixedPart, staff: number): number {
+  return sys.yposPart(p, staff) - sys.yposPart(p, 0);
+}
+
+function drawWedge(container: Group, obj: Wedge, sys: Sys): void {
+  const ypos = partStaffOffset(sys, obj.part, obj.staff) + obj.ypos;
+  const mifL = obj.startMeasure;
+  const mifR = obj.endMeasure;
+  const left = mifL.getEntPos(obj.startTick.minus(mifL.offset)) + mifL.xpos();
+  const right = mifR.getEntPos(obj.endTick.minus(mifR.offset)) + mifR.xpos();
+
+  const h = 15.0 / 2;
+  let topX: number, botX: number, centerX: number;
+  if (obj.crescendo) {
+    topX = right;
+    botX = right;
+    centerX = left;
+  } else {
+    topX = left;
+    botX = left;
+    centerX = right;
+  }
+
+  const path = new GraphicPath();
+  path.fill = false;
+  path.stroke = true;
+  path.strokeColor = 0xff000000;
+  path.strokeWidth = 1;
+  path.moveTo(topX, ypos + h);
+  path.lineTo(centerX, ypos);
+  path.lineTo(botX, ypos - h);
+  container.add(path);
+}
+
+function drawPedalLine(container: Group, obj: PedalLine, sys: Sys): void {
+  const ypos = partStaffOffset(sys, obj.part, obj.staff) + obj.ypos;
+  const mifL = obj.startMeasure;
+  const mifR = obj.endMeasure;
+  const left = mifL.getEntPos(obj.startTick.minus(mifL.offset)) + mifL.xpos();
+  const right = mifR.getEntPos(obj.endTick.minus(mifR.offset)) + mifR.xpos();
+
+  const vlen = 10;
+  const path = new GraphicPath();
+  path.fill = false;
+  path.stroke = true;
+  path.strokeColor = 0xff000000;
+  path.strokeWidth = 1;
+  path.moveTo(left, ypos - vlen);
+  path.lineTo(left, ypos);
+  path.lineTo(right, ypos);
+  path.lineTo(right, ypos - vlen);
+  container.add(path);
 }
 
 // -----------------------------------------------------------------------
@@ -953,6 +1051,20 @@ function drawLineObjs(container: Group, sys: Sys, p: MixedPart): void {
     if (!sys.overlap(obj)) continue;
     if (sys.contains(obj.startTick) && sys.contains(obj.endTick)) {
       drawTuplet(eng, grp, obj);
+    }
+  }
+
+  for (const obj of p.wedges) {
+    if (!sys.overlap(obj)) continue;
+    if (sys.contains(obj.startTick) && sys.contains(obj.endTick)) {
+      drawWedge(grp, obj, sys);
+    }
+  }
+
+  for (const obj of p.pedalLines) {
+    if (!sys.overlap(obj)) continue;
+    if (sys.contains(obj.startTick) && sys.contains(obj.endTick)) {
+      drawPedalLine(grp, obj, sys);
     }
   }
 
