@@ -60,6 +60,9 @@ html, body { margin: 0; height: 100%; }
   position: relative;
   background: #fff;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
+  /* 多页时只渲染/光栅化视口内的页，缩放与滚动不再为屏外页重排重绘。
+     盒子尺寸由 width + aspect-ratio 决定，屏外页跳过渲染也保持正确滚动高度。 */
+  content-visibility: auto;
 }
 
 .score-page {

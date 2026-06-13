@@ -38,6 +38,7 @@ export class App {
   zoom = 1; // 谱面显示缩放（应用到 #score-pane 的 --score-zoom）
   private meta: MetaData;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private zoomSaveTimer: ReturnType<typeof setTimeout> | undefined;
   private selectedEl: SVGGElement | null = null;
   statusEl: HTMLElement | null = null;
 
@@ -124,7 +125,9 @@ export class App {
   setZoom(z: number): void {
     this.zoom = Math.min(4, Math.max(0.25, z));
     this._applyZoom();
-    this.saveSettings();
+    // 连续缩放（滚轮/捏合）期间不每帧写盘，停止后再持久化一次。
+    clearTimeout(this.zoomSaveTimer);
+    this.zoomSaveTimer = setTimeout(() => this.saveSettings(), 400);
   }
   zoomBy(factor: number): void {
     this.setZoom(this.zoom * factor);

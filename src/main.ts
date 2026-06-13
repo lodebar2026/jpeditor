@@ -73,54 +73,89 @@ async function boot() {
   on("btn-zoom-out", () => { app.zoomBy(1 / 1.2); updateZoom(); });
   on("btn-zoom-reset", () => { app.resetZoom(); updateZoom(); });
   updateZoom();
-  // 指针锚定缩放：缩放后调整滚动，让光标下的内容点保持不动。
-  const zoomAt = (clientX: number, clientY: number, factor: number) => {
-    const before = app.zoom;
-    app.zoomBy(factor);
-    const ratio = app.zoom / before;
-    if (ratio !== 1) {
-      const r = scorePane.getBoundingClientRect();
-      const px = scorePane.scrollLeft + (clientX - r.left);
-      const py = scorePane.scrollTop + (clientY - r.top);
-      scorePane.scrollLeft += px * (ratio - 1);
-      scorePane.scrollTop += py * (ratio - 1);
+  // 指针锚定缩放：以触点为中心，缩放后让触点下的内容点保持在原屏幕位置
+  // （与双指预览图片一致）。连续的滚轮/捏合事件累积到 pending，按 rAF 每帧
+  // 只应用一次——避免每个事件都触发一次「改 CSS 变量 → 强制同步布局」的抖动。
+  let pendingZoom: number | null = null; // 目标 zoom（绝对值），null 表示无待处理
+  let anchorX = 0, anchorY = 0;
+  let rafId = 0;
+  // 找触点落在哪一页（缩放前），间隙/页外则取最接近的页。页内 SVG 等比缩放，
+  // 故基于该页自身的包围盒做锚定，天然规避了 score-pane 的居中/内边距偏移。
+  const anchorPage = (y: number): HTMLElement | null => {
+    const wraps = scorePane.querySelectorAll<HTMLElement>(".score-page-wrap");
+    let best: HTMLElement | null = null;
+    let bestDist = Infinity;
+    for (const w of wraps) {
+      const rc = w.getBoundingClientRect();
+      if (y >= rc.top && y <= rc.bottom) return w;
+      const d = y < rc.top ? rc.top - y : y - rc.bottom;
+      if (d < bestDist) { bestDist = d; best = w; }
+    }
+    return best;
+  };
+  // 内容锚点：一段手势内固定的「谱面上的点」（锚定页 + 页内归一化坐标）。
+  // 在手势开始时算一次并保持，避免低 zoom 居中阶段页位置变化污染归一化坐标；
+  // 当前手指屏幕坐标 (anchorX/anchorY) 每个事件更新，故捏合平移时谱面随手指走。
+  let gAnchor: { page: HTMLElement; fx: number; fy: number } | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const beginOrKeepAnchor = (clientX: number, clientY: number) => {
+    if (!gAnchor) {
+      const page = anchorPage(clientY);
+      if (page) {
+        const rc = page.getBoundingClientRect();
+        gAnchor = { page, fx: (clientX - rc.left) / rc.width, fy: (clientY - rc.top) / rc.height };
+      }
+    }
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { gAnchor = null; }, 250); // 手势空闲即结束
+  };
+  const flushZoom = () => {
+    rafId = 0;
+    if (pendingZoom === null) return;
+    app.setZoom(pendingZoom);
+    pendingZoom = null;
+    if (gAnchor) {
+      // 同步读取缩放后的包围盒，调整滚动让固定的内容点回到当前手指屏幕坐标
+      const post = gAnchor.page.getBoundingClientRect();
+      const wantLeft = anchorX - gAnchor.fx * post.width;
+      const wantTop = anchorY - gAnchor.fy * post.height;
+      scorePane.scrollLeft += post.left - wantLeft;
+      scorePane.scrollTop += post.top - wantTop;
     }
     updateZoom();
+  };
+  const scheduleZoom = (target: number, clientX: number, clientY: number) => {
+    pendingZoom = target;
+    anchorX = clientX;
+    anchorY = clientY;
+    beginOrKeepAnchor(clientX, clientY);
+    if (!rafId) rafId = requestAnimationFrame(flushZoom);
+  };
+  const zoomBy = (clientX: number, clientY: number, factor: number) => {
+    const base = pendingZoom ?? app.zoom;
+    scheduleZoom(base * factor, clientX, clientY);
   };
 
   // Chromium/Edge：捏合与 Ctrl+滚轮都表现为 ctrlKey 的 wheel 事件。
   scorePane.addEventListener("wheel", (e) => {
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
-    zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+    zoomBy(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
   }, { passive: false });
 
   // WebKit/WKWebView（Tauri macOS）：触控板双指捏合走 gesture* 事件，带绝对 scale。
   let gestureBase = 1;
-  let gestureCx = 0;
-  let gestureCy = 0;
   type GEvt = Event & { scale: number; clientX: number; clientY: number };
   scorePane.addEventListener("gesturestart", (ev) => {
     const e = ev as GEvt;
     e.preventDefault();
     gestureBase = app.zoom;
-    gestureCx = e.clientX;
-    gestureCy = e.clientY;
+    gAnchor = null; // 新捏合以新的双指中心为锚
   });
   scorePane.addEventListener("gesturechange", (ev) => {
     const e = ev as GEvt;
     e.preventDefault();
-    const before = app.zoom;
-    app.setZoom(gestureBase * e.scale);
-    const ratio = app.zoom / before;
-    if (ratio !== 1) {
-      const r = scorePane.getBoundingClientRect();
-      const px = scorePane.scrollLeft + (gestureCx - r.left);
-      const py = scorePane.scrollTop + (gestureCy - r.top);
-      scorePane.scrollLeft += px * (ratio - 1);
-      scorePane.scrollTop += py * (ratio - 1);
-    }
-    updateZoom();
+    scheduleZoom(gestureBase * e.scale, e.clientX, e.clientY);
   });
   scorePane.addEventListener("gestureend", (ev) => ev.preventDefault());
 
