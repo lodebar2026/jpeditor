@@ -749,33 +749,47 @@ function partStaffOffset(sys: Sys, p: MixedPart, staff: number): number {
   return sys.yposPart(p, staff) - sys.yposPart(p, 0);
 }
 
+// 跨系统截断：musicpp（render.cpp:2196）仅在 start/end 同属本 system 时绘制松叶，
+// wedge 跨换行就整条丢弃。这里主动 diverge——把松叶在每个相交 system 内裁到系统
+// 左右边界，端点高度按 tick 线性插值，使断开的渐强/渐弱线在两个系统上各画一段。
 function drawWedge(container: Group, obj: Wedge, sys: Sys): void {
   const ypos = partStaffOffset(sys, obj.part, obj.staff) + obj.ypos;
   const mifL = obj.startMeasure;
   const mifR = obj.endMeasure;
-  const left = mifL.getEntPos(obj.startTick.minus(mifL.offset)) + mifL.xpos();
-  const right = mifR.getEntPos(obj.endTick.minus(mifR.offset)) + mifR.xpos();
+
+  // 端点是否落在当前 system；不在则裁到系统边界。左边界用首小节的数据起点
+  // （getEntPos(0)，即谱号/调号之后的音符起始），避免续接段压到行首谱号/调号；
+  // 右边界用系统宽（行尾）。
+  const startInSys = mifL.system === sys;
+  const endInSys = mifR.system === sys;
+  const firstMif = sys.measures[0];
+  const xL = startInSys
+    ? mifL.getEntPos(obj.startTick.minus(mifL.offset)) + mifL.xpos()
+    : firstMif.getEntPos(new Fraction(0));
+  const xR = endInSys
+    ? mifR.getEntPos(obj.endTick.minus(mifR.offset)) + mifR.xpos()
+    : sys.width();
 
   const h = 15.0 / 2;
-  let topX: number, botX: number, centerX: number;
-  if (obj.crescendo) {
-    topX = right;
-    botX = right;
-    centerX = left;
-  } else {
-    topX = left;
-    botX = left;
-    centerX = right;
-  }
+  // 真实端点：渐强尖端在 start（高 0）、宽口在 end（高 h），渐弱相反。
+  // 落在系统边界的断点不按 tick 插值（否则尖端附近的续接段开度过小），固定取
+  // BREAK_FRAC×h，使断开的松叶在续接系统上有明显开口。
+  const BREAK_FRAC = 0.6;
+  const realL = obj.crescendo ? 0 : h;
+  const realR = obj.crescendo ? h : 0;
+  const hL = startInSys ? realL : h * BREAK_FRAC;
+  const hR = endInSys ? realR : h * BREAK_FRAC;
 
   const path = new GraphicPath();
   path.fill = false;
   path.stroke = true;
   path.strokeColor = 0xff000000;
   path.strokeWidth = 1;
-  path.moveTo(topX, ypos + h);
-  path.lineTo(centerX, ypos);
-  path.lineTo(botX, ypos - h);
+  // 上、下两条边各为独立线段；尖端处两端高度同为 0 自然汇于一点。
+  path.moveTo(xL, ypos + hL);
+  path.lineTo(xR, ypos + hR);
+  path.moveTo(xL, ypos - hL);
+  path.lineTo(xR, ypos - hR);
   container.add(path);
 }
 
@@ -1063,9 +1077,8 @@ function drawLineObjs(container: Group, sys: Sys, p: MixedPart): void {
 
   for (const obj of p.wedges) {
     if (!sys.overlap(obj)) continue;
-    if (sys.contains(obj.startTick) && sys.contains(obj.endTick)) {
-      drawWedge(grp, obj, sys);
-    }
+    // 与 musicpp 不同：相交即绘制，drawWedge 内部按系统边界裁断（跨换行的松叶）。
+    drawWedge(grp, obj, sys);
   }
 
   for (const obj of p.pedalLines) {
