@@ -1750,8 +1750,9 @@ export function loadMixedXml(xmlText: string, options: MixedOptions): MixedScore
   const partListEl = elem(root, "part-list");
   if (partListEl) loadPartGroups(score, partListEl);
 
-  // Sibelius fixes
+  // Sibelius fixes（parser.cpp:2890-2895，行首调号变更偏移须在 layoutAttr/updateDataXPos 之后）
   if (score.encoder === Encoder.Sibelius) {
+    for (const sys of score.systems) sys.fixSibKeyChange();
     for (const part of score.parts) part.fixTieForSib();
   }
 

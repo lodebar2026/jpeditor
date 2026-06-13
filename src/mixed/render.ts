@@ -1783,7 +1783,11 @@ function drawJpKey(
   if (mif.index === 0) y -= 30; // 避开和弦
   else y = -st.harmonyY;
 
-  const jpFont = eng.jianpuFont;
+  // 混排谱表上的简谱以 mixFont（按 mixStaffHeight 缩小）排号，转调记号同步用 mixFont，
+  // 否则 jianpuFont(30) 比谱面数字(22.5)明显偏大。render.cpp drawKey 用 jianpuFont 是因其
+  // 混排谱高为 40；此处随谱高等比缩放，r 即 mixStaffHeight/40。
+  const jpFont = eng.mixFont;
+  const r = jpFont.size / eng.jianpuFont.size;
   if (acc !== 0) {
     const grp = new Group();
     const str1 = new TextFrame();
@@ -1791,12 +1795,12 @@ function drawJpKey(
     str1.font = jpFont;
     str1.color = 0xff000000;
     grp.add(str1);
-    let w = jpFont.measureText(name) + 7;
+    let w = jpFont.measureText(name) + 7 * r;
 
     const accSym = acc < 0 ? GlyphCodes.accidentalFlat : GlyphCodes.accidentalSharp;
     const sc = jpFont.size / 40;
-    addSmuflScaled(grp, accSym, w, -10, eng.musicFont.size, sc, sc);
-    w += 12;
+    addSmuflScaled(grp, accSym, w, -10 * r, eng.musicFont.size, sc, sc);
+    w += 12 * r;
 
     const str2 = new TextFrame();
     str2.text = keyName;
