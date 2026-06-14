@@ -234,6 +234,8 @@ export class MixedPainter {
   private score: MixedScore | null = null;
   private meta: MetaData | null = null;
   private _pages: Group[] = [];
+  /** 隐藏小节号（用户选项）。下次 load 生效。 */
+  hideBarNumber = false;
 
   /** Width of one page in tenths. */
   get pageWidthTenths(): number {
@@ -268,6 +270,7 @@ export class MixedPainter {
       this.meta = await MetaData.load();
     }
     const options = new MixedOptions(this.meta);
+    options.hideBarNumber = this.hideBarNumber;
     const score = loadMixedXml(xmlText, options);
     formatMixedScore(score);
     this.score = score;

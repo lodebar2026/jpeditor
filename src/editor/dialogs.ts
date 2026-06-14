@@ -94,6 +94,13 @@ export function showOptionsDialog(app: App): void {
     labeled("词曲信息字号", creditSz),
     labeled("颜色", color),
   );
+  // 混排专属：隐藏小节号（仅混排模式下显示该选项）。
+  const hideBarNum = document.createElement("input");
+  hideBarNum.type = "checkbox";
+  hideBarNum.checked = app.mixedHideBarNumber;
+  if (app.mode === "mixed") {
+    body.append(labeled("隐藏小节号", hideBarNum));
+  }
   modal("选项", body, () => {
     const [w, h] = RATIOS[sel.value] ?? [app.pageW, app.pageH];
     const fontSize = parseInt(fs.value, 10) || app.fontSize;
@@ -101,5 +108,6 @@ export function showOptionsDialog(app: App): void {
     const creditSize = parseInt(creditSz.value, 10) || app.creditSize;
     const argb = 0xff000000 | (parseInt(color.value.slice(1), 16) & 0xffffff);
     app.applyRenderSettings({ pageW: w, pageH: h, fontSize, titleSize, creditSize, color: argb >>> 0 });
+    if (app.mode === "mixed") void app.setMixedHideBarNumber(hideBarNum.checked);
   });
 }

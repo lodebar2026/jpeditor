@@ -35,6 +35,7 @@ export class App {
   titleSize = 48;
   creditSize = 36;
   color = 0xff000000; // ARGB
+  mixedHideBarNumber = false; // 混排：隐藏小节号
   zoom = 1; // 谱面显示缩放（应用到 #score-pane 的 --score-zoom）
   private meta: MetaData;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -81,7 +82,9 @@ export class App {
       const s = JSON.parse(raw) as Partial<{
         pageW: number; pageH: number; fontSize: number;
         titleSize: number; creditSize: number; color: number; zoom: number;
+        mixedHideBarNumber: boolean;
       }>;
+      if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
       if (s.pageW) this.pageW = s.pageW;
       if (s.pageH) this.pageH = s.pageH;
       if (s.titleSize !== undefined) this.titleSize = s.titleSize;
@@ -114,6 +117,7 @@ export class App {
         creditSize: this.creditSize,
         color: this.color,
         zoom: this.zoom,
+        mixedHideBarNumber: this.mixedHideBarNumber,
       }));
     } catch {
       // storage unavailable — ignore
@@ -341,6 +345,14 @@ export class App {
     }
   }
 
+  /** 设置混排是否隐藏小节号，持久化；当前处于混排模式时立即重排。 */
+  async setMixedHideBarNumber(on: boolean): Promise<void> {
+    if (this.mixedHideBarNumber === on) return;
+    this.mixedHideBarNumber = on;
+    this.saveSettings();
+    if (this.mode === "mixed") await this._renderMixedPages();
+  }
+
   /** Mixed mode: editor read-only + hide the code pane entirely. */
   private _setMixedLayout(on: boolean): void {
     this.view.dispatch({
@@ -353,6 +365,7 @@ export class App {
     if (!this._mixedPainter) {
       this._mixedPainter = new MixedPainter();
     }
+    this._mixedPainter.hideBarNumber = this.mixedHideBarNumber;
     if (this.mixedXmlText) {
       await this._mixedPainter.load(this.mixedXmlText);
     }
