@@ -167,14 +167,38 @@ function drawFrames(
 
     // Credits (title block text) for this frame. credit-words 可含换行 → 逐行排版。
     const pg = page; // non-null here (ensured above); capture for closure
+
+    // Sibelius MusicXML 导出 bug：credit-words 的 default-y 被整体压到页面底部
+    //（绝对原点错误，但各 credit 间的相对间距仍然正确）。
+    // 检测：最高的 credit（default-y 最大者）按 spec 解释（pageHeight - y）后仍落在
+    // 页面下半 → 判定为该 bug，以页首为锚重排整个标题块，保留相对间距与水平对齐。
+    // 正常文件标题 default-y≈页高（落在上半），不触发，绝对定位照旧。
+    const creditMaxY = data.credits.length
+      ? Math.max(...data.credits.map((c) => c.y))
+      : 0;
+    const reanchorTop = data.credits.length > 0 && pageHeight - creditMaxY > pageHeight / 2;
+    // 重排时把最高 credit（标题）的基线放在上边距下方一个标题字高处。
+    const titleCredit = data.credits.find((c) => c.y === creditMaxY);
+    const titleFontSz = titleCredit && titleCredit.fontSize > 0
+      ? titleCredit.fontSize / score.scaling
+      : 20;
+
     for (const cr of data.credits) {
       const fntSz = cr.fontSize > 0 ? cr.fontSize / score.scaling : 20;
       const family = cr.fontSize > 0 ? score.defaults.lyricFont.family : "PingFang SC";
       const font = new Font(family, fntSz);
       const anchorX = cr.x > 0 ? cr.x : pageWidthTenths / 2;
-      const baseY = pageHeight - cr.y; // MusicXML y from page bottom → SVG top-down
+      // MusicXML y from page bottom → SVG top-down；Sibelius bug 时改以页首为锚。
+      const baseY = reanchorTop
+        ? topMargin + titleFontSz + (creditMaxY - cr.y)
+        : pageHeight - cr.y;
       const lineH = fntSz * 1.2;
       const lines = cr.text.split(/\r?\n/);
+      // 右对齐的多行 credit：Sibelius 把整块按最宽行右对齐，块内各行左缘对齐
+      //（参考 PDF 里"词曲…/翻译…"两行 xMin 相同、右缘不同），而非逐行各自右对齐。
+      const blockW = cr.justify === LCR.Right
+        ? Math.max(...lines.map((l) => font.measureText(l)))
+        : 0;
       lines.forEach((line, li) => {
         const tf = new TextFrame();
         tf.text = line;
@@ -182,7 +206,7 @@ function drawFrames(
         let x = anchorX;
         const w = font.measureText(line);
         if (cr.justify === LCR.Center) x -= w / 2;
-        else if (cr.justify === LCR.Right) x -= w;
+        else if (cr.justify === LCR.Right) x -= blockW;
         const m = new Matrix33();
         m.setAffine([1, 0, 0, 1, x, baseY + li * lineH]);
         tf.matrix = m;
