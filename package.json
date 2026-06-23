@@ -1,7 +1,7 @@
 {
   "name": "jpeditor-web",
   "private": true,
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
   "description": "简谱（JP-Word/.jpwabc）在线排版与编辑器，支持简谱·五线谱混排、MusicXML 导入与导出 PDF/PNG/MIDI/PPTX · An open-source jianpu (numbered musical notation) editor & typesetter.",
   "homepage": "https://lodebar2026.github.io/jpeditor-web/",
