@@ -1,11 +1,34 @@
 # jpeditor-web
 
+> 开源的简谱（JP-Word / `.jpwabc`）在线排版与编辑器 · An open-source jianpu (numbered
+> musical notation) editor & typesetter.
+
+[![Release](https://img.shields.io/github/v/release/lodebar2026/jpeditor-web?display_name=tag)](https://github.com/lodebar2026/jpeditor-web/releases)
+[![Live demo](https://img.shields.io/badge/%F0%9F%8C%90%20Live%20demo-online-2b6cb0)](https://lodebar2026.github.io/jpeditor-web/)
+![Platform](https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20Windows-555)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**🌐 在线试用 / Live demo：<https://lodebar2026.github.io/jpeditor-web/>**
+
 简谱（JP-Word / `.jpwabc`）排版与编辑器 —— **Tauri 2 + TypeScript + SVG** 版。
 
 由原 Kotlin/JVM + JavaFX + Skija 桌面应用迁移而来：体量更轻、跨平台分发更简单、单一现代技术栈。
-左侧高亮代码编辑器，右侧实时简谱预览，支持点选、翻页与文件读写。
+左侧高亮代码编辑器，右侧实时简谱预览，支持点选、翻页、**简谱与五线谱混排**（加载 MusicXML
+排版）、MusicXML 导入，以及导出 PDF / PNG / MIDI / 矢量 PPTX。
 
 ![界面](docs/screenshot.png)
+
+## English
+
+**jpeditor** is an open-source editor and typesetter for **jianpu** (Chinese
+numbered musical notation) in the `.jpwabc` (JP-Word) format. Edit the score as
+text on the left and see a live SVG preview on the right. It supports **mixed
+jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import, and
+export to **PDF / PNG / MIDI / vector PPTX**. It runs **in the browser**
+(no install) and as a lightweight **Windows / macOS desktop app** (Tauri 2).
+
+- 🌐 Live demo: <https://lodebar2026.github.io/jpeditor-web/>
+- ⬇️ Desktop downloads: [Releases](https://github.com/lodebar2026/jpeditor-web/releases)
 
 ## 特性
 

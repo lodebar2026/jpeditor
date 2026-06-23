@@ -1,5 +1,6 @@
 // Ported from mp/smufl/smufl.kt - SMuFL (Bravura) glyph codes + metadata.
 // Use fromCharCode to keep the PUA codepoints unambiguous in source.
+import { asset } from "../common/asset";
 
 export const GlyphCodes = {
   // Clefs
@@ -230,7 +231,7 @@ export class MetaData {
     return md;
   }
 
-  static async load(url = "/redist/bravura_metadata.json"): Promise<MetaData> {
+  static async load(url = asset("redist/bravura_metadata.json")): Promise<MetaData> {
     const resp = await fetch(url);
     const raw = (await resp.json()) as RawMetadata;
     return MetaData.fromJson(raw);

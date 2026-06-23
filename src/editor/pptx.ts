@@ -5,6 +5,7 @@
 
 import { zipSync, type Zippable } from "fflate";
 import * as opentype from "opentype.js";
+import { asset } from "../common/asset";
 import {
   GraphicLine,
   GraphicPath,
@@ -43,7 +44,7 @@ type Shape = TextShape | GeomShape;
 let bravuraFont: opentype.Font | null = null;
 async function loadBravura(): Promise<opentype.Font> {
   if (!bravuraFont) {
-    const buf = await fetch("/redist/Bravura.otf").then((r) => r.arrayBuffer());
+    const buf = await fetch(asset("redist/Bravura.otf")).then((r) => r.arrayBuffer());
     bravuraFont = opentype.parse(buf);
   }
   return bravuraFont;

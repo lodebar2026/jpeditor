@@ -2,9 +2,121 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>简谱编辑器</title>
+
+    <title>简谱编辑器 jpeditor — .jpwabc 在线排版与编辑 · 简谱·五线谱混排 | Numbered Notation Editor</title>
+    <meta
+      name="description"
+      content="简谱编辑器 jpeditor：在线编辑与排版 .jpwabc（JP-Word）数字谱，左侧代码、右侧实时简谱预览。支持简谱与五线谱混排（MusicXML 加载排版）、MusicXML 导入、导出 PDF·PNG·MIDI·矢量 PPTX，浏览器即开即用，亦可下载 Windows/macOS 桌面版。An open-source numbered-notation (jianpu) editor & typesetter."
+    />
+    <meta
+      name="keywords"
+      content="简谱,简谱编辑器,简谱排版,简谱五线谱混排,混排,数字谱,JP-Word,jpwabc,MusicXML,五线谱,jianpu,numbered notation,music notation editor,sheet music,Tauri"
+    />
+    <meta name="author" content="lodebar2026" />
+    <meta name="theme-color" content="#f5f5f5" />
+    <link rel="canonical" href="https://lodebar2026.github.io/jpeditor-web/" />
+    <link rel="alternate" hreflang="zh-CN" href="https://lodebar2026.github.io/jpeditor-web/" />
+    <link rel="alternate" hreflang="en" href="https://lodebar2026.github.io/jpeditor-web/" />
+    <link rel="alternate" hreflang="x-default" href="https://lodebar2026.github.io/jpeditor-web/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="简谱编辑器 jpeditor" />
+    <meta property="og:title" content="简谱编辑器 jpeditor — 在线简谱排版与简谱·五线谱混排" />
+    <meta
+      property="og:description"
+      content="在线编辑 .jpwabc 数字谱，实时简谱预览，支持简谱与五线谱混排、MusicXML 导入、导出 PDF/PNG/MIDI/PPTX。开源、跨平台、即开即用。"
+    />
+    <meta property="og:url" content="https://lodebar2026.github.io/jpeditor-web/" />
+    <meta property="og:image" content="https://lodebar2026.github.io/jpeditor-web/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:locale:alternate" content="en_US" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="简谱编辑器 jpeditor — 在线简谱排版与简谱·五线谱混排" />
+    <meta
+      name="twitter:description"
+      content="在线编辑 .jpwabc 数字谱，实时预览，支持简谱·五线谱混排、MusicXML 导入、导出 PDF/PNG/MIDI/PPTX。"
+    />
+    <meta name="twitter:image" content="https://lodebar2026.github.io/jpeditor-web/og-image.png" />
+
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />
+    <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
+    <link rel="stylesheet" href="/src/styles.css" />
+
+    <!-- 结构化数据：软件应用 + 常见问答（GEO/AI 引擎友好） -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "SoftwareApplication",
+          "name": "简谱编辑器 jpeditor",
+          "alternateName": "jpeditor-web — Numbered Notation (Jianpu) Editor",
+          "applicationCategory": "MultimediaApplication",
+          "operatingSystem": "Windows, macOS, Web",
+          "softwareVersion": "0.3.3",
+          "url": "https://lodebar2026.github.io/jpeditor-web/",
+          "downloadUrl": "https://github.com/lodebar2026/jpeditor-web/releases",
+          "screenshot": "https://lodebar2026.github.io/jpeditor-web/og-image.png",
+          "description": "开源的简谱（JP-Word/.jpwabc）在线排版与编辑器：实时编辑预览、简谱与五线谱混排、MusicXML 导入、导出 PDF/PNG/MIDI/PPTX。An open-source jianpu (numbered musical notation) editor and typesetter.",
+          "featureList": [
+            "实时编辑 .jpwabc 数字谱并即时排版预览",
+            "简谱与五线谱混排（加载 MusicXML 排版，含连音线/连谱号/力度/踏板/和弦记号）",
+            "MusicXML 导入转简谱",
+            "导出 PDF / PNG / MIDI / 矢量 PPTX",
+            "点选高亮与自动分页（16:9 / 4:3 / A4）",
+            "跨平台：浏览器在线版 + Windows/macOS 桌面版"
+          ],
+          "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+          "license": "https://github.com/lodebar2026/jpeditor-web/blob/main/LICENSE",
+          "author": { "@type": "Person", "name": "lodebar2026" }
+        },
+        {
+          "@type": "FAQPage",
+          "mainEntity": [
+            {
+              "@type": "Question",
+              "name": "什么是简谱编辑器 jpeditor？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "jpeditor 是一款开源的简谱（数字谱）排版与编辑器，使用 .jpwabc（JP-Word）格式。左侧编辑代码、右侧实时渲染简谱，支持简谱与五线谱混排、MusicXML 导入，以及导出 PDF、PNG、MIDI、矢量 PPTX。它既有浏览器在线版，也有 Windows/macOS 桌面版。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": ".jpwabc 是什么格式？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": ".jpwabc 是 JP-Word 简谱软件使用的文本谱面格式，按 .Title/.Voice/.Words 等小节描述标题、调号拍号、音符与歌词。jpeditor 用 ANTLR 解析该格式并排版为 SVG 简谱。文件以 UTF-16LE（带 BOM）编解码以兼容 JP-Word。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "如何把 MusicXML 转成简谱？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "在 jpeditor 中打开或拖入 .musicxml/.xml 文件即可导入并转换为简谱；也可用「混排」模式直接按五线谱与简谱混合排版（加载 MusicXML 渲染谱表系统）。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "macOS 提示「已损坏」或「无法验证开发者」怎么办？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "因应用未购买苹果开发者签名，首次打开会被拦截。把 jpeditor.app 拖入「应用程序」后，打开「终端」运行 xattr -cr /Applications/jpeditor.app 清除隔离标记即可正常打开；该命令对所有 macOS 版本通用。或者直接使用浏览器在线版，无需安装。"
+              }
+            }
+          ]
+        }
+      ]
+    }
+    </script>
+
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>

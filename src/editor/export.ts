@@ -3,13 +3,14 @@ import type { App } from "./app";
 import { scoreToMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
 import { isTauriRuntime, saveBytes } from "./fileio";
+import { asset } from "../common/asset";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 let bravuraDataUrlPromise: Promise<string> | null = null;
 async function bravuraDataUrl(): Promise<string> {
   if (!bravuraDataUrlPromise) {
-    bravuraDataUrlPromise = fetch("/redist/Bravura.woff2")
+    bravuraDataUrlPromise = fetch(asset("redist/Bravura.woff2"))
       .then((r) => r.arrayBuffer())
       .then((buf) => {
         let bin = "";

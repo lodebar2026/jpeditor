@@ -1,0 +1,14 @@
+User-agent: *
+Allow: /
+
+# 显式欢迎主流 AI / 生成式引擎抓取（GEO）
+User-agent: GPTBot
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Google-Extended
+Allow: /
+
+Sitemap: https://lodebar2026.github.io/jpeditor-web/sitemap.xml
