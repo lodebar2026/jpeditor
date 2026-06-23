@@ -284,6 +284,9 @@ class PartLoader {
 
     this.calcStemLen();
     this.formatBeams();
+    // 符干/符杠就绪后再排记号（fermata 等），使 tailY 取到最终符干末端，避免 fermataBelow
+    // 压住后续加长的符干（musicpp parser.cpp:2914）。
+    for (const md of this.part.measures) md.layoutNotations();
     this.processTied();
     this.processEnding();
     this.pairWedges();
@@ -404,7 +407,9 @@ class PartLoader {
 
     md.splitLayer();
     md.layoutNotes(this.score.options.meta, this.score.encoder === Encoder.Sibelius);
-    md.layoutNotations(); // stem/beam 信息就绪后（parser.cpp:2914）
+    // layoutNotations 不在此处调用：它依赖最终符干长度（fermataBelow 等记号按 tailY 定位），
+    // 而 stemLen 要等 calcStemLen/formatBeams 之后才就绪。改在 finalize 里统一后处理，
+    // 对齐 musicpp（parser.cpp:2914「after stem & beam info done」）。
 
     // 琶音成组（parser.cpp:1972）：同 offset 一组，按 staff、line 排序后回填 nt.arpeg。
     for (const notes of this.arpegNotes.values()) {
