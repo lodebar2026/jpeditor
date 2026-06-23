@@ -58,9 +58,48 @@ jobs:
           prerelease: ${{ github.event.release.prerelease }}
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
-  # 全部平台构建成功后删除本次 CI run 记录，节省资源
+  # Web 版随同一 release 部署到 GitHub Pages
+  pages-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Build (subpath base for project Pages)
+        run: npm run build
+        env:
+          BASE_PATH: /jpeditor-web/
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  pages-deploy:
+    needs: pages-build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # 桌面包与 Pages 全部成功后删除本次 CI run 记录，节省资源
   cleanup:
-    needs: build
+    needs: [build, pages-deploy]
     if: success()
     runs-on: ubuntu-latest
     permissions:
