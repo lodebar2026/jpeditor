@@ -1,9 +1,5 @@
-@font-face {
-  font-family: "Bravura";
-  src: url("/redist/Bravura.woff2") format("woff2");
-  font-weight: normal;
-  font-style: normal;
-}
+/* Bravura 的 @font-face 在 main.ts 用 JS 注入（FontFace API），以便按 Vite base
+   解析字体 URL，支持 GitHub Pages 子路径部署。CSS 读不到 import.meta.env.BASE_URL。 */
 
 :root {
   --bg: #f5f5f5;

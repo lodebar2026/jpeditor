@@ -1,0 +1,19 @@
+{
+  "name": "简谱编辑器 jpeditor",
+  "short_name": "jpeditor",
+  "description": "在线简谱（.jpwabc）排版与编辑器，支持简谱·五线谱混排、MusicXML 导入与多格式导出。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f5f5",
+  "theme_color": "#f5f5f5",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

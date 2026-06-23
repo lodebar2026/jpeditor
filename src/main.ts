@@ -1,6 +1,7 @@
 import "./styles.css";
 import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
+import { asset } from "./common/asset";
 import { App } from "./editor/app";
 import { showLayoutDialog, showOptionsDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
@@ -28,7 +29,16 @@ W4@1,1:
 {4.[圣]}哉，圣哉，圣哉！全能大主宰！天上地下海中万物颂主尊称，圣哉，圣哉，圣哉！恩慈永无更改，荣耀与赞美，归三一真神。
 `;
 
+// 注册 Bravura @font-face（替代 styles.css 里的静态声明），按 Vite base 解析字体 URL。
+async function registerBravura() {
+  if (typeof FontFace === "undefined") return;
+  const face = new FontFace("Bravura", `url(${asset("redist/Bravura.woff2")}) format("woff2")`);
+  await face.load();
+  (document.fonts as FontFaceSet).add(face);
+}
+
 async function boot() {
+  await registerBravura();
   await ensureFontsReady([
     { family: "Bravura", size: 40 },
     { family: "PingFang SC", size: 28 },

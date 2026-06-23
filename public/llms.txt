@@ -1,0 +1,35 @@
+# jpeditor-web
+
+> 开源的简谱（JP-Word / `.jpwabc`）在线排版与编辑器。左侧高亮代码编辑、右侧实时简谱
+> 预览，支持简谱与五线谱混排、MusicXML 导入，导出 PDF / PNG / MIDI / 矢量 PPTX。
+> 既有浏览器在线版（即开即用），也有 Windows / macOS 桌面版（Tauri 2 打包）。
+>
+> An open-source jianpu (numbered musical notation) editor and typesetter for the
+> `.jpwabc` (JP-Word) format. Live code-editor on the left, real-time SVG score
+> preview on the right; supports mixed jianpu + staff (Western) notation rendered
+> from MusicXML, MusicXML import, and export to PDF / PNG / MIDI / vector PPTX.
+> Runs in the browser and as a Windows/macOS desktop app.
+
+## 核心功能 / Features
+
+- 实时编辑 `.jpwabc` 数字谱，编辑即重排重渲染（CodeMirror 6 + 语法高亮）。
+- 简谱与五线谱**混排**：加载 MusicXML 排版谱表系统，含连音线、连谱号、力度、踏板、和弦记号等。
+- MusicXML 导入并转换为简谱。
+- 导出 PDF、PNG、MIDI、矢量 PPTX。
+- 点选音符/歌词高亮，自动分页（16:9 / 4:3 / A4），可设每页行数。
+- SVG 矢量渲染，分辨率无关；浏览器在线版无需安装。
+
+## 技术栈 / Tech
+
+- 外壳 Tauri 2（Rust）；前端 TypeScript + Vite；编辑器 CodeMirror 6。
+- `.jpwabc` 用 ANTLR 4 解析；乐谱以原生 SVG DOM 渲染；音乐字体 Bravura（SMuFL）。
+
+## 链接 / Links
+
+- 在线试用 / Live demo: https://lodebar2026.github.io/jpeditor-web/
+- 代码仓库 / Repository: https://github.com/lodebar2026/jpeditor-web
+- 下载桌面版 / Releases: https://github.com/lodebar2026/jpeditor-web/releases
+
+## 许可 / License
+
+- 代码 MIT 许可。随附 Bravura 字体按 SIL OFL 授权（见 `public/redist`）。
