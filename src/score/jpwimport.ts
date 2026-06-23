@@ -75,6 +75,12 @@ function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
     stat.inTuplet = true;
     txt = txt.replace(tupletText, "");
   }
+  // 演奏记号 {DunYin|BoYin|YanYin|ZhongYin}（Jpwabc.g4 Articulation）。目前仅渲染延音(fermata)。
+  const artMatch = txt.match(/\{(?:DunYin|BoYin|YanYin|ZhongYin)(?:,(?:DunYin|BoYin|YanYin|ZhongYin))*\}/);
+  if (artMatch) {
+    if (artMatch[0].includes("YanYin")) res.fermata = true;
+    txt = txt.replace(artMatch[0], "");
+  }
   for (const ch of txt) {
     if (ch >= "0" && ch <= "9") {
       nt.number = ch;
