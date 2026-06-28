@@ -44,6 +44,20 @@ function durationOf(num: JpNum): { type: string; divisions: number; dots: number
   return { type: typeForDivisions(divisions), divisions, dots };
 }
 
+const escapeXml = (s: string) => s.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"));
+
+// 歌词 <lyric number="i"><text>字</text></lyric>，按 verse 索引。下游 score/musicxml.ts 导入器接收。
+function lyricsXml(num: JpNum): string {
+  if (!num.lyrics) return "";
+  let out = "";
+  for (let v = 0; v < num.lyrics.length; v++) {
+    const t = num.lyrics[v];
+    if (!t) continue;
+    out += `<lyric number="${v + 1}"><syllabic>single</syllabic><text>${escapeXml(t)}</text></lyric>`;
+  }
+  return out;
+}
+
 function noteXml(num: JpNum, fifths: number): string {
   if (num.digit === 0) {
     const d = durationOf(num);
@@ -53,7 +67,7 @@ function noteXml(num: JpNum, fifths: number): string {
   const d = durationOf(num);
   const alterXml = p.alter ? `<alter>${p.alter}</alter>` : "";
   return `<note><pitch><step>${p.step}</step>${alterXml}<octave>${p.octave}</octave></pitch>` +
-    `<duration>${d.divisions}</duration><type>${d.type}</type>${"<dot/>".repeat(d.dots)}</note>`;
+    `<duration>${d.divisions}</duration><type>${d.type}</type>${"<dot/>".repeat(d.dots)}${lyricsXml(num)}</note>`;
 }
 
 // 把一行按小节线 x 切成小节。

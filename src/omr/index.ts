@@ -9,6 +9,7 @@ export { nullOcr } from "./ocr";
 export { decodeToBinary } from "./decode";
 export { buildMontage } from "./montage";
 export { localOcrBackend } from "./localocr";
+export { paddleOcrBackend } from "./paddleocr";
 export { agyAvailable, agyRecognizeImage, DEFAULT_GEMINI_MODEL } from "./agy";
 export { recognizeImage, recognizeMusicpp } from "./recognize";
 export type { OmrMethod, OmrResult } from "./recognize";

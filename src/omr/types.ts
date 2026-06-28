@@ -37,6 +37,7 @@ export interface JpNum {
   octave: number; // 八度偏移（上点+，下点-）
   div: number; // 下划线条数（每条时值减半）
   augment: number; // 增时线 '-' 数（延长拍）
+  lyrics?: string[]; // 歌词：按声部(verse)索引，lyrics[0]=第一段(W1)、lyrics[1]=第二段……
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */

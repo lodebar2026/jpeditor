@@ -38,6 +38,7 @@
     "antlr4": "^4.13.2",
     "codemirror": "^6.0.2",
     "fflate": "^0.8.3",
+    "onnxruntime-web": "^1.27.0",
     "opentype.js": "^2.0.0",
     "tesseract.js": "^7.0.0"
   },

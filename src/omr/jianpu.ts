@@ -11,6 +11,7 @@ import type { Binary, Component, JpNum, Rect, StaffRow, RecognizedScore } from "
 import { rright, rbottom, rcx, rcy } from "./types";
 import { connectedComponents } from "./ccl";
 import type { OcrBackend } from "./ocr";
+import { recognizeLyrics } from "./lyrics";
 
 const overlapX = (a: Rect, b: Rect) => Math.max(0, Math.min(rright(a), rright(b)) - Math.max(a.x, b.x));
 const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
@@ -230,6 +231,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs,
     nums: buildJpNums(m.rd, numH, c, ocrDigit),
   }));
+
+  // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
+  if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, rows, numH, ocr);
 
   return { key: "C", fifths: 0, beats: 4, beatType: 4, rows };
 }

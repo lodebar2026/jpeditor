@@ -6,6 +6,9 @@ import type { Binary, Rect } from "./types";
 export interface OcrBackend {
   /** 对 bin 上的一组 bbox 识别数字，返回与 rects 等长的数字数组（0-7）。 */
   recognizeDigits(bin: Binary, rects: Rect[]): Promise<number[]>;
+  /** 可选：识别一组文本画布（用于中文歌词）。返回与输入等长的字符串数组。
+   *  仅支持中文的后端（PaddleOCR）实现此方法；不实现 → 管线跳过歌词识别。 */
+  recognizeTexts?(canvases: OffscreenCanvas[]): Promise<string[]>;
 }
 
 /** 占位后端：无 OCR 时返回 0（用于先打通管线/结构调试）。 */
