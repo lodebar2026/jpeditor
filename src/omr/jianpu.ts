@@ -85,32 +85,11 @@ function tightBox(bin: Binary, b: Rect, x0: number, x1: number, yLimit: number):
 // jianpu.cpp 用形态学分离横线；这里用"底部带状宽行 = 下划线"+"上部列投影空隙 = 数字间隔"。
 function splitBlock(bin: Binary, comp: Component, numH: number): DigitCore[] {
   const b = comp.bbox;
-  // 1) 底部下划线：在块下 45% 行里，找覆盖宽度 ≥ 50% 的"宽行"，按层(被空行隔开)计 div。
-  const bandStart = Math.floor(b.h * 0.55);
-  // 下划线 = 一条贯通的长横线 → 用"最长连续前景游程"判别（区别于两个数字主体在同行
-  // 各占一段、像素数虽多但不连续）。阈值取块宽的 70%。
-  const wideRow = (yy: number) => {
-    let run = 0, best = 0;
-    for (let xx = 0; xx < b.w; xx++) {
-      if (bin.data[(b.y + yy) * bin.w + (b.x + xx)]) { run++; if (run > best) best = run; }
-      else run = 0;
-    }
-    return best >= b.w * 0.7;
-  };
-  // 下划线还须"细"（一两像素高）；实心数字主体虽整行贯通但很厚，不能误判为下划线。
-  const maxThick = Math.max(2, Math.round(numH * 0.22));
-  let div = 0, underlineTop = b.h;
-  let bandStartY = -1, bandLen = 0;
-  const flush = () => {
-    if (bandStartY >= 0 && bandLen <= maxThick) { div++; underlineTop = Math.min(underlineTop, bandStartY); }
-    bandStartY = -1; bandLen = 0;
-  };
-  for (let yy = bandStart; yy < b.h; yy++) {
-    if (wideRow(yy)) { if (bandStartY < 0) bandStartY = yy; bandLen++; }
-    else flush();
-  }
-  flush();
-  const yLimit = div > 0 ? underlineTop : b.h; // 数字主体（去掉下划线带）
+  // 减时线(下划线)在本图里是数字**正下方的独立横线连通块**(归入 c.hlines)，并不在数字块内
+  //（数字块高度≈字号，块内底部宽行其实是数字自身的底横笔，初版据此判 div 会把 5/6/2/3 全部误判）。
+  // 因此 div 不在此处测，改到 buildJpNums 里按"数字下方的 hline"统计（见 underlineDiv）。
+  const div = 0;
+  const yLimit = b.h;
 
   // 2) 上部按列投影空隙切分（仅当块明显宽于一个数字时才尝试，避免把单个数字切碎）。
   const cores: DigitCore[] = [];
@@ -183,13 +162,17 @@ function buildJpNums(
       else if (gapBelow >= -1 && gapBelow < numH * 0.8) octave--;  // 下点 → 低八度
     }
     octave = Math.max(-3, Math.min(3, octave)); // 简谱八度极少超过 ±2~3
+    let div = 0;
     for (const k of cls.hlines) {
       const kb = k.bbox;
       // 独立横线在数字右侧、与数字同高 → 增时线 '-'
       if (kb.x >= rright(d) - 1 && kb.x < xr && Math.abs(rcy(kb) - rcy(d)) < numH * 0.6 &&
-          overlapX(kb, d) < kb.w * 0.4) augment++;
+          overlapX(kb, d) < kb.w * 0.4) { augment++; continue; }
+      // 减时线(下划线)：数字**正下方**的独立横线，x 与数字重叠；多条上下堆叠 → div 多层。
+      const below = kb.y - rbottom(d);
+      if (below > -numH * 0.2 && below < numH * 0.75 && overlapX(kb, d) >= Math.min(kb.w, d.w) * 0.4) div++;
     }
-    out.push({ digit: ocrDigit(d), bbox: d, dot, octave, div: rowCores[i].div, augment });
+    out.push({ digit: ocrDigit(d), bbox: d, dot, octave, div, augment });
   }
   return out;
 }

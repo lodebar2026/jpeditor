@@ -12,29 +12,6 @@ import type { OcrBackend } from "./ocr";
 const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
 
-/** 把 bin 的一块矩形区域裁成白底黑字画布（带 2px 留白）。 */
-function cropCanvas(bin: Binary, r: Rect): OffscreenCanvas {
-  const pad = 2;
-  const W = r.w + pad * 2, H = r.h + pad * 2;
-  const cv = new OffscreenCanvas(W, H);
-  const ctx = cv.getContext("2d");
-  if (!ctx) throw new Error("无法创建 2D 画布上下文");
-  const img = new ImageData(W, H);
-  for (let i = 0; i < img.data.length; i += 4) { img.data[i] = img.data[i + 1] = img.data[i + 2] = 255; img.data[i + 3] = 255; }
-  for (let yy = 0; yy < r.h; yy++) {
-    for (let xx = 0; xx < r.w; xx++) {
-      const sx = r.x + xx, sy = r.y + yy;
-      if (sx < 0 || sy < 0 || sx >= bin.w || sy >= bin.h) continue;
-      if (bin.data[sy * bin.w + sx]) {
-        const p = ((yy + pad) * W + (xx + pad)) * 4;
-        img.data[p] = img.data[p + 1] = img.data[p + 2] = 0;
-      }
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
 /** 把一行(同 y)的连通块按 x 邻近并成字格。返回每个字格的合并包围盒，按 x 排序。 */
 function mergeToChars(line: Component[], charH: number): Rect[] {
   const sorted = [...line].sort((a, b) => a.bbox.x - b.bbox.x);
@@ -57,7 +34,55 @@ function mergeToChars(line: Component[], charH: number): Rect[] {
   return cells;
 }
 
-interface LyricCell { rect: Rect; verse: number; }
+// 一个 rec 块：本乐谱行(rowIdx)某 verse 的若干相邻字格（拼一条横图整体 rec）。
+interface Chunk { rowIdx: number; verse: number; cells: Rect[]; }
+const STRIP_H = 48, STRIP_MAXW = 300; // rec 宽上限 320 → 单条限 ~5 字免压扁
+
+/** 整幅二值图 → 黑字白底源画布（供拼条裁剪）。 */
+function srcCanvasOf(bin: Binary): OffscreenCanvas {
+  const cv = new OffscreenCanvas(bin.w, bin.h);
+  const ctx = cv.getContext("2d");
+  if (!ctx) throw new Error("无法创建 2D 画布上下文");
+  const img = new ImageData(bin.w, bin.h);
+  for (let i = 0; i < bin.data.length; i++) { const v = bin.data[i] ? 0 : 255; const p = i * 4; img.data[p] = img.data[p + 1] = img.data[p + 2] = v; img.data[p + 3] = 255; }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+
+/** 裁一块字格所覆盖的**自然连续区域**(保留原始字间距/渲染，不重拼)，缩到高 STRIP_H 整体 rec。
+ *  自然排版让 PP-OCR 远比逐字/拼接 rec 准；块按宽度上限切，避免长行被压扁(rec 宽上限 320)。 */
+function buildStrip(src: OffscreenCanvas, cells: Rect[], H = STRIP_H): OffscreenCanvas {
+  const x0 = Math.min(...cells.map((r) => r.x));
+  const x1 = Math.max(...cells.map((r) => r.x + r.w));
+  const y0 = Math.min(...cells.map((r) => r.y));
+  const y1 = Math.max(...cells.map((r) => r.y + r.h));
+  const pad = 4;
+  const sw = x1 - x0 + pad * 2, sh = y1 - y0 + pad * 2;
+  const W = Math.max(1, Math.round(sw * H / sh));
+  const cv = new OffscreenCanvas(W, H);
+  const ctx = cv.getContext("2d");
+  if (!ctx) throw new Error("无法创建 2D 画布上下文");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(src, x0 - pad, y0 - pad, sw, sh, 0, 0, W, H);
+  return cv;
+}
+
+/** 把一行字格按自然宽度上限切成若干块（每块缩到 H 后 ≤ ~300px → 不超 rec 宽上限 320）。 */
+function chunkCells(cells: Rect[]): Rect[][] {
+  const chunks: Rect[][] = [];
+  let cur: Rect[] = [];
+  const widthAtH = (rs: Rect[]) => {
+    const x0 = Math.min(...rs.map((r) => r.x)), x1 = Math.max(...rs.map((r) => r.x + r.w));
+    const y0 = Math.min(...rs.map((r) => r.y)), y1 = Math.max(...rs.map((r) => r.y + r.h));
+    return (x1 - x0) * STRIP_H / (y1 - y0);
+  };
+  for (const r of cells) {
+    if (cur.length && widthAtH([...cur, r]) > STRIP_MAXW) { chunks.push(cur); cur = []; }
+    cur.push(r);
+  }
+  if (cur.length) chunks.push(cur);
+  return chunks;
+}
 
 /** 识别歌词并写回各音符的 lyrics[]。staff 为乐谱行(按出现顺序)，comps 为全图连通块。 */
 export async function recognizeLyrics(
@@ -66,8 +91,9 @@ export async function recognizeLyrics(
   if (!ocr.recognizeTexts || !staff.length) return;
 
   const charMin = numH * 0.5; // 歌词字号下限（约等于音符字号）
-  const cells: LyricCell[] = [];
-  const canvases: OffscreenCanvas[] = [];
+  const src = srcCanvasOf(bin);
+  const chunks: Chunk[] = [];
+  const strips: OffscreenCanvas[] = [];
 
   for (let i = 0; i < staff.length; i++) {
     const row = staff[i];
@@ -75,7 +101,6 @@ export async function recognizeLyrics(
     const yBot = i + 1 < staff.length ? staff[i + 1].topY - Math.round(numH * 0.15) : bin.h;
     if (yBot - yTop < charMin) continue;
 
-    // 取带内字号大小的连通块
     const band = comps.filter((c) => {
       const b = c.bbox; const cy = b.y + b.h / 2;
       return cy >= yTop && cy <= yBot && b.h >= charMin && b.w >= charMin * 0.4;
@@ -92,46 +117,44 @@ export async function recognizeLyrics(
     }
 
     lines.forEach((ln, verse) => {
-      for (const cellRect of mergeToChars(ln, charH)) {
-        cells.push({ rect: cellRect, verse });
-        canvases.push(cropCanvas(bin, cellRect));
+      const cells = mergeToChars(ln, charH);
+      for (const chunkCellsArr of chunkCells(cells)) {
+        chunks.push({ rowIdx: i, verse, cells: chunkCellsArr });
+        strips.push(buildStrip(src, chunkCellsArr));
       }
     });
   }
 
-  if (!canvases.length) return;
-  const texts = await ocr.recognizeTexts(canvases);
+  if (!strips.length) return;
+  const texts = await ocr.recognizeTexts(strips);
 
-  // 按乐谱行分组对齐：每个 cell 属于某行(由 y 决定)。重新定位 cell 到行。
-  for (let i = 0; i < staff.length; i++) {
-    const row = staff[i];
-    const yTop = row.bottomY;
-    const yBot = i + 1 < staff.length ? staff[i + 1].topY : bin.h;
-    // 该行的 cells（按 verse 再按 x）
-    const byVerse = new Map<number, Array<{ x: number; ch: string }>>();
-    for (let k = 0; k < cells.length; k++) {
-      const cy = cells[k].rect.y + cells[k].rect.h / 2;
-      if (cy < yTop || cy >= yBot) continue;
-      const ch = (texts[k].match(/[一-鿿]/) || [])[0];
-      if (!ch || !isHanzi(ch)) continue;
-      const v = cells[k].verse;
-      if (!byVerse.has(v)) byVerse.set(v, []);
-      byVerse.get(v)!.push({ x: rcx(cells[k].rect), ch });
+  // 每块的识别字按字格索引取 x，汇总到 (row,verse)，再单调最近分配给音符。
+  const perLine = new Map<string, Array<{ x: number; ch: string }>>();
+  for (let s = 0; s < chunks.length; s++) {
+    const { rowIdx, verse, cells } = chunks[s];
+    const chars = (texts[s].match(/[一-鿿]/g) || []).filter(isHanzi);
+    if (!chars.length) continue;
+    const key = `${rowIdx}:${verse}`;
+    if (!perLine.has(key)) perLine.set(key, []);
+    const placed = perLine.get(key)!;
+    for (let j = 0; j < chars.length; j++) {
+      const ci = chars.length === cells.length ? j : Math.min(cells.length - 1, Math.floor(j * cells.length / chars.length));
+      placed.push({ x: rcx(cells[ci]), ch: chars[j] });
     }
-    const notes = row.nums;
+  }
+
+  for (const [key, placed] of perLine) {
+    const [rowIdx, verse] = key.split(":").map(Number);
+    const notes = staff[rowIdx].nums;
     if (!notes.length) continue;
-    for (const [verse, chars] of byVerse) {
-      chars.sort((a, b) => a.x - b.x);
-      // 单调最近分配：字按 x 顺序，音符指针只前进
-      let ni = 0;
-      for (const { x, ch } of chars) {
-        // 推进到 x 最接近的音符（不回退）
-        while (ni + 1 < notes.length && Math.abs(rcx(notes[ni + 1].bbox) - x) <= Math.abs(rcx(notes[ni].bbox) - x)) ni++;
-        const nt = notes[ni];
-        if (!nt.lyrics) nt.lyrics = [];
-        nt.lyrics[verse] = (nt.lyrics[verse] || "") + ch;
-        if (ni < notes.length - 1) ni++; // 一字一符：用掉即前进
-      }
+    placed.sort((a, b) => a.x - b.x);
+    let ni = 0;
+    for (const { x, ch } of placed) {
+      while (ni + 1 < notes.length && Math.abs(rcx(notes[ni + 1].bbox) - x) <= Math.abs(rcx(notes[ni].bbox) - x)) ni++;
+      const nt = notes[ni];
+      if (!nt.lyrics) nt.lyrics = [];
+      nt.lyrics[verse] = (nt.lyrics[verse] || "") + ch;
+      if (ni < notes.length - 1) ni++;
     }
   }
 }
