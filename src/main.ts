@@ -3,7 +3,7 @@ import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
 import { asset } from "./common/asset";
 import { App } from "./editor/app";
-import { showLayoutDialog, showOptionsDialog } from "./editor/dialogs";
+import { showLayoutDialog, showOptionsDialog, showRecognizeDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
 import { isTauriRuntime } from "./editor/fileio";
 import { MixedPainter } from "./mixed/painter";
@@ -51,9 +51,11 @@ async function boot() {
   const app = new App(meta, scorePane);
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter };
+  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown };
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
+  // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
+  win.__omr = import("./omr");
 
   // toolbar
   const on = (id: string, fn: () => void) =>
@@ -65,6 +67,7 @@ async function boot() {
   on("btn-lines", () => showLayoutDialog(app));
   on("btn-options", () => showOptionsDialog(app));
   on("btn-export", () => showExportDialog(app));
+  on("btn-omr", () => showRecognizeDialog(app));
   const mixedBtn = document.getElementById("btn-mixed") as HTMLButtonElement | null;
   if (mixedBtn) {
     app.setMixedBtn(mixedBtn);
