@@ -21,7 +21,7 @@ function voiceTokens(text) {
     const t = ln.trim();
     if (t.startsWith(".")) { inV = /^\.voice/i.test(t); continue; }
     if (!inV || !t) continue;
-    const s = ln.replace(/\$\([^)]*\)/g, " ").replace(/[()\]]/g, " ");
+    const s = ln.replace(/\$\([^)]*\)/g, " ").replace(/[()\]]/g, " ").replace(/\|/g, " | ");
     for (const raw of s.split(/\s+/)) {
       if (!raw) continue;
       if (raw === "|") { toks.push("|"); continue; }
