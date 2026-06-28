@@ -15,6 +15,7 @@ import { loadMusicXml } from "../score/musicxml";
 import { scoreToJpwabc } from "../score/jpscore";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 import { MixedPainter } from "../mixed/painter";
+import { recognizeImage, agyAvailable, type OmrMethod } from "../omr";
 
 export class App {
   painter: JinpuPainter;
@@ -454,6 +455,50 @@ export class App {
       };
       input.click();
     }
+  }
+
+  // ---------------- OMR：从图片识别简谱 ----------------
+  /** 选图 → OMR(method) → MusicXML → 复用 importBytes 导入排版。 */
+  async recognizeFromImage(method: OmrMethod): Promise<void> {
+    if (method === "gemini" && !agyAvailable()) {
+      this.setStatus("Gemini 识别需要桌面版（Antigravity CLI / agy），浏览器内不可用");
+      return;
+    }
+    const picked = await this._pickImage();
+    if (!picked) return;
+    this.setStatus(`识别中（${method === "gemini" ? "Gemini" : "musicpp"}）…可能需要几十秒`);
+    try {
+      const { musicxml, ms } = await recognizeImage(method, picked);
+      this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml");
+      this.setStatus(`识别完成（${method === "gemini" ? "Gemini" : "musicpp"}，${(ms / 1000).toFixed(1)}s）`);
+    } catch (e) {
+      console.error("OMR failed", e);
+      this.setStatus("识别失败：" + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  /** 选取图片文件，返回字节（+ Tauri 下的磁盘路径，供 Gemini 直接读盘）。 */
+  private async _pickImage(): Promise<{ bytes: Uint8Array; mime?: string; path?: string | null } | null> {
+    const exts = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+    if (isTauriRuntime()) {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { readFile } = await import("@tauri-apps/plugin-fs");
+      const sel = await open({ multiple: false, filters: [{ name: "图片", extensions: exts }] });
+      if (typeof sel !== "string") return null;
+      const bytes = await readFile(sel);
+      return { bytes, path: sel };
+    }
+    return new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) return resolve(null);
+        resolve({ bytes: new Uint8Array(await file.arrayBuffer()), mime: file.type, path: null });
+      };
+      input.click();
+    });
   }
 
   async saveFile(): Promise<void> {

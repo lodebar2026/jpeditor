@@ -52,6 +52,28 @@ export function showLayoutDialog(app: App): void {
   modal("页面行数", body, () => app.setLinesPerPage(input.value.trim()));
 }
 
+/** 识图 — 选择 OMR 方式后选图识别。 */
+export function showRecognizeDialog(app: App): void {
+  const body = document.createElement("div");
+  const sel = document.createElement("select");
+  for (const [value, label] of [
+    ["gemini", "Gemini（看图直转，真实照片更准，需桌面版 agy）"],
+    ["musicpp", "musicpp（本地识别，离线可用，浏览器也行）"],
+  ] as const) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    sel.append(o);
+  }
+  const hint = document.createElement("div");
+  hint.className = "modal-hint";
+  hint.textContent = "确定后选择简谱图片（PNG/JPG）。Gemini 方式需桌面版并已安装 Antigravity CLI；musicpp 为本地识别。";
+  body.append(labeled("识别方式", sel), hint);
+  modal("从图片识别简谱", body, () => {
+    void app.recognizeFromImage(sel.value as "musicpp" | "gemini");
+  });
+}
+
 const RATIOS: Record<string, [number, number]> = {
   "16:9": [960, 540],
   "4:3": [720, 540],

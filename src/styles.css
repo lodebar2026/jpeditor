@@ -108,6 +108,7 @@ html, body { margin: 0; height: 100%; }
 }
 .modal-row span { color: #444; }
 .modal-row input, .modal-row select { padding: 4px 6px; min-width: 160px; }
+.modal-hint { color: #777; font-size: 12px; margin: 6px 2px 0; line-height: 1.4; }
 .modal-footer {
   display: flex;
   justify-content: flex-end;
