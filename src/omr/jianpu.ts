@@ -155,9 +155,11 @@ function buildJpNums(
       const kb = k.bbox;
       // 右侧附点：在数字右侧近处、垂直居中。
       if (rcx(kb) > rright(d) && rcx(kb) < rright(d) + numH * 0.8 && Math.abs(rcy(kb) - dcy) < numH * 0.5) { dot++; continue; }
-      // 八度点：必须水平居中于数字、且紧贴上/下方（间隙 < 0.8×字号）。
-      // 距离/居中约束是修复真实扫描上"远处噪点/歌词笔画被当成八度点"导致八度乱的关键。
-      if (Math.abs(rcx(kb) - dcx) > numH * 0.55) continue;
+      // 八度点：须足够大(排除噪点小斑)、水平居中于数字、且紧贴上/下方（间隙 < 0.8×字号）。
+      // 阈值据实测分布定（真八度点 w/h≈0.21~0.30×numH、|dx|≤0.14；噪点误判那个是 0.09×0.11、dx=0.45）：
+      // 尺寸下限 0.15、居中收到 0.4，两道独立门都能剔除噪点，且对真点留足余量。
+      if (kb.w < numH * 0.15 || kb.h < numH * 0.15) continue;
+      if (Math.abs(rcx(kb) - dcx) > numH * 0.4) continue;
       const gapAbove = d.y - rbottom(kb);  // 点在数字上方的间隙
       const gapBelow = kb.y - rbottom(d);  // 点在数字下方的间隙
       if (gapAbove >= -1 && gapAbove < numH * 0.8) octave++;       // 上点 → 高八度
