@@ -145,7 +145,9 @@ function buildJpNums(
   for (let i = 0; i < rowCores.length; i++) {
     const d = rowCores[i].bbox;
     const next = rowCores[i + 1]?.bbox;
-    const xr = next ? next.x : d.x + numH * 3; // 该数字"管辖"到下一数字
+    // 增时线右界：行末音符(如 6--- 整小节长音)无下一音符，须放宽到无穷，否则只数到第一根 '-'；
+    // 同 y 高度约束已能防越界到别行。
+    const augR = next ? next.x : Number.POSITIVE_INFINITY;
     let octave = 0, dot = 0, augment = 0;
 
     const dcx = rcx(d), dcy = rcy(d);
@@ -166,7 +168,7 @@ function buildJpNums(
     for (const k of cls.hlines) {
       const kb = k.bbox;
       // 独立横线在数字右侧、与数字同高 → 增时线 '-'
-      if (kb.x >= rright(d) - 1 && kb.x < xr && Math.abs(rcy(kb) - rcy(d)) < numH * 0.6 &&
+      if (kb.x >= rright(d) - 1 && kb.x < augR && Math.abs(rcy(kb) - rcy(d)) < numH * 0.6 &&
           overlapX(kb, d) < kb.w * 0.4) { augment++; continue; }
       // 减时线(下划线)：数字**正下方**的独立横线，x 与数字重叠；多条上下堆叠 → div 多层。
       const below = kb.y - rbottom(d);
