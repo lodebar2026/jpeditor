@@ -52,6 +52,19 @@ function classify(comps: Component[]): { c: Classified; numH: number } {
     // 数字块：高度接近字号（可略高于字号以容纳粘连的下划线），宽度不限（连音会更宽）
     if (h >= numH * 0.55 && h <= numH * 2.0 && w >= numH * 0.3) { c.blocks.push(k); continue; }
   }
+  // 「细高竖条」既可能是小节线，也可能是数字 "1"（一条竖笔）。二者宽都很窄、高都 ≳ 字号，
+  // 形状难分；但**同一张图里真小节线高度集中成簇、且远高于数字**（实测：世上小节线 h≈35~49、
+  // "1" 仅 h≈16~24；日光小节线 h≈45~70）。故按候选高度中位数剔除明显偏矮者（<0.55×中位高）
+  // → 它们其实是 "1"，改归数字块，否则会凭空丢音又多出假小节线。真小节线占多数时中位数稳健。
+  if (c.barlines.length >= 4) {
+    const medH = median(c.barlines.map((k) => k.bbox.h));
+    const real: Component[] = [];
+    for (const k of c.barlines) {
+      if (k.bbox.h < medH * 0.55) c.blocks.push(k); // 偏矮 → 是数字 "1"
+      else real.push(k);
+    }
+    c.barlines = real;
+  }
   return { c, numH };
 }
 
