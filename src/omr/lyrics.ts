@@ -101,19 +101,26 @@ export async function recognizeLyrics(
     const yBot = i + 1 < staff.length ? staff[i + 1].topY - Math.round(numH * 0.15) : bin.h;
     if (yBot - yTop < charMin) continue;
 
-    const band = comps.filter((c) => {
-      const b = c.bbox; const cy = b.y + b.h / 2;
-      return cy >= yTop && cy <= yBot && b.h >= charMin && b.w >= charMin * 0.4;
-    });
+    const inBand = (c: Component) => { const cy = c.bbox.y + c.bbox.h / 2; return cy >= yTop && cy <= yBot; };
+    const band = comps.filter((c) => { const b = c.bbox; return inBand(c) && b.h >= charMin && b.w >= charMin * 0.4; });
     if (!band.length) continue;
 
-    // 按 y 分 verse 行
+    // 按 y 分 verse 行（只用正常字号块定行，避免减时线等横笔干扰）
     const charH = median(band.map((c) => c.bbox.h)) || numH;
     const sortedY = [...band].sort((a, b) => a.cy - b.cy);
     const lines: Component[][] = [];
     for (const c of sortedY) {
       const ln = lines.find((L) => Math.abs(median(L.map((k) => k.cy)) - c.cy) < charH * 0.7);
       if (ln) ln.push(c); else lines.push([c]);
+    }
+
+    // 细而宽的横笔（如"一"——高度仅笔画粗细，远不及 charMin，整字会被上面漏掉）：
+    // 只在它纵向落进某条 verse 行（与该行中线足够近）时并入，从而排除减时线等乐谱区横块。
+    for (const c of comps) {
+      const b = c.bbox;
+      if (!inBand(c) || b.h >= charMin || b.h < 2 || b.w < charMin * 0.6) continue;
+      const ln = lines.find((L) => Math.abs(median(L.map((k) => k.cy)) - c.cy) < charH * 0.45);
+      if (ln) ln.push(c);
     }
 
     lines.forEach((ln, verse) => {
