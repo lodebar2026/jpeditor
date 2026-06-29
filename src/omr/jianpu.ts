@@ -12,6 +12,7 @@ import { rright, rbottom, rcx, rcy } from "./types";
 import { connectedComponents } from "./ccl";
 import type { OcrBackend } from "./ocr";
 import { recognizeLyrics } from "./lyrics";
+import { recognizeHeader } from "./header";
 
 const overlapX = (a: Rect, b: Rect) => Math.max(0, Math.min(rright(a), rright(b)) - Math.max(a.x, b.x));
 const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
@@ -224,5 +225,12 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
   if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, rows, numH, ocr);
 
-  return { key: "C", fifths: 0, beats: 4, beatType: 4, rows };
+  // 页眉：标题/作词/作曲（同样仅 PaddleOCR 后端）。
+  let title: string | undefined, credits: string[] | undefined;
+  if (ocr.recognizeTexts && rows.length) {
+    const h = await recognizeHeader(bin, comps, rows[0].topY, numH, ocr);
+    title = h.title; credits = h.credits.length ? h.credits : undefined;
+  }
+
+  return { key: "C", fifths: 0, beats: 4, beatType: 4, rows, title, credits };
 }
