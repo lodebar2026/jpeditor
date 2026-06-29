@@ -5,7 +5,7 @@
 //   node measure-all.mjs 世上 日光    # 仅文件夹名含这些子串的
 // 需先 npm run build 出 dist + 本地 Edge。
 import { createServer } from "node:http";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { extname, join, normalize, basename } from "node:path";
 import { chromium } from "playwright";
 
@@ -105,12 +105,16 @@ function lyricsOf(text) {
   }
   return verses;
 }
-function lyricsAcc(gt, rec) {
+// 中文/英文标点 + jpwabc 记号花括号；忽略标点比对时剔除
+const stripPunct = (s) => s.replace(/[，。；：？！、,.;:?!{}]/g, "");
+function lyricsAcc(gt, rec, ignorePunct = false) {
   const g = lyricsOf(gt), r = lyricsOf(rec);
   if (!g.size && !r.size) return { acc: 1, detail: "无" };
   let totW = 0, sum = 0; const parts = [];
-  for (const [v, gtxt] of g) {
-    const a = charAcc(gtxt, r.get(v) ?? "");
+  for (const [v, gtxt0] of g) {
+    const gtxt = ignorePunct ? stripPunct(gtxt0) : gtxt0;
+    const rtxt = ignorePunct ? stripPunct(r.get(v) ?? "") : (r.get(v) ?? "");
+    const a = charAcc(gtxt, rtxt);
     const w = [...gtxt.replace(/\s/g, "")].length || 1;
     totW += w; sum += a * w;
     parts.push(`W${v} ${(a * 100).toFixed(0)}%`);
@@ -153,7 +157,7 @@ const songs = await findSongs();
 if (!songs.length) { console.log("testdata/ 下没找到 图片+jpwabc 的歌谱文件夹"); await browser.close(); server.close(); process.exit(0); }
 
 const rows = [];
-const sum = { a: 0, o: 0, d: 0, s: 0, ly: 0, ti: 0, cr: 0 };
+const sum = { a: 0, o: 0, d: 0, s: 0, ly: 0, lyNp: 0, ti: 0, cr: 0 };
 for (const song of songs) {
   errors.length = 0;
   const mime = MIME[extname(song.img).toLowerCase()] ?? "image/jpeg";
@@ -180,32 +184,39 @@ for (const song of songs) {
   const gB = brackets(gt), rB = brackets(rj);
   const s = acc(gB, rB);
   const ly = lyricsAcc(gt, rj);
+  const lyNp = lyricsAcc(gt, rj, true);
   const ti = charAcc(titleOf(gt), titleOf(rj));
   const cr = charAcc(creditsOf(gt), creditsOf(rj));
-  sum.a += a; sum.o += o; sum.d += d; sum.s += s; sum.ly += ly.acc; sum.ti += ti; sum.cr += cr;
+  sum.a += a; sum.o += o; sum.d += d; sum.s += s; sum.ly += ly.acc; sum.lyNp += lyNp.acc; sum.ti += ti; sum.cr += cr;
   rows.push({ name: song.name, a, o, d, s, sg: slurGroups(gB), sr: slurGroups(rB),
-    ly: ly.acc, lyD: ly.detail, ti, cr, g: g.length, r: r.length, stats: rec.stats,
+    ly: ly.acc, lyNp: lyNp.acc, lyD: ly.detail, ti, cr, g: g.length, r: r.length, stats: rec.stats,
     err: errors.filter((e) => !/favicon|space too large/.test(e)).slice(0, 2) });
 }
 
-const pct = (x) => (x * 100).toFixed(1).padStart(6) + "%";
-const C = "  ";
-console.log("\n" + "歌谱".padEnd(18) + C + " 音符" + C + " 八度" + C + " 小节" + C + "slur/tie" + C + " 歌词" + C + " 标题" + C + " 词曲" + C + " GT/识");
-console.log("─".repeat(104));
+// CSV 输出：百分比保留 1 位小数（不带 % 号），字段含逗号则加引号
+const p1 = (x) => (x * 100).toFixed(1);
+const csv = (v) => { const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+const cols = ["歌谱", "音符", "八度", "小节", "slur/tie", "slur组GT", "slur组识", "歌词", "歌词*", "标题", "词曲", "GT_token", "识_token", "行", "音", "线"];
+const lines = [cols.join(",")];
 for (const x of rows) {
-  if (x.fail) { console.log(x.name.padEnd(18) + C + "  识别异常"); continue; }
-  console.log(
-    x.name.padEnd(18) + C + pct(x.a) + C + pct(x.o) + C + pct(x.d) + C +
-    (pct(x.s) + `(${x.sg}/${x.sr})`).padEnd(8) + C + pct(x.ly) + C + pct(x.ti) + C + pct(x.cr) + C +
-    `${x.g}/${x.r}`);
-  console.log("    ".padEnd(20) + `结构 行${x.stats.rows}/音${x.stats.notes}/线${x.stats.bars}  歌词[${x.lyD}]` +
-    (x.err?.length ? "  ⚠ " + x.err.join(" | ").slice(0, 60) : ""));
+  if (x.fail) { lines.push([csv(x.name), "识别异常"].join(",")); continue; }
+  lines.push([
+    csv(x.name), p1(x.a), p1(x.o), p1(x.d), p1(x.s), x.sg, x.sr,
+    p1(x.ly), p1(x.lyNp), p1(x.ti), p1(x.cr), x.g, x.r,
+    x.stats.rows, x.stats.notes, x.stats.bars,
+  ].join(","));
 }
-console.log("─".repeat(104));
 const n = rows.filter((x) => !x.fail).length || 1;
-console.log("平均".padEnd(18) + C + pct(sum.a / n) + C + pct(sum.o / n) + C + pct(sum.d / n) + C +
-  pct(sum.s / n).padEnd(8) + C + pct(sum.ly / n) + C + pct(sum.ti / n) + C + pct(sum.cr / n) + `   (${n} 首)`);
-console.log("\nslur/tie 列括号内为 (GT 组数/识别组数)；歌词为各 verse 字符准确率加权平均；标题/词曲为字符准确率。");
+lines.push([
+  "平均", p1(sum.a / n), p1(sum.o / n), p1(sum.d / n), p1(sum.s / n), "", "",
+  p1(sum.ly / n), p1(sum.lyNp / n), p1(sum.ti / n), p1(sum.cr / n), "", "", "", "", "",
+].join(","));
+
+const outPath = join(process.cwd(), "measure-all.csv");
+const out = lines.join("\n") + "\n";
+await writeFile(outPath, "﻿" + out, "utf8"); // BOM 便于 Excel 识别 UTF-8 中文
+console.log(out);
+console.log(`已写入 ${outPath}`);
 
 await browser.close();
 server.close();
