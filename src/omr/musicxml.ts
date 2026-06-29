@@ -5,20 +5,31 @@ import type { RecognizedScore, JpNum, StaffRow } from "./types";
 // C 大调音名表（fifths=0 时 1..7 对应 C D E F G A B）。
 const STEPS = ["C", "D", "E", "F", "G", "A", "B"];
 
+// fifths→主音音级索引(0=C，CDEFGAB 顺序)。与导入器 score.ts::Note.init 的 b=(4f+28)%7 一致，
+// 保证导出→导入数字往返一致。
 function tonicStep(fifths: number): number {
-  // fifths→主音在五度圈上的音级索引（0=C）。简化：常见调直接给。
-  const map: Record<number, number> = { 0: 0, 1: 4, 2: 1, 3: 5, 4: 2, 5: 6, 6: 3, [-1]: 3, [-2]: 0, [-3]: 4 };
-  return map[fifths] ?? 0;
+  return (((4 * fifths + 28) % 7) + 7) % 7;
 }
 
-/** 数字音符 → {step, alter, octave(科学记号)} 。base 八度按数字 1 落在第 4 八度附近。 */
+// 调号升降：升序 F C G D A E B、降序 B E A D G C F（与 score.ts::getAlter/fifthCircle 同）。
+const SHARP_ORDER = [3, 0, 4, 1, 5, 2, 6];
+const FLAT_ORDER = [6, 2, 5, 1, 4, 0, 3];
+function keyAlter(stepIdx: number, fifths: number): number {
+  if (fifths > 0) return SHARP_ORDER.slice(0, fifths).includes(stepIdx) ? 1 : 0;
+  if (fifths < 0) return FLAT_ORDER.slice(0, -fifths).includes(stepIdx) ? -1 : 0;
+  return 0;
+}
+
+/** 数字音符 → {step, alter, octave(科学记号)} 。可动 do：数字 1=主音，按调号求该音级的升降。 */
 function pitchOf(num: JpNum, fifths: number): { step: string; alter: number; octave: number } {
   const tonic = tonicStep(fifths);
   const degree = Math.max(1, Math.min(7, num.digit)) - 1; // 0-based
   const stepIdx = (tonic + degree) % 7;
   const wrap = Math.floor((tonic + degree) / 7);
-  const octave = 4 + num.octave + wrap;
-  return { step: STEPS[stepIdx], alter: 0, octave };
+  // 导入器对 A/B/Bb 调(fifths 3/5/-2)会把 jpOctave +1，导出端预先 -1 抵消以保往返。
+  const extra = (fifths === 3 || fifths === 5 || fifths === -2) ? 1 : 0;
+  const octave = 4 + num.octave + wrap - extra;
+  return { step: STEPS[stepIdx], alter: keyAlter(stepIdx, fifths), octave };
 }
 
 // 时值：基础=四分(quarter)=QUARTER 个 division；div 条下划线 → 每条减半；
@@ -96,8 +107,14 @@ export function toMusicXml(score: RecognizedScore): string {
         `<time><beats>${score.beats}</beats><beat-type>${score.beatType}</beat-type></time>` +
         `<clef><sign>G</sign><line>2</line></clef></attributes>`
       : "";
+    // 速度记号置于首小节（♩=NN）。下游导入器暂不读 tempo，仅供 MusicXML 完整性。
+    const tempoEl = mi === 1 && score.tempo
+      ? `<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit>` +
+        `<per-minute>${score.tempo}</per-minute></metronome></direction-type>` +
+        `<sound tempo="${score.tempo}"/></direction>`
+      : "";
     const noteEls = notes.map((n) => noteXml(n, score.fifths)).join("");
-    return `<measure number="${mi}">${attrs}${noteEls}</measure>`;
+    return `<measure number="${mi}">${attrs}${tempoEl}${noteEls}</measure>`;
   }).join("");
 
   const workXml = score.title ? `<work><work-title>${escapeXml(score.title)}</work-title></work>` : "";

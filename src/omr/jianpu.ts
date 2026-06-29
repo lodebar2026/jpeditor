@@ -225,12 +225,15 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
   if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, rows, numH, ocr);
 
-  // 页眉：标题/作词/作曲（同样仅 PaddleOCR 后端）。
+  // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
   let title: string | undefined, credits: string[] | undefined;
+  let fifths = 0, tempo: number | undefined;
   if (ocr.recognizeTexts && rows.length) {
     const h = await recognizeHeader(bin, comps, rows[0].topY, numH, ocr);
     title = h.title; credits = h.credits.length ? h.credits : undefined;
+    if (h.fifths !== undefined) fifths = h.fifths;
+    tempo = h.tempo;
   }
 
-  return { key: "C", fifths: 0, beats: 4, beatType: 4, rows, title, credits };
+  return { key: "C", fifths, beats: 4, beatType: 4, rows, title, credits, tempo };
 }

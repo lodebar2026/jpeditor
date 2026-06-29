@@ -12,9 +12,57 @@ export interface HeaderInfo {
   title?: string;
   /** 著作者整行文本（如 "作词：叶薇心"），下游作为 credit 写入 WordsByAndMusicBy。 */
   credits: string[];
+  /** 调号五度圈数（识别到 "1=♭B" 等时给出，否则 undefined→上游用默认 0）。 */
+  fifths?: number;
+  /** 速度（♩=NN），仅进 MusicXML（当前下游导入器不读 tempo，故不进 .jpwabc）。 */
+  tempo?: number;
 }
 
 interface HLine { text: string; charH: number; cx: number; cy: number; n: number; }
+
+// 大调主音字母 → 五度圈数（自然，无升降）。降号 -7、升号 +7。
+const NAT_FIFTHS: Record<string, number> = { C: 0, D: 2, E: 4, F: -1, G: 1, A: 3, B: 5 };
+
+/** 从页眉小字区解析调号("1=♭B")与速度("♩=76")。OCR 常把 ♭→b、♩→J；页眉碎片散落，
+ *  故按碎片就地匹配、必要时空间最近邻配对，避免跨列拼接误配。 */
+function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number } {
+  const res: { fifths?: number; tempo?: number } = {};
+  const toFifths = (note: string, acc: string): number | undefined => {
+    if (!(note in NAT_FIFTHS)) return undefined;
+    let f = NAT_FIFTHS[note];
+    if (acc === "b" || acc === "♭") f -= 7;
+    else if (acc === "#" || acc === "♯") f += 7;
+    return f >= -7 && f <= 7 ? f : undefined;
+  };
+
+  // 调号：先认单碎片内 "1=♭B" 或 "♭B"（升降号紧贴音名）。
+  for (const l of lines) {
+    const m = l.text.match(/1\s*[=＝]\s*([b#♭♯])\s*([A-G])/) || l.text.match(/([b#♭♯])\s*([A-G])(?![a-z])/);
+    if (m) { const f = toFifths(m[2], m[1]); if (f !== undefined) { res.fifths = f; break; } }
+  }
+  // 否则：独立升降号碎片 + 右侧最近大写音名碎片（"♭B" 被 OCR 拆成 "b" / "B4" 两块时）。
+  if (res.fifths === undefined) {
+    const accs = lines.filter((l) => /^[b#♭♯]$/.test(l.text.trim()));
+    const notes = lines.filter((l) => /^[A-G]/.test(l.text.trim()));
+    for (const a of accs) {
+      let best: HLine | null = null, bd = Infinity;
+      for (const n of notes) {
+        // dx 上限放宽：音名碎片常与时值数字粘连(如 "B4")，质心被右拉。
+        const dx = n.cx - a.cx, dy = Math.abs(n.cy - a.cy);
+        if (dx < -0.3 * a.charH || dx > 4.5 * a.charH || dy > 1.5 * a.charH) continue;
+        const d = dx * dx + dy * dy; if (d < bd) { bd = d; best = n; }
+      }
+      if (best) { const f = toFifths(best.text.trim()[0], a.text.trim()); if (f !== undefined) { res.fifths = f; break; } }
+    }
+  }
+
+  // 速度：含 "=NN" 的碎片（♩/J 常与数字同块，如 "J=76"）。
+  for (const l of lines) {
+    const t = l.text.match(/[=＝]\s*(\d{2,3})\b/);
+    if (t) { const bpm = parseInt(t[1], 10); if (bpm >= 30 && bpm <= 300) { res.tempo = bpm; break; } }
+  }
+  return res;
+}
 
 /** 识别页眉信息。firstStaffTopY = 第一乐谱行顶部 y；只看其上方区域。 */
 export async function recognizeHeader(
@@ -92,5 +140,8 @@ export async function recognizeHeader(
     if (!titleLine || ln.charH > titleLine.charH) titleLine = ln;  // 标题=最大字号中文行
   }
   if (titleLine) out.title = titleLine.text.trim();
+  const meta = parseMeta(lines);
+  out.fifths = meta.fifths;
+  out.tempo = meta.tempo;
   return out;
 }

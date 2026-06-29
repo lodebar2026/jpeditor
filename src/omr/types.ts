@@ -56,4 +56,5 @@ export interface RecognizedScore {
   rows: StaffRow[];
   title?: string;
   credits?: string[]; // 著作者整行文本（作词/作曲…），→ MusicXML <credit>
+  tempo?: number; // 速度 ♩=NN（仅进 MusicXML；当前下游导入器不读 tempo）
 }
