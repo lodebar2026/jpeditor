@@ -194,10 +194,12 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const rowMeta = rowsC.map((rd) => {
     const topY = Math.min(...rd.map((k) => k.bbox.y));
     const botY = Math.max(...rd.map((k) => rbottom(k.bbox)));
-    // 小节线须**纵向贯穿本行**（从行顶附近到行底附近），而不只是中心落在宽松带内。
-    // 乐谱行的竖线只覆盖该行数字高度，不会伸进下面的歌词行 → 歌词行自然得不到小节线被滤掉。
+    // 小节线须**纵向贯穿本行**（覆盖本行 [topY,botY] 的大部分）。歌词行竖笔在行下方、
+    // 与本行纵向重叠≈0 → 自然被滤掉。用"重叠占比"而非两道紧边界阈值：后者会因竖线起点
+    // 偏几像素(如行3 x=466 顶部仅低 1.2px)就误杀真线。
+    const rowH = botY - topY;
     const barlineXs = c.barlines
-      .filter((b) => b.bbox.y <= topY + numH * 0.4 && rbottom(b.bbox) >= botY - numH * 0.4)
+      .filter((b) => Math.min(rbottom(b.bbox), botY) - Math.max(b.bbox.y, topY) >= rowH * 0.7)
       .map((b) => rcx(b.bbox))
       .sort((a, b) => a - b);
     return { rd, topY, botY, barlineXs };
