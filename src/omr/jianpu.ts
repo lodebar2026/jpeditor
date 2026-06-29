@@ -55,12 +55,12 @@ function classify(comps: Component[]): { c: Classified; numH: number } {
   return { c, numH };
 }
 
-/** 块内每列前景像素数（在 [0, yLimit) 行范围内统计）。 */
-function columnInk(bin: Binary, b: Rect, yLimit: number): number[] {
+/** 块内每列前景像素数（在 [y0, yLimit) 行范围内统计）。 */
+function columnInk(bin: Binary, b: Rect, y0: number, yLimit: number): number[] {
   const cols = new Array(b.w).fill(0);
   for (let xx = 0; xx < b.w; xx++) {
     let cnt = 0;
-    for (let yy = 0; yy < yLimit; yy++) {
+    for (let yy = y0; yy < yLimit; yy++) {
       if (bin.data[(b.y + yy) * bin.w + (b.x + xx)]) cnt++;
     }
     cols[xx] = cnt;
@@ -68,10 +68,23 @@ function columnInk(bin: Binary, b: Rect, yLimit: number): number[] {
   return cols;
 }
 
-/** 在 [x0,x1) 列、[0,yLimit) 行范围内求前景紧包围盒（相对块原点的绝对坐标）。 */
-function tightBox(bin: Binary, b: Rect, x0: number, x1: number, yLimit: number): Rect | null {
+/** 块内每行前景像素数（[0, b.h)）。用于探测「弧帽 + 数字」纵向结构。 */
+function rowInk(bin: Binary, b: Rect): number[] {
+  const rows = new Array(b.h).fill(0);
+  for (let yy = 0; yy < b.h; yy++) {
+    let cnt = 0;
+    for (let xx = 0; xx < b.w; xx++) {
+      if (bin.data[(b.y + yy) * bin.w + (b.x + xx)]) cnt++;
+    }
+    rows[yy] = cnt;
+  }
+  return rows;
+}
+
+/** 在 [x0,x1) 列、[y0,yLimit) 行范围内求前景紧包围盒（相对块原点的绝对坐标）。 */
+function tightBox(bin: Binary, b: Rect, x0: number, x1: number, y0: number, yLimit: number): Rect | null {
   let minX = x1, maxX = x0 - 1, minY = yLimit, maxY = -1;
-  for (let yy = 0; yy < yLimit; yy++) {
+  for (let yy = y0; yy < yLimit; yy++) {
     for (let xx = x0; xx < x1; xx++) {
       if (bin.data[(b.y + yy) * bin.w + (b.x + xx)]) {
         if (xx < minX) minX = xx; if (xx > maxX) maxX = xx;
@@ -83,24 +96,50 @@ function tightBox(bin: Binary, b: Rect, x0: number, x1: number, yLimit: number):
   return { x: b.x + minX, y: b.y + minY, w: maxX - minX + 1, h: maxY - minY + 1 };
 }
 
+// 探测「圆滑线弧帽 + 数字」粘连块：弧线常贴着它跨越的两个数字顶端，4-连通把弧与数字粘成
+// 一个**明显超高(h>1.2字号)**的块。结构（实测）：顶部弧帽(单段宽笔)→两条下垂弧尾(低墨谷)→
+// 底部 ~一个字号的数字体。据**行墨廓线**找谷底、把数字体定位到底部，弧帽切出来供 detectSlurs 用。
+// 返回 { bodyTop: 数字体起始行(块内偏移，0=无弧), arc: 弧帽紧包围盒|null }。
+function mergedArcSplit(bin: Binary, b: Rect, numH: number): { bodyTop: number; arc: Rect | null } {
+  if (b.h <= numH * 1.2 || b.w < numH * 1.2) return { bodyTop: 0, arc: null };
+  const rows = rowInk(bin, b);
+  const maxInk = Math.max(...rows);
+  // 在 [0.3字号, 块高-0.6字号) 内找最低墨行（弧尾与数字体之间的谷）。
+  const lo = Math.floor(numH * 0.3), hi = Math.floor(b.h - numH * 0.6);
+  let vIdx = -1, vMin = Infinity;
+  for (let y = lo; y < hi; y++) if (rows[y] < vMin) { vMin = rows[y]; vIdx = y; }
+  if (vIdx < 0 || vMin >= maxInk * 0.3) return { bodyTop: 0, arc: null }; // 无清晰分隔 → 不是弧
+  // 数字体顶：自谷底下行找首个墨量回升到 0.35×峰值 的行。
+  let bodyTop = vIdx;
+  for (let y = vIdx; y < b.h; y++) if (rows[y] >= maxInk * 0.35) { bodyTop = y; break; }
+  // 弧帽高须在 [0.2, 0.85]×字号（短于一个数字），数字体须 ≥0.7字号；否则疑似两数字纵向粘连，弃。
+  if (bodyTop < numH * 0.2 || bodyTop > numH * 0.85 || b.h - bodyTop < numH * 0.7) return { bodyTop: 0, arc: null };
+  const arc = tightBox(bin, b, 0, b.w, 0, bodyTop);
+  if (!arc || arc.w < b.w * 0.55) return { bodyTop: 0, arc: null }; // 弧帽须横跨大半块宽
+  return { bodyTop, arc };
+}
+
 // 把一个数字块拆成若干数字格，并测出共享的下划线条数(div)。
 // jianpu.cpp 用形态学分离横线；这里用"底部带状宽行 = 下划线"+"上部列投影空隙 = 数字间隔"。
-function splitBlock(bin: Binary, comp: Component, numH: number): DigitCore[] {
+function splitBlock(bin: Binary, comp: Component, numH: number): { cores: DigitCore[]; arc: Rect | null } {
   const b = comp.bbox;
   // 减时线(下划线)在本图里是数字**正下方的独立横线连通块**(归入 c.hlines)，并不在数字块内
   //（数字块高度≈字号，块内底部宽行其实是数字自身的底横笔，初版据此判 div 会把 5/6/2/3 全部误判）。
   // 因此 div 不在此处测，改到 buildJpNums 里按"数字下方的 hline"统计（见 underlineDiv）。
   const div = 0;
+  // 圆滑线弧帽常与所跨数字粘连成超高块 → 仅**取出弧帽**(供 detectSlurs)；数字格仍按整块切分。
+  // （不据弧帽裁数字体：块包围盒常跨到相邻独立数字上，裁后底带会漏进邻字像素 → 重复数字。）
+  const { arc } = mergedArcSplit(bin, b, numH);
   const yLimit = b.h;
 
   // 2) 上部按列投影空隙切分（仅当块明显宽于一个数字时才尝试，避免把单个数字切碎）。
   const cores: DigitCore[] = [];
   if (b.w <= numH * 1.4) {
-    const box = tightBox(bin, b, 0, b.w, yLimit) ?? { x: b.x, y: b.y, w: b.w, h: yLimit };
+    const box = tightBox(bin, b, 0, b.w, 0, yLimit) ?? { x: b.x, y: b.y, w: b.w, h: yLimit };
     cores.push({ bbox: box, div });
-    return cores;
+    return { cores, arc };
   }
-  const cols = columnInk(bin, b, yLimit);
+  const cols = columnInk(bin, b, 0, yLimit);
   // 收集前景列的连续段（空列 = 间隔）
   const segs: Array<[number, number]> = [];
   let s = -1;
@@ -117,10 +156,10 @@ function splitBlock(bin: Binary, comp: Component, numH: number): DigitCore[] {
     else merged.push([a, e]);
   }
   for (const [a, e] of merged.length ? merged : segs) {
-    const box = tightBox(bin, b, a, e, yLimit);
+    const box = tightBox(bin, b, a, e, 0, yLimit);
     if (box) cores.push({ bbox: box, div });
   }
-  return cores.length ? cores : [{ bbox: { x: b.x, y: b.y, w: b.w, h: yLimit }, div }];
+  return { cores: cores.length ? cores : [{ bbox: { x: b.x, y: b.y, w: b.w, h: yLimit }, div }], arc };
 }
 
 // 按 y 把数字格分行（贪心：行内 y 重叠或中心接近）。
@@ -188,8 +227,17 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const { c, numH } = classify(comps);
 
   // 数字块 → 数字格（拆分粘连/连音，并测各自下划线 div）。
+  // 与数字粘连的圆滑线弧帽在此切出，作为合成连通块补进 comps 供 detectSlurs 检测。
   const allCores: DigitCore[] = [];
-  for (const blk of c.blocks) allCores.push(...splitBlock(bin, blk, numH));
+  const mergedArcs: Rect[] = [];
+  for (const blk of c.blocks) {
+    const { cores, arc } = splitBlock(bin, blk, numH);
+    allCores.push(...cores);
+    if (arc) mergedArcs.push(arc);
+  }
+  const arcComps: Component[] = mergedArcs.map((bb, i) => ({
+    id: 1_000_000 + i, bbox: bb, area: bb.w * bb.h, cx: bb.x + bb.w / 2, cy: bb.y + bb.h / 2,
+  }));
 
   const rowsC = groupRows(allCores, numH).filter((r) => r.length >= 3);
   // 每行的 y 范围 + 穿过的小节线。
@@ -224,7 +272,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   }));
 
   // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
-  detectSlurs(comps, rows, numH);
+  // comps 之外再补上与数字粘连、已被切出的弧帽（arcComps）。
+  detectSlurs([...comps, ...arcComps], rows, numH);
 
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
   if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, rows, numH, ocr);
