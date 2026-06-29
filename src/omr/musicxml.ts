@@ -69,6 +69,17 @@ function lyricsXml(num: JpNum): string {
   return out;
 }
 
+// 圆滑线/连音线 <notations>。MusicXML 元素顺序：notations 在 lyric 之前。tied 既是 notations
+// 子元素，连音线还需在 <pitch> 后加 <tie> 播放元素，但下游导入器只读 notations/tied，故仅写 notations。
+function notationsXml(num: JpNum): string {
+  const ns: string[] = [];
+  if (num.tieStop) ns.push(`<tied type="stop"/>`);
+  if (num.tieStart) ns.push(`<tied type="start"/>`);
+  if (num.slurStop) ns.push(`<slur type="stop"/>`);
+  if (num.slurStart) ns.push(`<slur type="start"/>`);
+  return ns.length ? `<notations>${ns.join("")}</notations>` : "";
+}
+
 function noteXml(num: JpNum, fifths: number): string {
   if (num.digit === 0) {
     const d = durationOf(num);
@@ -78,7 +89,7 @@ function noteXml(num: JpNum, fifths: number): string {
   const d = durationOf(num);
   const alterXml = p.alter ? `<alter>${p.alter}</alter>` : "";
   return `<note><pitch><step>${p.step}</step>${alterXml}<octave>${p.octave}</octave></pitch>` +
-    `<duration>${d.divisions}</duration><type>${d.type}</type>${"<dot/>".repeat(d.dots)}${lyricsXml(num)}</note>`;
+    `<duration>${d.divisions}</duration><type>${d.type}</type>${"<dot/>".repeat(d.dots)}${notationsXml(num)}${lyricsXml(num)}</note>`;
 }
 
 // 把一行按小节线 x 切成小节。
