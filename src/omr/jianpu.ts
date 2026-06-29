@@ -338,6 +338,22 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
   if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, useRows, numH, ocr);
 
+  // 据歌词纠正休止误判：休止符不带歌词，故「digit=0 却对齐到歌词」几乎必是退化字形被 CTC 误判成空白
+  // →默认 0(见 paddleocr 的 empty→0)。取数字候选排序里的首个非零值复原（实测低对比图里糊住的"3"）。
+  if (ocr.rankDigits) {
+    const bad: JpNum[] = [];
+    for (const r of useRows) for (const n of r.nums) {
+      if (n.digit === 0 && n.lyrics?.some((s) => s && s.trim())) bad.push(n);
+    }
+    if (bad.length) {
+      const ranks = await ocr.rankDigits(bin, bad.map((n) => n.bbox));
+      bad.forEach((n, i) => {
+        const nz = ranks[i]?.find((d) => d !== 0);
+        if (nz !== undefined) n.digit = nz;
+      });
+    }
+  }
+
   // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
   let title: string | undefined, credits: string[] | undefined;
   let fifths = 0, tempo: number | undefined;

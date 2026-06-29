@@ -9,6 +9,9 @@ export interface OcrBackend {
   /** 可选：识别一组文本画布（用于中文歌词）。返回与输入等长的字符串数组。
    *  仅支持中文的后端（PaddleOCR）实现此方法；不实现 → 管线跳过歌词识别。 */
   recognizeTexts?(canvases: OffscreenCanvas[]): Promise<string[]>;
+  /** 可选：对每个 bbox 返回数字候选 0-7 的置信度降序排列（首位即 recognizeDigits 的次优来源）。
+   *  用于上层据上下文（如有歌词的音符不可能是休止 0）剔除误判、取次优候选。 */
+  rankDigits?(bin: Binary, rects: Rect[]): Promise<number[][]>;
 }
 
 /** 占位后端：无 OCR 时返回 0（用于先打通管线/结构调试）。 */

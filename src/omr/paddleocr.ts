@@ -74,8 +74,8 @@ function cellOf(src: OffscreenCanvas, bin: Binary, r: Rect, cell = 64, pad = 8):
   return cv;
 }
 
-/** 对一个文本行/字符画布跑 PP-OCRv4 rec → 字符串。 */
-async function recognizeCanvas(cell: OffscreenCanvas): Promise<string> {
+/** 对一个文本行/字符画布跑 PP-OCRv4 rec → 原始 logits [T,C]。 */
+async function inferLogits(cell: OffscreenCanvas): Promise<{ arr: Float32Array; T: number; C: number }> {
   // 等比缩放到高 REC_H、宽 ≤ REC_MAXW，零填充。
   const ratio = cell.width / cell.height;
   let w = Math.ceil(REC_H * ratio);
@@ -103,7 +103,12 @@ async function recognizeCanvas(cell: OffscreenCanvas): Promise<string> {
   const out = await _session.run(feeds);
   const o = out[_session.outputNames[0]];
   const [, T, C] = o.dims as number[];
-  const arr = o.data as Float32Array;
+  return { arr: o.data as Float32Array, T, C };
+}
+
+/** CTC 贪心解码 → 字符串。 */
+async function recognizeCanvas(cell: OffscreenCanvas): Promise<string> {
+  const { arr, T, C } = await inferLogits(cell);
   const chars = _chars!;
   let prev = -1, s = "";
   for (let t = 0; t < T; t++) {
@@ -115,8 +120,31 @@ async function recognizeCanvas(cell: OffscreenCanvas): Promise<string> {
   return s;
 }
 
+// 字符表里数字 '0'..'7' 的类别索引（首次用时据 _chars 求出）。
+let _digitIdx: number[] | null = null;
+function digitClassIdx(): number[] {
+  if (_digitIdx) return _digitIdx;
+  const chars = _chars!;
+  _digitIdx = Array.from({ length: 8 }, (_, d) => chars.indexOf(String(d)));
+  return _digitIdx;
+}
+
+/** 单数字格 → 候选数字按置信度降序（取各数字类在所有时间步上的最大 logit 排序）。
+ * 用于退化字形（贪心解码出空/非数字、默认成 0=休止）时，由上层据上下文（如歌词）剔除 0 取次优。 */
+async function rankDigitCandidates(cell: OffscreenCanvas): Promise<number[]> {
+  const { arr, T, C } = await inferLogits(cell);
+  const idx = digitClassIdx();
+  const scored = idx.map((ci, d) => {
+    let mx = -Infinity;
+    if (ci >= 0) for (let t = 0; t < T; t++) { const v = arr[t * C + ci]; if (v > mx) mx = v; }
+    return { d, mx };
+  });
+  scored.sort((a, b) => b.mx - a.mx);
+  return scored.map((s) => s.d);
+}
+
 export function paddleOcrBackend(): OcrBackend {
-  return {
+  const backend = {
     async recognizeDigits(bin: Binary, rects: Rect[]): Promise<number[]> {
       if (!rects.length) return [];
       await ensureSession();
@@ -130,6 +158,14 @@ export function paddleOcrBackend(): OcrBackend {
       }
       return out;
     },
+    async rankDigits(bin: Binary, rects: Rect[]): Promise<number[][]> {
+      if (!rects.length) return [];
+      await ensureSession();
+      const src = binToCanvas(bin);
+      const out: number[][] = [];
+      for (const r of rects) out.push(await rankDigitCandidates(cellOf(src, bin, r)));
+      return out;
+    },
     async recognizeTexts(canvases: OffscreenCanvas[]): Promise<string[]> {
       if (!canvases.length) return [];
       await ensureSession();
@@ -138,4 +174,5 @@ export function paddleOcrBackend(): OcrBackend {
       return out;
     },
   };
+  return backend;
 }
