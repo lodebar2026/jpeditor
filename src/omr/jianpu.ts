@@ -13,6 +13,7 @@ import { connectedComponents } from "./ccl";
 import type { OcrBackend } from "./ocr";
 import { recognizeLyrics } from "./lyrics";
 import { recognizeHeader } from "./header";
+import { detectSlurs } from "./slur";
 
 const overlapX = (a: Rect, b: Rect) => Math.max(0, Math.min(rright(a), rright(b)) - Math.max(a.x, b.x));
 const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
@@ -221,6 +222,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs,
     nums: buildJpNums(m.rd, numH, c, ocrDigit),
   }));
+
+  // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
+  detectSlurs(comps, rows, numH);
 
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
   if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, rows, numH, ocr);

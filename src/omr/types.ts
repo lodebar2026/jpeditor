@@ -38,6 +38,11 @@ export interface JpNum {
   div: number; // 下划线条数（每条时值减半）
   augment: number; // 增时线 '-' 数（延长拍）
   lyrics?: string[]; // 歌词：按声部(verse)索引，lyrics[0]=第一段(W1)、lyrics[1]=第二段……
+  // 圆滑线/连音线（音符上方弧形 ⌒）。一个音符可同时是上一条的结束与下一条的开始，故各用布尔。
+  slurStart?: boolean; // 圆滑线起点 → MusicXML <slur type="start">
+  slurStop?: boolean;  // 圆滑线终点 → <slur type="stop">
+  tieStart?: boolean;  // 连音线起点（弧下同音高）→ <tied type="start">
+  tieStop?: boolean;   // 连音线终点 → <tied type="stop">
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */
