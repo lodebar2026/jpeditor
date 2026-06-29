@@ -100,10 +100,15 @@ export function toMusicXml(score: RecognizedScore): string {
     return `<measure number="${mi}">${attrs}${noteEls}</measure>`;
   }).join("");
 
+  const workXml = score.title ? `<work><work-title>${escapeXml(score.title)}</work-title></work>` : "";
+  // 著作者整行（作词：…/作曲：…）作为 credit；下游 jpscore 据此拼 WordsByAndMusicBy。
+  const creditsXml = (score.credits ?? [])
+    .map((c) => `<credit page="1"><credit-words>${escapeXml(c)}</credit-words></credit>`).join("");
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
 <score-partwise version="3.0">
-<part-list><score-part id="P1"><part-name>Jianpu</part-name></score-part></part-list>
+${workXml}${creditsXml}<part-list><score-part id="P1"><part-name>Jianpu</part-name></score-part></part-list>
 <part id="P1">${measuresXml}</part>
 </score-partwise>`;
 }

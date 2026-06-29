@@ -13,7 +13,7 @@ const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); retu
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
 
 /** 把一行(同 y)的连通块按 x 邻近并成字格。返回每个字格的合并包围盒，按 x 排序。 */
-function mergeToChars(line: Component[], charH: number): Rect[] {
+export function mergeToChars(line: Component[], charH: number): Rect[] {
   const sorted = [...line].sort((a, b) => a.bbox.x - b.bbox.x);
   const cells: Rect[] = [];
   const gap = charH * 0.28;       // 偏旁间距 < 此值算同字
@@ -39,7 +39,7 @@ interface Chunk { rowIdx: number; verse: number; cells: Rect[]; }
 const STRIP_H = 48, STRIP_MAXW = 300; // rec 宽上限 320 → 单条限 ~5 字免压扁
 
 /** 整幅二值图 → 黑字白底源画布（供拼条裁剪）。 */
-function srcCanvasOf(bin: Binary): OffscreenCanvas {
+export function srcCanvasOf(bin: Binary): OffscreenCanvas {
   const cv = new OffscreenCanvas(bin.w, bin.h);
   const ctx = cv.getContext("2d");
   if (!ctx) throw new Error("无法创建 2D 画布上下文");
@@ -51,7 +51,7 @@ function srcCanvasOf(bin: Binary): OffscreenCanvas {
 
 /** 裁一块字格所覆盖的**自然连续区域**(保留原始字间距/渲染，不重拼)，缩到高 STRIP_H 整体 rec。
  *  自然排版让 PP-OCR 远比逐字/拼接 rec 准；块按宽度上限切，避免长行被压扁(rec 宽上限 320)。 */
-function buildStrip(src: OffscreenCanvas, cells: Rect[], H = STRIP_H): OffscreenCanvas {
+export function buildStrip(src: OffscreenCanvas, cells: Rect[], H = STRIP_H): OffscreenCanvas {
   const x0 = Math.min(...cells.map((r) => r.x));
   const x1 = Math.max(...cells.map((r) => r.x + r.w));
   const y0 = Math.min(...cells.map((r) => r.y));
@@ -68,7 +68,7 @@ function buildStrip(src: OffscreenCanvas, cells: Rect[], H = STRIP_H): Offscreen
 }
 
 /** 把一行字格按自然宽度上限切成若干块（每块缩到 H 后 ≤ ~300px → 不超 rec 宽上限 320）。 */
-function chunkCells(cells: Rect[]): Rect[][] {
+export function chunkCells(cells: Rect[]): Rect[][] {
   const chunks: Rect[][] = [];
   let cur: Rect[] = [];
   const widthAtH = (rs: Rect[]) => {

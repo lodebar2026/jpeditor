@@ -55,4 +55,5 @@ export interface RecognizedScore {
   beatType: number;
   rows: StaffRow[];
   title?: string;
+  credits?: string[]; // 著作者整行文本（作词/作曲…），→ MusicXML <credit>
 }
