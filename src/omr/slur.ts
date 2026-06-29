@@ -31,8 +31,10 @@ export function detectSlurs(comps: Component[], rows: StaffRow[], numH: number):
 
     for (const arc of arcs) {
       const a = arc.bbox;
-      // 找弧线横向覆盖的音符（质心落在弧线 x 跨度内，左右各放宽 0.3 字号容端点偏移）。
-      const covered = row.nums.filter((n) => between(rcx(n.bbox), a.x - numH * 0.3, rright(a) + numH * 0.3));
+      // 找弧线横向覆盖的音符（质心落在弧线 x 跨度内，左右各放宽 0.5 字号容端点偏移）。
+      // 弧线常画在两音"符头之间"而非正压音符质心，左缘可比首音质心偏右半个字号
+      //（实测基督更美行5 `(3_5_)`：弧 x129、首音 3 质心 114，差 15px≈0.3字号，0.3 容差差 0.6px 漏掉）。
+      const covered = row.nums.filter((n) => between(rcx(n.bbox), a.x - numH * 0.5, rright(a) + numH * 0.5));
       if (covered.length < 2) continue;
       const start = covered[0], stop = covered[covered.length - 1];
       // tie：恰好相邻两音、且同音高(数字+八度相同)；否则按 slur。

@@ -194,6 +194,7 @@ function groupRows(cores: DigitCore[], numH: number): DigitCore[][] {
 // 为一行的每个数字格归并修饰（八度点/增时线/附点），div 已随数字格带入。
 function buildJpNums(
   rowCores: DigitCore[], numH: number, cls: Classified, ocrDigit: (b: Rect) => number,
+  arcs: Component[],
 ): JpNum[] {
   const out: JpNum[] = [];
   for (let i = 0; i < rowCores.length; i++) {
@@ -216,8 +217,19 @@ function buildJpNums(
       if (Math.abs(rcx(kb) - dcx) > numH * 0.4) continue;
       const gapAbove = d.y - rbottom(kb);  // 点在数字上方的间隙
       const gapBelow = kb.y - rbottom(d);  // 点在数字下方的间隙
-      if (gapAbove >= -1 && gapAbove < numH * 0.8) octave++;       // 上点 → 高八度
-      else if (gapBelow >= -1 && gapBelow < numH * 0.8) octave--;  // 下点 → 低八度
+      if (gapAbove >= -1 && gapAbove < numH * 0.8) {
+        // 圆滑线弧帽的左/右"落脚"碎片常断成一个小斑、正落在弧端正下方、贴着数字顶——会被误当高八度点。
+        // 判据：有一条弧线(宽薄连通块)横跨此斑、且其**底缘正落在斑的纵向区间内** (dotTop, dotBot+0.15字号]
+        // ——即弧脚下垂到与小斑重叠，小斑就是断开的弧脚。**关键**：真高八度点(如日光行3 弧下的 2'/3')
+        // 的弧线整体在点**上方**(弧底缘高于点顶 → 不重叠)，或弧实为下方下划线(弧底缘远在点底之下)，
+        // 两者都落在窗口外，不会误剔。(实测：基督弧底-点顶=+9/弧底-点底=-3 命中；日光 -5/-16 不命中。)
+        const isArcFoot = arcs.some((arc) => {
+          const ab = arc.bbox;
+          return rbottom(ab) > kb.y && rbottom(ab) <= rbottom(kb) + numH * 0.15 &&
+            rcx(kb) >= ab.x - numH * 0.4 && rcx(kb) <= rright(ab) + numH * 0.4;
+        });
+        if (!isArcFoot) octave++;       // 上点 → 高八度
+      } else if (gapBelow >= -1 && gapBelow < numH * 0.8) octave--;  // 下点 → 低八度
     }
     octave = Math.max(-3, Math.min(3, octave)); // 简谱八度极少超过 ±2~3
     let div = 0;
@@ -261,8 +273,19 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     // 与本行纵向重叠≈0 → 自然被滤掉。用"重叠占比"而非两道紧边界阈值：后者会因竖线起点
     // 偏几像素(如行3 x=466 顶部仅低 1.2px)就误杀真线。
     const rowH = botY - topY;
-    const barlineXs = c.barlines
-      .filter((b) => Math.min(rbottom(b.bbox), botY) - Math.max(b.bbox.y, topY) >= rowH * 0.7)
+    // 纵向贯穿本行的小节线候选（覆盖本行 [topY,botY] 的大部分）。歌词行竖笔在行下方、
+    // 与本行纵向重叠≈0 → 自然被滤掉。
+    const spanning = c.barlines.filter(
+      (b) => Math.min(rbottom(b.bbox), botY) - Math.max(b.bbox.y, topY) >= rowH * 0.7,
+    );
+    // 真小节线是贯穿整个谱行的高竖线（实测远高于数字行：基督更美 h118 vs 数字 h55）；而数字 "1"
+    // 的竖笔、扫描里的细竖纹等"伪小节线"仅约一个字高、且常仅 1px 宽，会撞上面的贯穿判据。它们与真线
+    // 同 x 反复出现 → 凭单条 overlap 难剔。但**同一谱行内真小节线高度集中成簇且明显最高**：按本行候选
+    // 的最大高度设相对门（<0.6×行内最高 → 丢弃）即可干净分开——基督更美 h44<0.6×118 被剔，而日光
+    // (45~70)、世上(真 35~49)行内最高与真线同簇，整簇保留。绝对/字号比阈值跨图不通，故用行内相对。
+    const maxH = Math.max(0, ...spanning.map((b) => b.bbox.h));
+    const barlineXs = spanning
+      .filter((b) => b.bbox.h >= maxH * 0.6)
       .map((b) => rcx(b.bbox))
       .sort((a, b) => a - b);
     return { rd, topY, botY, barlineXs };
@@ -279,9 +302,15 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   allDigits.forEach((k, i) => digitCache.set(k.bbox, recog[i] ?? 0));
   const ocrDigit = (b: Rect) => digitCache.get(b) ?? 0;
 
+  // 圆滑线弧帽候选（宽而薄的连通块）：用于在 buildJpNums 里把弧脚碎片从"高八度点"中剔除。
+  const arcCands = [...comps, ...arcComps].filter((k) => {
+    const b = k.bbox;
+    return b.w >= numH * 0.8 && b.h >= 2 && b.h <= numH * 0.8 && b.w / b.h >= 2;
+  });
+
   const allRows: StaffRow[] = staff.map((m) => ({
     topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs,
-    nums: buildJpNums(m.rd, numH, c, ocrDigit),
+    nums: buildJpNums(m.rd, numH, c, ocrDigit, arcCands),
   }));
 
   // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是
