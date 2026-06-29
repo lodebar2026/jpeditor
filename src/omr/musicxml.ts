@@ -37,22 +37,30 @@ function pitchOf(num: JpNum, fifths: number): { step: string; alter: number; oct
 // 只看基础值、augment/dot 后与 duration 不一致的 bug）。
 const QUARTER = 4; // divisions per quarter（与 <divisions>4 一致）
 
-function typeForDivisions(div: number): string {
-  const q = div / QUARTER; // 折算成"四分音符数"
-  if (q >= 4) return "whole";
-  if (q >= 2) return "half";
-  if (q >= 1) return "quarter";
-  if (q >= 0.5) return "eighth";
-  return "16th";
+// 由总时值(divisions)反推 MusicXML 的 <type> + 附点数。**附点不只来自简谱附点**：增时线把音延长到
+// 3 拍(如 3/4 的 5--)即「附点二分」、6 拍即「附点全」——必须吐成 type=half/whole + <dot/>，否则
+// 下游导入器(score/musicxml.ts::parseDuration)只按 type 定 beats(half→2)，会把 5-- 还原成 5-(少一根
+// 增时线)。故这里据时值匹配 基础音符×{1, ×1.5(单附点), ×1.75(双附点)}。
+function noteTypeDots(divisions: number): { type: string; dots: number } {
+  const q = divisions / QUARTER; // 折算成"四分音符数"
+  const bases: Array<[string, number]> = [
+    ["whole", 4], ["half", 2], ["quarter", 1], ["eighth", 0.5], ["16th", 0.25], ["32nd", 0.125],
+  ];
+  for (const [type, val] of bases) {
+    if (Math.abs(q - val) < 1e-6) return { type, dots: 0 };
+    if (Math.abs(q - val * 1.5) < 1e-6) return { type, dots: 1 };
+    if (Math.abs(q - val * 1.75) < 1e-6) return { type, dots: 2 };
+  }
+  for (const [type, val] of bases) if (q >= val - 1e-6) return { type, dots: 0 }; // 非规整时值：取不超过的最大基础音符
+  return { type: "16th", dots: 0 };
 }
 
 function durationOf(num: JpNum): { type: string; divisions: number; dots: number } {
   const base = QUARTER / Math.pow(2, num.div); // 下划线每条减半
   let total = base + num.augment * QUARTER;    // 增时线每条 +1 拍
-  const dots = num.dot > 0 ? 1 : 0;
-  if (dots) total += base / 2;                 // 附点 +半
+  if (num.dot > 0) total += base / 2;          // 附点 +半
   const divisions = Math.max(1, Math.round(total));
-  return { type: typeForDivisions(divisions), divisions, dots };
+  return { divisions, ...noteTypeDots(divisions) };
 }
 
 const escapeXml = (s: string) => s.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"));
