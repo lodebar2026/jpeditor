@@ -266,27 +266,38 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   allDigits.forEach((k, i) => digitCache.set(k.bbox, recog[i] ?? 0));
   const ocrDigit = (b: Rect) => digitCache.get(b) ?? 0;
 
-  const rows: StaffRow[] = staff.map((m) => ({
+  const allRows: StaffRow[] = staff.map((m) => ({
     topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs,
     nums: buildJpNums(m.rd, numH, c, ocrDigit),
   }));
 
+  // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是
+  // 休止(digit 0)，且贯穿小节线很少。实测真乐谱行休止占比 ≤18%、小节线 ≥4；伪行休止 ≥79%、
+  // 线 ≤2，间隔极大。用「休止占比 < 0.5」即可干净分开（保留余量，避免误杀含少量休止的真行）。
+  const rows = allRows.filter((r) => {
+    if (!r.nums.length) return false;
+    const rest = r.nums.filter((n) => n.digit === 0).length;
+    return rest / r.nums.length < 0.5;
+  });
+  // 整曲都被判伪行（极端情况）则回退，至少出点东西。
+  const useRows = rows.length ? rows : allRows;
+
   // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
   // comps 之外再补上与数字粘连、已被切出的弧帽（arcComps）。
-  detectSlurs([...comps, ...arcComps], rows, numH);
+  detectSlurs([...comps, ...arcComps], useRows, numH);
 
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
-  if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, rows, numH, ocr);
+  if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, useRows, numH, ocr);
 
   // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
   let title: string | undefined, credits: string[] | undefined;
   let fifths = 0, tempo: number | undefined;
-  if (ocr.recognizeTexts && rows.length) {
-    const h = await recognizeHeader(bin, comps, rows[0].topY, numH, ocr);
+  if (ocr.recognizeTexts && useRows.length) {
+    const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr);
     title = h.title; credits = h.credits.length ? h.credits : undefined;
     if (h.fifths !== undefined) fifths = h.fifths;
     tempo = h.tempo;
   }
 
-  return { key: "C", fifths, beats: 4, beatType: 4, rows, title, credits, tempo };
+  return { key: "C", fifths, beats: 4, beatType: 4, rows: useRows, title, credits, tempo };
 }
