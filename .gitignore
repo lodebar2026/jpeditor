@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# OMR 批量测试输出
+measure-all.csv
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
