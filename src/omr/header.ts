@@ -35,10 +35,13 @@ function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number } {
     return f >= -7 && f <= 7 ? f : undefined;
   };
 
-  // 调号：先认单碎片内 "1=♭B" 或 "♭B"（升降号紧贴音名）。
+  // 调号：先认单碎片内 "1=♭B" 或 "♭B"（升降号紧贴音名）；再认自然调 "1=G"（音名无升降号）。
   for (const l of lines) {
-    const m = l.text.match(/1\s*[=＝]\s*([b#♭♯])\s*([A-G])/) || l.text.match(/([b#♭♯])\s*([A-G])(?![a-z])/);
-    if (m) { const f = toFifths(m[2], m[1]); if (f !== undefined) { res.fifths = f; break; } }
+    const acc = l.text.match(/1\s*[=＝]\s*([b#♭♯])\s*([A-G])/) || l.text.match(/([b#♭♯])\s*([A-G])(?![a-z])/);
+    if (acc) { const f = toFifths(acc[2], acc[1]); if (f !== undefined) { res.fifths = f; break; } }
+    // 自然调："1=G"/"1=C4"(4 来自拍号)。音名后须非升降号(否则属上面的带号情形)、非小写字母。
+    const nat = l.text.match(/1\s*[=＝]\s*([A-G])(?![b#♭♯a-z])/);
+    if (nat && nat[1] in NAT_FIFTHS) { res.fifths = NAT_FIFTHS[nat[1]]; break; }
   }
   // 否则：独立升降号碎片 + 右侧最近大写音名碎片（"♭B" 被 OCR 拆成 "b" / "B4" 两块时）。
   if (res.fifths === undefined) {
