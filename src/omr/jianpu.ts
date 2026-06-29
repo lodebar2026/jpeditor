@@ -206,10 +206,17 @@ function buildJpNums(
     let octave = 0, dot = 0, augment = 0;
 
     const dcx = rcx(d), dcy = rcy(d);
+    // 右侧附点窗口：附点紧跟其修饰的音符，但实测它常落在到下一音符空隙的中段（约 50%，
+    // 即 ~1.3×字号外），远超固定的 0.8×字号窗。改用空隙相对界——取本音符右缘到下一音符左缘
+    // 间隙的前 60%（无下一音符则放宽到 1.6×字号）；垂直居中(|Δcy|<0.5)已排除上/下八度点，
+    // 60% 上界确保把点归给本音符而非下一音符（下一音符的八度点居中于其自身，落在 60% 之外）。
+    const dotMaxX = next
+      ? rright(d) + (next.x - rright(d)) * 0.6
+      : rright(d) + numH * 1.6;
     for (const k of cls.dots) {
       const kb = k.bbox;
-      // 右侧附点：在数字右侧近处、垂直居中。
-      if (rcx(kb) > rright(d) && rcx(kb) < rright(d) + numH * 0.8 && Math.abs(rcy(kb) - dcy) < numH * 0.5) { dot++; continue; }
+      // 右侧附点：在数字右侧空隙前段、垂直居中。
+      if (rcx(kb) > rright(d) && rcx(kb) < dotMaxX && Math.abs(rcy(kb) - dcy) < numH * 0.5) { dot++; continue; }
       // 八度点：须足够大(排除噪点小斑)、水平居中于数字、且紧贴上/下方（间隙 < 0.8×字号）。
       // 阈值据实测分布定（真八度点 w/h≈0.21~0.30×numH、|dx|≤0.14；噪点误判那个是 0.09×0.11、dx=0.45）：
       // 尺寸下限 0.15、居中收到 0.4，两道独立门都能剔除噪点，且对真点留足余量。
