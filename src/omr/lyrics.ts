@@ -11,6 +11,8 @@ import type { OcrBackend } from "./ocr";
 
 const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
+// 歌词里贴在字尾的全角标点（简谱印刷用全角；半角多为页眉/版权噪声，不收）。
+const LYRIC_PUNCT = /[，。、；：！？…—]/;
 
 /** 把一行(同 y)的连通块按 x 邻近并成字格。返回每个字格的合并包围盒，按 x 排序。 */
 export function mergeToChars(line: Component[], charH: number): Rect[] {
@@ -149,17 +151,23 @@ export async function recognizeLyrics(
   const texts = await ocr.recognizeTexts(strips);
 
   // 每块的识别字按字格索引取 x，汇总到 (row,verse)，再单调最近分配给音符。
+  // 单元 = 一个汉字 + 紧随其后的尾随标点（，。、；！？等）：简谱标点向左贴在前一字、不占音符，
+  // 故并入该音节字符串而非另立一格——保持"音节数==字格数"的对齐前提不变。
   const perLine = new Map<string, Array<{ x: number; ch: string }>>();
   for (let s = 0; s < chunks.length; s++) {
     const { rowIdx, verse, cells } = chunks[s];
-    const chars = (texts[s].match(/[一-鿿]/g) || []).filter(isHanzi);
-    if (!chars.length) continue;
+    const toks: string[] = [];
+    for (const ch of texts[s]) {
+      if (isHanzi(ch)) toks.push(ch);
+      else if (LYRIC_PUNCT.test(ch) && toks.length) toks[toks.length - 1] += ch; // 尾随标点并入前一字
+    }
+    if (!toks.length) continue;
     const key = `${rowIdx}:${verse}`;
     if (!perLine.has(key)) perLine.set(key, []);
     const placed = perLine.get(key)!;
-    for (let j = 0; j < chars.length; j++) {
-      const ci = chars.length === cells.length ? j : Math.min(cells.length - 1, Math.floor(j * cells.length / chars.length));
-      placed.push({ x: rcx(cells[ci]), ch: chars[j] });
+    for (let j = 0; j < toks.length; j++) {
+      const ci = toks.length === cells.length ? j : Math.min(cells.length - 1, Math.floor(j * cells.length / toks.length));
+      placed.push({ x: rcx(cells[ci]), ch: toks[j] });
     }
   }
 
