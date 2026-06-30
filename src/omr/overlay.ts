@@ -62,25 +62,30 @@ function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number): void {
   // 数字（0=休止 → 0）
   g.appendChild(text(cx, cy, String(n.digit), H * 0.95));
 
-  // 八度点：octave>0 上方、<0 下方，|octave| 个
+  // 减时下划线（div 条）：数字正下方，每条间距固定。先画，下方留出最末一条的位置，
+  // 低音点要错到它下面（简谱约定：减时线在数字与低八度点之间）。
+  const divGap = H * 0.13;
+  let divBottom = bot; // 最末一条减时线的 y（无减时线即音符框下沿）
+  if (n.div > 0) {
+    const lw = Math.max(2.2, H * 0.11);   // 减时线画粗、画明显
+    const ext = H * 0.08;                  // 略伸出数字两侧，更像下划线、更醒目
+    for (let i = 0; i < n.div; i++) {
+      const ly = bot + divGap + i * divGap;
+      g.appendChild(line(b.x - ext, ly, rright(b) + ext, ly, lw, "omr-mark"));
+      divBottom = ly;
+    }
+  }
+
+  // 八度点：octave>0 上方、<0 下方，|octave| 个。低音点从减时线下方起，避免与下划线重叠。
   const oct = n.octave;
   if (oct !== 0) {
     const r = Math.max(1.2, H * 0.07);
     const gap = H * 0.18;
     const step = r * 3;
+    const lowBase = (n.div > 0 ? divBottom + divGap : bot) + gap; // 低音点首点基线（让过减时线）
     for (let i = 0; i < Math.abs(oct); i++) {
-      const oy = oct > 0 ? top - gap - i * step : bot + gap + i * step;
+      const oy = oct > 0 ? top - gap - i * step : lowBase + i * step;
       g.appendChild(dot(cx, oy, r));
-    }
-  }
-
-  // 减时下划线（div 条）：数字正下方，每条间距固定
-  if (n.div > 0) {
-    const lw = Math.max(1.2, H * 0.06);
-    const gap = H * 0.13;
-    for (let i = 0; i < n.div; i++) {
-      const ly = bot + gap + i * gap;
-      g.appendChild(line(b.x, ly, rright(b), ly, lw, "omr-mark"));
     }
   }
 
@@ -92,14 +97,19 @@ function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number): void {
     }
   }
 
-  // 增时横线（augment '-'）：数字右侧水平短横，augment 个
+  // 增时横线（augment '-'）：纵向贴本行中线 cy，横向**按识别到的源图横块位置**绘制
+  // （增时线占下一拍音符位、间距远宽于固定值；用源位才与原图对齐）。无源位时退回固定间距。
   if (n.augment > 0) {
     const lw = Math.max(1.5, H * 0.08);
-    const len = H * 0.55;
-    const startGap = H * 0.3;
-    for (let i = 0; i < n.augment; i++) {
-      const lx = rright(b) + startGap + i * (len + H * 0.3);
-      g.appendChild(line(lx, cy, lx + len, cy, lw, "omr-mark"));
+    const rects = n.augmentRects;
+    if (rects && rects.length) {
+      for (const r of rects) g.appendChild(line(r.x, cy, rright(r), cy, lw, "omr-mark"));
+    } else {
+      const len = H * 0.55, startGap = H * 0.3;
+      for (let i = 0; i < n.augment; i++) {
+        const lx = rright(b) + startGap + i * (len + H * 0.3);
+        g.appendChild(line(lx, cy, lx + len, cy, lw, "omr-mark"));
+      }
     }
   }
 }
@@ -154,7 +164,9 @@ function renderLyricsAligned(g: SVGGElement, regions: { text: string; bbox: Rect
     const fit = fitLine(ln.map((r) => ({ x: rcx(r.bbox), y: rcy(r.bbox) })));
     for (const r of ln) {
       const x = rcx(r.bbox);
-      const t = text(x, fit(x), r.text, fs, "middle"); // text() 默认 dominant-baseline:middle → 按中心对齐
+      // 把**首字**中心对到 bbox 中心（音符对位锚点），尾随标点向右自然拖出、不再把整串
+      // 居中而把可见汉字左拽——否则带标点音节(说，/降，)会左移半个标点宽，与右邻字重叠。
+      const t = text(x - fs / 2, fit(x), r.text, fs, "start");
       t.setAttribute("class", "omr-lyric");
       g.appendChild(t);
     }
@@ -182,31 +194,36 @@ function renderHeaderRegion(g: SVGGElement, r: { text: string; bbox: Rect; chars
   g.appendChild(t);
 }
 
-/** 一条音符上方弧线（圆滑线/连音线）：从 a 到 b 顶上凸起的二次贝塞尔。 */
-function arc(a: Rect, b: Rect, cls: string): SVGPathElement {
-  const x1 = rcx(a), x2 = rcx(b);
-  const gap = Math.max(a.h, b.h) * 0.25;
-  const y1 = a.y - gap, y2 = b.y - gap;
+/** 一条音符上方弧线（圆滑线/连音线）：从 a 到 b 顶上凸起的二次贝塞尔。
+ *  坐标用**叠加里音符的实际绘制位置**——横向 x、纵向音符框顶 topY、统一字号 h，
+ *  而非源图 bbox（源图两端 bbox.y 高低不一会把弧画歪）。 */
+function arc(x1: number, top1: number, x2: number, top2: number, h: number, cls: string): SVGPathElement {
+  const gap = h * 0.25;
+  const y1 = top1 - gap, y2 = top2 - gap;
   const span = Math.abs(x2 - x1);
-  const lift = Math.min(Math.max(a.h, b.h) * 1.2, gap + span * 0.18); // 弧高随跨度，封顶
+  const lift = Math.min(h * 1.2, gap + span * 0.18); // 弧高随跨度，封顶
   const cx = (x1 + x2) / 2, cy = Math.min(y1, y2) - lift;
   const p = document.createElementNS(SVG_NS, "path");
   p.setAttribute("d", `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`);
   p.setAttribute("fill", "none");
-  p.setAttribute("stroke-width", String(Math.max(1.5, Math.max(a.h, b.h) * 0.06)));
+  p.setAttribute("stroke-width", String(Math.max(1.5, h * 0.06)));
   p.setAttribute("class", cls);
   return p;
 }
 
-/** 配对并画出 slur(圆滑线)/tie(连音线) 弧。按阅读序用栈配对 start/stop，仅同行内绘弧。 */
-function renderSlursTies(g: SVGGElement, score: RecognizedScore): void {
-  type N = { bbox: Rect; row: number; n: JpNum };
+/** 配对并画出 slur(圆滑线)/tie(连音线) 弧。按阅读序用栈配对 start/stop，仅同行内绘弧。
+ *  弧端点取音符在叠加中的实际绘制位置：x=rcx(bbox)、顶=fit(x)-noteH/2（与 renderNum 同一斜线/字号）。 */
+function renderSlursTies(g: SVGGElement, score: RecognizedScore, rowFits: ((x: number) => number)[], noteH: number): void {
+  type N = { cx: number; top: number; row: number; n: JpNum };
   const flat: N[] = [];
-  score.rows.forEach((row, ri) => row.nums.forEach((n) => flat.push({ bbox: n.bbox, row: ri, n })));
+  score.rows.forEach((row, ri) => row.nums.forEach((n) => {
+    const cx = rcx(n.bbox);
+    flat.push({ cx, top: rowFits[ri](cx) - noteH / 2, row: ri, n });
+  }));
   const slurStack: N[] = [], tieStack: N[] = [];
   for (const it of flat) {
-    if (it.n.slurStop) { const s = slurStack.pop(); if (s && s.row === it.row) g.appendChild(arc(s.bbox, it.bbox, "omr-slur")); }
-    if (it.n.tieStop) { const s = tieStack.pop(); if (s && s.row === it.row) g.appendChild(arc(s.bbox, it.bbox, "omr-tie")); }
+    if (it.n.slurStop) { const s = slurStack.pop(); if (s && s.row === it.row) g.appendChild(arc(s.cx, s.top, it.cx, it.top, noteH, "omr-slur")); }
+    if (it.n.tieStop) { const s = tieStack.pop(); if (s && s.row === it.row) g.appendChild(arc(s.cx, s.top, it.cx, it.top, noteH, "omr-tie")); }
     if (it.n.slurStart) slurStack.push(it);
     if (it.n.tieStart) tieStack.push(it);
   }
@@ -248,9 +265,10 @@ export function renderRecognitionSvg(bin: Binary, score: RecognizedScore): SVGSV
   // 小节线统一长度：取各行高度均值（略放大露头），所有小节线等长，免逐行长短不一。
   const barLen = mean(score.rows.map((r) => r.bottomY - r.topY), noteH * 1.6) * 1.15;
   const barW = Math.max(2.5, noteH * 0.08);
-  for (const row of score.rows) {
-    // 本行音符中心拟合成一条（可倾斜）直线：音符与小节线都落在这条线上，顺图片倾斜走、抹平抖动。
-    const fit = fitLine(row.nums.map((n) => ({ x: rcx(n.bbox), y: rcy(n.bbox) })));
+  // 各行音符中心拟合成一条（可倾斜）直线：音符/小节线/弧线都落在这条线上，顺图片倾斜走、抹平抖动。
+  const rowFits = score.rows.map((row) => fitLine(row.nums.map((n) => ({ x: rcx(n.bbox), y: rcy(n.bbox) }))));
+  score.rows.forEach((row, ri) => {
+    const fit = rowFits[ri];
     // 小节线：统一长度(均值)，中点落在本行音符中线 fit(bx) 上（与音符同一条斜线）。
     for (const bx of row.barlineXs) {
       const cy = fit(bx);
@@ -258,10 +276,10 @@ export function renderRecognitionSvg(bin: Binary, score: RecognizedScore): SVGSV
     }
     // 音符 + 修饰：逐符落到 fit 对应 x 处，字号统一平均音符高。
     for (const n of row.nums) renderNum(g, n, noteH, fit(rcx(n.bbox)));
-  }
+  });
 
-  // 圆滑线/连音线弧（在音符之上）
-  renderSlursTies(g, score);
+  // 圆滑线/连音线弧（在音符之上）：端点取音符在叠加中的实际绘制位置（同一斜线/字号）
+  renderSlursTies(g, score, rowFits, noteH);
 
   svg.appendChild(g);
   return svg;

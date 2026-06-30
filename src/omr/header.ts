@@ -16,6 +16,9 @@ export interface HeaderInfo {
   fifths?: number;
   /** 速度（♩=NN），仅进 MusicXML（当前下游导入器不读 tempo，故不进 .jpwabc）。 */
   tempo?: number;
+  /** 拍号分子/分母（识别到 "4/4" 等时给出，否则 undefined→上游用默认 4/4）。 */
+  beats?: number;
+  beatType?: number;
   /** 页眉文本的源图定位（识别模式按原位叠加）。 */
   regions: TextRegion[];
 }
@@ -58,8 +61,8 @@ function unionBox(cs: Component[]): Rect {
 
 /** 从页眉小字区解析调号("1=♭B")与速度("♩=76")。OCR 常把 ♭→b、♩→J；页眉碎片散落，
  *  故按碎片就地匹配、必要时空间最近邻配对，避免跨列拼接误配。 */
-function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number; fifthsLine?: HLine; tempoLine?: HLine } {
-  const res: { fifths?: number; tempo?: number; fifthsLine?: HLine; tempoLine?: HLine } = {};
+function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number; beats?: number; beatType?: number; fifthsLine?: HLine; tempoLine?: HLine; timeBBox?: Rect } {
+  const res: { fifths?: number; tempo?: number; beats?: number; beatType?: number; fifthsLine?: HLine; tempoLine?: HLine; timeBBox?: Rect } = {};
   const toFifths = (note: string, acc: string): number | undefined => {
     if (!(note in NAT_FIFTHS)) return undefined;
     let f = NAT_FIFTHS[note];
@@ -97,7 +100,50 @@ function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number; fifthsLin
     const t = l.text.match(/[=＝]\s*(\d{2,3})\b/);
     if (t) { const bpm = parseInt(t[1], 10); if (bpm >= 30 && bpm <= 300) { res.tempo = bpm; res.tempoLine = l; break; } }
   }
+
+  // 拍号：分子/分母。简谱常写成 "X/4"（或与调号同块 "1=C 2/4"）；OCR 偶把斜杠丢成空格或上下竖排。
+  const tm = parseTime(lines, res.fifthsLine);
+  if (tm) { res.beats = tm.beats; res.beatType = tm.beatType; res.timeBBox = tm.bbox; }
   return res;
+}
+
+/** 合法拍号：分母为 2 的幂(2/4/8/16，偶含 1/2 拍 → beatType 2)，分子 1..16。 */
+const validBeatType = (d: number) => d === 1 || d === 2 || d === 4 || d === 8 || d === 16;
+const validBeats = (n: number) => n >= 1 && n <= 16;
+const union2 = (a: Rect, b: Rect): Rect => {
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+};
+
+/** 解析拍号：先认含斜杠的碎片 "X/Y"（含调号同块 "1=C 4/4"）；否则认上下竖排两碎片(分子在上、
+ *  分母在下、同列)。返回分子/分母与**叠加标注的源图 bbox**。 */
+function parseTime(lines: HLine[], fifthsLine?: HLine): { beats: number; beatType: number; bbox: Rect } | undefined {
+  // 斜杠式："4/4"、"6/8"，或与调号粘连 "1=C4/4"。取最右侧"数/数"。
+  for (const l of lines) {
+    const m = l.text.match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
+    if (m) {
+      const n = parseInt(m[1], 10), d = parseInt(m[2], 10);
+      if (!validBeats(n) || !validBeatType(d)) continue;
+      // 与调号同碎片("1=C4/4")：bbox 偏到行右侧，避免压在 "1=C" 标注上。
+      let bbox = l.bbox;
+      if (l === fifthsLine) bbox = { x: l.bbox.x + l.bbox.w * 0.62, y: l.bbox.y, w: l.bbox.w * 0.38, h: l.bbox.h };
+      return { beats: n, beatType: d, bbox };
+    }
+  }
+  // 竖排式：两个纯数字碎片，上下相邻、x 近乎对齐（分子在上 / 分母在下）。调号行附近优先。
+  const digs = lines.filter((l) => /^\d{1,2}$/.test(l.text.trim()));
+  let best: { beats: number; beatType: number; bbox: Rect } | undefined, bd = Infinity;
+  for (const a of digs) for (const b of digs) {
+    if (a === b) continue;
+    const dy = b.cy - a.cy, dx = Math.abs(b.cx - a.cx);     // a 在上、b 在下
+    if (dy <= 0.3 * a.charH || dy > 2.5 * a.charH || dx > 0.8 * a.charH) continue;
+    const n = parseInt(a.text.trim(), 10), d = parseInt(b.text.trim(), 10);
+    if (!validBeats(n) || !validBeatType(d)) continue;
+    // 越靠近调号行越可信（拍号紧跟调号）；以分子块到调号行的距离择优。
+    const score = fifthsLine ? Math.abs(a.cy - fifthsLine.cy) + Math.abs(a.cx - fifthsLine.cx) : dy + dx;
+    if (score < bd) { bd = score; best = { beats: n, beatType: d, bbox: union2(a.bbox, b.bbox) }; } // bbox 跨分子+分母
+  }
+  return best;
 }
 
 /** 把"同一字列里上下紧贴的碎块"竖向合并成整字高复合块。用于页眉粗体标题：复杂字(督/赢)的上下
@@ -240,7 +286,10 @@ export async function recognizeHeader(
     const meta = parseMeta(ls);
     out.fifths = meta.fifths;
     out.tempo = meta.tempo;
+    out.beats = meta.beats;
+    out.beatType = meta.beatType;
     if (meta.fifths !== undefined && meta.fifthsLine) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: meta.fifthsLine.bbox });
     if (meta.tempo !== undefined && meta.tempoLine) out.regions.push({ text: `♩=${meta.tempo}`, bbox: meta.tempoLine.bbox });
+    if (meta.beats !== undefined && meta.beatType !== undefined && meta.timeBBox) out.regions.push({ text: `${meta.beats}/${meta.beatType}`, bbox: meta.timeBBox });
   }
 }

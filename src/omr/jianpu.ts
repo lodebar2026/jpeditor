@@ -271,16 +271,17 @@ function buildJpNums(
     }
     octave = Math.max(-3, Math.min(3, octave)); // 简谱八度极少超过 ±2~3
     let div = 0;
+    const augmentRects: Rect[] = [];
     for (const k of cls.hlines) {
       const kb = k.bbox;
       // 独立横线在数字右侧、与数字同高 → 增时线 '-'
       if (kb.x >= rright(d) - 1 && kb.x < augR && Math.abs(rcy(kb) - rcy(d)) < numH * 0.6 &&
-          overlapX(kb, d) < kb.w * 0.4) { augment++; continue; }
+          overlapX(kb, d) < kb.w * 0.4) { augment++; augmentRects.push(kb); continue; }
       // 减时线(下划线)：数字**正下方**的独立横线，x 与数字重叠；多条上下堆叠 → div 多层。
       const below = kb.y - rbottom(d);
       if (below > -numH * 0.2 && below < numH * 0.75 && overlapX(kb, d) >= Math.min(kb.w, d.w) * 0.4) div++;
     }
-    out.push({ digit, bbox: d, dot, octave, div, augment });
+    out.push({ digit, bbox: d, dot, octave, div, augment, augmentRects });
   }
   return out;
 }
@@ -392,14 +393,16 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
   let title: string | undefined, credits: string[] | undefined;
   let fifths = 0, tempo: number | undefined;
+  let beats = 4, beatType = 4;
   let headerRegions: RecognizedScore["headerRegions"];
   if (ocr.recognizeTexts && useRows.length) {
     const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr);
     title = h.title; credits = h.credits.length ? h.credits : undefined;
     if (h.fifths !== undefined) fifths = h.fifths;
+    if (h.beats !== undefined && h.beatType !== undefined) { beats = h.beats; beatType = h.beatType; }
     tempo = h.tempo;
     headerRegions = h.regions.length ? h.regions : undefined;
   }
 
-  return { key: "C", fifths, beats: 4, beatType: 4, rows: useRows, title, credits, tempo, headerRegions, lyricRegions };
+  return { key: "C", fifths, beats, beatType, rows: useRows, title, credits, tempo, headerRegions, lyricRegions };
 }

@@ -37,6 +37,7 @@ export interface JpNum {
   octave: number; // 八度偏移（上点+，下点-）
   div: number; // 下划线条数（每条时值减半）
   augment: number; // 增时线 '-' 数（延长拍）
+  augmentRects?: Rect[]; // 增时线各横块源图 bbox（仅识别模式叠加按原位绘制用，不参与导出）
   lyrics?: string[]; // 歌词：按声部(verse)索引，lyrics[0]=第一段(W1)、lyrics[1]=第二段……
   // 圆滑线/连音线（音符上方弧形 ⌒）。一个音符可同时是上一条的结束与下一条的开始，故各用布尔。
   slurStart?: boolean; // 圆滑线起点 → MusicXML <slur type="start">
