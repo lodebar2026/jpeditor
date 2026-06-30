@@ -1,6 +1,7 @@
 // 把 RecognizedScore 输出为 MusicXML 3.0 partwise（参考 musicpp omr/musicxml.cpp / qtomr/toxml.cpp）。
 // 简谱数字→音高：可动 do，按 fifths 求调主音，数字 1-7 映射到自然音级，叠加八度点与升降。
 import type { RecognizedScore, JpNum, StaffRow } from "./types";
+import { rright } from "./types";
 
 // C 大调音名表（fifths=0 时 1..7 对应 C D E F G A B）。
 const STEPS = ["C", "D", "E", "F", "G", "A", "B"];
@@ -114,9 +115,26 @@ function measuresOfRow(row: StaffRow): JpNum[][] {
   return measures.filter((m) => m.length);
 }
 
+// 一行是否以小节线收尾（最后一个音符右侧仍有小节线）。否→末小节是"开口"的，
+// 即该小节跨行延续到下一行行首（弱起/续句），换行处图上本就没有小节线，不可补。
+function rowEndsClosed(row: StaffRow): boolean {
+  if (!row.nums.length || !row.barlineXs.length) return false;
+  const lastRight = rright(row.nums[row.nums.length - 1].bbox);
+  return Math.max(...row.barlineXs) >= lastRight;
+}
+
 export function toMusicXml(score: RecognizedScore): string {
+  // 遵照图片小节线：行末无小节线时（开口收尾），本行末小节与下一行行首小节实为同一跨行小节，合并，
+  // 不在换行处凭空补小节线。行末有小节线（如终止线）才各自成节。
   const allMeasures: JpNum[][] = [];
-  for (const row of score.rows) allMeasures.push(...measuresOfRow(row));
+  let openTail = false;
+  for (const row of score.rows) {
+    const ms = measuresOfRow(row);
+    if (!ms.length) continue;
+    if (openTail && allMeasures.length) allMeasures[allMeasures.length - 1].push(...ms.shift()!);
+    allMeasures.push(...ms);
+    openTail = !rowEndsClosed(row);
+  }
 
   let mi = 0;
   const measuresXml = allMeasures.map((notes) => {
