@@ -99,7 +99,10 @@ montage 单行长条过大导致 OCR 超时（改网格）、**八度点过检**
 实际减时线是数字**正下方的独立 hline 连通块**，改到 `buildJpNums` 按"数字下方 hline"数 div，类比增时线用"右侧 hline"）。
 **歌词识别**（`lyrics.ts`）：乐谱行下方"歌词带"取字号连通块 → 按 y 分 verse 行 → 按 x 邻近并字格 →
 按宽度切块、每块裁**自然连续区域**(保留原始字间距，不重拼)整体 rec(`buildStrip`/`chunkCells`，宽≤320 免压扁) →
-块内字按格序取 x → 按 x 单调最近对齐到音符（melisma 自然留空），写 `JpNum.lyrics[verse]`，
+块内字按格序取 x → 按 x 单调最近对齐到音符（melisma 自然留空），写 `JpNum.lyrics[verse]`。
+**标点**：单元=汉字+紧随尾随标点(全角 `，。、；！？` 等，向左贴前一字、不占音符)，并入该音节串不另立格——
+保持"音节数==字格数"对齐前提；rec 在自然块上下文里读逗号也准(`LYRIC_PUNCT`)。带标点 歌词档 89.6→93.0%
+(忽略标点 歌词* 仍 98.9%、对齐未破)；淡印逗号 rec 捕获不到的(如 我今来就你)仍漏，属图像层面限制。
 `musicxml.ts` 吐 `<lyric number>`，下游 `score/musicxml.ts` 导入器接管 → 排版/存 `.Words`。
 仅 PaddleOCR 后端(`recognizeTexts`)支持，tesseract/null 后端跳过歌词。自然区域分块 rec 实测 W1 98.9%/W2 96.5%
 （早期逐字/拼接 rec 仅 ~85%，差在破坏自然排版+细笔画字漏检）——回归 `node bench-lyrics.mjs`。
