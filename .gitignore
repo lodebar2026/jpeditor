@@ -15,6 +15,9 @@ dist-ssr
 # OMR 批量测试输出
 measure-all.csv
 
+# OMR 测试数据（本地保留，不入库）
+testdata
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
