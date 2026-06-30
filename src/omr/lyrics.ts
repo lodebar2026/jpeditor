@@ -123,8 +123,21 @@ export async function recognizeLyrics(
       if (ln) ln.push(c);
     }
 
-    lines.forEach((ln, verse) => {
+    // 真歌词行横向铺满整个乐谱行；像 "(副歌)" 标签、页脚 "徐震宇译"/CCLI 版权这类注记只占局部，
+    // 会被 y-聚类当成多余 verse 行，挤错副歌的 verse 序号。按"横跨乐谱行宽度的占比"剔除：
+    // 保留本行覆盖率最高的那条，其余覆盖率 <0.35 的判为注记丢弃。（实测真行 0.83~0.98、注记 0.08/0.21）
+    const noteX0 = Math.min(...row.nums.map((n) => n.bbox.x));
+    const noteX1 = Math.max(...row.nums.map((n) => rright(n.bbox)));
+    const noteSpan = Math.max(1, noteX1 - noteX0);
+    const lineInfo = lines.map((ln) => {
       const cells = mergeToChars(ln, charH);
+      const lx0 = Math.min(...cells.map((c) => c.x)), lx1 = Math.max(...cells.map((c) => rright(c)));
+      return { cells, cov: (lx1 - lx0) / noteSpan };
+    });
+    const maxCov = Math.max(0, ...lineInfo.map((L) => L.cov));
+    const kept = lineInfo.filter((L) => L.cov >= maxCov - 1e-9 || L.cov >= 0.35);
+
+    kept.forEach(({ cells }, verse) => {
       for (const chunkCellsArr of chunkCells(cells)) {
         chunks.push({ rowIdx: i, verse, cells: chunkCellsArr });
         strips.push(buildStrip(src, chunkCellsArr));
