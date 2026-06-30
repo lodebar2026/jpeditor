@@ -11,6 +11,7 @@ import { rright, rbottom } from "./types";
 const BASE = import.meta.env.BASE_URL; // "/" 或 "/jpeditor-web/"
 const REC_URL = `${BASE}redist/ocr/ch_PP-OCRv4_rec_infer.onnx`;
 const DICT_URL = `${BASE}redist/ocr/ppocr_keys_v1.txt`;
+const DET_URL = `${BASE}redist/ocr/ch_PP-OCRv4_det_infer.onnx`;
 
 const REC_H = 48, REC_MAXW = 320;
 
@@ -20,6 +21,9 @@ let _ort: any = null;
 let _session: any = null;
 let _chars: string[] | null = null;
 let _initPromise: Promise<void> | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _detSession: any = null;
+let _detInitPromise: Promise<void> | null = null;
 
 async function ensureSession(): Promise<void> {
   if (_session) return;
@@ -38,6 +42,87 @@ async function ensureSession(): Promise<void> {
     _chars = ["", ...keys];
   })();
   return _initPromise;
+}
+
+/** 懒加载 PP-OCRv4 检测(DBNet)模型，仅在用到整片页眉 det+rec 时拉起。复用 rec 的 ort 运行时。 */
+async function ensureDetSession(): Promise<void> {
+  if (_detSession) return;
+  if (_detInitPromise) return _detInitPromise;
+  _detInitPromise = (async () => {
+    await ensureSession(); // 复用 ort 初始化（wasmPaths/numThreads）
+    _detSession = await _ort.InferenceSession.create(DET_URL, { executionProviders: ["wasm"] });
+  })();
+  return _detInitPromise;
+}
+
+/** DBNet 文本检测：在源画布的 region 子图内找文本行框，返回**原图坐标**的 Rect[]（已 unclip 外扩、
+ *  按阅读序排好）。det 在干净二值图上同样有效（高对比）。仅供页眉(标题/著作者)整片识别用。 */
+async function detectRegion(src: OffscreenCanvas, region: Rect): Promise<Rect[]> {
+  await ensureDetSession();
+  const rx = Math.max(0, Math.round(region.x)), ry = Math.max(0, Math.round(region.y));
+  const rw = Math.min(src.width - rx, Math.round(region.w)), rh = Math.min(src.height - ry, Math.round(region.h));
+  if (rw < 8 || rh < 8) return [];
+
+  // 等比缩放到边长上限、且宽高对齐到 32 的倍数（DBNet 要求）。
+  const LIMIT = 960;
+  let scale = Math.min(1, LIMIT / Math.max(rw, rh));
+  const round32 = (n: number) => Math.max(32, Math.round(n * scale / 32) * 32);
+  const W = round32(rw), H = round32(rh);
+  const sxScale = W / rw, syScale = H / rh; // 原图→det 输入 的实际缩放（各维独立）
+
+  const tmp = new OffscreenCanvas(W, H);
+  const tctx = tmp.getContext("2d");
+  if (!tctx) throw new Error("无法创建 2D 画布上下文");
+  tctx.drawImage(src, rx, ry, rw, rh, 0, 0, W, H);
+  const px = tctx.getImageData(0, 0, W, H).data;
+
+  // 归一化（ImageNet mean/std, RGB, CHW）。
+  const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+  const chw = new Float32Array(3 * H * W);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = (y * W + x) * 4;
+    for (let c = 0; c < 3; c++) chw[c * H * W + y * W + x] = (px[p + c] / 255 - mean[c]) / std[c];
+  }
+  const tensor = new _ort.Tensor("float32", chw, [1, 3, H, W]);
+  const feeds: Record<string, unknown> = {};
+  feeds[_detSession.inputNames[0]] = tensor;
+  const out = await _detSession.run(feeds);
+  const prob = out[_detSession.outputNames[0]].data as Float32Array; // [1,1,H,W]
+
+  // 阈值二值化 → 连通域（4-邻接 BFS）→ 行框；按 DBNet 习惯外扩(unclip)。
+  const THRESH = 0.3, BOX_THRESH = 0.5;
+  const bm = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) bm[i] = prob[i] > THRESH ? 1 : 0;
+  const seen = new Uint8Array(W * H);
+  const boxes: Rect[] = [];
+  const stack: number[] = [];
+  for (let i0 = 0; i0 < W * H; i0++) {
+    if (!bm[i0] || seen[i0]) continue;
+    stack.length = 0; stack.push(i0); seen[i0] = 1;
+    let minX = W, minY = H, maxX = 0, maxY = 0, n = 0, probSum = 0;
+    while (stack.length) {
+      const idx = stack.pop()!; const x = idx % W, y = (idx / W) | 0;
+      n++; probSum += prob[idx];
+      if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (x > 0 && bm[idx - 1] && !seen[idx - 1]) { seen[idx - 1] = 1; stack.push(idx - 1); }
+      if (x < W - 1 && bm[idx + 1] && !seen[idx + 1]) { seen[idx + 1] = 1; stack.push(idx + 1); }
+      if (y > 0 && bm[idx - W] && !seen[idx - W]) { seen[idx - W] = 1; stack.push(idx - W); }
+      if (y < H - 1 && bm[idx + W] && !seen[idx + W]) { seen[idx + W] = 1; stack.push(idx + W); }
+    }
+    const bw = maxX - minX + 1, bh = maxY - minY + 1;
+    if (bw < 4 || bh < 4 || probSum / n < BOX_THRESH) continue;
+    // unclip：按 dist = area*ratio/perimeter 外扩（DBNet 收缩了文字框，需还原）。
+    const ratio = 1.6, dist = (bw * bh * ratio) / (2 * (bw + bh));
+    const ex0 = minX - dist, ey0 = minY - dist, ex1 = maxX + dist, ey1 = maxY + dist;
+    boxes.push({
+      x: rx + ex0 / sxScale, y: ry + ey0 / syScale,
+      w: (ex1 - ex0) / sxScale, h: (ey1 - ey0) / syScale,
+    });
+  }
+  // 阅读序：先按行(y 接近归一行)、再按 x。
+  const medH = boxes.length ? [...boxes.map((b) => b.h)].sort((a, b) => a - b)[boxes.length >> 1] : 0;
+  boxes.sort((a, b) => (Math.abs(a.y - b.y) > medH * 0.6 ? a.y - b.y : a.x - b.x));
+  return boxes;
 }
 
 /** 整幅二值图 → 黑字白底源画布（一次性，供逐格裁剪）。 */
@@ -74,30 +159,34 @@ function cellOf(src: OffscreenCanvas, bin: Binary, r: Rect, cell = 64, pad = 8):
   return cv;
 }
 
-/** 对一个文本行/字符画布跑 PP-OCRv4 rec → 原始 logits [T,C]。 */
-async function inferLogits(cell: OffscreenCanvas): Promise<{ arr: Float32Array; T: number; C: number }> {
-  // 等比缩放到高 REC_H、宽 ≤ REC_MAXW，零填充。
+/** 对一个文本行/字符画布跑 PP-OCRv4 rec → 原始 logits [T,C]。
+ *  maxW：宽度上限（rec 全卷积，宽度可变）。逐数字格/歌词块用默认 320；整行 det 框可能很长(英文著作者)，
+ *  用更大上限避免被压扁成乱码。 */
+async function inferLogits(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ arr: Float32Array; T: number; C: number }> {
+  // 等比缩放到高 REC_H、宽 ≤ maxW，零填充。
   const ratio = cell.width / cell.height;
   let w = Math.ceil(REC_H * ratio);
-  if (w > REC_MAXW) w = REC_MAXW;
+  if (w > maxW) w = maxW;
   if (w < 1) w = 1;
+  // 张量宽：默认上限(320)以内时仍按 320 零填充(保持逐格 rec 既有行为/精度)；放宽上限的长行按实际宽。
+  const tensorW = maxW <= REC_MAXW ? REC_MAXW : w;
   const tmp = new OffscreenCanvas(w, REC_H);
   const tctx = tmp.getContext("2d");
   if (!tctx) throw new Error("无法创建 2D 画布上下文");
   tctx.drawImage(cell, 0, 0, w, REC_H);
   const px = tctx.getImageData(0, 0, w, REC_H).data;
 
-  const chw = new Float32Array(3 * REC_H * REC_MAXW); // 零填充：padding 区归一化值=0
+  const chw = new Float32Array(3 * REC_H * tensorW); // 零填充：padding 区归一化值=0
   for (let y = 0; y < REC_H; y++) {
     for (let x = 0; x < w; x++) {
       const p = (y * w + x) * 4;
       for (let c = 0; c < 3; c++) {
         const v = px[p + c] / 255;
-        chw[c * REC_H * REC_MAXW + y * REC_MAXW + x] = (v - 0.5) / 0.5;
+        chw[c * REC_H * tensorW + y * tensorW + x] = (v - 0.5) / 0.5;
       }
     }
   }
-  const tensor = new _ort.Tensor("float32", chw, [1, 3, REC_H, REC_MAXW]);
+  const tensor = new _ort.Tensor("float32", chw, [1, 3, REC_H, tensorW]);
   const feeds: Record<string, unknown> = {};
   feeds[_session.inputNames[0]] = tensor;
   const out = await _session.run(feeds);
@@ -106,9 +195,9 @@ async function inferLogits(cell: OffscreenCanvas): Promise<{ arr: Float32Array; 
   return { arr: o.data as Float32Array, T, C };
 }
 
-/** CTC 贪心解码 → 字符串。 */
-async function recognizeCanvas(cell: OffscreenCanvas): Promise<string> {
-  const { arr, T, C } = await inferLogits(cell);
+/** CTC 贪心解码 → 字符串。maxW 见 inferLogits。 */
+async function recognizeCanvas(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<string> {
+  const { arr, T, C } = await inferLogits(cell, maxW);
   const chars = _chars!;
   let prev = -1, s = "";
   for (let t = 0; t < T; t++) {
@@ -171,6 +260,25 @@ export function paddleOcrBackend(): OcrBackend {
       await ensureSession();
       const out: string[] = [];
       for (const cv of canvases) out.push(await recognizeCanvas(cv));
+      return out;
+    },
+    async recognizeRegion(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect }[]> {
+      await ensureSession();
+      const src = binToCanvas(bin);
+      const boxes = await detectRegion(src, region);
+      const out: { text: string; bbox: Rect }[] = [];
+      for (const b of boxes) {
+        const x = Math.max(0, Math.round(b.x)), y = Math.max(0, Math.round(b.y));
+        const w = Math.min(bin.w - x, Math.round(b.w)), h = Math.min(bin.h - y, Math.round(b.h));
+        if (w < 4 || h < 4) continue;
+        const cv = new OffscreenCanvas(w, h);
+        const cx = cv.getContext("2d");
+        if (!cx) continue;
+        cx.fillStyle = "#fff"; cx.fillRect(0, 0, w, h);
+        cx.drawImage(src, x, y, w, h, 0, 0, w, h);
+        const text = await recognizeCanvas(cv, 2048); // 整行可能很长(英文著作者)，放宽 rec 宽上限免压扁
+        if (text.trim()) out.push({ text, bbox: { x, y, w, h } });
+      }
       return out;
     },
   };

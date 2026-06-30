@@ -67,6 +67,37 @@ function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number } {
   return res;
 }
 
+/** 把"同一字列里上下紧贴的碎块"竖向合并成整字高复合块。用于页眉粗体标题：复杂字(督/赢)的上下
+ *  偏旁会断成多个半截连通块。条件：x 向高度重叠(同列) + 竖向近乎相接(非整行行距)。返回新连通块集
+ *  (未被并的原样保留；被并的取并集包围盒，cx/cy 取包围盒中心——仅用于分层/裁剪定位，足够)。 */
+function mergeStackedColumns(comps: Component[], numH: number): Component[] {
+  const boxes = comps.map((c) => ({ ...c.bbox }));
+  const alive = boxes.map(() => true);
+  const xOverlap = (a: typeof boxes[0], b: typeof boxes[0]) => {
+    const o = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    return o / Math.min(a.w, b.w);
+  };
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (let i = 0; i < boxes.length; i++) {
+      if (!alive[i]) continue;
+      for (let j = i + 1; j < boxes.length; j++) {
+        if (!alive[j]) continue;
+        const a = boxes[i], b = boxes[j];
+        const top = a.y <= b.y ? a : b, bot = a.y <= b.y ? b : a;
+        const gap = bot.y - (top.y + top.h);          // <0 表示竖向有重叠
+        if (xOverlap(a, b) < 0.35 || gap > numH * 0.35) continue; // 非同列、或隔了整行行距 → 不并
+        const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+        const nb = { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+        if (nb.h > numH * 3) continue;                 // 防止串列失控
+        if (nb.w / nb.h < 0.5) continue;               // 合出来又高又窄 → 多半是竖排拍号(4/4)等 meta，非方块汉字，别并
+        boxes[i] = nb; alive[j] = false; changed = true;
+      }
+    }
+  }
+  return boxes.filter((_, i) => alive[i]).map((b, id) => ({ id, bbox: b, area: b.w * b.h, cx: b.x + b.w / 2, cy: b.y + b.h / 2 }));
+}
+
 /** 识别页眉信息。firstStaffTopY = 第一乐谱行顶部 y；只看其上方区域。 */
 export async function recognizeHeader(
   bin: Binary, comps: Component[], firstStaffTopY: number, numH: number, ocr: OcrBackend,
@@ -74,6 +105,19 @@ export async function recognizeHeader(
   const out: HeaderInfo = { credits: [] };
   if (!ocr.recognizeTexts || firstStaffTopY < numH) return out;
   const recognizeTexts = ocr.recognizeTexts.bind(ocr);
+
+  // 优先走文本检测(DBNet)整片识别页眉：让 det 网络自己找文本行，免去靠连通域几何切行/分层的脆弱
+  // 启发式（粗体复杂字裂块、字号混排都更稳）。det 返回空(漏检/无模型)时退回下方几何法。
+  // 可用 (globalThis).__headerDet=false 关闭以做 A/B。
+  if (ocr.recognizeRegion && (globalThis as { __headerDet?: boolean }).__headerDet !== false) {
+    const dets = await ocr.recognizeRegion(bin, { x: 0, y: 0, w: bin.w, h: Math.round(firstStaffTopY - numH * 0.1) });
+    if (dets.length) {
+      const lines: HLine[] = dets.map((d) => ({ text: d.text, charH: d.bbox.h, cx: d.bbox.x + d.bbox.w / 2, cy: d.bbox.y + d.bbox.h / 2, n: 1 }));
+      if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.log("[header/det]", lines.map((l) => `${Math.round(l.charH)}px@${Math.round(l.cx)},${Math.round(l.cy)}=${JSON.stringify(l.text)}`).join("  "));
+      classify(lines);
+      return out;
+    }
+  }
 
   // 页眉区字号大小的连通块。
   const region = comps.filter((c) => {
@@ -123,28 +167,40 @@ export async function recognizeHeader(
     return blocks;
   };
 
+  // 粗体标题里的复杂多偏旁字(如 督/赢)常裂成上下叠放的半截块，各自达不到 1.3×numH 而错落入
+  // 小字层、并在标题中间留下大间隙——结果标题被切成两段、还丢字。故先把"同一字列里上下紧贴的
+  // 碎块"竖向合并成整字高的复合块，再走原大/小字分层逻辑：督/赢 复原为大字、与标题连成一气。
+  // （叠放的两行著作者"作词/作曲"行距大，不会被并；故只并近乎相接的碎块。）
+  const merged = mergeStackedColumns(region, numH);
+
   // 标题字号明显更大(≥1.3×numH)，与正文小字分两层各自分块，避免按 y 黏连。
-  const big = region.filter((c) => c.bbox.h >= numH * 1.3);
-  const small = region.filter((c) => c.bbox.h < numH * 1.3);
+  const big = merged.filter((c) => c.bbox.h >= numH * 1.3);
+  const small = merged.filter((c) => c.bbox.h < numH * 1.3);
   const lines = await ocrGroups([...splitBlocks(big), ...splitBlocks(small)]);
 
-  // 归类：含 作/词/曲/编/译 且有冒号 → credits（清洗掉尾随的调号/页码杂项）；其余最大字号中文行作标题。
-  const authorRe = /[作詞词曲編编譯译]/;
-  let titleLine: HLine | null = null;
-  for (const ln of lines) {
-    const txt = ln.text.trim();
-    if (authorRe.test(txt) && /[:：]/.test(txt)) {
-      // "作曲：王丽玲1=bB4" → "作曲：王丽玲"：取 冒号前缀 + 紧随的中文名。
-      const m = txt.match(/^(.*?[:：])\s*([一-鿿·]+)/);
-      out.credits.push(m ? m[1] + m[2] : txt);
-      continue;
-    }
-    if (hanziCount(txt) < 2) continue;            // 跳过页码/调号/速度等（数字/符号为主）
-    if (!titleLine || ln.charH > titleLine.charH) titleLine = ln;  // 标题=最大字号中文行
-  }
-  if (titleLine) out.title = titleLine.text.trim();
-  const meta = parseMeta(lines);
-  out.fifths = meta.fifths;
-  out.tempo = meta.tempo;
+  classify(lines);
   return out;
+
+  // 归类：以 作/词/曲/编/译 开头紧跟冒号(作词：/词曲：…) → credits；其余最大字号中文行作标题。
+  // 著作者前缀须**行首**紧贴冒号——否则长句经文副标题("…正如他作更美之约…来8：6")也会因含"作"+"："被误判。
+  function classify(ls: HLine[]) {
+    const creditRe = /^\s*[作詞词曲編编譯译]{1,4}\s*[:：]/;
+    let titleLine: HLine | null = null;
+    for (const ln of ls) {
+      const txt = ln.text.trim();
+      if (creditRe.test(txt)) {
+        // "作曲：王丽玲1=bB4" → "作曲：王丽玲"：取 冒号前缀 + 紧随的中文名（英文名则整行保留）。
+        const m = txt.match(/^(.*?[:：])\s*([一-鿿·]+)/);
+        // 著作者前缀的冒号统一成全角 `：`（.jpwabc 约定；中文名行 OCR 多已全角，英文名行常落半角）。
+        out.credits.push((m ? m[1] + m[2] : txt).replace(/^([作詞词曲編编譯译]{1,4})\s*[:：]/, "$1："));
+        continue;
+      }
+      if (hanziCount(txt) < 2) continue;            // 跳过页码/调号/速度等（数字/符号为主）
+      if (!titleLine || ln.charH > titleLine.charH) titleLine = ln;  // 标题=最大字号中文行
+    }
+    if (titleLine) out.title = titleLine.text.trim().replace(/^\s*\d{1,4}\s*[.．、]\s*/, ""); // 去掉 "557." 之类的诗歌编号前缀
+    const meta = parseMeta(ls);
+    out.fifths = meta.fifths;
+    out.tempo = meta.tempo;
+  }
 }
