@@ -45,12 +45,19 @@ function classify(comps: Component[]): { c: Classified; numH: number } {
     const { w, h } = k.bbox;
     // 小节线：细高竖条（高 ≳ 字号，宽很窄）
     if (h >= numH * 0.85 && w <= Math.max(2, numH * 0.35)) { c.barlines.push(k); continue; }
+    // 终止线/粗小节线：比普通小节线粗（w 可达 ~0.5字号），但仍明显高瘦——高于一个字号且 h/w≥2.2。
+    // 否则会落进下面的数字块判据被 OCR 成 "1"（实测末尾 ▮ 终止线 w15 h56 → 误识两个 1）。
+    if (h >= numH * 1.3 && w <= numH * 0.6 && h / w >= 2.2) { c.barlines.push(k); continue; }
     // 独立横线：扁宽（增时线/分隔），且不够高不足以含数字
     if (w >= numH * 0.6 && h <= Math.max(3, numH * 0.32)) { c.hlines.push(k); continue; }
     // 小点：八度点/附点
     if (w <= numH * 0.45 && h <= numH * 0.45) { c.dots.push(k); continue; }
-    // 数字块：高度接近字号（可略高于字号以容纳粘连的下划线），宽度不限（连音会更宽）
+    // 数字块：高度接近字号（可略高于字号以容纳粘连的下划线），宽度不限（连音会更宽）。
     if (h >= numH * 0.55 && h <= numH * 2.0 && w >= numH * 0.3) { c.blocks.push(k); continue; }
+    // 淡印的窄音符（典型是 "1"：二值化常只留上半截）高度会略低于一般阈值——窄竖块（w≤0.6字号）
+    // 单独放宽到 0.5。但**只放窄块**：宽而矮的块多是下划线/碎片，放进来会凭空多识一个音（实测
+    // 日光末行 w52 h24 误成 "7"）。
+    if (w >= numH * 0.3 && w <= numH * 0.6 && h >= numH * 0.5 && h <= numH * 2.0) { c.blocks.push(k); continue; }
   }
   // 「细高竖条」既可能是小节线，也可能是数字 "1"（一条竖笔）。二者宽都很窄、高都 ≳ 字号，
   // 形状难分；但**同一张图里真小节线高度集中成簇、且远高于数字**（实测：世上小节线 h≈35~49、
@@ -60,8 +67,14 @@ function classify(comps: Component[]): { c: Classified; numH: number } {
     const medH = median(c.barlines.map((k) => k.bbox.h));
     const real: Component[] = [];
     for (const k of c.barlines) {
-      if (k.bbox.h < medH * 0.55) c.blocks.push(k); // 偏矮 → 是数字 "1"
-      else real.push(k);
+      if (k.bbox.h < medH * 0.55) {
+        // 偏矮 → 多半是数字 "1"。但终止/复纵线（‖）的细线常因扫描淡而偏矮，它紧贴另一根
+        // 竖线（间距 < 0.7×字号、同 y）——这种有近邻的不当 "1"，保留为小节线。
+        const paired = c.barlines.some((o) => o !== k &&
+          Math.abs(rcx(o.bbox) - rcx(k.bbox)) < numH * 0.7 && Math.abs(rcy(o.bbox) - rcy(k.bbox)) < numH);
+        if (!paired) { c.blocks.push(k); continue; }
+      }
+      real.push(k);
     }
     c.barlines = real;
   }
@@ -194,15 +207,20 @@ function groupRows(cores: DigitCore[], numH: number): DigitCore[][] {
 // 为一行的每个数字格归并修饰（八度点/增时线/附点），div 已随数字格带入。
 function buildJpNums(
   rowCores: DigitCore[], numH: number, cls: Classified, ocrDigit: (b: Rect) => number,
-  arcs: Component[],
+  arcs: Component[], barlineXs: number[],
 ): JpNum[] {
   const out: JpNum[] = [];
   for (let i = 0; i < rowCores.length; i++) {
     const d = rowCores[i].bbox;
     const next = rowCores[i + 1]?.bbox;
+    // 右侧修饰（附点/增时线）必与本音符同属一小节：不得越过本音符后的第一根小节线。
+    // 否则末音符会跨过小节线把下一小节的点/横线吞进来（实测「2_ |1-」把 1 的附点与增时线
+    // 误并到 2_ → 2. 且漏掉 1 的增时）。无后续小节线则不限。
+    const nextBar = barlineXs.find((x) => x > rright(d) - 1);
+    const rightLimit = nextBar ?? Number.POSITIVE_INFINITY;
     // 增时线右界：行末音符(如 6--- 整小节长音)无下一音符，须放宽到无穷，否则只数到第一根 '-'；
-    // 同 y 高度约束已能防越界到别行。
-    const augR = next ? next.x : Number.POSITIVE_INFINITY;
+    // 同 y 高度约束已能防越界到别行。再以本小节右界封顶。
+    const augR = Math.min(next ? next.x : Number.POSITIVE_INFINITY, rightLimit);
     let octave = 0, dot = 0, augment = 0;
 
     const dcx = rcx(d), dcy = rcy(d);
@@ -210,9 +228,10 @@ function buildJpNums(
     // 即 ~1.3×字号外），远超固定的 0.8×字号窗。改用空隙相对界——取本音符右缘到下一音符左缘
     // 间隙的前 60%（无下一音符则放宽到 1.6×字号）；垂直居中(|Δcy|<0.5)已排除上/下八度点，
     // 60% 上界确保把点归给本音符而非下一音符（下一音符的八度点居中于其自身，落在 60% 之外）。
-    const dotMaxX = next
-      ? rright(d) + (next.x - rright(d)) * 0.6
-      : rright(d) + numH * 1.6;
+    const dotMaxX = Math.min(
+      next ? rright(d) + (next.x - rright(d)) * 0.6 : rright(d) + numH * 1.6,
+      rightLimit,
+    );
     for (const k of cls.dots) {
       const kb = k.bbox;
       // 右侧附点：在数字右侧空隙前段、垂直居中。
@@ -249,7 +268,12 @@ function buildJpNums(
       const below = kb.y - rbottom(d);
       if (below > -numH * 0.2 && below < numH * 0.75 && overlapX(kb, d) >= Math.min(kb.w, d.w) * 0.4) div++;
     }
-    out.push({ digit: ocrDigit(d), bbox: d, dot, octave, div, augment });
+    // "1" 在简谱里是唯一的单竖笔，明显比其它数字窄（实测 ≈0.45~0.55字号，其余 ≈0.9字号）。
+    // 极窄块若被 OCR 误判成别的数字（淡印/碎裂的 "1" 常被读成 4/7），按宽度纠回 1；
+    // 不动休止 0（圆形、不窄）以免误改。
+    let digit = ocrDigit(d);
+    if (digit > 1 && d.w <= numH * 0.55) digit = 1;
+    out.push({ digit, bbox: d, dot, octave, div, augment });
   }
   return out;
 }
@@ -317,7 +341,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   const allRows: StaffRow[] = staff.map((m) => ({
     topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs,
-    nums: buildJpNums(m.rd, numH, c, ocrDigit, arcCands),
+    nums: buildJpNums(m.rd, numH, c, ocrDigit, arcCands, m.barlineXs),
   }));
 
   // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是
