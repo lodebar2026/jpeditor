@@ -8,6 +8,7 @@ import { recognizeJianpu } from "./jianpu";
 import { toMusicXml } from "./musicxml";
 import { paddleOcrBackend } from "./paddleocr";
 import { agyRecognizeImage, agyAvailable, DEFAULT_GEMINI_MODEL } from "./agy";
+import type { Binary, RecognizedScore } from "./types";
 
 export type OmrMethod = "musicpp" | "gemini";
 
@@ -17,11 +18,23 @@ export interface OmrResult {
   ms: number;
 }
 
-/** musicpp 本地管线：图片字节 → MusicXML。完全本地（PaddleOCR PP-OCRv4 / onnxruntime-web）。 */
-export async function recognizeMusicpp(bytes: Uint8Array, mime?: string): Promise<string> {
+/** musicpp 本地管线的详尽产物：MusicXML + 二值图 + 带源图坐标的识别结果（供识别模式叠加）。 */
+export interface MusicppDetail {
+  musicxml: string;
+  bin: Binary;
+  score: RecognizedScore;
+}
+
+/** musicpp 本地管线：图片字节 → 二值图 + RecognizedScore + MusicXML。完全本地（PaddleOCR PP-OCRv4）。 */
+export async function recognizeMusicppDetailed(bytes: Uint8Array, mime?: string): Promise<MusicppDetail> {
   const bin = await decodeToBinary(bytes, mime);
   const score = await recognizeJianpu(bin, paddleOcrBackend());
-  return toMusicXml(score);
+  return { musicxml: toMusicXml(score), bin, score };
+}
+
+/** musicpp 本地管线：图片字节 → MusicXML。完全本地（PaddleOCR PP-OCRv4 / onnxruntime-web）。 */
+export async function recognizeMusicpp(bytes: Uint8Array, mime?: string): Promise<string> {
+  return (await recognizeMusicppDetailed(bytes, mime)).musicxml;
 }
 
 /** 统一入口。gemini 方式需图片磁盘路径（agy 直接读盘，仅桌面）；musicpp 用字节即可。 */

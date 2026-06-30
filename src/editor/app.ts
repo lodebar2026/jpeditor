@@ -15,7 +15,8 @@ import { loadMusicXml } from "../score/musicxml";
 import { scoreToJpwabc } from "../score/jpscore";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 import { MixedPainter } from "../mixed/painter";
-import { recognizeImage, agyAvailable, type OmrMethod } from "../omr";
+import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, type OmrMethod } from "../omr";
+import type { Binary, RecognizedScore } from "../omr";
 
 export class App {
   painter: JinpuPainter;
@@ -24,10 +25,14 @@ export class App {
   pageEls: HTMLElement[] = [];
   pageIndex = 0;
   filePath: string | null = null;
-  mode: "jp" | "mixed" = "jp";
+  mode: "jp" | "mixed" | "recognize" = "jp";
   mixedXmlText: string | null = null;
   private _mixedPainter: MixedPainter | null = null;
   private _mixedBtnEl: HTMLButtonElement | null = null;
+  // 识别模式：二值图 + 带源图坐标的识别结果（仅 musicpp 本地路产出），供叠加核对。
+  private _recogBin: Binary | null = null;
+  private _recogScore: RecognizedScore | null = null;
+  private _recognizeBtnEl: HTMLButtonElement | null = null;
   private _readOnlyCompartment = new Compartment();
   // render settings (app-level, not part of the .jpwabc document)
   pageW = 960;
@@ -189,7 +194,8 @@ export class App {
 
   /** parse -> import -> layout -> render. Returns false on parse failure (text kept). */
   reload(text: string): boolean {
-    if (this.mode === "mixed") return true;
+    // 混排/识别模式：谱面区显示各自专属视图，编辑文本不重排冲掉它。
+    if (this.mode !== "jp") return true;
     let f: JpwFile | null;
     try {
       f = JpwFile.fromString(text);
@@ -281,6 +287,8 @@ export class App {
   // ---------------- file I/O ----------------
   /** Decode bytes by extension: .xml/.musicxml -> import to .jpwabc; else UTF-16 .jpwabc. */
   importBytes(bytes: Uint8Array, name: string): void {
+    // 任何新导入都使上一次的识别叠加产物失效（识别结果由 recognizeBytes 在本调用之后重设）。
+    this._clearRecognition();
     if (/\.(xml|musicxml)$/i.test(name)) {
       const xml = new TextDecoder(
         bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
@@ -328,6 +336,66 @@ export class App {
   /** Register the #btn-mixed element so App can enable/disable it. */
   setMixedBtn(el: HTMLButtonElement): void {
     this._mixedBtnEl = el;
+  }
+
+  /** Register the #btn-recognize element so App can enable/disable it. */
+  setRecognizeBtn(el: HTMLButtonElement): void {
+    this._recognizeBtnEl = el;
+  }
+
+  /** 在「简谱模式」与「识别模式」（二值图+半透明识别叠加）之间切换。需先有 OMR 识别结果。 */
+  async toggleRecognize(): Promise<void> {
+    if (!this._recogScore || !this._recogBin) return;
+    if (this.mode === "recognize") {
+      this.mode = "jp";
+      this._setRecognizeLayout(false);
+      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "识别";
+      this.reload(this.getText());
+    } else {
+      // 从混排切入识别：先退混排布局
+      if (this.mode === "mixed") this._setMixedLayout(false);
+      this.mode = "recognize";
+      this._setRecognizeLayout(true);
+      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "简谱";
+      this._renderRecognizePages();
+    }
+  }
+
+  /** 识别模式布局钩子：仅打 body.recognize 类（编辑器保留可编辑、代码区不隐藏）。 */
+  private _setRecognizeLayout(on: boolean): void {
+    document.getElementById("body")?.classList.toggle("recognize", on);
+  }
+
+  /** 渲染识别叠加视图：二值图 + 识别结果 → 一张 SVG，沿用 score-page-wrap + zoom 容器。 */
+  private _renderRecognizePages(): void {
+    this.scorePane.replaceChildren();
+    this.pageEls = [];
+    this.selectedEl = null;
+    if (!this._recogBin || !this._recogScore) return;
+    const bin = this._recogBin;
+    const svg = renderRecognitionSvg(bin, this._recogScore);
+    const wrap = document.createElement("div");
+    wrap.className = "score-page-wrap";
+    wrap.style.aspectRatio = `${bin.w} / ${bin.h}`;
+    wrap.style.width = "calc(min(960px, 100%) * var(--score-zoom, 1))";
+    wrap.appendChild(svg);
+    this.scorePane.appendChild(wrap);
+    this.pageEls.push(wrap);
+    this.pageIndex = 0;
+  }
+
+  /** 清掉本次 OMR 的识别叠加产物并禁用识别按钮；若正处识别模式则退回简谱模式。 */
+  private _clearRecognition(): void {
+    this._recogBin = null;
+    this._recogScore = null;
+    if (this._recognizeBtnEl) {
+      this._recognizeBtnEl.disabled = true;
+      this._recognizeBtnEl.textContent = "识别";
+    }
+    if (this.mode === "recognize") {
+      this.mode = "jp";
+      this._setRecognizeLayout(false);
+    }
   }
 
   /** Toggle between JP mode and Mixed (五线谱+简谱) mode. */
@@ -466,11 +534,33 @@ export class App {
     }
     const picked = await this._pickImage();
     if (!picked) return;
-    this.setStatus(`识别中（${method === "gemini" ? "Gemini" : "musicpp"}）…可能需要几十秒`);
+    await this.recognizeBytes(method, picked);
+  }
+
+  /** 已取得图片字节后的识别核心（供「识图」对话框与拖拽复用）。
+   *  musicpp 本地路额外保留二值图+识别结果并自动进入识别模式叠加核对；gemini 路只导入排版。 */
+  async recognizeBytes(method: OmrMethod, picked: { bytes: Uint8Array; mime?: string; path?: string | null }): Promise<void> {
+    if (method === "gemini" && !agyAvailable()) {
+      this.setStatus("Gemini 识别需要桌面版（Antigravity CLI / agy），浏览器内不可用");
+      return;
+    }
+    const label = method === "gemini" ? "Gemini" : "musicpp";
+    this.setStatus(`识别中（${label}）…可能需要几十秒`);
     try {
-      const { musicxml, ms } = await recognizeImage(method, picked);
-      this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml");
-      this.setStatus(`识别完成（${method === "gemini" ? "Gemini" : "musicpp"}，${(ms / 1000).toFixed(1)}s）`);
+      const t0 = performance.now();
+      if (method === "musicpp") {
+        const { musicxml, bin, score } = await recognizeMusicppDetailed(picked.bytes, picked.mime);
+        this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml"); // 先导入（会清旧识别）
+        this._recogBin = bin; // 再设本次识别产物
+        this._recogScore = score;
+        if (this._recognizeBtnEl) this._recognizeBtnEl.disabled = false;
+        if (this.mode !== "recognize") await this.toggleRecognize(); // 自动进识别模式叠加
+        this.setStatus(`识别完成（${label}，${((performance.now() - t0) / 1000).toFixed(1)}s）`);
+      } else {
+        const { musicxml, ms } = await recognizeImage(method, picked);
+        this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml");
+        this.setStatus(`识别完成（${label}，${(ms / 1000).toFixed(1)}s）`);
+      }
     } catch (e) {
       console.error("OMR failed", e);
       this.setStatus("识别失败：" + (e instanceof Error ? e.message : String(e)));

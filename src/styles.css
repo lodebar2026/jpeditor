@@ -38,6 +38,20 @@ html, body { margin: 0; height: 100%; }
 /* Mixed mode is read-only render; hide the code editor entirely. */
 #body.mixed #code-pane { display: none; }
 
+/* 识别模式：左侧代码区保留可编辑（无需隐藏）。二值底图与识别叠加均衡显示，便于对位核对。 */
+.omr-recognize { background: #fff; }
+.omr-recognize > image { opacity: 0.5; }
+.omr-recognize .omr-overlay { pointer-events: none; }
+/* 各类识别结果用不同颜色区分：音符红、小节线蓝、页眉绿、歌词紫、圆滑线橙、连音线青。 */
+.omr-recognize .omr-overlay text { fill: #d4145a; font-weight: 700; font-family: "PingFang SC", "Microsoft YaHei", ui-sans-serif, sans-serif; }
+.omr-recognize .omr-overlay circle { fill: #d4145a; }
+.omr-recognize .omr-overlay .omr-mark { stroke: #d4145a; }
+.omr-recognize .omr-overlay .omr-barline { stroke: #1565ff; stroke-linecap: round; opacity: 0.95; }
+.omr-recognize .omr-overlay text.omr-header { fill: #0a7d2c; }
+.omr-recognize .omr-overlay text.omr-lyric { fill: #6a1b9a; }
+.omr-recognize .omr-overlay .omr-slur { stroke: #e65100; }
+.omr-recognize .omr-overlay .omr-tie { stroke: #00838f; }
+
 #score-pane {
   flex: 1 1 auto;
   overflow: auto;

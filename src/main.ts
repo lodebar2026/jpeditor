@@ -73,6 +73,11 @@ async function boot() {
     app.setMixedBtn(mixedBtn);
     mixedBtn.addEventListener("click", () => void app.toggleMixed());
   }
+  const recognizeBtn = document.getElementById("btn-recognize") as HTMLButtonElement | null;
+  if (recognizeBtn) {
+    app.setRecognizeBtn(recognizeBtn);
+    recognizeBtn.addEventListener("click", () => void app.toggleRecognize());
+  }
   // export/play/stop wired in later phases
   const addOpen = document.getElementById("btn-open");
   addOpen?.addEventListener("click", () => void app.openFile());
@@ -190,6 +195,8 @@ async function boot() {
   await app.tryRestoreLastFile();
 }
 
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
+
 async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
   if (isTauriRuntime()) {
     const { getCurrentWebview } = await import("@tauri-apps/api/webview");
@@ -197,7 +204,14 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
     await getCurrentWebview().onDragDropEvent(async (event) => {
       if (event.payload.type === "drop") {
         const path = event.payload.paths[0];
-        if (!path || !/\.(jpwabc|xml|musicxml)$/i.test(path)) return;
+        if (!path) return;
+        if (IMAGE_EXT_RE.test(path)) {
+          // 拖入图片 → 本地 OMR 识别并自动进识别模式叠加核对。
+          const bytes = await readFile(path);
+          await app.recognizeBytes("musicpp", { bytes, path });
+          return;
+        }
+        if (!/\.(jpwabc|xml|musicxml)$/i.test(path)) return;
         const bytes = await readFile(path);
         app.importBytes(bytes, path);
         if (!/\.(xml|musicxml)$/i.test(path)) app.filePath = path;
@@ -211,6 +225,10 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
       const buf = new Uint8Array(await file.arrayBuffer());
+      if (IMAGE_EXT_RE.test(file.name) || file.type.startsWith("image/")) {
+        await app.recognizeBytes("musicpp", { bytes: buf, mime: file.type, path: null });
+        return;
+      }
       app.importBytes(buf, file.name);
     });
   }

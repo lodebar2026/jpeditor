@@ -11,5 +11,6 @@ export { buildMontage } from "./montage";
 export { localOcrBackend } from "./localocr";
 export { paddleOcrBackend } from "./paddleocr";
 export { agyAvailable, agyRecognizeImage, DEFAULT_GEMINI_MODEL } from "./agy";
-export { recognizeImage, recognizeMusicpp } from "./recognize";
-export type { OmrMethod, OmrResult } from "./recognize";
+export { recognizeImage, recognizeMusicpp, recognizeMusicppDetailed } from "./recognize";
+export type { OmrMethod, OmrResult, MusicppDetail } from "./recognize";
+export { renderRecognitionSvg } from "./overlay";

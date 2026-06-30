@@ -53,6 +53,15 @@ export interface StaffRow {
   barlineXs: number[]; // 小节线 x 位置
 }
 
+/** 一处带源图坐标的识别文本（页眉/歌词），供识别模式按原位、原字号叠加。 */
+export interface TextRegion {
+  text: string; // 识别出的展示文本（如 "日光之上"、"作词：叶薇心"、"1=♭B"、歌词单字）
+  bbox: Rect; // 源图像素坐标
+  // 可选：逐字源图位置（页眉行用 OCR 返回的字位）。识别模式据此把每个字落回源图 x，
+  // 使展开排布的标题/著作者行逐字对位，而非整行左对齐挤在一头。
+  chars?: { text: string; cx: number }[];
+}
+
 export interface RecognizedScore {
   key: string; // 如 "C"
   fifths: number;
@@ -62,4 +71,6 @@ export interface RecognizedScore {
   title?: string;
   credits?: string[]; // 著作者整行文本（作词/作曲…），→ MusicXML <credit>
   tempo?: number; // 速度 ♩=NN（仅进 MusicXML；当前下游导入器不读 tempo）
+  headerRegions?: TextRegion[]; // 页眉文本的源图定位（识别模式按原位叠加）
+  lyricRegions?: TextRegion[]; // 歌词单字的源图定位+字号（识别模式按原图位置/大小叠加）
 }

@@ -222,6 +222,11 @@ function buildJpNums(
     // 同 y 高度约束已能防越界到别行。再以本小节右界封顶。
     const augR = Math.min(next ? next.x : Number.POSITIVE_INFINITY, rightLimit);
     let octave = 0, dot = 0, augment = 0;
+    // 数字先识别（附点判定要用到：休止 0 不接附点 —— 见下）。
+    // "1" 是简谱唯一单竖笔，明显比其它数字窄（实测 ≈0.45~0.55字号，其余 ≈0.9字号）：极窄块若被
+    // OCR 误判成别的数字（淡印/碎裂的 "1" 常被读成 4/7），按宽度纠回 1；不动休止 0（圆形、不窄）。
+    let digit = ocrDigit(d);
+    if (digit > 1 && d.w <= numH * 0.55) digit = 1;
 
     const dcx = rcx(d), dcy = rcy(d);
     // 右侧附点窗口：附点紧跟其修饰的音符，但实测它常落在到下一音符空隙的中段（约 50%，
@@ -234,8 +239,15 @@ function buildJpNums(
     );
     for (const k of cls.dots) {
       const kb = k.bbox;
-      // 右侧附点：在数字右侧空隙前段、垂直居中。
-      if (rcx(kb) > rright(d) && rcx(kb) < dotMaxX && Math.abs(rcy(kb) - dcy) < numH * 0.5) { dot++; continue; }
+      // 右侧附点：在数字右侧空隙前段、**真正垂直居中**、且尺寸够大（非噪点）。
+      // 阈值据 5 首实测分布定（按 numH 自适应缩放）：真附点 w/h≈0.29~0.45×numH、|Δcy|≤0.16×numH；
+      // 误检要么是噪点小斑(≤0.08×numH)、要么是邻音符的下八度点(Δcy≈0.3~0.43×numH、偏右偏下)。
+      // 尺寸下限 0.15 剔噪点、居中收到 0.25×numH 剔偏下的八度点 —— 两道独立门各自留足真附点余量。
+      // 休止 0 不接附点：实测尾随休止右侧常有终止线碎块/噪点被误当附点（为基督 r5 末 "0" → 误 "0."）；
+      // 简谱附点休止极罕见，且休止右侧本就无修饰，按 digit!=0 一刀剔除，对真音符附点无损。
+      if (digit !== 0 && rcx(kb) > rright(d) && rcx(kb) < dotMaxX &&
+          kb.w >= numH * 0.15 && kb.h >= numH * 0.15 &&
+          Math.abs(rcy(kb) - dcy) < numH * 0.25) { dot++; continue; }
       // 八度点：须足够大(排除噪点小斑)、水平居中于数字、且紧贴上/下方（间隙 < 0.8×字号）。
       // 阈值据实测分布定（真八度点 w/h≈0.21~0.30×numH、|dx|≤0.14；噪点误判那个是 0.09×0.11、dx=0.45）：
       // 尺寸下限 0.15、居中收到 0.4，两道独立门都能剔除噪点，且对真点留足余量。
@@ -268,11 +280,6 @@ function buildJpNums(
       const below = kb.y - rbottom(d);
       if (below > -numH * 0.2 && below < numH * 0.75 && overlapX(kb, d) >= Math.min(kb.w, d.w) * 0.4) div++;
     }
-    // "1" 在简谱里是唯一的单竖笔，明显比其它数字窄（实测 ≈0.45~0.55字号，其余 ≈0.9字号）。
-    // 极窄块若被 OCR 误判成别的数字（淡印/碎裂的 "1" 常被读成 4/7），按宽度纠回 1；
-    // 不动休止 0（圆形、不窄）以免误改。
-    let digit = ocrDigit(d);
-    if (digit > 1 && d.w <= numH * 0.55) digit = 1;
     out.push({ digit, bbox: d, dot, octave, div, augment });
   }
   return out;
@@ -360,7 +367,11 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   detectSlurs([...comps, ...arcComps], useRows, numH);
 
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
-  if (ocr.recognizeTexts) await recognizeLyrics(bin, comps, useRows, numH, ocr);
+  let lyricRegions: RecognizedScore["lyricRegions"];
+  if (ocr.recognizeTexts) {
+    const lr = await recognizeLyrics(bin, comps, useRows, numH, ocr);
+    lyricRegions = lr.length ? lr : undefined;
+  }
 
   // 据歌词纠正休止误判：休止符不带歌词，故「digit=0 却对齐到歌词」几乎必是退化字形被 CTC 误判成空白
   // →默认 0(见 paddleocr 的 empty→0)。取数字候选排序里的首个非零值复原（实测低对比图里糊住的"3"）。
@@ -381,12 +392,14 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
   let title: string | undefined, credits: string[] | undefined;
   let fifths = 0, tempo: number | undefined;
+  let headerRegions: RecognizedScore["headerRegions"];
   if (ocr.recognizeTexts && useRows.length) {
     const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr);
     title = h.title; credits = h.credits.length ? h.credits : undefined;
     if (h.fifths !== undefined) fifths = h.fifths;
     tempo = h.tempo;
+    headerRegions = h.regions.length ? h.regions : undefined;
   }
 
-  return { key: "C", fifths, beats: 4, beatType: 4, rows: useRows, title, credits, tempo };
+  return { key: "C", fifths, beats: 4, beatType: 4, rows: useRows, title, credits, tempo, headerRegions, lyricRegions };
 }

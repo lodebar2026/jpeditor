@@ -1,7 +1,7 @@
 // 简谱页眉(第一行乐谱之上)信息识别：标题、作词/作曲(及编/译)等。
 // 复用歌词的"自然区域分块 rec"（lyrics.ts）：取页眉区连通块 → 按 y 分行 → 每行整体 rec →
 // 按内容/字号归类：含 作/词/曲/编/译 → 著作者 credit；最大字号且较居中的中文行 → 标题。
-import type { Binary, Component } from "./types";
+import type { Binary, Component, Rect, TextRegion } from "./types";
 import type { OcrBackend } from "./ocr";
 import { srcCanvasOf, mergeToChars, chunkCells, buildStrip } from "./lyrics";
 
@@ -16,17 +16,50 @@ export interface HeaderInfo {
   fifths?: number;
   /** 速度（♩=NN），仅进 MusicXML（当前下游导入器不读 tempo，故不进 .jpwabc）。 */
   tempo?: number;
+  /** 页眉文本的源图定位（识别模式按原位叠加）。 */
+  regions: TextRegion[];
 }
 
-interface HLine { text: string; charH: number; cx: number; cy: number; n: number; }
+interface HLine { text: string; charH: number; cx: number; cy: number; n: number; bbox: Rect; chars?: { text: string; cx: number }[]; }
+
+/** 把展示文本(可能已规整：去编号前缀、冒号全角化、截尾噪声)逐字对位回 OCR 原始字位，
+ *  供识别模式按源图 x 逐字叠加。贪心在 raw 里顺序找等字符；标点全/半角差异等取下一个原始位近似。 */
+function charsForText(text: string, raw?: { text: string; cx: number }[]): { text: string; cx: number }[] | undefined {
+  if (!raw || !raw.length) return undefined;
+  const res: { text: string; cx: number }[] = [];
+  let ri = 0;
+  for (const ch of text.trim()) {
+    let j = ri;
+    while (j < raw.length && raw[j].text !== ch) j++;
+    if (j < raw.length) { res.push({ text: ch, cx: raw[j].cx }); ri = j + 1; }        // 精确命中
+    else if (ri < raw.length) { res.push({ text: ch, cx: raw[ri].cx }); ri++; }       // 归一化字符：取下一原始位
+    else if (res.length) { res.push({ text: ch, cx: res[res.length - 1].cx + 1 }); }  // raw 用尽：顺延
+  }
+  return res.length ? res : undefined;
+}
 
 // 大调主音字母 → 五度圈数（自然，无升降）。降号 -7、升号 +7。
 const NAT_FIFTHS: Record<string, number> = { C: 0, D: 2, E: 4, F: -1, G: 1, A: 3, B: 5 };
 
+// fifths → 简谱调号 DO 位（如 -2 → "♭B"，2 → "D"），与图片 "1=♭B" 写法一致。供页眉叠加展示。
+const KEY_SHARP = ["C", "G", "D", "A", "E", "B", "♯F", "♯C"];
+const KEY_FLAT = ["C", "F", "♭B", "♭E", "♭A", "♭D", "♭G", "♭C"];
+export function fifthsToKey(f: number | undefined): string {
+  if (f === undefined) return "C";
+  return f < 0 ? (KEY_FLAT[-f] ?? "C") : (KEY_SHARP[f] ?? "C");
+}
+
+/** 一组连通块的并集包围盒（源图像素坐标）。 */
+function unionBox(cs: Component[]): Rect {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of cs) { const b = c.bbox; x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 /** 从页眉小字区解析调号("1=♭B")与速度("♩=76")。OCR 常把 ♭→b、♩→J；页眉碎片散落，
  *  故按碎片就地匹配、必要时空间最近邻配对，避免跨列拼接误配。 */
-function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number } {
-  const res: { fifths?: number; tempo?: number } = {};
+function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number; fifthsLine?: HLine; tempoLine?: HLine } {
+  const res: { fifths?: number; tempo?: number; fifthsLine?: HLine; tempoLine?: HLine } = {};
   const toFifths = (note: string, acc: string): number | undefined => {
     if (!(note in NAT_FIFTHS)) return undefined;
     let f = NAT_FIFTHS[note];
@@ -38,10 +71,10 @@ function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number } {
   // 调号：先认单碎片内 "1=♭B" 或 "♭B"（升降号紧贴音名）；再认自然调 "1=G"（音名无升降号）。
   for (const l of lines) {
     const acc = l.text.match(/1\s*[=＝]\s*([b#♭♯])\s*([A-G])/) || l.text.match(/([b#♭♯])\s*([A-G])(?![a-z])/);
-    if (acc) { const f = toFifths(acc[2], acc[1]); if (f !== undefined) { res.fifths = f; break; } }
+    if (acc) { const f = toFifths(acc[2], acc[1]); if (f !== undefined) { res.fifths = f; res.fifthsLine = l; break; } }
     // 自然调："1=G"/"1=C4"(4 来自拍号)。音名后须非升降号(否则属上面的带号情形)、非小写字母。
     const nat = l.text.match(/1\s*[=＝]\s*([A-G])(?![b#♭♯a-z])/);
-    if (nat && nat[1] in NAT_FIFTHS) { res.fifths = NAT_FIFTHS[nat[1]]; break; }
+    if (nat && nat[1] in NAT_FIFTHS) { res.fifths = NAT_FIFTHS[nat[1]]; res.fifthsLine = l; break; }
   }
   // 否则：独立升降号碎片 + 右侧最近大写音名碎片（"♭B" 被 OCR 拆成 "b" / "B4" 两块时）。
   if (res.fifths === undefined) {
@@ -55,14 +88,14 @@ function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number } {
         if (dx < -0.3 * a.charH || dx > 4.5 * a.charH || dy > 1.5 * a.charH) continue;
         const d = dx * dx + dy * dy; if (d < bd) { bd = d; best = n; }
       }
-      if (best) { const f = toFifths(best.text.trim()[0], a.text.trim()); if (f !== undefined) { res.fifths = f; break; } }
+      if (best) { const f = toFifths(best.text.trim()[0], a.text.trim()); if (f !== undefined) { res.fifths = f; res.fifthsLine = best; break; } }
     }
   }
 
   // 速度：含 "=NN" 的碎片（♩/J 常与数字同块，如 "J=76"）。
   for (const l of lines) {
     const t = l.text.match(/[=＝]\s*(\d{2,3})\b/);
-    if (t) { const bpm = parseInt(t[1], 10); if (bpm >= 30 && bpm <= 300) { res.tempo = bpm; break; } }
+    if (t) { const bpm = parseInt(t[1], 10); if (bpm >= 30 && bpm <= 300) { res.tempo = bpm; res.tempoLine = l; break; } }
   }
   return res;
 }
@@ -102,7 +135,7 @@ function mergeStackedColumns(comps: Component[], numH: number): Component[] {
 export async function recognizeHeader(
   bin: Binary, comps: Component[], firstStaffTopY: number, numH: number, ocr: OcrBackend,
 ): Promise<HeaderInfo> {
-  const out: HeaderInfo = { credits: [] };
+  const out: HeaderInfo = { credits: [], regions: [] };
   if (!ocr.recognizeTexts || firstStaffTopY < numH) return out;
   const recognizeTexts = ocr.recognizeTexts.bind(ocr);
 
@@ -112,7 +145,7 @@ export async function recognizeHeader(
   if (ocr.recognizeRegion && (globalThis as { __headerDet?: boolean }).__headerDet !== false) {
     const dets = await ocr.recognizeRegion(bin, { x: 0, y: 0, w: bin.w, h: Math.round(firstStaffTopY - numH * 0.1) });
     if (dets.length) {
-      const lines: HLine[] = dets.map((d) => ({ text: d.text, charH: d.bbox.h, cx: d.bbox.x + d.bbox.w / 2, cy: d.bbox.y + d.bbox.h / 2, n: 1 }));
+      const lines: HLine[] = dets.map((d) => ({ text: d.text, charH: d.bbox.h, cx: d.bbox.x + d.bbox.w / 2, cy: d.bbox.y + d.bbox.h / 2, n: 1, bbox: d.bbox, chars: d.chars }));
       if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.log("[header/det]", lines.map((l) => `${Math.round(l.charH)}px@${Math.round(l.cx)},${Math.round(l.cy)}=${JSON.stringify(l.text)}`).join("  "));
       classify(lines);
       return out;
@@ -139,7 +172,7 @@ export async function recognizeHeader(
     }
     if (!strips.length) return [];
     const texts = await recognizeTexts(strips);
-    const lines: HLine[] = meta.map((g) => ({ text: "", charH: median(g.map((k) => k.bbox.h)) || numH, cx: median(g.map((k) => k.cx)), cy: median(g.map((k) => k.cy)), n: g.length }));
+    const lines: HLine[] = meta.map((g) => ({ text: "", charH: median(g.map((k) => k.bbox.h)) || numH, cx: median(g.map((k) => k.cx)), cy: median(g.map((k) => k.cy)), n: g.length, bbox: unionBox(g) }));
     texts.forEach((t, i) => { lines[owner[i]].text += t; });
     return lines;
   };
@@ -192,15 +225,22 @@ export async function recognizeHeader(
         // "作曲：王丽玲1=bB4" → "作曲：王丽玲"：取 冒号前缀 + 紧随的中文名（英文名则整行保留）。
         const m = txt.match(/^(.*?[:：])\s*([一-鿿·]+)/);
         // 著作者前缀的冒号统一成全角 `：`（.jpwabc 约定；中文名行 OCR 多已全角，英文名行常落半角）。
-        out.credits.push((m ? m[1] + m[2] : txt).replace(/^([作詞词曲編编譯译]{1,4})\s*[:：]/, "$1："));
+        const credit = (m ? m[1] + m[2] : txt).replace(/^([作詞词曲編编譯译]{1,4})\s*[:：]/, "$1：");
+        out.credits.push(credit);
+        out.regions.push({ text: credit, bbox: ln.bbox, chars: charsForText(credit, ln.chars) });
         continue;
       }
       if (hanziCount(txt) < 2) continue;            // 跳过页码/调号/速度等（数字/符号为主）
       if (!titleLine || ln.charH > titleLine.charH) titleLine = ln;  // 标题=最大字号中文行
     }
-    if (titleLine) out.title = titleLine.text.trim().replace(/^\s*\d{1,4}\s*[.．、]\s*/, ""); // 去掉 "557." 之类的诗歌编号前缀
+    if (titleLine) {
+      out.title = titleLine.text.trim().replace(/^\s*\d{1,4}\s*[.．、]\s*/, ""); // 去掉 "557." 之类的诗歌编号前缀
+      out.regions.push({ text: out.title, bbox: titleLine.bbox, chars: charsForText(out.title, titleLine.chars) });
+    }
     const meta = parseMeta(ls);
     out.fifths = meta.fifths;
     out.tempo = meta.tempo;
+    if (meta.fifths !== undefined && meta.fifthsLine) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: meta.fifthsLine.bbox });
+    if (meta.tempo !== undefined && meta.tempoLine) out.regions.push({ text: `♩=${meta.tempo}`, bbox: meta.tempoLine.bbox });
   }
 }

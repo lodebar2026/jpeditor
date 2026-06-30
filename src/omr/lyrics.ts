@@ -5,7 +5,7 @@
 //   2. 行内把连通块(汉字常由多个偏旁连通块组成)按 x 邻近并成"字格"。
 //   3. 每个字格裁成画布 → PaddleOCR 识别汉字。
 //   4. 按 x 单调最近，把每个汉字分配给本乐谱行里 x 最接近的音符(melisma→某些音符无字，正确)。
-import type { Binary, Component, Rect, StaffRow } from "./types";
+import type { Binary, Component, Rect, StaffRow, TextRegion } from "./types";
 import { rright, rbottom, rcx } from "./types";
 import type { OcrBackend } from "./ocr";
 
@@ -86,11 +86,13 @@ export function chunkCells(cells: Rect[]): Rect[][] {
   return chunks;
 }
 
-/** 识别歌词并写回各音符的 lyrics[]。staff 为乐谱行(按出现顺序)，comps 为全图连通块。 */
+/** 识别歌词并写回各音符的 lyrics[]；返回每个歌词单元的源图定位+字号（识别模式按原位/原字号叠加）。
+ *  staff 为乐谱行(按出现顺序)，comps 为全图连通块。 */
 export async function recognizeLyrics(
   bin: Binary, comps: Component[], staff: StaffRow[], numH: number, ocr: OcrBackend,
-): Promise<void> {
-  if (!ocr.recognizeTexts || !staff.length) return;
+): Promise<TextRegion[]> {
+  const regions: TextRegion[] = [];
+  if (!ocr.recognizeTexts || !staff.length) return regions;
 
   const charMin = numH * 0.5; // 歌词字号下限（约等于音符字号）
   const src = srcCanvasOf(bin);
@@ -147,27 +149,61 @@ export async function recognizeLyrics(
     });
   }
 
-  if (!strips.length) return;
-  const texts = await ocr.recognizeTexts(strips);
+  if (!strips.length) return regions;
+  const STRIP_PAD = 4; // 与 buildStrip 一致：strip 源区在 cells 两侧各扩 pad，xFrac 换算 x 时要算进去
+  // 优先用**带字位**的 rec：每字带 xFrac → 直接落回源图 x，免去"字数↔连通块格数"按序硬配（错位根源）。
+  const posMode = !!ocr.recognizeTextsPos;
+  const textsPos = posMode ? await ocr.recognizeTextsPos!(strips) : null;
+  const texts = posMode ? null : await ocr.recognizeTexts(strips);
 
-  // 每块的识别字按字格索引取 x，汇总到 (row,verse)，再单调最近分配给音符。
-  // 单元 = 一个汉字 + 紧随其后的尾随标点（，。、；！？等）：简谱标点向左贴在前一字、不占音符，
-  // 故并入该音节字符串而非另立一格——保持"音节数==字格数"的对齐前提不变。
+  // 每块识别字汇总到 (row,verse)，再按 x 单调最近分配给音符。
+  // 单元 = 一个汉字 + 紧随其后的尾随标点（，。、；！？等）：简谱标点向左贴前一字、不占音符，
+  // 故并入该音节字符串而非另立单元（保持单元↔音符对齐）。段号数字等非汉字非标点 → 直接丢弃、自然不占位。
   const perLine = new Map<string, Array<{ x: number; ch: string }>>();
+  const lineSeen = new Set<string>();
   for (let s = 0; s < chunks.length; s++) {
     const { rowIdx, verse, cells } = chunks[s];
-    const toks: string[] = [];
-    for (const ch of texts[s]) {
-      if (isHanzi(ch)) toks.push(ch);
-      else if (LYRIC_PUNCT.test(ch) && toks.length) toks[toks.length - 1] += ch; // 尾随标点并入前一字
-    }
-    if (!toks.length) continue;
     const key = `${rowIdx}:${verse}`;
+    const isFirstChunk = !lineSeen.has(key);
+    lineSeen.add(key);
     if (!perLine.has(key)) perLine.set(key, []);
     const placed = perLine.get(key)!;
-    for (let j = 0; j < toks.length; j++) {
-      const ci = toks.length === cells.length ? j : Math.min(cells.length - 1, Math.floor(j * cells.length / toks.length));
-      placed.push({ x: rcx(cells[ci]), ch: toks[j] });
+    // 字格纵向范围 + 中位字宽（仅供识别模式叠加按源图定位/取大小）
+    const cy0 = Math.min(...cells.map((c) => c.y)), cy1 = Math.max(...cells.map((c) => rbottom(c)));
+    const charW = median(cells.map((c) => c.w)) || (cy1 - cy0);
+
+    if (posMode) {
+      // 用 OCR 字位 xFrac → 源图 x（strip 源区 [x0-pad, x1+pad] 线性映射到内容宽度）。
+      const x0 = Math.min(...cells.map((c) => c.x)) - STRIP_PAD;
+      const x1 = Math.max(...cells.map((c) => rright(c))) + STRIP_PAD;
+      const span = Math.max(1, x1 - x0);
+      for (const { ch, xFrac } of textsPos![s]) {
+        const sx = x0 + xFrac * span;
+        if (isHanzi(ch)) {
+          placed.push({ x: sx, ch });
+          regions.push({ text: ch, bbox: { x: sx - charW / 2, y: cy0, w: charW, h: cy1 - cy0 } });
+        } else if (LYRIC_PUNCT.test(ch) && placed.length) {
+          placed[placed.length - 1].ch += ch;                       // 尾随标点贴前一字（不移位、不另立单元）
+          if (regions.length) regions[regions.length - 1].text += ch;
+        }
+      }
+    } else {
+      // 回退：后端无字位时，沿用"字↔连通块格"按序映射 + 段号几何剔除（首格落在第一个音符中心左侧 → 段号丢弃）。
+      const toks: string[] = [];
+      for (const ch of texts![s]) {
+        if (isHanzi(ch)) toks.push(ch);
+        else if (LYRIC_PUNCT.test(ch) && toks.length) toks[toks.length - 1] += ch;
+      }
+      if (!toks.length) continue;
+      let mapCells = cells;
+      const notes0 = staff[rowIdx].nums;
+      if (isFirstChunk && cells.length > 1 && notes0.length &&
+          rright(cells[0]) < rcx(notes0[0].bbox)) mapCells = cells.slice(1);
+      for (let j = 0; j < toks.length; j++) {
+        const ci = toks.length === mapCells.length ? j : Math.min(mapCells.length - 1, Math.floor(j * mapCells.length / toks.length));
+        placed.push({ x: rcx(mapCells[ci]), ch: toks[j] });
+        regions.push({ text: toks[j], bbox: mapCells[ci] });
+      }
     }
   }
 
@@ -176,13 +212,22 @@ export async function recognizeLyrics(
     const notes = staff[rowIdx].nums;
     if (!notes.length) continue;
     placed.sort((a, b) => a.x - b.x);
+    const M = placed.length;
     let ni = 0;
-    for (const { x, ch } of placed) {
-      while (ni + 1 < notes.length && Math.abs(rcx(notes[ni + 1].bbox) - x) <= Math.abs(rcx(notes[ni].bbox) - x)) ni++;
+    for (let k = 0; k < M; k++) {
+      const { x, ch } = placed[k];
+      // 给后续字各留一个音符的上限：第 k 字最多落到 notes.length-(M-k)。
+      // 否则贪心 x-最近会因某字 x 略偏右而跳格(多留一个空白 melisma)，
+      // 误差向行尾累积，把末尾两字挤进同一音符（实测「人·心怎能说尽」错位即此）。
+      const maxNi = Math.max(0, notes.length - (M - k));
+      while (ni + 1 < notes.length && ni + 1 <= maxNi &&
+             Math.abs(rcx(notes[ni + 1].bbox) - x) <= Math.abs(rcx(notes[ni].bbox) - x)) ni++;
+      if (ni > maxNi) ni = maxNi;
       const nt = notes[ni];
       if (!nt.lyrics) nt.lyrics = [];
       nt.lyrics[verse] = (nt.lyrics[verse] || "") + ch;
       if (ni < notes.length - 1) ni++;
     }
   }
+  return regions;
 }

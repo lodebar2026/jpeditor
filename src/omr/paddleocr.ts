@@ -1,12 +1,17 @@
 // musicpp 方案的**本地**数字 OCR：PaddleOCR PP-OCRv4 识别模型（ONNX，经 onnxruntime-web 在
 // 浏览器/桌面离线推理）。替代 tesseract.js —— 实测对真实扫描简谱数字 0-7 准确率 100%
 // （tesseract 约 69%，常把 6 误读为 0）。模型与字典见 public/redist/ocr/，
-// wasm 运行时见 public/redist/ort/（单线程，无需 COOP/COEP 跨源隔离）。
+// wasm 运行时经 onnxruntime-web 包用 Vite `?url` 引入（见下，单线程，无需 COOP/COEP 跨源隔离）。
 //
 // 识别单元：每个数字裁成 64×64 居中白底黑字格（与回归基准一致），逐格 rec → CTC 解码 → 取 0-7。
 import type { OcrBackend } from "./ocr";
 import type { Binary, Rect } from "./types";
 import { rright, rbottom } from "./types";
+// ort 运行时（纯 wasm，单线程，免 jsep 26MB）经 Vite `?url` 引入：dev/build 都由 Vite 解析为
+// 合法资源 URL。**不能**把这两个文件放 /public 再用 wasmPaths 字符串——onnxruntime-web 会对
+// 其中的 .mjs 做动态 import()，而 Vite dev 拒绝把 /public 文件当模块加载。
+import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
+import ortMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 
 const BASE = import.meta.env.BASE_URL; // "/" 或 "/jpeditor-web/"
 const REC_URL = `${BASE}redist/ocr/ch_PP-OCRv4_rec_infer.onnx`;
@@ -32,7 +37,8 @@ async function ensureSession(): Promise<void> {
     // 纯 wasm 构建（非 jsep/webgpu）：CPU 单线程足够，且只需 ort-wasm-simd-threaded.wasm，
     // 省去 26MB 的 jsep wasm。
     const ort = await import("onnxruntime-web/wasm");
-    ort.env.wasm.wasmPaths = `${BASE}redist/ort/`;
+    // 用 Vite 解析出的资源 URL 映射，避免 dev 下对 /public 的 .mjs 动态 import 报错。
+    ort.env.wasm.wasmPaths = { wasm: ortWasmUrl, mjs: ortMjsUrl };
     ort.env.wasm.numThreads = 1; // 单线程：免 SharedArrayBuffer / 跨源隔离要求
     _ort = ort;
     _session = await ort.InferenceSession.create(REC_URL, { executionProviders: ["wasm"] });
@@ -162,7 +168,7 @@ function cellOf(src: OffscreenCanvas, bin: Binary, r: Rect, cell = 64, pad = 8):
 /** 对一个文本行/字符画布跑 PP-OCRv4 rec → 原始 logits [T,C]。
  *  maxW：宽度上限（rec 全卷积，宽度可变）。逐数字格/歌词块用默认 320；整行 det 框可能很长(英文著作者)，
  *  用更大上限避免被压扁成乱码。 */
-async function inferLogits(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ arr: Float32Array; T: number; C: number }> {
+async function inferLogits(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ arr: Float32Array; T: number; C: number; w: number; tensorW: number }> {
   // 等比缩放到高 REC_H、宽 ≤ maxW，零填充。
   const ratio = cell.width / cell.height;
   let w = Math.ceil(REC_H * ratio);
@@ -192,7 +198,9 @@ async function inferLogits(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ ar
   const out = await _session.run(feeds);
   const o = out[_session.outputNames[0]];
   const [, T, C] = o.dims as number[];
-  return { arr: o.data as Float32Array, T, C };
+  // w=有效内容宽（缩放后、零填充前），tensorW=张量总宽；二者之比给出内容占张量列的比例，
+  // 用于把 CTC 时间步换算成内容内的水平位置（recognizeCharsPos）。
+  return { arr: o.data as Float32Array, T, C, w, tensorW };
 }
 
 /** CTC 贪心解码 → 字符串。maxW 见 inferLogits。 */
@@ -207,6 +215,26 @@ async function recognizeCanvas(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<
     prev = best;
   }
   return s;
+}
+
+/** CTC 贪心解码 → 每字 {ch, xFrac}。xFrac∈[0,1]：该字在**输入内容宽度**上的水平位置，
+ *  取 CTC 非空峰值所在时间步 t 换算（tensor 列≈t·tensorW/T，内容占 [0,w) → xFrac=列/w）。
+ *  上层据此把识别字落回源图 x，免去"字数↔连通块格数"按序硬配（错位根源）。 */
+async function recognizeCharsPos(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ ch: string; xFrac: number }[]> {
+  const { arr, T, C, w, tensorW } = await inferLogits(cell, maxW);
+  const chars = _chars!;
+  const res: { ch: string; xFrac: number }[] = [];
+  let prev = -1;
+  for (let t = 0; t < T; t++) {
+    let best = 0, bv = -Infinity;
+    for (let c = 0; c < C; c++) { const v = arr[t * C + c]; if (v > bv) { bv = v; best = c; } }
+    if (best !== 0 && best !== prev) {
+      const ch = chars[best] ?? "";
+      if (ch) res.push({ ch, xFrac: Math.min(1, Math.max(0, (t * tensorW / T) / w)) });
+    }
+    prev = best;
+  }
+  return res;
 }
 
 // 字符表里数字 '0'..'7' 的类别索引（首次用时据 _chars 求出）。
@@ -262,11 +290,18 @@ export function paddleOcrBackend(): OcrBackend {
       for (const cv of canvases) out.push(await recognizeCanvas(cv));
       return out;
     },
-    async recognizeRegion(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect }[]> {
+    async recognizeTextsPos(canvases: OffscreenCanvas[]): Promise<{ ch: string; xFrac: number }[][]> {
+      if (!canvases.length) return [];
+      await ensureSession();
+      const out: { ch: string; xFrac: number }[][] = [];
+      for (const cv of canvases) out.push(await recognizeCharsPos(cv));
+      return out;
+    },
+    async recognizeRegion(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect; chars?: { text: string; cx: number }[] }[]> {
       await ensureSession();
       const src = binToCanvas(bin);
       const boxes = await detectRegion(src, region);
-      const out: { text: string; bbox: Rect }[] = [];
+      const out: { text: string; bbox: Rect; chars?: { text: string; cx: number }[] }[] = [];
       for (const b of boxes) {
         const x = Math.max(0, Math.round(b.x)), y = Math.max(0, Math.round(b.y));
         const w = Math.min(bin.w - x, Math.round(b.w)), h = Math.min(bin.h - y, Math.round(b.h));
@@ -276,8 +311,10 @@ export function paddleOcrBackend(): OcrBackend {
         if (!cx) continue;
         cx.fillStyle = "#fff"; cx.fillRect(0, 0, w, h);
         cx.drawImage(src, x, y, w, h, 0, 0, w, h);
-        const text = await recognizeCanvas(cv, 2048); // 整行可能很长(英文著作者)，放宽 rec 宽上限免压扁
-        if (text.trim()) out.push({ text, bbox: { x, y, w, h } });
+        // 逐字带位 rec（放宽宽上限免长英文行被压扁）；xFrac→源图 cx，供识别模式逐字对位。
+        const cp = await recognizeCharsPos(cv, 2048);
+        const text = cp.map((c) => c.ch).join("");
+        if (text.trim()) out.push({ text, bbox: { x, y, w, h }, chars: cp.map((c) => ({ text: c.ch, cx: x + c.xFrac * w })) });
       }
       return out;
     },
