@@ -207,7 +207,7 @@ function groupRows(cores: DigitCore[], numH: number): DigitCore[][] {
 // 为一行的每个数字格归并修饰（八度点/增时线/附点），div 已随数字格带入。
 function buildJpNums(
   rowCores: DigitCore[], numH: number, cls: Classified, ocrDigit: (b: Rect) => number,
-  arcs: Component[], barlineXs: number[],
+  arcs: Component[], barlineXs: number[], dotSizes: number[],
 ): JpNum[] {
   const out: JpNum[] = [];
   for (let i = 0; i < rowCores.length; i++) {
@@ -247,7 +247,7 @@ function buildJpNums(
       // 简谱附点休止极罕见，且休止右侧本就无修饰，按 digit!=0 一刀剔除，对真音符附点无损。
       if (digit !== 0 && rcx(kb) > rright(d) && rcx(kb) < dotMaxX &&
           kb.w >= numH * 0.15 && kb.h >= numH * 0.15 &&
-          Math.abs(rcy(kb) - dcy) < numH * 0.25) { dot++; continue; }
+          Math.abs(rcy(kb) - dcy) < numH * 0.25) { dot++; dotSizes.push((kb.w + kb.h) / 2); continue; }
       // 八度点：须足够大(排除噪点小斑)、水平居中于数字、且紧贴上/下方（间隙 < 0.8×字号）。
       // 阈值据实测分布定（真八度点 w/h≈0.21~0.30×numH、|dx|≤0.14；噪点误判那个是 0.09×0.11、dx=0.45）：
       // 尺寸下限 0.15、居中收到 0.4，两道独立门都能剔除噪点，且对真点留足余量。
@@ -266,8 +266,8 @@ function buildJpNums(
           return rbottom(ab) > kb.y && rbottom(ab) <= rbottom(kb) + numH * 0.15 &&
             rcx(kb) >= ab.x - numH * 0.4 && rcx(kb) <= rright(ab) + numH * 0.4;
         });
-        if (!isArcFoot) octave++;       // 上点 → 高八度
-      } else if (gapBelow >= -1 && gapBelow < numH * 0.8) octave--;  // 下点 → 低八度
+        if (!isArcFoot) { octave++; dotSizes.push((kb.w + kb.h) / 2); }  // 上点 → 高八度
+      } else if (gapBelow >= -1 && gapBelow < numH * 0.8) { octave--; dotSizes.push((kb.w + kb.h) / 2); }  // 下点 → 低八度
     }
     octave = Math.max(-3, Math.min(3, octave)); // 简谱八度极少超过 ±2~3
     let div = 0;
@@ -347,9 +347,10 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     return b.w >= numH * 0.8 && b.h >= 2 && b.h <= numH * 0.8 && b.w / b.h >= 2;
   });
 
+  const dotSizes: number[] = []; // 累积所有被采纳的八度点/附点源图直径 → 取中位数当统计点径
   const allRows: StaffRow[] = staff.map((m) => ({
     topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs,
-    nums: buildJpNums(m.rd, numH, c, ocrDigit, arcCands, m.barlineXs),
+    nums: buildJpNums(m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes),
   }));
 
   // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是
@@ -404,5 +405,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     headerRegions = h.regions.length ? h.regions : undefined;
   }
 
-  return { key: "C", fifths, beats, beatType, rows: useRows, title, credits, tempo, headerRegions, lyricRegions };
+  const dotDiam = dotSizes.length ? median(dotSizes) : undefined;
+
+  return { key: "C", fifths, beats, beatType, rows: useRows, title, credits, tempo, headerRegions, lyricRegions, dotDiam };
 }
