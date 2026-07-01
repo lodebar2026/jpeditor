@@ -33,6 +33,10 @@ export class App {
   private _recogBin: Binary | null = null;
   private _recogScore: RecognizedScore | null = null;
   private _recognizeBtnEl: HTMLButtonElement | null = null;
+  // 乐句排版：缓存导入时的「原始排版」文本以便无损切回；_phraseOn 记当前是否乐句排版。
+  private _phraseBtnEl: HTMLButtonElement | null = null;
+  private _origLayoutText: string | null = null;
+  private _phraseOn = false;
   private _readOnlyCompartment = new Compartment();
   // render settings (app-level, not part of the .jpwabc document)
   pageW = 960;
@@ -309,7 +313,7 @@ export class App {
         try {
           const score = loadMusicXml(xml);
           this.filePath = null;
-          this.setText(scoreToJpwabc(score));
+          this._applyImportedJp(scoreToJpwabc(score));
         } catch (e) {
           console.error("jp import (for toggle) failed", e);
         }
@@ -319,17 +323,66 @@ export class App {
 
       const score = loadMusicXml(xml);
       this.filePath = null; // imported; save as new .jpwabc
-      this.setText(scoreToJpwabc(score));
+      this._applyImportedJp(scoreToJpwabc(score));
     } else {
       this.mixedXmlText = null;
       this._mixedPainter = null;
       if (this._mixedBtnEl) this._mixedBtnEl.disabled = true;
+      this._disablePhrase();
       if (this.mode === "mixed") {
         this.mode = "jp";
         this._setMixedLayout(false);
         if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
       }
       this.setText(decodeJpwabc(bytes));
+    }
+  }
+
+  /** 导入 MusicXML/OMR 得到的默认（原始排版）文本：缓存以便乐句排版无损切回，并启用切换按钮。 */
+  private _applyImportedJp(text: string): void {
+    this._origLayoutText = text;
+    this._phraseOn = false;
+    if (this._phraseBtnEl) { this._phraseBtnEl.disabled = false; this._phraseBtnEl.textContent = "乐句排版"; }
+    this.setText(text);
+  }
+
+  private _disablePhrase(): void {
+    this._origLayoutText = null;
+    this._phraseOn = false;
+    if (this._phraseBtnEl) { this._phraseBtnEl.disabled = true; this._phraseBtnEl.textContent = "乐句排版"; }
+  }
+
+  /** Register the #btn-phrase element so App can enable/disable it. */
+  setPhraseBtn(el: HTMLButtonElement): void {
+    this._phraseBtnEl = el;
+  }
+
+  /** 在「原始排版」与「乐句排版」间切换（保留原始排版文本，无损切回）。 */
+  togglePhrase(): void {
+    if (!this.mixedXmlText || !this._origLayoutText) return;
+    // 乐句排版要看的是排版结果 → 先退出识别/混排叠加视图，回到简谱模式，否则 reload 直接返回不重排。
+    if (this.mode === "recognize") {
+      this.mode = "jp";
+      this._setRecognizeLayout(false);
+      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "识别";
+    } else if (this.mode === "mixed") {
+      this.mode = "jp";
+      this._setMixedLayout(false);
+      if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
+    }
+    if (this._phraseOn) {
+      this._phraseOn = false;
+      if (this._phraseBtnEl) this._phraseBtnEl.textContent = "乐句排版";
+      this.setText(this._origLayoutText);
+    } else {
+      try {
+        const score = loadMusicXml(this.mixedXmlText);
+        this.setText(scoreToJpwabc(score, { phrase: true }));
+        this._phraseOn = true;
+        if (this._phraseBtnEl) this._phraseBtnEl.textContent = "原始排版";
+      } catch (e) {
+        console.error("phrase relayout failed", e);
+      }
     }
   }
 

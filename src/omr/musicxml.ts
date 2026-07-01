@@ -126,19 +126,25 @@ function rowEndsClosed(row: StaffRow): boolean {
 export function toMusicXml(score: RecognizedScore): string {
   // 遵照图片小节线：行末无小节线时（开口收尾），本行末小节与下一行行首小节实为同一跨行小节，合并，
   // 不在换行处凭空补小节线。行末有小节线（如终止线）才各自成节。
+  // 记录每个 row 在 allMeasures 中「干净起始」的小节下标（>0 才记），供输出 <print new-system>
+  // 以恢复原图分行。若本行首小节被并入上一行的跨行小节（open-tail），则视觉行首落在小节内部，
+  // 无法在小节边界干净断行 → 不记（与「开口不补小节线」一致）。
   const allMeasures: JpNum[][] = [];
+  const rowStartIdx = new Set<number>();
   let openTail = false;
   for (const row of score.rows) {
     const ms = measuresOfRow(row);
     if (!ms.length) continue;
     if (openTail && allMeasures.length) allMeasures[allMeasures.length - 1].push(...ms.shift()!);
+    else if (allMeasures.length) rowStartIdx.add(allMeasures.length);
     allMeasures.push(...ms);
     openTail = !rowEndsClosed(row);
   }
 
   let mi = 0;
-  const measuresXml = allMeasures.map((notes) => {
+  const measuresXml = allMeasures.map((notes, idx) => {
     mi++;
+    const printEl = rowStartIdx.has(idx) ? `<print new-system="yes"/>` : "";
     const attrs = mi === 1
       ? `<attributes><divisions>4</divisions><key><fifths>${score.fifths}</fifths></key>` +
         `<time><beats>${score.beats}</beats><beat-type>${score.beatType}</beat-type></time>` +
@@ -151,7 +157,7 @@ export function toMusicXml(score: RecognizedScore): string {
         `<sound tempo="${score.tempo}"/></direction>`
       : "";
     const noteEls = notes.map((n) => noteXml(n, score.fifths)).join("");
-    return `<measure number="${mi}">${attrs}${tempoEl}${noteEls}</measure>`;
+    return `<measure number="${mi}">${printEl}${attrs}${tempoEl}${noteEls}</measure>`;
   }).join("");
 
   const workXml = score.title ? `<work><work-title>${escapeXml(score.title)}</work-title></work>` : "";

@@ -77,6 +77,11 @@ async function boot() {
     app.setRecognizeBtn(recognizeBtn);
     recognizeBtn.addEventListener("click", () => void app.toggleRecognize());
   }
+  const phraseBtn = document.getElementById("btn-phrase") as HTMLButtonElement | null;
+  if (phraseBtn) {
+    app.setPhraseBtn(phraseBtn);
+    phraseBtn.addEventListener("click", () => app.togglePhrase());
+  }
   // export/play/stop wired in later phases
   const addOpen = document.getElementById("btn-open");
   addOpen?.addEventListener("click", () => void app.openFile());
