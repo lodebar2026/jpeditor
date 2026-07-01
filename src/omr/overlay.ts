@@ -5,8 +5,23 @@
 import type { Binary, RecognizedScore, JpNum, Rect } from "./types";
 import { rcx, rcy, rright } from "./types";
 import { srcCanvasOf } from "./lyrics";
+import { measureGlyphText } from "../common/measure";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+// 叠加数字用的字体（须与 styles.css 的 .omr-overlay text 一致，含 700 粗细）。
+const NUM_FONT = "PingFang SC";
+
+// 数字字形的「墨迹高 ÷ font-size」比例：SVG font-size 是 em 框，数字实际墨迹只占约 0.7，
+// 故直接用 bbox.h 当 font-size 会画得比原图小。测一次比例，反推让墨迹高 == 目标高（原图音符高）。
+let _emPerInk = 0;
+function digitFontSize(targetInkH: number): number {
+  if (!_emPerInk) {
+    const probe = 100;
+    const ink = measureGlyphText("8", NUM_FONT, probe, "bold").bbox.height;
+    _emPerInk = ink > 0 ? probe / ink : 1.4; // 回退经验值 ~1.4
+  }
+  return targetInkH * _emPerInk;
+}
 
 /** 二值图 → PNG dataURL（黑字白底，作叠加背景）。 */
 function binDataUrl(bin: Binary): string {
@@ -53,14 +68,14 @@ function text(x: number, y: number, s: string, size: number, anchor = "middle"):
 /** 画一个音符及其全部简谱修饰（数字、八度点、减时下划线、附点、增时横线）。
  *  字号/修饰尺度统一用全谱平均音符高 noteH；**纵向统一贴本行中线 cy**（传入的整行公共基线），
  *  以 cy±H/2 当作统一音符框、横向仍按各音符 bbox 取位——使同一行音符落在一条直线上。 */
-function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number): void {
+function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number, dotR: number): void {
   const b: Rect = n.bbox;
   const cx = rcx(b);
   const H = noteH;
   const top = cy - H / 2, bot = cy + H / 2; // 统一音符框上/下沿（替代各自 bbox.y/bottom）
 
-  // 数字（0=休止 → 0）
-  g.appendChild(text(cx, cy, String(n.digit), H * 0.95));
+  // 数字（0=休止 → 0）：字号反推自「墨迹高==统计原图音符高 H」，不再直接把 H 当 em 框（会偏小）。
+  g.appendChild(text(cx, cy, String(n.digit), digitFontSize(H)));
 
   // 减时下划线（div 条）：数字正下方，每条间距固定。先画，下方留出最末一条的位置，
   // 低音点要错到它下面（简谱约定：减时线在数字与低八度点之间）。
@@ -79,8 +94,9 @@ function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number): void {
   // 八度点：octave>0 上方、<0 下方，|octave| 个。低音点从减时线下方起，避免与下划线重叠。
   const oct = n.octave;
   if (oct !== 0) {
-    const r = Math.max(1.2, H * 0.07);
-    const gap = H * 0.18;
+    const r = dotR; // 统计原图点径
+    // 数字字号增大后墨迹已顶到音符框上/下沿，八度点须离框远些才不粘连。
+    const gap = H * 0.38;
     const step = r * 3;
     const lowBase = (n.div > 0 ? divBottom + divGap : bot) + gap; // 低音点首点基线（让过减时线）
     for (let i = 0; i < Math.abs(oct); i++) {
@@ -89,9 +105,9 @@ function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number): void {
     }
   }
 
-  // 附点（dot）：数字右侧，dot 个圆点
+  // 附点（dot）：数字右侧，dot 个圆点（用统计原图点径）
   if (n.dot > 0) {
-    const r = Math.max(1.2, H * 0.08);
+    const r = dotR;
     for (let i = 0; i < n.dot; i++) {
       g.appendChild(dot(rright(b) + r * 2 + i * r * 3, cy, r));
     }
@@ -229,7 +245,7 @@ function renderSlursTies(g: SVGGElement, score: RecognizedScore, rowFits: ((x: n
   }
 }
 
-/** 二值图 + RecognizedScore → 叠加核对 SVG：均衡显示二值底图 + 不透明识别叠加（页眉/音符/弧线按原位）。 */
+/** 二值图 + RecognizedScore → 叠加核对 SVG：二值底图打底 + 半透明识别叠加（页眉/音符/弧线按原位，透出底图对位）。 */
 export function renderRecognitionSvg(bin: Binary, score: RecognizedScore): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "omr-recognize");
@@ -249,13 +265,15 @@ export function renderRecognitionSvg(bin: Binary, score: RecognizedScore): SVGSV
   img.setAttribute("href", url);
   svg.appendChild(img);
 
-  // 叠加层（不透明、醒目；pointer-events 由 CSS 关掉）
+  // 叠加层（半透明，透出底图对位；opacity 与 pointer-events 由 CSS 控）
   const g = document.createElementNS(SVG_NS, "g");
   g.setAttribute("class", "omr-overlay");
 
   // 统计平均字号：音符、歌词各按全谱 bbox 高的平均值统一字号（避免逐元素 bbox 抖动）。
   const noteH = mean(score.rows.flatMap((row) => row.nums.map((n) => n.bbox.h)), 24);
   const lyrH = mean((score.lyricRegions ?? []).map((r) => r.bbox.h), noteH);
+  // 八度点/附点半径：优先用识别到的源图统计点径（dotDiam），无则退回按字号推算。
+  const dotR = Math.max(1.2, score.dotDiam ? score.dotDiam / 2 : noteH * 0.08);
 
   // 页眉文本按识别到的源图位置/字号叠加（标题字号本就不一，保留各自 bbox 字号）
   for (const r of score.headerRegions ?? []) renderHeaderRegion(g, r, "omr-header");
@@ -275,7 +293,7 @@ export function renderRecognitionSvg(bin: Binary, score: RecognizedScore): SVGSV
       g.appendChild(line(bx, cy - barLen / 2, bx, cy + barLen / 2, barW, "omr-barline"));
     }
     // 音符 + 修饰：逐符落到 fit 对应 x 处，字号统一平均音符高。
-    for (const n of row.nums) renderNum(g, n, noteH, fit(rcx(n.bbox)));
+    for (const n of row.nums) renderNum(g, n, noteH, fit(rcx(n.bbox)), dotR);
   });
 
   // 圆滑线/连音线弧（在音符之上）：端点取音符在叠加中的实际绘制位置（同一斜线/字号）

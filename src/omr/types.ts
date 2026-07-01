@@ -74,4 +74,5 @@ export interface RecognizedScore {
   tempo?: number; // 速度 ♩=NN（仅进 MusicXML；当前下游导入器不读 tempo）
   headerRegions?: TextRegion[]; // 页眉文本的源图定位（识别模式按原位叠加）
   lyricRegions?: TextRegion[]; // 歌词单字的源图定位+字号（识别模式按原图位置/大小叠加）
+  dotDiam?: number; // 八度点/附点在源图的统计直径（识别模式按原图大小画点，非按字号推算）
 }
