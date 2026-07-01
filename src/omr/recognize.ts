@@ -6,7 +6,7 @@
 import { decodeToBinary } from "./decode";
 import { recognizeJianpu } from "./jianpu";
 import { toMusicXml } from "./musicxml";
-import { paddleOcrBackend } from "./paddleocr";
+import { paddleOcrBackend, omrProfile, omrProfileReset } from "./paddleocr";
 import { agyRecognizeImage, agyAvailable, DEFAULT_GEMINI_MODEL } from "./agy";
 import type { Binary, RecognizedScore } from "./types";
 
@@ -27,8 +27,19 @@ export interface MusicppDetail {
 
 /** musicpp 本地管线：图片字节 → 二值图 + RecognizedScore + MusicXML。完全本地（PaddleOCR PP-OCRv4）。 */
 export async function recognizeMusicppDetailed(bytes: Uint8Array, mime?: string): Promise<MusicppDetail> {
+  const _t0 = performance.now();
   const bin = await decodeToBinary(bytes, mime);
+  const _tDecode = performance.now();
+  omrProfileReset();
   const score = await recognizeJianpu(bin, paddleOcrBackend());
+  // 分阶段计时诊断：设 globalThis.__omrDebug=true 打印（decode / infer(IPC+推理) / CTC / 预处理+几何）。
+  if ((globalThis as { __omrDebug?: boolean }).__omrDebug) {
+    const p = omrProfile();
+    const total = performance.now() - _t0, decode = _tDecode - _t0, recog = performance.now() - _tDecode;
+    // eslint-disable-next-line no-console
+    console.log(`[OMR profile] 总 ${total.toFixed(0)}ms = decode ${decode.toFixed(0)} + recognize ${recog.toFixed(0)}`
+      + `  ｜ infer ${p.infer.toFixed(0)}ms(${p.calls}次) · CTC ${p.ctc.toFixed(0)}ms · 预处理+几何 ${(recog - p.infer - p.ctc).toFixed(0)}ms`);
+  }
   return { musicxml: toMusicXml(score), bin, score };
 }
 

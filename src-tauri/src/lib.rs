@@ -195,13 +195,186 @@ fn omr_gemini_cmd(image_path: String, model: Option<String>) -> Result<String, S
     extract_musicxml(&out).ok_or_else(|| format!("未能从 agy 输出解析出 MusicXML：\n{}", out.chars().take(500).collect::<String>()))
 }
 
+// ── 简谱 OMR 原生 OCR 推理（onnxruntime via ort）─────────────────────────────
+// 前端 paddleocr.ts 在 Tauri 下把预处理好的输入张量经二进制 IPC 交来，这里用原生 onnxruntime
+// 跑 session.run 再把 logits 传回（CTC 解码/几何仍在前端）。比浏览器 wasm 多线程快 ~3×。
+//
+// 二进制协议（避开 JSON 序列化大数组的开销）——
+//   请求体: [model u8(0=rec,1=det)][ndims u8][dims i32×ndims (LE)][f32 data (LE)]
+//   响应体: [ndims u8][dims i32×ndims (LE)][f32 data (LE)]
+use std::sync::Mutex;
+
+static REC_SESS: Mutex<Option<ort::session::Session>> = Mutex::new(None);
+static DET_SESS: Mutex<Option<ort::session::Session>> = Mutex::new(None);
+
+fn ocr_model_path(app: &tauri::AppHandle, file: &str) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("ocr").join(file))
+}
+
+fn ensure_ocr_session(
+    slot: &mut Option<ort::session::Session>,
+    app: &tauri::AppHandle,
+    file: &str,
+) -> Result<(), String> {
+    if slot.is_none() {
+        let path = ocr_model_path(app, file)?;
+        let sess = ort::session::Session::builder()
+            .map_err(|e| e.to_string())?
+            .with_intra_threads(4)
+            .map_err(|e| e.to_string())?
+            .commit_from_file(&path)
+            .map_err(|e| format!("加载模型 {} 失败: {}", path.display(), e))?;
+        *slot = Some(sess);
+    }
+    Ok(())
+}
+
+#[inline]
+fn ri32(b: &[u8], o: usize) -> i32 {
+    i32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+
+/// 跑一次推理。model 0=rec,1=det；mode 0=完整 f32 输出，1=每时间步 argmax 索引 [N,T]（仅 rec，
+/// 把 [N,T,6625] logits 的 ~6625× 传输量砍成索引）。返回 (输出维度, 输出数据字节：mode1=int32 索引，mode0=f32)。
+fn infer_one(
+    app: &tauri::AppHandle,
+    model: i32,
+    mode: i32,
+    dims: Vec<i64>,
+    data: Vec<f32>,
+) -> Result<(Vec<i32>, Vec<u8>), String> {
+    let (slot_mutex, file) = if model == 0 {
+        (&REC_SESS, "rec.onnx")
+    } else {
+        (&DET_SESS, "det.onnx")
+    };
+    let mut guard = slot_mutex.lock().map_err(|e| e.to_string())?;
+    ensure_ocr_session(&mut guard, app, file)?;
+    let sess = guard.as_mut().unwrap();
+    let iname = sess.inputs()[0].name().to_string();
+    let oname = sess.outputs()[0].name().to_string();
+    let tensor = ort::value::Tensor::from_array((dims, data)).map_err(|e| e.to_string())?;
+    let outputs = sess
+        .run(ort::inputs![iname.as_str() => tensor])
+        .map_err(|e| e.to_string())?;
+    let (shape, out) = outputs[oname.as_str()]
+        .try_extract_tensor::<f32>()
+        .map_err(|e| e.to_string())?;
+
+    if mode == 1 {
+        let (bn, t, c) = (shape[0] as usize, shape[1] as usize, shape[2] as usize);
+        let mut idx: Vec<i32> = Vec::with_capacity(bn * t);
+        for i in 0..bn * t {
+            let base = i * c;
+            let mut best = 0usize;
+            let mut bv = f32::NEG_INFINITY;
+            for k in 0..c {
+                let v = out[base + k];
+                if v > bv {
+                    bv = v;
+                    best = k;
+                }
+            }
+            idx.push(best as i32);
+        }
+        Ok((vec![bn as i32, t as i32], bytemuck::cast_slice(&idx).to_vec()))
+    } else {
+        let out_dims: Vec<i32> = shape.iter().map(|&d| d as i32).collect();
+        Ok((out_dims, bytemuck::cast_slice(out).to_vec()))
+    }
+}
+
+/// 从字节流按偏移解析一个子请求 int32[model,mode,ndims,dims...] + f32[data]，返回解析结果与推进后的偏移。
+fn parse_req(body: &[u8], mut off: usize) -> Result<(i32, i32, Vec<i64>, Vec<f32>, usize), String> {
+    if body.len() < off + 12 {
+        return Err("omr_onnx 子请求头越界".into());
+    }
+    let model = ri32(body, off);
+    let mode = ri32(body, off + 4);
+    let ndims = ri32(body, off + 8) as usize;
+    off += 12;
+    if body.len() < off + ndims * 4 {
+        return Err("omr_onnx 维度越界".into());
+    }
+    let mut dims: Vec<i64> = Vec::with_capacity(ndims);
+    for i in 0..ndims {
+        dims.push(ri32(body, off + i * 4) as i64);
+    }
+    off += ndims * 4;
+    let n: usize = dims.iter().map(|&d| d as usize).product();
+    if body.len() < off + n * 4 {
+        return Err("omr_onnx 数据越界".into());
+    }
+    let mut data: Vec<f32> = vec![0.0; n];
+    for (i, v) in data.iter_mut().enumerate() {
+        let b = off + i * 4;
+        *v = f32::from_le_bytes([body[b], body[b + 1], body[b + 2], body[b + 3]]);
+    }
+    off += n * 4;
+    Ok((model, mode, dims, data, off))
+}
+
+fn write_result(resp: &mut Vec<u8>, out_dims: &[i32], out_bytes: &[u8]) {
+    resp.extend_from_slice(&(out_dims.len() as i32).to_le_bytes());
+    for &d in out_dims {
+        resp.extend_from_slice(&d.to_le_bytes());
+    }
+    resp.extend_from_slice(out_bytes);
+}
+
+/// 单张量推理。请求 int32[model,mode,ndims,dims...]+f32[data]；响应 int32[ndims,dims...]+data。
+#[tauri::command]
+fn omr_onnx(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request,
+) -> Result<tauri::ipc::Response, String> {
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(v) => v.as_slice(),
+        _ => return Err("omr_onnx 需要原始字节请求体".into()),
+    };
+    let (model, mode, dims, data, _) = parse_req(body, 0)?;
+    let (out_dims, out_bytes) = infer_one(&app, model, mode, dims, data)?;
+    let mut resp: Vec<u8> = Vec::with_capacity((1 + out_dims.len()) * 4 + out_bytes.len());
+    write_result(&mut resp, &out_dims, &out_bytes);
+    Ok(tauri::ipc::Response::new(resp))
+}
+
+/// 多张量批量推理（一次 IPC 携带 N 个子请求，内部逐个 session.run）——把 Tauri 每次 ~数 ms 的往返开销
+/// 从 N 次压到 1 次，同时保持逐个推理的算力最优。请求 int32[count] + count×子请求；
+/// 响应 int32[count] + count×(int32[ndims,dims...]+data)。
+#[tauri::command]
+fn omr_onnx_batch(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request,
+) -> Result<tauri::ipc::Response, String> {
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(v) => v.as_slice(),
+        _ => return Err("omr_onnx_batch 需要原始字节请求体".into()),
+    };
+    if body.len() < 4 {
+        return Err("omr_onnx_batch 请求体过短".into());
+    }
+    let count = ri32(body, 0) as usize;
+    let mut off = 4usize;
+    let mut resp: Vec<u8> = Vec::new();
+    resp.extend_from_slice(&(count as i32).to_le_bytes());
+    for _ in 0..count {
+        let (model, mode, dims, data, next) = parse_req(body, off)?;
+        off = next;
+        let (out_dims, out_bytes) = infer_one(&app, model, mode, dims, data)?;
+        write_result(&mut resp, &out_dims, &out_bytes);
+    }
+    Ok(tauri::ipc::Response::new(resp))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![export_pdf_cmd, omr_gemini_cmd])
+        .invoke_handler(tauri::generate_handler![export_pdf_cmd, omr_gemini_cmd, omr_onnx, omr_onnx_batch])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

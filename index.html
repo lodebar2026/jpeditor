@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
+    <!-- 跨源隔离垫片：GitHub Pages 无法设响应头，用 SW 客户端补 COOP/COEP 以启用 SharedArrayBuffer
+         （onnxruntime-web wasm 多线程，OMR 识别 ~2x）。相对路径以适配子路径部署；Tauri/dev 已原生发头
+         → 页面已隔离 → 脚本自动跳过。首次访问会自动多刷新一次。 -->
+    <script src="coi-serviceworker.js"></script>
+
     <title>简谱编辑器 jpeditor — .jpwabc 在线排版与编辑 · 简谱·五线谱混排 | Numbered Notation Editor</title>
     <meta
       name="description"

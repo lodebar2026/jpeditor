@@ -21,6 +21,13 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    // 跨源隔离：让 onnxruntime-web 拿到 SharedArrayBuffer 以开 wasm 多线程（OMR rec 推理 ~2x）。
+    // 全站资源同源，COEP require-corp 无副作用。多线程初始化带超时回退，开不起来会自动退单线程。
+    // 注意：生产 GitHub Pages 无法设响应头 → 那里非隔离，desiredThreads 自动返回 1（仍享数字批量加速）。
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+    },
     hmr: host
       ? {
           protocol: "ws",
