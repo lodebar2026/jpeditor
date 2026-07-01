@@ -27,9 +27,11 @@ import {
   MixedScore,
   MNote,
   MPage,
+  Notation,
   NotationItem,
   PartGroup,
   PartStaff,
+  ScoreCredit,
   Sys,
   SysStaff,
   TimeSig,
@@ -211,6 +213,7 @@ class PartLoader {
   measureEls: Element[];
   stemYMap = new Map<MNote, number>(); // note → stem default-y
   stemNotes = new Set<MNote>(); // 有 <stem> 元素的音符（parser.cpp stemDir）
+  hasBeamEl = false; // 本声部是否出现过 <beam>（无则自动按拍分组符杠，供 OMR 谱用）
   transposeSteps = 0;
 
   tieStarts: TieRef[] = [];
@@ -283,6 +286,7 @@ class PartLoader {
     }
 
     this.calcStemLen();
+    if (!this.hasBeamEl) this.autoBeamPart();
     this.formatBeams();
     // 符干/符杠就绪后再排记号（fermata 等），使 tailY 取到最终符干末端，避免 fermataBelow
     // 压住后续加长的符干（musicpp parser.cpp:2914）。
@@ -517,6 +521,11 @@ class PartLoader {
       this.stemNotes.add(nt);
       const sy = attrFloat(stemEl, "default-y");
       if (sy !== null) this.stemYMap.set(nt, sy);
+    } else if (!ch.rest && ch.noteType.compareTo(new Fraction(4)) < 0) {
+      // 无 <stem> 且需符干（非全音符）的谱（如 OMR 生成、未给符干方向）：按符头相对中线
+      // 位置定默认方向（中线 line=-4 及以上朝下，其下朝上），并登记以便 calcStemLen 给长度。
+      ch.stemUp = nt.line() < -4;
+      this.stemNotes.add(nt);
     }
 
     const nhEl = elem(noteEl, "notehead");
@@ -538,6 +547,7 @@ class PartLoader {
   private processBeam(ch: MChord, noteEl: Element, md: MeasureData): void {
     const beamEls = elems(noteEl, "beam");
     if (beamEls.length === 0) return;
+    this.hasBeamEl = true;
     const beamMap = new Map<number, BeamVal>();
     for (const b of beamEls) {
       const num = (attrInt(b, "number") ?? 1) - 1;
@@ -1127,6 +1137,67 @@ class PartLoader {
     }
   }
 
+  /** 无 <beam> 的谱（OMR 生成）：按拍自动把相邻的短音符（八分及更短）分组成符杠。
+   *  仅在整声部无任何 <beam> 时启用；真实制谱谱都带 <beam>，不受影响。 */
+  private autoBeamPart(): void {
+    const one = new Fraction(1);
+    const levelsOf = (ch: MChord) => Math.max(0, Math.round(-Math.log2(ch.noteType.toFloat())));
+    for (let mi = 0; mi < this.part.measures.length; mi++) {
+      const md = this.part.measures[mi];
+      if (md.beams.length > 0) continue;
+      const mif = this.score.measures[mi];
+      const ts = this.part.staves[0]?.getTime(mif.offset);
+      // 每拍时值（四分音符单位）：复拍(x/8 且 beats 为 3 的倍数)按附点四分成组，否则按分母音符。
+      let beatLen = 1;
+      if (ts) beatLen = ts.beatType === 8 && ts.beats % 3 === 0 ? 1.5 : 4 / ts.beatType;
+      const chords = [...md.chords].filter((c) => !c.grace).sort((a, b) => a.offset.compareTo(b.offset));
+      let run: MChord[] = [];
+      const flush = () => {
+        if (run.length >= 2) {
+          const g = new BeamGroup();
+          // 符杠组内符干方向须统一：取离中线(line=-4)最远的音符决定——在中线之上则整组朝下，
+          // 否则朝上（否则同一符杠两端符干反向，符杠画歪/穿头）。
+          let extreme = 0; // line+4，绝对值最大者胜
+          for (const c of run) {
+            for (const nt of c.notes) {
+              const dev = nt.line() + 4;
+              if (Math.abs(dev) > Math.abs(extreme)) extreme = dev;
+            }
+          }
+          const groupUp = extreme < 0;
+          for (const c of run) c.stemUp = groupUp;
+          for (let i = 0; i < run.length; i++) {
+            const ch = run[i];
+            const lv = levelsOf(ch);
+            ch.beams = [];
+            for (let L = 0; L < lv; L++) {
+              const prevHas = i > 0 && levelsOf(run[i - 1]) > L;
+              const nextHas = i < run.length - 1 && levelsOf(run[i + 1]) > L;
+              ch.beams.push(
+                prevHas && nextHas ? BeamVal.Continue
+                  : !prevHas && nextHas ? BeamVal.Begin
+                  : prevHas && !nextHas ? BeamVal.End
+                  : i === 0 ? BeamVal.Forward : BeamVal.Backward,
+              );
+            }
+            g.chords.push(ch);
+          }
+          md.beams.push(g);
+        }
+        run = [];
+      };
+      let curBeat = -1;
+      for (const ch of chords) {
+        if (ch.rest || ch.noteType.compareTo(one) >= 0) { flush(); curBeat = -1; continue; }
+        const beat = Math.floor(ch.offset.toFloat() / beatLen + 1e-6);
+        if (run.length > 0 && beat !== curBeat) flush();
+        run.push(ch);
+        curBeat = beat;
+      }
+      flush();
+    }
+  }
+
   private calcStemLen(): void {
     // parser.cpp::calcStemLen —— 仅有 <stem> 的音符算符干长；有 default-y 用之，
     // 否则回退 35（grace 乘 cueSize）。无符干（全音符）保持默认 0。
@@ -1211,8 +1282,257 @@ class PartLoader {
 
 // ---------------- Layout pass ----------------
 
-function buildSystemsAndPages(score: MixedScore, xmlParts: Element[]): void {
-  const newSystem = new Set<number>();
+// ---- 自动版面（无内嵌坐标时，如 OMR 生成的 MusicXML）----
+// 真实制谱软件（Sibelius/Finale）导出的 MusicXML 自带 <measure width>、音符 default-x、
+// <print new-system/new-page>，本工程默认信任之。OMR（omr/musicxml.ts）产出的 MusicXML
+// 只有音高/时值、没有任何版面坐标 → 所有音符坍缩到 x≈0、谱表零宽。此处按节奏自动计算
+// 小节宽度、折行、并把音符横向铺开，使无坐标的谱也能正常混排显示。
+
+// 每音符按时值给一个"槽宽"（tenths）。时值越长间距越大（近似 Gould 的次线性增长）。
+const AUTO_MIN_SLOT = 22;
+const AUTO_END_PAD = 16;   // 末音符到小节线的余量
+const AUTO_LEFT_DATA = 16; // 小节左侧到首音符的名义留白（折行用的自然宽）
+const AUTO_FIRST_LEAD = 60; // 行首小节谱号/调号/拍号占位估算
+const AUTO_NOTE_PAD = 8;    // 铺开音符时两端留白
+
+function autoSlotWidth(durQuarters: number): number {
+  const d = durQuarters > 0 ? durQuarters : 0.25;
+  return Math.max(AUTO_MIN_SLOT, 30 * Math.pow(d, 0.6));
+}
+
+/** 该 MusicXML 是否自带版面坐标（任一小节有 width 或任一音符有 default-x）。 */
+function hasEmbeddedLayout(score: MixedScore): boolean {
+  for (const mif of score.measures) if (mif.width > 0) return true;
+  for (const part of score.parts) {
+    for (const md of part.measures) {
+      for (const ch of md.chords) {
+        for (const nt of ch.notes) if (nt.x >= 0) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** 某小节内所有声部音符的节奏槽：offset(measure-relative) → 自然累计 x + 该 offset 的槽宽。 */
+function autoMeasureSlots(score: MixedScore, mi: number): { offset: Fraction; nat: number; slot: number }[] {
+  const durAt = new Map<string, { offset: Fraction; dur: number }>();
+  for (const part of score.parts) {
+    const md = part.measures[mi];
+    if (!md) continue;
+    for (const ch of md.chords) {
+      if (ch.grace) continue;
+      const key = ch.offset.toString();
+      const dq = ch.dur.toFloat();
+      const prev = durAt.get(key);
+      // 同 offset 多声部/和弦取最短时值定间距（较密者主导）。
+      if (!prev || dq < prev.dur) durAt.set(key, { offset: ch.offset, dur: dq });
+    }
+  }
+  const entries = [...durAt.values()].sort((a, b) => a.offset.compareTo(b.offset));
+  const slots: { offset: Fraction; nat: number; slot: number }[] = [];
+  let nat = 0;
+  for (const e of entries) {
+    const slot = autoSlotWidth(e.dur);
+    slots.push({ offset: e.offset, nat, slot });
+    nat += slot;
+  }
+  return slots;
+}
+
+/** 计算每小节自然宽度 + 按页宽折行，返回强制换行的小节索引集合。 */
+function autoLayoutWidths(score: MixedScore): Set<number> {
+  const natSpan: number[] = [];
+  for (let i = 0; i < score.measures.length; i++) {
+    const slots = autoMeasureSlots(score, i);
+    const span = slots.length ? slots[slots.length - 1].nat + slots[slots.length - 1].slot : AUTO_MIN_SLOT;
+    natSpan[i] = span;
+    score.measures[i].width = AUTO_LEFT_DATA + span + AUTO_END_PAD;
+  }
+
+  const d = score.defaults;
+  const avail = d.pageWidth - d.leftMargin - d.rightMargin;
+  const breaks = new Set<number>([0]);
+  let cur = AUTO_FIRST_LEAD;
+  let firstInLine = true;
+  for (let i = 0; i < score.measures.length; i++) {
+    const w = score.measures[i].width;
+    if (!firstInLine && cur + w > avail) {
+      breaks.add(i);
+      cur = AUTO_FIRST_LEAD + w;
+      firstInLine = false;
+    } else {
+      cur += w;
+      firstInLine = false;
+    }
+  }
+  return breaks;
+}
+
+/** 折行后拉伸每个 system 的小节宽度以铺满页宽（末行保持自然宽，不拉伸）。 */
+function autoJustifySystems(score: MixedScore): void {
+  const d = score.defaults;
+  for (let si = 0; si < score.systems.length; si++) {
+    const sys = score.systems[si];
+    if (!sys.measures.length) continue;
+    const avail = d.pageWidth - d.leftMargin - d.rightMargin - sys.leftMargin - sys.rightMargin;
+    // 行首小节预留谱号/调号/拍号占位，使拉伸后仍有容纳区。
+    sys.measures[0].width += AUTO_FIRST_LEAD;
+    let sum = 0;
+    for (const m of sys.measures) sum += m.width;
+    if (sum <= 0) continue;
+    const isLast = si === score.systems.length - 1;
+    // 末行只在溢出时缩，不主动拉满（符合常规制谱：不把弱起短行撑满）。
+    let scale = avail / sum;
+    if (isLast && scale > 1) scale = 1;
+    for (const m of sys.measures) m.width *= scale;
+  }
+}
+
+/** layoutAttr 之后：把每小节音符横向铺到 [dataPos, dataEnd] 内（按节奏槽比例）。 */
+function autoPlaceNotes(score: MixedScore): void {
+  for (let i = 0; i < score.measures.length; i++) {
+    const mif = score.measures[i];
+    const slots = autoMeasureSlots(score, i);
+    if (!slots.length) continue;
+    const natTotal = slots[slots.length - 1].nat + slots[slots.length - 1].slot;
+    // 行首小节 dataPos 紧贴谱号/调号/拍号右缘，首音符须再留一段净空，否则贴着拍号。
+    const hasAttr = mif.clefPos !== null || mif.keyPos !== null || mif.timePos !== null;
+    const left = mif.dataPos + AUTO_NOTE_PAD + (hasAttr ? AUTO_ATTR_GAP : 0);
+    const right = mif.dataEnd - AUTO_NOTE_PAD;
+    const inner = Math.max(right - left, AUTO_MIN_SLOT);
+    const xOf = new Map<string, number>();
+    for (const s of slots) {
+      xOf.set(s.offset.toString(), left + (natTotal > 0 ? (s.nat / natTotal) * inner : 0));
+    }
+    const meta = score.options.meta;
+    for (const part of score.parts) {
+      const md = part.measures[i];
+      if (!md) continue;
+      for (const ch of md.chords) {
+        if (ch.grace) continue;
+        const x = xOf.get(ch.offset.toString());
+        if (x === undefined) continue;
+        for (const nt of ch.notes) nt.x = x;
+      }
+      // NoteEntry（加线/附点/临时记号）在解析期 layoutNotes 时按未定位的 x(-1) 算过一次，
+      // 加线会画到谱表最左端而非音符下方；音符 x 定好后按最终位置重排。
+      for (const ent of md.noteEntries) ent.layout(meta, false);
+      // 符杠斜率/端点依赖音符 x，解析期(x=-1)算出的是 NaN/退化值 → 重排。
+      for (const g of md.beams) {
+        if (g.chords.length === 0) continue;
+        const ref = g.chords.find((c) => !c.rest) ?? g.chords[0];
+        for (const c of g.chords) if (c.rest) c.stemUp = ref.stemUp;
+        g.doubleDir = g.chords.some((c) => c.stemUp !== ref.stemUp);
+        g.format(0);
+      }
+      // 歌词：解析时 lrc.x 取的是尚未定位的音符 x(-1)，此处按音符最终位置补正 x
+      //（否则 drawLrc 里 x<0 被跳过，歌词不显示）。y 在下面按 system 统一定。
+      for (const lrc of md.lyrics) {
+        const x = xOf.get(lrc.offset.toString());
+        if (x !== undefined) lrc.x = x;
+      }
+      // 速度/文字记号：无 default-y 时默认落在谱表内（y≈0）与音符重叠，抬到谱表上方；
+      // 字号统一到歌词字号（含节拍音符字形），避免 OMR 速度记号偏小。
+      const lyrSize = score.defaults.lyricFont.size;
+      for (const t of md.textBlocks) {
+        if (t.y <= 0) t.y = AUTO_DIRECTION_Y;
+        for (const it of t.data) {
+          if (it.font.size > 0) it.font = it.font.scaled(lyrSize / it.font.size);
+        }
+      }
+    }
+  }
+
+  // 歌词 y：逐 system 取该行音符/符干/下方 slur-tie 的最低点统一下移，让各 verse 行整齐
+  // 且不与下探的符干/加线/符杠/圆滑线重叠（固定偏移在低音+朝下符干/下方 slur 时会被压住）。
+  const four = new Fraction(4);
+  const chordLow = (ch: MChord): number => {
+    let low = 0;
+    for (const nt of ch.notes) low = Math.max(low, nt.cy());
+    if (!ch.stemUp && ch.noteType.compareTo(four) < 0) low = Math.max(low, ch.tailY(false));
+    return low;
+  };
+  for (const sys of score.systems) {
+    let maxDown = 40; // 谱表底线（cy 向下为正）
+    const t0 = sys.measures[0].offset;
+    const t1 = sys.measures[sys.measures.length - 1].endTick();
+    for (const mif of sys.measures) {
+      for (const part of score.parts) {
+        const md = part.measures[mif.index];
+        if (!md) continue;
+        for (const ch of md.chords) {
+          if (ch.grace || ch.rest) continue;
+          const low = chordLow(ch);
+          if (low > maxDown) maxDown = low;
+        }
+      }
+    }
+    // 实际画在谱表下方的 slur/tie 才参与避让：渲染层对 简谱/混排 记号一律把 slur/tie 画到
+    // 上方（render.ts drawSlur/drawTied，jianpu 惯例），故那些谱表用 above=true 不下探；仅当
+    // 该谱表是普通五线谱且 slur/tie 判为下方(above=false)时，弧线在端点音符下方再下探 SAG。
+    for (const part of score.parts) {
+      for (const sp of [...part.slurs, ...part.tied]) {
+        if (!sp.startNote || !sp.endNote) continue;
+        if (sp.endTick.compareTo(t0) <= 0 || sp.startTick.compareTo(t1) >= 0) continue;
+        const nota = part.staves[sp.startNote.staff]?.getNotation(sp.startTick);
+        const drawnAbove = nota === Notation.Mixed || nota === Notation.JianPu ? true : sp.above;
+        if (drawnAbove) continue;
+        const low = Math.max(chordLow(sp.startNote.chord), chordLow(sp.endNote.chord)) + AUTO_SLUR_SAG;
+        if (low > maxDown) maxDown = low;
+      }
+    }
+    const base = maxDown + AUTO_LYRIC_GAP;
+    for (const mif of sys.measures) {
+      for (const part of score.parts) {
+        const md = part.measures[mif.index];
+        if (!md) continue;
+        for (const lrc of md.lyrics) {
+          const verse = Math.max(0, (parseInt(lrc.num, 10) || 1) - 1);
+          lrc.y = -(base + verse * AUTO_LYRIC_ROW);
+        }
+      }
+    }
+  }
+}
+
+// 标题/词曲信息：OMR MusicXML 的 <credit> 无 default-x/-y/font-size，且标题只在
+// <work-title> 里（未作为 credit）→ 全挤在页首同一位置、无字号区分。此处按页面重排：
+// 标题居中大字，作词/作曲逐行居中小字，堆叠在标题下方。
+const AUTO_TITLE_FS = 26;
+const AUTO_CREDIT_FS = 14;
+const AUTO_LYRIC_GAP = 20;   // 音符/符干/slur 最低点到首行歌词基线的净空（tenths）
+const AUTO_LYRIC_ROW = 22;   // 相邻 verse 行距
+const AUTO_DIRECTION_Y = 46; // 速度记号默认高度（谱表上方）
+const AUTO_ATTR_GAP = 16;    // 行首小节谱号/调号/拍号右缘到首音符的额外净空
+const AUTO_SLUR_SAG = 16;    // 下方 slur/tie 弧线相对端点音符再下探的量
+
+function autoLayoutHeader(score: MixedScore): void {
+  const d = score.defaults;
+  const cx = d.pageWidth / 2;
+  const creds: ScoreCredit[] = [];
+  let yTop = d.topMargin + 8; // 自上边距向下累积基线（top-down）
+  if (score.title) {
+    yTop += AUTO_TITLE_FS;
+    creds.push({
+      page: 0, text: score.title, type: "title",
+      x: cx, y: d.pageHeight - yTop, justify: LCR.Center, fontSize: AUTO_TITLE_FS,
+    });
+    yTop += 10;
+  }
+  // 原有 credit（作词/作曲…）按顺序堆到标题下方，居中小字。
+  for (const c of score.credits) {
+    if (!c.text) continue;
+    yTop += AUTO_CREDIT_FS + 4;
+    creds.push({
+      page: 0, text: c.text, type: c.type,
+      x: cx, y: d.pageHeight - yTop, justify: LCR.Center, fontSize: AUTO_CREDIT_FS,
+    });
+  }
+  score.credits = creds;
+}
+
+function buildSystemsAndPages(score: MixedScore, xmlParts: Element[], extraBreaks?: Set<number>): void {
+  const newSystem = new Set<number>(extraBreaks ?? []);
   const newPage = new Set<number>();
 
   for (const pt of xmlParts) {
@@ -1743,11 +2063,16 @@ export function loadMixedXml(xmlText: string, options: MixedOptions): MixedScore
     for (const md of part.measures) md.processJpBeam();
   }
 
-  // Layout pass
-  buildSystemsAndPages(score, partEls);
+  // Layout pass。无内嵌版面坐标（OMR 生成谱）时自动计算小节宽度/折行/音符横向位置。
+  const autoLayout = !hasEmbeddedLayout(score);
+  if (autoLayout) autoLayoutHeader(score);
+  const autoBreaks = autoLayout ? autoLayoutWidths(score) : undefined;
+  buildSystemsAndPages(score, partEls, autoBreaks);
   applyStaffVisibility(score, partEls);
   updateLayoutByPrint(score, partEls);
+  if (autoLayout) autoJustifySystems(score);
   layoutAttr(score);
+  if (autoLayout) autoPlaceNotes(score);
   updateEntPos(score);
   updateDataXPos(score);
 
