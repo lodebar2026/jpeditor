@@ -867,7 +867,9 @@ export class Line {
     if (extra > maxExtra) {
       extra = maxExtra;
       dontMoveLastBarline = true;
-      console.error("space too large!");
+      // 非致命：某行内容远窄于可用宽度（如稀疏/末行），此处已 clamp 掉多余空白照常排版。
+      // 仅调试时输出，避免污染控制台（识别出的谱常有短行会触发）。
+      if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.debug("[layout] space too large (clamped)");
     }
 
     let totalDist = 0;
