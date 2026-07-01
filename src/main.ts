@@ -3,7 +3,7 @@ import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
 import { asset } from "./common/asset";
 import { App } from "./editor/app";
-import { showLayoutDialog, showOptionsDialog, showRecognizeDialog } from "./editor/dialogs";
+import { showLayoutDialog, showOptionsDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
 import { isTauriRuntime } from "./editor/fileio";
 import { MixedPainter } from "./mixed/painter";
@@ -67,7 +67,6 @@ async function boot() {
   on("btn-lines", () => showLayoutDialog(app));
   on("btn-options", () => showOptionsDialog(app));
   on("btn-export", () => showExportDialog(app));
-  on("btn-omr", () => showRecognizeDialog(app));
   const mixedBtn = document.getElementById("btn-mixed") as HTMLButtonElement | null;
   if (mixedBtn) {
     app.setMixedBtn(mixedBtn);
