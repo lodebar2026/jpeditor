@@ -9,7 +9,7 @@ import {
   Part,
   Score,
 } from "./score";
-import { computePhraseBreaks } from "./phrase";
+import { computePhraseBreaks, type PhraseBreaks } from "./phrase";
 
 function escape(s: string): string {
   return s.replace(/\n/g, "\\n");
@@ -59,7 +59,9 @@ class LyricProcessor {
   private static readonly reg = /^\d\./;
   private static readonly punc = /[，。！？、“”：；]+/g;
 
-  constructor(public part: Part) {}
+  // 乐句模式下 .Voice 会在这些和弦后插入行内 $(true)；re-parse 时（assignLrcSeg）会把
+  // 小节中间的 LineBreak 当作 mid++/nid=0，故此处须同步递增，否则歌词锚点 @measure,noteIndex 错位。
+  constructor(public part: Part, private midBreaks: Set<Chord> | null = null) {}
 
   lines(res: string[]): void {
     for (const [k, v] of this.texts) {
@@ -144,6 +146,8 @@ class LyricProcessor {
         if (!(ch instanceof Chord)) continue;
         this.nid++;
         this.onChord(ch, chordIdx++);
+        // 乐句行内断点：其后插了 $(true)，re-parse 视作新行 → 与 assignLrcSeg 对齐。
+        if (this.midBreaks?.has(ch)) { this.mid++; this.nid = 0; }
       }
     }
     if (this.refrain) this.refrain.passLast = this.numVerses;
@@ -157,12 +161,14 @@ class JpScore {
   private titleRec: Rec | null = null;
   private authorRecs: Array<{ text: string; rec: Rec }> = [];
   private _proc: LyricProcessor | null = null; // 保留 LyricProcessor 以便取歌词逐音节记录
+  private _breaks: PhraseBreaks | null = null;  // 乐句模式的断行，makeVoiceData / makeWordData 共用
 
   constructor(private phrase = false) {}
 
   fromMusicXml(scr: Score): void {
     this.lines.push("// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************");
     this.makeMetaData(scr);
+    this._breaks = this.phrase ? computePhraseBreaks(scr.parts[0]) : null;
     this.makeVoiceData(scr.parts[0]);
     this.makeWordData(scr.parts[0]);
     this.makeRepeatData(scr);
@@ -234,7 +240,7 @@ class JpScore {
   }
 
   private makeWordData(part: Part): void {
-    const proc = new LyricProcessor(part);
+    const proc = new LyricProcessor(part, this._breaks?.midBreaks ?? null);
     proc.process();
     this.lines.push(".Words");
     proc.lines(this.lines);
@@ -302,7 +308,7 @@ class JpScore {
     this.lines.push(".Voice");
     const voiceStart = this.lines.length;
     // 乐句排版：忽略源自带换行，按乐句分析结果断行；否则保留原始 newSystem。
-    const breaks = this.phrase ? computePhraseBreaks(part) : null;
+    const breaks = this._breaks;
     let l = "";
     let lineNo = 0;
     // 换行：乐句模式每 4 行自动换页（一页不超过 4 行）；否则沿用源换页标记。
