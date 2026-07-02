@@ -98,7 +98,10 @@ function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number, dotR: nu
     // 数字字号增大后墨迹已顶到音符框上/下沿，八度点须离框远些才不粘连。
     const gap = H * 0.38;
     const step = r * 3;
-    const lowBase = (n.div > 0 ? divBottom + divGap : bot) + gap; // 低音点首点基线（让过减时线）
+    // 低音点：紧贴减时线（无减时线则贴音符框下沿）下方，只留一个小间距，
+    // 不再复用上点的大 gap——否则低音点离音符太远（简谱约定低音点紧邻减时线）。
+    const lowGap = Math.max(r * 1.6, H * 0.14);
+    const lowBase = (n.div > 0 ? divBottom : bot) + lowGap; // 低音点首点基线（贴减时线下方）
     for (let i = 0; i < Math.abs(oct); i++) {
       const oy = oct > 0 ? top - gap - i * step : lowBase + i * step;
       g.appendChild(dot(cx, oy, r));
