@@ -40,7 +40,7 @@ export function mergeToChars(line: Component[], charH: number): Rect[] {
 }
 
 // 一个 rec 块：本乐谱行(rowIdx)某 verse 的若干相邻字格（拼一条横图整体 rec）。
-interface Chunk { rowIdx: number; verse: number; cells: Rect[]; }
+interface Chunk { rowIdx: number; verse: number; cells: Rect[]; maxGap: number; }
 
 // 调试可视化用：设 globalThis.__lyricTrace={} 后 recognizeLyrics 逐步把各阶段 I/O 记进来（供生成算法说明 HTML）。
 export interface LyricTrace {
@@ -53,6 +53,23 @@ export interface LyricTrace {
   aligned?: Record<string, Array<{ noteX: number; noteBox: Rect; lyric: string }>>;
 }
 const STRIP_H = 48, STRIP_MAXW = 300; // rec 宽上限 320 → 单条限 ~5 字免压扁
+const STRIP_PAD = 4; // 拼条时字格两侧留白（也是 xFrac↔源图 x 换算的边距）
+
+/** 压缩字格间过宽空白的布局：每个字间 gap 上限压到 maxGap（默认 ∞=不压，保留自然排版）。
+ *  歌词字距过大时（如基督更美 ~1 字宽的间隔）自然区域会超 rec 宽上限被迫拆成单字；压掉多余空白后
+ *  同样几个字能并进一条整体 rec（字形/字序不动，只去纯空白 → 不伤"自然排版"那点优势）。
+ *  返回各格在压缩条内容坐标(从 0 起)的 x 区间 + 对应源图 x，供 buildStrip 画 / chunkCells 量宽 / 对齐映回。 */
+function compactSegs(cells: Rect[], maxGap: number): { segs: { cx0: number; cx1: number; sx0: number; sw: number }[]; contentW: number } {
+  const segs: { cx0: number; cx1: number; sx0: number; sw: number }[] = [];
+  let cx = 0;
+  for (let i = 0; i < cells.length; i++) {
+    const w = cells[i].w;
+    segs.push({ cx0: cx, cx1: cx + w, sx0: cells[i].x, sw: w });
+    cx += w;
+    if (i < cells.length - 1) cx += Math.max(0, Math.min(cells[i + 1].x - (cells[i].x + w), maxGap));
+  }
+  return { segs, contentW: cx };
+}
 
 /** 整幅二值图 → 黑字白底源画布（供拼条裁剪）。 */
 export function srcCanvasOf(bin: Binary): OffscreenCanvas {
@@ -67,34 +84,51 @@ export function srcCanvasOf(bin: Binary): OffscreenCanvas {
 
 /** 裁一块字格所覆盖的**自然连续区域**(保留原始字间距/渲染，不重拼)，缩到高 STRIP_H 整体 rec。
  *  自然排版让 PP-OCR 远比逐字/拼接 rec 准；块按宽度上限切，避免长行被压扁(rec 宽上限 320)。 */
-export function buildStrip(src: OffscreenCanvas, cells: Rect[], H = STRIP_H): OffscreenCanvas {
-  const x0 = Math.min(...cells.map((r) => r.x));
-  const x1 = Math.max(...cells.map((r) => r.x + r.w));
+export function buildStrip(src: OffscreenCanvas, cells: Rect[], H = STRIP_H, maxGap = Infinity): OffscreenCanvas {
   const y0 = Math.min(...cells.map((r) => r.y));
   const y1 = Math.max(...cells.map((r) => r.y + r.h));
-  const pad = 4;
-  const sw = x1 - x0 + pad * 2, sh = y1 - y0 + pad * 2;
-  const W = Math.max(1, Math.round(sw * H / sh));
+  const { segs, contentW } = compactSegs(cells, maxGap);
+  const sh = y1 - y0 + STRIP_PAD * 2;
+  const sw = contentW + STRIP_PAD * 2;
+  const scale = H / sh;
+  const W = Math.max(1, Math.round(sw * scale));
   const cv = new OffscreenCanvas(W, H);
   const ctx = cv.getContext("2d");
   if (!ctx) throw new Error("无法创建 2D 画布上下文");
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-  ctx.drawImage(src, x0 - pad, y0 - pad, sw, sh, 0, 0, W, H);
+  // 逐格从源图取整列高切片，画到压缩后位置（去掉多余字间空白；空白无墨，故不丢内容）。
+  for (const sg of segs) {
+    ctx.drawImage(src, sg.sx0, y0 - STRIP_PAD, sg.sw, sh,
+      Math.round((sg.cx0 + STRIP_PAD) * scale), 0, Math.max(1, Math.round(sg.sw * scale)), H);
+  }
   return cv;
 }
 
-/** 把一行字格按自然宽度上限切成若干块（每块缩到 H 后 ≤ ~300px → 不超 rec 宽上限 320）。 */
-export function chunkCells(cells: Rect[]): Rect[][] {
+/** 把一行字格切成若干块（每块缩到 H 后 ≤ ~300px → 不超 rec 宽上限 320）。
+ *  **均匀切分**：先按整行宽算出需要的块数 k=ceil(总宽/上限)，再让各块宽度尽量接近 总宽/k，
+ *  避免贪心填满后末块只剩一两字（单字 rec 差、易漏，如基督更美末字「敞」）。硬上限仍不突破。 */
+export function chunkCells(cells: Rect[], maxGap = Infinity): Rect[][] {
+  const n = cells.length;
+  if (n <= 1) return n ? [cells] : [];
+  const widthAtH = (rs: Rect[]) => {
+    const y0 = Math.min(...rs.map((r) => r.y)), y1 = Math.max(...rs.map((r) => r.y + r.h));
+    return compactSegs(rs, maxGap).contentW * STRIP_H / (y1 - y0);
+  };
+  const k = Math.max(1, Math.ceil(widthAtH(cells) / STRIP_MAXW)); // 需要的块数
+  if (k <= 1) return [cells];
+  const target = widthAtH(cells) / k; // 均匀目标宽（≤ STRIP_MAXW）
   const chunks: Rect[][] = [];
   let cur: Rect[] = [];
-  const widthAtH = (rs: Rect[]) => {
-    const x0 = Math.min(...rs.map((r) => r.x)), x1 = Math.max(...rs.map((r) => r.x + r.w));
-    const y0 = Math.min(...rs.map((r) => r.y)), y1 = Math.max(...rs.map((r) => r.y + r.h));
-    return (x1 - x0) * STRIP_H / (y1 - y0);
-  };
-  for (const r of cells) {
-    if (cur.length && widthAtH([...cur, r]) > STRIP_MAXW) { chunks.push(cur); cur = []; }
-    cur.push(r);
+  for (let i = 0; i < n; i++) {
+    if (cur.length && widthAtH([...cur, cells[i]]) > STRIP_MAXW) { chunks.push(cur); cur = []; } // 防压扁：不越硬上限
+    cur.push(cells[i]);
+    const remainingChunks = k - chunks.length - 1; // 关掉当前块后仍需几块
+    const remainingCells = n - 1 - i;
+    if (remainingChunks > 0 &&
+        // 达均匀目标且剩余格够分给剩余块 → 关块；或剩余格数刚够每块留一个 → 必须关
+        ((widthAtH(cur) >= target && remainingCells > remainingChunks) || remainingCells <= remainingChunks)) {
+      chunks.push(cur); cur = [];
+    }
   }
   if (cur.length) chunks.push(cur);
   return chunks;
@@ -275,6 +309,7 @@ export async function recognizeLyrics(
       .map((b) => b.dyBot - b.dyTop);
     const charH = median(candH) || charW;
     const longGap = charW * 0.6; // 长空白（乐句/标点后）→ 分块边界
+    const maxGap = charW * 0.35; // 拼条时字间空白上限（去掉过宽字距 → 同条能多并几字，不压扁）
     // 把尾随标点小墨块并入前一字块（字块 = 汉字 + 尾随标点，裁条时一起 rec）。
     const mergedBlocks = lineBlocks.map((blocks) => mergePunctBlocks(blocks, charW, longGap));
     if (TR) TR.charW = charW;
@@ -302,9 +337,9 @@ export async function recognizeLyrics(
       // S5 直接按 STRIP_MAXW 宽上限把整行字格切成 rec 块（不再逐长空白断段）：散字尽量并进同一条
       // 自然区域整体 rec——多字上下文远比逐字准（实测单字 ~85% vs 自然区域 ~98%）。宽上限已含字间空白，
       // 真正的大段乐句空白会撑到上限自然断开，不会把整行压扁。
-      for (const chunkCellsArr of chunkCells(cells)) {
-        chunks.push({ rowIdx: i, verse, cells: chunkCellsArr });
-        strips.push(buildStrip(src, chunkCellsArr));
+      for (const chunkCellsArr of chunkCells(cells, maxGap)) {
+        chunks.push({ rowIdx: i, verse, cells: chunkCellsArr, maxGap });
+        strips.push(buildStrip(src, chunkCellsArr, STRIP_H, maxGap));
         if (TR) { const x0 = Math.min(...chunkCellsArr.map((r) => r.x)), y0 = Math.min(...chunkCellsArr.map((r) => r.y));
           const x1 = Math.max(...chunkCellsArr.map((r) => rright(r))), y1 = Math.max(...chunkCellsArr.map((r) => rbottom(r)));
           (TR.chunks ??= []).push({ rowIdx: i, verse, cells: chunkCellsArr, crop: { x: x0 - 4, y: y0 - 4, w: x1 - x0 + 8, h: y1 - y0 + 8 } }); }
@@ -313,7 +348,6 @@ export async function recognizeLyrics(
   }
 
   if (!strips.length) return regions;
-  const STRIP_PAD = 4; // 与 buildStrip 一致：strip 源区在 cells 两侧各扩 pad，xFrac 换算 x 时要算进去
   // 优先用**带字位**的 rec：每字带 xFrac → 直接落回源图 x，免去"字数↔连通块格数"按序硬配（错位根源）。
   const posMode = !!ocr.recognizeTextsPos;
   const textsPos = posMode ? await ocr.recognizeTextsPos!(strips) : null;
@@ -326,7 +360,7 @@ export async function recognizeLyrics(
   const perLine = new Map<string, Array<{ x: number; ch: string; region?: TextRegion }>>();
   const lineSeen = new Set<string>();
   for (let s = 0; s < chunks.length; s++) {
-    const { rowIdx, verse, cells } = chunks[s];
+    const { rowIdx, verse, cells, maxGap } = chunks[s];
     const key = `${rowIdx}:${verse}`;
     const isFirstChunk = !lineSeen.has(key);
     lineSeen.add(key);
@@ -337,12 +371,21 @@ export async function recognizeLyrics(
     const charW = median(cells.map((c) => c.w)) || (cy1 - cy0);
 
     if (posMode) {
-      // 用 OCR 字位 xFrac → 源图 x（strip 源区 [x0-pad, x1+pad] 线性映射到内容宽度）。
-      const x0 = Math.min(...cells.map((c) => c.x)) - STRIP_PAD;
-      const x1 = Math.max(...cells.map((c) => rright(c))) + STRIP_PAD;
-      const span = Math.max(1, x1 - x0);
+      // 用 OCR 字位 xFrac → 源图 x。strip 是**压缩条**（字间空白被压到 maxGap），故按同一压缩布局
+      // 把 xFrac 落到对应字格、再映回该格源图 x（不能再用自然 span 线性映，否则压缩处会错位）。
+      const { segs, contentW } = compactSegs(cells, maxGap);
+      const stripW = contentW + STRIP_PAD * 2;
+      const fracToSrcX = (xFrac: number) => {
+        const cc = xFrac * stripW - STRIP_PAD; // 压缩条内容坐标
+        for (const sg of segs) if (cc <= sg.cx1) {
+          const t = Math.max(0, Math.min(1, (cc - sg.cx0) / Math.max(1, sg.cx1 - sg.cx0)));
+          return sg.sx0 + t * sg.sw;
+        }
+        const last = segs[segs.length - 1];
+        return last.sx0 + last.sw;
+      };
       for (const { ch, xFrac } of textsPos![s]) {
-        const sx = x0 + xFrac * span;
+        const sx = fracToSrcX(xFrac);
         if (isHanzi(ch)) {
           const region: TextRegion = { text: ch, bbox: { x: sx - charW / 2, y: cy0, w: charW, h: cy1 - cy0 } };
           placed.push({ x: sx, ch, region });
