@@ -373,6 +373,26 @@ export async function recognizeLyrics(
     }
   }
 
+  // 剔除伪 verse：谱行下方噪声/记号被误当额外歌词行，rec 出来多为空、偶尔一行垃圾字（如世上 row3 的
+  // 「一尊心…办单办，口」→ 伪 W3）。真 verse 有字的谱行横跨全曲；伪 verse 只在个别行出字。留下不但污染
+  // .Words，更会让下游 findRefrain 误判：伪词与真词在某行重叠制造 n>1 断点，其后整段被当副歌拆段，
+  // 跨段 melisma 的 `/` 在段尾被抹掉（世上 W1「一生/事奉」对位破）。按「有字谱行数」过滤（须在 rec 之后）。
+  {
+    const rowsWithText = new Map<number, Set<number>>();
+    for (const [key, placed] of perLine) {
+      if (!placed.length) continue;
+      const [rowIdx, verse] = key.split(":").map(Number);
+      let s = rowsWithText.get(verse);
+      if (!s) rowsWithText.set(verse, (s = new Set()));
+      s.add(rowIdx);
+    }
+    const primary = Math.max(0, ...[...rowsWithText.values()].map((s) => s.size));
+    for (const key of [...perLine.keys()]) {
+      const verse = Number(key.split(":")[1]);
+      if ((rowsWithText.get(verse)?.size ?? 0) * 2 < primary) perLine.delete(key); // < 主 verse 有字行数的一半 → 伪
+    }
+  }
+
   if (TR) { TR.placed = {}; for (const [k, p] of perLine) TR.placed[k] = p.map(({ x, ch }) => ({ x, ch })); }
 
   // 投影已在自然上下文里把尾随标点并进字块、由 OCR 直接读出（并折全角）→ 不再需要几何补标点。
