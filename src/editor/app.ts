@@ -34,7 +34,7 @@ export class App {
   private _recogScore: RecognizedScore | null = null;
   private _recognizeBtnEl: HTMLButtonElement | null = null;
   // 识别视图（原位叠加/附近浮窗/仅原图）+ 下拉选择器 + 悬停浮窗 div。
-  recogView: RecogView = "inplace";
+  recogView: RecogView = "floating";
   private _recogViewSelectEl: HTMLSelectElement | null = null;
   private _recogPopupEl: HTMLDivElement | null = null;
   // 识别对象 → jpwabc 代码区间映射（导入时序列化产出，随编辑经 mapPos 迁移）。
@@ -435,7 +435,7 @@ export class App {
       if (this.mode === "mixed") this._setMixedLayout(false);
       this.mode = "recognize";
       this._setRecognizeLayout(true);
-      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "简谱";
+      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "排版";
       this._renderRecognizePages();
     }
   }
