@@ -347,8 +347,10 @@ function buildHitLayer(score: RecognizedScore, stats: Stats): SVGGElement {
     for (let v = 0; v < lyr.length; v++) {
       const by = rowBands[ri][v];
       if (!lyr[v] || by === undefined) continue;
+      // 歌词命中框用统计出的汉字字号（lyrH×lyrH 方框），横向以音符中心对齐——
+      // 而非各音符宽窄不一的 bbox.w，使悬停/选中高亮与实际汉字大小相符。
       hit(
-        { x: n.bbox.x, y: by - stats.lyrH / 2, w: n.bbox.w, h: stats.lyrH },
+        { x: rcx(n.bbox) - stats.lyrH / 2, y: by - stats.lyrH / 2, w: stats.lyrH, h: stats.lyrH },
         { "data-kind": "lyric", "data-i": String(i), "data-verse": String(v), class: "omr-hit" },
       );
     }
