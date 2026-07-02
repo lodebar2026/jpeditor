@@ -41,17 +41,6 @@ function labeled(label: string, el: HTMLElement): HTMLElement {
   return row;
 }
 
-/** 页面行数 — edit LinesPerPage in the .Layout section. */
-export function showLayoutDialog(app: App): void {
-  const body = document.createElement("div");
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = "例如 4 或 4|3|3（留空=自动）";
-  input.value = app.getLinesPerPage();
-  body.append(labeled("每页行数", input));
-  modal("页面行数", body, () => app.setLinesPerPage(input.value.trim()));
-}
-
 const RATIOS: Record<string, [number, number]> = {
   "16:9": [960, 540],
   "4:3": [720, 540],
@@ -87,8 +76,13 @@ export function showOptionsDialog(app: App): void {
   const color = document.createElement("input");
   color.type = "color";
   color.value = "#" + ((app.color >>> 0) & 0xffffff).toString(16).padStart(6, "0");
+  const lines = document.createElement("input");
+  lines.type = "text";
+  lines.placeholder = "例如 4 或 4|3|3（留空=自动）";
+  lines.value = app.getLinesPerPage();
   body.append(
     labeled("谱面比例", sel),
+    labeled("每页行数", lines),
     labeled("基础字号", fs),
     labeled("标题字号", titleSz),
     labeled("词曲信息字号", creditSz),
@@ -107,6 +101,8 @@ export function showOptionsDialog(app: App): void {
     const titleSize = parseInt(titleSz.value, 10) || app.titleSize;
     const creditSize = parseInt(creditSz.value, 10) || app.creditSize;
     const argb = 0xff000000 | (parseInt(color.value.slice(1), 16) & 0xffffff);
+    const linesVal = lines.value.trim();
+    if (linesVal !== app.getLinesPerPage()) app.setLinesPerPage(linesVal);
     app.applyRenderSettings({ pageW: w, pageH: h, fontSize, titleSize, creditSize, color: argb >>> 0 });
     if (app.mode === "mixed") void app.setMixedHideBarNumber(hideBarNum.checked);
   });
