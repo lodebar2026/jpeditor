@@ -279,8 +279,28 @@ class JpScore {
     }
   }
 
+  // 乐句排版：按实际乐句行数重排每页换页标记（每页至多 4 行；末页仅剩 1 行的 4+1
+  // 情形把最后一个换页上移一行 → 3+2）。voiceStart = .Voice 首行在 this.lines 的下标。
+  private balanceVoicePages(voiceStart: number): void {
+    const R = this.lines.length - voiceStart;
+    if (R <= 0) return;
+    const pageAt = new Set<number>(); // 1 基乐句行号：其行尾为换页
+    for (let p = 4; p <= R - 1; p += 4) pageAt.add(p);
+    pageAt.add(R); // 末行收尾（分隔反复段）
+    if (R % 4 === 1 && R >= 5) {
+      pageAt.delete(R - 1);
+      pageAt.add(R - 2);
+    }
+    for (let i = 1; i <= R; i++) {
+      const idx = voiceStart + i - 1;
+      const marker = pageAt.has(i) ? "$(true,0,0,true)" : "$(true)";
+      this.lines[idx] = this.lines[idx].replace(/\$\(true(?:,0,0,true)?\)\s*$/, "") + marker;
+    }
+  }
+
   private makeVoiceData(part: Part): void {
     this.lines.push(".Voice");
+    const voiceStart = this.lines.length;
     // 乐句排版：忽略源自带换行，按乐句分析结果断行；否则保留原始 newSystem。
     const breaks = this.phrase ? computePhraseBreaks(part) : null;
     let l = "";
@@ -295,7 +315,8 @@ class JpScore {
     };
     part.measures.forEach((m, mid) => {
       const doBreak = mid > 0 && (breaks ? breaks.measureBreaks.has(mid) : m.newSystem);
-      if (doBreak) pushBreak(m.newPage);
+      // l 为空说明上一乐句刚在小节内(midBreak)断过，别再补一次空行。
+      if (doBreak && l.length > 0) pushBreak(m.newPage);
       if (m.repeatForward) {
         l += "|:";
         if (m.endingLeft) {
@@ -358,6 +379,7 @@ class JpScore {
       l += "$(true,0,0,true)";
       this.lines.push(l);
     }
+    if (breaks) this.balanceVoicePages(voiceStart);
   }
 
   get code(): string {
