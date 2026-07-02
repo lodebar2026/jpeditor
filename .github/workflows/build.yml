@@ -96,17 +96,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-  # 桌面包与 Pages 全部成功后删除本次 CI run 记录，节省资源
-  cleanup:
-    needs: [build, pages-deploy]
-    if: success()
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Delete this workflow run
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api -X DELETE "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}"
