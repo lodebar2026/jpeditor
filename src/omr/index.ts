@@ -13,5 +13,6 @@ export { paddleOcrBackend } from "./paddleocr";
 export { agyAvailable, agyRecognizeImage, DEFAULT_GEMINI_MODEL } from "./agy";
 export { recognizeImage, recognizeMusicpp, recognizeMusicppDetailed } from "./recognize";
 export type { OmrMethod, OmrResult, MusicppDetail } from "./recognize";
+export { buildStrip, srcCanvasOf } from "./lyrics";
 export { renderRecognitionSvg, renderRowPopup, renderHeaderPopup } from "./overlay";
 export type { RecogView } from "./overlay";

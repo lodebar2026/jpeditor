@@ -47,7 +47,7 @@ export interface LyricTrace {
   numH?: number; charMin?: number; slope?: number; charW?: number;
   rows?: Array<{ rowIdx: number; yTop: number; yBot: number; charH: number;
     bandBoxes: Rect[]; noteBoxes: Rect[]; verses: Array<{ verse: number; cells: Rect[]; cov: number; longGapBefore?: boolean[] }> }>;
-  chunks?: Array<{ rowIdx: number; verse: number; cells: Rect[]; crop: Rect }>;
+  chunks?: Array<{ rowIdx: number; verse: number; cells: Rect[]; crop: Rect; maxGap: number }>;
   recPerChunk?: Array<Array<{ ch: string; xFrac: number }>>;
   placed?: Record<string, Array<{ x: number; ch: string }>>;
   aligned?: Record<string, Array<{ noteX: number; noteBox: Rect; lyric: string }>>;
@@ -342,7 +342,7 @@ export async function recognizeLyrics(
         strips.push(buildStrip(src, chunkCellsArr, STRIP_H, maxGap));
         if (TR) { const x0 = Math.min(...chunkCellsArr.map((r) => r.x)), y0 = Math.min(...chunkCellsArr.map((r) => r.y));
           const x1 = Math.max(...chunkCellsArr.map((r) => rright(r))), y1 = Math.max(...chunkCellsArr.map((r) => rbottom(r)));
-          (TR.chunks ??= []).push({ rowIdx: i, verse, cells: chunkCellsArr, crop: { x: x0 - 4, y: y0 - 4, w: x1 - x0 + 8, h: y1 - y0 + 8 } }); }
+          (TR.chunks ??= []).push({ rowIdx: i, verse, cells: chunkCellsArr, crop: { x: x0 - 4, y: y0 - 4, w: x1 - x0 + 8, h: y1 - y0 + 8 }, maxGap }); }
       }
     });
   }
