@@ -2,7 +2,7 @@
 // Mirrors EditorController in CodeEditor.kt (doBind/tryLoad/updateLayout/paint/load/doSave).
 
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, EditorSelection } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { jpwHighlighter } from "./highlight";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
@@ -12,10 +12,10 @@ import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../lay
 import { Point } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";
-import { scoreToJpwabc } from "../score/jpscore";
+import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 import { MixedPainter } from "../mixed/painter";
-import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, type OmrMethod } from "../omr";
+import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, type OmrMethod, type RecogView } from "../omr";
 import type { Binary, RecognizedScore } from "../omr";
 
 export class App {
@@ -33,6 +33,13 @@ export class App {
   private _recogBin: Binary | null = null;
   private _recogScore: RecognizedScore | null = null;
   private _recognizeBtnEl: HTMLButtonElement | null = null;
+  // 识别视图（原位叠加/附近浮窗/仅原图）+ 下拉选择器 + 悬停浮窗 div。
+  recogView: RecogView = "inplace";
+  private _recogViewSelectEl: HTMLSelectElement | null = null;
+  private _recogPopupEl: HTMLDivElement | null = null;
+  // 识别对象 → jpwabc 代码区间映射（导入时序列化产出，随编辑经 mapPos 迁移）。
+  private _recogMeta: JpwMeta | null = null;
+  private _lastImportMeta: JpwMeta | null = null; // 最近一次 xml 导入的序列化映射，供 recognizeBytes 接管
   // 乐句排版：缓存导入时的「原始排版」文本以便无损切回；_phraseOn 记当前是否乐句排版。
   private _phraseBtnEl: HTMLButtonElement | null = null;
   private _origLayoutText: string | null = null;
@@ -155,7 +162,11 @@ export class App {
 
   mountEditor(parent: HTMLElement, initialText: string): void {
     const updateListener = EditorView.updateListener.of((u) => {
-      if (u.docChanged) this.scheduleReload();
+      if (u.docChanged) {
+        // 识别映射随用户编辑迁移偏移，保持点选仍落在正确 token。
+        if (this._recogMeta) this._recogMeta = mapMeta(this._recogMeta, u.changes);
+        this.scheduleReload();
+      }
     });
     this.view = new EditorView({
       parent,
@@ -323,7 +334,9 @@ export class App {
 
       const score = loadMusicXml(xml);
       this.filePath = null; // imported; save as new .jpwabc
-      this._applyImportedJp(scoreToJpwabc(score));
+      const { text, meta } = scoreToJpwabcWithMeta(score);
+      this._lastImportMeta = meta; // 供 recognizeBytes（OMR）接管为 _recogMeta
+      this._applyImportedJp(text);
     } else {
       this.mixedXmlText = null;
       this._mixedPainter = null;
@@ -396,6 +409,19 @@ export class App {
     this._recognizeBtnEl = el;
   }
 
+  /** Register the #sel-recog-view dropdown (识别视图切换)。 */
+  setRecogViewSelect(el: HTMLSelectElement): void {
+    this._recogViewSelectEl = el;
+    el.value = this.recogView;
+  }
+
+  /** 切换识别视图（原位叠加/附近浮窗/仅原图）。识别模式下即时重渲。 */
+  setRecogView(v: RecogView): void {
+    this.recogView = v;
+    if (this._recogViewSelectEl) this._recogViewSelectEl.value = v;
+    if (this.mode === "recognize") this._renderRecognizePages();
+  }
+
   /** 在「简谱模式」与「识别模式」（二值图+半透明识别叠加）之间切换。需先有 OMR 识别结果。 */
   async toggleRecognize(): Promise<void> {
     if (!this._recogScore || !this._recogBin) return;
@@ -414,33 +440,174 @@ export class App {
     }
   }
 
-  /** 识别模式布局钩子：仅打 body.recognize 类（编辑器保留可编辑、代码区不隐藏）。 */
+  /** 识别模式布局钩子：打 body.recognize 类 + 显示/隐藏视图下拉。 */
   private _setRecognizeLayout(on: boolean): void {
     document.getElementById("body")?.classList.toggle("recognize", on);
+    if (this._recogViewSelectEl) this._recogViewSelectEl.hidden = !on;
+    if (!on) this._hideRecogPopup();
   }
 
-  /** 渲染识别叠加视图：二值图 + 识别结果 → 一张 SVG，沿用 score-page-wrap + zoom 容器。 */
+  /** 渲染识别视图：二值图 + 识别结果 → 一张 SVG，沿用 score-page-wrap + zoom 容器。 */
   private _renderRecognizePages(): void {
     this.scorePane.replaceChildren();
     this.pageEls = [];
     this.selectedEl = null;
+    this._recogPopupEl = null;
     if (!this._recogBin || !this._recogScore) return;
     const bin = this._recogBin;
-    const svg = renderRecognitionSvg(bin, this._recogScore);
+    const svg = renderRecognitionSvg(bin, this._recogScore, this.recogView);
     const wrap = document.createElement("div");
     wrap.className = "score-page-wrap";
+    wrap.style.position = "relative"; // 浮窗绝对定位相对此容器
     wrap.style.aspectRatio = `${bin.w} / ${bin.h}`;
     wrap.style.width = "calc(min(960px, 100%) * var(--score-zoom, 1))";
     wrap.appendChild(svg);
+    this._wireRecognizeInteraction(svg, wrap);
     this.scorePane.appendChild(wrap);
     this.pageEls.push(wrap);
     this.pageIndex = 0;
+  }
+
+  /** 识别 SVG 交互：点选命中对象→选中对应 jpwabc 代码；悬停高亮；floating 视图弹行/页眉浮窗。 */
+  private _wireRecognizeInteraction(svg: SVGSVGElement, wrap: HTMLDivElement): void {
+    const hitOf = (t: EventTarget | null): SVGRectElement | null =>
+      (t instanceof Element ? t.closest(".omr-hits rect") : null) as SVGRectElement | null;
+
+    let hovered: SVGRectElement | null = null;
+    const setHover = (r: SVGRectElement | null): void => {
+      if (hovered === r) return;
+      hovered?.classList.remove("omr-hover");
+      hovered = r;
+      hovered?.classList.add("omr-hover");
+    };
+
+    svg.addEventListener("click", (e) => {
+      const r = hitOf(e.target);
+      if (!r) return;
+      const range = this._rangeOfHit(r);
+      if (range) this._selectCode(range);
+      svg.querySelectorAll(".omr-hits rect.selected").forEach((x) => x.classList.remove("selected"));
+      r.classList.add("selected");
+    });
+
+    svg.addEventListener("mousemove", (e) => {
+      const r = hitOf(e.target);
+      setHover(r);
+      if (this.recogView === "floating") this._updateFloatingPopup(r, wrap);
+    });
+    svg.addEventListener("mouseleave", () => {
+      setHover(null);
+      if (this.recogView === "floating") this._hideRecogPopup();
+    });
+  }
+
+  /** 命中 rect → jpwabc 代码区间（据 data-kind 查 _recogMeta）。 */
+  private _rangeOfHit(r: SVGRectElement): { from: number; to: number } | null {
+    const meta = this._recogMeta;
+    if (!meta) return null;
+    const kind = r.getAttribute("data-kind");
+    if (kind === "note") {
+      const i = Number(r.getAttribute("data-i"));
+      return meta.noteRanges[i] ?? null;
+    }
+    if (kind === "lyric") {
+      const i = Number(r.getAttribute("data-i"));
+      const v = Number(r.getAttribute("data-verse"));
+      return meta.lyricRanges[i]?.get(v) ?? null;
+    }
+    if (kind === "title") return meta.titleRange ?? null;
+    if (kind === "author") {
+      const text = (r.getAttribute("data-text") ?? "").trim();
+      const a = meta.authorRanges.find((x) => x.text.trim() === text)
+        ?? meta.authorRanges.find((x) => text.includes(x.text.trim()) || x.text.trim().includes(text));
+      return a?.range ?? null;
+    }
+    return null;
+  }
+
+  /** 选中并滚动到编辑器里的代码区间。 */
+  private _selectCode(range: { from: number; to: number }): void {
+    const len = this.view.state.doc.length;
+    const from = Math.max(0, Math.min(range.from, len));
+    const to = Math.max(from, Math.min(range.to, len));
+    this.view.dispatch({
+      selection: EditorSelection.single(from, to),
+      effects: EditorView.scrollIntoView(from, { y: "center" }),
+    });
+    this.view.focus();
+  }
+
+  /** floating 视图：悬停对象所在行→在该行相邻固定位置弹整行浮窗；页眉命中→弹整块页眉。 */
+  private _updateFloatingPopup(r: SVGRectElement | null, wrap: HTMLDivElement): void {
+    if (!this._recogBin || !this._recogScore) { this._hideRecogPopup(); return; }
+    // 停在音符/歌词间隙（无命中）时保持当前浮窗，不隐藏——否则同 system 内移动光标会反复隐现闪烁。
+    // 真正离开谱面由 svg 的 mouseleave 负责隐藏。
+    if (!r) return;
+    const bin = this._recogBin, score = this._recogScore;
+    const kind = r.getAttribute("data-kind");
+    let key: string;
+    let r2: { svg: SVGSVGElement; srcTop: number; srcBottom: number };
+    if (kind === "title" || kind === "author") {
+      key = "header";
+      r2 = renderHeaderPopup(bin, score);
+    } else {
+      const i = Number(r.getAttribute("data-i"));
+      const ri = this._rowIndexOfFlat(i);
+      key = "row" + ri;
+      r2 = renderRowPopup(bin, score, ri);
+    }
+    // 同一行/页眉不重复重建。
+    if (this._recogPopupEl?.dataset.key !== key) {
+      this._showRecogPopup(r2.svg, key, wrap, bin, r2.srcTop, r2.srcBottom);
+    }
+  }
+
+  private _showRecogPopup(content: SVGSVGElement, key: string, wrap: HTMLDivElement, bin: Binary, srcTop: number, srcBottom: number): void {
+    let el = this._recogPopupEl;
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "omr-popup";
+      wrap.appendChild(el);
+      this._recogPopupEl = el;
+    }
+    el.dataset.key = key;
+    el.replaceChildren(content);
+    el.style.display = "block";
+    // 定位到**当前 system 之下**（srcBottom 已含本行歌词带底，故浮窗不盖当前行歌词）；
+    // 靠近底部则翻到当前行之上。浮窗整幅宽、列与源图对齐，便于逐音对比。
+    const topPct = (srcBottom / bin.h) * 100;
+    const botPct = (srcTop / bin.h) * 100;
+    if (topPct < 82) {
+      el.style.top = `${topPct}%`;
+      el.style.bottom = "auto";
+    } else {
+      el.style.bottom = `${100 - botPct}%`;
+      el.style.top = "auto";
+    }
+  }
+
+  private _hideRecogPopup(): void {
+    if (this._recogPopupEl) { this._recogPopupEl.style.display = "none"; delete this._recogPopupEl.dataset.key; }
+  }
+
+  /** flatten 音符下标 → 所属行下标。 */
+  private _rowIndexOfFlat(i: number): number {
+    if (!this._recogScore) return 0;
+    let acc = 0;
+    for (let ri = 0; ri < this._recogScore.rows.length; ri++) {
+      const n = this._recogScore.rows[ri].nums.length;
+      if (i < acc + n) return ri;
+      acc += n;
+    }
+    return this._recogScore.rows.length - 1;
   }
 
   /** 清掉本次 OMR 的识别叠加产物并禁用识别按钮；若正处识别模式则退回简谱模式。 */
   private _clearRecognition(): void {
     this._recogBin = null;
     this._recogScore = null;
+    this._recogMeta = null;
+    this._hideRecogPopup();
     if (this._recognizeBtnEl) {
       this._recognizeBtnEl.disabled = true;
       this._recognizeBtnEl.textContent = "识别";
@@ -595,6 +762,7 @@ export class App {
         this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml"); // 先导入（会清旧识别）
         this._recogBin = bin; // 再设本次识别产物
         this._recogScore = score;
+        this._recogMeta = this._lastImportMeta; // 接管导入时序列化产出的代码区间映射
         if (this._recognizeBtnEl) this._recognizeBtnEl.disabled = false;
         if (this.mode !== "recognize") await this.toggleRecognize(); // 自动进识别模式叠加
         this.setStatus(`识别完成（${label}，${((performance.now() - t0) / 1000).toFixed(1)}s）`);
@@ -714,4 +882,19 @@ function isMultiPartXml(xml: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** 把识别映射的所有代码区间经 CodeMirror 变更集迁移到新文档位置（保持编辑后点选仍准）。 */
+function mapMeta(meta: JpwMeta, ch: { mapPos(pos: number, assoc?: number): number }): JpwMeta {
+  const mr = (r: JpwRange): JpwRange => ({ from: ch.mapPos(r.from, 1), to: ch.mapPos(r.to, -1) });
+  return {
+    noteRanges: meta.noteRanges.map(mr),
+    lyricRanges: meta.lyricRanges.map((m) => {
+      const nm = new Map<number, JpwRange>();
+      for (const [k, v] of m) nm.set(k, mr(v));
+      return nm;
+    }),
+    titleRange: meta.titleRange ? mr(meta.titleRange) : undefined,
+    authorRanges: meta.authorRanges.map((a) => ({ text: a.text, range: mr(a.range) })),
+  };
 }

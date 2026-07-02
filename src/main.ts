@@ -77,6 +77,11 @@ async function boot() {
     app.setRecognizeBtn(recognizeBtn);
     recognizeBtn.addEventListener("click", () => void app.toggleRecognize());
   }
+  const recogViewSel = document.getElementById("sel-recog-view") as HTMLSelectElement | null;
+  if (recogViewSel) {
+    app.setRecogViewSelect(recogViewSel);
+    recogViewSel.addEventListener("change", () => app.setRecogView(recogViewSel.value as import("./omr").RecogView));
+  }
   const phraseBtn = document.getElementById("btn-phrase") as HTMLButtonElement | null;
   if (phraseBtn) {
     app.setPhraseBtn(phraseBtn);

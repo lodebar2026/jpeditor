@@ -42,15 +42,38 @@ html, body { margin: 0; height: 100%; }
 .omr-recognize { background: #fff; }
 .omr-recognize > image { opacity: 1; }
 .omr-recognize .omr-overlay { pointer-events: none; opacity: 0.85; }
-/* 各类识别结果用不同颜色区分：音符红、小节线蓝、页眉绿、歌词紫、圆滑线橙、连音线青。 */
-.omr-recognize .omr-overlay text { fill: #d4145a; font-weight: 700; font-family: "PingFang SC", "Microsoft YaHei", ui-sans-serif, sans-serif; }
-.omr-recognize .omr-overlay circle { fill: #d4145a; }
-.omr-recognize .omr-overlay .omr-mark { stroke: #d4145a; }
-.omr-recognize .omr-overlay .omr-barline { stroke: #1565ff; stroke-linecap: round; opacity: 0.95; }
-.omr-recognize .omr-overlay text.omr-header { fill: #0a7d2c; }
-.omr-recognize .omr-overlay text.omr-lyric { fill: #6a1b9a; }
-.omr-recognize .omr-overlay .omr-slur { stroke: #e65100; }
-.omr-recognize .omr-overlay .omr-tie { stroke: #00838f; }
+.omr-popup .omr-overlay { opacity: 1; }
+/* 各类识别结果用不同颜色区分：音符红、小节线蓝、页眉绿、歌词紫、圆滑线橙、连音线青。浮窗复用同配色。 */
+.omr-overlay text { fill: #d4145a; font-weight: 700; font-family: "PingFang SC", "Microsoft YaHei", ui-sans-serif, sans-serif; }
+.omr-overlay circle { fill: #d4145a; }
+.omr-overlay .omr-mark { stroke: #d4145a; }
+.omr-overlay .omr-barline { stroke: #1565ff; stroke-linecap: round; opacity: 0.95; }
+.omr-overlay text.omr-header { fill: #0a7d2c; }
+.omr-overlay text.omr-lyric { fill: #6a1b9a; }
+.omr-overlay .omr-slur { stroke: #e65100; }
+.omr-overlay .omr-tie { stroke: #00838f; }
+
+/* 命中层：透明可点选矩形，悬停/选中描边高亮，标示光标下 / 已选对象。 */
+.omr-hits rect { fill: transparent; pointer-events: all; cursor: pointer; }
+.omr-hits rect.omr-hover { fill: rgba(255, 109, 0, 0.12); stroke: #ff6d00; stroke-width: 2; }
+.omr-hits rect.selected { fill: rgba(21, 101, 255, 0.12); stroke: #1565ff; stroke-width: 2; }
+
+/* 附近浮窗：整幅宽（与源图同宽、列对齐便于对比），贴当前 system 之下，白底描边、透出识别结果，不拦鼠标。 */
+.omr-popup {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
+  z-index: 20;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  padding: 0;
+}
+
+#toolbar #sel-recog-view { margin: 0 2px; }
 
 #score-pane {
   flex: 1 1 auto;
