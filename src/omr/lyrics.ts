@@ -129,7 +129,7 @@ interface ProjBlock { x0: number; x1: number; dyTop: number; dyBot: number; gapB
  *  在该行 ink 的 deslant-y 窗口内逐列累加前景像素 → 成 run；相邻 run 间隙 < mergeGap（偏旁内间隙）
  *  并成一个字块（**粘连字整体保留、绝不硬切**）；每块记与前块的原始间隙(px)，供上层据 charW 判长空白。
  *  同时记每列 ink 的 deslant-y 上下界，产出每块真实 y 范围（供裁条/定位/字高统计）。 */
-function projectLine(bin: Binary, line: Component[], k: number, mergeGap: number): ProjBlock[] {
+function projectLine(bin: Binary, line: Component[], k: number, mergeGap: number, numH: number): ProjBlock[] {
   const w = bin.w, h = bin.h, data = bin.data;
   const x0 = Math.max(0, Math.min(...line.map((c) => c.bbox.x)));
   const x1 = Math.min(w - 1, Math.max(...line.map((c) => rright(c.bbox))));
@@ -154,13 +154,17 @@ function projectLine(bin: Binary, line: Component[], k: number, mergeGap: number
   let rs = -1;
   for (let i = 0; i < n; i++) {
     if (cnt[i] > 0) { if (rs < 0) rs = i; }
-    else if (rs >= 0) { runs.push(mkRun(rs, i - 1)); rs = -1; }
+    else if (rs >= 0) { pushRun(rs, i - 1); rs = -1; }
   }
-  if (rs >= 0) runs.push(mkRun(rs, n - 1));
-  function mkRun(a: number, b: number) {
-    let t = Infinity, bo = -Infinity;
-    for (let i = a; i <= b; i++) { if (colTop[i] < t) t = colTop[i]; if (colBot[i] > bo) bo = colBot[i]; }
-    return { x0: x0 + a, x1: x0 + b, dyTop: t, dyBot: bo };
+  if (rs >= 0) pushRun(rs, n - 1);
+  // 二值化残留的散点（w=1~2、墨极少）会各成一个游离 run → 假字格、被 OCR 读成 · / . 等。
+  // 丢弃「窄且墨少」的 run（窄=≤3列 且 墨<numH*0.5）：真笔画即便只 1~2 列也够高(墨多)→保留；
+  // 淡逗号更宽(≥~0.2charW)不受影响。宽 run 一律保留（不误伤细横笔"一"等）。
+  function pushRun(a: number, b: number) {
+    let t = Infinity, bo = -Infinity, ink = 0;
+    for (let i = a; i <= b; i++) { ink += cnt[i]; if (colTop[i] < t) t = colTop[i]; if (colBot[i] > bo) bo = colBot[i]; }
+    if (b - a + 1 <= 3 && ink < numH * 0.5) return; // 散点噪声
+    runs.push({ x0: x0 + a, x1: x0 + b, dyTop: t, dyBot: bo });
   }
   const blocks: ProjBlock[] = [];
   for (const r of runs) {
@@ -262,7 +266,7 @@ export async function recognizeLyrics(
 
     // S3 逐 verse 行投影分字 → 字块（原始间隙待定长空白）。
     const mergeGap = numH * 0.22; // 偏旁内间隙上限（charW≈numH，用于初并；不切粘连）
-    const lineBlocks = lines.map((ln) => projectLine(bin, ln, k, mergeGap));
+    const lineBlocks = lines.map((ln) => projectLine(bin, ln, k, mergeGap, numH));
     // S2② 字宽统计 → 筛等宽候选 → 字高统计。
     const allBlocks = lineBlocks.flat();
     const widths = allBlocks.map((b) => b.x1 - b.x0 + 1).filter((w) => w >= numH * 0.4 && w <= numH * 1.8);
@@ -295,13 +299,10 @@ export async function recognizeLyrics(
 
     kept.forEach(({ cells, longGapBefore, cov }, verse) => {
       if (rowT) rowT.verses.push({ verse, cells, cov, longGapBefore });
-      // S5 先在长空白边界断成段，各段再按 STRIP_MAXW 宽上限二次切成 rec 块。
-      let segStart = 0;
-      const segments: Rect[][] = [];
-      for (let ci = 1; ci <= cells.length; ci++) {
-        if (ci === cells.length || longGapBefore[ci]) { segments.push(cells.slice(segStart, ci)); segStart = ci; }
-      }
-      for (const seg of segments) for (const chunkCellsArr of chunkCells(seg)) {
+      // S5 直接按 STRIP_MAXW 宽上限把整行字格切成 rec 块（不再逐长空白断段）：散字尽量并进同一条
+      // 自然区域整体 rec——多字上下文远比逐字准（实测单字 ~85% vs 自然区域 ~98%）。宽上限已含字间空白，
+      // 真正的大段乐句空白会撑到上限自然断开，不会把整行压扁。
+      for (const chunkCellsArr of chunkCells(cells)) {
         chunks.push({ rowIdx: i, verse, cells: chunkCellsArr });
         strips.push(buildStrip(src, chunkCellsArr));
         if (TR) { const x0 = Math.min(...chunkCellsArr.map((r) => r.x)), y0 = Math.min(...chunkCellsArr.map((r) => r.y));
