@@ -110,6 +110,7 @@ class LyricProcessor {
       this.syllRecords.push({ seg: this.refrain, offsetInSeg: prev.length, len: out.length, chordIdx, verse: 0 });
       this.inVerse = false;
     } else {
+      const present = new Set<number>();
       for (const it of lrcs) {
         if (!this.verses.has(it.number)) {
           const seg: Segment = { passFirst: it.number, passLast: it.number, measure: this.mid, noteIndex: this.nid };
@@ -121,6 +122,13 @@ class LyricProcessor {
         const out = this.makeText(it.text);
         this.texts.set(seg, prev + out);
         this.syllRecords.push({ seg, offsetInSeg: prev.length, len: out.length, chordIdx, verse: it.number - 1 });
+        present.add(it.number);
+      }
+      // 某音符在部分 verse 是 melisma（该 verse 无音节）但另一 verse 有字：给缺席的 verse 补 "/"，
+      // 否则该 verse 丢失续记号、其后整体错位（原 Kotlin 缺此处理，多段歌词 melisma 不对齐时会漏 /）。
+      for (const [num, seg] of this.verses) {
+        if (present.has(num)) continue;
+        this.texts.set(seg, (this.texts.get(seg) ?? "") + "/");
       }
       this.inVerse = true;
     }

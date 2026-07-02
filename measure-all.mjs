@@ -141,6 +141,57 @@ function lyricsAcc(gt, rec, ignorePunct = false) {
   return { acc: totW ? sum / totW : (r.size ? 0 : 1), detail: parts.join("/") || "无" };
 }
 
+// ---- 歌词↔音符「对位」：.Words 里每汉字占一个音符、`/` 占一格(melisma 续前字/空音符)、
+// 标点贴前字不占音符。把每 verse 展开成逐音符 token 序列(汉字→该字; / →· 续记号)，与 GT 逐音符
+// 序列做 Levenshtein——一处 / 错位会令其后整体偏移，故比 flat CER 更能反映对位。反复段同 lyricsAcc
+// 对称剔除(trimSeqRepeat 复用 trimRepeatedSuffix)。按 GT 音格数加权平均。 ----
+const isHan = (c) => /[一-鿿]/.test(c);
+const NOTE_PUNCT = "，。、；：？！,.;:?!（）()《》「」“”‘’—…·　 \t";
+function verseNoteSeq(text) {
+  const verses = new Map(); let inW = false, cur = null;
+  for (const ln of text.split(/\r?\n/)) {
+    const t = ln.trim();
+    if (t.startsWith(".")) { inW = /^\.words/i.test(t); continue; }
+    if (!inW) continue;
+    const h = t.match(/^W(\d+)/);
+    if (h) { cur = h[1]; if (!verses.has(cur)) verses.set(cur, []); continue; }
+    if (cur == null) continue;
+    for (const c of ln) {
+      if (c === "/") verses.get(cur).push("·");
+      else if (isHan(c)) verses.get(cur).push(c);
+      // 标点/空白/其它: 贴前字不占音符 → 跳过
+    }
+  }
+  return verses;
+}
+// 反复段在 GT 里无 / 标记(纯汉字)，用汉字投影定位裁剪量，再从尾按汉字计数删对应音格(顺带删夹带的 ·)
+function trimSeqRepeat(seq) {
+  const han = seq.filter((t) => t !== "·").join("");
+  let rm = han.length - trimRepeatedSuffix(han).length;
+  if (rm <= 0) return seq;
+  let i = seq.length;
+  while (i > 0 && rm > 0) { i--; if (seq[i] !== "·") rm--; }
+  return seq.slice(0, i);
+}
+// 对位只看「有字/续记号」结构：汉字→字、·→·。识别错字(字 vs 另一字)前后不错位 → 视为对位正确；
+// 只有续记号错位(字↔·)或增删移位才算对位错。末尾漏识(最后一个续记号之后的字增删)不算错位——其后无
+// 续记号→不可能错位，纯识别漏/多字 → 剔掉尾部裸字再比。
+const trimTailSeq = (seq) => { let e = seq.length; while (e > 0 && seq[e - 1] !== "·") e--; return seq.slice(0, e); };
+const normSeq = (seq) => trimTailSeq(seq.map((t) => (t === "·" ? "·" : "字")));
+function alignAcc(gt, rec) {
+  const g = verseNoteSeq(gt), r = verseNoteSeq(rec);
+  if (!g.size && !r.size) return { acc: 1, detail: "无" };
+  let totW = 0, sum = 0; const parts = [];
+  for (const [v, gseq0] of g) {
+    const gseq = trimSeqRepeat(gseq0), rseq = trimSeqRepeat(r.get(v) ?? []);
+    const a = acc(normSeq(gseq), normSeq(rseq));
+    const w = gseq.length || 1;
+    totW += w; sum += a * w;
+    parts.push(`W${v} ${(a * 100).toFixed(0)}%`);
+  }
+  return { acc: totW ? sum / totW : (r.size ? 0 : 1), detail: parts.join("/") || "无" };
+}
+
 async function findSongs() {
   const out = [];
   for (const name of (await readdir(TESTDATA, { withFileTypes: true })).filter((d) => d.isDirectory())) {
@@ -176,7 +227,7 @@ const songs = await findSongs();
 if (!songs.length) { console.log("testdata/ 下没找到 图片+jpwabc 的歌谱文件夹"); await browser.close(); server.close(); process.exit(0); }
 
 const rows = [];
-const sum = { a: 0, o: 0, d: 0, dc: 0, s: 0, ly: 0, lyNp: 0, ti: 0, cr: 0 };
+const sum = { a: 0, o: 0, d: 0, dc: 0, s: 0, ly: 0, lyNp: 0, al: 0, ti: 0, cr: 0 };
 for (const song of songs) {
   errors.length = 0;
   const mime = MIME[extname(song.img).toLowerCase()] ?? "image/jpeg";
@@ -205,31 +256,32 @@ for (const song of songs) {
   const s = acc(gB, rB);
   const ly = lyricsAcc(gt, rj);
   const lyNp = lyricsAcc(gt, rj, true);
+  const al = alignAcc(gt, rj);
   const ti = charAcc(titleOf(gt), titleOf(rj));
   const cr = charAcc(creditsOf(gt), creditsOf(rj));
-  sum.a += a; sum.o += o; sum.d += d; sum.dc += dc; sum.s += s; sum.ly += ly.acc; sum.lyNp += lyNp.acc; sum.ti += ti; sum.cr += cr;
+  sum.a += a; sum.o += o; sum.d += d; sum.dc += dc; sum.s += s; sum.ly += ly.acc; sum.lyNp += lyNp.acc; sum.al += al.acc; sum.ti += ti; sum.cr += cr;
   rows.push({ name: song.name, a, o, d, dc, gdot: dotCount(g), rdot: dotCount(r), s, sg: slurGroups(gB), sr: slurGroups(rB),
-    ly: ly.acc, lyNp: lyNp.acc, lyD: ly.detail, ti, cr, g: g.length, r: r.length, stats: rec.stats,
+    ly: ly.acc, lyNp: lyNp.acc, lyD: ly.detail, al: al.acc, alD: al.detail, ti, cr, g: g.length, r: r.length, stats: rec.stats,
     err: errors.filter((e) => !/favicon|space too large/.test(e)).slice(0, 2) });
 }
 
 // CSV 输出：百分比保留 1 位小数（不带 % 号），字段含逗号则加引号
 const p1 = (x) => (x * 100).toFixed(1);
 const csv = (v) => { const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-const cols = ["歌谱", "音符", "八度", "附点", "附GT", "附识", "小节", "slur/tie", "slur组GT", "slur组识", "歌词", "歌词*", "标题", "词曲", "GT_token", "识_token", "行", "音", "线"];
+const cols = ["歌谱", "音符", "八度", "附点", "附GT", "附识", "小节", "slur/tie", "slur组GT", "slur组识", "歌词", "歌词*", "对位", "标题", "词曲", "GT_token", "识_token", "行", "音", "线"];
 const lines = [cols.join(",")];
 for (const x of rows) {
   if (x.fail) { lines.push([csv(x.name), "识别异常"].join(",")); continue; }
   lines.push([
     csv(x.name), p1(x.a), p1(x.o), p1(x.dc), x.gdot, x.rdot, p1(x.d), p1(x.s), x.sg, x.sr,
-    p1(x.ly), p1(x.lyNp), p1(x.ti), p1(x.cr), x.g, x.r,
+    p1(x.ly), p1(x.lyNp), p1(x.al), p1(x.ti), p1(x.cr), x.g, x.r,
     x.stats.rows, x.stats.notes, x.stats.bars,
   ].join(","));
 }
 const n = rows.filter((x) => !x.fail).length || 1;
 lines.push([
   "平均", p1(sum.a / n), p1(sum.o / n), p1(sum.dc / n), "", "", p1(sum.d / n), p1(sum.s / n), "", "",
-  p1(sum.ly / n), p1(sum.lyNp / n), p1(sum.ti / n), p1(sum.cr / n), "", "", "", "", "",
+  p1(sum.ly / n), p1(sum.lyNp / n), p1(sum.al / n), p1(sum.ti / n), p1(sum.cr / n), "", "", "", "", "",
 ].join(","));
 
 const outPath = join(process.cwd(), "measure-all.csv");
