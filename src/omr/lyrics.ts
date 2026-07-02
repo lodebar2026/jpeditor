@@ -323,10 +323,13 @@ export async function recognizeLyrics(
       const longGapBefore = blocks.map((b) => b.gapBefore > longGap);
       const lx0 = cells.length ? Math.min(...cells.map((c) => c.x)) : 0;
       const lx1 = cells.length ? Math.max(...cells.map((c) => rright(c))) : 0;
-      return { cells, longGapBefore, cov: cells.length ? (lx1 - lx0) / noteSpan : 0 };
+      return { cells, longGapBefore, cov: cells.length ? (lx1 - lx0) / noteSpan : 0, h: median(cells.map((c) => c.h)) };
     });
     const maxCov = Math.max(0, ...lineInfo.map((L) => L.cov));
-    const kept = lineInfo.filter((L) => L.cells.length && (L.cov >= maxCov - 1e-9 || L.cov >= 0.35));
+    // 圆滑线/连音线弧、下划线等：横跨谱行(cov 高)但**矮**（弧高 ~0.5 字高），会被当成一整条伪歌词行
+    // （如基督更美副歌行下的 slur → 伪 W5、OCR 出 ".llr" 垃圾）。真歌词行的字≈charH，故按行内中位字高
+    // 剔掉 < 0.6×charH 的矮行——提前滤掉、不白跑 OCR（下游伪 verse 过滤也会兜底，但那已浪费识别）。
+    const kept = lineInfo.filter((L) => L.cells.length && L.h >= charH * 0.6 && (L.cov >= maxCov - 1e-9 || L.cov >= 0.35));
 
     const rowT = TR ? { rowIdx: i, yTop, yBot, charH, bandBoxes: band.map((c) => c.bbox),
       noteBoxes: row.nums.map((n) => n.bbox), verses: [] as Array<{ verse: number; cells: Rect[]; cov: number; longGapBefore?: boolean[] }> } : null;
