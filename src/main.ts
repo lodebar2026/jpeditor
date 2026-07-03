@@ -88,7 +88,16 @@ async function boot() {
     app.setPhraseBtn(phraseBtn);
     phraseBtn.addEventListener("click", () => app.togglePhrase());
   }
-  // export/play/stop wired in later phases
+  const playBtn = document.getElementById("btn-play") as HTMLButtonElement | null;
+  if (playBtn) {
+    app.setPlayBtn(playBtn);
+    playBtn.addEventListener("click", () => void app.playScore());
+  }
+  const stopBtn = document.getElementById("btn-stop") as HTMLButtonElement | null;
+  if (stopBtn) {
+    app.setStopBtn(stopBtn);
+    stopBtn.addEventListener("click", () => app.stopPlayback());
+  }
   const addOpen = document.getElementById("btn-open");
   addOpen?.addEventListener("click", () => void app.openFile());
 

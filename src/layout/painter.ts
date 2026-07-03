@@ -8,11 +8,12 @@ import {
   GraphicPath,
   Group,
   Layout,
+  NoteEntry,
   PageItem,
   TextFrame,
   SmuflText,
 } from "./layout";
-import { Score } from "../score/score";
+import { Chord, Score } from "../score/score";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -23,6 +24,9 @@ export class JinpuPainter {
   pageHeight = 0;
   /** PageItem -> rendered <g>, populated each renderPage (for DOM picking). */
   nodeMap = new WeakMap<PageItem, SVGGElement>();
+  /** Chord -> its note-entry groups (one per rendered verse/pass), for playback cursor. */
+  private chordItem = new Map<Chord, { page: number; item: PageItem; verse: number }[]>();
+  private highlighted: PageItem | null = null;
 
   constructor(fontSize: number) {
     this.layout = new Layout(fontSize);
@@ -34,6 +38,52 @@ export class JinpuPainter {
     this.layout.fromScore(this.score, dur, w, h);
     this.layout.pages.unshift(this.titlePage(w, h));
     for (const p of this.layout.pages) p.update();
+    this.buildChordIndex();
+  }
+
+  /** Walk each page tree, mapping every Chord to its note-entry group(s). */
+  private buildChordIndex(): void {
+    this.chordItem.clear();
+    this.highlighted = null;
+    const walk = (item: PageItem, page: number): void => {
+      if (item.data instanceof NoteEntry) {
+        const ch = item.data.chord;
+        if (ch) {
+          const list = this.chordItem.get(ch) ?? [];
+          list.push({ page, item, verse: item.data.verse });
+          this.chordItem.set(ch, list);
+        }
+      }
+      for (const c of item.children) walk(c, page);
+    };
+    this.layout.pages.forEach((pg, i) => walk(pg, i));
+  }
+
+  /** The rendered entry for a chord at a given pass/verse (falls back to first). */
+  private hitFor(chord: Chord, pass: number): { page: number; item: PageItem } | null {
+    const list = this.chordItem.get(chord);
+    if (!list || list.length === 0) return null;
+    return list.find((h) => h.verse === pass) ?? list[0];
+  }
+
+  /** Highlight the note of `chord` at `pass` (clearing any previous). Returns page index. */
+  highlightChord(chord: Chord | null, pass = 0): number | null {
+    if (this.highlighted) {
+      this.nodeMap.get(this.highlighted)?.classList.remove("playing");
+      this.highlighted = null;
+    }
+    if (!chord) return null;
+    const hit = this.hitFor(chord, pass);
+    if (!hit) return null;
+    this.nodeMap.get(hit.item)?.classList.add("playing");
+    this.highlighted = hit.item;
+    return hit.page;
+  }
+
+  /** SVG <g> for a chord's note at `pass` (for scroll-into-view); null if not rendered. */
+  chordGroupEl(chord: Chord, pass = 0): SVGGElement | null {
+    const hit = this.hitFor(chord, pass);
+    return hit ? this.nodeMap.get(hit.item) ?? null : null;
   }
 
   private multipleLineText(str: string, fnt: Font, w: number, clr: number): PageItem {

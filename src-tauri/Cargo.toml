@@ -30,3 +30,9 @@ lopdf = "0.41"
 # WebKit 多线程 wasm worker 挂死影响）。TS 端把预处理好的张量经二进制 IPC 交来跑 session.run。
 ort = "2.0.0-rc.12"
 bytemuck = "1"
+
+# macOS 原生 MIDI 播放：AVFoundation 的 AVMIDIPlayer（系统内置 DLS GM 音源），音色比前端采样器丰满。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData"] }
+objc2-avf-audio = { version = "0.3", features = ["AVMIDIPlayer"] }
