@@ -1,0 +1,31 @@
+name: Cleanup run
+
+# 发布后自动删除 Build 的 run。必须是独立工作流：run 无法删自己（进行中恒 403），
+# 故用 workflow_run 在 Build 完成后另起一次 run，从外部 gh run delete 掉已完成的 Build run。
+# 顺便清掉历史 cleanup run，稳态只留当前这一次（无法自删）。
+on:
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
+
+permissions:
+  actions: write
+
+concurrency:
+  group: cleanup-run
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete finished Build run and prune old cleanup runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          gh run delete "$BUILD_RUN_ID" --repo "$REPO" || true
+          gh run list --repo "$REPO" --workflow "Cleanup run" --status completed \
+            --limit 100 --json databaseId -q '.[].databaseId' | while read -r id; do
+            gh run delete "$id" --repo "$REPO" || true
+          done
