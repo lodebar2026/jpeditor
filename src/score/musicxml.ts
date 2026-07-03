@@ -352,7 +352,12 @@ export function loadMusicXml(xmlText: string): Score {
     const cred = new Credit();
     const ct = txt(cr, "credit-type");
     if (ct) cred.type = ct;
-    const cw = txt(cr, "credit-words");
+    // A <credit> may hold several <credit-words> lines (e.g. 词:… / 曲:… / Public
+    // Domain). Keep them all, joined by newlines so multipleLineText renders each.
+    const cw = elems(cr, "credit-words")
+      .map((e) => (e.textContent ?? "").trim())
+      .filter((s) => s.length > 0)
+      .join("\n");
     if (cw) cred.text = cw;
     cred.page = (parseInt(cr.getAttribute("page") ?? "1", 10) || 1) - 1;
     score.credit.push(cred);
