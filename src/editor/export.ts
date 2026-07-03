@@ -72,7 +72,7 @@ export async function exportCurrentPagePng(app: App): Promise<void> {
 }
 
 export async function exportMidi(app: App): Promise<void> {
-  const bytes = scoreToMidi(app.painter.score);
+  const bytes = scoreToMidi(app.painter.score, { partVolumes: app.partVolumes });
   await saveBytes(bytes, `${baseName(app)}.mid`, "audio/midi");
 }
 

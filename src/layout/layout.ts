@@ -522,6 +522,7 @@ export class TimeSig extends Entry {
 
 export class NoteEntry extends Entry {
   chord!: S.Chord;
+  verse = 0; // repeat pass / lyric verse this rendered entry belongs to
   lrc: Lyric | null = null;
   number: JpNumber | null = null;
   accidental: TextFrame | null = null;
@@ -685,6 +686,7 @@ export class NoteEntry extends Entry {
     let ent = new NoteEntry();
     ent.beams = ch.beams;
     ent.chord = ch;
+    ent.verse = lrc;
     let it = new JpNumber();
     it.color = options.color;
     it.text = ch.notes[0].number;
@@ -702,6 +704,7 @@ export class NoteEntry extends Entry {
     for (let i = 1; i < ch.beats; i++) {
       ent = new NoteEntry();
       ent.chord = ch;
+      ent.verse = lrc;
       const num = ch.rest ? "0" : "-";
       it = new JpNumber();
       it.text = num;

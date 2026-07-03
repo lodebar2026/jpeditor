@@ -95,7 +95,25 @@ export function showOptionsDialog(app: App): void {
   if (app.mode === "mixed") {
     body.append(labeled("隐藏小节号", hideBarNum));
   }
+  // 播放混音：各声部音量（0–100%，播放/导出 MIDI 时按此写入 CC7；改后需重新播放）。
+  const volSliders: HTMLInputElement[] = [];
+  if (app.mode === "jp" && app.partCount > 1) {
+    const hint = document.createElement("div");
+    hint.style.cssText = "margin-top:8px;font-weight:600;opacity:0.8";
+    hint.textContent = "声部音量（播放/导出 MIDI）";
+    body.append(hint);
+    for (let i = 0; i < app.partCount; i++) {
+      const s = document.createElement("input");
+      s.type = "range";
+      s.min = "0";
+      s.max = "100";
+      s.value = String(Math.round(app.getPartVolume(i) * 100));
+      volSliders.push(s);
+      body.append(labeled(`声部 ${i + 1}`, s));
+    }
+  }
   modal("选项", body, () => {
+    volSliders.forEach((s, i) => app.setPartVolume(i, (parseInt(s.value, 10) || 0) / 100));
     const [w, h] = RATIOS[sel.value] ?? [app.pageW, app.pageH];
     const fontSize = parseInt(fs.value, 10) || app.fontSize;
     const titleSize = parseInt(titleSz.value, 10) || app.titleSize;

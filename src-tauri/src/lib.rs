@@ -368,13 +368,94 @@ fn omr_onnx_batch(
     Ok(tauri::ipc::Response::new(resp))
 }
 
+// ---------------- MIDI playback (macOS AVMIDIPlayer) ----------------
+// Plays a Standard MIDI File (bytes) through AVFoundation's built-in DLS GM sound
+// bank — much fuller timbre than a bare Web Audio oscillator. The player must be
+// kept alive (held in managed state) or it stops the moment it is dropped.
+
+#[cfg(target_os = "macos")]
+struct MidiPlayer(objc2::rc::Retained<objc2_avf_audio::AVMIDIPlayer>);
+// AVFoundation objects are safe to drive across threads; Retained<_> is marked
+// !Send only out of caution. We only ever create/stop from Tauri command threads.
+#[cfg(target_os = "macos")]
+unsafe impl Send for MidiPlayer {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for MidiPlayer {}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct MidiState(std::sync::Mutex<Option<MidiPlayer>>);
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn midi_play_cmd(
+    bytes: Vec<u8>,
+    start_seconds: f64,
+    state: tauri::State<MidiState>,
+) -> Result<(), String> {
+    use objc2::AnyThread;
+    use objc2_avf_audio::AVMIDIPlayer;
+    use objc2_foundation::NSData;
+
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(prev) = guard.take() {
+        unsafe { prev.0.stop() };
+    }
+    let data = NSData::with_bytes(&bytes);
+    let player = unsafe {
+        AVMIDIPlayer::initWithData_soundBankURL_error(AVMIDIPlayer::alloc(), &data, None)
+    }
+    .map_err(|e| format!("AVMIDIPlayer init: {e:?}"))?;
+    unsafe {
+        player.prepareToPlay();
+        if start_seconds > 0.0 {
+            player.setCurrentPosition(start_seconds); // seek to the selected note
+        }
+        player.play(std::ptr::null_mut());
+    }
+    *guard = Some(MidiPlayer(player));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn midi_stop_cmd(state: tauri::State<MidiState>) -> Result<(), String> {
+    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(prev) = guard.take() {
+        unsafe { prev.0.stop() };
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn midi_play_cmd(_bytes: Vec<u8>, _start_seconds: f64) -> Result<(), String> {
+    Err("native MIDI playback is only available on macOS".into())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn midi_stop_cmd() -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![export_pdf_cmd, omr_gemini_cmd, omr_onnx, omr_onnx_batch])
+        .plugin(tauri_plugin_dialog::init());
+    #[cfg(target_os = "macos")]
+    let builder = builder.manage(MidiState::default());
+    builder
+        .invoke_handler(tauri::generate_handler![
+            export_pdf_cmd,
+            omr_gemini_cmd,
+            omr_onnx,
+            omr_onnx_batch,
+            midi_play_cmd,
+            midi_stop_cmd
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -119,6 +119,10 @@ html, body { margin: 0; height: 100%; }
 .score-page g.selected { cursor: pointer; }
 .score-page text, .score-page path, .score-page line { cursor: default; }
 
+/* playback cursor — highlight the currently sounding note */
+.score-page g.playing [fill]:not([fill="none"]) { fill: #e8590c; }
+.score-page g.playing [stroke] { stroke: #e8590c; }
+
 .modal-overlay {
   position: fixed;
   inset: 0;

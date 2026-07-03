@@ -16,6 +16,7 @@ import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 import { MixedPainter } from "../mixed/painter";
+import { ScorePlayer, type PlayState } from "./player";
 import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, type OmrMethod, type RecogView } from "../omr";
 import type { Binary, RecognizedScore } from "../omr";
 
@@ -60,6 +61,14 @@ export class App {
   private zoomSaveTimer: ReturnType<typeof setTimeout> | undefined;
   private selectedEl: SVGGElement | null = null;
   statusEl: HTMLElement | null = null;
+  private _player: ScorePlayer | null = null;
+  private _playBtnEl: HTMLButtonElement | null = null;
+  private _stopBtnEl: HTMLButtonElement | null = null;
+  /** Per-part linear volume in [0,1]; index = part index. Missing = 1 (full). */
+  partVolumes: number[] = [];
+  // Selected note (for "play from here"): its chord + which verse/pass row.
+  private _selectedChord: import("../score/score").Chord | null = null;
+  private _selectedVerse = 0;
 
   private static readonly SETTINGS_KEY = "jpeditor-render-settings";
   private static readonly LAST_FILE_KEY = "jpeditor-last-file";
@@ -241,6 +250,7 @@ export class App {
   }
 
   private renderPages(): void {
+    this._player?.stop(); // relayout invalidates chord objects / highlight
     this.scorePane.replaceChildren();
     this.pageEls = [];
     this.selectedEl = null;
@@ -274,12 +284,21 @@ export class App {
       el.classList.add("selected");
       this.selectedEl = el;
     }
+    // Remember the note entry so playback can start from here.
+    const d = target.data;
+    if (d && typeof (d as { verse?: unknown }).verse === "number" && (d as { chord?: unknown }).chord) {
+      const ne = d as { chord: import("../score/score").Chord; verse: number };
+      this._selectedChord = ne.chord;
+      this._selectedVerse = ne.verse;
+    }
     this.setStatus(describePick(picked));
   }
 
   private deselect(): void {
     this.selectedEl?.classList.remove("selected");
     this.selectedEl = null;
+    this._selectedChord = null;
+    this._selectedVerse = 0;
   }
 
   private setStatus(s: string): void {
@@ -293,6 +312,68 @@ export class App {
     this.pageIndex = np;
     this.pageEls[np]?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+  // ---------------- playback ----------------
+  setPlayBtn(el: HTMLButtonElement): void {
+    this._playBtnEl = el;
+  }
+  setStopBtn(el: HTMLButtonElement): void {
+    this._stopBtnEl = el;
+    el.disabled = true;
+  }
+
+  private player(): ScorePlayer {
+    if (!this._player) {
+      this._player = new ScorePlayer(
+        (chord, pass) => this.onPlayChord(chord, pass),
+        (state) => this.onPlayState(state),
+      );
+    }
+    return this._player;
+  }
+
+  private onPlayChord(chord: import("../score/score").Chord | null, pass: number): void {
+    const page = this.painter.highlightChord(chord, pass);
+    if (chord && page !== null) {
+      if (page !== this.pageIndex) this.pageIndex = page;
+      // keep the sounding note visible (no-op when already in view)
+      this.painter.chordGroupEl(chord, pass)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
+  private onPlayState(state: PlayState): void {
+    const busy = state === "playing" || state === "loading";
+    if (this._playBtnEl) {
+      this._playBtnEl.disabled = busy;
+      this._playBtnEl.textContent = state === "loading" ? "加载中…" : "播放";
+    }
+    if (this._stopBtnEl) this._stopBtnEl.disabled = state === "stopped";
+  }
+
+  /** Number of parts in the current score (for the mixer UI). */
+  get partCount(): number {
+    return this.painter.score.parts.length;
+  }
+  getPartVolume(i: number): number {
+    const v = this.partVolumes[i];
+    return v === undefined ? 1 : v;
+  }
+  setPartVolume(i: number, v: number): void {
+    this.partVolumes[i] = Math.max(0, Math.min(1, v));
+  }
+
+  async playScore(): Promise<void> {
+    if (this.mode !== "jp") return; // playback is jianpu-mode only
+    const start =
+      this._selectedChord !== null
+        ? { chord: this._selectedChord, pass: this._selectedVerse }
+        : undefined;
+    await this.player().play(this.painter.score, { partVolumes: this.partVolumes }, start);
+  }
+
+  stopPlayback(): void {
+    this._player?.stop();
+  }
+
   nextPage(): void {
     this.goToPage(this.pageIndex + 1);
   }
@@ -441,6 +522,7 @@ export class App {
   /** 在「简谱模式」与「识别模式」（二值图+半透明识别叠加）之间切换。需先有 OMR 识别结果。 */
   async toggleRecognize(): Promise<void> {
     if (!this._recogScore || !this._recogBin) return;
+    this.stopPlayback();
     if (this.mode === "recognize") {
       this.mode = "jp";
       this._setRecognizeLayout(false);
@@ -637,6 +719,7 @@ export class App {
   /** Toggle between JP mode and Mixed (五线谱+简谱) mode. */
   async toggleMixed(): Promise<void> {
     if (!this.mixedXmlText) return;
+    this.stopPlayback();
     if (this.mode === "jp") {
       this.mode = "mixed";
       this._setMixedLayout(true);

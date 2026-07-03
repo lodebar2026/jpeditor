@@ -40,6 +40,7 @@
     "fflate": "^0.8.3",
     "onnxruntime-web": "^1.27.0",
     "opentype.js": "^2.0.0",
+    "smplr": "^1.0.0",
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {

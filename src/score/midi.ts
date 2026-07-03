@@ -1,10 +1,12 @@
 // Ported from mp/score/midi.kt (ToMidi). Builds a Standard MIDI File (format 1)
 // in pure TS: a tempo meta track + one track per part, note on/off per chord.
+// Note timing comes from buildTimeline (shared with the in-editor player), so the
+// exported MIDI honors the expanded play order (repeats / voltas / D.C. / D.S.).
 
-import { Chord, Score } from "./score";
+import { Score } from "./score";
+import { buildTimeline, partGain, PlayOptions, TEMPO, TimedNote } from "./timeline";
 
 const PPQ = 960;
-const TEMPO = 90;
 
 interface Ev {
   tick: number;
@@ -46,31 +48,24 @@ function tempoTrack(): number[] {
   return trackChunk([ev]);
 }
 
-function partTrack(score: Score, partIdx: number): number[] {
-  const part = score.parts[partIdx];
+function partTrack(notes: TimedNote[], partIdx: number, opts?: PlayOptions): number[] {
   const channel = partIdx & 0x0f;
   const events: Ev[] = [];
-  let pos = 0;
-  for (const m of part.measures) {
-    let dur = 0;
-    for (const ent of m.entries) {
-      if (!(ent instanceof Chord)) continue;
-      const ch = ent;
-      const start = Math.round(ch.position.toFloat() * PPQ);
-      const end = Math.round(ch.position.plus(ch.duration!).toFloat() * PPQ);
-      dur = end;
-      if (ch.rest) continue;
-      for (const n of ch.notes) {
-        events.push({ tick: pos + start, order: 1, data: [0x90 | channel, n.pitch & 0x7f, 100] });
-        events.push({ tick: pos + end, order: 0, data: [0x80 | channel, n.pitch & 0x7f, 0] });
-      }
-    }
-    pos += dur;
+  // Channel Volume (CC7) at tick 0 sets this part's level in the GM synth.
+  const vol = Math.round(partGain(opts, partIdx) * 127);
+  events.push({ tick: 0, order: 0, data: [0xb0 | channel, 0x07, vol & 0x7f] });
+  for (const n of notes) {
+    if (n.part !== partIdx) continue;
+    const start = Math.round(n.t0 * PPQ);
+    const end = Math.round(n.t1 * PPQ);
+    events.push({ tick: start, order: 1, data: [0x90 | channel, n.pitch & 0x7f, 100] });
+    events.push({ tick: end, order: 0, data: [0x80 | channel, n.pitch & 0x7f, 0] });
   }
   return trackChunk(events);
 }
 
-export function scoreToMidi(score: Score): Uint8Array {
+export function scoreToMidi(score: Score, opts?: PlayOptions): Uint8Array {
+  const { notes } = buildTimeline(score);
   const ntracks = 1 + score.parts.length;
   const header = [
     0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, // MThd, len 6
@@ -79,6 +74,6 @@ export function scoreToMidi(score: Score): Uint8Array {
     (PPQ >> 8) & 0xff, PPQ & 0xff, // division (ticks per quarter)
   ];
   const out: number[] = [...header, ...tempoTrack()];
-  for (let i = 0; i < score.parts.length; i++) out.push(...partTrack(score, i));
+  for (let i = 0; i < score.parts.length; i++) out.push(...partTrack(notes, i, opts));
   return new Uint8Array(out);
 }
