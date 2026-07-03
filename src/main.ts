@@ -51,11 +51,13 @@ async function boot() {
   const app = new App(meta, scorePane);
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown };
+  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown };
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
   // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
   win.__omr = import("./omr");
+  // ABC → MusicXML 移植版暴露（便于 abc-check.mjs 回归，同 __app 约定）。
+  win.__abc2musicxml = import("./abc/abc2xml");
 
   // toolbar
   const on = (id: string, fn: () => void) =>
@@ -219,10 +221,10 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
           await app.recognizeBytes("musicpp", { bytes, path });
           return;
         }
-        if (!/\.(jpwabc|xml|musicxml)$/i.test(path)) return;
+        if (!/\.(jpwabc|xml|musicxml|abc)$/i.test(path)) return;
         const bytes = await readFile(path);
         app.importBytes(bytes, path);
-        if (!/\.(xml|musicxml)$/i.test(path)) app.filePath = path;
+        if (!/\.(xml|musicxml|abc)$/i.test(path)) app.filePath = path;
         app.rememberLastFile(path);
       }
     });

@@ -12,6 +12,7 @@ import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../lay
 import { Point } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";
+import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 import { MixedPainter } from "../mixed/painter";
@@ -304,6 +305,21 @@ export class App {
   importBytes(bytes: Uint8Array, name: string): void {
     // 任何新导入都使上一次的识别叠加产物失效（识别结果由 recognizeBytes 在本调用之后重设）。
     this._clearRecognition();
+    // ABC 记谱：先用移植版 abc2xml 转成 MusicXML，再复用现有 MusicXML 导入路径。
+    if (/\.abc$/i.test(name)) {
+      const abcText = new TextDecoder(
+        bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
+      ).decode(bytes);
+      try {
+        const xml = abcToMusicXml(abcText);
+        bytes = new TextEncoder().encode(xml);
+        name = name.replace(/\.abc$/i, ".musicxml");
+      } catch (e) {
+        console.error("ABC 转换失败", e);
+        this.setStatus("ABC 转换失败：" + (e instanceof Error ? e.message : String(e)));
+        return;
+      }
+    }
     if (/\.(xml|musicxml)$/i.test(name)) {
       const xml = new TextDecoder(
         bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
@@ -723,23 +739,23 @@ export class App {
       const { readFile } = await import("@tauri-apps/plugin-fs");
       const sel = await open({
         multiple: false,
-        filters: [{ name: "简谱 / MusicXML", extensions: ["jpwabc", "JPWABC", "xml", "musicxml"] }],
+        filters: [{ name: "简谱 / MusicXML / ABC", extensions: ["jpwabc", "JPWABC", "xml", "musicxml", "abc"] }],
       });
       if (typeof sel !== "string") return;
       const bytes = await readFile(sel);
       this.importBytes(bytes, sel);
-      if (!/\.(xml|musicxml)$/i.test(sel)) this.filePath = sel;
+      if (!/\.(xml|musicxml|abc)$/i.test(sel)) this.filePath = sel;
       this.rememberLastFile(sel);
     } else {
       const input = document.createElement("input");
       input.type = "file";
-      input.accept = ".jpwabc,.xml,.musicxml";
+      input.accept = ".jpwabc,.xml,.musicxml,.abc";
       input.onchange = async () => {
         const file = input.files?.[0];
         if (!file) return;
         const buf = new Uint8Array(await file.arrayBuffer());
         this.importBytes(buf, file.name);
-        if (!/\.(xml|musicxml)$/i.test(file.name)) this.filePath = file.name;
+        if (!/\.(xml|musicxml|abc)$/i.test(file.name)) this.filePath = file.name;
       };
       input.click();
     }
