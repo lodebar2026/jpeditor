@@ -13,7 +13,8 @@
 简谱（JP-Word / `.jpwabc`）排版与编辑器。
 
 左侧高亮代码编辑器，右侧实时简谱预览，支持点选、翻页、**简谱与五线谱混排**（加载 MusicXML
-排版）、MusicXML 导入、**简谱图片识别（OMR）**，以及导出 PDF / PNG / MIDI / 矢量 PPTX。
+排版）、MusicXML 导入、**简谱图片识别（OMR）**、**ABC 记谱导入**、**乐谱播放**，以及导出
+PDF / PNG / MIDI / 矢量 PPTX。
 
 ![界面](docs/screenshot.png)
 
@@ -23,7 +24,8 @@
 numbered musical notation) in the `.jpwabc` (JP-Word) format. Edit the score as
 text on the left and see a live SVG preview on the right. It supports **mixed
 jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import,
-**optical music recognition (OMR)** of jianpu images, and export to
+**optical music recognition (OMR)** of jianpu images, **ABC notation import**,
+**score playback**, and export to
 **PDF / PNG / MIDI / vector PPTX**. It runs **in the browser**
 (no install) and as a lightweight **Windows / macOS desktop app** (Tauri 2).
 
@@ -43,6 +45,10 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import,
   - **识别核对视图**：识别后自动进入「识别 / 排版」可切换模式，把识别结果按源图坐标叠加在二值图上
     比对——支持原位叠加 / 附近浮窗 / 仅原图三种视图；点选识别对象即选中对应 `.jpwabc` 代码，
     悬停高亮并弹出整行 / 页眉浮窗，便于逐音校对
+- **ABC 记谱导入**：拖入或「打开」`.abc` 文件即自动转 MusicXML 再排版为简谱，复用 MusicXML 导入
+  路径，天然支持多声部、连奏、重复 / volta、和弦、装饰音、broken-rhythm、调号变更、`C:` 字段作词
+  作曲等。转换忠实移植自 Willem Vree 的 `abc2xml`，输出与原脚本逐字节一致
+- **乐谱播放**：内置播放，光标跟随当前音符，两路音源
 - **乐句分析排版**：MusicXML / OMR 导入时按乐句自动断行——综合歌词标点、音乐信号（延长号 /
   终止线 / 长音 / 休止 / 连线）与重复旋律结构，在小节边界找乐句断点并凑成疏密适中的行长
   （每页至多 4 行、末页 3+2）

@@ -9,14 +9,14 @@
          → 页面已隔离 → 脚本自动跳过。首次访问会自动多刷新一次。 -->
     <script src="coi-serviceworker.js"></script>
 
-    <title>简谱编辑器 jpeditor — .jpwabc 在线排版与编辑 · 简谱·五线谱混排 | Numbered Notation Editor</title>
+    <title>简谱编辑器 jpeditor — .jpwabc 在线排版编辑 · 简谱识别(OMR) · ABC导入 · 简谱五线谱混排 | Numbered Notation Editor</title>
     <meta
       name="description"
-      content="简谱编辑器 jpeditor：在线编辑与排版 .jpwabc（JP-Word）数字谱，左侧代码、右侧实时简谱预览。支持简谱与五线谱混排（MusicXML 加载排版）、MusicXML 导入、导出 PDF·PNG·MIDI·矢量 PPTX，浏览器即开即用，亦可下载 Windows/macOS 桌面版。An open-source numbered-notation (jianpu) editor & typesetter."
+      content="简谱编辑器 jpeditor：在线编辑与排版 .jpwabc（JP-Word）数字谱，左侧代码、右侧实时简谱预览。支持简谱图片识别（OMR，拍照/截图转简谱）、ABC 记谱导入、简谱与五线谱混排（MusicXML 加载排版）、MusicXML 导入、乐谱播放，导出 PDF·PNG·MIDI·矢量 PPTX，浏览器即开即用，亦可下载 Windows/macOS 桌面版。An open-source numbered-notation (jianpu) editor & typesetter with OMR image recognition and ABC import."
     />
     <meta
       name="keywords"
-      content="简谱,简谱编辑器,简谱排版,简谱五线谱混排,混排,数字谱,JP-Word,jpwabc,MusicXML,五线谱,jianpu,numbered notation,music notation editor,sheet music,Tauri"
+      content="简谱,简谱编辑器,简谱排版,简谱识别,简谱图片转谱,OMR,乐谱识别,ABC记谱,ABC导入,abc2xml,简谱五线谱混排,混排,数字谱,JP-Word,jpwabc,MusicXML,五线谱,乐谱播放,jianpu,numbered notation,optical music recognition,ABC notation,music notation editor,sheet music,Tauri"
     />
     <meta name="author" content="lodebar2026" />
     <meta name="theme-color" content="#f5f5f5" />
@@ -28,10 +28,10 @@
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="简谱编辑器 jpeditor" />
-    <meta property="og:title" content="简谱编辑器 jpeditor — 在线简谱排版与简谱·五线谱混排" />
+    <meta property="og:title" content="简谱编辑器 jpeditor — 在线简谱排版 · 图片识别(OMR) · ABC导入 · 简谱五线谱混排" />
     <meta
       property="og:description"
-      content="在线编辑 .jpwabc 数字谱，实时简谱预览，支持简谱与五线谱混排、MusicXML 导入、导出 PDF/PNG/MIDI/PPTX。开源、跨平台、即开即用。"
+      content="在线编辑 .jpwabc 数字谱，实时简谱预览，支持简谱图片识别（OMR）、ABC 记谱导入、简谱与五线谱混排、MusicXML 导入、乐谱播放，导出 PDF/PNG/MIDI/PPTX。开源、跨平台、即开即用。"
     />
     <meta property="og:url" content="https://lodebar2026.github.io/jpeditor-web/" />
     <meta property="og:image" content="https://lodebar2026.github.io/jpeditor-web/og-image.png" />
@@ -42,10 +42,10 @@
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="简谱编辑器 jpeditor — 在线简谱排版与简谱·五线谱混排" />
+    <meta name="twitter:title" content="简谱编辑器 jpeditor — 简谱排版 · 图片识别(OMR) · ABC导入 · 简谱五线谱混排" />
     <meta
       name="twitter:description"
-      content="在线编辑 .jpwabc 数字谱，实时预览，支持简谱·五线谱混排、MusicXML 导入、导出 PDF/PNG/MIDI/PPTX。"
+      content="在线编辑 .jpwabc 数字谱，实时预览，支持简谱图片识别（OMR）、ABC 记谱导入、简谱·五线谱混排、MusicXML 导入、乐谱播放，导出 PDF/PNG/MIDI/PPTX。"
     />
     <meta name="twitter:image" content="https://lodebar2026.github.io/jpeditor-web/og-image.png" />
 
@@ -64,15 +64,18 @@
           "alternateName": "jpeditor-web — Numbered Notation (Jianpu) Editor",
           "applicationCategory": "MultimediaApplication",
           "operatingSystem": "Windows, macOS, Web",
-          "softwareVersion": "0.3.3",
+          "softwareVersion": "0.4.1",
           "url": "https://lodebar2026.github.io/jpeditor-web/",
           "downloadUrl": "https://github.com/lodebar2026/jpeditor-web/releases",
           "screenshot": "https://lodebar2026.github.io/jpeditor-web/og-image.png",
-          "description": "开源的简谱（JP-Word/.jpwabc）在线排版与编辑器：实时编辑预览、简谱与五线谱混排、MusicXML 导入、导出 PDF/PNG/MIDI/PPTX。An open-source jianpu (numbered musical notation) editor and typesetter.",
+          "description": "开源的简谱（JP-Word/.jpwabc）在线排版与编辑器：实时编辑预览、简谱图片识别（OMR）、ABC 记谱导入、简谱与五线谱混排、MusicXML 导入、乐谱播放、导出 PDF/PNG/MIDI/PPTX。An open-source jianpu (numbered musical notation) editor and typesetter with optical music recognition and ABC notation import.",
           "featureList": [
             "实时编辑 .jpwabc 数字谱并即时排版预览",
+            "简谱图片识别（OMR）：把简谱照片/截图识别成乐谱（本地 PaddleOCR 离线识别，或 Gemini 整页转写），再排版编辑",
+            "ABC 记谱导入：拖入/打开 .abc 自动转 MusicXML 排版（忠实移植 abc2xml）",
             "简谱与五线谱混排（加载 MusicXML 排版，含连音线/连谱号/力度/踏板/和弦记号）",
             "MusicXML 导入转简谱",
+            "乐谱播放：光标跟随 + 两路音源",
             "导出 PDF / PNG / MIDI / 矢量 PPTX",
             "点选高亮与自动分页（16:9 / 4:3 / A4）",
             "跨平台：浏览器在线版 + Windows/macOS 桌面版"
@@ -106,6 +109,22 @@
               "acceptedAnswer": {
                 "@type": "Answer",
                 "text": "在 jpeditor 中打开或拖入 .musicxml/.xml 文件即可导入并转换为简谱；也可用「混排」模式直接按五线谱与简谱混合排版（加载 MusicXML 渲染谱表系统）。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "jpeditor 能识别简谱图片吗？（OMR）",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "可以。点工具栏「识图」，选择识别方式即可把简谱照片或截图识别成乐谱并排版：一是「musicpp」本地方式，完全在浏览器/桌面本地运行、可离线，数字用 PaddleOCR PP-OCRv4 识别，还能识别歌词并逐音节对齐（数字实测约 100%、完整 token 约 95%）；二是「Gemini」整页转写方式（仅桌面版，经 agy 调用，对真实照片更准）。识别结果会走 MusicXML 导入路径转成简谱，可继续编辑、排版、导出。"
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "jpeditor 支持 ABC 记谱（ABC notation）导入吗？",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "支持。把 .abc 文件拖入或用「打开」选择，jpeditor 会自动将 ABC 记谱转成 MusicXML 再排版为简谱，复用现有 MusicXML 导入路径，天然支持多声部、连奏、重复/volta、和弦、装饰音、broken-rhythm、调号变更、C: 字段作词作曲等。转换是对 Willem Vree 的 abc2xml 的忠实移植，输出与原脚本逐字节一致。"
               }
             },
             {
