@@ -5,6 +5,7 @@ import { asset } from "./common/asset";
 import { App } from "./editor/app";
 import { showOptionsDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
+import { showHelpDialog } from "./editor/help";
 import { isTauriRuntime } from "./editor/fileio";
 import { MixedPainter } from "./mixed/painter";
 
@@ -68,6 +69,7 @@ async function boot() {
   on("btn-next", () => app.nextPage());
   on("btn-options", () => showOptionsDialog(app));
   on("btn-export", () => showExportDialog(app));
+  on("btn-help", () => showHelpDialog(app));
   const mixedBtn = document.getElementById("btn-mixed") as HTMLButtonElement | null;
   if (mixedBtn) {
     app.setMixedBtn(mixedBtn);

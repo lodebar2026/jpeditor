@@ -158,6 +158,126 @@ html, body { margin: 0; height: 100%; }
 }
 .modal-footer button { padding: 4px 14px; cursor: pointer; }
 
+/* ---- 帮助对话框（双标签页：功能帮助 + 记谱法） ---- */
+.help-box {
+  width: 760px;
+  max-width: 92vw;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+.help-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 10px;
+}
+.help-tab {
+  padding: 7px 16px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  color: #666;
+  font-size: 14px;
+}
+.help-tab.active { color: #1565ff; border-bottom-color: #1565ff; font-weight: bold; }
+.help-content { overflow: auto; flex: 1 1 auto; padding-right: 6px; }
+.help-pane { color: #333; line-height: 1.6; font-size: 13px; }
+.help-intro { color: #555; margin: 0 0 12px; }
+.help-p { margin: 6px 0; }
+.help-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #f2f3f5;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: #c0341d;
+}
+
+/* 功能帮助：可展开主题 */
+.help-topic {
+  border: 1px solid #eaeaea;
+  border-radius: 5px;
+  margin: 6px 0;
+  padding: 0 12px;
+}
+.help-topic > summary {
+  cursor: pointer;
+  padding: 9px 2px;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.help-topic > summary::-webkit-details-marker { display: none; }
+.help-topic > summary::before { content: "▸"; color: #999; font-size: 11px; }
+.help-topic[open] > summary::before { content: "▾"; }
+.help-topic[open] > summary { border-bottom: 1px solid #f0f0f0; }
+.help-topic-title { font-weight: bold; color: #222; }
+.help-topic > .help-p { margin: 6px 2px; }
+.help-topic > .help-p:last-child { margin-bottom: 10px; }
+.help-badge {
+  font-size: 11px;
+  color: #0a7d33;
+  background: #eaf7ee;
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+.help-shortcuts { border-collapse: collapse; margin: 6px 2px 10px; width: 100%; }
+.help-shortcuts td { padding: 4px 8px; border-top: 1px solid #f0f0f0; }
+.help-shortcuts td:first-child { color: #555; white-space: nowrap; }
+.help-shortcuts td:last-child { color: #222; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+
+/* 记谱法：术语速查 + 分节示例 */
+.help-glossary {
+  border: 1px solid #eaeaea;
+  background: #fafbfc;
+  border-radius: 5px;
+  padding: 4px 12px;
+  margin: 0 0 14px;
+}
+.help-glossary > summary { cursor: pointer; padding: 6px 0; font-weight: bold; color: #444; }
+.help-gloss-list { margin: 4px 0 8px; }
+.help-gloss-list dt { font-weight: bold; color: #1565ff; margin-top: 8px; }
+.help-gloss-list dd { margin: 2px 0 0; color: #444; }
+
+.help-section { margin: 0 0 18px; }
+.help-sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.help-sec-title { font-size: 15px; font-weight: bold; color: #222; }
+.help-level { font-size: 11px; border-radius: 3px; padding: 1px 7px; }
+.help-level-common { color: #0a7d33; background: #eaf7ee; }
+.help-level-adv { color: #8a5a00; background: #fbf1de; }
+.help-example {
+  border: 1px solid #ececec;
+  border-radius: 5px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.help-source {
+  margin: 0;
+  padding: 8px 12px;
+  background: #f7f8fa;
+  border-bottom: 1px solid #ececec;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: #333;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.help-render {
+  padding: 10px 12px;
+  background: #fff;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  overflow-x: auto;
+}
+/* examples reuse renderPage()'s .score-page class (position:absolute); pin them
+   back into the flow of their card. */
+.help-render svg.help-svg { position: static; inset: auto; display: block; }
+
 #status {
   flex: 0 0 auto;
   padding: 3px 10px;

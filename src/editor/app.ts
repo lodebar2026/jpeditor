@@ -7,6 +7,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { jpwHighlighter } from "./highlight";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
+import { PlayItem } from "../score/score";
 import { JinpuPainter } from "../layout/painter";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/layout";
 import { Point } from "../common/geom";
@@ -247,6 +248,71 @@ export class App {
     }
     this.renderPages();
     return true;
+  }
+
+  /**
+   * Render a standalone `.jpwabc` snippet to its own `<svg>` for the help /
+   * notation documentation examples. Uses a throwaway painter (does not touch
+   * the live score) sharing this app's SMuFL metadata. Returns null on parse/
+   * layout failure so the caller can silently drop unsupported examples.
+   * The svg keeps the full page viewBox; crop to content via getBBox after it
+   * is attached to the DOM.
+   *
+   * `titlePage: true` renders the standalone title page (Title/SubTitle/credit/
+   * expression layout); otherwise renders the first content page with its
+   * footer (running title + page number) stripped so only the music remains.
+   */
+  renderExampleSvg(jpwabc: string, opts: { width?: number; height?: number; titlePage?: boolean } = {}): SVGSVGElement | null {
+    const width = opts.width ?? 1600;
+    const height = opts.height ?? 540;
+    let f: JpwFile | null;
+    try {
+      f = JpwFile.fromString(jpwabc);
+    } catch {
+      return null;
+    }
+    if (!f) return null;
+    let score;
+    try {
+      score = fromJpw(f);
+    } catch {
+      return null;
+    }
+    if (!score) return null;
+    // Lyric-less snippets get pass=0 → empty playData → blank layout. Synthesize
+    // a single play pass over all measures so examples without .Words still render.
+    if (score.playData.measures.length === 0 && score.parts[0]) {
+      const pi = new PlayItem();
+      pi.pass = 1;
+      pi.mid = 0;
+      pi.end = score.parts[0].measures.length;
+      score.playData.measures.push(pi);
+      score.playData.isSimpple = true;
+    }
+    const p = new JinpuPainter(this.fontSize);
+    p.layout.options.smuflMeta = this.meta;
+    p.layout.options.color = 0xff000000;
+    p.score = score;
+    const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
+    try {
+      if (opts.titlePage) {
+        // resize() prepends a standalone title page at index 0.
+        p.resize(width, height, breakDesc);
+        return p.renderPage(0);
+      }
+      p.pageWidth = width;
+      p.pageHeight = height;
+      p.layout.fromScore(score, breakDesc, width, height);
+      const pg = p.layout.pages[0];
+      if (!pg) return null;
+      // fromScore appends a running-title + page-number footer as the last two
+      // children of each page; drop them so examples show only the music.
+      if (pg.children.length > 2) pg.children.splice(pg.children.length - 2, 2);
+      pg.update();
+      return p.renderPage(0);
+    } catch {
+      return null;
+    }
   }
 
   private renderPages(): void {
