@@ -343,7 +343,12 @@ class PartLoader {
       }
 
       let delta = new Fraction(0);
-      if (tag === "direction") {
+      // harmony 的 <offset>：MuseScore 用它把同一拍上的第二个和弦符号往右挪开，避免重叠。
+      // 仅对 MuseScore 生效（其它软件的 x 定位另有调校，勿动）。
+      if (
+        tag === "direction" ||
+        (tag === "harmony" && this.score.encoder === Encoder.MuseScore)
+      ) {
         const offsetEl = elem(it, "offset");
         if (offsetEl) {
           const ov = parseFloat(offsetEl.textContent ?? "0");
@@ -1927,7 +1932,9 @@ export function loadMixedXml(xmlText: string, options: MixedOptions): MixedScore
     const encEl = elem(identEl, "encoding");
     if (encEl) {
       for (const swEl of elems(encEl, "software")) {
-        if ((swEl.textContent ?? "").includes("Sibelius")) score.encoder = Encoder.Sibelius;
+        const sw = swEl.textContent ?? "";
+        if (sw.includes("Sibelius")) score.encoder = Encoder.Sibelius;
+        else if (sw.includes("MuseScore")) score.encoder = Encoder.MuseScore;
       }
     }
   }

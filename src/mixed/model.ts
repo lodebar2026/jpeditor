@@ -1033,10 +1033,27 @@ export class MHarmony {
     };
     stepAlter(this.root);
 
+    // MuseScore 把 A7sus4 输出成 kind=suspended-fourth + text="74" + <degree>add 7</degree>，
+    // 直接采用 text "74" 会排成错乱的 A⁷⁴add7。此时忽略 kindText，规范展示成 A7(sus4)。
+    // 仅针对 MuseScore：其它软件（Sibelius/Finale）对 sus 和弦的记法不同，勿动。
+    const addSeventh = this.degree.find(
+      (d) => d.type === HarmonyDegreeType.Add && d.value === 7,
+    );
+    const susFourthSeventh =
+      this.measure.part.score.encoder === Encoder.MuseScore &&
+      this.kind === "suspended-fourth" &&
+      !!addSeventh;
+    // susFourthSeventh 时把 add 7 度并入后缀，剩余度数照常渲染。
+    const degrees = susFourthSeventh
+      ? this.degree.filter((d) => d !== addSeventh)
+      : this.degree;
+
     let kt = "";
     let useSym = false;
     let sym = "";
-    if (this.kindText !== null && this.kindText !== "") {
+    if (susFourthSeventh) {
+      kt = "7(sus4)";
+    } else if (this.kindText !== null && this.kindText !== "") {
       kt = this.kindText;
     } else if (this.kind === "half-diminished") {
       useSym = true; sym = GlyphCodes.csymHalfDiminished;
@@ -1068,16 +1085,16 @@ export class MHarmony {
     }
 
     // degrees（add / alter / sus4）
-    if (this.degree.length > 1) {
+    if (degrees.length > 1) {
       let deg = "";
-      if (isSus4(this.degree)) deg = "sus4";
+      if (isSus4(degrees)) deg = "sus4";
       if (deg) {
         if (this.parenthesesDegrees) segs.push({ text: "(", music: false, superscript: 1, dy: 0 });
         segs.push({ text: deg, music: false, superscript: 1, dy: 0 });
         if (this.parenthesesDegrees) segs.push({ text: ")", music: false, superscript: 1, dy: 0 });
       }
-    } else if (this.degree.length === 1) {
-      const d = this.degree[0];
+    } else if (degrees.length === 1) {
+      const d = degrees[0];
       let deg = "";
       if (d.type === HarmonyDegreeType.Add) {
         deg = "add";
