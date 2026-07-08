@@ -17,7 +17,7 @@ export interface OcrBackend {
   rankDigits?(bin: Binary, rects: Rect[]): Promise<number[][]>;
   /** 可选：用文本检测(DBNet)在 region 内自动找文本行 + 逐行识别，返回 {文本, 框}（原图坐标，阅读序）。
    *  仅 PaddleOCR(含 det 模型)实现。页眉(标题/著作者)整片识别用，免去靠连通域几何切行的脆弱启发式。 */
-  recognizeRegion?(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect; chars?: { text: string; cx: number }[] }[]>;
+  recognizeRegion?(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect; chars?: { text: string; cx: number; x1?: number }[] }[]>;
 }
 
 /** 占位后端：无 OCR 时返回 0（用于先打通管线/结构调试）。 */

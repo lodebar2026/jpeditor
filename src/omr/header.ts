@@ -23,7 +23,38 @@ export interface HeaderInfo {
   regions: TextRegion[];
 }
 
-interface HLine { text: string; charH: number; cx: number; cy: number; n: number; bbox: Rect; chars?: { text: string; cx: number }[]; }
+interface HLine { text: string; charH: number; cx: number; cy: number; n: number; bbox: Rect; chars?: { text: string; cx: number; x1?: number }[]; }
+
+/** 英文著作者名的词间空格恢复：PP-OCR rec 不吐空格，故 "Isaac Watts" → "IsaacWatts"。
+ *  用 det/CTC 给的逐字**左缘 cx + 右缘 x1**：相邻两字母的**边界间隙**(右字左缘 − 左字右缘) 明显大于
+ *  字母间隙中位数处补一个空格。**关键**：用边界间隙而非中心距——中心距含字形宽度(W 宽、i 窄)会虚高、
+ *  且被逗号等窄字撑大误判；边界间隙才是真实空白。只认字母-字母对(跳标点/数字，"1719" 不拆)。 */
+function recoverLatinSpaces(text: string, raw?: { text: string; cx: number; x1?: number }[]): string {
+  if (!raw || raw.length < 4 || !/[A-Za-z]{2}/.test(text)) return text;
+  const chars = [...text];
+  const cx: number[] = [], x1: number[] = []; // 每个 text 字符对位到的 raw 左缘/右缘（贪心顺序匹配）
+  let ri = 0;
+  for (const ch of chars) {
+    let j = ri; while (j < raw.length && raw[j].text !== ch) j++;
+    if (j < raw.length) { cx.push(raw[j].cx); x1.push(raw[j].x1 ?? raw[j].cx); ri = j + 1; } else { cx.push(NaN); x1.push(NaN); }
+  }
+  const isLetter = (c: string) => /[A-Za-z]/.test(c);
+  // 相邻字母的边界间隙：右字左缘 cx[i+1] − 左字右缘 x1[i]。
+  const gapAt = (i: number) => cx[i + 1] - x1[i];
+  const pair = (i: number) => isLetter(chars[i]) && isLetter(chars[i + 1]) && !isNaN(x1[i]) && !isNaN(cx[i + 1]);
+  const llGaps: number[] = [];
+  for (let i = 0; i < chars.length - 1; i++) if (pair(i)) llGaps.push(gapAt(i));
+  if (llGaps.length < 3) return text;
+  const med = median(llGaps);
+  let out = "";
+  for (let i = 0; i < chars.length; i++) {
+    out += chars[i];
+    // 词内字母边界间隙落在 {1,2}×基元(实测量化)、中位≈2×基元；词间空白≈4×基元=2×中位。取 1.5×中位为
+    // 界，稳落两簇之间(词内 ≤中位、词间 ≈2×中位)。含绝对下限防紧排文字里中位过小被放大误插。
+    if (i < chars.length - 1 && pair(i) && gapAt(i) > med * 1.5 && gapAt(i) > med + 6) out += " ";
+  }
+  return out;
+}
 
 /** 把展示文本(可能已规整：去编号前缀、冒号全角化、截尾噪声)逐字对位回 OCR 原始字位，
  *  供识别模式按源图 x 逐字叠加。贪心在 raw 里顺序找等字符；标点全/半角差异等取下一个原始位近似。 */
@@ -32,6 +63,7 @@ function charsForText(text: string, raw?: { text: string; cx: number }[]): { tex
   const res: { text: string; cx: number }[] = [];
   let ri = 0;
   for (const ch of text.trim()) {
+    if (ch === " ") continue; // 恢复出来的词间空格无字形，不占原始字位
     let j = ri;
     while (j < raw.length && raw[j].text !== ch) j++;
     if (j < raw.length) { res.push({ text: ch, cx: raw[j].cx }); ri = j + 1; }        // 精确命中
@@ -270,8 +302,10 @@ export async function recognizeHeader(
       if (creditRe.test(txt)) {
         // "作曲：王丽玲1=bB4" → "作曲：王丽玲"：取 冒号前缀 + 紧随的中文名（英文名则整行保留）。
         const m = txt.match(/^(.*?[:：])\s*([一-鿿·]+)/);
+        // 中文名取前缀+名；英文名整行保留、并按字距恢复词间空格（"IsaacWatts"→"Isaac Watts"）。
         // 著作者前缀的冒号统一成全角 `：`（.jpwabc 约定；中文名行 OCR 多已全角，英文名行常落半角）。
-        const credit = (m ? m[1] + m[2] : txt).replace(/^([作詞词曲編编譯译]{1,4})\s*[:：]/, "$1：");
+        const credit = (m ? m[1] + m[2] : recoverLatinSpaces(txt, ln.chars))
+          .replace(/^([作詞词曲編编譯译]{1,4})\s*[:：]/, "$1：");
         out.credits.push(credit);
         out.regions.push({ text: credit, bbox: ln.bbox, chars: charsForText(credit, ln.chars) });
         continue;

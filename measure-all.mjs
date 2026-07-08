@@ -12,7 +12,7 @@ import { chromium } from "playwright";
 const ROOT = join(process.cwd(), "dist");
 const TESTDATA = join(process.cwd(), "testdata");
 const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp", ".webp"]);
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp", ".webp": "image/webp" };
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".woff2": "font/woff2", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp", ".webp": "image/webp", ".pdf": "application/pdf" };
 const filters = process.argv.slice(2);
 
 function decodeJpwabc(buf) {
@@ -197,7 +197,8 @@ async function findSongs() {
   for (const name of (await readdir(TESTDATA, { withFileTypes: true })).filter((d) => d.isDirectory())) {
     const dir = join(TESTDATA, name.name);
     const files = await readdir(dir);
-    const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase()));
+    // 优先图片；无图片的歌谱（如 PDF-only 的「耶稣普治」）取 .pdf，走同一 decodeToBinary(pdf) 管线。
+    const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase())) ?? files.find((f) => extname(f).toLowerCase() === ".pdf");
     const gt = files.find((f) => extname(f).toLowerCase() === ".jpwabc");
     if (!img || !gt) continue;
     if (filters.length && !filters.some((f) => name.name.includes(f))) continue;

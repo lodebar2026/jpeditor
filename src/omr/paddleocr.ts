@@ -372,25 +372,32 @@ async function inferLogits(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ ar
   return { arr: o.data, T, C, w, tensorW };
 }
 
-/** 批量 CTC 带位解码：多个画布 → 各自 [{ch,xFrac}]，**一次 IPC**。xFrac∈[0,1]：该字在输入内容宽度上的
- *  水平位置（CTC 非空峰值时间步 t 换算）。用于歌词条 & 页眉框——把逐条 N 次 IPC 压到 1 次。 */
-async function recognizeCharsPosMany(cells: OffscreenCanvas[], maxW = REC_MAXW): Promise<{ ch: string; xFrac: number }[][]> {
+/** 批量 CTC 带位解码：多个画布 → 各自 [{ch,xFrac,x1Frac}]，**一次 IPC**。xFrac/x1Frac∈[0,1]：该字在
+ *  输入内容宽度上的**左缘/右缘**（CTC 非空标签连续run 的起止时间步换算）。xFrac 沿用原「起点」语义
+ *  (歌词按它对齐音符，勿动)；x1Frac 为新增右缘，供按**字符边界间隙**(右字左缘−左字右缘)判词间空格。
+ *  用于歌词条 & 页眉框——把逐条 N 次 IPC 压到 1 次。 */
+async function recognizeCharsPosMany(cells: OffscreenCanvas[], maxW = REC_MAXW): Promise<{ ch: string; xFrac: number; x1Frac: number }[][]> {
   if (!cells.length) return [];
   const preps = cells.map((c) => prepCell(c, maxW));
   const results = await runRecArgmaxMany(preps.map((p) => ({ chw: p.chw, dims: p.dims })));
   const chars = _chars!;
   const _t0 = performance.now();
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
   const out = preps.map((p, i) => {
     const { idx, T } = results[i];
-    const res: { ch: string; xFrac: number }[] = [];
-    let prev = -1;
-    for (let t = 0; t < T; t++) {
-      const best = idx[t];
-      if (best !== 0 && best !== prev) {
-        const ch = chars[best] ?? "";
-        if (ch) res.push({ ch, xFrac: Math.min(1, Math.max(0, (t * p.tensorW / T) / p.w)) });
+    const res: { ch: string; xFrac: number; x1Frac: number }[] = [];
+    // 逐字符 = 一段连续非空标签run（run 之间以 blank 或换标签分隔，同原 CTC 折叠语义、发射次数不变）。
+    // 记录 run 的起止时间步 [i0,t) → 左缘/右缘 frac，比原来只取起点更能量出字符间真实空隙。
+    let prev = -1, i0 = 0;
+    for (let t = 0; t <= T; t++) {
+      const best = t < T ? idx[t] : -1;
+      if (best !== prev) {
+        if (prev > 0) { // 上一段是非空字符 run，落在 [i0, t)
+          const ch = chars[prev] ?? "";
+          if (ch) res.push({ ch, xFrac: clamp((i0 * p.tensorW / T) / p.w), x1Frac: clamp((t * p.tensorW / T) / p.w) });
+        }
+        i0 = t; prev = best;
       }
-      prev = best;
     }
     return res;
   });
@@ -505,7 +512,7 @@ export function paddleOcrBackend(): OcrBackend {
       await ensureSession();
       return recognizeCharsPosMany(canvases); // 一次 IPC
     },
-    async recognizeRegion(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect; chars?: { text: string; cx: number }[] }[]> {
+    async recognizeRegion(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect; chars?: { text: string; cx: number; x1?: number }[] }[]> {
       await ensureSession();
       const src = binToCanvas(bin);
       const boxes = await detectRegion(src, region);
@@ -523,11 +530,11 @@ export function paddleOcrBackend(): OcrBackend {
         items.push({ cv, x, y, w, h });
       }
       const cps = await recognizeCharsPosMany(items.map((it) => it.cv), 2048);
-      const out: { text: string; bbox: Rect; chars?: { text: string; cx: number }[] }[] = [];
+      const out: { text: string; bbox: Rect; chars?: { text: string; cx: number; x1?: number }[] }[] = [];
       items.forEach((it, i) => {
         const cp = cps[i];
         const text = cp.map((c) => c.ch).join("");
-        if (text.trim()) out.push({ text, bbox: { x: it.x, y: it.y, w: it.w, h: it.h }, chars: cp.map((c) => ({ text: c.ch, cx: it.x + c.xFrac * it.w })) });
+        if (text.trim()) out.push({ text, bbox: { x: it.x, y: it.y, w: it.w, h: it.h }, chars: cp.map((c) => ({ text: c.ch, cx: it.x + c.xFrac * it.w, x1: it.x + c.x1Frac * it.w })) });
       });
       return out;
     },

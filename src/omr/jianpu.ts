@@ -32,7 +32,40 @@ interface Classified {
 }
 
 // jianpu.cpp: findBarline/analyze_barline/analyze_hline/analyze_dot —— 按形状分类连通域。
-function classify(comps: Component[]): { c: Classified; numH: number } {
+/** 高/低八度的窄数字（尤其唯一单竖笔的 "1"）常与其八度点 4-连通粘成一个**过高的窄竖块**
+ *  （点 + 竖笔），落进"终止/粗小节线"判据被整块丢弃 —— 但**数字字形不含点**，故顶/底部这个
+ *  与主笔隔着低墨谷的小墨斑必是八度点。按行墨廓在谷处切开，返回 { dot, digit } 两个合成连通块
+ *  （dot 归 c.dots 供 buildJpNums 记八度、digit 归 c.blocks 正常识别）；非此形态返回 null。 */
+function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Component; digit: Component } | null {
+  // 仅"过高、但仍有真实笔宽的窄竖块"才可能是点+数字笔：真小节线常细至 1~2px（下限剔之），
+  // 数字笔即便是最窄的 "1" 也有可观宽度（≈0.3~0.55字号）。
+  if (b.h <= numH * 1.05 || b.w < numH * 0.3 || b.w > numH * 0.6) return null;
+  const ink = rowInk(bin, b);
+  const strokeInk = median(ink.filter((v) => v > 0)) || 1;
+  const mk = (y0: number, y1: number): Component | null => {
+    const t = tightBox(bin, b, 0, b.w, y0, y1);
+    return t ? { id: -1, bbox: t, area: t.w * t.h, cx: rcx(t), cy: rcy(t) } : null;
+  };
+  // 在顶部窗口(高八度点)或底部窗口(低八度点)找与主笔隔开的低墨谷。
+  const tryCut = (winLo: number, winHi: number, dotAtTop: boolean): { dot: Component; digit: Component } | null => {
+    let v = -1, vMin = Infinity;
+    for (let y = winLo; y < winHi; y++) if (ink[y] < vMin) { vMin = ink[y]; v = y; }
+    if (v < 0 || vMin > strokeInk * 0.6) return null; // 无清晰低墨谷 → 非点+笔（真小节线墨廓均匀）
+    const dotSeg = dotAtTop ? mk(0, v) : mk(v + 1, b.h);
+    const digSeg = dotAtTop ? mk(v + 1, b.h) : mk(0, v);
+    if (!dotSeg || !digSeg) return null;
+    const dh = dotSeg.bbox.h, dgh = digSeg.bbox.h;
+    // 点须是真墨斑(≥0.13字号见方、≤0.5字号)、数字笔须够高(≥0.55字号)且宽度像数字(≥0.28字号)。
+    // 宽度下限把 1~2px 的细小节线/扫描竖纹挡在门外（它们墨廓也会有单像素起伏被误当"谷"）。
+    if (dh > numH * 0.5 || dotSeg.bbox.w > numH * 0.5 || dotSeg.bbox.w < numH * 0.13) return null;
+    if (dgh < numH * 0.55 || dgh > numH * 1.7 || digSeg.bbox.w > numH * 0.7 || digSeg.bbox.w < numH * 0.28) return null;
+    return { dot: dotSeg, digit: digSeg };
+  };
+  return tryCut(Math.round(numH * 0.12), Math.round(numH * 0.6), true) ??
+    tryCut(b.h - Math.round(numH * 0.6), b.h - Math.round(numH * 0.12), false);
+}
+
+function classify(comps: Component[], bin: Binary): { c: Classified; numH: number } {
   // 估计数字字号：取"近似方形且较大"连通块的高度中位数
   const squarish = comps.filter((k) => {
     const r = k.bbox.w / k.bbox.h;
@@ -41,8 +74,16 @@ function classify(comps: Component[]): { c: Classified; numH: number } {
   const numH = median(squarish.map((k) => k.bbox.h)) || 16;
 
   const c: Classified = { blocks: [], barlines: [], hlines: [], dots: [] };
+  // 高瘦竖块可能是"八度点 + 窄数字"粘连体（数字不含点）：优先切开、把点与数字笔各归其类，
+  // 否则会被下面的小节线判据整块吞掉而丢音（实测高八度 "1̇" 在单行简谱里 h 恰同真小节线）。
+  const barCand = (w: number, h: number) =>
+    (h >= numH * 0.85 && w <= Math.max(2, numH * 0.35)) || (h >= numH * 1.3 && w <= numH * 0.6 && h / w >= 2.2);
   for (const k of comps) {
     const { w, h } = k.bbox;
+    if (barCand(w, h)) {
+      const sp = splitMergedOctaveDot(bin, k.bbox, numH);
+      if (sp) { c.dots.push(sp.dot); c.blocks.push(sp.digit); continue; }
+    }
     // 小节线：细高竖条（高 ≳ 字号，宽很窄）
     if (h >= numH * 0.85 && w <= Math.max(2, numH * 0.35)) { c.barlines.push(k); continue; }
     // 终止线/粗小节线：比普通小节线粗（w 可达 ~0.5字号），但仍明显高瘦——高于一个字号且 h/w≥2.2。
@@ -288,7 +329,7 @@ function buildJpNums(
 
 export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<RecognizedScore> {
   const comps = connectedComponents(bin, 4);
-  const { c, numH } = classify(comps);
+  const { c, numH } = classify(comps, bin);
 
   // 数字块 → 数字格（拆分粘连/连音，并测各自下划线 div）。
   // 与数字粘连的圆滑线弧帽在此切出，作为合成连通块补进 comps 供 detectSlurs 检测。
