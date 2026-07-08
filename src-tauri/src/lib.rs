@@ -236,7 +236,7 @@ fn ri32(b: &[u8], o: usize) -> i32 {
 }
 
 /// 跑一次推理。model 0=rec,1=det；mode 0=完整 f32 输出，1=每时间步 argmax 索引 [N,T]（仅 rec，
-/// 把 [N,T,6625] logits 的 ~6625× 传输量砍成索引）。返回 (输出维度, 输出数据字节：mode1=int32 索引，mode0=f32)。
+/// 把 [N,T,18710] logits 的 ~18710× 传输量砍成索引）。返回 (输出维度, 输出数据字节：mode1=int32 索引，mode0=f32)。
 fn infer_one(
     app: &tauri::AppHandle,
     model: i32,

@@ -31,7 +31,7 @@
     "targets": "all",
     "resources": {
       "../public/redist/Bravura.otf": "Bravura.otf",
-      "../public/redist/ocr/ch_PP-OCRv4_rec_infer.onnx": "ocr/rec.onnx",
+      "../public/redist/ocr/ch_PP-OCRv6_small_rec_infer.onnx": "ocr/rec.onnx",
       "../public/redist/ocr/ch_PP-OCRv4_det_infer.onnx": "ocr/det.onnx"
     },
     "icon": [

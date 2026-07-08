@@ -327,6 +327,18 @@ function buildJpNums(
   return out;
 }
 
+/** 数字框中央横带的前景占比（x∈[0.28,0.72]×y∈[0.42,0.58]）：简谱 "0" 是空心椭圆环，中带几乎无墨
+ *  （实测各图真 0 ≤0.47）；被二值化糊死的 "3"（中间横笔连成一条穿心的"斜线"）中带占满（3 恒 ≥0.7）。
+ *  → 判"读成 0 却中带有横笔"= 实为糊住的 3 等，供 0 误判复原（简谱 0 从不带斜线）。 */
+function midbandInk(bin: Binary, b: Rect): number {
+  const x0 = Math.round(b.x + b.w * 0.28), x1 = Math.round(b.x + b.w * 0.72);
+  const y0 = Math.round(b.y + b.h * 0.42), y1 = Math.round(b.y + b.h * 0.58);
+  let n = 0, t = 0;
+  for (let y = Math.max(0, y0); y < Math.min(bin.h, y1); y++)
+    for (let x = Math.max(0, x0); x < Math.min(bin.w, x1); x++) { t++; if (bin.data[y * bin.w + x]) n++; }
+  return t ? n / t : 0;
+}
+
 export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<RecognizedScore> {
   const comps = connectedComponents(bin, 4);
   const { c, numH } = classify(comps, bin);
@@ -377,7 +389,17 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const staff = withBars.length ? withBars : rowMeta;
 
   const allDigits = staff.flatMap((m) => m.rd);
-  const recog = await ocr.recognizeDigits(bin, allDigits.map((k) => k.bbox));
+  // rec 输入裁剪：连通域偶尔只截到半个字（淡印/断笔的 "1" 竖笔断开，块高≈半个字高 → 送 rec 成半字被
+  // 误读，如"1"读成"4"）。据本行数字带统计高度把过矮的块纵向补到整字高（cellOf 按 rect 从二值图裁，
+  // 会把带内断开的另一半笔画一并纳入）。带 [topY,botY] 由数字核算出、不含下划线/八度点 → 补高安全。
+  // 仅补高、不动 x/w，且只作用于 rec 裁剪；几何(八度/附点/div/缓存键)仍用原 bbox。
+  const recRects = staff.flatMap((m) => {
+    const bandH = m.botY - m.topY;
+    return m.rd.map((k) =>
+      k.bbox.h < bandH * 0.7 ? { x: k.bbox.x, y: m.topY, w: k.bbox.w, h: bandH } : k.bbox,
+    );
+  });
+  const recog = await ocr.recognizeDigits(bin, recRects);
   const digitCache = new Map<Rect, number>();
   allDigits.forEach((k, i) => digitCache.set(k.bbox, recog[i] ?? 0));
   const ocrDigit = (b: Rect) => digitCache.get(b) ?? 0;
@@ -416,12 +438,16 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     lyricRegions = lr.length ? lr : undefined;
   }
 
-  // 据歌词纠正休止误判：休止符不带歌词，故「digit=0 却对齐到歌词」几乎必是退化字形被 CTC 误判成空白
-  // →默认 0(见 paddleocr 的 empty→0)。取数字候选排序里的首个非零值复原（实测低对比图里糊住的"3"）。
+  // digit=0 误判复原（取数字候选排序里首个非零值）。两条独立线索，任一命中即复原：
+  //  ① 休止符不带歌词，故「digit=0 却对齐到歌词」几乎必是退化字形被 CTC 误判成空白→默认 0；
+  //  ② 简谱 "0" 是空心环、从不带斜线；「digit=0 却中央横带占满」= 糊死的 "3" 等被读成"内含斜线的 0"。
   if (ocr.rankDigits) {
     const bad: JpNum[] = [];
     for (const r of useRows) for (const n of r.nums) {
-      if (n.digit === 0 && n.lyrics?.some((s) => s && s.trim())) bad.push(n);
+      if (n.digit !== 0) continue;
+      const alignedToLyric = n.lyrics?.some((s) => s && s.trim());
+      const notHollowRing = midbandInk(bin, n.bbox) >= 0.65;
+      if (alignedToLyric || notHollowRing) bad.push(n);
     }
     if (bad.length) {
       const ranks = await ocr.rankDigits(bin, bad.map((n) => n.bbox));
