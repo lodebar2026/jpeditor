@@ -216,7 +216,7 @@ async function boot() {
   await app.tryRestoreLastFile();
 }
 
-const IMAGE_EXT_RE = /\.(png|jpe?g|webp|bmp|gif)$/i;
+const RECOG_EXT_RE = /\.(png|jpe?g|webp|bmp|gif|pdf)$/i;
 
 async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
   if (isTauriRuntime()) {
@@ -226,7 +226,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
       if (event.payload.type === "drop") {
         const path = event.payload.paths[0];
         if (!path) return;
-        if (IMAGE_EXT_RE.test(path)) {
+        if (RECOG_EXT_RE.test(path)) {
           // 拖入图片 → 本地 OMR 识别并自动进识别模式叠加核对。
           const bytes = await readFile(path);
           await app.recognizeBytes("musicpp", { bytes, path });
@@ -246,7 +246,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement): Promise<void> {
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
       const buf = new Uint8Array(await file.arrayBuffer());
-      if (IMAGE_EXT_RE.test(file.name) || file.type.startsWith("image/")) {
+      if (RECOG_EXT_RE.test(file.name) || file.type.startsWith("image/")) {
         await app.recognizeBytes("musicpp", { bytes: buf, mime: file.type, path: null });
         return;
       }

@@ -18,6 +18,9 @@ measure-all.csv
 # OMR 测试数据（本地保留，不入库）
 testdata
 
+# pdf.js 位图解码器 wasm：来自 pdfjs-dist 包，构建时从 node_modules 拷入（见 vite.config.ts），不入库
+public/redist/pdfjs
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,4 +1,21 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
+import { copyFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// @ts-expect-error import.meta.dirname 在 Vite 的 ESM 配置里可用（node ≥20 亦有）
+const here = typeof import.meta.dirname === "string" ? import.meta.dirname : dirname(fileURLToPath(import.meta.url));
+
+// pdf.js v6 的位图解码器 wasm（jbig2 兼管 CCITTFax G4，供 OMR 读扫描版乐谱 PDF）来自
+// `pdfjs-dist` 包，版本随 package-lock 锁定 → 不入库，改为构建/开发启动时从 node_modules 拷到
+// public/redist/pdfjs/（pdf.js 按固定文件名 fetch `${wasmUrl}jbig2.wasm`，故不能走 Vite ?url 的 hash 资源）。
+function copyPdfjsWasm(): Plugin {
+  const files = ["jbig2.wasm", "jbig2_nowasm_fallback.js", "openjpeg.wasm", "openjpeg_nowasm_fallback.js", "qcms_bg.wasm"];
+  const src = `${here}/node_modules/pdfjs-dist/wasm`;
+  const dst = `${here}/public/redist/pdfjs`;
+  const copy = () => { mkdirSync(dst, { recursive: true }); for (const f of files) copyFileSync(`${src}/${f}`, `${dst}/${f}`); };
+  return { name: "copy-pdfjs-wasm", buildStart: copy, configureServer: copy };
+}
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
@@ -11,6 +28,7 @@ const base = process.env.BASE_PATH || "/";
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   base,
+  plugins: [copyPdfjsWasm()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
