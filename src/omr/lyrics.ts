@@ -16,6 +16,10 @@ const isHanzi = (c: string) => /[一-鿿]/.test(c);
 const LYRIC_PUNCT = /[，。、；：！？…—,;:!?]/;
 const PUNCT_FULL: Record<string, string> = { ",": "，", ";": "；", ":": "：", "!": "！", "?": "？" };
 const normPunct = (ch: string) => PUNCT_FULL[ch] ?? ch;
+// 引号（都不占音符）：开引号 “‘ **领起后一字**（如 “阿门”里的 “ 贴 阿），闭引号 ”’ **贴前一字**。
+// PP-OCR 对中文引号输出全角（实测 rec 已能读出 “ ”），故一并收下；半/全角开闭都认。
+const LYRIC_QUOTE_OPEN = /[“‘"']/;
+const LYRIC_QUOTE_CLOSE = /[”’]/;
 
 /** 把一行(同 y)的连通块按 x 邻近并成字格。返回每个字格的合并包围盒，按 x 排序。 */
 export function mergeToChars(line: Component[], charH: number): Rect[] {
@@ -387,24 +391,30 @@ export async function recognizeLyrics(
         const last = segs[segs.length - 1];
         return last.sx0 + last.sw;
       };
+      let lead = "";                                                // 待领起后一字的开引号
       for (const { ch, xFrac } of textsPos![s]) {
         const sx = fracToSrcX(xFrac);
         if (isHanzi(ch)) {
-          const region: TextRegion = { text: ch, bbox: { x: sx - charW / 2, y: cy0, w: charW, h: cy1 - cy0 } };
-          placed.push({ x: sx, ch, region });
+          const text = lead + ch; lead = "";                        // 开引号并入本字前缀（“阿）
+          const region: TextRegion = { text, bbox: { x: sx - charW / 2, y: cy0, w: charW, h: cy1 - cy0 } };
+          placed.push({ x: sx, ch: text, region });
           regions.push(region);
-        } else if (LYRIC_PUNCT.test(ch) && placed.length) {
+        } else if (LYRIC_QUOTE_OPEN.test(ch)) {
+          lead += ch;                                               // 开引号：领起后一字，不另立单元
+        } else if ((LYRIC_PUNCT.test(ch) || LYRIC_QUOTE_CLOSE.test(ch)) && placed.length) {
           const p = normPunct(ch);
-          placed[placed.length - 1].ch += p;                        // 尾随标点贴前一字（折全角，不移位、不另立单元）
+          placed[placed.length - 1].ch += p;                        // 尾随标点/闭引号贴前一字（折全角，不移位、不另立单元）
           if (regions.length) regions[regions.length - 1].text += p;
         }
       }
     } else {
       // 回退：后端无字位时，沿用"字↔连通块格"按序映射 + 段号几何剔除（首格落在第一个音符中心左侧 → 段号丢弃）。
       const toks: string[] = [];
+      let lead = "";
       for (const ch of texts![s]) {
-        if (isHanzi(ch)) toks.push(ch);
-        else if (LYRIC_PUNCT.test(ch) && toks.length) toks[toks.length - 1] += normPunct(ch);
+        if (isHanzi(ch)) { toks.push(lead + ch); lead = ""; }
+        else if (LYRIC_QUOTE_OPEN.test(ch)) lead += ch;
+        else if ((LYRIC_PUNCT.test(ch) || LYRIC_QUOTE_CLOSE.test(ch)) && toks.length) toks[toks.length - 1] += normPunct(ch);
       }
       if (!toks.length) continue;
       let mapCells = cells;
