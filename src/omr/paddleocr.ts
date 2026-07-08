@@ -1,6 +1,9 @@
-// musicpp 方案的**本地**数字 OCR：PaddleOCR PP-OCRv4 识别模型（ONNX，经 onnxruntime-web 在
-// 浏览器/桌面离线推理）。替代 tesseract.js —— 实测对真实扫描简谱数字 0-7 准确率 100%
-// （tesseract 约 69%，常把 6 误读为 0）。模型与字典见 public/redist/ocr/，
+// musicpp 方案的**本地**数字/歌词/页眉 OCR：PaddleOCR **PP-OCRv6_small** 识别模型（ONNX，经
+// onnxruntime-web 在浏览器/桌面离线推理）。替代 tesseract.js —— 实测对真实扫描简谱数字 0-7 准确率 100%
+// （tesseract 约 69%，常把 6 误读为 0）。rec 从 PP-OCRv4(6623字) → v5_mobile(18383字) → **v6_small**(18708字)：
+// v5 视觉偏向高频「他」把「祂」读错，v6_small 同一 48px 二值条上「祂」全对；配合 jianpu.ts 的矮块补高 +
+// 空心环校验（0 从不带斜线），6 曲音符 100%、歌词/词曲 ~100%。模型与字典见 public/redist/ocr/
+// （rec=v6_small 21MB + ppocrv6_dict.txt；det 仍 PP-OCRv4）；det 头结构与 rec 无关故不同版可混用。
 // wasm 运行时经 onnxruntime-web 包用 Vite `?url` 引入（见下，单线程，无需 COOP/COEP 跨源隔离）。
 //
 // 识别单元：每个数字裁成 64×64 居中白底黑字格（与回归基准一致），逐格 rec → CTC 解码 → 取 0-7。
@@ -14,8 +17,8 @@ import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
 import ortMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
 
 const BASE = import.meta.env.BASE_URL; // "/" 或 "/jpeditor-web/"
-const REC_URL = `${BASE}redist/ocr/ch_PP-OCRv4_rec_infer.onnx`;
-const DICT_URL = `${BASE}redist/ocr/ppocr_keys_v1.txt`;
+const REC_URL = `${BASE}redist/ocr/ch_PP-OCRv6_small_rec_infer.onnx`;
+const DICT_URL = `${BASE}redist/ocr/ppocrv6_dict.txt`;
 const DET_URL = `${BASE}redist/ocr/ch_PP-OCRv4_det_infer.onnx`;
 
 const REC_H = 48, REC_MAXW = 320;
