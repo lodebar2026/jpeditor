@@ -23,7 +23,9 @@ export function detectSlurs(comps: Component[], rows: StaffRow[], numH: number):
     // 候选弧线：宽而薄、底边贴近数字顶且不深入数字行。
     const arcs = comps.filter((c) => {
       const b = c.bbox;
-      if (b.w < numH * 0.8 || b.h < 2 || b.h > numH * 0.8) return false;
+      // 弧高上限放到 ~1 字号：跨相邻两音的弧其拱高可达一个字号（实测耶稣普治 w130 h32、numH39，
+      // 卡在旧的 0.8 字号=31 上被整条漏掉）；仍 < 数字块高(≥0.55~2 字号且 w/h<2)，靠 w/h≥2 兜住不误纳数字。
+      if (b.w < numH * 0.8 || b.h < 2 || b.h > numH * 1.05) return false;
       if (b.w / b.h < 2) return false;
       // 底边落在 [数字顶 - 1.2字号, 数字顶 + 0.25字号]：即整体在数字上方、最多略压数字顶缘。
       return between(rbottom(b), rowTop - numH * 1.2, rowTop + numH * 0.25);
