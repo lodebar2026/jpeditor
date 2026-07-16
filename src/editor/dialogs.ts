@@ -5,22 +5,36 @@ function modal(title: string, body: HTMLElement, onOk: () => void): void {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   const box = document.createElement("div");
-  box.className = "modal-box";
+  box.className = "modal-box settings-box";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
   const h = document.createElement("div");
   h.className = "modal-title";
+  h.id = "settings-dialog-title";
   h.textContent = title;
+  box.setAttribute("aria-labelledby", h.id);
   const footer = document.createElement("div");
   footer.className = "modal-footer";
   const ok = document.createElement("button");
+  ok.type = "button";
+  ok.className = "modal-button-primary";
   ok.textContent = "确定";
   const cancel = document.createElement("button");
+  cancel.type = "button";
   cancel.textContent = "取消";
   footer.append(cancel, ok);
   box.append(h, body, footer);
   overlay.append(box);
   document.body.append(overlay);
 
-  const close = () => overlay.remove();
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onKeyDown);
+  };
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") close();
+  };
+  document.addEventListener("keydown", onKeyDown);
   cancel.onclick = close;
   overlay.onclick = (e) => {
     if (e.target === overlay) close();
@@ -50,6 +64,7 @@ const RATIOS: Record<string, [number, number]> = {
 /** 选项 — page ratio + base font size. */
 export function showOptionsDialog(app: App): void {
   const body = document.createElement("div");
+  body.className = "settings-form";
   const sel = document.createElement("select");
   for (const k of Object.keys(RATIOS)) {
     const o = document.createElement("option");
@@ -112,7 +127,7 @@ export function showOptionsDialog(app: App): void {
       body.append(labeled(`声部 ${i + 1}`, s));
     }
   }
-  modal("选项", body, () => {
+  modal("设置", body, () => {
     volSliders.forEach((s, i) => app.setPartVolume(i, (parseInt(s.value, 10) || 0) / 100));
     const [w, h] = RATIOS[sel.value] ?? [app.pageW, app.pageH];
     const fontSize = parseInt(fs.value, 10) || app.fontSize;

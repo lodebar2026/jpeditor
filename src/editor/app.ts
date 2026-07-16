@@ -32,6 +32,8 @@ export class App {
   mixedXmlText: string | null = null;
   private _mixedPainter: MixedPainter | null = null;
   private _mixedBtnEl: HTMLButtonElement | null = null;
+  private _jpPreviewBtnEl: HTMLButtonElement | null = null;
+  private _staffJianpuToggleEl: HTMLInputElement | null = null;
   // 识别模式：二值图 + 带源图坐标的识别结果（仅 musicpp 本地路产出），供叠加核对。
   private _recogBin: Binary | null = null;
   private _recogScore: RecognizedScore | null = null;
@@ -44,6 +46,7 @@ export class App {
   private _recogMeta: JpwMeta | null = null;
   private _lastImportMeta: JpwMeta | null = null; // 最近一次 xml 导入的序列化映射，供 recognizeBytes 接管
   // 乐句排版：缓存导入时的「原始排版」文本以便无损切回；_phraseOn 记当前是否乐句排版。
+  private _originalLayoutBtnEl: HTMLButtonElement | null = null;
   private _phraseBtnEl: HTMLButtonElement | null = null;
   private _origLayoutText: string | null = null;
   private _phraseOn = false;
@@ -56,6 +59,7 @@ export class App {
   creditSize = 36;
   color = 0xff000000; // ARGB
   mixedHideBarNumber = false; // 混排：隐藏小节号
+  mixedShowJianpuLayer = true;
   zoom = 1; // 谱面显示缩放（应用到 #score-pane 的 --score-zoom）
   private meta: MetaData;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -64,7 +68,6 @@ export class App {
   statusEl: HTMLElement | null = null;
   private _player: ScorePlayer | null = null;
   private _playBtnEl: HTMLButtonElement | null = null;
-  private _stopBtnEl: HTMLButtonElement | null = null;
   /** Per-part linear volume in [0,1]; index = part index. Missing = 1 (full). */
   partVolumes: number[] = [];
   // Selected note (for "play from here"): its chord + which verse/pass row.
@@ -110,9 +113,10 @@ export class App {
       const s = JSON.parse(raw) as Partial<{
         pageW: number; pageH: number; fontSize: number;
         titleSize: number; creditSize: number; color: number; zoom: number;
-        mixedHideBarNumber: boolean;
+        mixedHideBarNumber: boolean; mixedShowJianpuLayer: boolean;
       }>;
       if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
+      if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
       if (s.pageW) this.pageW = s.pageW;
       if (s.pageH) this.pageH = s.pageH;
       if (s.titleSize !== undefined) this.titleSize = s.titleSize;
@@ -146,6 +150,7 @@ export class App {
         color: this.color,
         zoom: this.zoom,
         mixedHideBarNumber: this.mixedHideBarNumber,
+        mixedShowJianpuLayer: this.mixedShowJianpuLayer,
       }));
     } catch {
       // storage unavailable — ignore
@@ -379,12 +384,9 @@ export class App {
     this.pageEls[np]?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   // ---------------- playback ----------------
-  setPlayBtn(el: HTMLButtonElement): void {
+  setPlaybackBtn(el: HTMLButtonElement): void {
     this._playBtnEl = el;
-  }
-  setStopBtn(el: HTMLButtonElement): void {
-    this._stopBtnEl = el;
-    el.disabled = true;
+    this.onPlayState("stopped");
   }
 
   private player(): ScorePlayer {
@@ -407,12 +409,19 @@ export class App {
   }
 
   private onPlayState(state: PlayState): void {
-    const busy = state === "playing" || state === "loading";
-    if (this._playBtnEl) {
-      this._playBtnEl.disabled = busy;
-      this._playBtnEl.textContent = state === "loading" ? "加载中…" : "播放";
+    if (!this._playBtnEl) return;
+    const label = state === "loading" ? "加载中" : state === "playing" ? "停止" : "播放";
+    const icon = this._playBtnEl.querySelector<HTMLElement>(".playback-icon");
+    const labelEl = this._playBtnEl.querySelector<HTMLElement>(".playback-label");
+    this._playBtnEl.dataset.state = state;
+    this._playBtnEl.disabled = state === "loading";
+    this._playBtnEl.setAttribute("aria-label", label);
+    this._playBtnEl.title = state === "playing" ? "停止试听" : state === "loading" ? "正在加载试听音色" : "播放试听";
+    if (labelEl) labelEl.textContent = label;
+    if (icon) {
+      icon.classList.toggle("is-loading", state === "loading");
+      icon.textContent = state === "playing" ? "■" : state === "loading" ? "" : "▶";
     }
-    if (this._stopBtnEl) this._stopBtnEl.disabled = state === "stopped";
   }
 
   /** Number of parts in the current score (for the mixer UI). */
@@ -433,7 +442,21 @@ export class App {
       this._selectedChord !== null
         ? { chord: this._selectedChord, pass: this._selectedVerse }
         : undefined;
-    await this.player().play(this.painter.score, { partVolumes: this.partVolumes }, start);
+    try {
+      await this.player().play(this.painter.score, { partVolumes: this.partVolumes }, start);
+    } catch (e) {
+      console.error("playback failed", e);
+      this._player?.stop();
+      this.setStatus("试听加载失败：" + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  async togglePlayback(): Promise<void> {
+    if (this._player?.state === "playing" || this._player?.state === "loading") {
+      this.stopPlayback();
+      return;
+    }
+    await this.playScore();
   }
 
   stopPlayback(): void {
@@ -472,8 +495,8 @@ export class App {
         bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
       ).decode(bytes);
       this.mixedXmlText = xml;
-      this._mixedPainter = null; // reset so next toggleMixed re-loads
-      if (this._mixedBtnEl) this._mixedBtnEl.disabled = false;
+      this._mixedPainter = null; // reset so next showStaffPreview re-loads
+      this._setMixedAvailable(true);
 
       // 多声部（SATB 等）歌谱默认进入混排模式
       const autoMixed = this.mode !== "mixed" && isMultiPartXml(xml);
@@ -481,7 +504,7 @@ export class App {
         if (autoMixed) {
           this.mode = "mixed";
           this._setMixedLayout(true);
-          if (this._mixedBtnEl) this._mixedBtnEl.textContent = "简谱";
+          this._setPreviewModeActive("mixed");
         }
         // 仍填充编辑器的简谱转换文本，便于切回「简谱」（best-effort）
         try {
@@ -496,6 +519,7 @@ export class App {
       }
 
       const score = loadMusicXml(xml);
+      this._setPreviewModeActive("jp");
       this.filePath = null; // imported; save as new .jpwabc
       const { text, meta } = scoreToJpwabcWithMeta(score);
       this._lastImportMeta = meta; // 供 recognizeBytes（OMR）接管为 _recogMeta
@@ -503,12 +527,12 @@ export class App {
     } else {
       this.mixedXmlText = null;
       this._mixedPainter = null;
-      if (this._mixedBtnEl) this._mixedBtnEl.disabled = true;
+      this._setMixedAvailable(false);
       this._disablePhrase();
       if (this.mode === "mixed") {
         this.mode = "jp";
         this._setMixedLayout(false);
-        if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
+        this._setPreviewModeActive("jp");
       }
       this.setText(decodeJpwabc(bytes));
     }
@@ -518,58 +542,124 @@ export class App {
   private _applyImportedJp(text: string): void {
     this._origLayoutText = text;
     this._phraseOn = false;
-    if (this._phraseBtnEl) { this._phraseBtnEl.disabled = false; this._phraseBtnEl.textContent = "乐句排版"; }
+    this._setPhraseActive(false);
+    this._setPhraseAvailable(true);
     this.setText(text);
   }
 
   private _disablePhrase(): void {
     this._origLayoutText = null;
     this._phraseOn = false;
-    if (this._phraseBtnEl) { this._phraseBtnEl.disabled = true; this._phraseBtnEl.textContent = "乐句排版"; }
+    this._setPhraseActive(false);
+    this._setPhraseAvailable(false);
   }
 
-  /** Register the #btn-phrase element so App can enable/disable it. */
-  setPhraseBtn(el: HTMLButtonElement): void {
-    this._phraseBtnEl = el;
+  private _setContextControl(el: HTMLElement | null, visible: boolean): void {
+    if (!el) return;
+    el.hidden = !visible;
+    if (el instanceof HTMLButtonElement) el.disabled = !visible;
+    this._syncContextGroup(el);
   }
 
-  /** 在「原始排版」与「乐句排版」间切换（保留原始排版文本，无损切回）。 */
-  togglePhrase(): void {
+  private _syncContextGroup(el: HTMLElement | null): void {
+    if (!el) return;
+    const group = el.closest<HTMLElement>(".context-tool-group");
+    if (group) group.hidden = !group.querySelector("[data-context-control]:not([hidden])");
+  }
+
+  setPhraseButtons(original: HTMLButtonElement, phrase: HTMLButtonElement): void {
+    this._originalLayoutBtnEl = original;
+    this._phraseBtnEl = phrase;
+    this._setPhraseActive(false);
+    this._setPhraseAvailable(false);
+  }
+
+  private _setPhraseAvailable(available: boolean): void {
+    const switchEl = this._phraseBtnEl?.closest<HTMLElement>(".layout-mode-switch");
+    if (!switchEl) return;
+    switchEl.hidden = !available;
+    if (this._originalLayoutBtnEl) this._originalLayoutBtnEl.disabled = !available;
+    if (this._phraseBtnEl) this._phraseBtnEl.disabled = !available;
+    this._syncContextGroup(switchEl);
+  }
+
+  private _setPhraseActive(phrase: boolean): void {
+    this._originalLayoutBtnEl?.classList.toggle("active", !phrase);
+    this._phraseBtnEl?.classList.toggle("active", phrase);
+    this._originalLayoutBtnEl?.setAttribute("aria-pressed", String(!phrase));
+    this._phraseBtnEl?.setAttribute("aria-pressed", String(phrase));
+  }
+
+  /** Switch between the imported line layout and phrase-aware relayout. */
+  setPhraseLayout(phrase: boolean): void {
     if (!this.mixedXmlText || !this._origLayoutText) return;
+    if (this._phraseOn === phrase) return;
     // 乐句排版要看的是排版结果 → 先退出识别/混排叠加视图，回到简谱模式，否则 reload 直接返回不重排。
     if (this.mode === "recognize") {
       this.mode = "jp";
       this._setRecognizeLayout(false);
-      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "识别";
+      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "原图对照";
     } else if (this.mode === "mixed") {
       this.mode = "jp";
       this._setMixedLayout(false);
-      if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
+      this._setPreviewModeActive("jp");
     }
-    if (this._phraseOn) {
+    if (!phrase) {
       this._phraseOn = false;
-      if (this._phraseBtnEl) this._phraseBtnEl.textContent = "乐句排版";
+      this._setPhraseActive(false);
       this.setText(this._origLayoutText);
     } else {
       try {
         const score = loadMusicXml(this.mixedXmlText);
         this.setText(scoreToJpwabc(score, { phrase: true }));
         this._phraseOn = true;
-        if (this._phraseBtnEl) this._phraseBtnEl.textContent = "原始排版";
+        this._setPhraseActive(true);
       } catch (e) {
         console.error("phrase relayout failed", e);
       }
     }
   }
 
-  /** Register the #btn-mixed element so App can enable/disable it. */
-  setMixedBtn(el: HTMLButtonElement): void {
-    this._mixedBtnEl = el;
+  /** Register the right-preview segmented control. */
+  setPreviewModeButtons(jp: HTMLButtonElement, mixed: HTMLButtonElement): void {
+    this._jpPreviewBtnEl = jp;
+    this._mixedBtnEl = mixed;
+    this._setMixedAvailable(false);
+    this._setPreviewModeActive("jp");
+  }
+
+  setStaffJianpuToggle(el: HTMLInputElement): void {
+    this._staffJianpuToggleEl = el;
+    el.checked = this.mixedShowJianpuLayer;
+    const label = el.closest<HTMLElement>(".staff-layer-toggle");
+    if (label) label.hidden = this.mode !== "mixed";
+  }
+
+  private _setMixedAvailable(available: boolean): void {
+    const switchEl = this._mixedBtnEl?.closest<HTMLElement>(".preview-mode-switch");
+    if (switchEl) switchEl.hidden = !available;
+    if (this._mixedBtnEl) this._mixedBtnEl.disabled = !available;
+    if (!available) {
+      const label = this._staffJianpuToggleEl?.closest<HTMLElement>(".staff-layer-toggle");
+      if (label) label.hidden = true;
+    }
+    if (!available) this._setPreviewModeActive("jp");
+  }
+
+  private _setPreviewModeActive(mode: "jp" | "mixed"): void {
+    const mixed = mode === "mixed";
+    this._jpPreviewBtnEl?.classList.toggle("active", !mixed);
+    this._mixedBtnEl?.classList.toggle("active", mixed);
+    this._jpPreviewBtnEl?.setAttribute("aria-pressed", String(!mixed));
+    this._mixedBtnEl?.setAttribute("aria-pressed", String(mixed));
+    const label = this._staffJianpuToggleEl?.closest<HTMLElement>(".staff-layer-toggle");
+    if (label) label.hidden = !mixed;
   }
 
   /** Register the #btn-recognize element so App can enable/disable it. */
   setRecognizeBtn(el: HTMLButtonElement): void {
     this._recognizeBtnEl = el;
+    this._setContextControl(el, false);
   }
 
   /** Register the #sel-recog-view dropdown (识别视图切换)。 */
@@ -592,14 +682,17 @@ export class App {
     if (this.mode === "recognize") {
       this.mode = "jp";
       this._setRecognizeLayout(false);
-      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "识别";
+      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "原图对照";
       this.reload(this.getText());
     } else {
       // 从混排切入识别：先退混排布局
-      if (this.mode === "mixed") this._setMixedLayout(false);
+      if (this.mode === "mixed") {
+        this._setMixedLayout(false);
+        this._setPreviewModeActive("jp");
+      }
       this.mode = "recognize";
       this._setRecognizeLayout(true);
-      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "排版";
+      if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "返回排版稿";
       this._renderRecognizePages();
     }
   }
@@ -607,7 +700,10 @@ export class App {
   /** 识别模式布局钩子：打 body.recognize 类 + 显示/隐藏视图下拉。 */
   private _setRecognizeLayout(on: boolean): void {
     document.getElementById("body")?.classList.toggle("recognize", on);
-    if (this._recogViewSelectEl) this._recogViewSelectEl.hidden = !on;
+    const field = this._recogViewSelectEl?.closest<HTMLElement>(".toolbar-select-field");
+    if (field) field.hidden = !on;
+    else if (this._recogViewSelectEl) this._recogViewSelectEl.hidden = !on;
+    this._syncContextGroup(this._recognizeBtnEl ?? field ?? this._recogViewSelectEl);
     if (!on) this._hideRecogPopup();
   }
 
@@ -773,30 +869,34 @@ export class App {
     this._recogMeta = null;
     this._hideRecogPopup();
     if (this._recognizeBtnEl) {
-      this._recognizeBtnEl.disabled = true;
-      this._recognizeBtnEl.textContent = "识别";
+      this._recognizeBtnEl.textContent = "原图对照";
     }
+    this._setContextControl(this._recognizeBtnEl, false);
     if (this.mode === "recognize") {
       this.mode = "jp";
       this._setRecognizeLayout(false);
     }
   }
 
-  /** Toggle between JP mode and Mixed (五线谱+简谱) mode. */
-  async toggleMixed(): Promise<void> {
-    if (!this.mixedXmlText) return;
+  async showJpPreview(): Promise<void> {
+    if (this.mode === "jp") return;
     this.stopPlayback();
-    if (this.mode === "jp") {
-      this.mode = "mixed";
-      this._setMixedLayout(true);
-      if (this._mixedBtnEl) this._mixedBtnEl.textContent = "简谱";
-      await this._renderMixedPages();
-    } else {
-      this.mode = "jp";
-      this._setMixedLayout(false);
-      if (this._mixedBtnEl) this._mixedBtnEl.textContent = "混排";
-      this.reload(this.getText());
-    }
+    if (this.mode === "recognize") this._setRecognizeLayout(false);
+    if (this.mode === "mixed") this._setMixedLayout(false);
+    this.mode = "jp";
+    this._setPreviewModeActive("jp");
+    this.reload(this.getText());
+  }
+
+  async showStaffPreview(): Promise<void> {
+    if (!this.mixedXmlText) return;
+    if (this.mode === "mixed") return;
+    this.stopPlayback();
+    if (this.mode === "recognize") this._setRecognizeLayout(false);
+    this.mode = "mixed";
+    this._setMixedLayout(true);
+    this._setPreviewModeActive("mixed");
+    await this._renderMixedPages();
   }
 
   /** 设置混排是否隐藏小节号，持久化；当前处于混排模式时立即重排。 */
@@ -807,17 +907,29 @@ export class App {
     if (this.mode === "mixed") await this._renderMixedPages();
   }
 
-  /** Mixed mode: editor read-only + hide the code pane entirely. */
+  async setStaffJianpuLayer(on: boolean): Promise<void> {
+    if (this.mixedShowJianpuLayer === on) return;
+    this.mixedShowJianpuLayer = on;
+    if (this._staffJianpuToggleEl) this._staffJianpuToggleEl.checked = on;
+    this._mixedPainter = null;
+    this.saveSettings();
+    if (this.mode === "mixed") await this._renderMixedPages();
+  }
+
+  /** Staff preview is rendered from MusicXML, so the visible JP source is read-only. */
   private _setMixedLayout(on: boolean): void {
     this.view.dispatch({
       effects: this._readOnlyCompartment.reconfigure(EditorState.readOnly.of(on)),
     });
     document.getElementById("body")?.classList.toggle("mixed", on);
+    const meta = document.getElementById("code-pane-meta");
+    if (meta) meta.textContent = on ? "只读" : "JPWABC";
   }
 
   private async _renderMixedPages(): Promise<void> {
     if (!this._mixedPainter) {
       this._mixedPainter = new MixedPainter();
+      this._mixedPainter.showJianpuLayer = this.mixedShowJianpuLayer;
     }
     this._mixedPainter.hideBarNumber = this.mixedHideBarNumber;
     if (this.mixedXmlText) {
@@ -882,7 +994,7 @@ export class App {
     }
   }
 
-  async openFile(): Promise<void> {
+  async openFile(): Promise<boolean> {
     if (isTauriRuntime()) {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const { readFile } = await import("@tauri-apps/plugin-fs");
@@ -890,33 +1002,48 @@ export class App {
         multiple: false,
         filters: [{ name: "简谱 / MusicXML / ABC", extensions: ["jpwabc", "JPWABC", "xml", "musicxml", "abc"] }],
       });
-      if (typeof sel !== "string") return;
+      if (typeof sel !== "string") return false;
       const bytes = await readFile(sel);
       this.importBytes(bytes, sel);
       if (!/\.(xml|musicxml|abc)$/i.test(sel)) this.filePath = sel;
       this.rememberLastFile(sel);
-    } else {
+      return true;
+    }
+
+    return await new Promise<boolean>((resolve) => {
       const input = document.createElement("input");
+      let settled = false;
+      let changeStarted = false;
+      const finish = (opened: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(opened);
+      };
       input.type = "file";
       input.accept = ".jpwabc,.xml,.musicxml,.abc";
       input.onchange = async () => {
+        changeStarted = true;
         const file = input.files?.[0];
-        if (!file) return;
+        if (!file) { finish(false); return; }
         const buf = new Uint8Array(await file.arrayBuffer());
         this.importBytes(buf, file.name);
         if (!/\.(xml|musicxml|abc)$/i.test(file.name)) this.filePath = file.name;
+        finish(true);
       };
+      window.addEventListener("focus", () => setTimeout(() => {
+        if (!changeStarted) finish(false);
+      }, 500), { once: true });
       input.click();
-    }
+    });
   }
 
   // ---------------- OMR：从图片识别简谱 ----------------
   /** 已取得图片字节后的识别核心（供拖拽识别复用）。
-   *  musicpp 本地路额外保留二值图+识别结果并自动进入识别模式叠加核对；gemini 路只导入排版。 */
-  async recognizeBytes(method: OmrMethod, picked: { bytes: Uint8Array; mime?: string; path?: string | null }): Promise<void> {
+   *  musicpp 本地路额外保留二值图+识别结果，完成后默认进入叠加核对视图（先核对；「原图对照」可切回排版稿）。 */
+  async recognizeBytes(method: OmrMethod, picked: { bytes: Uint8Array; mime?: string; path?: string | null }): Promise<boolean> {
     if (method === "gemini" && !agyAvailable()) {
       this.setStatus("Gemini 识别需要桌面版（Antigravity CLI / agy），浏览器内不可用");
-      return;
+      return false;
     }
     const label = method === "gemini" ? "Gemini" : "musicpp";
     this.setStatus(`识别中（${label}）…可能需要几十秒`);
@@ -928,17 +1055,20 @@ export class App {
         this._recogBin = bin; // 再设本次识别产物
         this._recogScore = score;
         this._recogMeta = this._lastImportMeta; // 接管导入时序列化产出的代码区间映射
-        if (this._recognizeBtnEl) this._recognizeBtnEl.disabled = false;
-        if (this.mode !== "recognize") await this.toggleRecognize(); // 自动进识别模式叠加
+        if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "原图对照";
+        this._setContextControl(this._recognizeBtnEl, true);
+        if (this.mode !== "recognize") await this.toggleRecognize(); // 识别后默认进叠加核对（本仓库「先核对」取向）
         this.setStatus(`识别完成（${label}，${((performance.now() - t0) / 1000).toFixed(1)}s）`);
       } else {
         const { musicxml, ms } = await recognizeImage(method, picked);
         this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml");
         this.setStatus(`识别完成（${label}，${(ms / 1000).toFixed(1)}s）`);
       }
+      return true;
     } catch (e) {
       console.error("OMR failed", e);
       this.setStatus("识别失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
     }
   }
 

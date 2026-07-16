@@ -236,6 +236,8 @@ export class MixedPainter {
   private _pages: Group[] = [];
   /** 隐藏小节号（用户选项）。下次 load 生效。 */
   hideBarNumber = false;
+  /** false renders the original staff notation only; true adds the legacy jianpu layer. */
+  showJianpuLayer = true;
 
   /** Width of one page in tenths. */
   get pageWidthTenths(): number {
@@ -272,7 +274,7 @@ export class MixedPainter {
     const options = new MixedOptions(this.meta);
     options.hideBarNumber = this.hideBarNumber;
     const score = loadMixedXml(xmlText, options);
-    formatMixedScore(score);
+    if (this.showJianpuLayer) formatMixedScore(score);
     this.score = score;
 
     // M5: flow layout

@@ -144,40 +144,159 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
-    <div id="app">
-      <div id="toolbar">
-        <button id="btn-open">打开</button>
-        <button id="btn-save">保存</button>
-        <button id="btn-saveas">另存为</button>
-        <button id="btn-export">导出</button>
-        <button id="btn-mixed" disabled>混排</button>
-        <button id="btn-recognize" title="识别模式：二值图 + 半透明识别结果叠加核对" disabled>识别</button>
-        <select id="sel-recog-view" title="识别视图" hidden>
-          <option value="floating">附近浮窗</option>
-          <option value="inplace">原位叠加</option>
-          <option value="original">仅原图</option>
-        </select>
-        <button id="btn-phrase" title="按乐句分析自动断行排版，可切回原始排版" disabled>乐句排版</button>
-        <span class="sep"></span>
-        <button id="btn-options">选项</button>
-        <span class="sep"></span>
-        <button id="btn-play">播放</button>
-        <button id="btn-stop">停止</button>
-        <span class="sep"></span>
-        <button id="btn-zoom-out" title="缩小 (Ctrl/⌘ -)">−</button>
-        <button id="btn-zoom-reset" title="复位 (Ctrl/⌘ 0)">100%</button>
-        <button id="btn-zoom-in" title="放大 (Ctrl/⌘ +)">＋</button>
-        <span class="sep"></span>
-        <button id="btn-prev">上一页</button>
-        <button id="btn-next">下一页</button>
-        <span class="sep"></span>
-        <button id="btn-help" title="功能帮助与记谱法说明">帮助</button>
+    <div id="app" class="is-starting">
+      <header id="app-header">
+        <div class="header-left">
+          <button id="btn-home" class="button button-home" aria-label="返回开始">
+            <span class="button-symbol" aria-hidden="true">←</span><span class="home-label">返回开始</span>
+          </button>
+          <div class="brand" aria-label="jpeditor 简谱编辑器">
+            <img class="brand-mark" src="%BASE_URL%favicon.svg" alt="" width="30" height="30" aria-hidden="true" />
+            <span class="brand-name">jpeditor</span>
+            <span class="brand-subtitle">简谱工作台</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="btn-save" class="button button-secondary">保存</button>
+          <button id="btn-export" class="button button-primary">导出</button>
+        </div>
+      </header>
+
+      <div id="toolbar" aria-label="乐谱工具栏">
+        <div id="layout-tools" class="tool-group context-tool-group" hidden>
+          <span class="tool-label">分行</span>
+          <div id="layout-mode-switch" class="layout-mode-switch" data-context-control aria-label="分行方式" hidden>
+            <button id="btn-layout-original" class="active" aria-pressed="true" title="保留导入或识别时的行结构">原始排版</button>
+            <button id="btn-phrase" aria-pressed="false" title="根据歌词和音乐乐句重新安排换行">按乐句重排</button>
+          </div>
+        </div>
+        <div id="recognition-tools" class="tool-group context-tool-group" hidden>
+          <span class="tool-label">核对</span>
+          <button id="btn-recognize" data-context-control title="将识别结果与上传原图进行对照" hidden>原图对照</button>
+          <label id="recog-view-field" class="toolbar-select-field" data-context-control hidden>
+            <span class="sr-only">原图对照方式</span>
+            <select id="sel-recog-view" title="原图对照方式" aria-label="原图对照方式">
+              <option value="floating">附近浮窗</option>
+              <option value="inplace">原位叠加</option>
+              <option value="original">仅原图</option>
+            </select>
+            <span class="select-chevron" aria-hidden="true">⌄</span>
+          </label>
+        </div>
+        <div class="tool-group context-tool-group playback-tools">
+          <span class="tool-label">试听</span>
+          <button id="btn-play" class="icon-text playback-button" aria-label="播放">
+            <span class="playback-icon" aria-hidden="true">▶</span>
+            <span class="playback-label">播放</span>
+          </button>
+        </div>
+        <span class="toolbar-spacer"></span>
+        <div class="tool-group mobile-view-switch" aria-label="移动端工作区视图">
+          <button id="btn-mobile-code" aria-pressed="false">源码</button>
+          <button id="btn-mobile-score" class="active" aria-pressed="true">预览</button>
+        </div>
+        <div class="tool-group">
+          <span class="tool-label">缩放</span>
+          <button id="btn-zoom-out" class="icon-button" title="缩小 (Ctrl/⌘ -)" aria-label="缩小">−</button>
+          <button id="btn-zoom-reset" title="复位 (Ctrl/⌘ 0)">100%</button>
+          <button id="btn-zoom-in" class="icon-button" title="放大 (Ctrl/⌘ +)" aria-label="放大">＋</button>
+        </div>
+        <span class="sep" aria-hidden="true"></span>
+        <div class="tool-group">
+          <span class="tool-label">页面</span>
+          <button id="btn-prev" class="icon-button" title="上一页" aria-label="上一页">‹</button>
+          <button id="btn-next" class="icon-button" title="下一页" aria-label="下一页">›</button>
+        </div>
+        <span class="sep" aria-hidden="true"></span>
+        <div class="tool-group">
+          <button id="btn-options">设置</button>
+          <button id="btn-help" title="功能帮助与记谱法说明">帮助</button>
+        </div>
       </div>
+
       <div id="body">
-        <div id="code-pane"></div>
-        <div id="score-pane"></div>
+        <section id="code-pane-shell" class="workspace-pane" aria-label="乐谱源码">
+          <div class="pane-heading">
+            <span>乐谱源码</span>
+            <span id="code-pane-meta" class="pane-meta">JPWABC</span>
+          </div>
+          <div id="code-pane"></div>
+        </section>
+        <section id="score-pane-shell" class="workspace-pane" aria-label="排版预览">
+          <div class="pane-heading">
+            <span>排版预览</span>
+            <div class="pane-heading-actions">
+              <label id="staff-jianpu-toggle" class="staff-layer-toggle" hidden>
+                <input id="chk-staff-jianpu" type="checkbox" checked />
+                <span>显示简谱层</span>
+              </label>
+              <div id="preview-mode-switch" class="preview-mode-switch" aria-label="乐谱预览模式" hidden>
+                <button id="btn-preview-jp" class="active" aria-pressed="true">简谱</button>
+                <button id="btn-preview-staff" aria-pressed="false">五线谱</button>
+              </div>
+            </div>
+          </div>
+          <div id="score-pane"></div>
+        </section>
+
+        <section id="start-screen" aria-labelledby="start-title">
+          <div class="start-content">
+            <div class="start-heading">
+              <span class="eyebrow">开始创作</span>
+              <h1 id="start-title">把乐谱带进来，可编辑，可导出</h1>
+              <p>本地识别、校对排版、简谱与五线谱切换、在线试听和多格式导出。</p>
+            </div>
+            <div class="start-modes">
+              <button id="btn-start-image" class="start-mode start-mode-primary">
+                <span class="mode-icon" aria-hidden="true">
+                  <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M24 10.6667C24 12.1394 22.8061 13.3333 21.3333 13.3333C19.8605 13.3333 18.6667 12.1394 18.6667 10.6667C18.6667 9.19391 19.8605 8 21.3333 8C22.8061 8 24 9.19391 24 10.6667Z" fill="#fff"/>
+                    <path fill-rule="evenodd" clip-rule="evenodd" d="M16.0765 1.66667H15.9235C12.8457 1.66665 10.4336 1.66664 8.55161 1.91967C6.62529 2.17865 5.10527 2.71911 3.91219 3.91219C2.71911 5.10527 2.17865 6.62529 1.91967 8.55161C1.66664 10.4336 1.66665 12.8456 1.66667 15.9235V16.0765C1.66665 19.1544 1.66664 21.5664 1.91967 23.4484C2.17865 25.3747 2.71911 26.8948 3.91219 28.0879C5.10527 29.2809 6.62529 29.8213 8.55161 30.0804C10.4336 30.3333 12.8456 30.3333 15.9235 30.3333H16.0765C19.1544 30.3333 21.5664 30.3333 23.4484 30.0804C25.3747 29.8213 26.8948 29.2809 28.0879 28.0879C29.2809 26.8948 29.8213 25.3747 30.0804 23.4484C30.3333 21.5664 30.3333 19.1544 30.3333 16.0765V15.9235C30.3333 12.8456 30.3333 10.4336 30.0804 8.55161C29.8213 6.62529 29.2809 5.10527 28.0879 3.91219C26.8948 2.71911 25.3747 2.17865 23.4484 1.91967C21.5664 1.66664 19.1544 1.66665 16.0765 1.66667ZM5.3264 5.3264C6.08593 4.56685 7.11356 4.131 8.81811 3.90183C10.5514 3.66879 12.829 3.66667 16 3.66667C19.1709 3.66667 21.4485 3.66879 23.1819 3.90183C24.8864 4.131 25.914 4.56685 26.6736 5.3264C27.4332 6.08593 27.8691 7.11356 28.0981 8.81811C28.3312 10.5514 28.3333 12.829 28.3333 16C28.3333 16.6003 28.3332 17.1685 28.3316 17.7072L28.0355 17.6663C24.2437 17.1412 20.774 19.1124 19.0072 22.0835C16.7279 16.3168 10.7046 12.3841 3.97431 13.3505L3.67329 13.3939C3.68844 11.5199 3.73824 10.0349 3.90183 8.81811C4.131 7.11356 4.56685 6.08593 5.3264 5.3264Z" fill="#fff"/>
+                  </svg>
+                </span>
+                <span class="mode-copy">
+                  <strong>图片识谱</strong>
+                  <span>上传图片，自动识别</span>
+                  <small>PNG · JPG · WEBP · PDF</small>
+                </span>
+                <span class="mode-arrow" aria-hidden="true">→</span>
+              </button>
+              <button id="btn-start-score" class="start-mode">
+                <span class="mode-icon mode-icon-score" aria-hidden="true">
+                  <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M11.3465 2.66668H20.6533C20.9633 2.6666 21.2009 2.66655 21.4087 2.68687C22.8857 2.83136 24.0948 3.71944 24.6075 4.91571H7.39237C7.90505 3.71944 9.11407 2.83136 10.5912 2.68687C10.7989 2.66655 11.0365 2.6666 11.3465 2.66668Z" fill="#333"/>
+                    <path d="M8.41403 6.29749C6.55985 6.29749 5.03951 7.41716 4.53213 8.90255C4.52156 8.93351 4.51141 8.96464 4.50172 8.99591C5.03259 8.83515 5.58508 8.73012 6.14436 8.65843C7.58487 8.47375 9.40532 8.47384 11.52 8.47396H20.7095C22.8241 8.47384 24.6447 8.47375 26.0852 8.65843C26.6444 8.73012 27.1969 8.83515 27.7277 8.99591C27.7181 8.96464 27.708 8.93351 27.6973 8.90255C27.19 7.41716 25.6696 6.29749 23.8155 6.29749H8.41403Z" fill="#333"/>
+                    <path d="M15 22.6667C15 22.1144 14.5523 21.6667 14 21.6667C13.4477 21.6667 13 22.1144 13 22.6667C13 23.2189 13.4477 23.6667 14 23.6667C14.5523 23.6667 15 23.2189 15 22.6667Z" fill="#333"/>
+                    <path fill-rule="evenodd" clip-rule="evenodd" d="M11.5632 10.0561H20.4368C24.9365 10.0561 27.1864 10.0561 28.4503 11.3718C29.714 12.6876 29.4167 14.7205 28.822 18.7861L28.258 22.6415C27.7916 25.8299 27.5585 27.424 26.3623 28.3787C25.166 29.3333 23.4016 29.3333 19.8728 29.3333H12.1271C8.5984 29.3333 6.83404 29.3333 5.63779 28.3787C4.44153 27.424 4.20835 25.8299 3.74197 22.6415L3.17801 18.7861C2.58331 14.7204 2.28596 12.6876 3.54976 11.3718C4.81356 10.0561 7.06344 10.0561 11.5632 10.0561ZM17 14C17 13.4477 16.5523 13 16 13C15.4477 13 15 13.4477 15 14V19.8373C14.6872 19.7268 14.3507 19.6667 14 19.6667C12.3431 19.6667 11 21.0099 11 22.6667C11 24.3235 12.3431 25.6667 14 25.6667C15.6568 25.6667 17 24.3235 17 22.6667V17.7596C17.8936 18.4845 19.0156 19 20 19C20.5523 19 21 18.5523 21 18C21 17.4477 20.5523 17 20 17C19.5928 17 18.8193 16.7085 18.1113 16.0804C17.4205 15.4675 17 14.7181 17 14Z" fill="#333"/>
+                  </svg>
+                </span>
+                <span class="mode-copy">
+                  <strong>导入乐谱</strong>
+                  <span>继续编辑已有谱面</span>
+                  <small>JPWABC · MusicXML · ABC</small>
+                </span>
+                <span class="mode-arrow" aria-hidden="true">→</span>
+              </button>
+            </div>
+            <div class="start-footer">
+              <span class="privacy-note"><span aria-hidden="true">●</span> 图片在本地识别，不会上传</span>
+              <button id="btn-start-sample" class="sample-link">查看示例乐谱</button>
+            </div>
+            <div id="start-feedback" hidden role="alert"></div>
+          </div>
+        </section>
+
+        <div id="recognition-progress" hidden aria-live="polite">
+          <div class="recognition-progress-card">
+            <span class="progress-spinner" aria-hidden="true"></span>
+            <div>
+              <strong>正在识别并生成排版</strong>
+              <span>完成后将直接显示可编辑的乐谱</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <div id="status"></div>
+      <div id="status" class="sr-only" role="status" aria-live="polite"></div>
     </div>
     <!-- hidden off-screen svg used for getBBox/getComputedTextLength measurement -->
     <svg id="measure-svg" width="0" height="0" aria-hidden="true"></svg>
