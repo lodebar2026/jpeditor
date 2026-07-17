@@ -1,14 +1,14 @@
-# jpeditor-web
+# jpeditor
 
 > 开源的简谱（JP-Word / `.jpwabc`）在线排版与编辑器 · An open-source jianpu (numbered
 > musical notation) editor & typesetter.
 
-[![Release](https://img.shields.io/github/v/release/lodebar2026/jpeditor-web?display_name=tag)](https://github.com/lodebar2026/jpeditor-web/releases)
-[![Live demo](https://img.shields.io/badge/%F0%9F%8C%90%20Live%20demo-online-2b6cb0)](https://lodebar2026.github.io/jpeditor-web/)
+[![Release](https://img.shields.io/github/v/release/lodebar2026/jpeditor?display_name=tag)](https://github.com/lodebar2026/jpeditor/releases)
+[![Live demo](https://img.shields.io/badge/%F0%9F%8C%90%20Live%20demo-online-2b6cb0)](https://lodebar2026.github.io/jpeditor/)
 ![Platform](https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20Windows-555)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**🌐 在线试用 / Live demo：<https://lodebar2026.github.io/jpeditor-web/>**
+**🌐 在线试用 / Live demo：<https://lodebar2026.github.io/jpeditor/>**
 
 简谱（JP-Word / `.jpwabc`）排版与编辑器。
 
@@ -29,8 +29,8 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import,
 **PDF / PNG / MIDI / vector PPTX**. It runs **in the browser**
 (no install) and as a lightweight **Windows / macOS desktop app** (Tauri 2).
 
-- 🌐 Live demo: <https://lodebar2026.github.io/jpeditor-web/>
-- ⬇️ Desktop downloads: [Releases](https://github.com/lodebar2026/jpeditor-web/releases)
+- 🌐 Live demo: <https://lodebar2026.github.io/jpeditor/>
+- ⬇️ Desktop downloads: [Releases](https://github.com/lodebar2026/jpeditor/releases)
 
 ## 特性
 
@@ -56,8 +56,8 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import,
 
 ## 安装与使用
 
-- **浏览器在线版**（免安装）：<https://lodebar2026.github.io/jpeditor-web/>
-- **桌面版下载**：[Releases](https://github.com/lodebar2026/jpeditor-web/releases)
+- **浏览器在线版**（免安装）：<https://lodebar2026.github.io/jpeditor/>
+- **桌面版下载**：[Releases](https://github.com/lodebar2026/jpeditor/releases)
 - macOS 首次打开提示“已损坏”或“无法验证开发者”？见
   [docs/macOS-打不开.md](docs/macOS-打不开.md)（应用未签名，属正常现象，一条命令即可解决）。
 

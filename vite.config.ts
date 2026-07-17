@@ -20,7 +20,7 @@ function copyPdfjsWasm(): Plugin {
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
-// GitHub Pages 项目页部署在子路径下（BASE_PATH=/jpeditor-web/）。Tauri 桌面构建
+// GitHub Pages 项目页部署在子路径下（BASE_PATH=/jpeditor/）。Tauri 桌面构建
 // 不设此 env，base 保持 "/"，桌面包资源解析不受影响。
 // @ts-expect-error process is a nodejs global
 const base = process.env.BASE_PATH || "/";

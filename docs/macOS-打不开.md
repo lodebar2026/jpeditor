@@ -47,4 +47,4 @@
 
 ---
 
-> 不想折腾安装？也可以直接用浏览器在线版：<https://lodebar2026.github.io/jpeditor-web/>
+> 不想折腾安装？也可以直接用浏览器在线版：<https://lodebar2026.github.io/jpeditor/>

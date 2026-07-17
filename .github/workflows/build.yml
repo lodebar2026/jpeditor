@@ -77,7 +77,7 @@ jobs:
       - name: Build (subpath base for project Pages)
         run: npm run build
         env:
-          BASE_PATH: /jpeditor-web/
+          BASE_PATH: /jpeditor/
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
