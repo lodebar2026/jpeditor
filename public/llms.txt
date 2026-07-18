@@ -1,4 +1,4 @@
-# jpeditor-web
+# jpeditor
 
 > 开源的简谱（JP-Word / `.jpwabc`）在线排版与编辑器。左侧高亮代码编辑、右侧实时简谱
 > 预览，支持简谱与五线谱混排、MusicXML 导入，导出 PDF / PNG / MIDI / 矢量 PPTX。
@@ -26,9 +26,9 @@
 
 ## 链接 / Links
 
-- 在线试用 / Live demo: https://lodebar2026.github.io/jpeditor-web/
-- 代码仓库 / Repository: https://github.com/lodebar2026/jpeditor-web
-- 下载桌面版 / Releases: https://github.com/lodebar2026/jpeditor-web/releases
+- 在线试用 / Live demo: https://lodebar2026.github.io/jpeditor/
+- 代码仓库 / Repository: https://github.com/lodebar2026/jpeditor
+- 下载桌面版 / Releases: https://github.com/lodebar2026/jpeditor/releases
 
 ## 许可 / License
 

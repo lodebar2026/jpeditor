@@ -10,7 +10,8 @@ set -euo pipefail
 VER="${1:?用法: scripts/release.sh <version> [notes...]}"
 shift || true
 TAG="v${VER}"
-REPO="lodebar2026/jpeditor-web"
+REPO="lodebar2026/jpeditor"
+PAGES_URL="https://lodebar2026.github.io/jpeditor/"
 cd "$(dirname "$0")/.."
 
 # 约定：本项目提交/推送用 lodebar2026 帐号
@@ -44,6 +45,36 @@ if [ -z "${RUN_ID}" ]; then
   echo "!! 没抓到 Build run，请稍后手动 gh run delete"; exit 0
 fi
 gh run watch "${RUN_ID}" --repo "${REPO}" --exit-status || true
+
+# —— 发布后校验 GitHub Pages：抓线上 index.html，逐个验证它引用的本站资源都返回 200 ——
+# 改名/改 base 后最容易出的坑：页面还引用旧前缀的 /assets/*，全部 404、页面白屏但 run 仍绿。
+echo "==> 校验 Pages 部署（${PAGES_URL}）…"
+HOST="$(printf '%s' "${PAGES_URL}" | sed -E 's#(https?://[^/]+).*#\1#')"      # https://lodebar2026.github.io
+BASEPATH="$(printf '%s' "${PAGES_URL}" | sed -E 's#https?://[^/]+##')"        # /jpeditor/
+check_pages() {
+  local html paths p code bad=0
+  # 部署完成后 CDN 传播可能有几秒延迟，带缓存穿透参数重试
+  for _ in $(seq 1 12); do
+    html="$(curl -fsSL "${PAGES_URL}?_=$(date +%s)" 2>/dev/null || true)"
+    [ -n "${html}" ] && break
+    sleep 5
+  done
+  [ -z "${html}" ] && { echo "!! 拉取 ${PAGES_URL} 失败"; return 1; }
+  paths="$(printf '%s' "${html}" | grep -oE "(src|href)=\"${BASEPATH}[^\"]+\"" \
+    | sed -E 's/.*"([^"]+)"/\1/' | sort -u)"
+  [ -z "${paths}" ] && { echo "!! 页面未引用任何 ${BASEPATH} 资源（base 前缀可能不对）"; return 1; }
+  while IFS= read -r p; do
+    [ -z "${p}" ] && continue
+    code="$(curl -s -o /dev/null -w '%{http_code}' "${HOST}${p}")"
+    if [ "${code}" = "200" ]; then echo "   ok  ${code}  ${p}"; else echo "   BAD ${code}  ${p}"; bad=1; fi
+  done <<< "${paths}"
+  return ${bad}
+}
+if ! check_pages; then
+  echo "!! Pages 资源校验未通过，保留 run ${RUN_ID} 以便排查：https://github.com/${REPO}/actions/runs/${RUN_ID}"
+  exit 1
+fi
+echo "==> Pages 资源校验通过"
 
 echo "==> 删除 run ${RUN_ID}"
 gh run delete "${RUN_ID}" --repo "${REPO}"
