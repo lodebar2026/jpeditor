@@ -1,6 +1,6 @@
 [package]
 name = "jpeditor"
-version = "0.5.1"
+version = "0.5.2"
 description = "简谱编辑器"
 authors = []
 edition = "2021"
