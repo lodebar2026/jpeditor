@@ -136,8 +136,10 @@ montage 单行长条过大导致 OCR 超时（改网格）、**八度点过检**
 **实测准确率**（`日光之下简谱.jpg` 真实照片 vs GT jpwabc，token 级 Levenshtein）：
 PaddleOCR + 修减时线过检后，**完整 token ~95.5%、仅数字+小节线 ~96.2%**（纯数字 100%；
 对比 tesseract 初版仅 ~25% / ~44%）。歌词逐音节对齐：W1 **98.9%** / W2 **96.5%**（自然区域分块 rec）。
-回归：`node measure-musicpp.mjs`(音符) + `node bench-lyrics.mjs`(歌词)。**Gemini 整页方式仍是更准的一路**。
-回归脚本：`node measure-musicpp.mjs`（需 `testdata/` + 本地 Edge；用 `window.__omr` 跑真实管线）。
+回归：`node measure-all.mjs`(音符/八度/附点/小节/slur-tie/歌词/标题/词曲，全 7 档、CSV 逐曲+平均) +
+`node bench-lyrics.mjs`(歌词)。**Gemini 整页方式仍是更准的一路**。
+回归脚本：`node measure-all.mjs`（自动扫 `testdata/` 每个歌谱文件夹，需本地 Edge；用 `window.__omr` 跑真实管线；
+可加子串参数只测部分曲，如 `node measure-all.mjs 从前`）。
 **页眉识别**（`header.ts`，标题/作词作曲/调号/速度）：首选 **DBNet 文本检测(det)整片识别**——
 `paddleocr.ts` 的 `recognizeRegion(bin, 音符上方区域)` 用 det 模型自动找文本行框、逐行 rec(`recognizeCanvas`
 放宽宽上限至 2048 免长英文著作者行被压扁)，再按字号/行首前缀归类：行首 `作/词/曲/编/译`+冒号→credit、
