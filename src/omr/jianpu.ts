@@ -65,14 +65,109 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
     tryCut(b.h - Math.round(numH * 0.6), b.h - Math.round(numH * 0.12), false);
 }
 
-function classify(comps: Component[], bin: Binary): { c: Classified; numH: number } {
-  // 估计数字字号：取"近似方形且较大"连通块的高度中位数
+/** 在块内按列找"竖直连续墨迹 ≥0.8 块高"的窄列簇 = 贯穿全高的竖笔（小节线）。相邻达标列并成一根，
+ *  返回其中心 x、竖笔 y 起点与高度。弧/横线各列只有很短竖直段，天然不达标。 */
+function fullHeightBars(bin: Binary, b: Rect, numH: number): Array<{ cx: number; y: number; h: number }> {
+  const minRun = Math.floor(b.h * 0.8);
+  const runs: Array<{ run: number; y0: number } | null> = [];
+  for (let xx = 0; xx < b.w; xx++) {
+    let best = 0, bestY0 = 0, cur = 0, curY0 = 0;
+    for (let yy = 0; yy < b.h; yy++) {
+      if (bin.data[(b.y + yy) * bin.w + (b.x + xx)]) { if (cur === 0) curY0 = yy; cur++; if (cur > best) { best = cur; bestY0 = curY0; } }
+      else cur = 0;
+    }
+    runs.push(best >= minRun ? { run: best, y0: bestY0 } : null);
+  }
+  const out: Array<{ cx: number; y: number; h: number }> = [];
+  let s = -1;
+  for (let xx = 0; xx <= b.w; xx++) {
+    if (xx < b.w && runs[xx]) { if (s < 0) s = xx; }
+    else if (s >= 0) {
+      if (xx - s <= numH * 0.5) {              // 过宽的不是小节线（可能是实心块），弃
+        let ry0 = runs[s]!.y0, rrun = runs[s]!.run;
+        for (let j = s; j < xx; j++) if (runs[j]!.run > rrun) { rrun = runs[j]!.run; ry0 = runs[j]!.y0; }
+        out.push({ cx: b.x + (s + xx - 1) / 2, y: b.y + ry0, h: rrun });
+      }
+      s = -1;
+    }
+  }
+  return out;
+}
+
+/** 去连通：一根贯穿全高的小节线常像"桥"，把上方的圆滑线弧、数字中线的增时线 '- -' 在交叉点 4-连通地
+ *  串成一个宽而稀疏的大块 —— classify 各类都不匹配而整块被丢弃（末尾小节线、跨小节 slur 随之全失，
+ *  实测「哦愿我有千万舌头」两行末尾 1--｜7,-）。**本质解法是把这根竖笔从像素上擦掉、重做连通域**，
+ *  让弧/增时线/数字各自独立、走正常 classify + detectSlurs，而非在别处特判抽取。
+ *
+ *  唯一微妙处：弧横跨小节线，整列擦除会把弧拦腰切断。但弧永远在**最顶部连续墨带**、其下才是纯竖笔，
+ *  故只擦"弧带以下"的竖笔 —— 弧整条保留，它与下方增时线之间那段纯竖笔被切断即达到解连通。擦出的
+ *  竖笔按小节线补回。只作用于"够高(≳2字号)、够宽(≳1字号)、够稀疏(填充<25%)"的粘连块，普通数字块/
+ *  连音块（无贯穿全高竖笔）原样返回。 */
+function untangleBridged(comps: Component[], bin: Binary, numH: number): Component[] {
+  const out: Component[] = [];
+  for (const k of comps) {
+    const b = k.bbox;
+    if (b.h < numH * 1.8 || b.w < numH * 0.9 || k.area >= b.w * b.h * 0.25) { out.push(k); continue; }
+    const bars = fullHeightBars(bin, b, numH);
+    if (!bars.length) { out.push(k); continue; }
+    const halo = Math.ceil(numH * 0.25);
+    const inBar = (absX: number) => bars.some((bar) => Math.abs(absX - bar.cx) <= halo);
+    // 只取**本连通块自身**的像素：bbox 矩形里常混入相邻的独立块（如邻音的增时线），直接按矩形
+    // 复制会把它们也 re-CCL 出来、与其本体重复计数。故从竖笔上一枚种子像素 8-邻接泛洪重建本块掩码。
+    const mask = new Uint8Array(b.w * b.h);
+    const seed = (bars[0].y - b.y) * b.w + (Math.round(bars[0].cx) - b.x);
+    const st = [seed]; mask[seed] = 1;
+    while (st.length) {
+      const cur = st.pop()!, yy = (cur / b.w) | 0, xx = cur - yy * b.w;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const ny = yy + dy, nx = xx + dx;
+        if (ny < 0 || ny >= b.h || nx < 0 || nx >= b.w) continue;
+        const ni = ny * b.w + nx;
+        if (!mask[ni] && bin.data[(b.y + ny) * bin.w + (b.x + nx)]) { mask[ni] = 1; st.push(ni); }
+      }
+    }
+    // 弧带 = 顶部连续墨带（列扫时跳过竖笔列，免竖笔把整列串成一带）。其下界即开始擦竖笔的位置。
+    const rowInkExcl = (yy: number) => {
+      let n = 0;
+      for (let xx = 0; xx < b.w; xx++) if (!inBar(b.x + xx) && mask[yy * b.w + xx]) n++;
+      return n;
+    };
+    let y = 0;
+    while (y < b.h && rowInkExcl(y) === 0) y++;
+    while (y < b.h && rowInkExcl(y) > 0) y++;
+    const arcBottom = y;                        // 块内偏移：弧带下界，此下的竖笔可擦
+    // 子图：本块掩码擦掉弧带以下的竖笔列，重做连通域 → 弧/增时线/数字各自独立。
+    const sub: Binary = { w: b.w, h: b.h, data: new Uint8Array(b.w * b.h) };
+    for (let yy = 0; yy < b.h; yy++)
+      for (let xx = 0; xx < b.w; xx++) {
+        if (!mask[yy * b.w + xx]) continue;
+        if (yy >= arcBottom && inBar(b.x + xx)) continue;   // 擦弧带以下的竖笔
+        sub.data[yy * b.w + xx] = 1;
+      }
+    const pieces = connectedComponents(sub, 4).map((p) => ({
+      id: p.id, area: p.area,
+      bbox: { x: b.x + p.bbox.x, y: b.y + p.bbox.y, w: p.bbox.w, h: p.bbox.h },
+      cx: b.x + p.cx, cy: b.y + p.cy,
+    }));
+    for (const bar of bars)
+      out.push({ id: 2_000_000 + out.length, bbox: { x: Math.round(bar.cx - 1), y: bar.y, w: 2, h: bar.h }, area: 2 * bar.h, cx: bar.cx, cy: bar.y + bar.h / 2 });
+    out.push(...pieces);
+  }
+  return out;
+}
+
+/** 估计数字字号：取"近似方形且较大"连通块的高度中位数。 */
+function estimateNumH(comps: Component[]): number {
   const squarish = comps.filter((k) => {
     const r = k.bbox.w / k.bbox.h;
     return r > 0.35 && r < 1.6 && k.bbox.h >= 6;
   });
-  const numH = median(squarish.map((k) => k.bbox.h)) || 16;
+  return median(squarish.map((k) => k.bbox.h)) || 16;
+}
 
+function classify(comps: Component[], bin: Binary): { c: Classified; numH: number } {
+  const numH = estimateNumH(comps);
   const c: Classified = { blocks: [], barlines: [], hlines: [], dots: [] };
   // 高瘦竖块可能是"八度点 + 窄数字"粘连体（数字不含点）：优先切开、把点与数字笔各归其类，
   // 否则会被下面的小节线判据整块吞掉而丢音（实测高八度 "1̇" 在单行简谱里 h 恰同真小节线）。
@@ -86,9 +181,11 @@ function classify(comps: Component[], bin: Binary): { c: Classified; numH: numbe
     }
     // 小节线：细高竖条（高 ≳ 字号，宽很窄）
     if (h >= numH * 0.85 && w <= Math.max(2, numH * 0.35)) { c.barlines.push(k); continue; }
-    // 终止线/粗小节线：比普通小节线粗（w 可达 ~0.5字号），但仍明显高瘦——高于一个字号且 h/w≥2.2。
-    // 否则会落进下面的数字块判据被 OCR 成 "1"（实测末尾 ▮ 终止线 w15 h56 → 误识两个 1）。
-    if (h >= numH * 1.3 && w <= numH * 0.6 && h / w >= 2.2) { c.barlines.push(k); continue; }
+    // 终止线/粗小节线：比普通小节线粗（w 可达 ~0.5字号），但仍**明显更瘦长**——高于一个字号且
+    // h/w≥3.5。数字 "1"（一条竖笔）恰是"更宽更矮"：实测 w≈0.5字号、h≈1.3字号 → h/w≈2.7，低于
+    // 3.5 被排除、落到下面的数字块判据；而粗终止线 ▮（实测 w15 h56 → h/w≈3.7）仍 ≥3.5 保留。
+    // 早先用 h/w≥2.2 会把 "1" 当小节线整片丢掉（本行八处 "1" 全失，见「哦愿我有千万舌头」）。
+    if (h >= numH * 1.3 && w <= numH * 0.6 && h / w >= 3.5) { c.barlines.push(k); continue; }
     // 独立横线：扁宽（增时线/分隔），且不够高不足以含数字
     if (w >= numH * 0.6 && h <= Math.max(3, numH * 0.32)) { c.hlines.push(k); continue; }
     // 小点：八度点/附点
@@ -342,7 +439,10 @@ function midbandInk(bin: Binary, b: Rect): number {
 }
 
 export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<RecognizedScore> {
-  const comps = connectedComponents(bin, 4);
+  // 去连通：把贯穿全高的小节线（常像"桥"把弧/增时线粘成一团）从像素上擦掉重做连通域，
+  // 让弧/小节线/数字各自独立、以干净连通块流入下面的 classify 与 detectSlurs。
+  const raw = connectedComponents(bin, 4);
+  const comps = untangleBridged(raw, bin, estimateNumH(raw));
   const { c, numH } = classify(comps, bin);
 
   // 数字块 → 数字格（拆分粘连/连音，并测各自下划线 div）。
@@ -430,7 +530,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const useRows = rows.length ? rows : allRows;
 
   // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
-  // comps 之外再补上与数字粘连、已被切出的弧帽（arcComps）。
+  // comps 之外再补上与数字粘连切出的弧帽（arcComps）。与小节线粘连的弧已在 untangleBridged
+  // 去连通阶段还原为 comps 里的独立连通块，这里天然一并检测。
   detectSlurs([...comps, ...arcComps], useRows, numH);
 
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
