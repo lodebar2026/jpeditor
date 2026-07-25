@@ -293,10 +293,17 @@ export async function recognizeLyrics(
     // 行末/句末标点（；。，等）小巧、不在 band，落在末字右侧空档 → 只扫到字身右缘就永远采不到。
     // 把**紧邻行左右缘（±~1 字宽）的 punct 尺寸小墨块**并入该行，精确扩 x 窗口（不盲扫空白，避免
     // 引入杂点/邻行噪声）；随后投影成块、由 mergePunctBlocks 并入相邻汉字。
+    // 宽度上限用 numH*0.8 而非 charMin(=numH*0.5)：句号是小圆，实测 w 可达 ~numH*0.5（恰等 charMin），
+    // 卡 `w>=charMin` 会把它漏掉（W1 句号 w9 收下、W3 句号 w10 被漏 → 丢末尾句号）。h<charMin 已保证
+    // 只收矮块（真汉字 h≈1.7×charMin 早被排除），故放宽宽度安全，仍远低于汉字宽。
     for (const c of comps) {
       const b = c.bbox;
-      if (!inBand(c) || b.h >= charMin || b.h < 3 || b.w >= charMin) continue; // 只收小墨块(punct 尺寸)
-      const ln = lines.find((L) => Math.abs(median(L.map(dcy)) - dcy(c)) < numH * 0.5);
+      if (!inBand(c) || b.h >= charMin || b.h < 3 || b.w >= numH * 0.8) continue; // 只收小墨块(punct 尺寸)
+      // 垂直容差用 numH*0.9：句末标点坐在**基线**、其中心比本行字心低约半个字高（实测 dcy 差 ~9~11px），
+      // 卡在原来的 numH*0.5(=10) 边界上——不同浏览器/WebView 的 JPEG 解码有 ±1px 抖动即可让它时收时漏
+      // （同一图在无头 Edge 收得到、在 tauri WebView 却漏 W1 句号）。放宽到 0.9 远离边界，仍远小于 verse
+      // 行距一半(~1.3字号)，不会误挂到相邻 verse 行。
+      const ln = lines.find((L) => Math.abs(median(L.map(dcy)) - dcy(c)) < numH * 0.9);
       if (!ln) continue;
       const lx0 = Math.min(...ln.map((k2) => k2.bbox.x)), lx1 = Math.max(...ln.map((k2) => rright(k2.bbox)));
       if ((c.cx > lx1 && c.cx <= lx1 + numH * 1.1) || (c.cx < lx0 && c.cx >= lx0 - numH * 1.1)) ln.push(c);
