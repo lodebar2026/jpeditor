@@ -154,6 +154,30 @@ class LyricProcessor {
   }
 }
 
+/** 副歌（refrain）的第一个和弦；用作乐句排版的「主歌 / 副歌」分页点。
+ *  两道护栏：① 须在主歌之后——单段谱里 findRefrain 会把整首都标成 refrain；
+ *  ② 副歌须有份量（≥8 个音且不少于全曲 1/8）——只有末尾一两个字共用时不算副歌。
+ *  否则返回 null，免得断出残页。 */
+function firstRefrainChord(part: Part): Chord | null {
+  const chords: Chord[] = [];
+  for (const m of part.measures) {
+    for (const ent of m.entries) if (ent instanceof Chord) chords.push(ent);
+  }
+  let sawVerse = false;
+  for (let i = 0; i < chords.length; i++) {
+    for (const nt of chords[i].notes) {
+      for (const lrc of nt.lyrics) {
+        if (lrc.text.length === 0) continue;
+        if (!lrc.refrain) { sawVerse = true; continue; }
+        if (!sawVerse) continue;
+        const rest = chords.length - i;
+        return rest >= Math.max(8, chords.length / 8) ? chords[i] : null;
+      }
+    }
+  }
+  return null;
+}
+
 class JpScore {
   lines: string[] = [];
   // 点选定位用的行内相对记录（最后 computeMeta 换算成绝对偏移）。
@@ -162,6 +186,7 @@ class JpScore {
   private authorRecs: Array<{ text: string; rec: Rec }> = [];
   private _proc: LyricProcessor | null = null; // 保留 LyricProcessor 以便取歌词逐音节记录
   private _breaks: PhraseBreaks | null = null;  // 乐句模式的断行，makeVoiceData / makeWordData 共用
+  private _pageLines = new Set<number>(); // 乐句模式：段末（主歌/副歌分界）的乐句行号，1 基
 
   constructor(private phrase = false) {}
 
@@ -204,9 +229,14 @@ class JpScore {
     if (scr.playData.noRepeat) return;
     if (scr.playData.measures.length === 0) return;
     this.lines.push(".Repeat");
-    for (const it of scr.playData.measures) {
-      this.lines.push(`${it.mid + 1}-${it.end}V${it.pass}`);
-    }
+    const items = scr.playData.measures;
+    items.forEach((it, idx) => {
+      const head = it.skip > 0 ? `${it.mid + 1}.${it.skip + 1}` : `${it.mid + 1}`;
+      const tail = it.limit >= 0 ? `${it.end}.${it.limit}` : `${it.end}`;
+      // 乐句排版：主歌 / 副歌各自成段，段末（endOfPass）单独起页；末段不用再换。
+      const page = this.phrase && it.endOfPass && idx < items.length - 1 ? "P" : "";
+      this.lines.push(`${head}-${tail}V${it.pass}${page}`);
+    });
   }
 
   private makeMetaData(scr: Score): void {
@@ -291,11 +321,17 @@ class JpScore {
     const R = this.lines.length - voiceStart;
     if (R <= 0) return;
     const pageAt = new Set<number>(); // 1 基乐句行号：其行尾为换页
-    for (let p = 4; p <= R - 1; p += 4) pageAt.add(p);
-    pageAt.add(R); // 末行收尾（分隔反复段）
-    if (R % 4 === 1 && R >= 5) {
-      pageAt.delete(R - 1);
-      pageAt.add(R - 2);
+    // 主歌 / 副歌各自成段（_pageLines 记的是段末行号），段内再按每页至多 4 行分。
+    const bounds = [0, ...[...this._pageLines].filter((n) => n > 0 && n < R).sort((a, b) => a - b), R];
+    for (let s = 0; s + 1 < bounds.length; s++) {
+      const beg = bounds[s];
+      const len = bounds[s + 1] - beg;
+      for (let p = 4; p <= len - 1; p += 4) pageAt.add(beg + p);
+      pageAt.add(beg + len); // 段末收尾（分隔主歌/副歌、反复段）
+      if (len % 4 === 1 && len >= 5) {
+        pageAt.delete(beg + len - 1);
+        pageAt.add(beg + len - 2);
+      }
     }
     for (let i = 1; i <= R; i++) {
       const idx = voiceStart + i - 1;
@@ -309,6 +345,8 @@ class JpScore {
     const voiceStart = this.lines.length;
     // 乐句排版：忽略源自带换行，按乐句分析结果断行；否则保留原始 newSystem。
     const breaks = this._breaks;
+    // 乐句排版：副歌另起一页（无反复展开的多段谱走这条；有反复的靠 .Repeat 的 P 标记）。
+    const refrainChord = breaks ? firstRefrainChord(part) : null;
     let l = "";
     let lineNo = 0;
     // 换行：乐句模式每 4 行自动换页（一页不超过 4 行）；否则沿用源换页标记。
@@ -343,6 +381,11 @@ class JpScore {
           this.lines.push(l);
           l = "";
         } else if (ch instanceof Chord) {
+          if (ch === refrainChord) {
+            // 副歌起点：本行先收掉（已在别处断过就不重复断），并记为段末 → 副歌单独起页。
+            if (l.length > 0) pushBreak(false);
+            if (lineNo > 0) this._pageLines.add(lineNo);
+          }
           const nt = ch.notes[0];
           if (nt.tieStart) l += "(";
           if (ch.slurStart) l += "(";

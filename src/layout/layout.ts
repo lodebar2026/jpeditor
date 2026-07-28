@@ -1268,7 +1268,9 @@ export class Line {
     });
   }
 
-  load(m: S.Measure, lrc: number, options: LayoutOptions, final: boolean): void {
+  /** `skip`：跳过本小节开头这么多个和弦（弱起式接入，见 PlayItem.skip）。
+   *  `limit`：只装载前这么多个和弦（-1 = 整节，见 PlayItem.limit）；截断时不补小节线。 */
+  load(m: S.Measure, lrc: number, options: LayoutOptions, final: boolean, skip = 0, limit = -1): void {
     if (m.timeChange && m.index !== 0) {
       const ts = TimeSig.fromTime(m.time, options);
       this.entries.push(ts);
@@ -1281,8 +1283,10 @@ export class Line {
       }
       this.entries.push(key);
     }
-    let hasBarline = false;
+    let hasBarline = limit >= 0; // 截断的小节尾不补小节线（下一段接着唱同一小节）
+    let taken = 0;
     for (const ch of m.entries) {
+      if (limit >= 0 && taken >= limit) break;
       if (ch instanceof S.LineBreak) {
         const ignore = ch.pass !== null && ch.pass !== lrc;
         if (!ignore) {
@@ -1292,7 +1296,9 @@ export class Line {
         }
         continue;
       } else if (ch instanceof S.Chord) {
+        if (skip > 0) { skip--; continue; }
         NoteEntry.fromChord(this.entries, ch, lrc, options);
+        taken++;
       } else if (ch instanceof S.BarlineEntry) {
         const ent = new Barline(final, options);
         ent.update();
@@ -1494,7 +1500,11 @@ export class Layout {
         const pass = it.pass;
         m.autoBeamGroup();
         const final = mid === it.end - 1 && idx === repMeasures.length - 1;
-        l.load(m, pass, this.options, final);
+        l.load(
+          m, pass, this.options, final,
+          mid === it.mid ? it.skip : 0,
+          mid === it.end - 1 ? it.limit : -1,
+        );
       }
       if (it.endOfPass && dur === null) {
         const lst = l.entries[l.entries.length - 1];

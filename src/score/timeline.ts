@@ -57,15 +57,37 @@ function measureLen(score: Score, mid: number): number {
   return len;
 }
 
-/** Expanded play order as [mid, end) measure ranges with a start offset + pass. */
-function playRanges(score: Score): { mid: number; end: number; offset: number; pass: number }[] {
+/** Expanded play order as [mid, end) measure ranges with a start offset + pass.
+ *  `until` clips the last measure (PlayItem.limit：只唱到该小节第 n 个音符为止)。 */
+function playRanges(
+  score: Score,
+): { mid: number; end: number; offset: number; pass: number; until: number }[] {
   const items = score.playData.measures;
   if (items.length > 0) {
-    return items.map((p) => ({ mid: p.mid, end: p.end, offset: p.offset.toFloat(), pass: p.pass }));
+    return items.map((p) => ({
+      mid: p.mid,
+      end: p.end,
+      offset: p.offset.toFloat(),
+      pass: p.pass,
+      until: p.limit >= 0 ? chordEnd(score, p.end - 1, p.limit) : Number.POSITIVE_INFINITY,
+    }));
   }
   // No expansion computed: linear single pass over all measures.
   const n = score.parts[0]?.measures.length ?? 0;
-  return n > 0 ? [{ mid: 0, end: n, offset: 0, pass: 1 }] : [];
+  return n > 0 ? [{ mid: 0, end: n, offset: 0, pass: 1, until: Number.POSITIVE_INFINITY }] : [];
+}
+
+/** 第 `limit` 个和弦唱完时的小节内位置（四分音符为单位）。 */
+function chordEnd(score: Score, mid: number, limit: number): number {
+  const m = score.parts[0]?.measures[mid];
+  if (!m) return Number.POSITIVE_INFINITY;
+  let n = 0;
+  for (const ent of m.entries) {
+    if (!(ent instanceof Chord)) continue;
+    n++;
+    if (n === limit) return ent.position.toFloat() + (ent.duration?.toFloat() ?? 0);
+  }
+  return Number.POSITIVE_INFINITY;
 }
 
 export function buildTimeline(score: Score): Timeline {
@@ -76,6 +98,7 @@ export function buildTimeline(score: Score): Timeline {
   for (const range of playRanges(score)) {
     for (let mid = range.mid; mid < range.end; mid++) {
       const startOffset = mid === range.mid ? range.offset : 0;
+      const endOffset = mid === range.end - 1 ? range.until : Number.POSITIVE_INFINITY;
       for (let pi = 0; pi < score.parts.length; pi++) {
         const m = score.parts[pi].measures[mid];
         if (!m) continue;
@@ -83,6 +106,7 @@ export function buildTimeline(score: Score): Timeline {
           if (!(ent instanceof Chord)) continue;
           const cp = ent.position.toFloat();
           if (cp < startOffset) continue; // clipped by a mid-measure jump entry
+          if (cp >= endOffset) continue; // clipped by PlayItem.limit
           const t0 = pos + (cp - startOffset);
           const t1 = t0 + (ent.duration?.toFloat() ?? 0);
           if (pi === 0 && !ent.rest) anchors.push({ t0, chord: ent, pass: range.pass });
@@ -92,7 +116,7 @@ export function buildTimeline(score: Score): Timeline {
           }
         }
       }
-      pos += measureLen(score, mid) - startOffset;
+      pos += Math.min(measureLen(score, mid), endOffset) - startOffset;
     }
   }
 

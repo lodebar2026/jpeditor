@@ -545,6 +545,10 @@ export class TimePosition {
 export class PlayItem extends TimePosition {
   end = 0;
   endOfPass = false;
+  /** 首小节要跳过的和弦个数（弱起式接入，`.Repeat` 里写作 `11.2-20V4`）。 */
+  skip = 0;
+  /** 末小节只取前这么多个和弦（-1 = 整节，`.Repeat` 里写作 `11.1-11.1V1`）。 */
+  limit = -1;
   clone(): PlayItem {
     const p = new PlayItem();
     p.mid = this.mid;
@@ -552,6 +556,8 @@ export class PlayItem extends TimePosition {
     p.offset = this.offset;
     p.end = this.end;
     p.endOfPass = this.endOfPass;
+    p.skip = this.skip;
+    p.limit = this.limit;
     return p;
   }
 }
@@ -587,6 +593,12 @@ export class Score {
       pit.mid = it.first;
       pit.end = it.last + 1;
       pit.pass = it.verse;
+      pit.skip = it.skip;
+      pit.limit = it.limit;
+      pit.endOfPass = it.page;
+      // 跳过起头几个音时，试听/MIDI 侧用 offset 裁掉同样的部分（buildTimeline 只认 offset）。
+      const mea = this.parts[0]?.measures[it.first];
+      if (it.skip > 0 && mea) pit.offset = skipOffset(mea, it.skip);
       this.playData.measures.push(pit);
     }
   }
@@ -617,9 +629,94 @@ export class Score {
     if (repeatByVerse) rep.repeatByLyric();
     this.playData.measures = [];
     this.playData.measures.push(...rep.result);
+    this.expandVoltaByVerse();
     for (const m of measures) {
       if (m.repeatBackward) this.playData.hasRepeat = true;
     }
+  }
+
+  /** 「一房只有第 1 段 + 歌词段数多于房数」的赞美诗谱（如《我心等候祢》）补救展开。
+   *
+   *  这类谱：A 段有 V 行歌词，一房只写第 1 行（第 1 段唱完回头、不进副歌），
+   *  二房起的行整体上移一行（行 k ↔ 第 k+1 段，谱面常在行首标「2./3./4.」），
+   *  末尾多出来的行则是收尾再唱一遍的副歌。RepeatProcessor 只按房数推 2 遍，
+   *  第 3、4 段会整个丢掉；这里按歌词行数重排 playData.measures。
+   *
+   *  条件不满足时原样返回（普通两房两段谱不受影响）。 */
+  private expandVoltaByVerse(): void {
+    const part = this.parts[0];
+    const measures = part.measures;
+    const items = this.playData.measures;
+    if (items.length === 0) return;
+
+    // 唯一一个 backward 反复，且带房号；其后须紧跟二房（endingLeft）。
+    let backIdx = -1;
+    for (let i = 0; i < measures.length; i++) {
+      if (!measures[i].repeatBackward) continue;
+      if (backIdx >= 0) return; // 多处反复，不处理
+      backIdx = i;
+    }
+    if (backIdx < 0) return;
+    const volta1End = backIdx + 1; // 一房尾后一格
+    if (measures[backIdx].endingRight === null) return;
+    let volta1Beg = -1;
+    for (let i = backIdx; i >= 0; i--) {
+      if (measures[i].endingLeft) { volta1Beg = i; break; }
+    }
+    if (volta1Beg < 0) return;
+    const tailBeg = volta1End;
+    if (tailBeg >= measures.length || !measures[tailBeg].endingLeft) return;
+
+    // 反复起点（无 forward 记号则从头）。
+    let repStart = 0;
+    for (let i = 0; i < volta1Beg; i++) if (measures[i].repeatForward) repStart = i;
+    if (repStart >= volta1Beg) return;
+
+    const verses = part.getVerseCount(0, measures.length);
+    let maxPass = 0;
+    for (const it of items) if (it.pass > maxPass) maxPass = it.pass;
+    if (verses <= maxPass) return; // 段数没有多出来，交给原逻辑
+    if (part.getVerseCount(volta1Beg, volta1End) !== 1) return; // 一房不止第 1 段，形态不符
+
+    const tailVerses = part.getVerseCount(tailBeg, measures.length);
+    const out: PlayItem[] = [];
+    const push = (mid: number, end: number, pass: number): PlayItem => {
+      const p = new PlayItem();
+      p.mid = mid;
+      p.end = end;
+      p.pass = pass;
+      out.push(p);
+      return p;
+    };
+    // 二房开头那几个音是这一段的结束音（与一房同位），断句上归主歌、不归副歌，
+    // 这样「…惟靠祢恩典我站立。」不会被拆到副歌那页去。
+    const lead = voltaLead(measures, volta1Beg, volta1End, tailBeg);
+    const tailStart = (p: PlayItem): void => {
+      p.skip = lead;
+      if (lead > 0) p.offset = skipOffset(measures[tailBeg], lead);
+    };
+    // 第 1 遍：A 段 + 一房（连续，合成一项），唱完回头、不进副歌。
+    push(repStart, volta1End, 1).endOfPass = true;
+    // 第 2..V 遍：A 段用第 k 行，二房+副歌用第 k-1 行（整体上移一行）。
+    for (let k = 2; k <= verses; k++) {
+      push(repStart, volta1Beg, k);
+      const tv = k - 1;
+      if (tv <= tailVerses && lead > 0) push(tailBeg, tailBeg + 1, tv).limit = lead; // 结束音，仍归主歌那页
+      out[out.length - 1].endOfPass = true; // 主歌段末
+      if (tv <= tailVerses) {
+        const p = push(tailBeg, measures.length, tv);
+        tailStart(p);
+        p.endOfPass = true; // 副歌段末
+      }
+    }
+    // 二房+副歌里没用掉的行 = 收尾再唱的副歌，每行追加一遍（同样从副歌起拍接入）。
+    for (let v = verses; v <= tailVerses; v++) {
+      const p = push(tailBeg, measures.length, v);
+      tailStart(p);
+      p.endOfPass = true;
+    }
+    out[out.length - 1].endOfPass = false; // 末遍不额外换页
+    this.playData.measures = out;
   }
 
   jp(): string {
@@ -819,14 +916,54 @@ export class RepeatProcessor {
   }
 }
 
+/** 跳过 `skip` 个和弦后的小节内时值位置（PlayItem.offset 用，试听/MIDI 侧靠它裁剪）。 */
+function skipOffset(m: Measure, skip: number): Fraction {
+  let n = 0;
+  for (const ent of m.entries) {
+    if (!(ent instanceof Chord)) continue;
+    if (n === skip) return ent.position;
+    n++;
+  }
+  return new Fraction(0);
+}
+
+function chordsOf(m: Measure): Chord[] {
+  return m.entries.filter((e): e is Chord => e instanceof Chord);
+}
+
+/** 二房开头「与一房同位的结束音」个数：按一房的和弦数算，封顶到二房首节留一个音给副歌起拍。
+ *  这几个音属于本段主歌（一房/二房各写一次的段末音），断句、分页都跟主歌走。
+ *  跨连线/延音时返回 0（不把带连线的音切开）。 */
+function voltaLead(measures: Measure[], volta1Beg: number, volta1End: number, tailBeg: number): number {
+  let n = 0;
+  for (let i = volta1Beg; i < volta1End; i++) n += chordsOf(measures[i]).length;
+  const tail = chordsOf(measures[tailBeg]);
+  n = Math.min(n, tail.length - 1);
+  if (n <= 0) return 0;
+  for (let i = 0; i < n; i++) {
+    const c = tail[i];
+    if (c.slurStart || c.slurEnd) return 0;
+    if (c.notes.some((nt) => nt.tieStart || nt.tieEnd)) return 0;
+  }
+  return n;
+}
+
 export class RepeatSpecItem {
   constructor(
     public first: number,
     public last: number,
     public verse: number,
+    /** 首小节跳过的和弦个数（`11.2-20V4` → skip=1）。 */
+    public skip = 0,
+    /** 段末换页：这一段（主歌/副歌）唱完起新页，写作 `1-10V1P`。 */
+    public page = false,
+    /** 末小节只取前 n 个和弦（-1 = 整节），写作 `11.1-11.1V1`。 */
+    public limit = -1,
   ) {}
   toString(): string {
-    return `${this.first}-${this.last}V${this.verse}`;
+    const head = this.skip > 0 ? `${this.first}.${this.skip + 1}` : `${this.first}`;
+    const tail = this.limit >= 0 ? `${this.last}.${this.limit}` : `${this.last}`;
+    return `${head}-${tail}V${this.verse}${this.page ? "P" : ""}`;
   }
 }
 
@@ -835,11 +972,21 @@ export class RepeatSpec {
   constructor(s: string) {
     for (const it of s.split("\n")) {
       const arr = it.split("V");
+      // 段号后可带 `P`：这一段唱完换页（乐句排版把主歌/副歌分页用）。
+      const page = /p\s*$/i.test(arr[1] ?? "");
       const v = parseInt(arr[1], 10);
       const rng = arr[0].split("-");
-      const first = parseInt(rng[0], 10) - 1;
-      const last = parseInt(rng[rng.length - 1], 10) - 1;
-      this.items.push(new RepeatSpecItem(first, last, v));
+      // 首端可写作 `小节.音符序号`（1 基），表示这一遍从该小节的第 n 个音符起接入。
+      // 逗号在 .Repeat 里是条目分隔符（见 RepeatSection.parse），故用点号；
+      // 旧解析器 parseInt("11.2") 仍得 11，退化成整小节接入而不是报错。
+      const fst = rng[0].split(".");
+      const first = parseInt(fst[0], 10) - 1;
+      const skip = fst.length > 1 ? Math.max(0, parseInt(fst[1], 10) - 1) : 0;
+      // 末端同样可写 `小节.音符个数`：这一段只唱到该小节的第 n 个音符为止。
+      const lst = rng[rng.length - 1].split(".");
+      const last = parseInt(lst[0], 10) - 1;
+      const limit = lst.length > 1 ? Math.max(0, parseInt(lst[1], 10)) : -1;
+      this.items.push(new RepeatSpecItem(first, last, v, skip, page, limit));
     }
   }
 }
