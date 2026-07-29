@@ -322,7 +322,13 @@ class JpScore {
     if (R <= 0) return;
     const pageAt = new Set<number>(); // 1 基乐句行号：其行尾为换页
     // 主歌 / 副歌各自成段（_pageLines 记的是段末行号），段内再按每页至多 4 行分。
-    const bounds = [0, ...[...this._pageLines].filter((n) => n > 0 && n < R).sort((a, b) => a - b), R];
+    const rawBounds = [0, ...[...this._pageLines].filter((n) => n > 0 && n < R).sort((a, b) => a - b), R];
+    // 只有 1 行的段（如前奏 Intro）单独占一页太空 → 并入下一段（丢掉它的段界）。
+    const bounds = [rawBounds[0]];
+    for (let i = 1; i < rawBounds.length; i++) {
+      if (i < rawBounds.length - 1 && rawBounds[i] - bounds[bounds.length - 1] < 2) continue;
+      bounds.push(rawBounds[i]);
+    }
     for (let s = 0; s + 1 < bounds.length; s++) {
       const beg = bounds[s];
       const len = bounds[s + 1] - beg;
@@ -361,6 +367,9 @@ class JpScore {
       const doBreak = mid > 0 && (breaks ? breaks.measureBreaks.has(mid) : m.newSystem);
       // l 为空说明上一乐句刚在小节内(midBreak)断过，别再补一次空行。
       if (doBreak && l.length > 0) pushBreak(m.newPage);
+      // 段落起点(Verse/Chorus/Coda…)：记下上一行为段末 → balanceVoicePages 让新段另起一页
+      // （否则主歌与副歌会挤在同一页）。
+      if (breaks?.sectionStarts.has(mid) && lineNo > 0) this._pageLines.add(lineNo);
       if (m.repeatForward) {
         l += "|:";
         if (m.endingLeft) {
@@ -400,7 +409,11 @@ class JpScore {
           if (ch.slurEnd) l += ")";
           l += " ";
           // 乐句尾（弱起谱漏进本小节的休止/长音）处行内换行，不加小节线。
-          if (breaks?.midBreaks.has(ch)) pushBreak(false);
+          if (breaks?.midBreaks.has(ch)) {
+            pushBreak(false);
+            // 段界顺延到小节内部（弧闭合处）时，这一行就是段末 → 记下让新段另起一页。
+            if (breaks.sectionCutChords.has(ch) && lineNo > 0) this._pageLines.add(lineNo);
+          }
         } else if (ch instanceof BarlineEntry) {
           if (!ch.position.equals(0)) {
             const bl = this.makeBarline(m);
