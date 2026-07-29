@@ -21,7 +21,7 @@ const REC_URL = `${BASE}redist/ocr/ch_PP-OCRv6_small_rec_infer.onnx`;
 const DICT_URL = `${BASE}redist/ocr/ppocrv6_dict.txt`;
 const DET_URL = `${BASE}redist/ocr/ch_PP-OCRv4_det_infer.onnx`;
 
-const REC_H = 48, REC_MAXW = 320;
+const REC_H = 48, REC_MAXW = 320, REC_MAXW_LONG = 2048;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _ort: any = null;
@@ -379,9 +379,13 @@ async function inferLogits(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ ar
  *  输入内容宽度上的**左缘/右缘**（CTC 非空标签连续run 的起止时间步换算）。xFrac 沿用原「起点」语义
  *  (歌词按它对齐音符，勿动)；x1Frac 为新增右缘，供按**字符边界间隙**(右字左缘−左字右缘)判词间空格。
  *  用于歌词条 & 页眉框——把逐条 N 次 IPC 压到 1 次。 */
-async function recognizeCharsPosMany(cells: OffscreenCanvas[], maxW = REC_MAXW): Promise<{ ch: string; xFrac: number; x1Frac: number }[][]> {
+async function recognizeCharsPosMany(cells: OffscreenCanvas[], maxW: number | "auto" = REC_MAXW): Promise<{ ch: string; xFrac: number; x1Frac: number }[][]> {
   if (!cells.length) return [];
-  const preps = cells.map((c) => prepCell(c, maxW));
+  // "auto"：逐条按其**自身宽度**定上限——常规歌词条 ≤320 → 与旧行为完全一致；只有切不开的超宽条
+  // （如整串英文音节 "How-awe-some-you-are"，小字号缩到 48px 高后宽近千）才放宽，免被压扁失真。
+  const maxWOf = (c: OffscreenCanvas) =>
+    maxW === "auto" ? Math.min(REC_MAXW_LONG, Math.max(REC_MAXW, Math.ceil(REC_H * (c.width / c.height)))) : maxW;
+  const preps = cells.map((c) => prepCell(c, maxWOf(c)));
   const results = await runRecArgmaxMany(preps.map((p) => ({ chw: p.chw, dims: p.dims })));
   const chars = _chars!;
   const _t0 = performance.now();
@@ -508,12 +512,12 @@ export function paddleOcrBackend(): OcrBackend {
       if (!canvases.length) return [];
       await ensureSession();
       // 全部歌词条一次 IPC（Rust 内部逐条推理=算力最优，往返只 1 次）。
-      return (await recognizeCharsPosMany(canvases)).map((cp) => cp.map((c) => c.ch).join(""));
+      return (await recognizeCharsPosMany(canvases, "auto")).map((cp) => cp.map((c) => c.ch).join(""));
     },
     async recognizeTextsPos(canvases: OffscreenCanvas[]): Promise<{ ch: string; xFrac: number }[][]> {
       if (!canvases.length) return [];
       await ensureSession();
-      return recognizeCharsPosMany(canvases); // 一次 IPC
+      return recognizeCharsPosMany(canvases, "auto"); // 一次 IPC
     },
     async recognizeRegion(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect; chars?: { text: string; cx: number; x1?: number }[] }[]> {
       await ensureSession();

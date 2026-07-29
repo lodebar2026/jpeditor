@@ -190,6 +190,25 @@ function parsePrint(m: Measure, printEl: Element): void {
   if (printEl.getAttribute("new-page") === "yes") { m.newSystem = true; m.newPage = true; }
 }
 
+// 段落词（流行/敬拜谱常见的段落方框标记）。`<words>` 也用于表情记号(rit./dolce)，故只认这些词，
+// 免把普通文字当段落；`<rehearsal>` 本就是排练/段落记号，一律收下。
+const SECTION_WORD_RE =
+  /^(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|refrain|tag|前奏|主歌|副歌|间奏|尾奏|尾声|桥段|插曲)\s*\d*$/i;
+
+/** 从 `<direction>` 取段落标记 → `Measure.sectionMark`（供乐句排版按段落硬换行）。 */
+function parseSectionMark(m: Measure, dirEl: Element): void {
+  for (const dt of elems(dirEl, "direction-type")) {
+    for (const el of Array.from(dt.children)) {
+      const txt = (el.textContent ?? "").trim();
+      if (!txt) continue;
+      if (el.tagName === "rehearsal" || (el.tagName === "words" && SECTION_WORD_RE.test(txt))) {
+        m.sectionMark = txt;
+        return;
+      }
+    }
+  }
+}
+
 function parseBarline(m: Measure, blEl: Element, st: MState): void {
   const loc = blEl.getAttribute("location") ?? "right";
   const st0 = txt(blEl, "bar-style");
@@ -253,6 +272,7 @@ function loadMeasure(
         st.pos = st.noteEnd;
         const snd = elem(item, "sound");
         if (snd) parseSound(snd, tmp.playData, m.index, st, div);
+        parseSectionMark(m, item);
         break;
       }
     }

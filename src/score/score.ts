@@ -340,6 +340,9 @@ export class Measure {
   endingLeft = false;
   endingNum: Set<number> | null = null;
   endingRight: StartStopDiscontinue | null = null;
+  /** 段落标记（Intro/Verse/Chorus/Coda…，来自 MusicXML `<rehearsal>`/段落词 `<words>`）。
+   *  乐句排版据此在段首硬换行、并按段分别排行长（见 phrase.ts）。原 Kotlin 无此字段。 */
+  sectionMark: string | null = null;
 
   constructor(public index: number) {}
 

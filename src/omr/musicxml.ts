@@ -156,8 +156,14 @@ export function toMusicXml(score: RecognizedScore): string {
         `<per-minute>${score.tempo}</per-minute></metronome></direction-type>` +
         `<sound tempo="${score.tempo}"/></direction>`
       : "";
+    // 段落标记（Intro/Verse/Chorus/Coda…）：识别时标在该段首音符上 → 本小节开头的 <direction>。
+    // 下游 score/musicxml.ts 收进 Measure.sectionMark，乐句排版据此按段落断行。
+    const mark = notes.find((n) => n.sectionMark)?.sectionMark;
+    const markEl = mark
+      ? `<direction placement="above"><direction-type><words>${escapeXml(mark)}</words></direction-type></direction>`
+      : "";
     const noteEls = notes.map((n) => noteXml(n, score.fifths)).join("");
-    return `<measure number="${mi}">${printEl}${attrs}${tempoEl}${noteEls}</measure>`;
+    return `<measure number="${mi}">${printEl}${attrs}${tempoEl}${markEl}${noteEls}</measure>`;
   }).join("");
 
   const workXml = score.title ? `<work><work-title>${escapeXml(score.title)}</work-title></work>` : "";

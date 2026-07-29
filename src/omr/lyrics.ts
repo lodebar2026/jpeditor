@@ -20,6 +20,41 @@ const normPunct = (ch: string) => PUNCT_FULL[ch] ?? ch;
 // PP-OCR 对中文引号输出全角（实测 rec 已能读出 “ ”），故一并收下；半/全角开闭都认。
 const LYRIC_QUOTE_OPEN = /[“‘"']/;
 const LYRIC_QUOTE_CLOSE = /[”’]/;
+// 英文歌词：一个音节 = 一串字母(可含撇号 don't)，音节间以连字符相连（"How-awe-some-you-are"），
+// 词间以空白相隔。故拉丁串按 **连字符** 与 **空白**(rec 不吐空格 → 按源图字距)切成音节单元，
+// 每个音节占一个音符，与汉字单元同等对待。
+const isLatin = (c: string) => /[A-Za-z]/.test(c);
+const isApostrophe = (c: string) => /['’]/.test(c);
+const isHyphen = (c: string) => /[-‐‑–—]/.test(c);
+
+// ── 和弦/段落标记行 ────────────────────────────────────────────────────────
+// 吉他和弦(C / G/B / Am / Gsus4)与段落方框(Intro/Verse/Chorus/Coda)印在**下一乐谱行音符的上方**，
+// 同样落在"本行下缘→下一行上缘"的歌词带里，被当成一条 verse 行。汉字歌词时它们被字符过滤滤空、
+// 无害；放开拉丁字符后就会变成伪 verse 污染 .Words，故按文本形态显式剔除（须在 rec 之后）。
+// 段落**起点**方框（用于给乐句排版分段）：Fine/D.C./D.S. 是终止/反复记号而非段落起点，故不在此列。
+const SECTION_MARK_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|refrain|tag)\d*/i;
+// 注记行判定用（比上面多收 fine 等，这类行同样不是歌词、要从歌词带里剔掉）。
+const SECTION_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|fine|tag|refrain)\d*/gi;
+const CHORD_SUFFIX_RE = /(maj|min|sus|dim|aug|add)/gi;
+/** 整行 rec 原文是否为和弦/段落标记行（而非歌词）。
+ *  一行里的和弦常被连写成一个字母簇（"CG/BAm"、"AmC"、"EmF"），故不逐 token 匹配，而看形态：
+ *  ① 无汉字；② 每个字母簇（先剥去 maj/min/sus… 性质后缀）**首字母是 A-G 的根音**；
+ *  ③ 簇内最长连续小写段 ≤2（和弦性质符 m/dim 短，英文音节 "awe"/"some"/"ther" 则长）。
+ *  不依赖大小写正确（OCR 常把 C 读成 c），也不会误伤英文歌词——只要行内有一个音节不合和弦形态即否决。 */
+function isAnnotationLine(text: string): boolean {
+  if (/[一-鿿]/.test(text)) return false;                       // 有汉字 → 真歌词行
+  const rest = text.replace(SECTION_RE, " ");
+  if (!rest.trim()) return text.trim().length > 0;              // 纯段落标记（Intro/Chorus…）
+  const clusters = rest.match(/[A-Za-z]+/g) ?? [];
+  if (!clusters.length) return false;                            // 无字母 → 交给下游伪 verse 过滤
+  return clusters.every((c0) => {
+    const root = c0[0].toUpperCase();
+    if (root < "A" || root > "G") return false;
+    const c = c0.replace(CHORD_SUFFIX_RE, "");
+    const lower = c.match(/[a-z]+/g) ?? [];
+    return lower.every((seg) => seg.length <= 2);
+  });
+}
 
 /** 把一行(同 y)的连通块按 x 邻近并成字格。返回每个字格的合并包围盒，按 x 排序。 */
 export function mergeToChars(line: Component[], charH: number): Rect[] {
@@ -44,7 +79,7 @@ export function mergeToChars(line: Component[], charH: number): Rect[] {
 }
 
 // 一个 rec 块：本乐谱行(rowIdx)某 verse 的若干相邻字格（拼一条横图整体 rec）。
-interface Chunk { rowIdx: number; verse: number; cells: Rect[]; maxGap: number; }
+interface Chunk { rowIdx: number; verse: number; cells: Rect[]; maxGap: number; mark?: boolean; }
 
 // 调试可视化用：设 globalThis.__lyricTrace={} 后 recognizeLyrics 逐步把各阶段 I/O 记进来（供生成算法说明 HTML）。
 export interface LyricTrace {
@@ -235,6 +270,23 @@ function mergePunctBlocks(blocks: ProjBlock[], charW: number, longGap: number): 
   return out;
 }
 
+/** 把「相邻的小字块」并成一个字块：英文歌词字号比汉字小得多（约半个字高），一串音节
+ *  "How-awe-some-you-are" 本是连排的一段，但淡印处笔画断开时投影会把它切成两块，落进不同 rec 块
+ *  → 各自读到半个音节（"How-awe-s" / "ome-you-are"）。故把**两块都矮**(< 0.8×charH，汉字不满足)
+ *  且间隙小于半个汉字宽的相邻块并回一块，整串在同一自然区域里 rec。 */
+function mergeSmallTextBlocks(blocks: ProjBlock[], charW: number, charH: number): ProjBlock[] {
+  if (blocks.length < 2) return blocks;
+  const out = [{ ...blocks[0] }];
+  const isSmall = (b: ProjBlock) => b.dyBot - b.dyTop < charH * 0.8;
+  for (let i = 1; i < blocks.length; i++) {
+    const b = blocks[i], p = out[out.length - 1];
+    if (isSmall(b) && isSmall(p) && b.gapBefore < charW * 0.5) {
+      p.x1 = b.x1; p.dyTop = Math.min(p.dyTop, b.dyTop); p.dyBot = Math.max(p.dyBot, b.dyBot);
+    } else out.push({ ...b });
+  }
+  return out;
+}
+
 /** 投影字块 → 源图 Rect（deslant-y 在块中心 x 处折回原坐标；小块内斜率影响可忽略）。 */
 function blockRect(b: ProjBlock, k: number): Rect {
   const xc = (b.x0 + b.x1) / 2;
@@ -322,7 +374,7 @@ export async function recognizeLyrics(
     const longGap = charW * 0.6; // 长空白（乐句/标点后）→ 分块边界
     const maxGap = charW * 0.35; // 拼条时字间空白上限（去掉过宽字距 → 同条能多并几字，不压扁）
     // 把尾随标点小墨块并入前一字块（字块 = 汉字 + 尾随标点，裁条时一起 rec）。
-    const mergedBlocks = lineBlocks.map((blocks) => mergePunctBlocks(blocks, charW, longGap));
+    const mergedBlocks = lineBlocks.map((blocks) => mergeSmallTextBlocks(mergePunctBlocks(blocks, charW, longGap), charW, charH));
     if (TR) TR.charW = charW;
 
     // S4 注记过滤：真歌词行横向铺满谱行；"(副歌)"/"徐震宇译"/CCLI 版权等注记只占局部。
@@ -345,6 +397,15 @@ export async function recognizeLyrics(
     const rowT = TR ? { rowIdx: i, yTop, yBot, charH, bandBoxes: band.map((c) => c.bbox),
       noteBoxes: row.nums.map((n) => n.bbox), verses: [] as Array<{ verse: number; cells: Rect[]; cov: number; longGapBefore?: boolean[] }> } : null;
     if (TR && rowT) TR.rows!.push(rowT);
+
+    // 被 cov 过滤掉的**短行**（占谱行宽不足 35%）里混着段落方框 Intro/Verse/Chorus/Coda —— 它们
+    // 不是歌词（丢弃是对的），但标出了段落起点，对乐句排版有用。故也送去 rec，只用来提段落词
+    // （`mark: true` 的块不参与歌词装配）。限短行（≤5 格）以免白跑 OCR。
+    for (const L of lineInfo) {
+      if (kept.includes(L) || !L.cells.length || L.cells.length > 5) continue;
+      chunks.push({ rowIdx: i, verse: -1, cells: L.cells, maxGap, mark: true });
+      strips.push(buildStrip(src, L.cells, STRIP_H, maxGap));
+    }
 
     kept.forEach(({ cells, longGapBefore, cov }, verse) => {
       if (rowT) rowT.verses.push({ verse, cells, cov, longGapBefore });
@@ -372,12 +433,43 @@ export async function recognizeLyrics(
   // 单元 = 一个汉字 + 紧随其后的尾随标点（，。、；！？等）：简谱标点向左贴前一字、不占音符，
   // 故并入该音节字符串而非另立单元（保持单元↔音符对齐）。段号数字等非汉字非标点 → 直接丢弃、自然不占位。
   const perLine = new Map<string, Array<{ x: number; ch: string; region?: TextRegion }>>();
+  const rawByKey = new Map<string, string>();   // 每 (row,verse) 的 rec 原文（供和弦/段落标记行判定）
   const lineSeen = new Set<string>();
+  const marks: { rowIdx: number; word: string; x: number }[] = []; // 段落标记（印在下一谱行上方）
   for (let s = 0; s < chunks.length; s++) {
     const { rowIdx, verse, cells, maxGap } = chunks[s];
     const key = `${rowIdx}:${verse}`;
     const isFirstChunk = !lineSeen.has(key);
     lineSeen.add(key);
+    // 用 OCR 字位 xFrac → 源图 x。strip 是**压缩条**（字间空白被压到 maxGap），故按同一压缩布局
+    // 把 xFrac 落到对应字格、再映回该格源图 x（不能再用自然 span 线性映，否则压缩处会错位）。
+    const { segs, contentW } = compactSegs(cells, maxGap);
+    const stripW = contentW + STRIP_PAD * 2;
+    const fracToSrcX = (xFrac: number) => {
+      const cc = xFrac * stripW - STRIP_PAD; // 压缩条内容坐标
+      for (const sg of segs) if (cc <= sg.cx1) {
+        const t = Math.max(0, Math.min(1, (cc - sg.cx0) / Math.max(1, sg.cx1 - sg.cx0)));
+        return sg.sx0 + t * sg.sw;
+      }
+      const last = segs[segs.length - 1];
+      return last.sx0 + last.sw;
+    };
+
+    const rawText = textsPos ? textsPos[s].map((c) => c.ch).join("") : texts![s];
+    // 段落方框 Intro/Verse/Chorus/Coda：可能独占一块（被 cov 过滤的短行），也可能与和弦行同块
+    // （"Gsus4G" 与 "Chorus" 同一 verse 行）。在任何块里就地捞出，x 取该词首字。
+    {
+      const hit = SECTION_MARK_RE.exec(rawText);
+      if (hit) {
+        let acc = 0, xf = 0;
+        if (textsPos) for (const c of textsPos[s]) { if (acc >= hit.index) { xf = c.xFrac; break; } acc += c.ch.length; }
+        const word = hit[0][0].toUpperCase() + hit[0].slice(1).toLowerCase();
+        marks.push({ rowIdx, word, x: textsPos ? fracToSrcX(xf) : cells[0].x });
+      }
+    }
+    if (chunks[s].mark) continue; // 只为提段落词而 rec 的块：不参与歌词装配
+
+    rawByKey.set(key, (rawByKey.get(key) ?? "") + rawText);
     if (!perLine.has(key)) perLine.set(key, []);
     const placed = perLine.get(key)!;
     // 字格纵向范围 + 中位字宽（仅供识别模式叠加按源图定位/取大小）
@@ -385,44 +477,66 @@ export async function recognizeLyrics(
     const charW = median(cells.map((c) => c.w)) || (cy1 - cy0);
 
     if (posMode) {
-      // 用 OCR 字位 xFrac → 源图 x。strip 是**压缩条**（字间空白被压到 maxGap），故按同一压缩布局
-      // 把 xFrac 落到对应字格、再映回该格源图 x（不能再用自然 span 线性映，否则压缩处会错位）。
-      const { segs, contentW } = compactSegs(cells, maxGap);
-      const stripW = contentW + STRIP_PAD * 2;
-      const fracToSrcX = (xFrac: number) => {
-        const cc = xFrac * stripW - STRIP_PAD; // 压缩条内容坐标
-        for (const sg of segs) if (cc <= sg.cx1) {
-          const t = Math.max(0, Math.min(1, (cc - sg.cx0) / Math.max(1, sg.cx1 - sg.cx0)));
-          return sg.sx0 + t * sg.sw;
-        }
-        const last = segs[segs.length - 1];
-        return last.sx0 + last.sw;
-      };
       let lead = "";                                                // 待领起后一字的开引号
+      // 英文音节缓冲：连字符/词间空白/汉字/行末 → 结算成一个单元（与汉字同等占一个音符）。
+      let pend: { text: string; x0: number; x1: number } | null = null;
+      const flushLatin = () => {
+        if (!pend) return;
+        const text = lead + pend.text; lead = "";
+        // 音节宽度取**实际跨度** + 末字符估宽。不能拿 charW 兜底：英文行的字格是整串音节合成的
+        // 一个大块（`How-awe-some-you-are` 宽两百多像素），charW 就是那个块宽，用它算出的中心
+        // 会把音节整体右移一个多字位（实测 How- 落到 x233、该在 170 的 `5` 音上）。
+        const w = Math.max(1, pend.x1 - pend.x0) + (cy1 - cy0) * 0.6;
+        const region: TextRegion = { text, bbox: { x: pend.x0, y: cy0, w, h: cy1 - cy0 } };
+        // 对齐点用音节**起始 x**，与汉字（用字位左缘 sx）同一基准。
+        placed.push({ x: pend.x0, ch: text, region });
+        regions.push(region);
+        pend = null;
+      };
       for (const { ch, xFrac } of textsPos![s]) {
         const sx = fracToSrcX(xFrac);
         if (isHanzi(ch)) {
+          flushLatin();
           const text = lead + ch; lead = "";                        // 开引号并入本字前缀（“阿）
           const region: TextRegion = { text, bbox: { x: sx - charW / 2, y: cy0, w: charW, h: cy1 - cy0 } };
           placed.push({ x: sx, ch: text, region });
           regions.push(region);
-        } else if (LYRIC_QUOTE_OPEN.test(ch)) {
+        } else if (isLatin(ch) || (pend && isApostrophe(ch))) {
+          // rec 不吐空格 → 用源图字距断词：间隙明显大于字母间距即另起一个音节单元。
+          if (pend && sx - pend.x1 > charW * 0.5) flushLatin();
+          if (!pend) pend = { text: "", x0: sx, x1: sx };
+          pend.text += ch; pend.x1 = sx;
+        } else if (isHyphen(ch)) {
+          if (pend) { pend.text += "-"; pend.x1 = sx; flushLatin(); } // 连字符=音节边界，随音节保留
+        } else if (LYRIC_QUOTE_OPEN.test(ch) && !pend) {
           lead += ch;                                               // 开引号：领起后一字，不另立单元
-        } else if ((LYRIC_PUNCT.test(ch) || LYRIC_QUOTE_CLOSE.test(ch)) && placed.length) {
+        } else if (LYRIC_PUNCT.test(ch) || LYRIC_QUOTE_CLOSE.test(ch)) {
           const p = normPunct(ch);
-          placed[placed.length - 1].ch += p;                        // 尾随标点/闭引号贴前一字（折全角，不移位、不另立单元）
-          if (regions.length) regions[regions.length - 1].text += p;
+          if (pend) { pend.text += p; pend.x1 = sx; }               // 贴在当前英文音节尾
+          else if (placed.length) {
+            placed[placed.length - 1].ch += p;                      // 尾随标点/闭引号贴前一字（折全角，不移位、不另立单元）
+            if (regions.length) regions[regions.length - 1].text += p;
+          }
         }
       }
+      flushLatin();
     } else {
       // 回退：后端无字位时，沿用"字↔连通块格"按序映射 + 段号几何剔除（首格落在第一个音符中心左侧 → 段号丢弃）。
       const toks: string[] = [];
       let lead = "";
+      let pend = "";                                   // 英文音节缓冲（无字位时只能按连字符断，词间空白读不到）
+      const flushLatin = () => { if (pend) { toks.push(lead + pend); lead = ""; pend = ""; } };
       for (const ch of texts![s]) {
-        if (isHanzi(ch)) { toks.push(lead + ch); lead = ""; }
-        else if (LYRIC_QUOTE_OPEN.test(ch)) lead += ch;
-        else if ((LYRIC_PUNCT.test(ch) || LYRIC_QUOTE_CLOSE.test(ch)) && toks.length) toks[toks.length - 1] += normPunct(ch);
+        if (isHanzi(ch)) { flushLatin(); toks.push(lead + ch); lead = ""; }
+        else if (isLatin(ch) || (pend && isApostrophe(ch))) pend += ch;
+        else if (isHyphen(ch)) { if (pend) { pend += "-"; flushLatin(); } }
+        else if (LYRIC_QUOTE_OPEN.test(ch) && !pend) lead += ch;
+        else if (LYRIC_PUNCT.test(ch) || LYRIC_QUOTE_CLOSE.test(ch)) {
+          if (pend) pend += normPunct(ch);
+          else if (toks.length) toks[toks.length - 1] += normPunct(ch);
+        }
       }
+      flushLatin();
       if (!toks.length) continue;
       let mapCells = cells;
       const notes0 = staff[rowIdx].nums;
@@ -435,6 +549,47 @@ export async function recognizeLyrics(
         regions.push(region);
       }
     }
+  }
+
+  // 剔除和弦/段落标记行（Am、G/B、Gsus4、Chorus…）：它们印在**下一谱行音符上方**，同样落在歌词带内，
+  // 放开拉丁字符后会成为伪 verse。按整行 rec 原文形态判（大小写敏感，真英文歌词不会整行全是和弦形），
+  // 剔掉后把该谱行剩余 verse 按原顺序重新编号（保持各行 W1/W2 对齐；无标记行时是恒等变换）。
+  const dropped = new Set<TextRegion>();
+  {
+    const annotKeys = [...perLine.keys()].filter((k) => isAnnotationLine(rawByKey.get(k) ?? ""));
+    for (const k of annotKeys) {
+      for (const p of perLine.get(k)!) if (p.region) dropped.add(p.region);
+      perLine.delete(k);
+      rawByKey.delete(k);
+    }
+    if (annotKeys.length) {
+      const byRow = new Map<number, number[]>();
+      for (const k of perLine.keys()) {
+        const [rowIdx, verse] = k.split(":").map(Number);
+        let vs = byRow.get(rowIdx);
+        if (!vs) byRow.set(rowIdx, (vs = []));
+        vs.push(verse);
+      }
+      const renamed = new Map<string, Array<{ x: number; ch: string; region?: TextRegion }>>();
+      for (const [rowIdx, verses] of byRow) {
+        verses.sort((a, b) => a - b);
+        verses.forEach((v, nv) => renamed.set(`${rowIdx}:${nv}`, perLine.get(`${rowIdx}:${v}`)!));
+      }
+      perLine.clear();
+      for (const [k, v] of renamed) perLine.set(k, v);
+    }
+  }
+
+  // 段落标记落位：方框印在**下一谱行**音符的上方 → 归到该行、该标记 x 所在**小节的第一个音符**
+  // （谱面上段落总从整小节起；标记框略偏左于段首音符，故先按 x 找起点音符再回退到本小节首音）。
+  for (const mk of marks) {
+    const row = staff[mk.rowIdx + 1];
+    if (!row?.nums.length) continue;
+    let bi = row.nums.findIndex((nn) => rcx(nn.bbox) >= mk.x - numH * 0.5);
+    if (bi < 0) bi = 0;
+    const barX = row.barlineXs.filter((x) => x < rcx(row.nums[bi].bbox)).pop() ?? -Infinity;
+    while (bi > 0 && rcx(row.nums[bi - 1].bbox) > barX) bi--;
+    row.nums[bi].sectionMark = mk.word;
   }
 
   // 剔除伪 verse：谱行下方噪声/记号被误当额外歌词行，rec 出来多为空、偶尔一行垃圾字（如世上 row3 的
@@ -483,5 +638,5 @@ export async function recognizeLyrics(
     }
     if (TR) (TR.aligned ??= {})[key] = notes.map((n) => ({ noteX: rcx(n.bbox), noteBox: n.bbox, lyric: n.lyrics?.[verse] || "" }));
   }
-  return regions;
+  return dropped.size ? regions.filter((r) => !dropped.has(r)) : regions;
 }

@@ -295,17 +295,19 @@ export async function recognizeHeader(
   // 归类：以 作/词/曲/编/译 开头紧跟冒号(作词：/词曲：…) → credits；其余最大字号中文行作标题。
   // 著作者前缀须**行首**紧贴冒号——否则长句经文副标题("…正如他作更美之约…来8：6")也会因含"作"+"："被误判。
   function classify(ls: HLine[]) {
-    const creditRe = /^\s*[作詞词曲編编譯译]{1,4}\s*[:：]/;
+    // 著作者前缀：`作词：`/`词曲：`，也含顿号/斜杠分列的 `词、曲：`、`作词/作曲：`。
+    const creditRe = /^\s*[作詞词曲編编譯译]{1,2}(?:\s*[、，,/／]\s*[作詞词曲編编譯译]{1,2})*\s*[:：]/;
     let titleLine: HLine | null = null;
     for (const ln of ls) {
       const txt = ln.text.trim();
       if (creditRe.test(txt)) {
         // "作曲：王丽玲1=bB4" → "作曲：王丽玲"：取 冒号前缀 + 紧随的中文名（英文名则整行保留）。
-        const m = txt.match(/^(.*?[:：])\s*([一-鿿·]+)/);
+        // 名字可由顿号并列多人（"词、曲：游智婷、曾祥怡"）。
+        const m = txt.match(/^(.*?[:：])\s*([一-鿿·]+(?:\s*[、，,]\s*[一-鿿·]+)*)/);
         // 中文名取前缀+名；英文名整行保留、并按字距恢复词间空格（"IsaacWatts"→"Isaac Watts"）。
         // 著作者前缀的冒号统一成全角 `：`（.jpwabc 约定；中文名行 OCR 多已全角，英文名行常落半角）。
         const credit = (m ? m[1] + m[2] : recoverLatinSpaces(txt, ln.chars))
-          .replace(/^([作詞词曲編编譯译]{1,4})\s*[:：]/, "$1：");
+          .replace(/\s*[:：]\s*/, "：");
         out.credits.push(credit);
         out.regions.push({ text: credit, bbox: ln.bbox, chars: charsForText(credit, ln.chars) });
         continue;

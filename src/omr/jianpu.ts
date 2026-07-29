@@ -343,8 +343,19 @@ function groupRows(cores: DigitCore[], numH: number): DigitCore[][] {
 }
 
 // 为一行的每个数字格归并修饰（八度点/增时线/附点），div 已随数字格带入。
+/** 小块正下方半个字号内的前景占比。八度点是**孤立**的圆点、下方留白；歌词字的顶部笔画
+ *  （如「主」字上方那一竖）下方紧接着字的其余笔画，占比高。与字号无关，故比宽高比/间隙阈值稳。 */
+function inkBelow(bin: Binary, r: Rect, numH: number): number {
+  const y0 = Math.round(rbottom(r)) + 1, y1 = Math.min(bin.h - 1, Math.round(rbottom(r) + numH * 0.3));
+  const x0 = Math.max(0, Math.round(r.x - numH * 0.2)), x1 = Math.min(bin.w - 1, Math.round(rright(r) + numH * 0.2));
+  if (y1 <= y0 || x1 <= x0) return 0;
+  let ink = 0, tot = 0;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { tot++; if (bin.data[y * bin.w + x]) ink++; }
+  return tot ? ink / tot : 0;
+}
+
 function buildJpNums(
-  rowCores: DigitCore[], numH: number, cls: Classified, ocrDigit: (b: Rect) => number,
+  bin: Binary, rowCores: DigitCore[], numH: number, cls: Classified, ocrDigit: (b: Rect) => number,
   arcs: Component[], barlineXs: number[], dotSizes: number[],
 ): JpNum[] {
   const out: JpNum[] = [];
@@ -392,7 +403,11 @@ function buildJpNums(
       // 阈值据实测分布定（真八度点 w/h≈0.21~0.30×numH、|dx|≤0.14；噪点误判那个是 0.09×0.11、dx=0.45）：
       // 尺寸下限 0.15、居中收到 0.4，两道独立门都能剔除噪点，且对真点留足余量。
       if (kb.w < numH * 0.15 || kb.h < numH * 0.15) continue;
-      if (Math.abs(rcx(kb) - dcx) > numH * 0.4) continue;
+      // 居中阈值 0.25（原 0.4 过松）：真八度点是**印在数字正上/正下方**的圆点，实测 |dx| ≤0.07~0.14；
+      // 而歌词字的顶部小笔画（歌词带紧接在数字下方 ~15px，与「减时线下方的低音点」几乎同高）
+      // 偏在两字之间、|dx| 0.3~0.39，旧阈值放它进来 → 凭空多出低八度点，若该音本就有高八度点还会
+      // 被一加一减抵消（实测「主祢真伟大」Coda 的 `i`(为) 丢点、`7`(我) 平白多点）。
+      if (Math.abs(rcx(kb) - dcx) > numH * 0.25) continue;
       const gapAbove = d.y - rbottom(kb);  // 点在数字上方的间隙
       const gapBelow = kb.y - rbottom(d);  // 点在数字下方的间隙
       if (gapAbove >= -1 && gapAbove < numH * 0.8) {
@@ -407,7 +422,13 @@ function buildJpNums(
             rcx(kb) >= ab.x - numH * 0.4 && rcx(kb) <= rright(ab) + numH * 0.4;
         });
         if (!isArcFoot) { octave++; dotSizes.push((kb.w + kb.h) / 2); }  // 上点 → 高八度
-      } else if (gapBelow >= -1 && gapBelow < numH * 0.8) { octave--; dotSizes.push((kb.w + kb.h) / 2); }  // 下点 → 低八度
+      // 下点 → 低八度。额外一道门专防**歌词字的顶部笔画**：歌词带紧接在数字下方，字顶的短竖/点
+      // （如「主」字上方那一笔）正落在数字正下方、dx≈0、间隙也与「减时线下方的低音点」几乎同高
+      // （14~15px vs 真点 3~13px），靠位置分不开。改看**它下方还有没有墨**：八度点孤立、下方留白，
+      // 字顶笔画下方紧接着字的其余笔画。（先试过宽高比，但小字号图上真点只有 2×3 像素、比值不可靠，
+      // 世上所有的民族的真低音点被误剔、音符 100→99.3。）
+      } else if (gapBelow >= -1 && gapBelow < numH * 0.8 && inkBelow(bin, kb, numH) < 0.12) {
+        octave--; dotSizes.push((kb.w + kb.h) / 2); }
     }
     octave = Math.max(-3, Math.min(3, octave)); // 简谱八度极少超过 ±2~3
     let div = 0;
@@ -515,7 +536,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const dotSizes: number[] = []; // 累积所有被采纳的八度点/附点源图直径 → 取中位数当统计点径
   const allRows: StaffRow[] = staff.map((m) => ({
     topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs,
-    nums: buildJpNums(m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes),
+    nums: buildJpNums(bin, m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes),
   }));
 
   // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是
@@ -558,6 +579,26 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
         const nz = ranks[i]?.find((d) => d !== 0);
         if (nz !== undefined) n.digit = nz;
       });
+    }
+  }
+
+  // **隐含 tie 补检**：无歌词的音符若与前一个音同音高，就是延音——简谱里同音延续本该有连音线，
+  // 但**跨谱行的弧画不出来**（原图上就没有），行内的淡弧也可能漏检。有歌词的音是新音节、不算延音；
+  // 纯器乐行（前奏/间奏，整行无词）没有"有无歌词"这条线索，跳过以免把重复音全连成一片。
+  {
+    const flat: { n: JpNum; rowHasLyrics: boolean }[] = [];
+    for (const row of useRows) {
+      const has = row.nums.some((n) => n.lyrics?.some((t) => t && t.trim()));
+      for (const n of row.nums) flat.push({ n, rowHasLyrics: has });
+    }
+    for (let i = 1; i < flat.length; i++) {
+      const cur = flat[i].n, prev = flat[i - 1].n;
+      if (!flat[i].rowHasLyrics) continue;
+      if (cur.lyrics?.some((t) => t && t.trim())) continue;          // 有词 → 新音节，不是延音
+      if (cur.digit === 0 || prev.digit === 0) continue;             // 休止不参与
+      if (cur.digit !== prev.digit || cur.octave !== prev.octave) continue;
+      if (cur.tieStop || cur.slurStop || prev.tieStart || prev.slurStart) continue; // 已有弧
+      prev.tieStart = true; cur.tieStop = true;
     }
   }
 
