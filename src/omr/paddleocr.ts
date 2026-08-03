@@ -223,7 +223,12 @@ async function ensureSession(): Promise<void> {
   _initPromise = (async () => {
     // 字典两端都要（CTC 解码在前端）。PaddleOCR CTC 字符表：index0=blank，随后字典，末尾可能补 space。
     const dictText = await (await fetch(DICT_URL)).text();
-    _chars = ["", ...dictText.split("\n").filter((l) => l.length)];
+    // Windows checkouts commonly use core.autocrlf, so the packaged dictionary
+    // may contain CRLF even though the repository copy uses LF. A plain
+    // split("\n") leaves `\r` attached to every OCR class; after MusicXML's
+    // line-ending normalization that becomes a real newline after every title
+    // and lyric character. Accept either line ending and reject empty lines.
+    _chars = ["", ...dictText.split(/\r?\n/).filter((l) => l.length)];
     if (nativeOcr()) { _ready = true; return; } // 原生(Tauri)：推理在 Rust，无需加载 ort-web
     // 浏览器：纯 wasm 构建（非 jsep/webgpu），只需 ort-wasm-simd-threaded.wasm，省去 26MB jsep。
     const ort = await import("onnxruntime-web/wasm");

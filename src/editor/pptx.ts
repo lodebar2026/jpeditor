@@ -31,7 +31,7 @@ function hex(argb: number): string {
 interface TextShape {
   kind: "text";
   x: number; y: number; w: number; h: number;
-  text: string; size: number; colorHex: string; bold: boolean; family: string; cjk: boolean;
+  text: string; size: number; colorHex: string; bold: boolean; family: string;
 }
 interface GeomShape {
   kind: "geom";
@@ -48,11 +48,6 @@ async function loadBravura(): Promise<opentype.Font> {
     bravuraFont = opentype.parse(buf);
   }
   return bravuraFont;
-}
-
-function hasCJK(s: string): boolean {
-  for (const ch of s) if (ch.codePointAt(0)! >= 0x100) return true;
-  return false;
 }
 
 function glyphSegs(font: opentype.Font, ch: string, size: number): { segs: PathSeg[]; bbox: { x1: number; y1: number; x2: number; y2: number } } | null {
@@ -132,7 +127,7 @@ function collectShapes(item: PageItem, font: opentype.Font, out: Shape[]): void 
       kind: "text", x: pp.x, y: pp.y + fm.descent - height - sz / 20,
       w: Math.max(item.width, 1), h: height,
       text: item.text, size: sz, colorHex: hex(item.color),
-      bold: item.font.bold, family: item.font.family, cjk: hasCJK(item.text),
+      bold: item.font.bold, family: item.font.family,
     });
     return;
   }
@@ -164,14 +159,24 @@ function geomXml(s: GeomShape, id: number): string {
 
 function textXml(s: TextShape, id: number): string {
   const sz = Math.round(s.size * 100);
-  const ea = s.cjk ? `<a:ea typeface="${xml(s.family)}"/>` : "";
+  const family = pptTypeface(s.family);
   const b = s.bold ? ` b="1"` : "";
   return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="t${id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>` +
     `<p:spPr><a:xfrm><a:off x="${EMU(s.x)}" y="${EMU(s.y)}"/><a:ext cx="${EMU(s.w)}" cy="${EMU(s.h)}"/></a:xfrm>` +
     `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
-    `<p:txBody><a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="b"><a:spAutoFit/></a:bodyPr><a:lstStyle/>` +
+    `<p:txBody><a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="b" horzOverflow="overflow" vertOverflow="overflow"><a:noAutofit/></a:bodyPr><a:lstStyle/>` +
     `<a:p><a:pPr algn="l"/><a:r><a:rPr lang="zh-CN" sz="${sz}"${b}><a:solidFill><a:srgbClr val="${s.colorHex}"/></a:solidFill>` +
-    `<a:latin typeface="${xml(s.family)}"/>${ea}</a:rPr><a:t>${xml(s.text)}</a:t></a:r></a:p></p:txBody></p:sp>`;
+    `<a:latin typeface="${xml(family)}"/><a:ea typeface="${xml(family)}"/></a:rPr><a:t>${xml(s.text)}</a:t></a:r></a:p></p:txBody></p:sp>`;
+}
+
+/** DrawingML accepts one typeface, not a CSS fallback list. The layout font
+ * stack deliberately includes Microsoft YaHei, which is also the font used by
+ * the original desktop PPTX exporter and is present on supported Windows. */
+function pptTypeface(cssFamily: string): string {
+  const families = cssFamily.split(",").map((f) => f.trim().replace(/^(['"])(.*)\1$/, "$2"));
+  const yahei = families.find((f) => f.toLowerCase() === "microsoft yahei");
+  if (yahei) return yahei;
+  return families.find((f) => !/^(?:sans-serif|serif|monospace|system-ui)$/i.test(f)) || "Arial";
 }
 
 function slideXml(shapes: Shape[]): string {

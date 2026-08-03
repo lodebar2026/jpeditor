@@ -45,6 +45,18 @@ const textCache = new Map<string, TextMetrics>();
 // outline. Canvas actualBoundingBoxAscent/Descent matches Skija getPath bounds.
 let glyphCtx: CanvasRenderingContext2D | null = null;
 
+/** Build a Canvas/FontFaceSet font shorthand without turning an entire CSS
+ * fallback list into one (non-existent) quoted family name. */
+function cssFontShorthand(fontFamily: string, fontSizePx: number, fontWeight: "normal" | "bold"): string {
+  const family = fontFamily.split(",").map((part) => {
+    const name = part.trim().replace(/^(['"])(.*)\1$/, "$2");
+    return /^(?:sans-serif|serif|monospace|system-ui)$/i.test(name)
+      ? name
+      : `"${name.replace(/(["\\])/g, "\\$1")}"`;
+  }).join(", ");
+  return `${fontWeight} ${fontSizePx}px ${family}`;
+}
+
 export function measureGlyphText(
   text: string,
   fontFamily: string,
@@ -82,7 +94,7 @@ export function measureGlyphText(
     glyphCtx = c.getContext("2d");
   }
   if (glyphCtx) {
-    glyphCtx.font = `${fontWeight} ${fontSizePx}px "${fontFamily}"`;
+    glyphCtx.font = cssFontShorthand(fontFamily, fontSizePx, fontWeight);
     const cm = glyphCtx.measureText(text);
     bboxTop = -(cm.actualBoundingBoxAscent ?? fontSizePx * 0.8);
     bboxBottom = cm.actualBoundingBoxDescent ?? fontSizePx * 0.2;
@@ -139,7 +151,7 @@ export function measureFontMetrics(
   }
   let res = { ascent: -fontSizePx * 0.8, descent: fontSizePx * 0.2 };
   if (metricsCtx) {
-    metricsCtx.font = `${fontWeight} ${fontSizePx}px "${fontFamily}"`;
+    metricsCtx.font = cssFontShorthand(fontFamily, fontSizePx, fontWeight);
     const m = metricsCtx.measureText("Mg");
     const asc = m.fontBoundingBoxAscent ?? m.actualBoundingBoxAscent;
     const desc = m.fontBoundingBoxDescent ?? m.actualBoundingBoxDescent;
@@ -158,7 +170,7 @@ export async function ensureFontsReady(
   if (!("fonts" in document)) return;
   try {
     await Promise.all(
-      families.map((f) => document.fonts.load(`${f.size}px "${f.family}"`)),
+      families.map((f) => document.fonts.load(cssFontShorthand(f.family, f.size, "normal"))),
     );
     await document.fonts.ready;
   } catch {

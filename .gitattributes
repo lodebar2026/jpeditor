@@ -1,0 +1,3 @@
+# PaddleOCR's dictionary is one class per line. CRLF would make the trailing
+# carriage return part of every decoded class on Windows.
+public/redist/ocr/ppocrv6_dict.txt text eol=lf
