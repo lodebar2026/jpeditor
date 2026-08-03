@@ -302,9 +302,14 @@ function loadPart(part: Part, partEl: Element, pd: PlayData): void {
 // ---------------- refrain detection (score.kt findRefrain/updateRefrain) ----------------
 function findRefrain(score: Score): void {
   const countInf = new Map<string, { pos: Fraction; n: number }>();
+  let inEnding = false;
   for (const m of score.parts[0].measures) {
+    if (m.endingLeft) inEnding = true;
     for (const ent of m.entries) {
       if (!(ent instanceof Chord)) continue;
+      // 房内的单行歌词只属于该房次，不能按「尾部只剩一行 = 各段共用副歌」折成 refrain。
+      // 二房歌词一旦被折成共用行，第一遍也会读到它，造成两房文字交叉拼接。
+      if (inEnding) continue;
       let cnt = 0;
       for (const n of ent.notes) for (const l of n.lyrics) if (l.text.length > 0) cnt++;
       if (cnt === 0) continue;
@@ -313,6 +318,7 @@ function findRefrain(score: Score): void {
       const prev = countInf.get(key);
       countInf.set(key, { pos, n: (prev?.n ?? 0) + cnt });
     }
+    if (m.endingRight !== null) inEnding = false;
   }
   const entries = [...countInf.values()].sort((a, b) => a.pos.compareTo(b.pos));
   let refrainPos: Fraction | null = null;

@@ -47,6 +47,11 @@ export interface JpNum {
   slurStop?: boolean;  // 圆滑线终点 → <slur type="stop">
   tieStart?: boolean;  // 连音线起点（弧下同音高）→ <tied type="start">
   tieStop?: boolean;   // 连音线终点 → <tied type="stop">
+  // 反复与一/二房结构锚定到边界相邻音符，MusicXML 输出时再提升为小节左右 barline。
+  repeatForward?: boolean;  // 本音符所在小节左边界为 ||:
+  repeatBackward?: boolean; // 本音符所在小节右边界为 :||
+  endingStart?: number;     // 本音符所在小节开始第 N 房
+  endingStop?: number;      // 本音符所在小节结束第 N 房
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */

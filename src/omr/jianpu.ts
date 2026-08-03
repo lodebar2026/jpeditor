@@ -14,6 +14,7 @@ import type { OcrBackend } from "./ocr";
 import { recognizeLyrics } from "./lyrics";
 import { recognizeHeader } from "./header";
 import { detectSlurs } from "./slur";
+import { detectRepeatsAndEndings } from "./repeats";
 
 const overlapX = (a: Rect, b: Rect) => Math.max(0, Math.min(rright(a), rright(b)) - Math.max(a.x, b.x));
 const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
@@ -198,14 +199,16 @@ function classify(comps: Component[], bin: Binary): { c: Classified; numH: numbe
     if (w >= numH * 0.3 && w <= numH * 0.6 && h >= numH * 0.5 && h <= numH * 2.0) { c.blocks.push(k); continue; }
   }
   // 「细高竖条」既可能是小节线，也可能是数字 "1"（一条竖笔）。二者宽都很窄、高都 ≳ 字号，
-  // 形状难分；但**同一张图里真小节线高度集中成簇、且远高于数字**（实测：世上小节线 h≈35~49、
-  // "1" 仅 h≈16~24；日光小节线 h≈45~70）。故按候选高度中位数剔除明显偏矮者（<0.55×中位高）
-  // → 它们其实是 "1"，改归数字块，否则会凭空丢音又多出假小节线。真小节线占多数时中位数稳健。
+  // 形状难分；但真小节线会明显高于数字带，而 "1" 的高度通常不超过 1.25×字号、笔宽仍至少约
+  // 0.28×字号。先用这两个绝对尺度收回 "1"；再用候选高度中位数兜底处理偏矮者。不能只依赖
+  // 中位数：当一首歌的 1 很多时（如「爱是不保留」首行），候选中位数本身就是 1 的高度，
+  // 原规则会把同一组四个 1 全留在小节线里。
   if (c.barlines.length >= 4) {
     const medH = median(c.barlines.map((k) => k.bbox.h));
     const real: Component[] = [];
     for (const k of c.barlines) {
-      if (k.bbox.h < medH * 0.55) {
+      const digitOneSized = k.bbox.h <= numH * 1.25 && k.bbox.w >= numH * 0.28;
+      if (digitOneSized || k.bbox.h < medH * 0.55) {
         // 偏矮 → 多半是数字 "1"。但终止/复纵线（‖）的细线常因扫描淡而偏矮，它紧贴另一根
         // 竖线（间距 < 0.7×字号、同 y）——这种有近邻的不当 "1"，保留为小节线。
         const paired = c.barlines.some((o) => o !== k &&
@@ -390,6 +393,19 @@ function buildJpNums(
     );
     for (const k of cls.dots) {
       const kb = k.bbox;
+      // 反复号冒号：同一 x 上下成对、分居数字行中心两侧，并紧邻复纵线。下方那一点有时恰好
+      // 落进末音符的附点窗口，旧逻辑会把 `:||` 误成末音符附点。先按完整的「点对 + 竖线」
+      // 结构剔除；双高/低八度点都在数字同一侧，不满足分居条件，普通单附点也没有配对点。
+      const repeatColon = barlineXs.some((x) => Math.abs(x - rcx(kb)) <= numH * 1.2) &&
+        cls.dots.some((o) => {
+          if (o === k) return false;
+          const ob = o.bbox;
+          const dy = Math.abs(rcy(ob) - rcy(kb));
+          return Math.abs(rcx(ob) - rcx(kb)) <= numH * 0.35 &&
+            dy >= numH * 0.35 && dy <= numH * 1.4 &&
+            (rcy(ob) - dcy) * (rcy(kb) - dcy) <= 0;
+        });
+      if (repeatColon) continue;
       // 右侧附点：在数字右侧空隙前段、**真正垂直居中**、且尺寸够大（非噪点）。
       // 阈值据 5 首实测分布定（按 numH 自适应缩放）：真附点 w/h≈0.29~0.45×numH、|Δcy|≤0.16×numH；
       // 误检要么是噪点小斑(≤0.08×numH)、要么是邻音符的下八度点(Δcy≈0.3~0.43×numH、偏右偏下)。
@@ -550,6 +566,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 整曲都被判伪行（极端情况）则回退，至少出点东西。
   const useRows = rows.length ? rows : allRows;
 
+  // 反复线与一/二房：以冒号点对/顶括线几何识别，锚到相邻音符供 MusicXML 输出。
+  await detectRepeatsAndEndings(bin, comps, c.dots, useRows, numH, ocr);
+
   // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
   // comps 之外再补上与数字粘连切出的弧帽（arcComps）。与小节线粘连的弧已在 untangleBridged
   // 去连通阶段还原为 comps 里的独立连通块，这里天然一并检测。
@@ -560,6 +579,20 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   if (ocr.recognizeTexts) {
     const lr = await recognizeLyrics(bin, comps, useRows, numH, ocr);
     lyricRegions = lr.length ? lr : undefined;
+  }
+
+  // 房内只印一行歌词时，歌词识别天然把它放在 W1；但二房的这行实际属于第 2 遍，应迁到 W2。
+  // 否则 MusicXML 导入器会把一/二房尾句误判成「两遍共用的副歌」，展开时交叉拼接。
+  for (const row of useRows) {
+    let ending = 0;
+    for (const n of row.nums) {
+      if (n.endingStart !== undefined) ending = n.endingStart;
+      if (ending > 1 && n.lyrics?.[0] && !n.lyrics[ending - 1] && n.lyrics.filter(Boolean).length === 1) {
+        n.lyrics[ending - 1] = n.lyrics[0];
+        n.lyrics[0] = "";
+      }
+      if (n.endingStop === ending) ending = 0;
+    }
   }
 
   // digit=0 误判复原（取数字候选排序里首个非零值）。两条独立线索，任一命中即复原：

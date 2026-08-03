@@ -36,14 +36,28 @@ const SECTION_MARK_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|endin
 // 注记行判定用（比上面多收 fine 等，这类行同样不是歌词、要从歌词带里剔掉）。
 const SECTION_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|fine|tag|refrain)\d*/gi;
 const CHORD_SUFFIX_RE = /(maj|min|sus|dim|aug|add)/gi;
+// 中文谱常把备选和弦写成 `F或C`，升降根音也可能写成 `升F` / `降B`。这些少量汉字属于
+// 和弦语法而非歌词；先折成分隔符再做根音形态判断。除此以外只要含汉字，仍按真歌词处理。
+const CHORD_HANZI_RE = /[或升降]/g;
+// 页脚版权/制作声明的 OCR 经常有少量错字（如「用途」→「用速」），所以不用整句精确匹配，
+// 而要求一条较长文本同时命中至少两个强语义词。正常歌词偶见「制作」等单词也不会被误删。
+const FOOTER_CUE_RE = /(版权|版权所有|制作|团队|原版|音频|音頻|歌谱|歌譜|商业|商業|用途|翻印|请勿|請勿|仅供|僅供)/g;
+function isFooterNoticeLine(text: string): boolean {
+  const compact = text.replace(/\s/g, "");
+  if (compact.length < 8) return false;
+  const cues = new Set(compact.match(FOOTER_CUE_RE) ?? []);
+  return cues.size >= 2;
+}
 /** 整行 rec 原文是否为和弦/段落标记行（而非歌词）。
  *  一行里的和弦常被连写成一个字母簇（"CG/BAm"、"AmC"、"EmF"），故不逐 token 匹配，而看形态：
- *  ① 无汉字；② 每个字母簇（先剥去 maj/min/sus… 性质后缀）**首字母是 A-G 的根音**；
+ *  ① 无歌词汉字（只允许和弦语法里的「或/升/降」）；② 每个字母簇（先剥去 maj/min/sus… 性质后缀）
+ *  **首字母是 A-G 的根音**；
  *  ③ 簇内最长连续小写段 ≤2（和弦性质符 m/dim 短，英文音节 "awe"/"some"/"ther" 则长）。
  *  不依赖大小写正确（OCR 常把 C 读成 c），也不会误伤英文歌词——只要行内有一个音节不合和弦形态即否决。 */
 function isAnnotationLine(text: string): boolean {
-  if (/[一-鿿]/.test(text)) return false;                       // 有汉字 → 真歌词行
-  const rest = text.replace(SECTION_RE, " ");
+  const hanzi = text.match(/[一-鿿]/g) ?? [];
+  if (hanzi.some((ch) => !/[或升降]/.test(ch))) return false;  // 除和弦连接/升降记号外有汉字 → 真歌词行
+  const rest = text.replace(SECTION_RE, " ").replace(CHORD_HANZI_RE, " ");
   if (!rest.trim()) return text.trim().length > 0;              // 纯段落标记（Intro/Chorus…）
   const clusters = rest.match(/[A-Za-z]+/g) ?? [];
   if (!clusters.length) return false;                            // 无字母 → 交给下游伪 verse 过滤
@@ -551,12 +565,15 @@ export async function recognizeLyrics(
     }
   }
 
-  // 剔除和弦/段落标记行（Am、G/B、Gsus4、Chorus…）：它们印在**下一谱行音符上方**，同样落在歌词带内，
-  // 放开拉丁字符后会成为伪 verse。按整行 rec 原文形态判（大小写敏感，真英文歌词不会整行全是和弦形），
-  // 剔掉后把该谱行剩余 verse 按原顺序重新编号（保持各行 W1/W2 对齐；无标记行时是恒等变换）。
+  // 剔除和弦/段落标记行（Am、G/B、Gsus4、Chorus…）及页脚版权声明：它们同样可能落在歌词带内，
+  // 放开拉丁字符/最后一行开放带后会成为伪 verse。按整行 rec 原文形态判，剔掉后把该谱行剩余 verse
+  // 按原顺序重新编号（保持各行 W1/W2 对齐；无注记行时是恒等变换）。
   const dropped = new Set<TextRegion>();
   {
-    const annotKeys = [...perLine.keys()].filter((k) => isAnnotationLine(rawByKey.get(k) ?? ""));
+    const annotKeys = [...perLine.keys()].filter((k) => {
+      const raw = rawByKey.get(k) ?? "";
+      return isAnnotationLine(raw) || isFooterNoticeLine(raw);
+    });
     for (const k of annotKeys) {
       for (const p of perLine.get(k)!) if (p.region) dropped.add(p.region);
       perLine.delete(k);

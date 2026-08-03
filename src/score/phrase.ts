@@ -209,6 +209,20 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   // 段落标记（Intro/Verse/Chorus/Coda…）：段首必起新行，且**每段独立排行长**——否则 DP 会为了
   // 凑均匀行长把上一段末尾与本段开头并进同一行，段落结构在排版上就看不出来了。
   const sectionMi = [...Array(n).keys()].filter((mi) => mi > 0 && measures[mi].sectionMark);
+  // 段落标题/反复线有时印在新段第一强拍处，而新段的弱起仍写在上一小节末（如
+  // `…长存不朽！ 谁人 |【Chorus】受痛苦…`）。若结构段界前只有 1~2 个短音，且其前正好是
+  // 完整句末，就把段界前移到句末：弱起随下一段、下一页走，不悬在上一行末。
+  const beforeSectionPickup = (at: number): number => {
+    let pickupChords = 0;
+    for (let idx = at; idx >= 0 && at - idx <= 3; idx--) {
+      if (punctAfter[idx] === 6 && pickupChords > 0 && pickupChords <= 2) return idx;
+      const c = flat[idx].chord;
+      if (c.beats > 1) break;
+      if (!c.rest) pickupChords++;
+      if (pickupChords > 2) break;
+    }
+    return at;
+  };
   // 段界落在段首小节前；那里若 slur/tie 未闭合（长音 tie 连到段首音，如「主祢真伟大」的
   // `5__|5---|5`）就**顺延到弧闭合处**——把延续音留在上一页，弧才画得完整（跨页的弧渲染不出来）。
   // 顺延只到弧闭合，不再往后凑整小节：段首小节就此被拆成两半，新段从半个小节起头，但段落的
@@ -219,6 +233,7 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
     if (at < 0) continue;
     let idx = at;
     while (idx < K && depthAfter[idx] !== 0) idx++;
+    idx = beforeSectionPickup(idx);
     if (idx < K) sectionCutIdx.set(mi, idx);
   }
   // 副歌（refrain）起点同样是段界：jpscore 会在它之前**强制断行并另起一页**（主歌/副歌分页）。
@@ -237,7 +252,7 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
         }
       }
     }
-    if (refrainIdx > 0) sectionCutIdx.set(flat[refrainIdx].mi, refrainIdx - 1);
+    if (refrainIdx > 0) sectionCutIdx.set(flat[refrainIdx].mi, beforeSectionPickup(refrainIdx - 1));
   }
 
   // 顺延后的位置不一定在候选里（弧闭合处未必带乐句信号）→ 补进去。只对段界破例，普通断点仍不拆弧。
@@ -264,8 +279,16 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   const cellsUpto = new Array<number>(K + 1).fill(0); // 前缀格数：cellsUpto[i]=前 i 个和弦占的格数
   for (let i = 0; i < K; i++) cellsUpto[i + 1] = cellsUpto[i] + cellsOf(flat[i].chord);
   const cellsBetween = (a: number, b: number) => cellsUpto[idxAt[b] + 1] - cellsUpto[idxAt[a] + 1];
+  // 完整句末的前缀计数。仅提高「跨过句末、把下一句弱起塞到本行」的代价；若断点本身就在
+  // 句末则不罚。这样 `…便要走！ 而…`、`…长存不朽！ 谁人…` 会优先在 `！` 后换行，
+  // 同时很短的句子仍可在行长收益足够大时合排，不把句末标点做成绝对硬断点。
+  const endPunctUpto = new Array<number>(K + 1).fill(0);
+  for (let i = 0; i < K; i++) endPunctUpto[i + 1] = endPunctUpto[i] + (punctAfter[i] === 6 ? 1 : 0);
+  const crossedEndPunct = (a: number, b: number): number =>
+    endPunctUpto[idxAt[b]] - endPunctUpto[idxAt[a] + 1];
   const INF = Number.POSITIVE_INFINITY;
   const BASE_BREAK = 8;
+  const CROSSED_END_PUNCT_COST = 4;
   // 行长约束一律是**软惩罚**而非硬禁：可断点稀疏时（弧线跨小节连成一片，如「主祢真伟大」副歌
   // 每小节末都在 slur 内）硬禁会让整段找不到任何合法切法、退化成一整行。软罚则总能挑出最不坏的一种。
   const lenCost = (meas: number, cells: number, segEnd: boolean): number =>
@@ -298,7 +321,8 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
         const sc = b === hi ? 0 : scoreAt(cand[b - 1]);
         const bc = b === hi ? 0
           : Math.max(0, BASE_BREAK - sc) + (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6);
-        const cost = lenCost(meas, cells, b === hi) + bc + dp[b];
+        const cost = lenCost(meas, cells, b === hi) + bc +
+          crossedEndPunct(a, b) * CROSSED_END_PUNCT_COST + dp[b];
         if (cost < dp[a]) { dp[a] = cost; nextB[a] = b; }
       }
       // 无解（段内可断点太稀，够不着 MIN 又超不出扫描上界）→ 退到最近的候选断点，宁可短行也别整段一行。

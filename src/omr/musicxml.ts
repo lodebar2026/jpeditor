@@ -123,6 +123,24 @@ function rowEndsClosed(row: StaffRow): boolean {
   return Math.max(...row.barlineXs) >= lastRight;
 }
 
+/** 识别阶段把反复/房号锚到边界相邻音符；这里提升成 MusicXML 小节线结构。 */
+function structuralBarlineXml(notes: JpNum[], location: "left" | "right"): string {
+  if (location === "left") {
+    const ending = notes.find((n) => n.endingStart !== undefined)?.endingStart;
+    const repeat = notes.some((n) => n.repeatForward);
+    if (ending === undefined && !repeat) return "";
+    return `<barline location="left">${repeat ? "<bar-style>heavy-light</bar-style>" : ""}` +
+      `${ending !== undefined ? `<ending number="${ending}" type="start"/>` : ""}` +
+      `${repeat ? "<repeat direction=\"forward\"/>" : ""}</barline>`;
+  }
+  const ending = [...notes].reverse().find((n) => n.endingStop !== undefined)?.endingStop;
+  const repeat = notes.some((n) => n.repeatBackward);
+  if (ending === undefined && !repeat) return "";
+  return `<barline location="right">${repeat ? "<bar-style>light-heavy</bar-style>" : ""}` +
+    `${ending !== undefined ? `<ending number="${ending}" type="stop"/>` : ""}` +
+    `${repeat ? "<repeat direction=\"backward\"/>" : ""}</barline>`;
+}
+
 export function toMusicXml(score: RecognizedScore): string {
   // 遵照图片小节线：行末无小节线时（开口收尾），本行末小节与下一行行首小节实为同一跨行小节，合并，
   // 不在换行处凭空补小节线。行末有小节线（如终止线）才各自成节。
@@ -163,7 +181,9 @@ export function toMusicXml(score: RecognizedScore): string {
       ? `<direction placement="above"><direction-type><words>${escapeXml(mark)}</words></direction-type></direction>`
       : "";
     const noteEls = notes.map((n) => noteXml(n, score.fifths)).join("");
-    return `<measure number="${mi}">${printEl}${attrs}${tempoEl}${markEl}${noteEls}</measure>`;
+    const leftBar = structuralBarlineXml(notes, "left");
+    const rightBar = structuralBarlineXml(notes, "right");
+    return `<measure number="${mi}">${printEl}${attrs}${leftBar}${tempoEl}${markEl}${noteEls}${rightBar}</measure>`;
   }).join("");
 
   const workXml = score.title ? `<work><work-title>${escapeXml(score.title)}</work-title></work>` : "";

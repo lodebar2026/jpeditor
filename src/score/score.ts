@@ -827,11 +827,11 @@ export class RepeatProcessor {
     this.endingActive = mif.endingNum?.has(pass) === true;
   }
 
-  private onRightEnding(m: TimePosition, dist: boolean): void {
+  private onRightEnding(m: TimePosition, resetPass: boolean): void {
     if (this.inJump) return;
     this.endingActive = false;
     this.inEnding = false;
-    if (dist) {
+    if (resetPass) {
       m.pass = 1;
       this.passCount = -1;
     }
@@ -882,7 +882,11 @@ export class RepeatProcessor {
     const fine = this.update(m);
     if (fine) return true;
     if (mif.endingRight !== null) {
-      this.onRightEnding(m, mif.endingRight === StartStopDiscontinue.DISCONTINUE);
+      // 第一房通常在右边界同时带 backward repeat，必须保留当前 pass 让 onBackward 进入下一遍；
+      // 最后一房右边界没有 backward repeat，它结束了这一组独立反复，此处要把 pass/passCount 重置，
+      // 否则紧随其后的下一组 ||: 会因 pass>1 被 onForward 忽略、错误跳回上一组反复起点。
+      const closesRepeatGroup = !mif.repeatBackward;
+      this.onRightEnding(m, mif.endingRight === StartStopDiscontinue.DISCONTINUE || closesRepeatGroup);
     }
     if (!this.inJump && mif.repeatBackward) {
       if (this.passCount < 0) {
