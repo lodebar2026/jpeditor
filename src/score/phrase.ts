@@ -31,6 +31,10 @@ const MAX_MEAS = 7;
 // 增时线渲染得比数字窄（`5 - - -` 明显短于 `3 1 2 5`），按 1 整格算会高估长音行的宽度，把
 // 「超长音收尾」挤到下一行去（实测副歌 `…手心|中5---|5` 的「中」被甩到行首）。按实测比例折算。
 const MAX_CELLS = 25;
+// 一个完整句子若能独占一行，可比普通行稍宽：中文简谱里「句号收行」比机械地卡在 25 格更能体现乐句，
+// 也避免 28~30 格的完整句子被从逗号处劈开。再长仍会回退到普通候选断点，防止真正的长句撑出版心。
+const MAX_SENTENCE_CELLS = 30;
+const MAX_SENTENCE_MEAS = 5;
 // 行长下限也认格数：行从小节中间起头时（前一行在长音 tie 收尾处断），按小节数算会偏小，
 // 但内容量其实够——`MIN_MEAS` 与 `MIN_CELLS` 满足其一即可。
 const MIN_CELLS = 14;
@@ -209,10 +213,19 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   // 段落标记（Intro/Verse/Chorus/Coda…）：段首必起新行，且**每段独立排行长**——否则 DP 会为了
   // 凑均匀行长把上一段末尾与本段开头并进同一行，段落结构在排版上就看不出来了。
   const sectionMi = [...Array(n).keys()].filter((mi) => mi > 0 && measures[mi].sectionMark);
-  // 段落标题/反复线有时印在新段第一强拍处，而新段的弱起仍写在上一小节末（如
-  // `…长存不朽！ 谁人 |【Chorus】受痛苦…`）。若结构段界前只有 1~2 个短音，且其前正好是
-  // 完整句末，就把段界前移到句末：弱起随下一段、下一页走，不悬在上一行末。
-  const beforeSectionPickup = (at: number): number => {
+  // 段落标题/反复线有时与真实歌词段界错开 1~2 个短音：可能是新段弱起仍写在上一小节末，也可能是
+  // 上一句收尾占了新小节开头。向两侧找最近句号，把弱起放进下一段、上一句收尾留在上一段。
+  const aroundSectionPickup = (at: number): number => {
+    // 段落标题通常标在新小节上方，但上一句的收尾偶尔占了新小节开头 1~2 个短音（「脚步」的
+    // `| 路。 求给我…`）。这种情况应在句号后切段，而不是把「路。」放到副歌新页行首。
+    let leadingChords = 0;
+    for (let idx = at + 1; idx < K && idx <= at + 3; idx++) {
+      const c = flat[idx].chord;
+      if (c.beats > 1) break;
+      if (!c.rest) leadingChords++;
+      if (punctAfter[idx] === 6 && leadingChords > 0 && leadingChords <= 2) return idx;
+      if (leadingChords > 2) break;
+    }
     let pickupChords = 0;
     for (let idx = at; idx >= 0 && at - idx <= 3; idx--) {
       if (punctAfter[idx] === 6 && pickupChords > 0 && pickupChords <= 2) return idx;
@@ -233,7 +246,7 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
     if (at < 0) continue;
     let idx = at;
     while (idx < K && depthAfter[idx] !== 0) idx++;
-    idx = beforeSectionPickup(idx);
+    idx = aroundSectionPickup(idx);
     if (idx < K) sectionCutIdx.set(mi, idx);
   }
   // 副歌（refrain）起点同样是段界：jpscore 会在它之前**强制断行并另起一页**（主歌/副歌分页）。
@@ -252,7 +265,7 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
         }
       }
     }
-    if (refrainIdx > 0) sectionCutIdx.set(flat[refrainIdx].mi, beforeSectionPickup(refrainIdx - 1));
+    if (refrainIdx > 0) sectionCutIdx.set(flat[refrainIdx].mi, aroundSectionPickup(refrainIdx - 1));
   }
 
   // 顺延后的位置不一定在候选里（弧闭合处未必带乐句信号）→ 补进去。只对段界破例，普通断点仍不拆弧。
@@ -289,12 +302,13 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   const INF = Number.POSITIVE_INFINITY;
   const BASE_BREAK = 8;
   const CROSSED_END_PUNCT_COST = 4;
+  const SPLIT_SHORT_SENTENCE_COST = 24;
   // 行长约束一律是**软惩罚**而非硬禁：可断点稀疏时（弧线跨小节连成一片，如「主祢真伟大」副歌
   // 每小节末都在 slur 内）硬禁会让整段找不到任何合法切法、退化成一整行。软罚则总能挑出最不坏的一种。
-  const lenCost = (meas: number, cells: number, segEnd: boolean): number =>
+  const lenCost = (meas: number, cells: number, segEnd: boolean, maxCells = MAX_CELLS): number =>
     (meas - TARGET_MEAS) ** 2 +
     (meas > MAX_MEAS ? (meas - MAX_MEAS) ** 2 * 40 : 0) +
-    (cells > MAX_CELLS ? (cells - MAX_CELLS) ** 2 * 8 : 0) +
+    (cells > maxCells ? (cells - maxCells) ** 2 * 8 : 0) +
     // 段末/曲末行是唯一可短于 MIN 的行，但也**不该短到只剩一小节**——软罚让 DP 宁可把前面几行
     // 各让出一点，也别甩出一个孤零零的尾巴（"不要有只有一节的情况"）。
     (segEnd && meas < MIN_MEAS ? (MIN_MEAS - meas) ** 2 * 10 : 0);
@@ -321,8 +335,25 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
         const sc = b === hi ? 0 : scoreAt(cand[b - 1]);
         const bc = b === hi ? 0
           : Math.max(0, BASE_BREAK - sc) + (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6);
-        const cost = lenCost(meas, cells, b === hi) + bc +
-          crossedEndPunct(a, b) * CROSSED_END_PUNCT_COST + dp[b];
+        const crossed = crossedEndPunct(a, b);
+        const endsAtSentence = punctAfter[idxAt[b]] === 6;
+        // 若从本行起点继续到下一个句号仍不超过「完整句」宽度，就不要提前在逗号/弱音乐信号处拆开。
+        // 超过该宽度则不罚，长句仍可正常分行。
+        let splitSentence = 0;
+        if (b < hi && !endsAtSentence) {
+          for (let p = idxAt[b] + 1; p <= idxAt[hi]; p++) {
+            if (punctAfter[p] !== 6) continue;
+            const sentenceCells = cellsUpto[p + 1] - cellsUpto[idxAt[a] + 1];
+            const sentenceMeas = flat[p].pos - ends[a];
+            if (sentenceCells <= MAX_SENTENCE_CELLS && sentenceMeas <= MAX_SENTENCE_MEAS) {
+              splitSentence = SPLIT_SHORT_SENTENCE_COST;
+            }
+            break;
+          }
+        }
+        const lineMaxCells = endsAtSentence && crossed === 0 && meas <= MAX_SENTENCE_MEAS ? MAX_SENTENCE_CELLS : MAX_CELLS;
+        const cost = lenCost(meas, cells, b === hi, lineMaxCells) + bc + splitSentence +
+          crossed * CROSSED_END_PUNCT_COST + dp[b];
         if (cost < dp[a]) { dp[a] = cost; nextB[a] = b; }
       }
       // 无解（段内可断点太稀，够不着 MIN 又超不出扫描上界）→ 退到最近的候选断点，宁可短行也别整段一行。
