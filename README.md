@@ -16,6 +16,8 @@
 排版）、MusicXML 导入、**简谱图片识别（OMR）**、**ABC 记谱导入**、**乐谱播放**，以及导出
 PDF / PNG / MIDI / 矢量 PPTX。
 
+![首页](docs/screenshot-start.png)
+
 ![界面](docs/screenshot.png)
 
 ## English
