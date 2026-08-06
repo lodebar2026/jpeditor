@@ -306,9 +306,14 @@ java -jar /tmp/antlr-4.13.2-complete.jar -Dlanguage=TypeScript -o /tmp/gen -visi
 
 - **谱速来源与往返**：MusicXML `<sound tempo>`（OMR 页眉的 `♩=76`、ABC 的 `Q:` 都吐这个）
   → `score/musicxml.ts::parseSound` → `PlayData.tempo` → `jpscore.ts` 写 `.Title` 的
-  `Tempo = 76` → `jpwimport.ts` 读回。**必须经 .jpwabc 走一圈**：导入是 xml→jpwabc 文本→
-  编辑器重解析，不落进 `.Title` 就会在这一步丢掉。`.Title` 本就是自由的 `键 = 值` 表
-  （`TitleSection.parse` 通吃），加键不用动 ANTLR 语法。
+  `Expression = {J=76}` → `jpwimport.ts` 读回。**必须经 .jpwabc 走一圈**：导入是 xml→jpwabc
+  文本→编辑器重解析，不落进 `.Title` 就会在这一步丢掉。
+- **字段名依 JP-Word 原生规范**：速度不另立 `Tempo` 键，而是记进 **`Expression`**——JP-Word
+  用这一个字段兼记速度与表情，值可以是 `{J=80}`（`J` 即谱面的 ♩）或纯表情文字（`热烈欢快地`）。
+  `TitleSection.parse` 会剥掉外层 `{}`，故读到的是 `J=80`，用正则取数值。字段顺序也依原样排在
+  `WordsByAndMusicBy` 之后。规范见 happyeo 的 JP-Word 手册与实际 `.jpwabc`（`.Title` 的完整
+  键集：`Intro`/`Title`/`SubTitle`/`SubTitle2`/`KeyAndMeters`/`WordsByAndMusicBy`/
+  `Expression`/`LinePos`；`jpw.kt:399` 的注释里也抄了一份样例）。
 - **倍率**：工具条「试听」旁的下拉（`SPEED_STEPS`，×0.5~×2），存进 localStorage 的渲染设置，
   经 `App.playOptions()` 同时喂给试听和 MIDI 导出。播放中改倍率会按新速重播——音已排进
   Web Audio 队列，改不了只能重来。

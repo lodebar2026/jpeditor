@@ -296,7 +296,7 @@ const NOTATION: NoteEx[] = [
     level: "常用",
     body: [
       "`.Title` 段放曲子的抬头信息：`Title` 是标题（居中显示在最上方）、`WordsByAndMusicBy` 是词曲作者（格式 `{词作者,曲作者}`）；`KeyAndMeters` 设置调号与拍号。",
-      "`Tempo = 76` 记曲速（♩= 每分钟拍数），试听与导出 MIDI 按它走；不写则按 ♩=90。工具条「试听」旁的下拉可在此基础上调倍速。",
+      "`Expression` 记速度与表情：写成 `{J=76}` 就是 ♩=76（`J` 即谱面上的四分音符），也可以写表情文字如 `热烈欢快地`。试听与导出 MIDI 按 `{J=…}` 走，不写则按 ♩=90；工具条「试听」旁的下拉可在此基础上调倍速。",
       "下面这段会渲染出标题页的抬头版式。",
     ],
     code: ".Title\nTitle = {奇异恩典}\nKeyAndMeters = {1=G,3/4}\nWordsByAndMusicBy = {John Newton,美国民谣}\n.Voice\n5 1'. 1'_ 3' |2'- 1'- |",

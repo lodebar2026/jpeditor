@@ -249,9 +249,6 @@ class JpScore {
     const tm = firstMea.time;
     const key = firstMea.key.name;
     this.lines.push(`KeyAndMeters = {1=${key},${tm.beats}/${tm.beatType}}`);
-    // 谱面速度。`.Title` 段本就是自由的 `键 = 值` 表（TitleSection.parse 通吃），
-    // 加一行 Tempo 即可让 ♩= 值跟着 .jpwabc 走一圈，试听/导出 MIDI 才能按谱速播。
-    if (scr.playData.tempo > 0) this.lines.push(`Tempo = ${scr.playData.tempo}`);
     const authors: string[] = [];
     for (const it of scr.credit) {
       if (it.type === "title") continue;
@@ -270,6 +267,10 @@ class JpScore {
       col += a.length + 2; // "\\n"
     }
     this.lines.push(`${authPrefix}${authors.join("\\n")}`);
+    // 速度：按 JP-Word 原生写法记进 Expression（`{J=80}`，J 即谱面的 ♩），字段位置也依原样
+    // 排在 WordsByAndMusicBy 之后。这样导出的 .jpwabc 拿回 JP-Word 里速度不丢；试听/导出 MIDI
+    // 也靠它把 ♩= 带过「xml → jpwabc 文本 → 重解析」这一圈。
+    if (scr.playData.tempo > 0) this.lines.push(`Expression = {J=${scr.playData.tempo}}`);
   }
 
   private makeWordData(part: Part): void {
