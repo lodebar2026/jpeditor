@@ -4,7 +4,7 @@
 // exported MIDI honors the expanded play order (repeats / voltas / D.C. / D.S.).
 
 import { Score } from "./score";
-import { buildTimeline, partGain, PlayOptions, TEMPO, TimedNote } from "./timeline";
+import { buildTimeline, partGain, PlayOptions, playTempo, TimedNote } from "./timeline";
 
 const PPQ = 960;
 
@@ -38,8 +38,8 @@ function trackChunk(events: Ev[]): number[] {
   return [0x4d, 0x54, 0x72, 0x6b, (len >> 24) & 0xff, (len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff, ...body];
 }
 
-function tempoTrack(): number[] {
-  const mpqn = Math.round(60000000 / TEMPO);
+function tempoTrack(bpm: number): number[] {
+  const mpqn = Math.round(60000000 / bpm);
   const ev: Ev = {
     tick: 0,
     order: 0,
@@ -73,7 +73,7 @@ export function scoreToMidi(score: Score, opts?: PlayOptions): Uint8Array {
     (ntracks >> 8) & 0xff, ntracks & 0xff,
     (PPQ >> 8) & 0xff, PPQ & 0xff, // division (ticks per quarter)
   ];
-  const out: number[] = [...header, ...tempoTrack()];
+  const out: number[] = [...header, ...tempoTrack(playTempo(score, opts))];
   for (let i = 0; i < score.parts.length; i++) out.push(...partTrack(notes, i, opts));
   return new Uint8Array(out);
 }

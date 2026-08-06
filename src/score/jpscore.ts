@@ -249,6 +249,9 @@ class JpScore {
     const tm = firstMea.time;
     const key = firstMea.key.name;
     this.lines.push(`KeyAndMeters = {1=${key},${tm.beats}/${tm.beatType}}`);
+    // 谱面速度。`.Title` 段本就是自由的 `键 = 值` 表（TitleSection.parse 通吃），
+    // 加一行 Tempo 即可让 ♩= 值跟着 .jpwabc 走一圈，试听/导出 MIDI 才能按谱速播。
+    if (scr.playData.tempo > 0) this.lines.push(`Tempo = ${scr.playData.tempo}`);
     const authors: string[] = [];
     for (const it of scr.credit) {
       if (it.type === "title") continue;

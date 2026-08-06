@@ -6,12 +6,10 @@
 
 import { Soundfont } from "smplr";
 import { Chord } from "../score/score";
-import { buildTimeline, partGain, PlayOptions, TEMPO } from "../score/timeline";
+import { buildTimeline, partGain, PlayOptions, playTempo } from "../score/timeline";
 import { scoreToMidi } from "../score/midi";
 import { Score } from "../score/score";
 import { isTauriRuntime } from "./fileio";
-
-const SPQ = 60 / TEMPO; // seconds per quarter note
 
 export type PlayState = "stopped" | "loading" | "playing";
 
@@ -54,6 +52,8 @@ export class ScorePlayer {
     const gen = this.gen;
     const tl = buildTimeline(score);
     if (tl.notes.length === 0) return;
+    // 秒/四分音符：谱面 ♩= 与用户速度倍率都折进这一个系数，时间轴本身仍是四分音符单位。
+    const SPQ = 60 / playTempo(score, opts);
 
     this.anchors = tl.anchors.map((a) => ({ t: a.t0 * SPQ, chord: a.chord, pass: a.pass }));
     this.duration = tl.duration * SPQ;

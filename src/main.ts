@@ -151,6 +151,8 @@ async function boot() {
     app.setPlaybackBtn(playBtn);
     playBtn.addEventListener("click", () => void app.togglePlayback());
   }
+  const speedSel = document.getElementById("sel-speed") as HTMLSelectElement | null;
+  if (speedSel) app.bindSpeedSelect(speedSel);
   const openScore = async () => { if (await app.openFile()) revealWorkspace(); };
   document.getElementById("btn-open")?.addEventListener("click", () => void openScore());
   document.getElementById("btn-start-score")?.addEventListener("click", () => void openScore());

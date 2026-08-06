@@ -238,6 +238,7 @@ export function fromJpw(f: JpwFile): Score | null {
     cred.page = 1;
     res.credit.push(cred);
   }
+  res.playData.tempo = title?.tempo ?? 0;
   const tm = title?.meter ?? "4/4";
   const tmArr = tm.split("/");
   const ts = new Time();

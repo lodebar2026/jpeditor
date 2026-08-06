@@ -243,6 +243,9 @@ function parseSound(snd: Element, pd: PlayData, mid: number, st: MState, div: nu
   const segno = snd.getAttribute("segno");
   if (coda) pd.coda.set(coda, tick);
   if (segno) pd.segno.set(segno, tick);
+  // 曲首的速度记号（OMR 页眉的 `♩=76`、ABC 的 `Q:`）：只取第一处，后续变速暂不支持。
+  const tempo = parseFloat(snd.getAttribute("tempo") ?? "");
+  if (pd.tempo === 0 && tempo >= 20 && tempo <= 400) pd.tempo = Math.round(tempo);
   if (snd.getAttribute("dacapo")) pd.jumpTo.set(tick, new JumpSpec(PlaySpecKind.Dacapo));
   if (snd.getAttribute("fine")) pd.jumpTo.set(tick, new JumpSpec(PlaySpecKind.Fine));
   const dalsegno = snd.getAttribute("dalsegno");

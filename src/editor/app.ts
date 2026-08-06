@@ -18,6 +18,7 @@ import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } fro
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 import { MixedPainter } from "../mixed/painter";
 import { ScorePlayer, type PlayState } from "./player";
+import { playTempo, SPEED_STEPS, type PlayOptions } from "../score/timeline";
 import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, type OmrMethod, type RecogView } from "../omr";
 import type { Binary, RecognizedScore } from "../omr";
 
@@ -68,8 +69,11 @@ export class App {
   statusEl: HTMLElement | null = null;
   private _player: ScorePlayer | null = null;
   private _playBtnEl: HTMLButtonElement | null = null;
+  private _speedSelEl: HTMLSelectElement | null = null;
   /** Per-part linear volume in [0,1]; index = part index. Missing = 1 (full). */
   partVolumes: number[] = [];
+  /** 试听/导出 MIDI 的速度倍率（1 = 谱面标注速度）。持久化。 */
+  playSpeed = 1;
   // Selected note (for "play from here"): its chord + which verse/pass row.
   private _selectedChord: import("../score/score").Chord | null = null;
   private _selectedVerse = 0;
@@ -113,8 +117,9 @@ export class App {
       const s = JSON.parse(raw) as Partial<{
         pageW: number; pageH: number; fontSize: number;
         titleSize: number; creditSize: number; color: number; zoom: number;
-        mixedHideBarNumber: boolean; mixedShowJianpuLayer: boolean;
+        mixedHideBarNumber: boolean; mixedShowJianpuLayer: boolean; playSpeed: number;
       }>;
+      if (s.playSpeed) this.playSpeed = Math.max(0.25, Math.min(3, s.playSpeed));
       if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
       if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
       if (s.pageW) this.pageW = s.pageW;
@@ -151,6 +156,7 @@ export class App {
         zoom: this.zoom,
         mixedHideBarNumber: this.mixedHideBarNumber,
         mixedShowJianpuLayer: this.mixedShowJianpuLayer,
+        playSpeed: this.playSpeed,
       }));
     } catch {
       // storage unavailable — ignore
@@ -252,6 +258,7 @@ export class App {
       return false;
     }
     this.renderPages();
+    this.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换
     return true;
   }
 
@@ -436,6 +443,49 @@ export class App {
     this.partVolumes[i] = Math.max(0, Math.min(1, v));
   }
 
+  /** 试听/导出 MIDI 共用的播放参数。 */
+  playOptions(): PlayOptions {
+    return { partVolumes: this.partVolumes, speed: this.playSpeed };
+  }
+
+  /** 谱面标注的速度 ♩=NN（0 = 未标注，试听按默认 90）。 */
+  get scoreTempo(): number {
+    return this.painter.score.playData.tempo;
+  }
+
+  /** 设置速度倍率并持久化；正在播放时按新速度重播（音已排好队，只能重来）。 */
+  setPlaySpeed(mul: number): void {
+    const v = Math.max(0.25, Math.min(3, mul));
+    if (v === this.playSpeed) return;
+    this.playSpeed = v;
+    this.saveSettings();
+    this.refreshSpeedUi();
+    if (this._player?.state === "playing") void this.playScore();
+  }
+
+  /** 工具条速度下拉与谱速提示的同步（换谱、改倍率后调用）。 */
+  refreshSpeedUi(): void {
+    const sel = this._speedSelEl;
+    if (!sel) return;
+    sel.value = String(this.playSpeed);
+    const bpm = Math.round(playTempo(this.painter.score, this.playOptions()));
+    const marked = this.scoreTempo > 0 ? `谱面 ♩=${this.scoreTempo}` : "谱面未标速度，按 ♩=90";
+    sel.title = `播放速度：${marked}，当前 ♩=${bpm}`;
+  }
+
+  bindSpeedSelect(el: HTMLSelectElement): void {
+    this._speedSelEl = el;
+    el.innerHTML = "";
+    for (const v of SPEED_STEPS) {
+      const o = document.createElement("option");
+      o.value = String(v);
+      o.textContent = v === 1 ? "原速" : `×${v}`;
+      el.append(o);
+    }
+    el.addEventListener("change", () => this.setPlaySpeed(parseFloat(el.value) || 1));
+    this.refreshSpeedUi();
+  }
+
   async playScore(): Promise<void> {
     if (this.mode !== "jp") return; // playback is jianpu-mode only
     const start =
@@ -443,7 +493,7 @@ export class App {
         ? { chord: this._selectedChord, pass: this._selectedVerse }
         : undefined;
     try {
-      await this.player().play(this.painter.score, { partVolumes: this.partVolumes }, start);
+      await this.player().play(this.painter.score, this.playOptions(), start);
     } catch (e) {
       console.error("playback failed", e);
       this._player?.stop();

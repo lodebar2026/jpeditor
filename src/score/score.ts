@@ -518,6 +518,9 @@ export class PlayData {
   measures: PlayItem[] = [];
   hasRepeat = false;
   isSimpple = false; // no repeat, only multiple verse
+  /** 谱面速度（♩= 每分钟拍数）。0 = 未标注，试听/导出用 timeline.ts 的默认值。
+   *  来源：MusicXML `<sound tempo>` / OMR 页眉的 `♩=76` / .jpwabc `.Title` 的 `Tempo`。 */
+  tempo = 0;
 
   get noRepeat(): boolean {
     if (this.hasRepeat) return false;

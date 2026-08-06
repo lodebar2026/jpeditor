@@ -228,6 +228,11 @@ export class TitleSection extends Section {
   get wordsMusicBy(): string | null {
     return this.getValue("WordsByAndMusicBy");
   }
+  /** 谱面速度 ♩=NN（`Tempo = 76`）；未标注/非法则 0。 */
+  get tempo(): number {
+    const v = parseInt((this.getValue("Tempo") ?? "").replace(/[^\d]/g, ""), 10);
+    return v >= 20 && v <= 400 ? v : 0;
+  }
   get key(): string | null {
     const km = this.keyAndMeters;
     if (km === null) return null;

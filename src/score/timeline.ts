@@ -6,12 +6,25 @@
 
 import { Chord, Score } from "./score";
 
-export const TEMPO = 90; // BPM, shared by MIDI export and playback
+export const TEMPO = 90; // BPM fallback when the score carries no ♩= marking
+
+/** 速度倍率的可选档位（试听工具条 + MIDI 导出共用）。 */
+export const SPEED_STEPS = [0.5, 0.6, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 2] as const;
 
 /** Mixing options shared by MIDI export and playback. */
 export interface PlayOptions {
   /** Per-part linear volume in [0,1]; index = part index. Missing/undefined = 1. */
   partVolumes?: number[];
+  /** 播放速度倍率（1 = 谱面标注速度）。夹在 [0.25, 3]。 */
+  speed?: number;
+}
+
+/** 实际播放速度 = 谱面 ♩=（无则 90）× 用户倍率。 */
+export function playTempo(score: Score, opts?: PlayOptions): number {
+  const base = score.playData.tempo > 0 ? score.playData.tempo : TEMPO;
+  const mul = opts?.speed;
+  const k = mul === undefined || Number.isNaN(mul) ? 1 : Math.max(0.25, Math.min(3, mul));
+  return base * k;
 }
 
 /** Per-part linear gain in [0,1], defaulting to 1 (full) when unset. */

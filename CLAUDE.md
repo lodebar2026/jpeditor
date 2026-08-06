@@ -299,6 +299,20 @@ java -jar /tmp/antlr-4.13.2-complete.jar -Dlanguage=TypeScript -o /tmp/gen -visi
 当前 9 首基线：**每行都落在 3~5 节 / 11~25 格**（主祢真伟大 9 行、日光之下 6 行、耶稣普治 4 行…；
 从小节中间起头的行会显示 2 节但格数够）。出现「整段一行」「1 小节一行」都是退化。
 
+## 播放速度（issue #2）
+
+试听与导出 MIDI 的速度 = **谱面标注 ♩=** × **用户倍率**，两者都在 `score/timeline.ts::playTempo`
+里折算，`TEMPO = 90` 退化成"谱面没标速度"时的兜底值。
+
+- **谱速来源与往返**：MusicXML `<sound tempo>`（OMR 页眉的 `♩=76`、ABC 的 `Q:` 都吐这个）
+  → `score/musicxml.ts::parseSound` → `PlayData.tempo` → `jpscore.ts` 写 `.Title` 的
+  `Tempo = 76` → `jpwimport.ts` 读回。**必须经 .jpwabc 走一圈**：导入是 xml→jpwabc 文本→
+  编辑器重解析，不落进 `.Title` 就会在这一步丢掉。`.Title` 本就是自由的 `键 = 值` 表
+  （`TitleSection.parse` 通吃），加键不用动 ANTLR 语法。
+- **倍率**：工具条「试听」旁的下拉（`SPEED_STEPS`，×0.5~×2），存进 localStorage 的渲染设置，
+  经 `App.playOptions()` 同时喂给试听和 MIDI 导出。播放中改倍率会按新速重播——音已排进
+  Web Audio 队列，改不了只能重来。
+
 ## 约定
 
 - 严格模式 TS，`noUnusedLocals/Parameters`。生成代码用 `// @ts-nocheck` 豁免。
