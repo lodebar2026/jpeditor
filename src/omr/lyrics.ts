@@ -45,6 +45,20 @@ const normalizeJump = (s: string): string => {
   if (t === "FINE") return "Fine";
   return "To Coda";
 };
+// 歌词行首的段号：`1.` `2.` `3.5.` `4、` `6．`。多个号并列表示这行词由这几段共用
+// （`3.5.` = 第 3、5 段唱同一行）。段号小、点更小，OCR 常把点整个吞掉（实测读出 `1沧海…`、
+// `35江山…`），故分隔符一律可选、连写的数字按**逐位**拆成多个段号（简谱段号极少超过 9）。
+const VERSE_LABEL_RE = /^[\s(（[]*((?:\d[\s.．、,，/]*){1,4})/;
+/** 行首段号 → 段号列表；不是段号则 null。 */
+function parseVerseLabel(raw: string): number[] | null {
+  const m = VERSE_LABEL_RE.exec(raw);
+  if (!m) return null;
+  const nums = [...m[1].replace(/\D/g, "")].map(Number).filter((n) => n >= 1);
+  // 号后面必须真跟着一行词。房括号上的号码（`1.2.3.5.` `4.` `6.`）也会落进歌词带被当成一行，
+  // 它后面没有字——据此剔掉，否则号会与真段号撞车、把整套映射作废。
+  if (!nums.length || (raw.slice(m[0].length).match(/[一-鿿]/g) ?? []).length < 2) return null;
+  return nums;
+}
 // 注记行判定用（比上面多收 fine 等，这类行同样不是歌词、要从歌词带里剔掉）。
 const SECTION_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|fine|tag|refrain)\d*/gi;
 const CHORD_SUFFIX_RE = /(maj|min|sus|dim|aug|add)/gi;
@@ -407,12 +421,32 @@ export async function recognizeLyrics(
     const noteX0 = Math.min(...row.nums.map((n) => n.bbox.x));
     const noteX1 = Math.max(...row.nums.map((n) => rright(n.bbox)));
     const noteSpan = Math.max(1, noteX1 - noteX0);
+    // 房（一/二房）内的第 2、3… 段词只覆盖本房，按整行宽算 cov 天生低（沧海一声笑一房里的
+    // 「天知晓。」只占 0.2）会被当注记丢掉，那几遍就没词唱。故 cov 取"对整行"与"对各房"的
+    // 最大值：**整条落在某房内、且铺满该房**的短行同样算真词。
+    const endingSpans: Array<[number, number]> = [];
+    {
+      let s = -1;
+      for (const n of row.nums) {
+        if (n.endingStart !== undefined) s = n.bbox.x;
+        if (n.endingStop !== undefined && s >= 0) { endingSpans.push([s, rright(n.bbox)]); s = -1; }
+      }
+    }
+    const covOf = (lx0: number, lx1: number): number => {
+      let best = (lx1 - lx0) / noteSpan;
+      for (const [a, b] of endingSpans) {
+        const ov = Math.min(lx1, b) - Math.max(lx0, a);
+        if (ov <= 0 || ov < (lx1 - lx0) * 0.8) continue; // 行须基本落在这一房内
+        best = Math.max(best, (lx1 - lx0) / Math.max(1, b - a));
+      }
+      return best;
+    };
     const lineInfo = mergedBlocks.map((blocks) => {
       const cells = blocks.map((b) => blockRect(b, k));
       const longGapBefore = blocks.map((b) => b.gapBefore > longGap);
       const lx0 = cells.length ? Math.min(...cells.map((c) => c.x)) : 0;
       const lx1 = cells.length ? Math.max(...cells.map((c) => rright(c))) : 0;
-      return { cells, longGapBefore, cov: cells.length ? (lx1 - lx0) / noteSpan : 0, h: median(cells.map((c) => c.h)) };
+      return { cells, longGapBefore, cov: cells.length ? covOf(lx0, lx1) : 0, h: median(cells.map((c) => c.h)) };
     });
     const maxCov = Math.max(0, ...lineInfo.map((L) => L.cov));
     // 圆滑线/连音线弧、下划线等：横跨谱行(cov 高)但**矮**（弧高 ~0.5 字高），会被当成一整条伪歌词行
@@ -660,24 +694,60 @@ export async function recognizeLyrics(
     const primaryVerse = [...rowsWithText.entries()].sort((a, b) => b[1].size - a[1].size)[0]?.[0] ?? 0;
     const chars = new Map<string, number>();
     for (const [key, placed] of perLine) chars.set(key, placed.reduce((a, p) => a + p.ch.length, 0));
-    for (const key of [...perLine.keys()]) {
+    // 去留按**视觉行序**整体决定，不逐谱行：一个行序只要在某一谱行上是完整一行词，它就是真
+    // verse，它在别的谱行上的短行（房内只唱一小节的那几行，如沧海一声笑一房里的「几多娇？」）
+    // 跟着保留——否则那几遍会唱空。
+    const real = new Set<number>();
+    for (const key of perLine.keys()) {
       const [rowIdx, verse] = key.split(":").map(Number);
-      if ((rowsWithText.get(verse)?.size ?? 0) * 2 >= primary) continue; // 行数够 → 真
+      if ((rowsWithText.get(verse)?.size ?? 0) * 2 >= primary) { real.add(verse); continue; } // 行数够 → 真
       // 行数不够也可能是真词：多段谱的第 2..N 段只印在主歌那几行，啦…/间奏行下方本就没有
       // （沧海一声笑 A 段有 1./2./3.5./4./6. 五行词，只光按行数会被整片当伪 verse 删掉，
       //  六个房就全唱成第一段）。真词在它出现的那一行是**完整一行**、字数与主 verse 相当；
       // 噪声伪行（世上 row3 的「一尊心…办单办，口」）只有零星几字，仍被删。
       const ref = chars.get(`${rowIdx}:${primaryVerse}`) ?? 0;
-      if (ref > 0 && (chars.get(key) ?? 0) >= ref * 0.6) continue;
-      perLine.delete(key);
+      if (ref > 0 && (chars.get(key) ?? 0) >= ref * 0.6) real.add(verse);
+    }
+    for (const key of [...perLine.keys()]) {
+      if (!real.has(Number(key.split(":")[1]))) perLine.delete(key);
     }
   }
+
+  // 段号标签 → 词段映射。多段谱在歌词行首印段号（`1.` `2.` `3.5.` `4.` `6.`），**视觉行序未必
+  // 等于段号**：一行可服务多遍（`3.5.` = 第 3、5 遍共用这行词），号也可能跳（`6.`）。段号是非汉字、
+  // 装配时本就被丢弃、不占音符位，只需从 rec 原文行首把它取回来做重映射。
+  // 标签通常只印在第一谱行；后续谱行（如房内那几行）行序与它一致，故按**视觉行序**建全局映射。
+  const verseLabels = new Map<number, number[]>();
+  {
+    const seen = new Set<number>();
+    for (const [key, raw] of rawByKey) {
+      const verse = Number(key.split(":")[1]);
+      if (seen.has(verse)) continue;           // 每个视觉行只看它首次出现的那一谱行（= 标号那行）
+      seen.add(verse);
+      const nums = parseVerseLabel(raw);
+      if (nums) verseLabels.set(verse, nums);
+    }
+    // 只在标签成套时才信：首行必须标 1、号不重复、至少两行有标签。零星误读（歌词里恰好有
+    // 数字、OCR 把字读成数字）达不到这几条，映射整体作废、退回"行序即段号"。
+    const all = [...verseLabels.values()].flat();
+    const ok = verseLabels.size >= 2 && verseLabels.get(0)?.[0] === 1 &&
+      new Set(all).size === all.length;
+    if (!ok) verseLabels.clear();
+    if ((globalThis as { __omrDebug?: boolean }).__omrDebug) {
+      console.log("[lyrics/verse-label]", ok ? "apply" : "ignore",
+        [...verseLabels].map(([v, ns]) => `${v}->${ns.join(",")}`).join(" "));
+    }
+  }
+  /** 视觉行序 → 段号列表（1 基）。无标签时即行序本身。 */
+  const versesOf = (v: number): number[] => verseLabels.get(v) ?? [v + 1];
 
   if (TR) { TR.placed = {}; for (const [k, p] of perLine) TR.placed[k] = p.map(({ x, ch }) => ({ x, ch })); }
 
   // 投影已在自然上下文里把尾随标点并进字块、由 OCR 直接读出（并折全角）→ 不再需要几何补标点。
   for (const [key, placed] of perLine) {
-    const [rowIdx, verse] = key.split(":").map(Number);
+    const [rowIdx, visual] = key.split(":").map(Number);
+    const targets = versesOf(visual);            // 一行词可同时属于多个段（`3.5.`）
+    const verse = targets[0] - 1;
     const notes = staff[rowIdx].nums;
     if (!notes.length) continue;
     placed.sort((a, b) => a.x - b.x);
@@ -694,7 +764,7 @@ export async function recognizeLyrics(
       if (ni > maxNi) ni = maxNi;
       const nt = notes[ni];
       if (!nt.lyrics) nt.lyrics = [];
-      nt.lyrics[verse] = (nt.lyrics[verse] || "") + ch;
+      for (const p of targets) nt.lyrics[p - 1] = (nt.lyrics[p - 1] || "") + ch;
       if (ni < notes.length - 1) ni++;
     }
     if (TR) (TR.aligned ??= {})[key] = notes.map((n) => ({ noteX: rcx(n.bbox), noteBox: n.bbox, lyric: n.lyrics?.[verse] || "" }));
