@@ -228,15 +228,17 @@ export class TitleSection extends Section {
   get wordsMusicBy(): string | null {
     return this.getValue("WordsByAndMusicBy");
   }
-  /** 速度/表情记号原文。JP-Word 用 `Expression` 一个字段兼记两者：
-   *  可以是纯文字（`Expression = 热烈欢快地`），也可以是速度（`Expression = {J=80}`，
-   *  `J` 即谱面上的 ♩）。parse() 已剥掉外层 {}，故这里拿到的是 `J=80` / `热烈欢快地`。 */
+  /** 速度/表情记号原文。JP-Word 用 `Expression` 一个字段兼记两者：可以是纯文字
+   *  （`Expression = 热烈欢快地`），也可以是速度（`Expression = {♩=80}`）。
+   *  parse() 已剥掉外层 {}，故这里拿到的是 `♩=80` / `热烈欢快地`。 */
   get expression(): string | null {
     return this.getValue("Expression");
   }
-  /** 从 Expression 里取 ♩=NN 的数值；没写速度（纯表情文字）或超范围则 0。 */
+  /** 从 Expression 里取 ♩=NN 的数值；没写速度（纯表情文字）或超范围则 0。
+   *  本项目写出的是 `♩`；JP-Word 自己存的是 ASCII `J`（它按音乐字体映射成四分音符），
+   *  两种都认，免得读别处来的谱丢速度。 */
   get tempo(): number {
-    const m = /(?:J|♩|♩)\s*=\s*(\d+)/i.exec(this.expression ?? "");
+    const m = /[J♩]\s*=\s*(\d+)/i.exec(this.expression ?? "");
     const v = m ? parseInt(m[1], 10) : 0;
     return v >= 20 && v <= 400 ? v : 0;
   }

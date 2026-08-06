@@ -50,7 +50,8 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import,
 - **ABC 记谱导入**：拖入或「打开」`.abc` 文件即自动转 MusicXML 再排版为简谱，复用 MusicXML 导入
   路径，天然支持多声部、连奏、重复 / volta、和弦、装饰音、broken-rhythm、调号变更、`C:` 字段作词
   作曲等。转换忠实移植自 Willem Vree 的 `abc2xml`，输出与原脚本逐字节一致
-- **乐谱播放**：内置播放，光标跟随当前音符，两路音源
+- **乐谱播放**：内置播放，光标跟随当前音符，两路音源；按谱面标注的速度（`.Title` 的
+  `Expression = {♩=76}`）演奏，工具条可再调 ×0.5～×2 倍速，试听与导出 MIDI 共用
 - **乐句分析排版**：MusicXML / OMR 导入时按乐句自动断行——综合歌词标点、音乐信号（延长号 /
   终止线 / 长音 / 休止 / 连线）与重复旋律结构，在小节边界找乐句断点并凑成疏密适中的行长
   （每页至多 4 行、末页 3+2）
