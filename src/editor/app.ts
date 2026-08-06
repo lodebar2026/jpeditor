@@ -303,7 +303,9 @@ export class App {
     }
     const p = new JinpuPainter(this.fontSize);
     p.layout.options.smuflMeta = this.meta;
-    p.layout.options.color = 0xff000000;
+    // 示例画在压暗的米白纸上（styles.css 的 --help-paper），墨色也从纯黑收一档，
+    // 免得深色界面上黑白对比过硬。真正的谱面预览仍是纯白纸 + 用户设定的颜色。
+    p.layout.options.color = 0xff1a1a1a;
     p.score = score;
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
     try {

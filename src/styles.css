@@ -15,6 +15,8 @@
   --text-muted: #7c7c7c;
   --border: rgba(255, 255, 255, 0.1);
   --error: #f3727f;
+  /* 帮助里示例谱面的「纸」：保留白纸语义，但比真纸页压暗一档，深色界面上不刺眼。 */
+  --help-paper: #e8e8e8;
   color-scheme: dark;
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
@@ -601,7 +603,9 @@ button:focus-visible, select:focus-visible {
 }
 .help-render {
   padding: 10px 12px;
-  background: #fff;
+  /* 示例仍是「白纸」（与主预览区同构），但深色界面上纯白一块过于刺眼 → 压成米白，
+     谱面墨色也相应从纯黑调到 #1a1a1a（见 App.renderExampleSvg）。 */
+  background: var(--help-paper);
   display: flex;
   justify-content: flex-start;
   align-items: center;
@@ -740,6 +744,6 @@ button:focus-visible, select:focus-visible {
 .help-topic, .help-glossary, .help-example { border-color: var(--border); background: #1d1d1d; }
 .help-topic[open] > summary, .help-source { border-bottom-color: var(--border); }
 .help-source, .help-glossary { color: var(--text-secondary); background: #151515; }
-.help-render { background: #fff; }
+.help-render { background: var(--help-paper); }
 .help-sec-title, .help-shortcuts td:last-child { color: var(--text); }
 .help-shortcuts td { border-top-color: var(--border); }
