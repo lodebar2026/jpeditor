@@ -50,8 +50,11 @@ export interface JpNum {
   // 反复与一/二房结构锚定到边界相邻音符，MusicXML 输出时再提升为小节左右 barline。
   repeatForward?: boolean;  // 本音符所在小节左边界为 ||:
   repeatBackward?: boolean; // 本音符所在小节右边界为 :||
-  endingStart?: number;     // 本音符所在小节开始第 N 房
-  endingStop?: number;      // 本音符所在小节结束第 N 房
+  // 房号是 MusicXML `<ending number>` 的原文：一个房括号可辖多遍，写作 "1,2,3,5"。
+  endingStart?: string;     // 本音符所在小节开始该房
+  endingStop?: string;      // 本音符所在小节结束该房
+  // 跳转记号（D.C./D.S./Fine/To Coda…），印在本谱行音符附近 → MusicXML <direction>+<sound>。
+  jumpMark?: string;
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */

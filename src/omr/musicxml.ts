@@ -123,6 +123,14 @@ function rowEndsClosed(row: StaffRow): boolean {
   return Math.max(...row.barlineXs) >= lastRight;
 }
 
+/** 跳转记号 → MusicXML `<sound>` 属性。下游 score/musicxml.ts::parseSound 读的就是这些。 */
+const JUMP_SOUND: Record<string, string> = {
+  "D.C.": 'dacapo="yes"',
+  "D.S.": 'dalsegno="1"',
+  "Fine": 'fine="yes"',
+  "To Coda": 'tocoda="1"',
+};
+
 /** 识别阶段把反复/房号锚到边界相邻音符；这里提升成 MusicXML 小节线结构。 */
 function structuralBarlineXml(notes: JpNum[], location: "left" | "right"): string {
   if (location === "left") {
@@ -180,10 +188,17 @@ export function toMusicXml(score: RecognizedScore): string {
     const markEl = mark
       ? `<direction placement="above"><direction-type><words>${escapeXml(mark)}</words></direction-type></direction>`
       : "";
+    // 跳转记号（D.C./D.S./Fine/To Coda）：识别时锚在本小节某音符上 → 小节末的 <direction>，
+    // 带 <sound> 属性供 score.ts 的 RepeatProcessor 展开演唱顺序。
+    const jump = notes.find((n) => n.jumpMark)?.jumpMark;
+    const jumpEl = jump
+      ? `<direction placement="above"><direction-type><words>${escapeXml(jump)}</words></direction-type>` +
+        `<sound ${JUMP_SOUND[jump] ?? 'dacapo="yes"'}/></direction>`
+      : "";
     const noteEls = notes.map((n) => noteXml(n, score.fifths)).join("");
     const leftBar = structuralBarlineXml(notes, "left");
     const rightBar = structuralBarlineXml(notes, "right");
-    return `<measure number="${mi}">${printEl}${attrs}${leftBar}${tempoEl}${markEl}${noteEls}${rightBar}</measure>`;
+    return `<measure number="${mi}">${printEl}${attrs}${leftBar}${tempoEl}${markEl}${noteEls}${jumpEl}${rightBar}</measure>`;
   }).join("");
 
   const workXml = score.title ? `<work><work-title>${escapeXml(score.title)}</work-title></work>` : "";

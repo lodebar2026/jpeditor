@@ -583,15 +583,16 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   // 房内只印一行歌词时，歌词识别天然把它放在 W1；但二房的这行实际属于第 2 遍，应迁到 W2。
   // 否则 MusicXML 导入器会把一/二房尾句误判成「两遍共用的副歌」，展开时交叉拼接。
+  // 多房共用一个括号时（`1. 2. 3. 5.`）里面那行词属于**首个**房次，故一律按首号迁。
   for (const row of useRows) {
-    let ending = 0;
+    let ending = 0, raw = "";
     for (const n of row.nums) {
-      if (n.endingStart !== undefined) ending = n.endingStart;
+      if (n.endingStart !== undefined) { raw = n.endingStart; ending = parseInt(raw, 10) || 0; }
       if (ending > 1 && n.lyrics?.[0] && !n.lyrics[ending - 1] && n.lyrics.filter(Boolean).length === 1) {
         n.lyrics[ending - 1] = n.lyrics[0];
         n.lyrics[0] = "";
       }
-      if (n.endingStop === ending) ending = 0;
+      if (n.endingStop !== undefined && n.endingStop === raw) { ending = 0; raw = ""; }
     }
   }
 

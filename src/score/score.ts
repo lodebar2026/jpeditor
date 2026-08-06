@@ -628,8 +628,14 @@ export class Score {
       const verseCnt = rep.getPassCountByLrc(repStart, m.end);
       if (verseCnt > 1) repeatByVerse = false;
     }
+    // 谱面写明了 2 号以上的房（1.2.3.5./4./6.）时，演唱遍数由房号显式给定、RepeatProcessor
+    // 已按房展开；不能再按歌词段数把整份结果整体乘一遍（沧海一声笑会被乘成 6 倍）。
+    let hasVolta = false;
+    for (const m of measures) {
+      if (m.endingNum && [...m.endingNum].some((n) => n > 1)) hasVolta = true;
+    }
     this.playData.isSimpple = rep.result.length === 1;
-    if (repeatByVerse) rep.repeatByLyric();
+    if (repeatByVerse && !hasVolta) rep.repeatByLyric();
     this.playData.measures = [];
     this.playData.measures.push(...rep.result);
     this.expandVoltaByVerse();
@@ -739,6 +745,8 @@ export class RepeatProcessor {
   loopStart = 0;
   passCount = -1;
   inJump = false;
+  /** 本小节的 D.C./D.S. 被当作「房内回头记号」处理过（见 play()）：外层据此跳过收房/反复判定。 */
+  loopedBack = false;
   result: PlayItem[] = [];
 
   constructor(public score: Score) {}
@@ -800,9 +808,19 @@ export class RepeatProcessor {
       this.inJump = false;
     }
     if (dacapo) {
+      // 房内的 D.C.（沧海一声笑的「4.」房：1.2.3.5 房带 :||、4 房改用 D.C.、6 房收尾）：
+      // 房号已经把遍数列全了，这里的 D.C. 只是这一遍的回头记号，与 :|| 等价——回到曲首后
+      // **后续反复照常生效**，故不进 inJump 抑制模式。房外的 D.C. 仍按老规矩（跳回后不再反复）。
+      const insideVolta = this.inEnding && m.pass < this.passCount;
       m.pass++;
       m.mid = -1;
-      this.inJump = true;
+      if (insideVolta) {
+        this.loopedBack = true;
+        this.inEnding = false;
+        this.endingActive = false;
+      } else {
+        this.inJump = true;
+      }
     }
     return res;
   }
@@ -879,16 +897,29 @@ export class RepeatProcessor {
       this.onStartEnding(mif, m.pass);
     }
     if (mif.repeatForward) this.onForward(m.mid, m.pass);
+    // 本遍不唱这一房（房号不含当前 pass）。它右边界上的 :|| 属于这一房、不该照唱——三房以上的谱
+    // （1.2.3.5. / 4. / 6.）里，第 4 遍要跳过一房落到「4.」房，若照跳 :|| 就永远到不了后面的房。
+    // 两房谱不受影响：那里 pass 已到 passCount，onBackward 本就走 m.mid++ 落到二房。
+    const skippedEnding = this.inEnding && !this.endingActive;
     const fine = this.update(m);
     if (fine) return true;
+    if (this.loopedBack) {
+      // 房内 D.C. 已把 mid 拨回曲首、pass 进位，收房/反复判定一概跳过。
+      this.loopedBack = false;
+      m.mid++;
+      return m.mid === p0.measures.length;
+    }
     if (mif.endingRight !== null) {
       // 第一房通常在右边界同时带 backward repeat，必须保留当前 pass 让 onBackward 进入下一遍；
       // 最后一房右边界没有 backward repeat，它结束了这一组独立反复，此处要把 pass/passCount 重置，
       // 否则紧随其后的下一组 ||: 会因 pass>1 被 onForward 忽略、错误跳回上一组反复起点。
-      const closesRepeatGroup = !mif.repeatBackward;
+      // 「最后一房」须按房号判：多房谱中间的房（如「4.」）右边界同样没有 backward，按「无 backward
+      // 即收组」会在半途把 pass 归 1，剩下的房永远唱不到、并陷入死循环。
+      const lastVolta = !mif.endingNum || Math.max(...mif.endingNum) >= this.passCount;
+      const closesRepeatGroup = !mif.repeatBackward && lastVolta;
       this.onRightEnding(m, mif.endingRight === StartStopDiscontinue.DISCONTINUE || closesRepeatGroup);
     }
-    if (!this.inJump && mif.repeatBackward) {
+    if (!this.inJump && mif.repeatBackward && !skippedEnding) {
       if (this.passCount < 0) {
         const beg = this.result[this.result.length - 1].mid;
         this.passCount = this.getPassCountByLrc(beg, m.mid + 1);

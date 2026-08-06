@@ -55,7 +55,21 @@ function detectRepeatBarlines(dots: Component[], rows: StaffRow[], numH: number)
 interface EndingCandidate {
   bracket: Component;
   row: StaffRow;
-  label?: Rect;
+  /** 房号数字块，左→右（`1. 2. 3. 5.` 这样的多房共用号会有多块）。 */
+  labels: Rect[];
+}
+
+/** 括线左端是否有下垂短竖（房括号的立脚）。房括号 ⌐ 必有它；歌词/连音线等长横墨线没有，
+ *  故它是把搜索窗口放深后仍能挡住误检的形态特征。 */
+function hasLeftHook(bin: Binary, b: Rect, numH: number): boolean {
+  const need = Math.max(2, Math.round(numH * 0.35));
+  for (let x = b.x; x <= Math.min(bin.w - 1, b.x + Math.max(1, Math.round(numH * 0.25))); x++) {
+    let run = 0;
+    for (let y = b.y; y < Math.min(bin.h, b.y + numH * 1.6); y++) {
+      if (bin.data[y * bin.w + x]) { if (++run >= need) return true; } else run = 0;
+    }
+  }
+  return false;
 }
 
 function endingCandidates(bin: Binary, comps: Component[], rows: StaffRow[], numH: number): EndingCandidate[] {
@@ -65,7 +79,10 @@ function endingCandidates(bin: Binary, comps: Component[], rows: StaffRow[], num
     const rowTop = median(row.nums.map((n) => n.bbox.y));
     const nx0 = row.nums[0].bbox.x, nx1 = rright(row.nums[row.nums.length - 1].bbox);
     const runs: Rect[] = [];
-    const y0 = Math.max(0, Math.floor(rowTop - numH * 1.8));
+    // 括线到数字顶的距离随谱面松紧变化很大：行内有圆滑线时括线被顶到 ~2.8 字号高处
+    // （沧海一声笑的 1./4./6. 三房实测 y 差 29px、numH 11）。窗口停在 1.8 字号会整片漏掉，
+    // 故放深到 3.4 字号，误检交给 hasLeftHook 的立脚形态挡。
+    const y0 = Math.max(0, Math.floor(rowTop - numH * 3.4));
     const y1 = Math.min(bin.h - 1, Math.ceil(rowTop - numH * 0.3));
     // 直接扫水平墨线：即使括线与左侧复纵线粘成一个高连通块，顶横线仍是一段连续 run。
     for (let y = y0; y <= y1; y++) {
@@ -92,14 +109,26 @@ function endingCandidates(bin: Binary, comps: Component[], rows: StaffRow[], num
       if (!duplicate) unique.push(r);
     }
     for (const b of unique) {
-      // 房号印在括线左端内侧，通常是独立小连通块；选该窗口里最高/最大的块。
-      const labelComps = comps.filter((c) =>
-        rcx(c.bbox) >= b.x - numH * 0.1 && rcx(c.bbox) <= b.x + numH * 1.5 &&
+      if (!hasLeftHook(bin, b, numH)) continue;
+      // 房号印在括线左端内侧，是一串独立小连通块。一个房括号可辖多遍（`1. 2. 3. 5.`），
+      // 故不再只取最高的一块，而是从左端起把**连续**的同高小块全收下，右侧留够 5 字号。
+      const near = comps.filter((c) =>
+        rcx(c.bbox) >= b.x - numH * 0.1 && rcx(c.bbox) <= b.x + numH * 5 &&
         rcy(c.bbox) >= b.y - numH * 0.2 && rcy(c.bbox) <= b.y + numH * 0.9 &&
-        c.bbox.h >= numH * 0.18 && c.bbox.h <= numH * 0.9 && c.bbox.w <= numH * 0.9);
-      labelComps.sort((a, z) => z.bbox.h - a.bbox.h || z.area - a.area);
+        c.bbox.h >= numH * 0.18 && c.bbox.h <= numH * 0.9 && c.bbox.w <= numH * 0.9)
+        .sort((a, z) => a.bbox.x - z.bbox.x);
+      // 号与号之间的小圆点（`1.` 的点）高度只有数字的三成，按最高块的 0.55 倍剔掉，
+      // 免得当成一位房号送去 OCR。
+      const hMax = Math.max(0, ...near.map((c) => c.bbox.h));
+      const labels: Rect[] = [];
+      for (const c of near) {
+        if (c.bbox.h < hMax * 0.55) continue;
+        // 断在第一个大空档：单房号谱的窗口右侧若有别的墨（八度点、弧脚）不会被卷进来。
+        if (labels.length && c.bbox.x - rright(labels[labels.length - 1]) > numH * 1.2) break;
+        labels.push(c.bbox);
+      }
       const bracket: Component = { id: -1, bbox: b, area: b.w, cx: rcx(b), cy: rcy(b) };
-      out.push({ bracket, row, label: labelComps[0]?.bbox });
+      out.push({ bracket, row, labels });
     }
   }
   return out.sort((a, b) => a.bracket.bbox.y - b.bracket.bbox.y || a.bracket.bbox.x - b.bracket.bbox.x);
@@ -116,15 +145,23 @@ export async function detectRepeatsAndEndings(
   detectRepeatBarlines(dots, rows, numH);
   const endings = endingCandidates(bin, comps, rows, numH);
   if (!endings.length) return;
-  const labels = endings.filter((e) => e.label);
-  const rec = labels.length ? await ocr.recognizeDigits(bin, labels.map((e) => e.label!)) : [];
-  const recognized = new Map<EndingCandidate, number>();
-  labels.forEach((e, i) => {
-    if (rec[i] >= 1 && rec[i] <= 9) recognized.set(e, rec[i]);
+  // 所有房号数字块摊平成一批送 OCR（每个候选的块数不定），再按 offset 收回。
+  const flat: Rect[] = [];
+  const span = endings.map((e) => { const at = flat.length; flat.push(...e.labels); return { at, n: e.labels.length }; });
+  const rec = flat.length ? await ocr.recognizeDigits(bin, flat) : [];
+  const recognized = new Map<EndingCandidate, number[]>();
+  endings.forEach((e, i) => {
+    const nums: number[] = [];
+    for (let k = 0; k < span[i].n; k++) {
+      const d = rec[span[i].at + k];
+      if (d >= 1 && d <= 9 && !nums.includes(d)) nums.push(d);
+    }
+    if (nums.length) recognized.set(e, nums);
   });
   endings.forEach((e, i) => {
     // 小号房号过淡时 OCR 可能为空；常规谱按 1/2 成对出现，按阅读序作安全回退。
-    const number = recognized.get(e) ?? (i % 2) + 1;
+    const nums = recognized.get(e) ?? [(i % 2) + 1];
+    const number = nums.join(",");
     const b = e.bracket.bbox;
     const covered = e.row.nums.filter((n) =>
       rcx(n.bbox) >= b.x - numH * 0.5 && rcx(n.bbox) <= rright(b) + numH * 0.5);

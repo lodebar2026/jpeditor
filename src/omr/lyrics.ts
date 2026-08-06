@@ -33,6 +33,18 @@ const isHyphen = (c: string) => /[-‐‑–—]/.test(c);
 // 无害；放开拉丁字符后就会变成伪 verse 污染 .Words，故按文本形态显式剔除（须在 rec 之后）。
 // 段落**起点**方框（用于给乐句排版分段）：Fine/D.C./D.S. 是终止/反复记号而非段落起点，故不在此列。
 const SECTION_MARK_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|refrain|tag)\d*/i;
+// 跳转记号 D.C./D.S./Fine/To Coda：不是段落起点（故不进 SECTION_MARK_RE），但它决定演唱顺序，
+// 必须输出到 MusicXML 才能正确展开反复。谱面印在**本谱行**音符的下方近旁（沧海一声笑的 D.C.
+// 印在二房末音右上），因此与段落方框归行方式不同（那个归下一行）。
+// 点号常被 OCR 吞掉或读成逗号，故点一律可选；`D.S. al Coda` 之类的后缀在此不细分。
+const JUMP_MARK_RE = /(D\s*[.,·]?\s*[CS]\s*[.,·]?|Fine|To\s*Coda)/i;
+const normalizeJump = (s: string): string => {
+  const t = s.replace(/\s|[.,·]/g, "").toUpperCase();
+  if (t === "DC") return "D.C.";
+  if (t === "DS") return "D.S.";
+  if (t === "FINE") return "Fine";
+  return "To Coda";
+};
 // 注记行判定用（比上面多收 fine 等，这类行同样不是歌词、要从歌词带里剔掉）。
 const SECTION_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|fine|tag|refrain)\d*/gi;
 const CHORD_SUFFIX_RE = /(maj|min|sus|dim|aug|add)/gi;
@@ -450,6 +462,7 @@ export async function recognizeLyrics(
   const rawByKey = new Map<string, string>();   // 每 (row,verse) 的 rec 原文（供和弦/段落标记行判定）
   const lineSeen = new Set<string>();
   const marks: { rowIdx: number; word: string; x: number }[] = []; // 段落标记（印在下一谱行上方）
+  const jumps: { rowIdx: number; word: string; x: number }[] = []; // 跳转记号（印在本谱行下方）
   for (let s = 0; s < chunks.length; s++) {
     const { rowIdx, verse, cells, maxGap } = chunks[s];
     const key = `${rowIdx}:${verse}`;
@@ -479,6 +492,16 @@ export async function recognizeLyrics(
         if (textsPos) for (const c of textsPos[s]) { if (acc >= hit.index) { xf = c.xFrac; break; } acc += c.ch.length; }
         const word = hit[0][0].toUpperCase() + hit[0].slice(1).toLowerCase();
         marks.push({ rowIdx, word, x: textsPos ? fracToSrcX(xf) : cells[0].x });
+      }
+    }
+    // 跳转记号 D.C./D.S./Fine：与段落方框同样可能独占短块、也可能混在别的块里就地捞。
+    // 只在**无汉字**的块里找，免得歌词里的 "Do"/"Si" 等被误当记号。
+    if (!/[一-鿿]/.test(rawText)) {
+      const hit = JUMP_MARK_RE.exec(rawText);
+      if (hit) {
+        let acc = 0, xf = 0;
+        if (textsPos) for (const c of textsPos[s]) { if (acc >= hit.index) { xf = c.xFrac; break; } acc += c.ch.length; }
+        jumps.push({ rowIdx, word: normalizeJump(hit[0]), x: textsPos ? fracToSrcX(xf) : cells[0].x });
       }
     }
     if (chunks[s].mark) continue; // 只为提段落词而 rec 的块：不参与歌词装配
@@ -609,6 +632,16 @@ export async function recognizeLyrics(
     row.nums[bi].sectionMark = mk.word;
   }
 
+  // 跳转记号落位：D.C./Fine 印在**本谱行**音符下方，作用于它所在处的小节末 →
+  // 归到 x 处或其左侧最近的那个音符（记号总略偏右于末音）。
+  for (const jp of jumps) {
+    const row = staff[jp.rowIdx];
+    if (!row?.nums.length) continue;
+    let bi = row.nums.length - 1;
+    while (bi > 0 && rcx(row.nums[bi].bbox) > jp.x) bi--;
+    row.nums[bi].jumpMark = jp.word;
+  }
+
   // 剔除伪 verse：谱行下方噪声/记号被误当额外歌词行，rec 出来多为空、偶尔一行垃圾字（如世上 row3 的
   // 「一尊心…办单办，口」→ 伪 W3）。真 verse 有字的谱行横跨全曲；伪 verse 只在个别行出字。留下不但污染
   // .Words，更会让下游 findRefrain 误判：伪词与真词在某行重叠制造 n>1 断点，其后整段被当副歌拆段，
@@ -623,9 +656,20 @@ export async function recognizeLyrics(
       s.add(rowIdx);
     }
     const primary = Math.max(0, ...[...rowsWithText.values()].map((s) => s.size));
+    // 主 verse（有字谱行最多的那个）逐行字数 → 作"一行完整歌词有多长"的参照。
+    const primaryVerse = [...rowsWithText.entries()].sort((a, b) => b[1].size - a[1].size)[0]?.[0] ?? 0;
+    const chars = new Map<string, number>();
+    for (const [key, placed] of perLine) chars.set(key, placed.reduce((a, p) => a + p.ch.length, 0));
     for (const key of [...perLine.keys()]) {
-      const verse = Number(key.split(":")[1]);
-      if ((rowsWithText.get(verse)?.size ?? 0) * 2 < primary) perLine.delete(key); // < 主 verse 有字行数的一半 → 伪
+      const [rowIdx, verse] = key.split(":").map(Number);
+      if ((rowsWithText.get(verse)?.size ?? 0) * 2 >= primary) continue; // 行数够 → 真
+      // 行数不够也可能是真词：多段谱的第 2..N 段只印在主歌那几行，啦…/间奏行下方本就没有
+      // （沧海一声笑 A 段有 1./2./3.5./4./6. 五行词，只光按行数会被整片当伪 verse 删掉，
+      //  六个房就全唱成第一段）。真词在它出现的那一行是**完整一行**、字数与主 verse 相当；
+      // 噪声伪行（世上 row3 的「一尊心…办单办，口」）只有零星几字，仍被删。
+      const ref = chars.get(`${rowIdx}:${primaryVerse}`) ?? 0;
+      if (ref > 0 && (chars.get(key) ?? 0) >= ref * 0.6) continue;
+      perLine.delete(key);
     }
   }
 
