@@ -357,7 +357,9 @@ class JpScore {
     // 乐句排版：忽略源自带换行，按乐句分析结果断行；否则保留原始 newSystem。
     const breaks = this._breaks;
     // 乐句排版：副歌另起一页（无反复展开的多段谱走这条；有反复的靠 .Repeat 的 P 标记）。
-    const refrainChord = breaks ? firstRefrainChord(part) : null;
+    // 断点位置由 phrase 统一决定（它按同样的规则找副歌首音，再把弱起顺延过去），这里只在
+    // phrase 没给出副歌段界时兜底——否则两边各断一次，会在副歌前甩出「我立定」这样的半行。
+    const refrainChord = breaks && !breaks.refrainCut ? firstRefrainChord(part) : null;
     let l = "";
     let lineNo = 0;
     // 换行：乐句模式每 4 行自动换页（一页不超过 4 行）；否则沿用源换页标记。

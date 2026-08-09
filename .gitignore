@@ -31,3 +31,6 @@ public/redist/pdfjs
 *.njsproj
 *.sln
 *.sw?
+
+# 乐句排版回归的 musicxml 缓存（phrase-lines.mjs）
+.phrase-cache

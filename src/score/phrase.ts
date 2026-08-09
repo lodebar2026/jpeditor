@@ -15,11 +15,14 @@ export interface PhraseBreaks {
   sectionStarts: Set<number>;
   /** 段界落在小节内部（弧闭合处）时的断点和弦：在该和弦后换行**并另起一页**。midBreaks 是其超集。 */
   sectionCutChords: Set<Chord>;
+  /** 是否已为「副歌起点」安排了段界（含弱起顺延）。jpscore 据此不再自行在副歌首音处断行。 */
+  refrainCut: boolean;
 }
 
 // 句末 / 句中标点（读 Note.lyrics 原文，未被 jpscore 剥离）。
-const PUNCT_END = /[。！？…]$/;
-const PUNCT_MID = /[，、；：]$/;
+// 分号并列的是两个完整分句（「…忧伤的权利；我要宣告…」），乐句同样在此收尾 → 与句号同级。
+const PUNCT_END = /[。！？…；]$/;
+const PUNCT_MID = /[，、：]$/;
 
 // 行长以「小节数」计（简谱/圣诗按小节成行，与音符密度无关）。经验初值，可回归调参。
 const MIN_MEAS = 3;
@@ -34,7 +37,11 @@ const MAX_CELLS = 25;
 // 一个完整句子若能独占一行，可比普通行稍宽：中文简谱里「句号收行」比机械地卡在 25 格更能体现乐句，
 // 也避免 28~30 格的完整句子被从逗号处劈开。再长仍会回退到普通候选断点，防止真正的长句撑出版心。
 const MAX_SENTENCE_CELLS = 30;
-const MAX_SENTENCE_MEAS = 5;
+// 「完整句独占一行」的小节数上限。STRICT_ 是一般情形；断点处**毫无乐句收尾凭据**（无标点、非长音、
+// 无延长号，只是正好到了小节线）时放到 MAX_，因为在那里截断句子最没道理——「立定心志」末两行
+// （`…涌流在我心，我立定 | 心志，走在主圣洁光中。`，句子跨 6 小节 26.5 格）因此并成一行。
+const STRICT_SENTENCE_MEAS = 5;
+const MAX_SENTENCE_MEAS = 6;
 // 行长下限也认格数：行从小节中间起头时（前一行在长音 tie 收尾处断），按小节数算会偏小，
 // 但内容量其实够——`MIN_MEAS` 与 `MIN_CELLS` 满足其一即可。
 const MIN_CELLS = 14;
@@ -63,7 +70,8 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   const midBreaks = new Set<Chord>();
   const sectionStarts = new Set<number>();
   const sectionCutChords = new Set<Chord>();
-  if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords };
+  let refrainCut = false;
+  if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut };
 
   const chordsPer = measures.map((m) => chordsOf(m));
   const fpPer = chordsPer.map((cs) => measureFp(cs));
@@ -110,7 +118,7 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
     }
   }
   const K = flat.length;
-  if (K === 0) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords };
+  if (K === 0) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut };
 
   // slur/tie 括号**先做栈式配对**：识别(OMR)或原谱本身都可能给出不成对的弧（漏检一端）。若照单全收，
   // 一个悬空的起始就让此后 depth 永不归零 → 整曲再无候选断点、乐句排版退化成一整行（实测「主祢真伟大」
@@ -163,17 +171,21 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   // 重复边界（小节下标）→ 实际断点的 flat 下标。边界之后若紧跟一个**长音 tie/slur 组**
   // （如 `…3 5 |(5--- |5) 0…` 里的 `5---|5`），那是上一乐句的延音收尾、歌词也还是上一句的末字，
   // 不该充当新乐句的开头 → 把边界顺延到该弧闭合之后。第 1 页的段界同样这么顺延，两处behavior一致。
-  const repeatBreakIdx = new Set<number>();
-  for (const mi of repeatEdges) {
-    let idx = flat.findIndex((f) => f.isLast && f.mi === mi);
-    if (idx < 0) continue;
+  const advancePastLongTie = (from: number): number => {
+    let idx = from;
     while (idx + 1 < K && okStart[idx + 1] > 0 && flat[idx + 1].chord.beats >= 2) {
       let j = idx + 1;
       while (j < K && depthAfter[j] !== 0) j++;
       if (j >= K || j === idx) break;
       idx = j;
     }
-    repeatBreakIdx.add(idx);
+    return idx;
+  };
+  const repeatBreakIdx = new Set<number>();
+  for (const mi of repeatEdges) {
+    const idx = flat.findIndex((f) => f.isLast && f.mi === mi);
+    if (idx < 0) continue;
+    repeatBreakIdx.add(advancePastLongTie(idx));
   }
 
   // 断点候选的乐句强度分（在该和弦之后换行）。
@@ -226,13 +238,16 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
       if (punctAfter[idx] === 6 && leadingChords > 0 && leadingChords <= 2) return idx;
       if (leadingChords > 2) break;
     }
+    // 反过来，新段的弱起可能长达 3 个短音（「立定心志」的 `…路亚！ 我立定|心志，一生赞美你…`：
+    // 副歌唱词从「心志」起标，但乐句实际从「我立定」起唱）。弱起放宽到 3 个音，段界就落在
+    // 「亚！」的长音之后，副歌整句留在新页行首，也不会甩出「我立定」这样一行。
     let pickupChords = 0;
     for (let idx = at; idx >= 0 && at - idx <= 3; idx--) {
-      if (punctAfter[idx] === 6 && pickupChords > 0 && pickupChords <= 2) return idx;
+      if (punctAfter[idx] === 6 && pickupChords > 0 && pickupChords <= 3) return idx;
       const c = flat[idx].chord;
       if (c.beats > 1) break;
       if (!c.rest) pickupChords++;
-      if (pickupChords > 2) break;
+      if (pickupChords > 3) break;
     }
     return at;
   };
@@ -246,6 +261,9 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
     if (at < 0) continue;
     let idx = at;
     while (idx < K && depthAfter[idx] !== 0) idx++;
+    // 段首小节的头一个音若是上一乐句的**长音收尾**（「立定心志」的 `…哈利路|(2'- 2'_) 我立定|心志…`：
+    // Chorus 标在长音「亚！」那一小节上），它属于上一句 → 与重复边界同样顺延到弧闭合之后。
+    idx = advancePastLongTie(idx);
     idx = aroundSectionPickup(idx);
     if (idx < K) sectionCutIdx.set(mi, idx);
   }
@@ -265,7 +283,10 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
         }
       }
     }
-    if (refrainIdx > 0) sectionCutIdx.set(flat[refrainIdx].mi, aroundSectionPickup(refrainIdx - 1));
+    if (refrainIdx > 0) {
+      sectionCutIdx.set(flat[refrainIdx].mi, aroundSectionPickup(refrainIdx - 1));
+      refrainCut = true;
+    }
   }
 
   // 顺延后的位置不一定在候选里（弧闭合处未必带乐句信号）→ 补进去。只对段界破例，普通断点仍不拆弧。
@@ -341,11 +362,19 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
         // 超过该宽度则不罚，长句仍可正常分行。
         let splitSentence = 0;
         if (b < hi && !endsAtSentence) {
+          // 断点自身有没有「乐句收尾」的凭据：歌词标点、长音、延长号。没有的话，这里只是**正好到了
+          // 一条小节线**（哪怕它是重复段边界）——在这种地方把一句话截断最没道理。
+          const bi = idxAt[b];
+          const softCut = punctAfter[bi] === 0 && !flat[bi].chord.fermata && flat[bi].chord.beats < 2;
           for (let p = idxAt[b] + 1; p <= idxAt[hi]; p++) {
             if (punctAfter[p] !== 6) continue;
             const sentenceCells = cellsUpto[p + 1] - cellsUpto[idxAt[a] + 1];
             const sentenceMeas = flat[p].pos - ends[a];
-            if (sentenceCells <= MAX_SENTENCE_CELLS && sentenceMeas <= MAX_SENTENCE_MEAS) {
+            // 句子占 STRICT_SENTENCE_MEAS 以内：照旧一律不许提前拆（含在逗号处拆）。再长一点的句子
+            // （到 MAX_SENTENCE_MEAS）只护「无凭据的断点」——「…涌流在我心，我立定 | 心志，走在主
+            // 圣洁光中。」并成一行；而「…从开始到最终，| 讲述救赎…」在逗号处断仍属正常分行。
+            const limitMeas = softCut ? MAX_SENTENCE_MEAS : STRICT_SENTENCE_MEAS;
+            if (sentenceCells <= MAX_SENTENCE_CELLS && sentenceMeas <= limitMeas) {
               splitSentence = SPLIT_SHORT_SENTENCE_COST;
             }
             break;
@@ -373,5 +402,5 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
     if (b < M) brk(b);
     a = b;
   }
-  return { measureBreaks, midBreaks, sectionStarts, sectionCutChords };
+  return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut };
 }
