@@ -127,16 +127,18 @@ export class MusicCommon {
     return MusicCommon._stepToPitch[st];
   }
 
-  static jpToStep(num: string, basePitch: number): string {
-    let res = "C".charCodeAt(0) + (num.charCodeAt(0) - "1".charCodeAt(0));
-    const mod = ((basePitch % 12) + 12) % 12;
-    const delta: Record<number, number> = {
-      0: 0, 2: 1, 3: 2, 4: 2, 5: 3, 7: 4, 8: 5, 9: 5, 10: 6, 11: 6,
-    };
-    if (!(mod in delta)) throw new Error("");
-    res += delta[mod];
-    if (res > "G".charCodeAt(0)) res -= 7;
-    return String.fromCharCode(res);
+  /**
+   * 简谱数字 → 音名字母。字母取自调号的**拼写**（fifths → keys[]），不是 basePitch：
+   * 同音高的升/降两种拼写字母不同（#C 的 1 是 C、bD 的 1 是 D；#F 对 bG 同理），
+   * 只看 basePitch 分不开。原 Kotlin 按 basePitch 查表，bD/#C/bG/#F 四个调根本没有
+   * 表项、直接抛错——`1=#C` 的谱因此整首排不出来（代码区有文本、排版是空的）。
+   */
+  static jpToStep(num: string, fifths: number): string {
+    const tonic = MusicCommon.keys[fifths + 7];
+    if (!tonic) throw new Error("");
+    const letter = tonic[tonic.length - 1]; // 去掉 b/# 前缀
+    const idx = MusicCommon.steps.indexOf(letter) + (num.charCodeAt(0) - "1".charCodeAt(0));
+    return MusicCommon.steps[idx % 7];
   }
 
   static getAlter(st: string, fifths: number): number {
@@ -637,8 +639,11 @@ export class Score {
     for (const m of measures) {
       if (m.endingNum && [...m.endingNum].some((n) => n > 1)) hasVolta = true;
     }
+    // D.C./D.S. 同理：跳转记号本身就把曲子展开成了多遍（本曲 `D.C. al Fine`＝全曲唱一遍、
+    // 回头唱到 Fine 为止，两遍正好配两段词），再按歌词段数整体乘一遍就成了四遍。
+    const hasJump = this.playData.jumpTo.size > 0;
     this.playData.isSimpple = rep.result.length === 1;
-    if (repeatByVerse && !hasVolta) rep.repeatByLyric();
+    if (repeatByVerse && !hasVolta && !hasJump) rep.repeatByLyric();
     this.playData.measures = [];
     this.playData.measures.push(...rep.result);
     this.expandVoltaByVerse();

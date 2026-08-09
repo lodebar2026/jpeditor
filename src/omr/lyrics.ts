@@ -40,6 +40,13 @@ const SECTION_MARK_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|endin
 // 另加**词边界**：和弦行连写成一个字母簇后，`Em G/D C G/B…` 里就藏着 `DC`，无边界约束会凭空
 // 读出一个 D.C.（「立定心志」因此被展开成十遍）。带点的 `D.C.` 只要求左边界；裸 `DC` 两侧都不许挨字母。
 const JUMP_MARK_RE = /(?<![A-Za-z])(D\s*[.,·]\s*[CS]\s*[.,·]?|D\s*[CS](?![A-Za-z])|Fine|To\s*Coda)/i;
+// **夹在中文歌词里**的记号（「因有主同在直到永远。 Fine」——Fine 就印在歌词行末、与歌词同高，
+// OCR 常把它和末几个字读进同一块）。旧规则「只在无汉字的块里找」会整个漏掉这种记号，而且拉丁串
+// 还会被当成一个英文音节占掉一个音符位、把后面的歌词整体挤偏。故含汉字的块也扫，但只认**形态
+// 明确**的写法：完整词 Fine / To Coda、带点的 D.C. D.S.；裸 `DC`/`DS` 不认——那在真歌词里太容易撞。
+const INLINE_JUMP_RE = /(?<![A-Za-z])(D\s*[.,·]\s*[CS]\s*[.,·]?|Fine|To\s*Coda)(?![A-Za-z])/i;
+// 记号连同其修饰后缀（`D.C. al Fine`）在原文里的跨度：这整段都不该进歌词。
+const JUMP_SPAN_RE = /^(D\s*[.,·]?\s*[CS]\s*[.,·]?(?:\s*al\s*[.,·]?\s*(?:Fine|Coda))?|Fine|To\s*Coda)/i;
 const normalizeJump = (s: string): string => {
   const t = s.replace(/\s|[.,·]/g, "").toUpperCase();
   if (t === "DC") return "D.C.";
@@ -501,7 +508,7 @@ export async function recognizeLyrics(
   const rawByKey = new Map<string, string>();   // 每 (row,verse) 的 rec 原文（供和弦/段落标记行判定）
   const lineSeen = new Set<string>();
   const marks: { rowIdx: number; word: string; x: number }[] = []; // 段落标记（印在下一谱行上方）
-  const jumps: { rowIdx: number; word: string; x: number; key: string }[] = []; // 跳转记号（印在本谱行下方）
+  const jumps: { rowIdx: number; word: string; x: number; y: number; key: string }[] = []; // 跳转记号
   for (let s = 0; s < chunks.length; s++) {
     const { rowIdx, verse, cells, maxGap } = chunks[s];
     const key = `${rowIdx}:${verse}`;
@@ -535,12 +542,17 @@ export async function recognizeLyrics(
     }
     // 跳转记号 D.C./D.S./Fine：与段落方框同样可能独占短块、也可能混在别的块里就地捞。
     // 只在**无汉字**的块里找，免得歌词里的 "Do"/"Si" 等被误当记号。
-    if (!/[一-鿿]/.test(rawText)) {
-      const hit = JUMP_MARK_RE.exec(rawText);
+    // 含汉字的块用严格写法（见 INLINE_JUMP_RE），无汉字的注记块沿用宽松写法。
+    let jumpSpan: [number, number] | null = null;
+    {
+      const hit = (/[一-鿿]/.test(rawText) ? INLINE_JUMP_RE : JUMP_MARK_RE).exec(rawText);
       if (hit) {
         let acc = 0, xf = 0;
         if (textsPos) for (const c of textsPos[s]) { if (acc >= hit.index) { xf = c.xFrac; break; } acc += c.ch.length; }
-        jumps.push({ rowIdx, word: normalizeJump(hit[0]), x: textsPos ? fracToSrcX(xf) : cells[0].x, key });
+        const jy = (Math.min(...cells.map((c) => c.y)) + Math.max(...cells.map((c) => rbottom(c)))) / 2;
+        jumps.push({ rowIdx, word: normalizeJump(hit[0]), x: textsPos ? fracToSrcX(xf) : cells[0].x, y: jy, key });
+        const span = JUMP_SPAN_RE.exec(rawText.slice(hit.index));
+        jumpSpan = [hit.index, hit.index + (span?.[0].length ?? hit[0].length)];
       }
     }
     if (chunks[s].mark) continue; // 只为提段落词而 rec 的块：不参与歌词装配
@@ -569,7 +581,10 @@ export async function recognizeLyrics(
         regions.push(region);
         pend = null;
       };
+      let at = 0;
       for (const { ch, xFrac } of textsPos![s]) {
+        const pos = at; at += ch.length;
+        if (jumpSpan && pos >= jumpSpan[0] && pos < jumpSpan[1]) { flushLatin(); continue; } // 记号不是歌词
         const sx = fracToSrcX(xFrac);
         if (isHanzi(ch)) {
           flushLatin();
@@ -602,7 +617,10 @@ export async function recognizeLyrics(
       let lead = "";
       let pend = "";                                   // 英文音节缓冲（无字位时只能按连字符断，词间空白读不到）
       const flushLatin = () => { if (pend) { toks.push(lead + pend); lead = ""; pend = ""; } };
+      let at = 0;
       for (const ch of texts![s]) {
+        const pos = at; at += ch.length;
+        if (jumpSpan && pos >= jumpSpan[0] && pos < jumpSpan[1]) { flushLatin(); continue; } // 记号不是歌词
         if (isHanzi(ch)) { flushLatin(); toks.push(lead + ch); lead = ""; }
         else if (isLatin(ch) || (pend && isApostrophe(ch))) pend += ch;
         else if (isHyphen(ch)) { if (pend) { pend += "-"; flushLatin(); } }
@@ -675,10 +693,15 @@ export async function recognizeLyrics(
     row.nums[bi].sectionMark = mk.word;
   }
 
-  // 跳转记号落位：D.C./Fine 印在**本谱行**音符下方，作用于它所在处的小节末 →
-  // 归到 x 处或其左侧最近的那个音符（记号总略偏右于末音）。
+  // 跳转记号落位：作用于记号所在处的小节末 → 归到 x 处或其左侧最近的那个音符（记号总略偏右于末音）。
+  // 归**哪一行**要看它贴着谁：记号多印在本谱行音符下方（Fine 贴在歌词行末），但 `D.C. al Fine`
+  // 这类收尾记号习惯印在**末谱行音符的右上方**——那同样落在「上一行下缘→本行上缘」的歌词带里，
+  // 一律归本行就会把 D.C. 挂到上一行末（本曲挂到小节 22，整首少唱一行半）。故按 y 就近取行。
   for (const jp of jumps) {
-    const row = staff[jp.rowIdx];
+    let rowIdx = jp.rowIdx;
+    const cur = staff[rowIdx], next = staff[rowIdx + 1];
+    if (cur && next && next.topY - jp.y < jp.y - cur.bottomY) rowIdx += 1;
+    const row = staff[rowIdx];
     if (!row?.nums.length) continue;
     let bi = row.nums.length - 1;
     while (bi > 0 && rcx(row.nums[bi].bbox) > jp.x) bi--;
@@ -772,8 +795,19 @@ export async function recognizeLyrics(
              Math.abs(rcx(notes[ni + 1].bbox) - x) <= Math.abs(rcx(notes[ni].bbox) - x)) ni++;
       if (ni > maxNi) ni = maxNi;
       const nt = notes[ni];
-      if (!nt.lyrics) nt.lyrics = [];
-      for (const p of targets) nt.lyrics[p - 1] = (nt.lyrics[p - 1] || "") + ch;
+      // 落在**延音音符**上的孤立拉丁串不是歌词。tie/slur 的收尾音唱的还是上一个音节（前一音
+      // 已有词），此处本就不该另起一个新音节；中文歌里在这个位置冒出来的拉丁串只可能是记号
+      // ——Fine / D.C. 就印在歌词行末尾、紧挨着延音的末音（「…直到永远。 Fine」）。这条兜住
+      // INLINE_JUMP_RE 认不出的写法（OCR 把点吞了、记号被拆开）：认不出是哪个记号也罢，至少
+      // 不让它挤进歌词把后面的对齐带偏。**只对拉丁串**生效——汉字落到延音音上多半只是对齐
+      // 误差，丢掉就真丢词了。
+      const isStrayMark = !/[一-鿿]/.test(ch) && /[A-Za-z]/.test(ch) &&
+        (nt.tieStop || nt.slurStop) && !nt.tieStart && !nt.slurStart &&
+        ni > 0 && !!(notes[ni - 1].lyrics?.[verse] ?? "");
+      if (!isStrayMark) {
+        if (!nt.lyrics) nt.lyrics = [];
+        for (const p of targets) nt.lyrics[p - 1] = (nt.lyrics[p - 1] || "") + ch;
+      }
       if (ni < notes.length - 1) ni++;
     }
     if (TR) (TR.aligned ??= {})[key] = notes.map((n) => ({ noteX: rcx(n.bbox), noteBox: n.bbox, lyric: n.lyrics?.[verse] || "" }));

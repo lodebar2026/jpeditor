@@ -50,7 +50,7 @@ function calcPitch(stat: JpState, nt: Note): void {
   let res = stat.basePitch;
   res += nt.jpOctave * 12;
   res += MusicCommon.stepToPitch(nt.number);
-  nt.step = MusicCommon.jpToStep(nt.number, stat.basePitch);
+  nt.step = MusicCommon.jpToStep(nt.number, stat.fifths);
   switch (nt.jpAlter) {
     case " ": break;
     case "b": stat.alter[nt.number] = -1; break;
