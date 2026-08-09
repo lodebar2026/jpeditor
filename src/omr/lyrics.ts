@@ -528,7 +528,20 @@ export async function recognizeLyrics(
       return last.sx0 + last.sw;
     };
 
-    const rawText = textsPos ? textsPos[s].map((c) => c.ch).join("") : texts![s];
+    let rawText = textsPos ? textsPos[s].map((c) => c.ch).join("") : texts![s];
+    // 歌词里的「一」是孤零零一根横，自成一块送 rec 时常被读成 "1"（也见过 "-"/"—"）——这些字符
+    // 走不进下面任何一个装配分支，被整个丢掉，那个音符就空出来、后面一串词跟着往前挪一格
+    // （「因有主同在」的 `我愿/意将一生/奉献` 读成 `我愿/意将/生/奉献`）。中文谱的歌词块里
+    // 这些字符没有别的合理来源：段号在行首另有处理，英文音节的连字符必然挨着字母、不会独占一块。
+    // 只在**整块就这一个字符**时改判成「一」，不动任何多字符块。
+    // 例外：**行首**、落在本谱行第一个音符左侧的单字符块是歌词行首的**段号**（多段谱的 `1.`/`2.`），
+    // 它本就该被丢弃、不占音符位。不排除的话「沧海一声笑」六段词的段号会全变成「一」字。
+    const notes0 = staff[rowIdx].nums;
+    const beforeFirstNote = notes0.length > 0 && rright(cells[cells.length - 1]) < rcx(notes0[0].bbox);
+    if (!beforeFirstNote && /^[-‐‑–—1]$/.test(rawText.trim())) {
+      rawText = "一";
+      if (textsPos) textsPos[s] = textsPos[s].map((c) => ({ ...c, ch: "一" }));
+    }
     // 段落方框 Intro/Verse/Chorus/Coda：可能独占一块（被 cov 过滤的短行），也可能与和弦行同块
     // （"Gsus4G" 与 "Chorus" 同一 verse 行）。在任何块里就地捞出，x 取该词首字。
     {

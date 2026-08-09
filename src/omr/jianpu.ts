@@ -393,28 +393,33 @@ function buildJpNums(
     );
     for (const k of cls.dots) {
       const kb = k.bbox;
-      // 反复号冒号：同一 x 上下成对、分居数字行中心两侧，并紧邻复纵线。下方那一点有时恰好
-      // 落进末音符的附点窗口，旧逻辑会把 `:||` 误成末音符附点。先按完整的「点对 + 竖线」
-      // 结构剔除；双高/低八度点都在数字同一侧，不满足分居条件，普通单附点也没有配对点。
+      // 反复号冒号：同一 x 上下成对、紧邻复纵线。其中一点常落进末音符的附点窗口，
+      // 不剔就把 `:||` 读成末音符的附点。判据只要「点对 + 竖线」：**不再要求两点分居数字中心
+      // 两侧**——小图上冒号相对数字中线整体偏上，「爱是不保留」两处 `:|` 的点对实测 Δcy 是
+      // -0.47/-0.06 字号（同在上方），异侧条件一卡就漏，两个 `2._`/`5,._` 假附点由此而来。
+      // 能走到这一步的点本就在数字**右侧空隙**里（附点窗口的前提），不会是居中于数字的双八度点。
       const repeatColon = barlineXs.some((x) => Math.abs(x - rcx(kb)) <= numH * 1.2) &&
         cls.dots.some((o) => {
           if (o === k) return false;
           const ob = o.bbox;
           const dy = Math.abs(rcy(ob) - rcy(kb));
           return Math.abs(rcx(ob) - rcx(kb)) <= numH * 0.35 &&
-            dy >= numH * 0.35 && dy <= numH * 1.4 &&
-            (rcy(ob) - dcy) * (rcy(kb) - dcy) <= 0;
+            dy >= numH * 0.35 && dy <= numH * 1.4;
         });
-      if (repeatColon) continue;
-      // 右侧附点：在数字右侧空隙前段、**真正垂直居中**、且尺寸够大（非噪点）。
-      // 阈值据 5 首实测分布定（按 numH 自适应缩放）：真附点 w/h≈0.29~0.45×numH、|Δcy|≤0.16×numH；
-      // 误检要么是噪点小斑(≤0.08×numH)、要么是邻音符的下八度点(Δcy≈0.3~0.43×numH、偏右偏下)。
-      // 尺寸下限 0.15 剔噪点、居中收到 0.25×numH 剔偏下的八度点 —— 两道独立门各自留足真附点余量。
-      // 休止 0 不接附点：实测尾随休止右侧常有终止线碎块/噪点被误当附点（为基督 r5 末 "0" → 误 "0."）；
-      // 简谱附点休止极罕见，且休止右侧本就无修饰，按 digit!=0 一刀剔除，对真音符附点无损。
-      if (digit !== 0 && rcx(kb) > rright(d) && rcx(kb) < dotMaxX &&
+      if (repeatColon && rcx(kb) > rright(d)) continue;
+      // 右侧附点：在数字右侧空隙前段、垂直大致居中、尺寸够大（非噪点）、且**不居中于任何数字**。
+      // 尺寸下限 0.15×numH 剔噪点。垂直窗口 0.35×numH：旧的 0.25 在扫描抖动面前太窄——「因有主同在」
+      // 第 2 谱行四个附点实测 Δcy=0.28（同一版面第 1 谱行的同一批附点只有 0.18），整行附点全漏。
+      // 放宽后要把「邻音符的八度点」挡住，就不能再靠 Δcy（它们 0.3~0.43，与真附点重叠），改用
+      // **水平位置**：八度点永远印在某个数字的正上/正下方，附点在两数字之间的空隙里，两者按
+      // 「点心与任一数字中心的水平距」一分即开（这也正是下面八度点分支的判据，口径一致）。
+      // 「休止 0 不接附点」这条**不在这里**做（挪到 digit=0 复原之后，见下文 rankDigits 那段）：
+      // 此处的 digit 还是 CTC 原始结果，糊死的 "3" 常被读成 0，一刀切会连它的真附点一起丢
+      // （沧海一声笑行 1 的 `3._` 即此）。
+      const overDigit = rowCores.some((c) => Math.abs(rcx(c.bbox) - rcx(kb)) < numH * 0.3);
+      if (rcx(kb) > rright(d) && rcx(kb) < dotMaxX && !overDigit &&
           kb.w >= numH * 0.15 && kb.h >= numH * 0.15 &&
-          Math.abs(rcy(kb) - dcy) < numH * 0.25) { dot++; dotSizes.push((kb.w + kb.h) / 2); continue; }
+          Math.abs(rcy(kb) - dcy) < numH * 0.35) { dot++; dotSizes.push((kb.w + kb.h) / 2); continue; }
       // 八度点：须足够大(排除噪点小斑)、水平居中于数字、且紧贴上/下方（间隙 < 0.8×字号）。
       // 阈值据实测分布定（真八度点 w/h≈0.21~0.30×numH、|dx|≤0.14；噪点误判那个是 0.09×0.11、dx=0.45）：
       // 尺寸下限 0.15、居中收到 0.4，两道独立门都能剔除噪点，且对真点留足余量。
@@ -615,14 +620,22 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       });
     }
   }
+  // 休止 0 不接附点：尾随休止右侧常有终止线碎块/噪点被误当附点（为基督 r5 末 "0" → 误 "0."）；
+  // 简谱附点休止极罕见，休止右侧本就无修饰。放在**复原之后**清零——放在 buildJpNums 里会把
+  // 「被误读成 0、复原后是 3」的音符的真附点一并丢掉。
+  for (const r of useRows) for (const n of r.nums) if (n.digit === 0) n.dot = 0;
 
   // **隐含 tie 补检**：无歌词的音符若与前一个音同音高，就是延音——简谱里同音延续本该有连音线，
   // 但**跨谱行的弧画不出来**（原图上就没有），行内的淡弧也可能漏检。有歌词的音是新音节、不算延音；
   // 纯器乐行（前奏/间奏，整行无词）没有"有无歌词"这条线索，跳过以免把重复音全连成一片。
+  // **衬词行同理**：「啦 …… 啦 …… 」这种一行二十来个音只印四个「啦」（其余是省略号，不成字），
+  // 有词率两成——和器乐行一样没有线索，却因为"有那么几个字"过了 some() 这道门，行里凡是重复音
+  // 都被连成延音（沧海一声笑末行 `1_ 1-` 凭空多一条 tie）。改看**有词率**：低于四成即视同无词行。
   {
     const flat: { n: JpNum; rowHasLyrics: boolean }[] = [];
     for (const row of useRows) {
-      const has = row.nums.some((n) => n.lyrics?.some((t) => t && t.trim()));
+      const withLyric = row.nums.filter((n) => n.lyrics?.some((t) => t && t.trim())).length;
+      const has = row.nums.length > 0 && withLyric / row.nums.length >= 0.4;
       for (const n of row.nums) flat.push({ n, rowHasLyrics: has });
     }
     for (let i = 1; i < flat.length; i++) {

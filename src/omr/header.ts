@@ -297,9 +297,31 @@ export async function recognizeHeader(
   function classify(ls: HLine[]) {
     // 著作者前缀：`作词：`/`词曲：`，也含顿号/斜杠分列的 `词、曲：`、`作词/作曲：`。
     const creditRe = /^\s*[作詞词曲編编譯译]{1,2}(?:\s*[、，,/／]\s*[作詞词曲編编譯译]{1,2})*\s*[:：]/;
+    // 后缀式著作者：中文谱很常见把职能写在名字**后面**、且不带冒号——"盛晓玫 词曲"、
+    // "卢永亨词曲"、"黄霑作词、作曲"。前缀式一条都认不出（实测 4 首词曲整档 0 分）。
+    // 判据是整行恰好等于「人名(2~4 字，可顿号并列) + 职能词组」，再归一成 .jpwabc 约定的
+    // `<职能>：<名字>`。要求**不是最大字号行**，免得短标题被当成著作者、连标题一起丢掉。
+    // 名字组**非贪婪**、职能组锚定行尾：贪婪会把「卢永亨词曲」的「词」吃进名字、只剩「曲」→
+    // 出成 `作曲：卢永亨词`。非贪婪 + `$` 让引擎先给名字最短长度，回溯到「卢永亨」+「词曲」。
+    // 职能词之间的分隔符**可选**：既有「作词、作曲」也有连写的「词曲」，后者若强求分隔符，
+    // 职能组只吃得下一个字，剩下那个会被名字回溯吞掉（→ `作曲：卢永亨词`）。
+    const creditSuffixRe = /^\s*([一-鿿·]{2,4}?(?:\s*[、，,]\s*[一-鿿·]{2,4}?)*)\s*((?:[作編编]?[詞词曲])(?:\s*[、，,/／]?\s*(?:[作編编]?[詞词曲]))*)\s*$/;
+    const roleOf = (s: string): string => {
+      const ci = /[詞词]/.test(s), qu = /曲/.test(s);
+      if (/[編编]/.test(s) && !ci) return "编曲";
+      return ci && qu ? "词曲" : ci ? "作词" : "作曲";
+    };
+    const maxCharH = Math.max(0, ...ls.map((l) => l.charH));
     let titleLine: HLine | null = null;
     for (const ln of ls) {
       const txt = ln.text.trim();
+      const sm = ln.charH < maxCharH ? creditSuffixRe.exec(txt) : null;
+      if (sm && !creditRe.test(txt)) {
+        const credit = `${roleOf(sm[2])}：${sm[1].replace(/\s+/g, "")}`;
+        out.credits.push(credit);
+        out.regions.push({ text: credit, bbox: ln.bbox }); // 字序已重排，不带逐字位
+        continue;
+      }
       if (creditRe.test(txt)) {
         // "作曲：王丽玲1=bB4" → "作曲：王丽玲"：取 冒号前缀 + 紧随的中文名（英文名则整行保留）。
         // 名字可由顿号并列多人（"词、曲：游智婷、曾祥怡"）。
