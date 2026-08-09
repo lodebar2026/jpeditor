@@ -37,7 +37,9 @@ const SECTION_MARK_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|endin
 // 必须输出到 MusicXML 才能正确展开反复。谱面印在**本谱行**音符的下方近旁（沧海一声笑的 D.C.
 // 印在二房末音右上），因此与段落方框归行方式不同（那个归下一行）。
 // 点号常被 OCR 吞掉或读成逗号，故点一律可选；`D.S. al Coda` 之类的后缀在此不细分。
-const JUMP_MARK_RE = /(D\s*[.,·]?\s*[CS]\s*[.,·]?|Fine|To\s*Coda)/i;
+// 另加**词边界**：和弦行连写成一个字母簇后，`Em G/D C G/B…` 里就藏着 `DC`，无边界约束会凭空
+// 读出一个 D.C.（「立定心志」因此被展开成十遍）。带点的 `D.C.` 只要求左边界；裸 `DC` 两侧都不许挨字母。
+const JUMP_MARK_RE = /(?<![A-Za-z])(D\s*[.,·]\s*[CS]\s*[.,·]?|D\s*[CS](?![A-Za-z])|Fine|To\s*Coda)/i;
 const normalizeJump = (s: string): string => {
   const t = s.replace(/\s|[.,·]/g, "").toUpperCase();
   if (t === "DC") return "D.C.";
@@ -80,11 +82,14 @@ function isFooterNoticeLine(text: string): boolean {
  *  **首字母是 A-G 的根音**；
  *  ③ 簇内最长连续小写段 ≤2（和弦性质符 m/dim 短，英文音节 "awe"/"some"/"ther" 则长）。
  *  不依赖大小写正确（OCR 常把 C 读成 c），也不会误伤英文歌词——只要行内有一个音节不合和弦形态即否决。 */
-function isAnnotationLine(text: string): boolean {
+function isAnnotationLine(text0: string): boolean {
+  // 方括号里的是编者注/段落标记（「立定心志」和弦行末的 `[下面一行也可用]`、`【Chorus】`），
+  // 从来不是唱词。不先剥掉，一句中文编者注就会让整行和弦行被当成真歌词（该曲的 W2 = 和弦）。
+  const text = text0.replace(/[[【][^\]】]*[\]】]/g, " ");
   const hanzi = text.match(/[一-鿿]/g) ?? [];
   if (hanzi.some((ch) => !/[或升降]/.test(ch))) return false;  // 除和弦连接/升降记号外有汉字 → 真歌词行
   const rest = text.replace(SECTION_RE, " ").replace(CHORD_HANZI_RE, " ");
-  if (!rest.trim()) return text.trim().length > 0;              // 纯段落标记（Intro/Chorus…）
+  if (!rest.trim()) return text0.trim().length > 0;             // 纯段落标记（Intro/Chorus…）或纯方括号注
   const clusters = rest.match(/[A-Za-z]+/g) ?? [];
   if (!clusters.length) return false;                            // 无字母 → 交给下游伪 verse 过滤
   return clusters.every((c0) => {
@@ -496,7 +501,7 @@ export async function recognizeLyrics(
   const rawByKey = new Map<string, string>();   // 每 (row,verse) 的 rec 原文（供和弦/段落标记行判定）
   const lineSeen = new Set<string>();
   const marks: { rowIdx: number; word: string; x: number }[] = []; // 段落标记（印在下一谱行上方）
-  const jumps: { rowIdx: number; word: string; x: number }[] = []; // 跳转记号（印在本谱行下方）
+  const jumps: { rowIdx: number; word: string; x: number; key: string }[] = []; // 跳转记号（印在本谱行下方）
   for (let s = 0; s < chunks.length; s++) {
     const { rowIdx, verse, cells, maxGap } = chunks[s];
     const key = `${rowIdx}:${verse}`;
@@ -535,7 +540,7 @@ export async function recognizeLyrics(
       if (hit) {
         let acc = 0, xf = 0;
         if (textsPos) for (const c of textsPos[s]) { if (acc >= hit.index) { xf = c.xFrac; break; } acc += c.ch.length; }
-        jumps.push({ rowIdx, word: normalizeJump(hit[0]), x: textsPos ? fracToSrcX(xf) : cells[0].x });
+        jumps.push({ rowIdx, word: normalizeJump(hit[0]), x: textsPos ? fracToSrcX(xf) : cells[0].x, key });
       }
     }
     if (chunks[s].mark) continue; // 只为提段落词而 rec 的块：不参与歌词装配
@@ -636,6 +641,10 @@ export async function recognizeLyrics(
       perLine.delete(k);
       rawByKey.delete(k);
     }
+    // 和弦行里就地捞出的「跳转记号」同样是误检（`G/D C` → `DC`）：整行既然不是歌词，
+    // 记号也不作数。真的 D.C./Fine 印在音符下方的自己那一小块里，不在和弦行上。
+    const annotSet = new Set(annotKeys);
+    for (let i = jumps.length - 1; i >= 0; i--) if (annotSet.has(jumps[i].key)) jumps.splice(i, 1);
     if (annotKeys.length) {
       const byRow = new Map<number, number[]>();
       for (const k of perLine.keys()) {
