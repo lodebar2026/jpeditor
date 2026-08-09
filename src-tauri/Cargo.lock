@@ -2164,7 +2164,7 @@ dependencies = [
 
 [[package]]
 name = "jpeditor"
-version = "0.5.9"
+version = "0.6.0"
 dependencies = [
  "bytemuck",
  "lopdf",
