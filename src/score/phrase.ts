@@ -34,17 +34,19 @@ const MAX_MEAS = 7;
 // 增时线渲染得比数字窄（`5 - - -` 明显短于 `3 1 2 5`），按 1 整格算会高估长音行的宽度，把
 // 「超长音收尾」挤到下一行去（实测副歌 `…手心|中5---|5` 的「中」被甩到行首）。按实测比例折算。
 const MAX_CELLS = 25;
-// 一个完整句子若能独占一行，可比普通行稍宽：中文简谱里「句号收行」比机械地卡在 25 格更能体现乐句，
-// 也避免 28~30 格的完整句子被从逗号处劈开。再长仍会回退到普通候选断点，防止真正的长句撑出版心。
-const MAX_SENTENCE_CELLS = 30;
-// 「完整句独占一行」的小节数上限。STRICT_ 是一般情形；断点处**毫无乐句收尾凭据**（无标点、非长音、
-// 无延长号，只是正好到了小节线）时放到 MAX_，因为在那里截断句子最没道理——「立定心志」末两行
-// （`…涌流在我心，我立定 | 心志，走在主圣洁光中。`，句子跨 6 小节 26.5 格）因此并成一行。
-const STRICT_SENTENCE_MEAS = 5;
-const MAX_SENTENCE_MEAS = 6;
+// **一整句独占一行**（行尾恰是句末、行内不跨句末）时，行长上限比普通行放宽——中文简谱里
+// 「一行一句」比机械地卡在 25 格 / 7 小节更能体现乐句。实测 33 格 / 8 小节仍排得进版心
+//（「我們成為一家人」副歌 `因著耶穌得潔淨，…同享復活的生命；` 8 小节 32.5 格，无头渲染核对过）。
+// 超出则回退到普通上限，真正的长句仍会正常分行。
+const MAX_SENTENCE_CELLS = 33;
+const MAX_SENTENCE_MEAS = 8;
 // 行长下限也认格数：行从小节中间起头时（前一行在长音 tie 收尾处断），按小节数算会偏小，
 // 但内容量其实够——`MIN_MEAS` 与 `MIN_CELLS` 满足其一即可。
 const MIN_CELLS = 14;
+// 「这里是乐句收尾」的音乐凭据：够长的长音（≥3 拍）、延长号、休止。作曲家在句子真正收尾处
+// 留的音明显比句中的停顿长——「耶稣普治」每句中间的逗号落在 4 拍全音符上，而「我們成為一家人」
+// 副歌句中的逗号只有 2 拍、句末才是 4 拍。故 2 拍不算凭据，否则两者分不开。
+const LONG_NOTE_BEATS = 3;
 const DASH_W = 0.7;
 const cellsOf = (c: Chord): number => 1 + Math.max(0, Math.floor(c.beats) - 1) * DASH_W;
 
@@ -326,13 +328,17 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   const SPLIT_SHORT_SENTENCE_COST = 24;
   // 行长约束一律是**软惩罚**而非硬禁：可断点稀疏时（弧线跨小节连成一片，如「主祢真伟大」副歌
   // 每小节末都在 slur 内）硬禁会让整段找不到任何合法切法、退化成一整行。软罚则总能挑出最不坏的一种。
-  const lenCost = (meas: number, cells: number, segEnd: boolean, maxCells = MAX_CELLS): number =>
+  const lenCost = (meas: number, cells: number, segEnd: boolean, maxCells = MAX_CELLS, maxMeas = MAX_MEAS): number =>
     (meas - TARGET_MEAS) ** 2 +
-    (meas > MAX_MEAS ? (meas - MAX_MEAS) ** 2 * 40 : 0) +
+    (meas > maxMeas ? (meas - maxMeas) ** 2 * 40 : 0) +
     (cells > maxCells ? (cells - maxCells) ** 2 * 8 : 0) +
     // 段末/曲末行是唯一可短于 MIN 的行，但也**不该短到只剩一小节**——软罚让 DP 宁可把前面几行
     // 各让出一点，也别甩出一个孤零零的尾巴（"不要有只有一节的情况"）。
-    (segEnd && meas < MIN_MEAS ? (MIN_MEAS - meas) ** 2 * 10 : 0);
+    (segEnd && meas < MIN_MEAS ? (MIN_MEAS - meas) ** 2 * 10 : 0) +
+    // 「尾巴太短」在小节短促的谱上按小节数量不出来：「基督更美」每小节才 4 格，末行 3 小节
+    // 合规、实则只有 7.7 格（同曲其余行 15.7）。故段末行的下限也认格数，与非段末行的 MIN_CELLS
+    // 同一口径——非段末行是硬约束，段末行仍只软罚（末行本来就可以短一些）。
+    (segEnd && cells < MIN_CELLS ? (MIN_CELLS - cells) ** 2 : 0);
 
   const dp = new Array<number>(M + 1).fill(INF);
   const nextB = new Array<number>(M + 1).fill(-1);
@@ -362,26 +368,28 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
         // 超过该宽度则不罚，长句仍可正常分行。
         let splitSentence = 0;
         if (b < hi && !endsAtSentence) {
-          // 断点自身有没有「乐句收尾」的凭据：歌词标点、长音、延长号。没有的话，这里只是**正好到了
-          // 一条小节线**（哪怕它是重复段边界）——在这种地方把一句话截断最没道理。
+          // 断点处有没有「乐句在此收尾」的音乐凭据：够长的长音、延长号、休止。**歌词逗号不算凭据**
+          // ——一句话的内部本来就有逗号，拿它当凭据等于允许任意在句中拆行。有凭据就照拆（作曲家
+          // 确实在这里留了气口，如「耶稣普治」每句中间那个 4 拍全音符、「世上所有的民族」的休止）；
+          // 没凭据（只是个 2 拍音）则宁可让整句留在一行。
           const bi = idxAt[b];
-          const softCut = punctAfter[bi] === 0 && !flat[bi].chord.fermata && flat[bi].chord.beats < 2;
+          const softCut = flat[bi].chord.beats < LONG_NOTE_BEATS && !flat[bi].chord.fermata && !flat[bi].chord.rest;
           for (let p = idxAt[b] + 1; p <= idxAt[hi]; p++) {
             if (punctAfter[p] !== 6) continue;
             const sentenceCells = cellsUpto[p + 1] - cellsUpto[idxAt[a] + 1];
             const sentenceMeas = flat[p].pos - ends[a];
-            // 句子占 STRICT_SENTENCE_MEAS 以内：照旧一律不许提前拆（含在逗号处拆）。再长一点的句子
-            // （到 MAX_SENTENCE_MEAS）只护「无凭据的断点」——「…涌流在我心，我立定 | 心志，走在主
-            // 圣洁光中。」并成一行；而「…从开始到最终，| 讲述救赎…」在逗号处断仍属正常分行。
-            const limitMeas = softCut ? MAX_SENTENCE_MEAS : STRICT_SENTENCE_MEAS;
-            if (sentenceCells <= MAX_SENTENCE_CELLS && sentenceMeas <= limitMeas) {
+            // 一句话只要放得下（MAX_SENTENCE_MEAS 小节 / MAX_SENTENCE_CELLS 格）就整句成行。
+            if (softCut && sentenceCells <= MAX_SENTENCE_CELLS && sentenceMeas <= MAX_SENTENCE_MEAS) {
               splitSentence = SPLIT_SHORT_SENTENCE_COST;
             }
             break;
           }
         }
-        const lineMaxCells = endsAtSentence && crossed === 0 && meas <= MAX_SENTENCE_MEAS ? MAX_SENTENCE_CELLS : MAX_CELLS;
-        const cost = lenCost(meas, cells, b === hi, lineMaxCells) + bc + splitSentence +
+        // 「整句独占一行」（行尾恰是句末、行内不跨句末）可比普通行宽一些、长一些。
+        const wholeSentence = endsAtSentence && crossed === 0 && meas <= MAX_SENTENCE_MEAS && cells <= MAX_SENTENCE_CELLS;
+        const lineMaxCells = wholeSentence ? MAX_SENTENCE_CELLS : MAX_CELLS;
+        const lineMaxMeas = wholeSentence ? MAX_SENTENCE_MEAS : MAX_MEAS;
+        const cost = lenCost(meas, cells, b === hi, lineMaxCells, lineMaxMeas) + bc + splitSentence +
           crossed * CROSSED_END_PUNCT_COST + dp[b];
         if (cost < dp[a]) { dp[a] = cost; nextB[a] = b; }
       }
