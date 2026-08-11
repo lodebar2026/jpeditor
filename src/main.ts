@@ -3,7 +3,7 @@ import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
 import { asset } from "./common/asset";
 import { App } from "./editor/app";
-import { showOptionsDialog } from "./editor/dialogs";
+import { showOptionsDialog, showHanConvDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
 import { showHelpDialog } from "./editor/help";
 import { isTauriRuntime } from "./editor/fileio";
@@ -115,6 +115,11 @@ async function boot() {
   on("btn-prev", () => app.prevPage());
   on("btn-next", () => app.nextPage());
   on("btn-options", () => showOptionsDialog(app));
+  const hanziBtn = document.getElementById("btn-hanzi") as HTMLButtonElement | null;
+  if (hanziBtn) {
+    app.setHanziButton(hanziBtn);
+    hanziBtn.addEventListener("click", () => showHanConvDialog(app));
+  }
   on("btn-export", () => showExportDialog(app));
   on("btn-help", () => showHelpDialog(app));
   const jpPreviewBtn = document.getElementById("btn-preview-jp") as HTMLButtonElement | null;

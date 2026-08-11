@@ -61,6 +61,39 @@ const RATIOS: Record<string, [number, number]> = {
   A4: [595, 842],
 };
 
+const HANCONV_KEY = "jpeditor-hanconv-dir";
+
+/** 简繁 — 整篇转换源码中的中文（歌词/标题/词曲）。 */
+export function showHanConvDialog(app: App): void {
+  const body = document.createElement("div");
+  body.className = "settings-form";
+  const sel = document.createElement("select");
+  const opts: [string, string][] = [
+    ["auto", "自动检测"],
+    ["s2t", "简体 → 繁体"],
+    ["t2s", "繁体 → 简体"],
+  ];
+  const last = localStorage.getItem(HANCONV_KEY) ?? "auto";
+  for (const [v, text] of opts) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = text;
+    if (v === last) o.selected = true;
+    sel.append(o);
+  }
+  const hint = document.createElement("div");
+  hint.style.cssText = "margin-top:8px;opacity:0.75;font-size:12px;line-height:1.6";
+  hint.textContent = "转换源码中的歌词、标题与词曲信息，乐谱代码不变；可用 Ctrl/⌘+Z 撤销。";
+  body.append(labeled("转换方向", sel), hint);
+  modal("简繁转换", body, () => {
+    const dir = sel.value as "auto" | "s2t" | "t2s";
+    try {
+      localStorage.setItem(HANCONV_KEY, dir);
+    } catch { /* 隐私模式下忽略 */ }
+    void app.convertHanzi(dir);
+  });
+}
+
 /** 选项 — page ratio + base font size. */
 export function showOptionsDialog(app: App): void {
   const body = document.createElement("div");

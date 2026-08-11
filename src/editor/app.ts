@@ -15,6 +15,7 @@ import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";
 import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
+import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
 import { MixedPainter } from "../mixed/painter";
 import { ScorePlayer, type PlayState } from "./player";
@@ -51,6 +52,7 @@ export class App {
   private _phraseBtnEl: HTMLButtonElement | null = null;
   private _origLayoutText: string | null = null;
   private _phraseOn = false;
+  private _hanziBtnEl: HTMLButtonElement | null = null;
   private _readOnlyCompartment = new Compartment();
   // render settings (app-level, not part of the .jpwabc document)
   pageW = 960;
@@ -668,6 +670,41 @@ export class App {
         this._setPhraseActive(true);
       } catch (e) {
         console.error("phrase relayout failed", e);
+      }
+    }
+  }
+
+  /** 注册工具栏「简繁」按钮，供转换期间切换加载中状态。 */
+  setHanziButton(el: HTMLButtonElement): void {
+    this._hanziBtnEl = el;
+  }
+
+  /**
+   * 整篇简繁转换：改写源码文本本身（单个 CodeMirror transaction，Ctrl+Z 可整体撤销）。
+   * dir = "auto" 时按当前文本字形自动判定方向。
+   */
+  async convertHanzi(dir: "auto" | HanDirection): Promise<void> {
+    if (this.mode !== "jp") return;
+    const btn = this._hanziBtnEl;
+    const label = btn?.textContent ?? "简繁";
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "加载中";
+    }
+    try {
+      const text = this.getText();
+      const d = dir === "auto" ? await detectDirection(text) : dir;
+      const out = await convertJpwabc(text, d);
+      if (this._origLayoutText) this._origLayoutText = await convertJpwabc(this._origLayoutText, d);
+      if (out !== text) this.setText(out);
+      this.setStatus(d === "s2t" ? "已转为繁体" : "已转为简体");
+    } catch (e) {
+      console.error("hanzi conversion failed", e);
+      this.setStatus("简繁转换失败");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = label;
       }
     }
   }
