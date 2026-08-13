@@ -70,7 +70,6 @@ function parseVerseLabel(raw: string): number[] | null {
 }
 // 注记行判定用（比上面多收 fine 等，这类行同样不是歌词、要从歌词带里剔掉）。
 const SECTION_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|fine|tag|refrain)\d*/gi;
-const CHORD_SUFFIX_RE = /(maj|min|sus|dim|aug|add)/gi;
 // 中文谱常把备选和弦写成 `F或C`，升降根音也可能写成 `升F` / `降B`。这些少量汉字属于
 // 和弦语法而非歌词；先折成分隔符再做根音形态判断。除此以外只要含汉字，仍按真歌词处理。
 const CHORD_HANZI_RE = /[或升降]/g;
@@ -83,12 +82,29 @@ function isFooterNoticeLine(text: string): boolean {
   const cues = new Set(compact.match(FOOTER_CUE_RE) ?? []);
   return cues.size >= 2;
 }
+// 单个和弦记号：根音 [A-G]（OCR 大小写不可靠，两者都收）+ 可选升降号 + 可选性质符 + 可选数字
+// + 可选 sus/add 扩展 + 可选转位低音（`/D#`）。交替里长后缀在前——JS 取**首个**成功的分支而非最长，
+// `maj7` 若先命中 `m` 就会剩下 "aj7" 变成未覆盖。
+const CHORD_TOKEN_RE = /^[A-Ga-g][#♯b♭]?(?:maj|min|dim|aug|sus|add|m|M)?\d*(?:sus\d*|add\d*)?(?:\/[A-Ga-g][#♯b♭]?)?/;
+// 一行文本被和弦记号覆盖的字符比例 + 记号个数。OCR 常把整行和弦连写成一串（"C#mF#mBmBm7E"），
+// 故不切 token，而从左到右贪心逐个吃和弦，吃不动就跳一个字符记为未覆盖。
+function chordCoverage(s: string): { cov: number; count: number } {
+  let hit = 0, total = 0, count = 0;
+  for (let i = 0; i < s.length;) {
+    if (/[\s()\-–—_,.·、|]/.test(s[i])) { i++; continue; }   // 分隔/标点不计入分母
+    const m = CHORD_TOKEN_RE.exec(s.slice(i));
+    if (m && m[0].length) { hit += m[0].length; total += m[0].length; i += m[0].length; count++; }
+    else { total++; i++; }
+  }
+  return { cov: total ? hit / total : 0, count };
+}
 /** 整行 rec 原文是否为和弦/段落标记行（而非歌词）。
- *  一行里的和弦常被连写成一个字母簇（"CG/BAm"、"AmC"、"EmF"），故不逐 token 匹配，而看形态：
- *  ① 无歌词汉字（只允许和弦语法里的「或/升/降」）；② 每个字母簇（先剥去 maj/min/sus… 性质后缀）
- *  **首字母是 A-G 的根音**；
- *  ③ 簇内最长连续小写段 ≤2（和弦性质符 m/dim 短，英文音节 "awe"/"some"/"ther" 则长）。
- *  不依赖大小写正确（OCR 常把 C 读成 c），也不会误伤英文歌词——只要行内有一个音节不合和弦形态即否决。 */
+ *  ① 无歌词汉字（只允许和弦语法里的「或/升/降」）；② 整行几乎能被一串**和弦记号**贪心覆盖
+ *  （见 chordCoverage）。旧判据按 `[A-Za-z]+` 切字母簇、要求每簇首字母是 A-G 根音，但升降号与
+ *  数字会把簇切断——`C#mF#mBm7E` 切出 `mF`/`mBmBm`、`E7sus4` 切出 `sus`，首字母都不是根音，
+ *  于是整行和弦被当成歌词（「再次将我更新」的 W2/W3 就是这么来的）。改看覆盖率后二者都能吃完。
+ *  不依赖大小写正确（OCR 常把 C 读成 c）；英文歌词的音节吃不动（"still"/"azing" 起头即失败），
+ *  覆盖率立刻塌下去，故不会误伤。 */
 function isAnnotationLine(text0: string): boolean {
   // 方括号里的是编者注/段落标记（「立定心志」和弦行末的 `[下面一行也可用]`、`【Chorus】`），
   // 从来不是唱词。不先剥掉，一句中文编者注就会让整行和弦行被当成真歌词（该曲的 W2 = 和弦）。
@@ -97,15 +113,11 @@ function isAnnotationLine(text0: string): boolean {
   if (hanzi.some((ch) => !/[或升降]/.test(ch))) return false;  // 除和弦连接/升降记号外有汉字 → 真歌词行
   const rest = text.replace(SECTION_RE, " ").replace(CHORD_HANZI_RE, " ");
   if (!rest.trim()) return text0.trim().length > 0;             // 纯段落标记（Intro/Chorus…）或纯方括号注
-  const clusters = rest.match(/[A-Za-z]+/g) ?? [];
-  if (!clusters.length) return false;                            // 无字母 → 交给下游伪 verse 过滤
-  return clusters.every((c0) => {
-    const root = c0[0].toUpperCase();
-    if (root < "A" || root > "G") return false;
-    const c = c0.replace(CHORD_SUFFIX_RE, "");
-    const lower = c.match(/[a-z]+/g) ?? [];
-    return lower.every((seg) => seg.length <= 2);
-  });
+  if (!/[A-Za-z]/.test(rest)) return false;                      // 无字母 → 交给下游伪 verse 过滤
+  const { cov, count } = chordCoverage(rest);
+  // 两个以上和弦时容一点残渣（OCR 掉字/多字）；只有一个记号的短行要求完全吃净，免得把
+  // 单个英文词（"Be"、"Ah"）当成和弦行整条丢掉。
+  return count >= 2 ? cov >= 0.85 : count === 1 && cov === 1;
 }
 
 /** 把一行(同 y)的连通块按 x 邻近并成字格。返回每个字格的合并包围盒，按 x 排序。 */
@@ -344,6 +356,30 @@ function blockRect(b: ProjBlock, k: number): Rect {
   const xc = (b.x0 + b.x1) / 2;
   const y = b.dyTop + k * xc, yb = b.dyBot + k * xc;
   return { x: b.x0, y, w: b.x1 - b.x0 + 1, h: Math.max(1, yb - y) };
+}
+
+/** 多段谱的惯例：两段唱同一句的那几行只印一行词，第二段只从"两段词分岔"的那行才另起。
+ *  「再次将我更新」前两谱行只有一行词（两段主歌前半同词），第 2 段从第三谱行才开始印 → 导出后
+ *  第二遍前半是空的。此处按惯例补齐：某段在它**首次出现之前**的谱行整行无词、而第 1 段那几行
+ *  有词时，把第 1 段的该行词整行照抄过去（连 melisma 分布一起，下游 `/` 续记号才不错位）。
+ *  只补**前缀**、且要求第 1 段在该段自己的区间里也有词——反复房「二房起歌词整体上移」那类
+ *  （见 Score.expandVoltaByVerse）第 1 段在分岔行反而是空的，据此排除，不会误补。 */
+function fillLeadingVerses(staff: StaffRow[]): void {
+  const nv = Math.max(0, ...staff.map((r) => Math.max(0, ...r.nums.map((n) => n.lyrics?.length ?? 0))));
+  if (nv < 2) return;
+  const has = (row: number, v: number) => staff[row].nums.some((n) => (n.lyrics?.[v] ?? "") !== "");
+  for (let v = 1; v < nv; v++) {
+    const first = staff.findIndex((_, r) => has(r, v));
+    if (first <= 0) continue;                       // 从第一谱行就有词（或整段无词）→ 无需补
+    if (!has(first, 0)) continue;                   // 分岔行第 1 段反而空 → 是"上移"结构，别碰
+    for (let r = 0; r < first; r++) {
+      if (has(r, v) || !has(r, 0)) continue;
+      for (const n of staff[r].nums) {
+        const t = n.lyrics?.[0];
+        if (t) (n.lyrics ??= [])[v] = t;
+      }
+    }
+  }
 }
 
 /** 识别歌词并写回各音符的 lyrics[]；返回每个歌词单元的源图定位+字号（识别模式按原位/原字号叠加）。
@@ -825,5 +861,7 @@ export async function recognizeLyrics(
     }
     if (TR) (TR.aligned ??= {})[key] = notes.map((n) => ({ noteX: rcx(n.bbox), noteBox: n.bbox, lyric: n.lyrics?.[verse] || "" }));
   }
+
+  fillLeadingVerses(staff);
   return dropped.size ? regions.filter((r) => !dropped.has(r)) : regions;
 }

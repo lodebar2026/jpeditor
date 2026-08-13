@@ -229,7 +229,17 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   const sectionMi = [...Array(n).keys()].filter((mi) => mi > 0 && measures[mi].sectionMark);
   // 段落标题/反复线有时与真实歌词段界错开 1~2 个短音：可能是新段弱起仍写在上一小节末，也可能是
   // 上一句收尾占了新小节开头。向两侧找最近句号，把弱起放进下一段、上一句收尾留在上一段。
-  const aroundSectionPickup = (at: number): number => {
+  // 断点若落在**八分及更短的休止**上，那是新段弱起的起拍留白（「再次将我更新」副歌前的
+  // `(2'-) 0_ 5_ 1'_ 2'_ |3'.`：休止与其后三个八分音是同一个弱起组），它属下一句，挂在上一行
+  // 行尾（尤其是页尾）很难看 → 回退到休止之前。四分及以上休止相反，是上一句唱完的收气
+  //（「基督更美」的 `1 0`、「世上所有的民族」句号后的 `0`），仍留在上一行。
+  const retreatPastPickupRest = (at: number): number => {
+    let idx = at;
+    while (idx >= 0 && flat[idx].chord.rest && flat[idx].chord.beams > 0) idx--;
+    return idx >= 0 && idx !== at && depthAfter[idx] === 0 ? idx : at; // 回退处在弧中不可断 → 维持原判
+  };
+  const aroundSectionPickup = (at0: number): number => {
+    const at = retreatPastPickupRest(at0);
     // 段落标题通常标在新小节上方，但上一句的收尾偶尔占了新小节开头 1~2 个短音（「脚步」的
     // `| 路。 求给我…`）。这种情况应在句号后切段，而不是把「路。」放到副歌新页行首。
     let leadingChords = 0;
