@@ -454,6 +454,7 @@ function buildJpNums(
     octave = Math.max(-3, Math.min(3, octave)); // 简谱八度极少超过 ±2~3
     let div = 0;
     const augmentRects: Rect[] = [];
+    const belowLines: Rect[] = [];
     for (const k of cls.hlines) {
       const kb = k.bbox;
       // 独立横线在数字右侧、与数字同高 → 增时线 '-'
@@ -461,7 +462,29 @@ function buildJpNums(
           overlapX(kb, d) < kb.w * 0.4) { augment++; augmentRects.push(kb); continue; }
       // 减时线(下划线)：数字**正下方**的独立横线，x 与数字重叠；多条上下堆叠 → div 多层。
       const below = kb.y - rbottom(d);
-      if (below > -numH * 0.2 && below < numH * 0.75 && overlapX(kb, d) >= Math.min(kb.w, d.w) * 0.4) div++;
+      if (below > -numH * 0.2 && below < numH * 0.75 && overlapX(kb, d) >= Math.min(kb.w, d.w) * 0.4) {
+        belowLines.push(kb);
+      }
+    }
+    // 多条减时线是**紧挨着堆叠**的（层距≈线厚的两三倍）。只按「落在窗口内」计数会把窗口下沿
+    // 的别的东西也算进来——歌词字的横笔、下一行的记号，于是 `6_ 5_` 被读成 `6__ 5__`，
+    // 小节凭空少半拍（《主祢真伟大》第 25/33 小节即此，连 GT 都跟着错了）。
+    // 改为：自上而下逐层验距，第一条要紧贴数字底，后面每条与上一条的间距不得超过 0.28 字高，
+    // 断档就停止计数——真减时线不会稀稀拉拉地散在半个字高的范围里。
+    belowLines.sort((a, b) => a.y - b.y);
+    let prev: Rect | null = null;
+    for (const kb of belowLines) {
+      if (prev === null) {
+        if (kb.y - rbottom(d) > numH * 0.45) break; // 第一条离得太远：不是本音符的减时线
+      } else {
+        // 两条判据取交集，单用哪一条都分不开（实测：小图《沧海一声笑》numH=11 的真双减时线
+        // 层距 0.27~0.36 字高、比值 2~4 倍线厚；大图《主祢真伟大》numH=22 的真双减时线
+        // 层距 0.18 字高、1.3 倍线厚，而误判进来的歌词横笔是 0.45~0.55 字高、5 倍线厚）。
+        const gap = kb.y - prev.y;
+        if (gap > numH * 0.40 || gap > Math.max(prev.h, kb.h) * 4.5) break;
+      }
+      div++;
+      prev = kb;
     }
     out.push({ digit, bbox: d, dot, octave, div, augment, augmentRects });
   }
