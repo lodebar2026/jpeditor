@@ -4,6 +4,9 @@ import { scoreToMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
 import { isTauriRuntime, saveBytes } from "./fileio";
 import { asset } from "../common/asset";
+import { scoreToMusicXml } from "../score/musicxmlout";
+import { patchMusicXml } from "../score/musicxmlpatch";
+import { annotateLayout } from "../score/musicxmllayout";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -98,6 +101,44 @@ export async function exportPptx(app: App): Promise<void> {
   );
 }
 
+const MUSICXML_MIME = "application/vnd.recordare.musicxml+xml";
+
+/** 导出 MusicXML。有底本（OMR/ABC/导入的 musicxml）就在底本上做增量修改，只有纯 .jpwabc
+ *  才整体重生成——.jpwabc 承载的信息比 MusicXML 少，重生成等于把底本降采样。 */
+export async function exportMusicXml(app: App): Promise<void> {
+  const base = app.mixedXmlText;
+  if (app.mode === "mixed" && base) { // 混排：底本即五线谱原文，原样给出
+    await saveBytes(new TextEncoder().encode(base), `${baseName(app)}.musicxml`, MUSICXML_MIME);
+    return;
+  }
+  let xml: string;
+  if (base && app.importUnchanged) {
+    xml = base; // 一字未改：零损耗
+  } else if (base) {
+    let r: { xml: string; fallback: boolean } | null = null;
+    try {
+      r = patchMusicXml(base, app.painter.score);
+    } catch (e) {
+      console.error("MusicXML 增量修改失败，改走整体重生成", e);
+    }
+    if (!r || r.fallback) {
+      app.setStatus("改动过大，MusicXML 已按当前谱面重新生成（原图行结构等细节会丢失）");
+      xml = scoreToMusicXml(app.painter.score);
+    } else {
+      xml = r.xml;
+    }
+  } else {
+    xml = scoreToMusicXml(app.painter.score);
+  }
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.querySelector("parsererror")) throw new Error("生成的 MusicXML 无法解析");
+  annotateLayout(doc); // 分行沿用底本 <print>，版面参数用 A4 常量表
+  // XMLSerializer 不输出 XML 声明（DOCTYPE 会保留），手动补回，否则部分软件拒绝打开。
+  let out = new XMLSerializer().serializeToString(doc);
+  if (!out.startsWith("<?xml")) out = `<?xml version="1.0" encoding="UTF-8"?>\n${out}`;
+  await saveBytes(new TextEncoder().encode(out), `${baseName(app)}.musicxml`, MUSICXML_MIME);
+}
+
 /** Export staff pages to a directly downloadable PDF. */
 export async function exportMixedPdf(app: App): Promise<void> {
   if (!app["_mixedPainter"] || app.mode !== "mixed") return;
@@ -173,9 +214,11 @@ export function showExportDialog(app: App): void {
     item("PNG", () => exportCurrentPagePng(app));
     item("PDF", () => exportMixedPdf(app));
     item("MIDI", () => exportMidi(app));
+    item("MusicXML", () => exportMusicXml(app));
   } else {
     item("PPTX", () => exportPptx(app));
     item("MIDI", () => exportMidi(app));
+    item("MusicXML", () => exportMusicXml(app));
   }
 
   const footer = document.createElement("div");

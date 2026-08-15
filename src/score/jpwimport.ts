@@ -203,8 +203,9 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
         case "|]": ent.style = BarStyle.LIGHT_HEAVY; break;
         case "[|]": ent.style = BarStyle.NONE; break;
         case "||": ent.style = BarStyle.LIGHT_LIGHT; break;
-        case "|:": ent.style = BarStyle.HEAVY_LIGHT; break;
-        case ":|": ent.style = BarStyle.LIGHT_HEAVY; break;
+        // 反复线另记 ent.repeat：`:|` 与终止线 `|]` 的 style 相同，只看 style 分不开。
+        case "|:": ent.style = BarStyle.HEAVY_LIGHT; ent.repeat = "forward"; break;
+        case ":|": ent.style = BarStyle.LIGHT_HEAVY; ent.repeat = "backward"; break;
         default: throw new Error(`bad barline: ${txt}`);
       }
       mea!.entries.push(ent);
@@ -235,7 +236,10 @@ export function fromJpw(f: JpwFile): Score | null {
   if (author !== null) {
     const cred = new Credit();
     cred.text = unescape(author);
-    cred.page = 1;
+    // page 是 0 基的页号（MusicXML 导入端也是 attr−1）。原先写 1 与 jpscore.ts 只收 page===0
+    // 的判据对不上，`.jpwabc → Score → .jpwabc` 的作者行会整条丢掉，导出的 MusicXML 里
+    // 词曲也会落到第 2 页。
+    cred.page = 0;
     res.credit.push(cred);
   }
   res.playData.tempo = title?.tempo ?? 0;

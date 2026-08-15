@@ -233,6 +233,10 @@ export class LineBreak extends Entry {
 
 export class BarlineEntry extends Entry {
   style: BarStyle | null = null;
+  /** 原始记号是不是反复线。`.jpwabc` 的 `:|` 与终止线 `|]` 都映射成 LIGHT_HEAVY、光看
+   *  style 分不开，故另记一笔（MusicXML 导出要据此写 `<repeat>`；见 musicxmlout.ts）。
+   *  `forward`（`|:`）出现在小节开头，但解析时被 push 到**前一小节**末尾，语义上属于下一小节左端。 */
+  repeat: "forward" | "backward" | null = null;
   constructor(mea: Measure) {
     super(mea);
     this.duration = new Fraction(0);

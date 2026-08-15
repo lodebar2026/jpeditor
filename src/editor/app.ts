@@ -218,6 +218,12 @@ export class App {
     return this.view.state.doc.toString();
   }
 
+  /** 当前文本是否与「导入 MusicXML 时生成的 .jpwabc」逐字相同。
+   *  true = 用户没改过谱面，MusicXML 导出可以直接给底本原文（零损耗）。 */
+  get importUnchanged(): boolean {
+    return this._origLayoutText !== null && this.getText() === this._origLayoutText;
+  }
+
   setText(text: string): void {
     this.view.dispatch({
       changes: { from: 0, to: this.view.state.doc.length, insert: text },
@@ -383,7 +389,7 @@ export class App {
     this._selectedVerse = 0;
   }
 
-  private setStatus(s: string): void {
+  setStatus(s: string): void {
     if (!this.statusEl) this.statusEl = document.getElementById("status");
     if (this.statusEl) this.statusEl.textContent = s;
   }

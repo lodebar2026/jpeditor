@@ -57,13 +57,21 @@ async function boot() {
   const app = new App(meta, scorePane);
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown };
+  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown };
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
   // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
   win.__omr = import("./omr");
   // ABC → MusicXML 移植版暴露（便于 abc-check.mjs 回归，同 __app 约定）。
   win.__abc2musicxml = import("./abc/abc2xml");
+  // MusicXML 导出（全量序列化 / 增量 patch / 版面注入）暴露，供 xml-roundtrip.mjs 回归。
+  win.__xmlout = Promise.all([
+    import("./score/musicxmlout"), import("./score/musicxmlpatch"),
+    import("./score/musicxmllayout"), import("./score/musicxml"),
+    import("./score/jpscore"), import("./jpword/jpwfile"),
+    import("./jpword/parse"), import("./score/jpwimport"),
+  ]).then(([out, patch, layout, imp, jpscore, jpwfile, parse, jpwimport]) =>
+    ({ ...out, ...patch, ...layout, ...imp, ...jpscore, ...jpwfile, ...parse, ...jpwimport }));
 
   const revealWorkspace = () => {
     startScreen.hidden = true;

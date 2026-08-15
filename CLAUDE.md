@@ -31,6 +31,8 @@ cd src-tauri && cargo check   # 仅检查 Rust 侧
 # 无头渲染/交互校验（用本地 Edge，免下载 chromium）：
 npm run build && node shot.mjs /tmp/out.png            # 截 #score-pane + 诊断
 npm run build && node abc-check.mjs                    # ABC→MusicXML 移植回归（见 docs/实现/ABC-导入.md）
+npm run build && node xml-roundtrip.mjs                # MusicXML 导出回归（序列化往返 / 增量 patch / 版面）
+npm run build && node omr-export-check.mjs             # 同上，但底本取自真跑一遍 OMR 的识别原文
 npm run build && node abc-shot.mjs <abc> /tmp/abc.png  # 拖入 .abc 端到端渲染核对
 ```
 
@@ -96,6 +98,12 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   含测试 musicxml 的位置。改混排行为前先核对 musicpp 原文。
 - **[播放速度](docs/实现/播放速度.md)**（`score/timeline.ts`）——谱面 `♩=` × 用户倍率，
   以及它怎么经 `.Title` 的 `Expression` 字段往返 `.jpwabc`。
+- **[MusicXML 导出](docs/实现/MusicXML-导出.md)**（`score/musicxmlout.ts`、`musicxmlpatch.ts`、
+  `musicxmllayout.ts`）——工具栏「导出 → MusicXML」。**有 MusicXML 底本（OMR/ABC/导入的 xml）
+  就在底本上做增量 patch，绝不整体重生成**（.jpwabc 承载的信息更少，重生成 = 降采样）；
+  patch 刻意不碰 barline/ending/repeat/direction 等 jpwabc 表达不了的结构。全量序列化那条路
+  有四个要害（divisions/音高拼写/调号推断/type-dot 互逆），改之前必看那篇。
+  回归 `node xml-roundtrip.mjs`、`node omr-export-check.mjs`。
 
 面向仓库读者（非本文件受众）的文档在 [docs/](docs/)：开发、技术栈、进度、macOS 打不开。
 

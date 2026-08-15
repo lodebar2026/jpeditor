@@ -134,7 +134,8 @@ function parseDuration(ch: Chord, noteEl: Element): void {
     case "quarter": ch.beats = 1; ch.beams = 0; break;
     case "eighth": ch.beats = 1; ch.beams = 1; break;
     case "16th": ch.beats = 1; ch.beams = 2; break;
-    case "32nd": ch.beats = 1; ch.beams = 4; break;
+    case "32nd": ch.beats = 1; ch.beams = 3; break;
+    case "64th": ch.beats = 1; ch.beams = 4; break;
     case null:
       if (has(noteEl, "rest")) { ch.beats = 4; ch.beams = 0; return; }
       break;
