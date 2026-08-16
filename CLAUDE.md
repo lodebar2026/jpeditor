@@ -90,6 +90,10 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   回归 `node measure-all.mjs`、`node bench-lyrics.mjs`、`node check-gt.mjs`。
   篇中逐条记录了几何启发式的判据与反例（八度点/附点/减时线/衬词行/歌词标点/反复房/页眉著作者…），
   **动那些阈值前必看**——每条都是拿具体曲子换来的。
+- **[简谱纵向栅格](docs/实现/简谱纵向栅格.md)**（`src/layout/layout.ts`）——高音点/低音点、slur/tie、
+  三连音、fermata、减时线、小节线高度共用的一把尺子（唯一常量 `jpStackGap`，墨迹到墨迹等距；
+  musicpp 自己在这里并不等距），以及八度点按**墨迹**而非 advance 居中（`1` 在 PingFang 里偏 0.88px）。
+  含跨小节 slur 的小节线避让，和两处刻意背离 musicpp 的地方。**动这些常量前必看。**
 - **[乐句排版](docs/实现/乐句排版.md)**（`src/score/phrase.ts`）——工具栏「按乐句重排」的 DP 与代价项
   （行长目标、整句独占一行、断点凭据、段落/副歌分页）。回归 `node phrase-lines.mjs [曲名子串]`。
 - **[ABC 记谱导入](docs/实现/ABC-导入.md)**（`src/abc/`）——abc2xml.py 的全量忠实移植（含 pyparsing /

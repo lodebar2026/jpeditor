@@ -315,8 +315,19 @@ export class JpNumber extends TextFrame {
   get right(): number {
     return this.measureText(0, 1) / 2 + this.measureText(1);
   }
+  /**
+   * Anchor for decorations that must look centred on the digit: octave dots,
+   * slur/tie ends, tuplet brackets. Uses the *ink* centre, not advance/2 —
+   * PingFang SC's "1" is a narrow proportional glyph sitting 3.1% of an em
+   * left of its advance centre, which is visible as an off-centre octave dot.
+   * (musicpp render.cpp:906 and the Kotlin original both use advance/2 here
+   * and carry the same offset; FreeType/Skija gave them no ink bounds on that
+   * path, whereas the browser hands us actualBoundingBoxLeft/Right for free.)
+   * Horizontal spacing goes through `width`/`left`/`right`, never `cx`, so
+   * this does not move the notes themselves.
+   */
   get cx(): number {
-    return this.measureText(0, 1) / 2;
+    return this.font.inkCenter(this.text[0]);
   }
   get numberPos(): number {
     let end = this.text.length;
@@ -390,32 +401,42 @@ export abstract class SlurTieBase extends Group {
   }
 
   init(pl: Point, pr: Point, thickness: number, clr: number): void {
-    let [pt0, pt1, cos] = SlurTieBase.calcSlurPoints(pl, pr);
+    const [pt0, pt1, cos] = SlurTieBase.calcSlurPoints(pl, pr);
     const lw0 = thickness / cos;
 
-    // (the "line" object is computed but not added in the original; skipped)
-
+    // musicpp drawSlurTied (render.cpp:1078-1104): a filled crescent — out
+    // along the curve, back with both control points pushed *down* by lw0/2 so
+    // the shape is thick in the middle and pointed at both ends — plus a thin
+    // outline stroked along a curve offset by lw0/4.
+    // (The earlier port pushed pt0 along x instead of y, which flattened the
+    // left end and made the arc visibly lopsided.)
     const obj = new GraphicPath();
     obj.fill = true;
-    obj.stroke = true;
-    obj.strokeWidth = 1.0;
-    obj.strokeColor = clr;
+    obj.stroke = false;
     obj.fillColor = clr;
     obj.moveTo(pl);
     obj.cubicTo(pt0, pt1, pr);
-    pt0 = pt0.offset(lw0 / 2, 0);
-    pt1 = pt1.offset(0, lw0 / 2);
-    obj.cubicTo(pt1, pt0, pl);
+    obj.cubicTo(pt1.offset(0, lw0 / 2), pt0.offset(0, lw0 / 2), pl);
     obj.close();
 
-    const box = obj.computeTightBounds();
-    obj.offset(-box.left, -box.top);
-    obj.x = 0;
-    obj.y = 0;
-    obj.width = box.width;
-    obj.height = box.height;
+    const outline = new GraphicPath();
+    outline.fill = false;
+    outline.stroke = true;
+    outline.strokeWidth = 0.7;
+    outline.strokeColor = clr;
+    outline.moveTo(pl);
+    outline.cubicTo(pt0.offset(0, lw0 / 4), pt1.offset(0, lw0 / 4), pr);
 
-    this.add(obj);
+    const box = obj.computeTightBounds().union(outline.computeTightBounds());
+    for (const p of [obj, outline]) {
+      p.offset(-box.left, -box.top);
+      p.x = 0;
+      p.y = 0;
+      p.width = box.width;
+      p.height = box.height;
+      this.add(p);
+    }
+
     this.x = box.left;
     this.y = box.top;
     this.width = box.width;
@@ -488,8 +509,8 @@ export class TimeSig extends Entry {
     return this.width;
   }
   layout(opt: LayoutOptions): void {
-    const top = (-opt.numberSize * 23) / 28;
-    const bot = (opt.numberSize * 5) / 28;
+    const top = opt.jpStaffTop;
+    const bot = opt.jpStaffBottom;
     const cy = (bot + top) / 2;
     const font = opt.numberFont.withBold().makeWithSize(opt.numberSize * 0.75);
     const tf1 = new TextFrame();
@@ -575,25 +596,29 @@ export class NoteEntry extends Entry {
     if (this.chord.notes[0].tieEnd) return true;
     return false;
   }
+  /** Ink top of the digit plus whatever octave dots sit above it — i.e. the
+   * top of the shared vertical ladder, which slurs/ties then continue. */
   entryTop(opt: LayoutOptions): number {
-    const nt = this.chord.notes[0];
+    const oct = this.chord.notes[0].jpOctave;
     const bnd = opt.numberBound("1");
-    const dotBnd = opt.numberBound(".");
-    let ypos = bnd.top;
-    if (nt.jpOctave > 0) {
-      ypos -= (nt.jpOctave + 0.5) * dotBnd.height * 1.5;
-    }
-    return ypos - opt.numberSize / 8;
+    if (oct <= 0) return bnd.top;
+    return bnd.top - oct * opt.jpDotRung;
   }
+  /** Where a slur/tie sits: one `jpStackGap` above whatever the note already
+   * stacks — the same gap that separates the digit from its first octave dot,
+   * and one dot from the next. */
+  slurRung(opt: LayoutOptions): number {
+    return this.entryTop(opt) - opt.jpStackGap;
+  }
+  /** Mirror of entryTop below the baseline (low octave dots clear the beams). */
   entryBottom(options: LayoutOptions): number {
     const oct = this.chord.notes[0].jpOctave;
-    let y = this.chord.beams * options.jpBeamDist;
-    if (oct < 0) {
-      const numSize = options.numberFont.size;
-      y += numSize * ((-oct - 1) * 0.175 + 0.25);
-      y += numSize / 4;
-    }
-    return y;
+    const bnd = options.numberBound("1");
+    const beamBottom = options.jpBeamBottom(this.chord.beams);
+    if (oct >= 0) return beamBottom;
+    const above = Math.max(bnd.bottom, beamBottom);
+    const dotBnd = options.numberBound(".");
+    return above + options.jpStackGap + (-oct - 1) * options.jpDotRung + dotBnd.height;
   }
 
   static addAccidental(it: JpNumber, options: LayoutOptions, ch: S.Chord, ent: NoteEntry): void {
@@ -622,20 +647,35 @@ export class NoteEntry extends Entry {
       ent.addAccidental(tf);
     }
   }
+  /**
+   * Octave dots stack outward from the digit on the shared vertical ladder
+   * (see LayoutOptions.jpStackGap / jpDotRung). Row `d` = 0 is the row
+   * nearest the digit, so `entryTop`/`slurTop` can simply continue the same
+   * ladder at row `oct`.
+   *
+   * NB musicpp does the opposite — it pins the *outermost* dot at a fixed y
+   * and fills back down toward the digit (render.cpp:906, `octY + i*dotDist`
+   * with octY independent of the dot count), which is not how jianpu is
+   * normally engraved.
+   */
   static octaveDot(ch: S.Chord, options: LayoutOptions, ent: NoteEntry): void {
     const oct = ch.notes[0].jpOctave;
     const numBound = options.numberBound("1");
-    const dotBound = options.numberBound(".");
     for (let d = 0; d < Math.abs(oct); d++) {
       const tf = new JpOctaveDot();
       tf.font = options.numberFont;
       tf.color = options.color;
-      const numSize = options.numberFont.size;
+      // Ladder positions are ink-to-ink, so convert to a text baseline by
+      // backing off the dot glyph's own ink offset (a "." sits above its
+      // baseline, so the two sides need different corrections).
+      const dotBound = options.numberBound(".");
       if (oct >= 0) {
-        tf.y = numBound.top - (d + 0.5) * dotBound.height * 1.5;
+        const inkBottom = numBound.top - options.jpStackGap - d * options.jpDotRung;
+        tf.y = inkBottom - dotBound.bottom;
       } else {
-        tf.y = numSize * (d * 0.175 + 0.25);
-        tf.y += ch.beams * options.jpBeamDist;
+        const above = Math.max(numBound.bottom, options.jpBeamBottom(ch.beams));
+        const inkTop = above + options.jpStackGap + d * options.jpDotRung;
+        tf.y = inkTop - dotBound.top;
       }
       ent.group.add(tf);
       ent.octaveDot.push(tf);
@@ -673,10 +713,12 @@ export class NoteEntry extends Entry {
       const t = new SmuflText(options);
       t.color = options.color;
       t.text = GlyphCodes.fermataAbove;
-      t.y = ent.entryTop(options);
+      // Same ladder as the octave dots / slur (musicpp render.cpp:349-355 uses
+      // `y -= dot*7` plus a flat -10 over a slur; both collapse to one rung).
+      t.y = ent.slurRung(options);
       const hasSlurTied = ent.beginOfSlurTied || ent.endOfSlurTied;
-      if (hasSlurTied) t.y -= options.smuflFont.size / 4;
-      t.x += ent.numberPos / 2;
+      if (hasSlurTied) t.y -= options.jpDotRung;
+      t.x += ent.number!.x + ent.number!.cx;
       t.x -= t.bound.width / 2;
       ent.group.add(t);
       ent.notations.push(t);
@@ -718,14 +760,21 @@ export class NoteEntry extends Entry {
 }
 
 export class Barline extends Entry {
+  /** The vertical strokes, kept so `clipBarlinesUnderSlurs` can shorten them. */
+  readonly lines: GraphicLine[] = [];
+  readonly defaultTop: number;
+  private readonly bot: number;
+
   constructor(final: boolean, opt: LayoutOptions) {
     super();
     this.group.data = this;
-    const top = (-opt.numberSize * 23) / 28;
-    const bot = (opt.numberSize * 5) / 28;
+    const top = opt.jpStaffTop;
+    const bot = opt.jpStaffBottom;
+    this.defaultTop = top;
+    this.bot = bot;
     const heavyWidth = 3.5;
     const res = this.group;
-    const widths = [1.5];
+    const widths = [2]; // musicpp lineWidths.lightBarline (pptutil.cpp:139)
     if (final) widths.push(heavyWidth);
     const dist = heavyWidth;
     let xpos = 0;
@@ -738,8 +787,32 @@ export class Barline extends Entry {
       l.strokeWidth = w;
       xpos += w + dist;
       res.add(l);
+      this.lines.push(l);
     }
     res.update();
+  }
+
+  /**
+   * Lower the top edge so the barline stops below a slur/tie crossing it.
+   * Only ever shortens; a `top` above `defaultTop` is ignored.
+   *
+   * Works on the post-`update()` representation: `Group.update()` has already
+   * folded each line's p0 into the group's y and left the children at y=0 with
+   * p1 holding the length, so trimming means moving the group down and
+   * shortening p1 by the same amount. (Re-assigning p0 instead would be folded
+   * in a *second* time by GraphicLine.update(), which both moves and lengthens
+   * the stroke.)
+   */
+  clipTop(top: number): void {
+    const y = Math.max(this.defaultTop, Math.min(top, this.bot));
+    const dy = y - this.group.y;
+    if (dy <= 0) return;
+    for (const l of this.lines) {
+      l.p1 = new Point(l.p1.x, l.p1.y - dy);
+      l.height = Math.abs(l.p1.y);
+    }
+    this.group.y += dy;
+    this.group.height -= dy;
   }
   entryItem(): PageItem | null {
     return this.group.children[0];
@@ -773,9 +846,12 @@ export class BeamLine extends GraphicLine {
     this.p0 = l.entryItem()!.pos(grp);
     this.p1 = r.entryItem()!.pos(grp);
     this.p1 = this.p1.offset(r.numberPos, 0);
-    this.p0 = new Point(this.p0.x, opt.jpBeamDist * lev);
-    this.p1 = new Point(this.p1.x, opt.jpBeamDist * lev);
-    this.strokeWidth = 1.25;
+    // `lev` is 1-based here (musicpp's is 0-based), so the first beam lands on
+    // jpBeamTop and each further level steps down by jpBeamDist.
+    const y = opt.jpBeamTop + opt.jpBeamDist * (lev - 1);
+    this.p0 = new Point(this.p0.x, y);
+    this.p1 = new Point(this.p1.x, y);
+    this.strokeWidth = opt.jpBeamWidth;
     this.strokeColor = opt.color;
     this.x = this.p0.x;
     this.p1 = this.p1.offset(-this.p0.x, 0);
@@ -801,6 +877,8 @@ export class Line {
   beams: BeamLine[] = [];
   maxBeamLevel = 0;
   chordEntry = new Map<S.Chord, NoteEntry>();
+  /** Arcs drawn on this line, in line coordinates (see clipBarlinesUnderSlurs). */
+  slurTies: SlurTieBase[] = [];
 
   private addEntry(e: Entry): void {
     if (e instanceof NoteEntry) {
@@ -1064,6 +1142,37 @@ export class Line {
     grp.normalizeX();
     grp.normalizeY();
     this.group.add(grp);
+    this.slurTies.push(grp);
+  }
+
+  /**
+   * Stop barlines short of any slur/tie arching over them.
+   *
+   * Barlines now reach a full 1.0em above the baseline (musicpp's staff top),
+   * which is *higher* than where an arc with no octave dots starts — so a tie
+   * spanning a barline (last note of a bar tied into the next, the common case)
+   * would be pierced from above. Neither musicpp nor the Kotlin original does
+   * anything here; musicpp only gets away with it because its arcs are lifted
+   * clear whenever there are octave dots.
+   *
+   * Uses the arc's whole bounding box bottom rather than solving the Bézier at
+   * the barline's x: conservative, never intersects, and the barline loses at
+   * most a hair more height than strictly necessary.
+   */
+  private clipBarlinesUnderSlurs(opt: LayoutOptions): void {
+    if (this.slurTies.length === 0) return;
+    const gap = opt.jpStackGap / 2;
+    for (const e of this.entries) {
+      if (!(e instanceof Barline)) continue;
+      const x0 = e.group.x;
+      const x1 = x0 + e.group.width;
+      let top = e.group.y;
+      for (const s of this.slurTies) {
+        if (s.x + s.width < x0 || s.x > x1) continue;
+        top = Math.max(top, s.y + s.height + gap);
+      }
+      e.clipTop(top);
+    }
   }
 
   private addTie(opt: LayoutOptions): void {
@@ -1084,25 +1193,27 @@ export class Line {
       this.addSlurTie(nt, nt.tieNext!, ypos, thickness, opt.color);
     }
   }
+  // tiedTop/slurTop sit on the octave-dot ladder (NoteEntry.slurRung), plus one
+  // more rung per element that has to pass underneath.
   private tiedTop(ent: NoteEntry, opt: LayoutOptions, left: boolean): number {
-    let res = ent.entryTop(opt);
+    let res = ent.slurRung(opt);
     const nt = ent.chord.notes[0];
     if (left) {
-      if (nt.tupletBegin) res -= opt.numberSize / 2;
+      if (nt.tupletBegin) res -= opt.jpDotRung;
     } else {
-      if (nt.tupletEnd) res -= opt.numberSize / 2;
+      if (nt.tupletEnd) res -= opt.jpDotRung;
     }
     return res;
   }
   private slurTop(ent: NoteEntry, opt: LayoutOptions, left: boolean): number {
-    let res = ent.entryTop(opt);
+    let res = ent.slurRung(opt);
     const nt = ent.chord.notes[0];
     if (left) {
-      if (nt.tieStart) res -= opt.numberSize / 8;
+      if (nt.tieStart) res -= opt.jpDotRung;
     } else {
-      if (nt.tieEnd) res -= opt.numberSize / 8;
+      if (nt.tieEnd) res -= opt.jpDotRung;
     }
-    if (nt.tupletEnd || nt.tupletBegin) res -= opt.numberSize / 2;
+    if (nt.tupletEnd || nt.tupletBegin) res -= opt.jpDotRung;
     return res;
   }
   private addSlur(opt: LayoutOptions): void {
@@ -1129,6 +1240,7 @@ export class Line {
       l.addTuplet(opt);
       l.addTie(opt);
       l.addSlur(opt);
+      l.clipBarlinesUnderSlurs(opt);
       l.updateLyricY(opt);
       l.group.normalizeY();
       l.group.update();
@@ -1347,7 +1459,7 @@ export class LayoutOptions {
   smuflAsPath = false;
   halfWidthPunct = true;
   ignoreVerseNumber = true;
-  slurTieThickness = 4;
+  slurTieThickness = 6; // musicpp render.cpp:1076 (`lw0 = 6/cos`)
   staffDist = 0;
   marginTop: number;
   marginBottom: number;
@@ -1355,6 +1467,45 @@ export class LayoutOptions {
   maxLineDist: number;
   maxHorizontalScale = 2.0;
   jpBeamDist: number;
+
+  // --- jianpu vertical grid ---------------------------------------------
+  // Everything stacked above (and below) a jianpu digit — octave dots, the
+  // slur/tie arc, the tuplet bracket — is separated by ONE gap, `jpStackGap`,
+  // measured ink-to-ink. So digit→dot, dot→dot and dot→slur are all equal and
+  // the stack reads as an even ladder.
+  //
+  // musicpp is *not* even here: it steps the dots by `octaveDotDist = 6` but
+  // lifts the slur a further 6 per dot from a different origin
+  // (render.cpp:906 vs model.cpp:2649), giving ~6.4px digit→dot against
+  // ~2.3px dot→slur at this font size. Its absolute slur height is still a
+  // good sanity check: with one octave dot the ladder below lands within
+  // 0.1px of it.
+  //
+  // (Before this, the project mixed three unrelated steps —
+  // `dotBound.height*1.5` ≈ 4.2px, `numberSize/8` = 3.5px and
+  // `numberSize/2` = 14px.)
+  jpStackGap: number;
+  /** Baseline → first beam (减时线). musicpp draws level 0 at y=35 with the
+   * digit baseline at 30 (render.cpp:161, and processLevelJp's `lev >= cnt`
+   * makes the level 0-based), i.e. 5 units at jianpuFont 30 = 1/6 em.
+   * Without it the first beam sat at `jpBeamDist` (1/8 em) and crowded the
+   * digit, more so once the stroke widened to musicpp's 1.5. */
+  jpBeamTop: number;
+  jpBeamWidth = 1.5; // musicpp lineWidths.jpBeam (pptutil.cpp:138)
+
+  /** One rung of the stack: a dot plus the gap above it. Also the amount by
+   * which anything that must clear a slur (a second arc, a tuplet bracket)
+   * steps up. */
+  get jpDotRung(): number {
+    return this.jpStackGap + this.numberBound(".").height;
+  }
+
+  /** Bottom edge of the lowest of `n` beams, or the digit baseline if n = 0.
+   * Low octave dots hang one `jpStackGap` below this, mirroring the top side. */
+  jpBeamBottom(n: number): number {
+    if (n <= 0) return 0;
+    return this.jpBeamTop + this.jpBeamDist * (n - 1) + this.jpBeamWidth / 2;
+  }
 
   constructor(public fontSize: number) {
     // Original used 苹方-简 / Microsoft YaHei; in the webview we rely on the
@@ -1367,6 +1518,8 @@ export class LayoutOptions {
     this.marginBottom = fontSize * 3;
     this.maxLineDist = fontSize * 0.75;
     this.jpBeamDist = fontSize / 8;
+    this.jpStackGap = fontSize / 6;
+    this.jpBeamTop = fontSize / 6; // musicpp 35 − baseline 30, at jianpuFont 30
   }
 
   get lrcSize(): number {
@@ -1382,8 +1535,26 @@ export class LayoutOptions {
     this.numberFont = this.numberFont.makeWithSize(v);
   }
 
+  /** Tight glyph box of a jianpu number/dot. Was measured on `lrcFont`, which
+   * is a no-op only as long as the two fonts stay identical (they do today,
+   * but `lrcSize` is settable) — the numbers are drawn with `numberFont`. */
   numberBound(ch: string): Rect {
-    return LayoutOptions.charBound(this.lrcFont, ch);
+    return LayoutOptions.charBound(this.numberFont, ch);
+  }
+
+  /**
+   * Vertical extent of barlines and time signatures, relative to the digit
+   * baseline. musicpp spans the whole 40-unit jianpu staff at jianpuFont 30
+   * (render.cpp:802, :1793): 1.0em above the baseline — which is exactly the
+   * high octave-dot row — down to 0.333em below, the low octave-dot row.
+   * This project used 23/28 and 5/28, a third shorter, whose lower edge did
+   * not even reach the first low octave dot.
+   */
+  get jpStaffTop(): number {
+    return -this.numberSize;
+  }
+  get jpStaffBottom(): number {
+    return this.numberSize / 3;
   }
 }
 

@@ -83,12 +83,19 @@ export function measureGlyphText(
 
   const width = t.getComputedTextLength();
 
-  // Use Canvas actualBoundingBox* for tight vertical glyph bounds.
+  // Use Canvas actualBoundingBox* for tight glyph bounds.
   // getBBox() on SVG <text> returns the full em/line box for CJK fonts (e.g.
   // "." in PingFang SC measures the same height as "1"), causing octave dots
   // to be placed far above their correct position.
+  // Horizontally the ink box is NOT 0..advance: PingFang SC's "1" is a narrow
+  // proportional glyph whose ink centre sits 3.1% of an em left of its advance
+  // centre, which visibly offsets anything centred on it (octave dots, slur
+  // ends, tuplet brackets). actualBoundingBoxLeft/Right come free from the same
+  // measureText() call, so keep them.
   let bboxTop: number;
   let bboxBottom: number;
+  let inkLeft = 0;
+  let inkRight = width;
   if (!glyphCtx) {
     const c = document.createElement("canvas");
     glyphCtx = c.getContext("2d");
@@ -98,6 +105,10 @@ export function measureGlyphText(
     const cm = glyphCtx.measureText(text);
     bboxTop = -(cm.actualBoundingBoxAscent ?? fontSizePx * 0.8);
     bboxBottom = cm.actualBoundingBoxDescent ?? fontSizePx * 0.2;
+    // actualBoundingBoxLeft is the distance *left* of the origin, so it is
+    // positive when ink overhangs to the left — negate it to get a coordinate.
+    if (cm.actualBoundingBoxLeft !== undefined) inkLeft = -cm.actualBoundingBoxLeft;
+    if (cm.actualBoundingBoxRight !== undefined) inkRight = cm.actualBoundingBoxRight;
   } else {
     const b = t.getBBox();
     bboxTop = b.y;
@@ -106,7 +117,7 @@ export function measureGlyphText(
 
   const m: TextMetrics = {
     width,
-    bbox: new Rect(0, bboxTop, width, bboxBottom),
+    bbox: new Rect(inkLeft, bboxTop, inkRight, bboxBottom),
   };
   textCache.set(key, m);
   return m;

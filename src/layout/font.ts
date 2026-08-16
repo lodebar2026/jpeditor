@@ -40,6 +40,19 @@ export class Font {
     return measureGlyphText(ch, this.family, this.size, this.weight).bbox;
   }
 
+  /**
+   * Horizontal centre of a glyph's *ink*, measured from the pen origin.
+   * Differs from advance/2 for glyphs whose side bearings are asymmetric —
+   * notably "1", which in PingFang SC is 0.88px (3.1% of an em) left of its
+   * advance centre at 28px. Decorations that must look centred on a jianpu
+   * digit (octave dots, slur/tie ends, tuplet brackets) anchor here rather
+   * than on advance/2.
+   */
+  inkCenter(ch: string): number {
+    const b = this.charBound(ch);
+    return (b.left + b.right) / 2;
+  }
+
   /** font-global ascent (negative) / descent (positive). */
   get metrics(): { ascent: number; descent: number } {
     return measureFontMetrics(this.family, this.size, this.weight);
