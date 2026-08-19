@@ -9,12 +9,13 @@ import { asset } from "../common/asset";
 import {
   GraphicLine,
   GraphicPath,
+  Group,
   PageItem,
   SmuflText,
   TextFrame,
   type PathSeg,
 } from "../layout/layout";
-import type { JinpuPainter } from "../layout/painter";
+
 
 const EMU = (v: number) => Math.round(v * 12700); // 1 pt = 12700 EMU
 
@@ -242,7 +243,14 @@ function buildDeck(slides: string[], wEmu: number, hEmu: number): Zippable {
   return z;
 }
 
-export async function buildPptx(painter: JinpuPainter): Promise<Uint8Array> {
+/** buildPptx 只用到页面树与页面尺寸，简谱与文本谱两种排版器都满足。 */
+export interface PptxSource {
+  layout: { pages: Group[] };
+  pageWidth: number;
+  pageHeight: number;
+}
+
+export async function buildPptx(painter: PptxSource): Promise<Uint8Array> {
   const font = await loadBravura();
   const slides = painter.layout.pages.map((pg) => {
     const shapes: Shape[] = [];

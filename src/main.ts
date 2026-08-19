@@ -57,13 +57,15 @@ async function boot() {
   const app = new App(meta, scorePane);
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown };
+  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown };
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
   // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
   win.__omr = import("./omr");
   // ABC → MusicXML 移植版暴露（便于 abc-check.mjs 回归，同 __app 约定）。
   win.__abc2musicxml = import("./abc/abc2xml");
+  // 文本谱（番茄 / 有谱）解析与排版暴露，供 pu-*.mjs 回归。
+  win.__pu = import("./pu");
   // MusicXML 导出（全量序列化 / 增量 patch / 版面注入）暴露，供 xml-roundtrip.mjs 回归。
   win.__xmlout = Promise.all([
     import("./score/musicxmlout"), import("./score/musicxmlpatch"),
@@ -72,6 +74,16 @@ async function boot() {
     import("./jpword/parse"), import("./score/jpwimport"),
   ]).then(([out, patch, layout, imp, jpscore, jpwfile, parse, jpwimport]) =>
     ({ ...out, ...patch, ...layout, ...imp, ...jpscore, ...jpwfile, ...parse, ...jpwimport }));
+
+  // 文本谱版面切换（原版 / PPT）
+  const puSwitch = document.getElementById("pu-profile-switch");
+  const puPrint = document.getElementById("btn-pu-print") as HTMLButtonElement | null;
+  const puSlide = document.getElementById("btn-pu-slide") as HTMLButtonElement | null;
+  if (puSwitch && puPrint && puSlide) {
+    app.setPuProfileButtons(puSwitch, puPrint, puSlide);
+    puPrint.onclick = () => app.setPuProfile("print");
+    puSlide.onclick = () => app.setPuProfile("slide");
+  }
 
   const revealWorkspace = () => {
     startScreen.hidden = true;
@@ -374,7 +386,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
           }
           return;
         }
-        if (!/\.(jpwabc|xml|musicxml|abc)$/i.test(path)) return;
+        if (!/\.(jpwabc|pu|fq|jps|txt|xml|musicxml|abc)$/i.test(path)) return;
         const bytes = await readFile(path);
         app.importBytes(bytes, path);
         if (!/\.(xml|musicxml|abc)$/i.test(path)) app.filePath = path;

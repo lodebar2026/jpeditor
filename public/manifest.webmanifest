@@ -1,7 +1,7 @@
 {
   "name": "简谱编辑器 jpeditor",
   "short_name": "jpeditor",
-  "description": "在线简谱（.jpwabc）排版与编辑器，支持简谱·五线谱混排、MusicXML 导入与多格式导出。",
+  "description": "在线简谱（.jpwabc）与文本谱（番茄简谱 / 诗歌本动态谱）排版与编辑器，支持简谱·五线谱混排、图片识谱（OMR）、MusicXML 导入与多格式导出。",
   "lang": "zh-CN",
   "start_url": "./",
   "scope": "./",

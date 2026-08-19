@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.6.1",
   "type": "module",
-  "description": "简谱（JP-Word/.jpwabc）在线排版与编辑器，支持简谱·五线谱混排、MusicXML 导入与导出 PDF/PNG/MIDI/PPTX · An open-source jianpu (numbered musical notation) editor & typesetter.",
+  "description": "简谱（JP-Word/.jpwabc）与文本谱（番茄简谱 / 诗歌本动态谱）在线排版与编辑器，支持图片识谱（OMR）、简谱·五线谱混排、MusicXML 导入导出与 PDF/PNG/MIDI/PPTX 导出 · An open-source jianpu (numbered musical notation) editor & typesetter.",
   "homepage": "https://lodebar2026.github.io/jpeditor/",
   "repository": {
     "type": "git",
@@ -18,6 +18,11 @@
     "sheet-music",
     "musicxml",
     "jpwabc",
+    "fanqie-jianpu",
+    "jianpu-text",
+    "omr",
+    "abc-notation",
+    "pptx",
     "tauri",
     "svg"
   ],

@@ -5,6 +5,12 @@ import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState, EditorSelection } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { jpwHighlighter } from "./highlight";
+import { puHighlighter } from "../pu/highlight";
+import { PuPainter } from "../pu/painter";
+import { parsePu, puToScore, sniffDialect } from "../pu";
+import type { Chord, Score } from "../score/score";
+import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
+import type { PageProfileName } from "../pu/metrics";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
 import { PlayItem } from "../score/score";
@@ -23,6 +29,9 @@ import { playTempo, SPEED_STEPS, type PlayOptions } from "../score/timeline";
 import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, type OmrMethod, type RecogView } from "../omr";
 import type { Binary, RecognizedScore } from "../omr";
 
+/** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
+const PU_EXT_RE = /\.(pu|fq|jps|txt)$/i;
+
 export class App {
   painter: JinpuPainter;
   view!: EditorView;
@@ -31,6 +40,15 @@ export class App {
   pageIndex = 0;
   filePath: string | null = null;
   mode: "jp" | "mixed" | "recognize" = "jp";
+  /** 当前编辑的是哪种源格式：`.jpwabc` 还是文本谱（番茄 / 诗歌本）。 */
+  docFormat: "jpwabc" | "pu" = "jpwabc";
+  /** 文本谱的版面：原版 A4 / PPT 16:9。 */
+  puProfile: PageProfileName = "print";
+  private _puPainter: PuPainter | null = null;
+  private _puHighlightCompartment = new Compartment();
+  private _puProfileSwitchEl: HTMLElement | null = null;
+  private _puPrintBtnEl: HTMLButtonElement | null = null;
+  private _puSlideBtnEl: HTMLButtonElement | null = null;
   mixedXmlText: string | null = null;
   private _mixedPainter: MixedPainter | null = null;
   private _mixedBtnEl: HTMLButtonElement | null = null;
@@ -200,7 +218,7 @@ export class App {
           lineNumbers(),
           history(),
           keymap.of([...defaultKeymap, ...historyKeymap]),
-          jpwHighlighter,
+          this._puHighlightCompartment.of(jpwHighlighter),
           updateListener,
           this._readOnlyCompartment.of(EditorState.readOnly.of(false)),
           EditorView.lineWrapping,
@@ -241,6 +259,7 @@ export class App {
   reload(text: string): boolean {
     // 混排/识别模式：谱面区显示各自专属视图，编辑文本不重排冲掉它。
     if (this.mode !== "jp") return true;
+    if (this.docFormat === "pu") return this.reloadPu(text);
     let f: JpwFile | null;
     try {
       f = JpwFile.fromString(text);
@@ -337,6 +356,169 @@ export class App {
     }
   }
 
+  /** 文本谱（番茄 / 诗歌本）：解析 → 专用排版 → 渲染。 */
+  private reloadPu(text: string): boolean {
+    let doc;
+    try {
+      doc = parsePu(text);
+    } catch (e) {
+      console.error("文本谱解析失败", e);
+      this.setStatus("文本谱解析失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    const fatal = doc.diagnostics.find((d) => d.severity === "error");
+    if (fatal) {
+      this.setStatus(`文本谱无法解析：${fatal.message}`);
+      return false;
+    }
+    if (!this._puPainter) this._puPainter = new PuPainter(this.puProfile);
+    else if (this._puPainter.metrics.profile !== this.puProfile) {
+      this._puPainter = new PuPainter(this.puProfile);
+    }
+    try {
+      this._puPainter.load(doc);
+    } catch (e) {
+      console.error("文本谱排版失败", e);
+      this.setStatus("文本谱排版失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    this._puDoc = { text, doc };
+    this._puScoreCache = null; // 文本变了，Score 与 noteMap 都要重建
+    this._puDialect = doc.dialect;
+    this._syncFormatLabel();
+    this.renderPuPages();
+    // 解析告警不拦排版，但要让用户看得见（谱面往往仍然是对的）
+    const warns = doc.diagnostics.length;
+    this.setStatus(
+      warns === 0
+        ? ""
+        : `${doc.dialect === "tomato" ? "番茄简谱" : "诗歌本文本谱"}：${warns} 处需要留意` +
+            `（第 ${doc.diagnostics[0]!.source.line + 1} 行 ${doc.diagnostics[0]!.message}）`,
+    );
+    return true;
+  }
+
+  private renderPuPages(): void {
+    const painter = this._puPainter;
+    if (!painter) return;
+    this._player?.stop();
+    this.scorePane.replaceChildren();
+    this.pageEls = [];
+    this.selectedEl = null;
+    for (let i = 0; i < painter.pageCount; i++) {
+      const svg = painter.renderPage(i);
+      const wrap = document.createElement("div");
+      wrap.className = "score-page-wrap";
+      // 文本谱的「原版」是连续长图，宽高比随谱而变，不能用 CSS 里写死的 960/540
+      wrap.style.aspectRatio = `${painter.pageWidth} / ${painter.pageHeight}`;
+      wrap.appendChild(svg);
+      this.scorePane.appendChild(wrap);
+      this.pageEls.push(wrap);
+    }
+    this.pageIndex = Math.min(this.pageIndex, Math.max(0, this.pageEls.length - 1));
+  }
+
+  /** 文本谱版面切换（原版 / PPT）。 */
+  setPuProfile(profile: PageProfileName): void {
+    if (this.puProfile === profile) return;
+    this.puProfile = profile;
+    this._syncPuProfileButtons();
+    if (this.docFormat === "pu") this.reload(this.getText());
+  }
+
+  /** 注册文本谱版面切换按钮（原版 / PPT）。 */
+  setPuProfileButtons(
+    switchEl: HTMLElement,
+    printBtn: HTMLButtonElement,
+    slideBtn: HTMLButtonElement,
+  ): void {
+    this._puProfileSwitchEl = switchEl;
+    this._puPrintBtnEl = printBtn;
+    this._puSlideBtnEl = slideBtn;
+    this._setPuControlsAvailable(this.docFormat === "pu");
+  }
+
+  private _setPuControlsAvailable(available: boolean): void {
+    if (this._puProfileSwitchEl) this._puProfileSwitchEl.hidden = !available;
+    this._syncPuProfileButtons();
+  }
+
+  private _syncPuProfileButtons(): void {
+    const slide = this.puProfile === "slide";
+    for (const [btn, on] of [
+      [this._puPrintBtnEl, !slide],
+      [this._puSlideBtnEl, slide],
+    ] as const) {
+      if (!btn) continue;
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-pressed", String(on));
+    }
+  }
+
+  /** 当前文本谱的 AST（MusicXML 直出用；与排版器共用同一份对象）。 */
+  puDoc(): PuDoc | null {
+    if (this.docFormat !== "pu") return null;
+    const text = this.getText();
+    if (this._puDoc?.text === text) return this._puDoc.doc;
+    try {
+      const doc = parsePu(text);
+      this._puDoc = { text, doc };
+      return doc;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 当前文本谱对应的 Score（导出 .jpwabc / MusicXML / MIDI 与试听共用）。
+   *  Score 装不下和弦与力度，那些信息只在「原版」谱面上有。 */
+  puScore(): Score | null {
+    if (this.docFormat !== "pu") return null;
+    const text = this.getText();
+    if (this._puScoreCache && this._puScoreCache.text === text) return this._puScoreCache.score;
+    let score: Score | null = null;
+    const noteMap = new Map<Chord, PuNoteElement>();
+    try {
+      // **必须复用排版时那份 AST**：PuPainter 的高亮索引是按节点对象身份建的，
+      // 重新 parse 一遍会得到另一批对象，播放高亮就永远找不到。
+      const doc = this._puDoc?.text === text ? this._puDoc.doc : parsePu(text);
+      score = puToScore(doc, { noteMap });
+    } catch (e) {
+      console.error("文本谱转 Score 失败", e);
+      return null;
+    }
+    this._puScoreCache = { text, score, noteMap };
+    return score;
+  }
+
+  /** 当前文本谱的排版器（播放高亮 / 导出用）。 */
+  get puPainter(): PuPainter | null {
+    return this.docFormat === "pu" ? this._puPainter : null;
+  }
+
+  /** 切换编辑的源格式：换高亮、清掉另一路的状态。 */
+  private _setDocFormat(format: "jpwabc" | "pu"): void {
+    if (this.docFormat === format) return;
+    this.docFormat = format;
+    this.view.dispatch({
+      effects: this._puHighlightCompartment.reconfigure(
+        format === "pu" ? puHighlighter : jpwHighlighter,
+      ),
+    });
+    if (format === "pu") {
+      // 文本谱走自己的排版器，简谱那侧的上下文工具（乐句重排 / 混排）不适用
+      this._disablePhrase();
+      this.mixedXmlText = null;
+      this._setMixedAvailable(false);
+    } else {
+      this._puPainter = null;
+      this._puDialect = null;
+      this._puDoc = null;
+      this._puScoreCache = null;
+    }
+    this._setPuControlsAvailable(format === "pu");
+    this._syncFormatLabel();
+  }
+
   private renderPages(): void {
     this._player?.stop(); // relayout invalidates chord objects / highlight
     this.scorePane.replaceChildren();
@@ -417,6 +599,18 @@ export class App {
   }
 
   private onPlayChord(chord: import("../score/score").Chord | null, pass: number): void {
+    // 文本谱：播放器给的是 Chord，「原版」谱面按 AST 节点索引，靠 noteMap 搭桥
+    if (this.docFormat === "pu") {
+      const painter = this._puPainter;
+      if (!painter) return;
+      const note = chord ? this._puScoreCache?.noteMap.get(chord) : null;
+      const pg = painter.highlight(note ?? null, Math.max(0, pass - 1));
+      if (note && pg !== null) {
+        if (pg !== this.pageIndex) this.pageIndex = pg;
+        painter.noteGroupEl(note)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+      return;
+    }
     const page = this.painter.highlightChord(chord, pass);
     if (chord && page !== null) {
       if (page !== this.pageIndex) this.pageIndex = page;
@@ -498,12 +692,18 @@ export class App {
 
   async playScore(): Promise<void> {
     if (this.mode !== "jp") return; // playback is jianpu-mode only
+    // 文本谱先转成 Score（谱面高亮走 PuPainter 自己的索引，见 _puPlaybackScore）
+    const score = this.docFormat === "pu" ? this.puScore() : this.painter.score;
+    if (!score) {
+      this.setStatus("这份文本谱里没有可试听的曲行");
+      return;
+    }
     const start =
       this._selectedChord !== null
         ? { chord: this._selectedChord, pass: this._selectedVerse }
         : undefined;
     try {
-      await this.player().play(this.painter.score, this.playOptions(), start);
+      await this.player().play(score, this.playOptions(), start);
     } catch (e) {
       console.error("playback failed", e);
       this._player?.stop();
@@ -550,10 +750,33 @@ export class App {
         return;
       }
     }
+    // 文本谱（番茄 / 诗歌本）：原文就是源格式，直接进编辑器，不做任何转换。
+    if (PU_EXT_RE.test(name)) {
+      const puText = new TextDecoder(
+        bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
+      ).decode(bytes);
+      const sniffed = sniffDialect(puText);
+      if (sniffed.dialect === null) {
+        // `.txt` 太泛，认不出宁可不动——硬解只会得到一首乱谱
+        this.setStatus(`这不像文本谱：${sniffed.reason}`);
+        return;
+      }
+      this.mixedXmlText = null;
+      this._mixedPainter = null;
+      if (this.mode === "mixed") {
+        this.mode = "jp";
+        this._setMixedLayout(false);
+        this._setPreviewModeActive("jp");
+      }
+      this._setDocFormat("pu");
+      this.setText(puText);
+      return;
+    }
     if (/\.(xml|musicxml)$/i.test(name)) {
       const xml = new TextDecoder(
         bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
       ).decode(bytes);
+      this._setDocFormat("jpwabc");
       this.mixedXmlText = xml;
       this._mixedPainter = null; // reset so next showStaffPreview re-loads
       this._setMixedAvailable(true);
@@ -585,6 +808,7 @@ export class App {
       this._lastImportMeta = meta; // 供 recognizeBytes（OMR）接管为 _recogMeta
       this._applyImportedJp(text);
     } else {
+      this._setDocFormat("jpwabc");
       this.mixedXmlText = null;
       this._mixedPainter = null;
       this._setMixedAvailable(false);
@@ -691,6 +915,11 @@ export class App {
    */
   async convertHanzi(dir: "auto" | HanDirection): Promise<void> {
     if (this.mode !== "jp") return;
+    if (this.docFormat === "pu") {
+      // convertJpwabc 认的是 .Title/.Words 段结构，文本谱是另一套语法
+      this.setStatus("文本谱暂不支持整篇简繁转换");
+      return;
+    }
     const btn = this._hanziBtnEl;
     const label = btn?.textContent ?? "简繁";
     if (btn) {
@@ -1018,7 +1247,28 @@ export class App {
     });
     document.getElementById("body")?.classList.toggle("mixed", on);
     const meta = document.getElementById("code-pane-meta");
-    if (meta) meta.textContent = on ? "只读" : "JPWABC";
+    if (meta) meta.textContent = on ? "只读" : this._formatLabel();
+  }
+
+  /** 已解析出的文本谱方言，用于代码区标签（解析前未知）。 */
+  private _puDialect: "tomato" | "shige" | null = null;
+  private _puDoc: { text: string; doc: PuDoc } | null = null;
+  private _puScoreCache: {
+    text: string;
+    score: Score | null;
+    noteMap: Map<Chord, PuNoteElement>;
+  } | null = null;
+
+  /** 代码区右上角的格式标签。 */
+  private _formatLabel(): string {
+    if (this.docFormat !== "pu") return "JPWABC";
+    if (this._puDialect === null) return "文本谱";
+    return this._puDialect === "shige" ? "文本谱·诗歌本" : "文本谱·番茄";
+  }
+
+  private _syncFormatLabel(): void {
+    const meta = document.getElementById("code-pane-meta");
+    if (meta && meta.textContent !== "只读") meta.textContent = this._formatLabel();
   }
 
   private async _renderMixedPages(): Promise<void> {
@@ -1095,7 +1345,12 @@ export class App {
       const { readFile } = await import("@tauri-apps/plugin-fs");
       const sel = await open({
         multiple: false,
-        filters: [{ name: "简谱 / MusicXML / ABC", extensions: ["jpwabc", "JPWABC", "xml", "musicxml", "abc"] }],
+        filters: [
+          {
+            name: "简谱 / 文本谱 / MusicXML / ABC",
+            extensions: ["jpwabc", "JPWABC", "pu", "fq", "jps", "txt", "xml", "musicxml", "abc"],
+          },
+        ],
       });
       if (typeof sel !== "string") return false;
       const bytes = await readFile(sel);
@@ -1115,7 +1370,7 @@ export class App {
         resolve(opened);
       };
       input.type = "file";
-      input.accept = ".jpwabc,.xml,.musicxml,.abc";
+      input.accept = ".jpwabc,.pu,.fq,.jps,.txt,.xml,.musicxml,.abc";
       input.onchange = async () => {
         changeStarted = true;
         const file = input.files?.[0];
@@ -1176,7 +1431,7 @@ export class App {
   }
 
   async saveFileAs(): Promise<void> {
-    const name = (this.painter.score.title.split("\n")[0] || "未命名") + ".jpwabc";
+    const name = this.defaultSaveName();
     if (isTauriRuntime()) {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const dest = await save({ defaultPath: name });
@@ -1185,7 +1440,7 @@ export class App {
       this.filePath = dest;
       this.rememberLastFile(dest);
     } else {
-      const blob = new Blob([encodeJpwabc(this.getText())], {
+      const blob = new Blob([this.encodeForSave()], {
         type: "application/octet-stream",
       });
       const a = document.createElement("a");
@@ -1196,9 +1451,36 @@ export class App {
     }
   }
 
+  /** 存盘用的文件名：文本谱存 `.pu`，其余存 `.jpwabc`。 */
+  private defaultSaveName(): string {
+    const base = this.documentTitle() || "未命名";
+    return base + (this.docFormat === "pu" ? ".pu" : ".jpwabc");
+  }
+
+  /** 当前文档的标题（文本谱取头部第一条 T:/B:）。 */
+  private documentTitle(): string {
+    if (this.docFormat === "pu") {
+      const meta = this._puPainter ? null : null;
+      void meta;
+      const first = this.getText()
+        .split(/\r?\n/)
+        .map((l) => /^\s*[TB]\s*[:：](.*)$/.exec(l))
+        .find((m) => m !== null);
+      return first ? first[1]!.trim() : "";
+    }
+    return this.painter.score.title.split("\n")[0] ?? "";
+  }
+
+  /** 文本谱是纯文本源格式，存 UTF-8 原文；`.jpwabc` 仍按 JP-Word 的 UTF-16LE+BOM。 */
+  private encodeForSave(): Uint8Array {
+    return this.docFormat === "pu"
+      ? new TextEncoder().encode(this.getText())
+      : encodeJpwabc(this.getText());
+  }
+
   private async writeTo(path: string): Promise<void> {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
-    await writeFile(path, encodeJpwabc(this.getText()));
+    await writeFile(path, this.encodeForSave());
   }
 
   /** Load dropped file content (already decoded). */

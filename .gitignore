@@ -34,3 +34,6 @@ public/redist/pdfjs
 
 # 乐句排版回归的 musicxml 缓存（phrase-lines.mjs）
 .phrase-cache
+
+# 文本谱规范外写法笔记（本地保留，不入库）
+docs/实现/文本谱-规范外写法.md

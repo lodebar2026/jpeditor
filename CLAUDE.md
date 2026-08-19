@@ -98,6 +98,11 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   （行长目标、整句独占一行、断点凭据、段落/副歌分页）。回归 `node phrase-lines.mjs [曲名子串]`。
 - **[ABC 记谱导入](docs/实现/ABC-导入.md)**（`src/abc/`）——abc2xml.py 的全量忠实移植（含 pyparsing /
   etree shim）。改前先核对 python 原文，回归 `node abc-check.mjs`、`node abc-shot.mjs`。
+- **[文本谱](docs/实现/文本谱.md)**（`src/pu/`）——番茄简谱 / 诗歌本两种**纯文本简谱**的
+  原生支持：编辑器直接编原文、专用排版器（原版连续长图 + PPT 版面、四声部并排）、
+  导出 MusicXML/`.jpwabc`/MIDI/PPTX、试听逐字高亮。两方言差异与排版判据都在那篇里，
+  **动解析或排版常量前必看**。回归 `node pu-parse-check.mjs`、`node pu-export-check.mjs`、
+  `node pu-shot.mjs`。
 - **[混排](docs/实现/混排.md)**（`src/mixed/`）——移植自 C++ 工程 musicpp（`~/proj/musicpp`），
   含测试 musicxml 的位置。改混排行为前先核对 musicpp 原文。
 - **[播放速度](docs/实现/播放速度.md)**（`score/timeline.ts`）——谱面 `♩=` × 用户倍率，

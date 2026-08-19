@@ -2,7 +2,9 @@
 import type { App } from "./app";
 import { scoreToMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
-import { isTauriRuntime, saveBytes } from "./fileio";
+import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
+import { scoreToJpwabc } from "../score/jpscore";
+import { puToMusicXml } from "../pu";
 import { asset } from "../common/asset";
 import { scoreToMusicXml } from "../score/musicxmlout";
 import { patchMusicXml } from "../score/musicxmlpatch";
@@ -76,6 +78,10 @@ async function svgToBytes(svg: SVGSVGElement, scale: number): Promise<Uint8Array
 }
 
 function baseName(app: App): string {
+  if (app.docFormat === "pu") {
+    const t = app.puScore()?.title.split("\n")[0];
+    if (t) return t;
+  }
   return app.painter.score.title.split("\n")[0] || "未命名";
 }
 
@@ -88,12 +94,16 @@ export async function exportCurrentPagePng(app: App): Promise<void> {
 }
 
 export async function exportMidi(app: App): Promise<void> {
-  const bytes = scoreToMidi(app.painter.score, app.playOptions());
+  const score = app.docFormat === "pu" ? app.puScore() : app.painter.score;
+  if (!score) throw new Error("这份文本谱里没有可导出的曲行");
+  const bytes = scoreToMidi(score, app.playOptions());
   await saveBytes(bytes, `${baseName(app)}.mid`, "audio/midi");
 }
 
 export async function exportPptx(app: App): Promise<void> {
-  const bytes = await buildPptx(app.painter);
+  // 文本谱用它自己的排版器出片（PPT 版面），简谱走原来的
+  const painter = app.docFormat === "pu" ? app.puPainter : null;
+  const bytes = await buildPptx(painter ?? app.painter);
   await saveBytes(
     bytes,
     `${baseName(app)}.pptx`,
@@ -137,6 +147,30 @@ export async function exportMusicXml(app: App): Promise<void> {
   let out = new XMLSerializer().serializeToString(doc);
   if (!out.startsWith("<?xml")) out = `<?xml version="1.0" encoding="UTF-8"?>\n${out}`;
   await saveBytes(new TextEncoder().encode(out), `${baseName(app)}.musicxml`, MUSICXML_MIME);
+}
+
+/** 文本谱 → MusicXML。直接从 AST 生成（不经 Score），和弦、力度、渐强渐弱都保住。 */
+export async function exportPuMusicXml(app: App): Promise<void> {
+  const puDoc = app.puDoc();
+  if (!puDoc) throw new Error("这份文本谱里没有可导出的曲行");
+  let xml = puToMusicXml(puDoc);
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.querySelector("parsererror")) throw new Error("生成的 MusicXML 无法解析");
+  annotateLayout(doc);
+  xml = new XMLSerializer().serializeToString(doc);
+  if (!xml.startsWith("<?xml")) xml = `<?xml version="1.0" encoding="UTF-8"?>\n${xml}`;
+  await saveBytes(new TextEncoder().encode(xml), `${baseName(app)}.musicxml`, MUSICXML_MIME);
+}
+
+/** 文本谱 → `.jpwabc`。JP-Word 的 .Voice 只有单声部，多声部时只导第一声部。 */
+export async function exportPuJpwabc(app: App): Promise<void> {
+  const score = app.puScore();
+  if (!score) throw new Error("这份文本谱里没有可导出的曲行");
+  if (score.parts.length > 1) {
+    app.setStatus(`.jpwabc 只支持单声部，已导出第一声部（原谱有 ${score.parts.length} 个）`);
+  }
+  const text = scoreToJpwabc(score);
+  await saveBytes(encodeJpwabc(text), `${baseName(app)}.jpwabc`, "application/octet-stream");
 }
 
 /** Export staff pages to a directly downloadable PDF. */
@@ -184,7 +218,10 @@ export function showExportDialog(app: App): void {
   box.className = "modal-box";
   const title = document.createElement("div");
   title.className = "modal-title";
-  title.textContent = app.mode === "mixed" ? "导出 · 五线谱" : "导出 · 简谱";
+  // 文本谱这一档不加后缀：「导出 · 文本谱」会被读成「导出成文本谱」，而条目里
+  // 一个文本谱格式都没有。
+  title.textContent =
+    app.docFormat === "pu" ? "导出" : app.mode === "mixed" ? "导出 · 五线谱" : "导出 · 简谱";
   const list = document.createElement("div");
   list.style.cssText = "display:flex;flex-direction:column;gap:8px";
   const error = document.createElement("div");
@@ -210,7 +247,12 @@ export function showExportDialog(app: App): void {
     };
     list.append(btn);
   };
-  if (app.mode === "mixed") {
+  if (app.docFormat === "pu" && app.mode !== "mixed") {
+    item("PPTX", () => exportPptx(app));
+    item("MIDI", () => exportMidi(app));
+    item("MusicXML", () => exportPuMusicXml(app));
+    item("JPWABC（简谱）", () => exportPuJpwabc(app));
+  } else if (app.mode === "mixed") {
     item("PNG", () => exportCurrentPagePng(app));
     item("PDF", () => exportMixedPdf(app));
     item("MIDI", () => exportMidi(app));
