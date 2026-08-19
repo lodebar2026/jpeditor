@@ -42,6 +42,7 @@ import {
   smuflWidth,
 } from "./model";
 import { Font } from "../layout/font";
+import { harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
 
 // -----------------------------------------------------------------------
 // primitives
@@ -911,34 +912,9 @@ export function drawHarmony(
     const segs = h.asText();
 
     // 总宽：未缩放的 advance 之和（对齐 musicpp TextBlock::width 的居中口径）
-    let width = 0;
-    for (const s of segs) width += (s.music ? musicFont : wordFont).measureText(s.text);
-
-    const grp = new Group();
-    let xpos = 0;
-    for (const s of segs) {
-      const font = s.music ? musicFont : wordFont;
-      const t = new TextFrame();
-      t.text = s.text;
-      t.font = font;
-      t.color = 0xff000000;
-      let scl = 1;
-      if (s.superscript === 1 || s.superscript === -1) {
-        scl = 0.75;
-        const dy = s.superscript === 1 ? -font.size / 4 : font.size / 4;
-        const g = new Group();
-        const m = new Matrix33();
-        m.setAffine([scl, 0, 0, scl, xpos, dy]);
-        g.matrix = m;
-        g.add(t);
-        grp.add(g);
-      } else {
-        t.x = xpos;
-        t.y = s.dy;
-        grp.add(t);
-      }
-      xpos += font.measureText(s.text) * scl;
-    }
+    const width = harmonyWidth(segs, wordFont, musicFont);
+    // 分段排版与文本谱共用（src/layout/harmony.ts）
+    const grp = layoutHarmonySegs(segs, wordFont, musicFont, 0xff000000);
 
     const m = new Matrix33();
     m.setAffine([
