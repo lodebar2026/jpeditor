@@ -76,6 +76,20 @@ if ! check_pages; then
 fi
 echo "==> Pages 资源校验通过"
 
+# 只在构建成功时才删 run；失败的 run 必须留着分析。
+# （gh run watch 遇 API 瞬时 503 会提前退出，所以这里重新查一次真实结论。）
+CONCL=""
+for _ in $(seq 1 60); do
+  read -r ST CONCL <<< "$(gh run view "${RUN_ID}" --repo "${REPO}" \
+    --json status,conclusion -q '"\(.status) \(.conclusion)"' 2>/dev/null || echo "unknown ")"
+  [ "${ST}" = "completed" ] && break
+  sleep 10
+done
+if [ "${CONCL}" != "success" ]; then
+  echo "!! Build run 结论为 ${CONCL:-未知}，保留 run ${RUN_ID}：https://github.com/${REPO}/actions/runs/${RUN_ID}"
+  exit 1
+fi
+
 echo "==> 删除 run ${RUN_ID}"
 gh run delete "${RUN_ID}" --repo "${REPO}"
 echo "==> 完成：${TAG} 已发布，run ${RUN_ID} 已删除"
