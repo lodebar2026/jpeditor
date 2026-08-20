@@ -164,6 +164,8 @@ async function boot() {
     app.setRecogViewSelect(recogViewSel);
     recogViewSel.addEventListener("change", () => app.setRecogView(recogViewSel.value as import("./omr").RecogView));
   }
+  const recogFormatSel = document.getElementById("sel-recog-format") as HTMLSelectElement | null;
+  if (recogFormatSel) app.bindOmrFormatSelect(recogFormatSel); // 选项与 change 都在 App 里接
   const originalLayoutBtn = document.getElementById("btn-layout-original") as HTMLButtonElement | null;
   const phraseBtn = document.getElementById("btn-phrase") as HTMLButtonElement | null;
   if (originalLayoutBtn && phraseBtn) {

@@ -23,14 +23,25 @@ import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
+import { showConfirmDialog } from "./dialogs";
 import { MixedPainter } from "../mixed/painter";
 import { ScorePlayer, type PlayState } from "./player";
 import { playTempo, SPEED_STEPS, type PlayOptions } from "../score/timeline";
-import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, type OmrMethod, type RecogView } from "../omr";
+import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, toMusicXml, toPuText, type OmrMethod, type RecogView } from "../omr";
 import type { Binary, RecognizedScore } from "../omr";
 
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 const PU_EXT_RE = /\.(pu|fq|jps|txt)$/i;
+
+/** 识别结果的输出格式。文本谱两种方言各算一种。 */
+export type OmrFormat = "jpwabc" | "tomato" | "shige";
+
+/** 下拉选项（值, 显示名）。顺序即下拉里的顺序，jpwabc 为默认。 */
+export const OMR_FORMATS: ReadonlyArray<readonly [OmrFormat, string]> = [
+  ["jpwabc", "简谱 jpwabc"],
+  ["tomato", "番茄简谱"],
+  ["shige", "诗歌本文本谱"],
+];
 
 export class App {
   painter: JinpuPainter;
@@ -62,8 +73,15 @@ export class App {
   recogView: RecogView = "floating";
   private _recogViewSelectEl: HTMLSelectElement | null = null;
   private _recogPopupEl: HTMLDivElement | null = null;
-  // 识别对象 → jpwabc 代码区间映射（导入时序列化产出，随编辑经 mapPos 迁移）。
+  // 识别对象 → 源码区间映射（由导入序列化 / toPuText 产出，随编辑经 mapPos 迁移）。
   private _recogMeta: JpwMeta | null = null;
+  // 识别结果的输出格式。识别产物（RecognizedScore）本身与格式无关，切换只是重出文本，
+  // **不重跑识别**。持久化，下次识别沿用。
+  omrFormat: OmrFormat = "jpwabc";
+  private _recogFormatSelectEl: HTMLSelectElement | null = null;
+  private _recogFormatFieldEl: HTMLElement | null = null;
+  /** 上一次由识别产出的文本；与当前文本不等即说明用户手改过（切格式前要确认）。 */
+  private _recogEmitted: string | null = null;
   private _lastImportMeta: JpwMeta | null = null; // 最近一次 xml 导入的序列化映射，供 recognizeBytes 接管
   // 乐句排版：缓存导入时的「原始排版」文本以便无损切回；_phraseOn 记当前是否乐句排版。
   private _originalLayoutBtnEl: HTMLButtonElement | null = null;
@@ -138,7 +156,9 @@ export class App {
         pageW: number; pageH: number; fontSize: number;
         titleSize: number; creditSize: number; color: number; zoom: number;
         mixedHideBarNumber: boolean; mixedShowJianpuLayer: boolean; playSpeed: number;
+        omrFormat: OmrFormat;
       }>;
+      if (s.omrFormat && OMR_FORMATS.some(([v]) => v === s.omrFormat)) this.omrFormat = s.omrFormat;
       if (s.playSpeed) this.playSpeed = Math.max(0.25, Math.min(3, s.playSpeed));
       if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
       if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
@@ -177,6 +197,7 @@ export class App {
         mixedHideBarNumber: this.mixedHideBarNumber,
         mixedShowJianpuLayer: this.mixedShowJianpuLayer,
         playSpeed: this.playSpeed,
+        omrFormat: this.omrFormat,
       }));
     } catch {
       // storage unavailable — ignore
@@ -1191,6 +1212,8 @@ export class App {
     this._recogBin = null;
     this._recogScore = null;
     this._recogMeta = null;
+    this._recogEmitted = null;
+    this._setContextControl(this._recogFormatFieldEl, false);
     this._hideRecogPopup();
     if (this._recognizeBtnEl) {
       this._recognizeBtnEl.textContent = "原图对照";
@@ -1387,6 +1410,91 @@ export class App {
     });
   }
 
+  // ---------------- OMR：识别结果 → 编辑器文本 ----------------
+  /**
+   * 把一份识别结果按当前 `omrFormat` 出成编辑器文本。
+   *
+   * `RecognizedScore` 是格式无关的那一份，留在内存里；换格式只重走这里，**不重跑识别**。
+   * 两条分支产出的 meta 都按同一套音符序（flatten(rows[].nums)）编号，
+   * 所以「原图对照」的点选定位对两种格式通用（见 `_rangeOfHit`）。
+   */
+  private _emitRecognition(rec: RecognizedScore, bin: Binary): void {
+    if (this.omrFormat === "jpwabc") {
+      // importBytes 开头会 _clearRecognition()，故必须先导入、后回填本次产物。
+      this.importBytes(new TextEncoder().encode(toMusicXml(rec)), "omr.musicxml");
+      this._recogMeta = this._lastImportMeta; // 接管导入时序列化产出的代码区间映射
+    } else {
+      const { text, meta } = toPuText(rec, this.omrFormat);
+      this._clearRecognition();
+      this.mixedXmlText = null;
+      this._mixedPainter = null;
+      this._setMixedAvailable(false);
+      if (this.mode === "mixed") {
+        this.mode = "jp";
+        this._setMixedLayout(false);
+        this._setPreviewModeActive("jp");
+      }
+      this._setDocFormat("pu");
+      this.filePath = null;
+      this.setText(text);
+      this._recogMeta = meta;
+    }
+    this._recogBin = bin;
+    this._recogScore = rec;
+    this._recogEmitted = this.getText();
+    if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "原图对照";
+    this._setContextControl(this._recognizeBtnEl, true);
+    this._setContextControl(this._recogFormatFieldEl, true);
+  }
+
+  /** 切换识别输出格式：有识别结果就地重出文本（不重跑识别），并持久化选择。 */
+  async setOmrFormat(format: OmrFormat): Promise<void> {
+    if (this.omrFormat === format) return;
+    const rec = this._recogScore;
+    const bin = this._recogBin;
+    if (rec && bin && this._recogEmitted !== null && this.getText() !== this._recogEmitted) {
+      const ok = await showConfirmDialog(
+        "切换输出格式",
+        "源码已手工修改过。切换格式会用识别结果重新生成文本，这些修改将丢失。要继续吗？",
+      );
+      if (!ok) {
+        this._syncOmrFormatSelect(); // 用户取消：把下拉拨回原值
+        return;
+      }
+    }
+    this.omrFormat = format;
+    this.saveSettings();
+    this._syncOmrFormatSelect();
+    if (rec && bin) {
+      // 保持当前预览模式（对照 / 简谱），只换文本——切格式不该把用户踢出正在看的视图。
+      const wasRecognize = this.mode === "recognize";
+      this._emitRecognition(rec, bin);
+      if (wasRecognize && this.mode !== "recognize") await this.toggleRecognize();
+      const name = OMR_FORMATS.find(([v]) => v === format)?.[1] ?? format;
+      this.setStatus(`已切换输出格式：${name}（未重新识别）`);
+    }
+  }
+
+  /** 注册识别输出格式下拉（选项由这里填，同 bindSpeedSelect 的写法）。 */
+  bindOmrFormatSelect(el: HTMLSelectElement): void {
+    this._recogFormatSelectEl = el;
+    this._recogFormatFieldEl = el.closest(".toolbar-select-field") ?? el;
+    el.replaceChildren();
+    for (const [value, label] of OMR_FORMATS) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      el.appendChild(opt);
+    }
+    this._syncOmrFormatSelect();
+    el.addEventListener("change", () => void this.setOmrFormat(el.value as OmrFormat));
+    this._setContextControl(this._recogFormatFieldEl, this._recogScore !== null);
+  }
+
+  private _syncOmrFormatSelect(): void {
+    if (this._recogFormatSelectEl) this._recogFormatSelectEl.value = this.omrFormat;
+  }
+
   // ---------------- OMR：从图片识别简谱 ----------------
   /** 已取得图片字节后的识别核心（供拖拽识别复用）。
    *  musicpp 本地路额外保留二值图+识别结果，完成后默认进入叠加核对视图（先核对；「原图对照」可切回排版稿）。 */
@@ -1400,19 +1508,16 @@ export class App {
     try {
       const t0 = performance.now();
       if (method === "musicpp") {
-        const { musicxml, bin, score } = await recognizeMusicppDetailed(picked.bytes, picked.mime);
-        this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml"); // 先导入（会清旧识别）
-        this._recogBin = bin; // 再设本次识别产物
-        this._recogScore = score;
-        this._recogMeta = this._lastImportMeta; // 接管导入时序列化产出的代码区间映射
-        if (this._recognizeBtnEl) this._recognizeBtnEl.textContent = "原图对照";
-        this._setContextControl(this._recognizeBtnEl, true);
+        const { bin, score } = await recognizeMusicppDetailed(picked.bytes, picked.mime);
+        this._emitRecognition(score, bin);
         if (this.mode !== "recognize") await this.toggleRecognize(); // 识别后默认进叠加核对（本仓库「先核对」取向）
         this.setStatus(`识别完成（${label}，${((performance.now() - t0) / 1000).toFixed(1)}s）`);
       } else {
+        // gemini 只吐 MusicXML，没有格式无关的中间模型，因而只能出 .jpwabc、也无从切格式。
         const { musicxml, ms } = await recognizeImage(method, picked);
         this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml");
-        this.setStatus(`识别完成（${label}，${(ms / 1000).toFixed(1)}s）`);
+        const note = this.omrFormat === "jpwabc" ? "" : `（${label} 只能输出 .jpwabc）`;
+        this.setStatus(`识别完成（${label}，${(ms / 1000).toFixed(1)}s）${note}`);
       }
       return true;
     } catch (e) {

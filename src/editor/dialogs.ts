@@ -1,7 +1,7 @@
 // Minimal modal dialogs (replacing options.fxml / SimpleLayout.fxml).
 import type { App } from "./app";
 
-function modal(title: string, body: HTMLElement, onOk: () => void): void {
+function modal(title: string, body: HTMLElement, onOk: () => void, onCancel?: () => void): void {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   const box = document.createElement("div");
@@ -27,9 +27,15 @@ function modal(title: string, body: HTMLElement, onOk: () => void): void {
   overlay.append(box);
   document.body.append(overlay);
 
+  let settled = false;
   const close = () => {
     overlay.remove();
     document.removeEventListener("keydown", onKeyDown);
+    // 取消（含 Esc / 点遮罩）也要有回声，否则确认框的调用方永远等不到答复。
+    if (!settled) {
+      settled = true;
+      onCancel?.();
+    }
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape") close();
@@ -40,10 +46,21 @@ function modal(title: string, body: HTMLElement, onOk: () => void): void {
     if (e.target === overlay) close();
   };
   ok.onclick = () => {
+    settled = true;
     onOk();
     close();
   };
   (body.querySelector("input,select") as HTMLElement | null)?.focus();
+}
+
+/** 是/否确认框。用同一套 modal 样式，别退回 window.confirm——桌面版观感对不上。 */
+export function showConfirmDialog(title: string, message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const body = document.createElement("div");
+    body.className = "modal-row";
+    body.textContent = message;
+    modal(title, body, () => resolve(true), () => resolve(false));
+  });
 }
 
 function labeled(label: string, el: HTMLElement): HTMLElement {

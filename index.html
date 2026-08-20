@@ -191,6 +191,11 @@
         <div id="recognition-tools" class="tool-group context-tool-group" hidden>
           <span class="tool-label">核对</span>
           <button id="btn-recognize" data-context-control title="将识别结果与上传原图进行对照" hidden>原图对照</button>
+          <label id="recog-format-field" class="toolbar-select-field" data-context-control hidden>
+            <span class="sr-only">识别输出格式</span>
+            <select id="sel-recog-format" title="识别输出格式（切换不会重新识别）" aria-label="识别输出格式"></select>
+            <span class="select-chevron" aria-hidden="true">⌄</span>
+          </label>
           <label id="recog-view-field" class="toolbar-select-field" data-context-control hidden>
             <span class="sr-only">原图对照方式</span>
             <select id="sel-recog-view" title="原图对照方式" aria-label="原图对照方式">

@@ -4,6 +4,7 @@ export { binarize, rgbaToBinary, toGray, otsuThreshold } from "./preprocess";
 export { connectedComponents } from "./ccl";
 export { recognizeJianpu } from "./jianpu";
 export { toMusicXml } from "./musicxml";
+export { toPuText, keyNameOf } from "./topu";
 export type { OcrBackend } from "./ocr";
 export { nullOcr } from "./ocr";
 export { decodeToBinary } from "./decode";

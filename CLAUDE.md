@@ -34,6 +34,7 @@ npm run build && node abc-check.mjs                    # ABC→MusicXML 移植�
 npm run build && node xml-roundtrip.mjs                # MusicXML 导出回归（序列化往返 / 增量 patch / 版面）
 npm run build && node omr-export-check.mjs             # 同上，但底本取自真跑一遍 OMR 的识别原文
 npm run build && node abc-shot.mjs <abc> /tmp/abc.png  # 拖入 .abc 端到端渲染核对
+npm run build && node omr-pu-check.mjs                 # 识别→文本谱原文→回解析 逐项对拍
 ```
 
 `shot.mjs` 用 Playwright `channel: "msedge"` 驱动本地 Edge，serve `dist/`，加载后截图并
@@ -90,6 +91,9 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   回归 `node measure-all.mjs`、`node bench-lyrics.mjs`、`node check-gt.mjs`。
   篇中逐条记录了几何启发式的判据与反例（八度点/附点/减时线/衬词行/歌词标点/反复房/页眉著作者…），
   **动那些阈值前必看**——每条都是拿具体曲子换来的。
+  识别输出格式可选 `jpwabc`（默认）/ 番茄简谱 / 诗歌本文本谱（工具栏「核对」组下拉，持久化）：
+  内存里留着格式无关的 `RecognizedScore`，**换格式只重走 emitter，绝不重跑识别**；
+  文本谱那路是 `src/omr/topu.ts` 直出原文（不过 Score），回归 `node omr-pu-check.mjs`。
 - **[简谱纵向栅格](docs/实现/简谱纵向栅格.md)**（`src/layout/layout.ts`）——高音点/低音点、slur/tie、
   三连音、fermata、减时线、小节线高度共用的一把尺子（唯一常量 `jpStackGap`，墨迹到墨迹等距；
   musicpp 自己在这里并不等距），以及八度点按**墨迹**而非 advance 居中（`1` 在 PingFang 里偏 0.88px）。
