@@ -663,6 +663,8 @@ export class PuPainter {
         line.strokeColor = BLACK;
         line.strokeWidth = m.sustainWidth;
         root.add(line);
+        // 长音里换的和弦印在增时线上方（`- "hx:C/G"`），画法与音符上方那个一样
+        if (it.element.chord) this.paintChord(root, it.element.chord, x, base);
         this.paintSyllables(root, it, x, voice, pageIndex, lyricRight);
         continue;
       }
@@ -840,6 +842,18 @@ export class PuPainter {
     }
   }
 
+  /** 音符/增时线上方的和弦：与五线谱共用富文本分段（根音升降号用 SMuFL csym 字形、后缀上标）。 */
+  private paintChord(g: Group, chord: string, x: number, baseline: number): void {
+    const m = this.metrics;
+    const wordFont = new Font(m.fontFamily, m.annotationSize);
+    const musicFont = new Font("Bravura", m.annotationSize);
+    const segs = chordTextSegs(chord);
+    const grp = layoutHarmonySegs(segs, wordFont, musicFont, BLACK);
+    grp.x = x - harmonyWidth(segs, wordFont, musicFont) / 2;
+    grp.y = baseline + m.annotationY;
+    g.add(grp);
+  }
+
   private paintNote(
     root: Group,
     it: PlacedItem,
@@ -902,13 +916,7 @@ export class PuPainter {
 
     // 和弦：与五线谱共用富文本分段（根音升降号用 SMuFL csym 字形、后缀上标）
     if (note.chord) {
-      const wordFont = new Font(m.fontFamily, m.annotationSize);
-      const musicFont = new Font("Bravura", m.annotationSize);
-      const segs = chordTextSegs(note.chord);
-      const grp = layoutHarmonySegs(segs, wordFont, musicFont, BLACK);
-      grp.x = x - harmonyWidth(segs, wordFont, musicFont) / 2;
-      grp.y = baseline + m.annotationY;
-      g.add(grp);
+      this.paintChord(g, note.chord, x, baseline);
     } else if (note.annotation) {
       const font = new Font(m.fontFamily, m.annotationSize);
       const a = note.annotation;

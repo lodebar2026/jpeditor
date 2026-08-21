@@ -49,6 +49,10 @@ export interface JpNum {
   // 两音符之间的拍点上，故不能只表达「挂在某音符」。MusicXML 那路折成 <harmony><offset>（乘本音符
   // divisions）；文本谱 `"hx:"` 挂不住偏移，只能就近挂到本音符（有损）。
   chordOffset?: number;
+  // 同一音符时值内的**后续**和弦（长音上第二、第三拍各换一个和弦时用），offset 同上为 0..1 比例。
+  // 谱面上它们印在增时线上方，模型里没有独立元素可挂，只能连同 offset 挂回起头的那个音符。
+  // → MusicXML 各出一个带 <offset> 的 <harmony>；文本谱挂到对应的那条增时线上（`- "hx:…"`）。
+  extraChords?: { tok: string; offset: number }[];
   // 圆滑线/连音线（音符上方弧形 ⌒）。一个音符可同时是上一条的结束与下一条的开始，故各用布尔。
   slurStart?: boolean; // 圆滑线起点 → MusicXML <slur type="start">
   slurStop?: boolean;  // 圆滑线终点 → <slur type="stop">

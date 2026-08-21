@@ -602,11 +602,30 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 去连通阶段还原为 comps 里的独立连通块，这里天然一并检测。
   detectSlurs([...comps, ...arcComps], useRows, numH);
 
+  // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
+  // **必须排在歌词/和弦识别之前**：第一谱行的「上方带」（和弦所在）与页眉 ROI 在几何上是重叠的，
+  // 页眉里的调号 `1=C 4/4` 会一并落进和弦通道（OCR 常把它读成 `-C4`、`C4` 这类残片，
+  // 恰好是合法的「根音 + 数字」和弦，「为基督赢得城市」就凭空多出一个 C4）。
+  // 拿 header **已采纳**的字段区域当禁区交给 recognizeLyrics 剔，比在文法上猜可靠得多——
+  // det 框里那个真和弦 `Am` 不会被 header 采纳，故不在禁区里。
+  let title: string | undefined, credits: string[] | undefined;
+  let fifths = 0, tempo: number | undefined;
+  let beats = 4, beatType = 4;
+  let headerRegions: RecognizedScore["headerRegions"];
+  if (ocr.recognizeTexts && useRows.length) {
+    const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr);
+    title = h.title; credits = h.credits.length ? h.credits : undefined;
+    if (h.fifths !== undefined) fifths = h.fifths;
+    if (h.beats !== undefined && h.beatType !== undefined) { beats = h.beats; beatType = h.beatType; }
+    tempo = h.tempo;
+    headerRegions = h.regions.length ? h.regions : undefined;
+  }
+
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
   let lyricRegions: RecognizedScore["lyricRegions"];
   let chordRegions: RecognizedScore["chordRegions"];
   if (ocr.recognizeTexts) {
-    const lr = await recognizeLyrics(bin, comps, useRows, numH, ocr);
+    const lr = await recognizeLyrics(bin, comps, useRows, numH, ocr, headerRegions);
     lyricRegions = lr.lyrics.length ? lr.lyrics : undefined;
     chordRegions = lr.chords.length ? lr.chords : undefined;
   }
@@ -672,20 +691,6 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       if (cur.tieStop || cur.slurStop || prev.tieStart || prev.slurStart) continue; // 已有弧
       prev.tieStart = true; cur.tieStop = true;
     }
-  }
-
-  // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
-  let title: string | undefined, credits: string[] | undefined;
-  let fifths = 0, tempo: number | undefined;
-  let beats = 4, beatType = 4;
-  let headerRegions: RecognizedScore["headerRegions"];
-  if (ocr.recognizeTexts && useRows.length) {
-    const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr);
-    title = h.title; credits = h.credits.length ? h.credits : undefined;
-    if (h.fifths !== undefined) fifths = h.fifths;
-    if (h.beats !== undefined && h.beatType !== undefined) { beats = h.beats; beatType = h.beatType; }
-    tempo = h.tempo;
-    headerRegions = h.regions.length ? h.regions : undefined;
   }
 
   const dotDiam = dotSizes.length ? median(dotSizes) : undefined;

@@ -264,7 +264,21 @@ export function toPuText(
         if (n.chord) tb.push(`"hx:${n.chord}"`);
         if (n.sectionMark) tb.push(`"${n.sectionMark}"`);
         tb.push(")".repeat(closes.get(noteIdx) ?? 0)); // 收弧要在增时线之前，弧才止于本音符
-        tb.push(" -".repeat(Math.max(0, n.augment)));
+        // 增时线：长音里逐拍换的和弦（extraChords）就印在它们上方，按拍位挂到对应那一条上。
+        // offset 是占本音符**总时值**的比例，折成拍数后减掉音符本体占的拍，就是第几条增时线。
+        const extras = n.extraChords ?? [];
+        if (n.augment > 0) {
+          const baseBeats = (1 / Math.pow(2, n.div)) * (n.dot > 0 ? 1.5 : 1);
+          const total = baseBeats + n.augment;
+          for (let k = 1; k <= n.augment; k++) {
+            tb.push(" -");
+            const hit = extras.find((e) => {
+              const idx = Math.round(e.offset * total - baseBeats) + 1;
+              return Math.min(Math.max(idx, 1), n.augment) === k;
+            });
+            if (hit) tb.push(`"hx:${hit.tok}"`);
+          }
+        }
         noteIdx += 1;
       }
       const endingStop = [...notes].reverse().find((n) => n.endingStop !== undefined)?.endingStop;

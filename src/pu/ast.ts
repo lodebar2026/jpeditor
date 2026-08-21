@@ -112,6 +112,8 @@ export interface SustainElement {
   lyricAnchor: boolean;
   ornaments: Ornament[];
   annotation?: string;
+  /** 增时线上方的和弦（`- "hx:C/G"`）：长音里逐拍换和弦时，后面几个就印在增时线上。 */
+  chord?: string;
   code: string;
   source: SourceSpan;
 }

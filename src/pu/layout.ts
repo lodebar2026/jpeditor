@@ -379,6 +379,7 @@ function voiceHeadroom(voice: ScoreLine, m: PuMetrics): number {
   }
   for (const el of voice.elements) {
     if (el.kind === "note" && (el.chord || el.annotation)) consider(m.annotationY);
+    if (el.kind === "sustain" && el.chord) consider(m.annotationY); // 增时线上的和弦同样要留头顶
     if (el.kind === "note" || el.kind === "sustain" || el.kind === "barline") {
       for (const orn of el.ornaments) {
         if (orn.name === "hx") consider(-m.digitInkHeight * 1.05);

@@ -347,6 +347,9 @@ function fillLeadingVerses(staff: StaffRow[]): void {
  *  （识别模式按原位/原字号叠加）。staff 为乐谱行(按出现顺序)，comps 为全图连通块。 */
 export async function recognizeLyrics(
   bin: Binary, comps: Component[], staff: StaffRow[], numH: number, ocr: OcrBackend,
+  /** 页眉里**已被采纳**的字段区域（标题/词曲/调号/速度/拍号）。第一谱行的上方带与页眉 ROI
+   *  几何上重叠，落在这些框里的块一律不进和弦通道——见 jianpu.ts 那处说明。 */
+  headerRegions?: TextRegion[],
 ): Promise<{ lyrics: TextRegion[]; chords: TextRegion[] }> {
   const regions: TextRegion[] = [];
   if (!ocr.recognizeTexts || !staff.length) return { lyrics: regions, chords: [] };
@@ -647,13 +650,22 @@ export async function recognizeLyrics(
     const isChordChunk = chordKeys.has(key) || (chunks[s].mark === true && !jumpSpan && isAnnotationLine(rawText));
     if (isChordChunk) {
       const by0 = Math.min(...cells.map((c) => c.y)), by1 = Math.max(...cells.map((c) => rbottom(c)));
+      const bx0 = Math.min(...cells.map((c) => c.x)), bx1 = Math.max(...cells.map((c) => rright(c)));
+      // 页眉字段（调号/标题/词曲…）落在上方带里：整块作废。`1=C 4/4` 的残片（`-C4`/`C4`）
+      // 恰好是合法的「根音 + 数字」，靠文法拦不住，靠几何一拦一个准。
+      const inHeader = (headerRegions ?? []).some((hr) => {
+        const h = hr.bbox;
+        return by0 < h.y + h.h && by1 > h.y && bx0 < h.x + h.w && bx1 > h.x;
+      });
       const srcXAt = (idx: number): number => {
         if (!textsPos) return cells[0].x;
         let acc = 0;
         for (const c of textsPos[s]) { if (acc >= idx) return fracToSrcX(c.xFrac); acc += c.ch.length; }
         return fracToSrcX(1); // 下标越界（记号收在行末）→ 该条右缘
       };
-      const cands = chordCandidates(rawText, srcXAt, (x0, x1) => ({ x: x0, y: by0, w: x1 - x0, h: by1 - by0 }));
+      const cands = inHeader
+        ? []
+        : chordCandidates(rawText, srcXAt, (x0, x1) => ({ x: x0, y: by0, w: x1 - x0, h: by1 - by0 }));
       if (cands.length) chordCands.set(rowIdx, [...(chordCands.get(rowIdx) ?? []), ...cands]);
     }
     if (chunks[s].mark) continue; // 只为提段落词而 rec 的块：不参与歌词装配
@@ -805,7 +817,7 @@ export async function recognizeLyrics(
     const bars = staff.reduce((a, r) => a + r.barlineXs.length, 0);
     const chordN = staff.reduce((a, r) => a + r.nums.filter((n) => n.chord).length, 0);
     if (bars >= 4 && chordN < bars * 0.4) {
-      for (const r of staff) for (const n of r.nums) { delete n.chord; delete n.chordOffset; }
+      for (const r of staff) for (const n of r.nums) { delete n.chord; delete n.chordOffset; delete n.extraChords; }
       chordRegions.length = 0;
     }
   }

@@ -162,7 +162,9 @@ const PRINT: PuMetrics = {
   stepPerDot: 12.5,
   accidentalWidth: 9,
   minSqueeze: 0.55,
-  justify: false, // 番茄原版短行就是短的，不做两端对齐
+  // 两端对齐：番茄**原版**其实短行就是短的，这里刻意背离——短行留一大截白比排得散更难看，
+  // 且本应用的 OMR 识别结果常出短行。末行仍按 justifyMinFill 保护（太短就不拉）。
+  justify: true,
   continuous: true, // 「原版」是一张连续长图，不是 A4 分页
   continuousSideMargin: 96,
   maxStretch: 3,

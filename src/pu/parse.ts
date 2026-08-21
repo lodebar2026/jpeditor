@@ -212,8 +212,11 @@ type Attachable = NoteElement | SustainElement | BarlineElement;
 function applyQuoted(target: Attachable, q: QuotedMeaning): void {
   if (q.meter !== undefined && target.kind === "barline") target.temporaryMeter = q.meter;
   if (q.annotation !== undefined) target.annotation = q.annotation;
+  // 和弦既可挂音符，也可挂增时线——长音里第二、三拍换和弦时，谱面就把它印在增时线上方。
+  if (q.chord !== undefined && (target.kind === "note" || target.kind === "sustain")) {
+    target.chord = q.chord;
+  }
   if (target.kind !== "note") return;
-  if (q.chord !== undefined) target.chord = q.chord;
   if (q.graceBefore) target.graceBefore.push(...q.graceBefore);
   if (q.graceAfter) target.graceAfter.push(...q.graceAfter);
 }

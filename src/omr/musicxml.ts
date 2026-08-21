@@ -333,8 +333,18 @@ export function toMusicXml(score: RecognizedScore): string {
     // 和弦符号：MusicXML 要求 <harmony> 紧接其所辖音符**之前**。chordOffset 是本音符时值内的
     // 比例（和弦印在两音符之间的拍点上时非 0），这里折成 divisions 交给 <offset>。
     const noteEls = notes.map((n) => {
+      const div = durationOf(n).divisions;
+      // 一个音符可带多个和弦（长音里逐拍换和弦），各自按 offset 折成 divisions；
+      // <harmony> 一律紧接所辖音符之前，拍位全交给 <offset> 表达。
+      // 长音里的后续和弦印在增时线上方，必落在**整拍**上：量化到拍，免得插值出的 1.89 拍
+      // 变成一个既不在第 2 拍也不在第 3 拍的 <offset>。主和弦那条沿用原来的按比例折算。
+      const extra = (n.extraChords ?? []).map((c) => ({
+        tok: c.tok,
+        div: Math.max(0, Math.min(Math.round(c.offset * div / QUARTER) * QUARTER, div - 1)),
+      }));
       const harm = n.chord
-        ? harmonyXml(n.chord, Math.round((n.chordOffset ?? 0) * durationOf(n).divisions))
+        ? [{ tok: n.chord, div: Math.round((n.chordOffset ?? 0) * div) }, ...extra]
+          .map((c) => harmonyXml(c.tok, c.div)).join("")
         : "";
       return harm + noteXml(n, score.fifths, arcs, beams.get(n));
     }).join("");

@@ -373,6 +373,8 @@ function partXml(
     const slurNumbers = assignSlurNumbers(line);
     const cursors = line.lyrics.map(() => 0);
     let lastNoteXmlIndex = -1;
+    let lastNoteQuarters = 0;   // 前一个音符本体占几个四分音符（增时线上的和弦据此算拍位）
+    let sustainSeen = 0;        // 自那个音符以来数到第几条增时线
 
     line.elements.forEach((el, index) => {
       if (el.kind === "beat-boundary" || el.kind === "inline-layer") return;
@@ -381,6 +383,14 @@ function partXml(
         // 增时线并进前一个音符：把它的 duration 加一拍
         if (lastNoteXmlIndex >= 0) {
           body[lastNoteXmlIndex] = extendDuration(body[lastNoteXmlIndex]!, divisions);
+        }
+        sustainSeen += 1;
+        // 增时线上方的和弦（长音里换和弦）：MusicXML 的 <harmony> 必须排在所辖音符**之前**，
+        // 拍位交给 <offset>——从那个音符起算，本体时值 + 前面已数过的增时线条数。
+        if (el.chord && lastNoteXmlIndex >= 0) {
+          const off = Math.round((lastNoteQuarters + sustainSeen - 1) * divisions);
+          body.splice(lastNoteXmlIndex, 0, harmonyXml(el.chord, off));
+          lastNoteXmlIndex += 1;
         }
         return;
       }
@@ -453,6 +463,8 @@ function partXml(
       const r = ratios[index];
       if (r) q = q.timesInt(r.num).divInt(r.den);
       lastNoteXmlIndex = body.length;
+      lastNoteQuarters = q.numerator / q.denominator;
+      sustainSeen = 0;
       hasNote = true;
       body.push(noteXml(el, q, ctx, index, line, slurNumbers, cursors, r));
       for (const g of el.graceAfter) body.push(graceXml(g, ctx));
