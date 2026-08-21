@@ -8,6 +8,7 @@
 //  2) 版面参数——一张写死的 A4 常量表，按每行实际小节数把行宽分掉。
 //
 // 底本自带 <defaults><scaling>（abc2xml 会输出）时整体跳过：作者已给的版面比我们合成的更贴切。
+import { child, children, fragment, insertOrdered } from "./xmldom";
 
 export interface LayoutOpts {
   /** 底本没有任何 <print> 分行凭据时，每行放几个小节。 */
@@ -26,23 +27,7 @@ const FIRST_SYSTEM_INDENT = 80;
 const MEASURE_PAD = 2;
 const NOTE_LEFT = 12;
 
-function children(el: Element, tag: string): Element[] {
-  return Array.from(el.children).filter((c) => c.tagName === tag);
-}
-function child(el: Element, tag: string): Element | null {
-  for (const c of Array.from(el.children)) if (c.tagName === tag) return c;
-  return null;
-}
-function insertOrdered(el: Element, node: Element, beforeTags: string[]): void {
-  for (const c of Array.from(el.children)) {
-    if (beforeTags.includes(c.tagName)) { el.insertBefore(node, c); return; }
-  }
-  el.append(node);
-}
-function frag(doc: Document, xml: string): Element {
-  const d = new DOMParser().parseFromString(`<r>${xml}</r>`, "application/xml");
-  return doc.importNode(d.documentElement.firstElementChild!, true) as Element;
-}
+const frag = (doc: Document, xml: string): Element => fragment(doc, xml, "版面片段");
 const round1 = (v: number) => String(Math.round(v * 10) / 10);
 
 /** 标题基线（从页面**底边**往上量，见 layoutCredits 的说明）。 */

@@ -5,6 +5,10 @@ import { rright } from "./types";
 // 简谱数字→音高拼写：与 MusicXML 导出（score/musicxmlout.ts）共用同一份换算，见该文件说明。
 import { jpPitch } from "../score/jppitch";
 import { harmonyXml } from "../score/harmonyxml";
+import {
+  barlineXml, beamXml as beamElementsXml, creditWordsXml, escapeXml, lyricElementXml,
+  scorePartXml, workXml as workElementXml, wrapPartwise,
+} from "../score/xmlutil";
 
 /** 数字音符 → {step, alter, octave(科学记号)}。可动 do：数字 1=主音，按调号求该音级的升降。 */
 function pitchOf(num: JpNum, fifths: number): { step: string; alter: number; octave: number } {
@@ -44,8 +48,6 @@ function durationOf(num: JpNum): { type: string; divisions: number; dots: number
   return { divisions, ...noteTypeDots(divisions) };
 }
 
-const escapeXml = (s: string) => s.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"));
-
 // 歌词 <lyric number="i"><text>字</text></lyric>，按 verse 索引。下游 score/musicxml.ts 导入器接收。
 function lyricsXml(num: JpNum): string {
   if (!num.lyrics) return "";
@@ -53,7 +55,7 @@ function lyricsXml(num: JpNum): string {
   for (let v = 0; v < num.lyrics.length; v++) {
     const t = num.lyrics[v];
     if (!t) continue;
-    out += `<lyric number="${v + 1}"><syllabic>single</syllabic><text>${escapeXml(t)}</text></lyric>`;
+    out += lyricElementXml(String(v + 1), t);
   }
   return out;
 }
@@ -202,11 +204,7 @@ function beamsOfMeasure(notes: JpNum[], beatDiv: number): Map<JpNum, Map<number,
   return out;
 }
 
-function beamXml(beams: Map<number, string> | undefined): string {
-  if (!beams) return "";
-  return [...beams.entries()].sort((a, b) => a[0] - b[0])
-    .map(([lv, v]) => `<beam number="${lv}">${v}</beam>`).join("");
-}
+const beamXml = beamElementsXml;
 
 // MusicXML 3.0 的 note 子元素顺序：(pitch|rest), duration, tie*, voice?, type?, dot*,
 // time-modification?, …, beam*, notations*, lyric*。改这里务必守住这个顺序。
@@ -265,16 +263,12 @@ function structuralBarlineXml(notes: JpNum[], location: "left" | "right"): strin
     const ending = notes.find((n) => n.endingStart !== undefined)?.endingStart;
     const repeat = notes.some((n) => n.repeatForward);
     if (ending === undefined && !repeat) return "";
-    return `<barline location="left">${repeat ? "<bar-style>heavy-light</bar-style>" : ""}` +
-      `${ending !== undefined ? `<ending number="${ending}" type="start"/>` : ""}` +
-      `${repeat ? "<repeat direction=\"forward\"/>" : ""}</barline>`;
+    return barlineXml("left", { style: repeat ? "heavy-light" : null, ending: String(ending ?? ""), repeat });
   }
   const ending = [...notes].reverse().find((n) => n.endingStop !== undefined)?.endingStop;
   const repeat = notes.some((n) => n.repeatBackward);
   if (ending === undefined && !repeat) return "";
-  return `<barline location="right">${repeat ? "<bar-style>light-heavy</bar-style>" : ""}` +
-    `${ending !== undefined ? `<ending number="${ending}" type="stop"/>` : ""}` +
-    `${repeat ? "<repeat direction=\"backward\"/>" : ""}</barline>`;
+  return barlineXml("right", { style: repeat ? "light-heavy" : null, ending: String(ending ?? ""), repeat });
 }
 
 export function toMusicXml(score: RecognizedScore): string {
@@ -353,15 +347,12 @@ export function toMusicXml(score: RecognizedScore): string {
     return `<measure number="${mi}">${printEl}${attrs}${leftBar}${tempoEl}${markEl}${noteEls}${jumpEl}${rightBar}</measure>`;
   }).join("");
 
-  const workXml = score.title ? `<work><work-title>${escapeXml(score.title)}</work-title></work>` : "";
+  const workXml = workElementXml(score.title);
   // 著作者整行（作词：…/作曲：…）作为 credit；下游 jpscore 据此拼 WordsByAndMusicBy。
-  const creditsXml = (score.credits ?? [])
-    .map((c) => `<credit page="1"><credit-words>${escapeXml(c)}</credit-words></credit>`).join("");
+  const creditsXml = (score.credits ?? []).map((c) => creditWordsXml(c)).join("");
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
-<score-partwise version="3.0">
-${workXml}${creditsXml}<part-list><score-part id="P1"><part-name print-object="no"></part-name></score-part></part-list>
-<part id="P1">${measuresXml}</part>
-</score-partwise>`;
+  return wrapPartwise({
+    work: workXml, credits: creditsXml, partList: scorePartXml("P1"),
+    body: `<part id="P1">${measuresXml}</part>`,
+  });
 }

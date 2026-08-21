@@ -21,6 +21,10 @@ import {
   jpSpelling, makeNoteXml, noteTypeOf, pairSlurTies, type SlurTieMap,
 } from "./musicxmlout";
 import { Chord, Measure, Note, Score } from "./score";
+import { child, children, fragment as xmlFragment, insertOrdered, setText } from "./xmldom";
+import { durationTicks, lyricElementXml } from "./xmlutil";
+
+const fragment = (doc: Document, xml: string): Element => xmlFragment(doc, xml, "patch 片段");
 
 export interface PatchResult {
   xml: string;
@@ -95,34 +99,6 @@ function alignWithEdits(a: string[], b: string[]): Array<[number, number]> {
   return out.sort((x, y) => x[0] - y[0]);
 }
 
-// ---------------- DOM 小工具 ----------------
-function child(el: Element, tag: string): Element | null {
-  for (const c of Array.from(el.children)) if (c.tagName === tag) return c;
-  return null;
-}
-function children(el: Element, tag: string): Element[] {
-  return Array.from(el.children).filter((c) => c.tagName === tag);
-}
-function setText(el: Element, tag: string, text: string): boolean {
-  const c = child(el, tag);
-  if (!c) return false;
-  if (c.textContent === text) return false;
-  c.textContent = text;
-  return true;
-}
-/** 在 el 内部、位于 beforeTags 里最先出现的那个子元素之前插入（维持 MusicXML 的元素顺序）。 */
-function insertOrdered(el: Element, node: Element, beforeTags: string[]): void {
-  for (const c of Array.from(el.children)) {
-    if (beforeTags.includes(c.tagName)) { el.insertBefore(node, c); return; }
-  }
-  el.append(node);
-}
-function fragment(doc: Document, xml: string): Element {
-  const d = new DOMParser().parseFromString(`<r>${xml}</r>`, "application/xml");
-  const err = d.querySelector("parsererror");
-  if (err) throw new Error("patch 片段解析失败: " + err.textContent);
-  return doc.importNode(d.documentElement.firstElementChild!, true) as Element;
-}
 
 /** 底本每个 <measure> 里的 <note> 按和弦分组（<chord/> 从属音归前一组，grace 跳过，与
  *  musicxml.ts::onNote 的取舍一致），得到与 Score 的 Chord 序严格对应的结构。 */
@@ -181,7 +157,7 @@ function patchPitch(noteEl: Element, ch: Chord, nt: Note, fifths: number): numbe
 
 function patchDuration(noteEl: Element, ch: Chord, divisions: number): number {
   const d = ch.duration ?? new Fraction(1);
-  const dur = Math.max(1, Math.round(d.numerator * divisions / d.denominator));
+  const dur = durationTicks(d, divisions, "MusicXML patch");
   const tp = noteTypeOf(ch);
   let n = 0;
   if (setText(noteEl, "duration", String(dur))) n++;
@@ -213,14 +189,9 @@ function patchLyrics(noteEl: Element, nt: Note): number {
   for (const l of sorted) {
     if (!l.text.length) continue;
     const num = l.refrain ? "chorus" : String(l.number);
-    noteEl.append(fragment(noteEl.ownerDocument,
-      `<lyric number="${num}"><syllabic>single</syllabic><text>${escapeText(l.text)}</text></lyric>`));
+    noteEl.append(fragment(noteEl.ownerDocument, lyricElementXml(num, l.text)));
   }
   return 1;
-}
-
-function escapeText(s: string): string {
-  return s.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"));
 }
 
 /** notations 里本模块负责的四类（tied/slur/tuplet/fermata）；其余子元素（articulations、

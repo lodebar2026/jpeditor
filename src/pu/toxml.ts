@@ -7,9 +7,13 @@
 // 音高与时值的换算复用主谱面那套（spellPitch / typeOfDuration / MusicCommon），
 // 两条路得出的结果才对得上。
 
-import { Fraction } from "../common/fraction";
+import { Fraction, lcm } from "../common/fraction";
 import { Key, MusicCommon } from "../score/score";
-import { escapeXml, spellPitch, typeOfDuration } from "../score/musicxmlout";
+import { spellPitch, typeOfDuration } from "../score/musicxmlout";
+import {
+  creditWordsXml, durationTicks, escapeAttr, escapeXml, lyricElementXml, scorePartXml,
+  workXml as workElementXml, wrapPartwise,
+} from "../score/xmlutil";
 import { harmonyXml } from "../score/harmonyxml";
 import type {
   BarlineElement,
@@ -22,8 +26,6 @@ import type {
   ScoreLine,
 } from "./ast";
 import { DYNAMICS, TERMS } from "./glyph";
-
-const escapeAttr = (s: string): string => escapeXml(s).replace(/"/g, "&quot;");
 
 /** 音符时值（以四分音符为 1）。多连音比例由调用方另乘。 */
 function noteQuarters(el: NoteElement | { duration: number; dots: number }): Fraction {
@@ -106,10 +108,6 @@ function voiceNumbers(song: PuSong): number[] {
 
 /** 全曲扫一遍定 divisions：所有音符时值分母的最小公倍数。 */
 function collectDivisions(song: PuSong): number {
-  const lcm = (a: number, b: number): number => {
-    const g = (x: number, y: number): number => (y === 0 ? x : g(y, x % y));
-    return (a / g(a, b)) * b;
-  };
   let div = 1;
   for (const voice of voiceNumbers(song)) {
     for (const line of linesOfVoice(song, voice)) {
@@ -282,34 +280,27 @@ export function puToMusicXml(doc: PuDoc, options: ToXmlOptions = {}): string {
 
   const partList = voices
     .map((v, pi) => {
-      const caption = firstCaption(song, v);
-      const name = caption
-        ? `<part-name>${escapeXml(caption)}</part-name>`
-        : `<part-name print-object="no"></part-name>`;
-      return `<score-part id="P${pi + 1}">${name}</score-part>`;
+      return scorePartXml(`P${pi + 1}`, firstCaption(song, v));
     })
     .join("");
 
   const title = meta.titles[0] ?? "";
-  const workXml = title ? `<work><work-title>${escapeXml(title)}</work-title></work>` : "";
+  const workXml = workElementXml(title);
   const credits: string[] = [];
   meta.titles.forEach((t, i) => {
     if (i === 0) return;
-    credits.push(`<credit page="1"><credit-type>subtitle</credit-type><credit-words>${escapeXml(t)}</credit-words></credit>`);
+    credits.push(creditWordsXml(t, 1, "subtitle"));
   });
   for (const a of [...meta.authors, ...meta.topRight]) {
-    if (a) credits.push(`<credit page="1"><credit-type>composer</credit-type><credit-words>${escapeXml(a)}</credit-words></credit>`);
+    if (a) credits.push(creditWordsXml(a, 1, "composer"));
   }
   for (const a of meta.topLeft) {
-    if (a) credits.push(`<credit page="1"><credit-type>lyricist</credit-type><credit-words>${escapeXml(a)}</credit-words></credit>`);
+    if (a) credits.push(creditWordsXml(a, 1, "lyricist"));
   }
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
-<score-partwise version="3.0">
-${workXml}${credits.join("")}<part-list>${partList}</part-list>
-${partsXml}
-</score-partwise>`;
+  return wrapPartwise({
+    work: workXml, credits: credits.join(""), partList, body: partsXml,
+  });
 }
 
 function firstCaption(song: PuSong, voice: number): string | undefined {
@@ -512,7 +503,7 @@ function noteXml(
   cursors: number[],
   ratio: { num: number; den: number } | undefined,
 ): string {
-  const duration = Math.max(1, Math.round((quarters.numerator * ctx.divisions) / quarters.denominator));
+  const duration = durationTicks(quarters, ctx.divisions, "文本谱导出 MusicXML");
   const { type, dots } = typeOfDuration(noteQuarters(el));
 
   let head: string;
@@ -542,8 +533,7 @@ function noteXml(
       if (!syl || syl.text.length === 0) return;
       const text = syl.text + (syl.trailingPunctuation ?? "");
       for (let v = lyricLine.verseFrom; v <= lyricLine.verseTo; v += 1) {
-        lyricXml += `<lyric number="${v}"><syllabic>single</syllabic>` +
-          `<text>${escapeXml(text)}</text></lyric>`;
+        lyricXml += lyricElementXml(String(v), text);
       }
     });
   }

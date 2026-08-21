@@ -2,9 +2,8 @@
 //
 // 和弦在本项目里一律以**字符串**形态流转（`"Cm"` / `"B♭7"` / `"Fm/A♭"` / `"Cadd9"`），
 // 排版走 layout/harmony.ts 的 chordTextSegs，导出走这里。两边都认 ASCII 与全角升降号。
-import { escapeXml } from "./musicxmlout";
+import { escapeAttr, escapeXml } from "./xmlutil";
 
-const escapeAttr = (s: string): string => escapeXml(s).replace(/"/g, "&quot;");
 
 const alterOf = (acc: string): number => (acc === "#" || acc === "♯" ? 1 : acc === "b" || acc === "♭" ? -1 : 0);
 

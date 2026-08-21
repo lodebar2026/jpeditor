@@ -12,7 +12,7 @@
 //  (c) fifths 要推断，不能照抄 m.key.fifths——jpwimport 从不给 Measure.key 赋值。
 //  (d) <type>/<dot> 必须与导入端 parseDuration 互逆（含 dot=1 && beats>1 → beats*=1.5）。
 
-import { Fraction } from "../common/fraction";
+import { Fraction, lcm } from "../common/fraction";
 import { jpPitch } from "./jppitch";
 import {
   BarlineEntry,
@@ -25,6 +25,10 @@ import {
   PlaySpecKind,
   Score,
 } from "./score";
+import {
+  barlineXml, beamXml as beamElementsXml, durationTicks, escapeAttr, escapeXml,
+  lyricElementXml, scorePartXml, workXml as workElementXml, wrapPartwise,
+} from "./xmlutil";
 
 export interface MusicXmlOutOptions {
   /** 强制调号；默认按 §(c) 推断。 */
@@ -35,17 +39,7 @@ export interface MusicXmlOutOptions {
 
 const PITCH_MAP: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 
-export const escapeXml = (s: string) =>
-  s.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"));
-const escapeAttr = (s: string) => escapeXml(s).replace(/"/g, "&quot;");
-
 // ---------------- (a) divisions ----------------
-function gcd(a: number, b: number): number {
-  let x = Math.abs(a), y = Math.abs(b);
-  while (y) { const t = x % y; x = y; y = t; }
-  return x || 1;
-}
-
 /** 全曲 Chord.duration 分母的最小公倍数：三连音得 3、减时线得 2^n、附点得 2。 */
 export function collectDivisions(score: Score): number {
   let div = 1;
@@ -54,7 +48,7 @@ export function collectDivisions(score: Score): number {
       for (const e of m.entries) {
         if (!(e instanceof Chord) || !e.duration) continue;
         const den = e.duration.denominator;
-        div = (div / gcd(div, den)) * den;
+        div = lcm(div, den);
       }
     }
   }
@@ -336,12 +330,7 @@ export interface OutCtx {
 }
 
 function durationOf(ch: Chord, ctx: OutCtx): number {
-  const d = ch.duration ?? new Fraction(1);
-  const num = d.numerator * ctx.divisions;
-  if (num % d.denominator !== 0) {
-    console.warn(`MusicXML 导出：时值 ${d} 无法被 divisions=${ctx.divisions} 整除`);
-  }
-  return Math.max(1, Math.round(num / d.denominator));
+  return durationTicks(ch.duration ?? new Fraction(1), ctx.divisions);
 }
 
 /** nominal（按 type/dot 该有的时值）÷ 实际时值 ≠ 1 → 三连音等，需要 <time-modification>。 */
@@ -389,18 +378,14 @@ export function lyricsXml(nt: Note): string {
     if (!l.text.length) continue;
     if (l.number > 9) console.warn(`MusicXML 导出：verse ${l.number} > 9，导入端只读末位数字`);
     const num = l.refrain ? "chorus" : String(l.number);
-    out += `<lyric number="${escapeAttr(num)}"><syllabic>single</syllabic>` +
-      `<text>${escapeXml(l.text)}</text></lyric>`;
+    out += lyricElementXml(num, l.text);
   }
   return out;
 }
 
 function beamXml(ch: Chord, ctx: OutCtx): string {
   if (ch.rest) return ""; // 休止符没有符干，挂不了 <beam>
-  const st = ctx.beams?.get(ch);
-  if (!st) return "";
-  return [...st.entries()].sort((a, b) => a[0] - b[0])
-    .map(([lv, v]) => `<beam number="${lv}">${v}</beam>`).join("");
+  return beamElementsXml(ctx.beams?.get(ch));
 }
 
 /** 单个 <note>。idx>0 表示同和弦的第 2+ 个音（写 <chord/>）。 */
@@ -569,7 +554,7 @@ export function deriveVoltas(score: Score): Map<number, Volta> {
   return out;
 }
 
-function barlineXml(
+function measureBarlineXml(
   m: Measure, loc: "left" | "right", prev: Measure | null, volta: Volta | undefined,
 ): string {
   if (loc === "left") {
@@ -577,10 +562,7 @@ function barlineXml(
     // 房号：Measure 上有就用（MusicXML 来源），否则用 .Repeat 反推的（jpw 来源）。
     const ending = m.endingLeft ? endingAttr(m.endingNum) : volta?.start ?? null;
     const style = effectiveLeftBarline(m) ?? (rep ? "heavy-light" : null);
-    if (!style && !rep && ending === null) return "";
-    return `<barline location="left">${style ? `<bar-style>${style}</bar-style>` : ""}` +
-      `${ending !== null ? `<ending number="${escapeAttr(ending)}" type="start"/>` : ""}` +
-      `${rep ? `<repeat direction="forward"/>` : ""}</barline>`;
+    return barlineXml("left", { style, ending, repeat: rep });
   }
   // 房末（最后一房除外）必须回头，否则外部软件走不出正确的演唱顺序。
   const rep = hasRepeatBackward(m) || !!volta?.repeatBack;
@@ -589,10 +571,11 @@ function barlineXml(
     : (m.endingRight ? endingAttr(m.endingNum) : volta?.start ?? endingAttr(m.endingNum));
   let style = effectiveBarline(m);
   if (!style && rep) style = "light-heavy";
-  if (!style && !rep && endType === null) return "";
-  return `<barline location="right">${style ? `<bar-style>${style}</bar-style>` : ""}` +
-    `${endType !== null ? `<ending number="${escapeAttr(ending ?? "")}" type="${endType}"/>` : ""}` +
-    `${rep ? `<repeat direction="backward"/>` : ""}</barline>`;
+  return barlineXml("right", {
+    style, repeat: rep,
+    ending: endType === null ? null : (ending ?? ""),
+    endingType: endType ?? undefined,
+  });
 }
 
 const JUMP_ATTR: Record<PlaySpecKind, (v: unknown) => string> = {
@@ -692,7 +675,7 @@ function measureXml(
       // 位置链有空档就补休止：导入端不处理 <forward>，不补会让后续音符整体前移。
       if (ch.position.compareTo(expect) > 0) {
         const gap = ch.position.minus(expect);
-        const gapDur = Math.max(1, Math.round(gap.numerator * ctx.divisions / gap.denominator));
+        const gapDur = durationTicks(gap, ctx.divisions);
         const tp = typeOfDuration(gap);
         body += `<note><rest/><duration>${gapDur}</duration><voice>1</voice>` +
           `<type>${tp.type}</type>${"<dot/>".repeat(tp.dots)}</note>`;
@@ -704,8 +687,8 @@ function measureXml(
   }
   flush(null);
 
-  return `<measure number="${mid + 1}">${printEl}${attrs}${barlineXml(m, "left", prev, volta)}` +
-    `${tempoEl}${markEl}${body}${barlineXml(m, "right", null, volta)}</measure>`;
+  return `<measure number="${mid + 1}">${printEl}${attrs}${measureBarlineXml(m, "left", prev, volta)}` +
+    `${tempoEl}${markEl}${body}${measureBarlineXml(m, "right", null, volta)}</measure>`;
 }
 
 // ---------------- top level ----------------
@@ -735,25 +718,18 @@ export function scoreToMusicXml(score: Score, opt: MusicXmlOutOptions = {}): str
     return `<part id="P${pi + 1}">${ms}</part>`;
   }).join("");
 
-  const partList = score.parts.map((_, pi) =>
-    // 不给乐器名：Dorico/MuseScore 会把 <part-name> 当乐器名显示在谱前，简谱没有这个概念。
-    // 空内容 + print-object="no"，两种软件都不显示。
-    `<score-part id="P${pi + 1}"><part-name print-object="no"></part-name></score-part>`,
-  ).join("");
+  const partList = score.parts.map((_, pi) => scorePartXml(`P${pi + 1}`)).join("");
 
-  const workXml = score.title ? `<work><work-title>${escapeXml(score.title)}</work-title></work>` : "";
+  const workXml = workElementXml(score.title);
   const identXml = score.creator.size
     ? `<identification>${[...score.creator].map(([k, v]) =>
         `<creator type="${escapeAttr(k)}">${escapeXml(v)}</creator>`).join("")}</identification>`
     : "";
   const creditsXml = score.credit.map(creditXml).join("");
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
-<score-partwise version="3.0">
-${workXml}${identXml}${creditsXml}<part-list>${partList}</part-list>
-${partsXml}
-</score-partwise>`;
+  return wrapPartwise({
+    work: workXml, identification: identXml, credits: creditsXml, partList, body: partsXml,
+  });
 }
 
 /** 供 patch 复用：不带 Score 上下文地生成一个 <note> 片段。 */

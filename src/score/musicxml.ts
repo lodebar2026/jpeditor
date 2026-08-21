@@ -20,20 +20,14 @@ import {
   StartStopDiscontinue,
   TimePosition,
 } from "./score";
+import { child, childText, children } from "./xmldom";
 
 // ---------------- DOM helpers ----------------
-function elems(parent: Element, tag: string): Element[] {
-  const out: Element[] = [];
-  for (const n of Array.from(parent.children)) if (n.tagName === tag) out.push(n);
-  return out;
-}
-function elem(parent: Element, tag: string): Element | null {
-  for (const n of Array.from(parent.children)) if (n.tagName === tag) return n;
-  return null;
-}
+// 通用的取子元素工具在 ./xmldom.ts；这里只保留本模块特有的取值语义（数字/默认值）。
+const elems = children;
+const elem = child;
 function txt(parent: Element, tag: string): string | null {
-  const e = elem(parent, tag);
-  return e ? (e.textContent ?? "") : null;
+  return childText(parent, tag);
 }
 function normText(s: string | null): string | null {
   const t = s?.trim() ?? "";
