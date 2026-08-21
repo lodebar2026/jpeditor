@@ -5,6 +5,8 @@ import { rright } from "./types";
 // 简谱数字→音高拼写：与 MusicXML 导出（score/musicxmlout.ts）共用同一份换算，见该文件说明。
 import { jpPitch } from "../score/jppitch";
 import { harmonyXml } from "../score/harmonyxml";
+import { typeOfDuration } from "../score/musicxmlout";
+import { Fraction } from "../common/fraction";
 import {
   barlineXml, beamXml as beamElementsXml, creditWordsXml, escapeXml, lyricElementXml,
   scorePartXml, workXml as workElementXml, wrapPartwise,
@@ -22,23 +24,12 @@ function pitchOf(num: JpNum, fifths: number): { step: string; alter: number; oct
 // 被 round 成 1，时值凭空翻倍；16 能精确表示到 64 分附点。<divisions> 直接用这个常量输出。
 const QUARTER = 16;
 
-// 由总时值(divisions)反推 MusicXML 的 <type> + 附点数。**附点不只来自简谱附点**：增时线把音延长到
-// 3 拍(如 3/4 的 5--)即「附点二分」、6 拍即「附点全」——必须吐成 type=half/whole + <dot/>，否则
-// 下游导入器(score/musicxml.ts::parseDuration)只按 type 定 beats(half→2)，会把 5-- 还原成 5-(少一根
-// 增时线)。故这里据时值匹配 基础音符×{1, ×1.5(单附点), ×1.75(双附点)}。
-function noteTypeDots(divisions: number): { type: string; dots: number } {
-  const q = divisions / QUARTER; // 折算成"四分音符数"
-  const bases: Array<[string, number]> = [
-    ["whole", 4], ["half", 2], ["quarter", 1], ["eighth", 0.5], ["16th", 0.25], ["32nd", 0.125],
-  ];
-  for (const [type, val] of bases) {
-    if (Math.abs(q - val) < 1e-6) return { type, dots: 0 };
-    if (Math.abs(q - val * 1.5) < 1e-6) return { type, dots: 1 };
-    if (Math.abs(q - val * 1.75) < 1e-6) return { type, dots: 2 };
-  }
-  for (const [type, val] of bases) if (q >= val - 1e-6) return { type, dots: 0 }; // 非规整时值：取不超过的最大基础音符
-  return { type: "16th", dots: 0 };
-}
+// 时值 → <type> + 附点数：与 Score 那路（score/musicxmlout.ts::typeOfDuration）共用同一份实现。
+// **附点不只来自简谱附点**：增时线把音延长到 3 拍(如 3/4 的 5--)即「附点二分」、6 拍即「附点全」
+// ——必须吐成 type=half/whole + <dot/>，否则下游导入器(score/musicxml.ts::parseDuration)只按 type
+// 定 beats(half→2)，会把 5-- 还原成 5-(少一根增时线)。
+const noteTypeDots = (divisions: number): { type: string; dots: number } =>
+  typeOfDuration(new Fraction(divisions, QUARTER));
 
 function durationOf(num: JpNum): { type: string; divisions: number; dots: number } {
   const base = QUARTER / Math.pow(2, num.div); // 下划线每条减半
@@ -263,12 +254,20 @@ function structuralBarlineXml(notes: JpNum[], location: "left" | "right"): strin
     const ending = notes.find((n) => n.endingStart !== undefined)?.endingStart;
     const repeat = notes.some((n) => n.repeatForward);
     if (ending === undefined && !repeat) return "";
-    return barlineXml("left", { style: repeat ? "heavy-light" : null, ending: String(ending ?? ""), repeat });
+    return barlineXml("left", {
+      style: repeat ? "heavy-light" : null,
+      ending: ending === undefined ? null : String(ending),
+      repeat,
+    });
   }
   const ending = [...notes].reverse().find((n) => n.endingStop !== undefined)?.endingStop;
   const repeat = notes.some((n) => n.repeatBackward);
   if (ending === undefined && !repeat) return "";
-  return barlineXml("right", { style: repeat ? "light-heavy" : null, ending: String(ending ?? ""), repeat });
+  return barlineXml("right", {
+    style: repeat ? "light-heavy" : null,
+    ending: ending === undefined ? null : String(ending),
+    repeat,
+  });
 }
 
 export function toMusicXml(score: RecognizedScore): string {

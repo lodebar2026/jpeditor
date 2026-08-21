@@ -28,8 +28,9 @@ import {
   Score,
   Time,
 } from "./score";
+import { applyJpPitch, type JpKeyState } from "./jppitch";
 
-class JpState {
+class JpState implements JpKeyState {
   inTuplet = false;
   alter: Record<string, number> = {};
   basePitch = 0;
@@ -38,27 +39,6 @@ class JpState {
 
 function unescape(str: string): string {
   return str.replace(/\\n/g, "\n");
-}
-
-function calcPitch(stat: JpState, nt: Note): void {
-  if (nt.number === "0") {
-    nt.pitch = 0;
-    nt.rest = true;
-    nt.chord.rest = true;
-    return;
-  }
-  let res = stat.basePitch;
-  res += nt.jpOctave * 12;
-  res += MusicCommon.stepToPitch(nt.number);
-  nt.step = MusicCommon.jpToStep(nt.number, stat.fifths);
-  switch (nt.jpAlter) {
-    case " ": break;
-    case "b": stat.alter[nt.number] = -1; break;
-    case "n": delete stat.alter[nt.number]; break;
-    case "#": stat.alter[nt.number] = 1; break;
-  }
-  res += stat.alter[nt.number] ?? 0;
-  nt.pitch = res;
 }
 
 function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
@@ -111,7 +91,7 @@ function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
       default: console.log(ch);
     }
   }
-  calcPitch(stat, nt);
+  applyJpPitch(stat, nt);
   let dur = new Fraction(res.beats);
   if (res.dot > 0) {
     dur = dur.timesInt(3);

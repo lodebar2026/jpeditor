@@ -1,13 +1,14 @@
 // 文本谱 AST → Score（本项目的乐谱模型）。
 //
 // `.jpwabc` 导出、MIDI、试听都以 Score 为输入，所以这条路是必需的。
-// 换算规则与 `.jpwabc` 的导入端同构（见 score/jpwimport.ts 的 makeChord/calcPitch），
+// 换算规则与 `.jpwabc` 的导入端同构（音高换算共用 score/jppitch.ts::applyJpPitch），
 // 两条路得出同一套 pitch/duration，MusicXML 与 MIDI 才对得上。
 //
 // **有损**：Score 装不下和弦符号、力度、多声部并排等文本谱特有的信息。
 // 需要完整保留时走 toxml.ts 的直出路径。
 
 import { Fraction } from "../common/fraction";
+import { applyJpPitch, type JpKeyState } from "../score/jppitch";
 import {
   BarStyle,
   BarlineEntry,
@@ -55,37 +56,6 @@ function alterOf(el: NoteElement): string {
   }
 }
 
-interface KeyState {
-  basePitch: number;
-  fifths: number;
-  alter: Record<string, number>;
-}
-
-/** 与 jpwimport.calcPitch 同构：调号基准 + 八度 + 唱名，叠加小节内延续的临时记号。 */
-function calcPitch(stat: KeyState, nt: Note): void {
-  if (nt.number === "0") {
-    nt.pitch = 0;
-    nt.rest = true;
-    nt.chord.rest = true;
-    return;
-  }
-  let res = stat.basePitch + nt.jpOctave * 12 + MusicCommon.stepToPitch(nt.number);
-  nt.step = MusicCommon.jpToStep(nt.number, stat.fifths);
-  switch (nt.jpAlter) {
-    case "b":
-      stat.alter[nt.number] = -1;
-      break;
-    case "n":
-      delete stat.alter[nt.number];
-      break;
-    case "#":
-      stat.alter[nt.number] = 1;
-      break;
-  }
-  res += stat.alter[nt.number] ?? 0;
-  nt.pitch = res;
-}
-
 /** 一行曲里，某个元素下标属于哪些记号（弧线 / 多连音）。 */
 function marksAt(marks: readonly Mark[], index: number, type: Mark["type"]): {
   starts: boolean;
@@ -111,7 +81,7 @@ interface Builder {
   part: Part;
   measure: Measure | null;
   mid: number;
-  stat: KeyState;
+  stat: JpKeyState;
   tupletNotes: Note[];
   slurOpen: Chord | null;
   /** 这些状态要**跨行**存活：小节和弧线都可以跨行延续 */
@@ -237,7 +207,7 @@ function buildPart(
         ch.rest = true;
         nt.rest = true;
       }
-      calcPitch(b.stat, nt);
+      applyJpPitch(b.stat, nt);
 
       const tup = marksAt(line.marks, index, "tuplet");
       if (tup.starts) nt.tupletBegin = true;

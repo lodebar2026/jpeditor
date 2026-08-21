@@ -6,6 +6,7 @@
 
 import { Fraction } from "../common/fraction";
 import { BarStyle, StartStopDiscontinue } from "./enums";
+import { keyAlter } from "./jppitch";
 
 export { BarStyle, StartStopDiscontinue };
 
@@ -141,21 +142,10 @@ export class MusicCommon {
     return MusicCommon.steps[idx % 7];
   }
 
+  /** 音名字母在该调号下的固定升降。实现只在 jppitch.ts::keyAlter 一处
+   *  （原来这里另有一份用 fifthCircle 的等价实现，两份漂移就会出错音）。 */
   static getAlter(st: string, fifths: number): number {
-    const idx = MusicCommon.steps.indexOf(st);
-    if (fifths < 0) {
-      for (let i = fifths; i < 0; i++) {
-        if (MusicCommon.fifthCircle[7 + i] === idx + 1) return -1;
-      }
-      return 0;
-    } else if (fifths === 0) {
-      return 0;
-    } else {
-      for (let i = 0; i < fifths; i++) {
-        if (MusicCommon.fifthCircle[i] === idx + 1) return 1;
-      }
-      return 0;
-    }
+    return keyAlter(MusicCommon.steps.indexOf(st), fifths);
   }
 
   static getBasePitchOfKey(key: Key): number {
