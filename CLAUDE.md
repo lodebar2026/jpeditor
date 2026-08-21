@@ -35,6 +35,7 @@ npm run build && node xml-roundtrip.mjs                # MusicXML 导出回归�
 npm run build && node omr-export-check.mjs             # 同上，但底本取自真跑一遍 OMR 的识别原文
 npm run build && node abc-shot.mjs <abc> /tmp/abc.png  # 拖入 .abc 端到端渲染核对
 npm run build && node omr-pu-check.mjs                 # 识别→文本谱原文→回解析 逐项对拍
+npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿（须人工核对后才算 GT）
 ```
 
 `shot.mjs` 用 Playwright `channel: "msedge"` 驱动本地 Edge，serve `dist/`，加载后截图并
@@ -93,8 +94,9 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   **动那些阈值前必看**——每条都是拿具体曲子换来的。
   **和弦符号**（`src/omr/chordline.ts`）：印在谱行上方的 `Am`/`G/B`/`Gsus4` 也识别出来，
   挂 `JpNum.chord` → MusicXML `<harmony>` 与文本谱 `"hx:…"` 两路；**`.jpwabc`/Score 装不下和弦**，
-  那一路会丢（有意为之，不扩 jpwabc 语法）。和弦与圆滑线同处一带、与段落方框共用文法判定，
-  阈值全是拿具体曲子换来的——动前必看那篇的「和弦符号」一节。
+  那一路会丢（有意为之，不扩 jpwabc 语法）。和弦与圆滑线同处一带、与段落方框共用文法判定；
+  根音必须大写、跳转记号/段落词/调号先抹掉、和弦数与小节数的比例兜底——每条都是拿具体曲子换来的，
+  动前必看那篇的「和弦符号」一节。
   识别输出格式可选 `jpwabc`（默认）/ 番茄简谱 / 诗歌本文本谱（工具栏「核对」组下拉，持久化）：
   内存里留着格式无关的 `RecognizedScore`，**换格式只重走 emitter，绝不重跑识别**；
   文本谱那路是 `src/omr/topu.ts` 直出原文（不过 Score），回归 `node omr-pu-check.mjs`。

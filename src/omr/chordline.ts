@@ -20,27 +20,40 @@ const BRACKET_RE = /[[【][^\]】]*[\]】]/g;
  *  不能像 isAnnotationLine 那样变长替换。不抹的话 `Verse` 里的 e、`Coda` 里的 C/d/a
  *  都是合法根音，会被贪心吃成 E、C、D、A 四个凭空的和弦（「主祢真伟大」的 Verse/Coda 行）。 */
 const blankNonChord = (s: string): string =>
-  s.replace(BRACKET_RE, (m) => " ".repeat(m.length)).replace(SECTION_RE, (m) => " ".repeat(m.length));
+  s.replace(BRACKET_RE, (m) => " ".repeat(m.length))
+    .replace(SECTION_RE, (m) => " ".repeat(m.length))
+    .replace(JUMP_RE, (m) => " ".repeat(m.length));
 // 中文谱常把备选和弦写成 `F或C`，升降根音也可能写成 `升F` / `降B`。这些少量汉字属于
 // 和弦语法而非歌词；先折成分隔符再做根音形态判断。除此以外只要含汉字，仍按真歌词处理。
 const CHORD_HANZI_RE = /[或升降]/g;
-// 单个和弦记号：根音 [A-G]（OCR 大小写不可靠，两者都收）+ 可选升降号 + 可选性质符 + 可选数字
-// + 可选 sus/add 扩展 + 可选转位低音（`/D#`）。交替里长后缀在前——JS 取**首个**成功的分支而非最长，
+// 单个和弦记号：根音 **大写** [A-G] + 可选升降号 + 可选性质符 + 可选数字 + 可选 sus/add 扩展
+// + 可选转位低音（`/D#`，低音同样大写）。交替里长后缀在前——JS 取**首个**成功的分支而非最长，
 // `maj7` 若先命中 `m` 就会剩下 "aj7" 变成未覆盖。
-const CHORD_TOKEN_RE = /^[A-Ga-g][#♯b♭]?(?:maj|min|dim|aug|sus|add|m|M)?\d*(?:sus\d*|add\d*)?(?:\/[A-Ga-g][#♯b♭]?)?/;
-// 记号之间的分隔/标点：不计入覆盖率分母，也不产生 token。
+// **根音必须大写**：印刷体和弦的根音从来是大写，而小写字母遍地都是——`Coda` 的 d/a、`Verse` 的 e
+// 一旦算根音，就凭空长出 D、A、E 三个和弦。宁可漏掉 OCR 把 C 读成 c 的那几个，也不放小写进来。
+const CHORD_TOKEN_RE = /^[A-G][#♯b♭]?(?:maj|min|dim|aug|sus|add|m|M)?\d*(?:sus\d*|add\d*)?(?:\/[A-G][#♯b♭]?)?/;
+// 记号之间的分隔/标点：不计入覆盖率分母，也不产生 token。句点在其列——和弦之间的点多半是
+// OCR 把字距读成的噪声（`Em F C/E G` 读成 `EmF.C/EG`），一律当未覆盖会把整条和弦行判没。
+// 真含点的 `D.C.`/`D.S.` 另由 JUMP_RE 在切词前整段抹掉，不靠点这一条挡。
 const CHORD_SEP_RE = /[\s()\-–—_,.·、|]/;
+// 跳转记号：`D.C.` / `D.S.`（含 `al Fine`/`al Coda` 后缀）/ `Fine` / `To Coda`。它们的字母恰好
+// 都是合法根音，不先抹掉就会被贪心吃成 D、C 两个凭空的和弦（「沧海一声笑」的 D.C. 曾这么变出两个）。
+const JUMP_RE = /D\s*[.,·]\s*[CS]\s*[.,·]?(?:\s*al\s*[.,·]?\s*(?:Fine|Coda))?|\bFine\b|\bTo\s*Coda\b/gi;
 
 /** 从左到右贪心扫和弦记号。OCR 常把整行和弦连写成一串（"C#mF#mBmBm7E"），故不按空白切 token，
  *  而是逐个吃和弦、吃不动就跳一个字符记为未覆盖。覆盖率与切词共用这一趟扫描，免得两处文法漂移。 */
-function scanChords(s: string): { toks: { tok: string; index: number }[]; hit: number; total: number } {
+function scanChords(s0: string): { toks: { tok: string; index: number }[]; hit: number; total: number } {
+  const s = s0.replace(JUMP_RE, (m) => " ".repeat(m.length));   // 等长抹除，保住字符下标
   const toks: { tok: string; index: number }[] = [];
   let hit = 0, total = 0;
   for (let i = 0; i < s.length;) {
     if (CHORD_SEP_RE.test(s[i])) { i++; continue; }   // 分隔/标点不计入分母
     const m = CHORD_TOKEN_RE.exec(s.slice(i));
-    if (m && m[0].length) { toks.push({ tok: m[0], index: i }); hit += m[0].length; total += m[0].length; i += m[0].length; }
-    else { total++; i++; }
+    // 记号前面（跨过空格）是等号 → 是调号 `1=G` / `1=bB` 的调名，不是和弦。
+    const keyed = m && /=\s*$/.test(s.slice(0, i));
+    if (m && m[0].length && !keyed) {
+      toks.push({ tok: m[0], index: i }); hit += m[0].length; total += m[0].length; i += m[0].length;
+    } else { total++; i++; }
   }
   return { toks, hit, total };
 }
@@ -61,9 +74,6 @@ export function splitChordTokens(s: string): { tok: string; index: number }[] {
  *  harmonyXml 接受——两者都认 `#`/`b`，故统一吐 ASCII 最稳。 */
 export function normalizeChord(tok: string): string {
   let s = tok.replace(/\s/g, "").replace(/♯/g, "#").replace(/♭/g, "b");
-  // 根音（含转位低音）大写；`b` 作为降号必须留小写，故只动 `/` 前后的**首字母**。
-  s = s.replace(/^([A-Ga-g])/, (_, c: string) => c.toUpperCase());
-  s = s.replace(/\/([A-Ga-g])/, (_, c: string) => `/${c.toUpperCase()}`);
   // 性质符：`M`（大写）在和弦里表示大三/大七，但 OCR 更常把小写 m 读成大写；简谱上大写 M
   // 几乎不用，故一律折成小写 m（`maj` 另有写法、不受影响）。
   s = s.replace(/^([A-G][#b]?)M(?!aj)/, (_, r: string) => `${r}m`);

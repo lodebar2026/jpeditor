@@ -372,12 +372,11 @@ export async function recognizeLyrics(
     if (!row.nums.length) continue;
     const above = i < 0;
     // S1 歌词带（deslant 空间）：本谱行 deslant 下缘 → 下一谱行 deslant 上缘。
-    // i=-1 的上方带没有「上一行下缘」可依，改从第 0 行上缘往上量 numH*2.5 —— 和弦紧贴谱行，
-    // 标题/词曲/调号/表情记号在更上方。这个倍数是拿页眉版式换来的：放到 3.5 就会把「沧海一声笑」
-    // 页眉里的表情记号卷进这条带，那首的 Expression 字段随之丢失、歌词准确率从 99.4% 掉到 80.8%；
-    // 代价是够不着「再次将我更新」第一谱行的和弦（它与谱行之间还隔着一排圆滑线，距顶 2.54 个
-    // 字号，差 1px 就在带外）——那 5 个和弦是本实现已知的漏检，宁可漏也不动页眉。
-    const yTop = above ? Math.max(0, dTop(row.nums) - numH * 2.5) : dBot(row.nums) + numH * 0.15;
+    // i=-1 的上方带没有「上一行下缘」可依，改从第 0 行上缘往上量 numH*3.5 —— 和弦紧贴谱行，
+    // 标题/词曲在更上方。3.5 才够得着「再次将我更新」第一谱行的和弦（它与谱行之间还隔着一排
+    // 圆滑线，距顶 2.54 个字号）；代价是会把调号/表情记号一并卷进来，那些由下面几道判据挡掉：
+    // 根音必须大写、`=` 后的音名算调号、整首和弦数与小节数的比例。
+    const yTop = above ? Math.max(0, dTop(row.nums) - numH * 3.5) : dBot(row.nums) + numH * 0.15;
     const yBot = above ? dTop(row.nums) - numH * 0.15
       : i + 1 < staff.length && staff[i + 1].nums.length
         ? dTop(staff[i + 1].nums) - numH * 0.15 : Infinity;
@@ -528,8 +527,20 @@ export async function recognizeLyrics(
   if (!strips.length) return { lyrics: regions, chords: [] };
   // 优先用**带字位**的 rec：每字带 xFrac → 直接落回源图 x，免去"字数↔连通块格数"按序硬配（错位根源）。
   const posMode = !!ocr.recognizeTextsPos;
-  const textsPos = posMode ? await ocr.recognizeTextsPos!(strips) : null;
-  const texts = posMode ? null : await ocr.recognizeTexts(strips);
+  // **上方带的块单独成一批**送 rec：歌词那批的输入必须与「没有上方带」时逐条相同，否则识别结果
+  // 会漂——实测把上方带的块（多是页眉碎块与音符上方的下划线）混进同一批，「沧海一声笑」六段词的
+  // 歌词从 99.4% 掉到 80.8%，而那些块本身一个字都没进歌词。分两批调用，索引按原 chunk 序填回。
+  const recPos = ocr.recognizeTextsPos?.bind(ocr);
+  const mainIdx: number[] = [], aboveIdx: number[] = [];
+  chunks.forEach((c, i) => (c.above ? aboveIdx : mainIdx).push(i));
+  const textsPos: { ch: string; xFrac: number }[][] | null = posMode ? new Array(chunks.length) : null;
+  const texts: string[] | null = posMode ? null : new Array(chunks.length);
+  for (const idxs of [mainIdx, aboveIdx]) {
+    if (!idxs.length) continue;
+    const st = idxs.map((i) => strips[i]);
+    if (textsPos) { const r = await recPos!(st); idxs.forEach((ci, k) => { textsPos[ci] = r[k]; }); }
+    else { const r = await ocr.recognizeTexts(st); idxs.forEach((ci, k) => { texts![ci] = r[k]; }); }
+  }
   if (TR) TR.recPerChunk = textsPos ?? texts!.map((s) => [...s].map((ch) => ({ ch, xFrac: 0 })));
 
   // 每块识别字汇总到 (row,verse)，再按 x 单调最近分配给音符。
@@ -787,6 +798,17 @@ export async function recognizeLyrics(
     const row = staff[rowIdx + 1];
     if (row) placeChords(row, cands, chordRegions);
   }
+  // 全局合理性：真配了和弦的谱子基本上每小节至少一个（14 首实测最稀的一首也有 0.56 个/小节）。
+  // 稀稀拉拉几个多半是页眉/调号/注记被误当和弦——放宽第 0 行上方带以后尤其容易撞上。整批作废
+  // 比留着强：漏掉几个和弦只是少个记号，混进几个假和弦却会印在谱面上误导演奏。
+  {
+    const bars = staff.reduce((a, r) => a + r.barlineXs.length, 0);
+    const chordN = staff.reduce((a, r) => a + r.nums.filter((n) => n.chord).length, 0);
+    if (bars >= 4 && chordN < bars * 0.4) {
+      for (const r of staff) for (const n of r.nums) { delete n.chord; delete n.chordOffset; }
+      chordRegions.length = 0;
+    }
+  }
 
   // 跳转记号落位：作用于记号所在处的小节末 → 归到 x 处或其左侧最近的那个音符（记号总略偏右于末音）。
   // 归**哪一行**要看它贴着谁：记号多印在本谱行音符下方（Fine 贴在歌词行末），但 `D.C. al Fine`
@@ -848,7 +870,11 @@ export async function recognizeLyrics(
   {
     const seen = new Set<number>();
     for (const [key, raw] of rawByKey) {
-      const verse = Number(key.split(":")[1]);
+      const [rowIdx, verse] = key.split(":").map(Number);
+      // 上方带（rowIdx=-1）没有歌词，不该参与任何 verse 语义。它按插入序**排在最前**，
+      // 不跳过就会顶掉真正的 `0:0`（标着 `1.` 的那行）占住 seen，整套段号映射随即作废、
+      // 退回「行序即段号」——「沧海一声笑」的 `3.5.` 跳号失效，W5/W6 整体错位。
+      if (rowIdx < 0) continue;
       if (seen.has(verse)) continue;           // 每个视觉行只看它首次出现的那一谱行（= 标号那行）
       seen.add(verse);
       const nums = parseVerseLabel(raw);
