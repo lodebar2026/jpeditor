@@ -1,5 +1,5 @@
 // 简谱 OMR（移植自 ~/proj/musicpp/omr/jianpu.cpp 的 recognition_jp 管线）。
-// 不依赖 OpenCV/Tesseract 原生库：像素运算用纯 TS，OCR 子模块可插拔（tesseract.js / Gemini）。
+// 不依赖 OpenCV/Tesseract 原生库：像素运算用纯 TS，OCR 子模块可插拔（现为本地 PaddleOCR）。
 
 /** 二值图：1=前景(黑/有墨)，0=背景。row-major，w*h。 */
 export interface Binary {

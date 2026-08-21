@@ -27,7 +27,7 @@ import { showConfirmDialog } from "./dialogs";
 import { MixedPainter } from "../mixed/painter";
 import { ScorePlayer, type PlayState } from "./player";
 import { playTempo, SPEED_STEPS, type PlayOptions } from "../score/timeline";
-import { recognizeImage, recognizeMusicppDetailed, agyAvailable, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, toMusicXml, toPuText, type OmrMethod, type RecogView } from "../omr";
+import { recognizeMusicppDetailed, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, toMusicXml, toPuText, type RecogView } from "../omr";
 import type { Binary, RecognizedScore } from "../omr";
 
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
@@ -1497,28 +1497,15 @@ export class App {
 
   // ---------------- OMR：从图片识别简谱 ----------------
   /** 已取得图片字节后的识别核心（供拖拽识别复用）。
-   *  musicpp 本地路额外保留二值图+识别结果，完成后默认进入叠加核对视图（先核对；「原图对照」可切回排版稿）。 */
-  async recognizeBytes(method: OmrMethod, picked: { bytes: Uint8Array; mime?: string; path?: string | null }): Promise<boolean> {
-    if (method === "gemini" && !agyAvailable()) {
-      this.setStatus("Gemini 识别需要桌面版（Antigravity CLI / agy），浏览器内不可用");
-      return false;
-    }
-    const label = method === "gemini" ? "Gemini" : "musicpp";
-    this.setStatus(`识别中（${label}）…可能需要几十秒`);
+   *  保留二值图+识别结果，完成后默认进入叠加核对视图（先核对；「原图对照」可切回排版稿）。 */
+  async recognizeBytes(picked: { bytes: Uint8Array; mime?: string }): Promise<boolean> {
+    this.setStatus("识别中…可能需要几十秒");
     try {
       const t0 = performance.now();
-      if (method === "musicpp") {
-        const { bin, score } = await recognizeMusicppDetailed(picked.bytes, picked.mime);
-        this._emitRecognition(score, bin);
-        if (this.mode !== "recognize") await this.toggleRecognize(); // 识别后默认进叠加核对（本仓库「先核对」取向）
-        this.setStatus(`识别完成（${label}，${((performance.now() - t0) / 1000).toFixed(1)}s）`);
-      } else {
-        // gemini 只吐 MusicXML，没有格式无关的中间模型，因而只能出 .jpwabc、也无从切格式。
-        const { musicxml, ms } = await recognizeImage(method, picked);
-        this.importBytes(new TextEncoder().encode(musicxml), "omr.musicxml");
-        const note = this.omrFormat === "jpwabc" ? "" : `（${label} 只能输出 .jpwabc）`;
-        this.setStatus(`识别完成（${label}，${(ms / 1000).toFixed(1)}s）${note}`);
-      }
+      const { bin, score } = await recognizeMusicppDetailed(picked.bytes, picked.mime);
+      this._emitRecognition(score, bin);
+      if (this.mode !== "recognize") await this.toggleRecognize(); // 识别后默认进叠加核对（本仓库「先核对」取向）
+      this.setStatus(`识别完成（${((performance.now() - t0) / 1000).toFixed(1)}s）`);
       return true;
     } catch (e) {
       console.error("OMR failed", e);

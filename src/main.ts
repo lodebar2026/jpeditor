@@ -334,7 +334,7 @@ async function pickRecognitionFile(app: App, hooks: RecognitionPickerHooks): Pro
     hooks.onPicked();
     let success = false;
     try {
-      success = await app.recognizeBytes("musicpp", { bytes: await readFile(sel), path: sel });
+      success = await app.recognizeBytes({ bytes: await readFile(sel) });
     } finally {
       hooks.onDone(success);
     }
@@ -350,10 +350,9 @@ async function pickRecognitionFile(app: App, hooks: RecognitionPickerHooks): Pro
     hooks.onPicked();
     let success = false;
     try {
-      success = await app.recognizeBytes("musicpp", {
+      success = await app.recognizeBytes({
         bytes: new Uint8Array(await file.arrayBuffer()),
         mime: file.type,
-        path: null,
       });
     } finally {
       hooks.onDone(success);
@@ -382,7 +381,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
           hooks.onRecognitionStart();
           let success = false;
           try {
-            success = await app.recognizeBytes("musicpp", { bytes, path });
+            success = await app.recognizeBytes({ bytes });
           } finally {
             hooks.onRecognitionDone(success);
           }
@@ -414,7 +413,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
         hooks.onRecognitionStart();
         let success = false;
         try {
-          success = await app.recognizeBytes("musicpp", { bytes: buf, mime: file.type, path: null });
+          success = await app.recognizeBytes({ bytes: buf, mime: file.type });
         } finally {
           hooks.onRecognitionDone(success);
         }

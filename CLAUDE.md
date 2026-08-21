@@ -87,8 +87,7 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
 改行为前先读对应那篇，别照直觉改。
 
 - **[OMR 简谱识别](docs/实现/OMR-简谱识别.md)**（`src/omr/`，最长的一篇）——图片/PDF → MusicXML。
-  两路：`gemini`（agy CLI，仅桌面版，更准）与 `musicpp`（全本地：连通域几何 + PaddleOCR PP-OCRv6_small，
-  浏览器离线）。14 首 GT 基线：音符/八度/附点/小节/对位/标题/词曲 100%，slur-tie 99.8%、歌词 99.5%。
+  全本地一条路：连通域几何 + PaddleOCR PP-OCRv6_small，浏览器离线。14 首 GT 基线：音符/八度/附点/小节/对位/标题/词曲 100%，slur-tie 99.8%、歌词 99.5%。
   回归 `node measure-all.mjs`、`node bench-lyrics.mjs`、`node check-gt.mjs`。
   篇中逐条记录了几何启发式的判据与反例（八度点/附点/减时线/衬词行/歌词标点/反复房/页眉著作者…），
   **动那些阈值前必看**——每条都是拿具体曲子换来的。

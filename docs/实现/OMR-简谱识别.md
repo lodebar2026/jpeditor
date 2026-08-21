@@ -12,17 +12,15 @@
 `ImageBitmap`）而非整页渲染——源本就是二值扫描图，直接贴白底即可（顺带甩掉赞美诗页码/栏目标题等叠加矢量文字，
 如「耶稣普治」PDF 顶部的 `055/圣子耶稣`）；纯矢量 PDF（无内嵌图）退回 `page.render` 整页光栅化。多页竖向拼接。
 
-- **`gemini`**：整页交 Antigravity CLI `agy` 让 Gemini 直接转写（真实照片更准）。**仅桌面版**：
-  `agy` 是命令行工具，经 Rust `omr_gemini_cmd`（[src-tauri/src/lib.rs](src-tauri/src/lib.rs)，
-  `std::process::Command`，stdin 关掉防挂起）调用；浏览器内 `agyAvailable()` 为 false → 报"需桌面版"。
-- **`musicpp`**：**完全本地**，浏览器/桌面均可、可离线。`decode.ts`(图→二值) → `jianpu.ts`
+识别只有**一条路**：**完全本地**，浏览器/桌面均可、可离线。`decode.ts`(图→二值) → `jianpu.ts`
   (连通域/几何启发式：数字块拆分、下划线 div、八度点、增时线) → `musicxml.ts`(→partwise)；
   数字/歌词/页眉 OCR 走本地 **PaddleOCR PP-OCRv6_small**（`paddleocr.ts`，onnxruntime-web 浏览器离线推理，
-  逐数字格 / 歌词条 rec→CTC），**不经 agy**——整页识别本就是 Gemini 方案在做的事。模型/字典在
+  逐数字格 / 歌词条 rec→CTC）。模型/字典在
   `public/redist/ocr/`（rec onnx `ch_PP-OCRv6_small_rec_infer.onnx` **~21MB** + `ppocrv6_dict.txt` **18708 字**
   + **det onnx ~4.7MB**（DBNet，仍 PP-OCRv4，页眉用；det 头与 rec 无关故可跨版混用）），wasm 运行时在
   `public/redist/ort/`（纯 wasm 单线程，免 COOP/COEP）；`onnxruntime-web/wasm` 子入口避开 26MB 的 jsep 构建。
-  旧的 **tesseract.js** 后端（`localocr.ts` + `montage.ts`）保留为 fallback（`localOcrBackend()`）。
+  早期用 **tesseract.js**（`localocr.ts` + `montage.ts`），实测数字仅约 69%（常把 6 误读为 0），
+  且从来没有开关能切到它，2026-08 重构时连同已废弃的 Gemini/agy 整页转写方案一并移除。
   - **rec 逐代换**（2026-07）：PP-OCRv4(6623字/无「祂」) → v5_mobile(18383字) → **v6_small(18708字)**。v4 无「祂」
     （赞美诗第三人称神）只能读成形近「他」；v5_mobile 字典含「祂」但**视觉仍偏向高频「他」**、48px 二值条上「祂」全读错；
     **v6_small 同一条子「祂」4/4 全对**（基督更美/耶稣普治），整体音符 100%、含标点歌词 ~93→**99.8%**、词曲 99→**100%**。
@@ -278,7 +276,7 @@ w/h≥4**——弧越长越扁（7.3），段落方框（"Chorus" 带框 w98 h36
 `node omr-export-check.mjs`（`<harmony>` 列入 patch 保全清单——和弦只活在底本里，patch 顺手删掉它，
 jpwabc 那边看不出任何异样）。
 
-仅 PaddleOCR 后端(`recognizeTexts`)支持，tesseract/null 后端跳过歌词。自然区域分块 rec 实测 W1 98.9%/W2 96.5%
+仅 PaddleOCR 后端(`recognizeTexts`)支持，`nullOcr` 跳过歌词。自然区域分块 rec 实测 W1 98.9%/W2 96.5%
 （早期逐字/拼接 rec 仅 ~85%，差在破坏自然排版+细笔画字漏检）——回归 `node bench-lyrics.mjs`。
 **当前基线（14 首全 GT）**：音符 / 八度 / 附点 / 小节 / 对位 / 标题 / 词曲 **全 100%**，
 slur-tie **99.8%**、歌词 **99.5%**。只剩两个已知缺口：世上所有的民族漏 1 组 slur（96.6）、
@@ -286,7 +284,7 @@ slur-tie **99.8%**、歌词 **99.5%**。只剩两个已知缺口：世上所有�
 爱是不保留/沧海一声笑）后修掉的四类缺陷，见下面各处「附点」「隐含 tie」「后缀式著作者」
 「孤立的一」注释。（历史：tesseract 初版完整 token 仅 ~25%。）
 回归：`node measure-all.mjs`(音符/八度/附点/小节/slur-tie/歌词/标题/词曲，全 7 档、CSV 逐曲+平均) +
-`node bench-lyrics.mjs`(歌词)。**Gemini 整页方式仍是更准的一路**。
+`node bench-lyrics.mjs`(歌词)。
 回归脚本：`node measure-all.mjs`（自动扫 `testdata/` 每个歌谱文件夹，需本地 Edge；用 `window.__omr` 跑真实管线；
 可加子串参数只测部分曲，如 `node measure-all.mjs 从前`）。**每首之间重载页面**——App/Score 在同一 page 里
 复用会串味（「爱是不保留」单跑 slur/歌词 100%，跟在别的歌谱后面跑掉到 60%/42%），基线因此不可复现。
@@ -324,7 +322,6 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 **为什么文本谱不过 Score**：文本谱「一行 `Q:` 就是谱面一行」，而 `rows` 正是源图的行结构，
 天然对齐；逐音符的多段歌词 `JpNum.lyrics[verse]` 原样在手，不必经 Score 的段落/副歌再拆分；
 小节线按 `row.barlineXs` 落位，跨行开口小节也不用像 MusicXML 那路先合并再补。
-（gemini 那路只吐 MusicXML、没有中间模型，因此只能出 `.jpwabc`，识别完会在状态栏说明。）
 
 **meta 的序号约定**：两个 emitter 都产出 `JpwMeta`，`noteRanges`/`lyricRanges` 一律按
 **`flatten(rows[].nums)` 的下标**编号。`app.ts::_rangeOfHit` 因此不必分格式——「原图对照」

@@ -49,8 +49,7 @@
     "opencc-js": "^1.4.1",
     "opentype.js": "^2.0.0",
     "pdfjs-dist": "^6.1.200",
-    "smplr": "^1.0.0",
-    "tesseract.js": "^7.0.0"
+    "smplr": "^1.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

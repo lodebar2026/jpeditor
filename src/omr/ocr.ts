@@ -1,6 +1,6 @@
 // OCR 子模块（可插拔）：把数字 bbox 识别成 0-7。
 // 识别策略仿 jianpu.cpp::asLine —— 把多个数字裁剪拼成一张横条图一次性 OCR，提速。
-// 具体后端见 ./montage.ts（拼图）+ ./agy.ts（经 Antigravity CLI 让 Gemini 读图）。
+// 具体后端见 ./paddleocr.ts（PaddleOCR + onnxruntime，本地离线）。
 import type { Binary, Rect } from "./types";
 
 export interface OcrBackend {
