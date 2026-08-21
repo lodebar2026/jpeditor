@@ -22,7 +22,7 @@ import { loadMusicXml } from "../score/musicxml";
 import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
-import { decodeJpwabc, encodeJpwabc, isTauriRuntime } from "./fileio";
+import { decodeJpwabc, encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { showConfirmDialog } from "./dialogs";
 import { MixedPainter } from "../mixed/painter";
 import { ScorePlayer, type PlayState } from "./player";
@@ -126,15 +126,11 @@ export class App {
     this.scorePane = scorePane;
   }
 
-  /** Apply page-size / font-size / title-size / credit-size / color render settings and re-render. */
-  applyRenderSettings(opts: { pageW?: number; pageH?: number; fontSize?: number; titleSize?: number; creditSize?: number; color?: number }): void {
-    if (opts.pageW) this.pageW = opts.pageW;
-    if (opts.pageH) this.pageH = opts.pageH;
-    if (opts.color !== undefined) this.color = opts.color;
-    if (opts.titleSize !== undefined) this.titleSize = opts.titleSize;
-    if (opts.creditSize !== undefined) this.creditSize = opts.creditSize;
-    if (opts.fontSize && opts.fontSize !== this.fontSize) {
-      this.fontSize = opts.fontSize;
+  /** 换字号要重建 painter（字号是 JinpuPainter 的构造参数），保留已排好的 Score。
+   *  随后把 color/titleSize/creditSize 三个选项同步进新 painter。两个调用点共用。 */
+  private _rebuildPainter(fontSize?: number): void {
+    if (fontSize && fontSize !== this.fontSize) {
+      this.fontSize = fontSize;
       const score = this.painter.score;
       this.painter = new JinpuPainter(this.fontSize);
       this.painter.layout.options.smuflMeta = this.meta;
@@ -143,6 +139,16 @@ export class App {
     this.painter.layout.options.color = this.color;
     this.painter.layout.options.titleSize = this.titleSize;
     this.painter.layout.options.creditSize = this.creditSize;
+  }
+
+  /** Apply page-size / font-size / title-size / credit-size / color render settings and re-render. */
+  applyRenderSettings(opts: { pageW?: number; pageH?: number; fontSize?: number; titleSize?: number; creditSize?: number; color?: number }): void {
+    if (opts.pageW) this.pageW = opts.pageW;
+    if (opts.pageH) this.pageH = opts.pageH;
+    if (opts.color !== undefined) this.color = opts.color;
+    if (opts.titleSize !== undefined) this.titleSize = opts.titleSize;
+    if (opts.creditSize !== undefined) this.creditSize = opts.creditSize;
+    this._rebuildPainter(opts.fontSize);
     this.saveSettings();
     this.reload(this.getText());
   }
@@ -169,16 +175,7 @@ export class App {
       if (s.color !== undefined) this.color = s.color;
       if (s.zoom) this.zoom = s.zoom;
       this._applyZoom();
-      if (s.fontSize && s.fontSize !== this.fontSize) {
-        this.fontSize = s.fontSize;
-        const score = this.painter.score;
-        this.painter = new JinpuPainter(this.fontSize);
-        this.painter.layout.options.smuflMeta = this.meta;
-        this.painter.score = score;
-      }
-      this.painter.layout.options.color = this.color;
-      this.painter.layout.options.titleSize = this.titleSize;
-      this.painter.layout.options.creditSize = this.creditSize;
+      this._rebuildPainter(s.fontSize);
     } catch {
       // corrupt storage — ignore
     }
@@ -1523,24 +1520,11 @@ export class App {
   }
 
   async saveFileAs(): Promise<void> {
-    const name = this.defaultSaveName();
-    if (isTauriRuntime()) {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const dest = await save({ defaultPath: name });
-      if (!dest) return;
-      await this.writeTo(dest);
-      this.filePath = dest;
-      this.rememberLastFile(dest);
-    } else {
-      const blob = new Blob([this.encodeForSave()], {
-        type: "application/octet-stream",
-      });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }
+    // 落盘细节（对话框 / a[download]）统一在 fileio.saveBytes，这里只管记住路径。
+    const dest = await saveBytes(this.encodeForSave(), this.defaultSaveName());
+    if (!dest) return;
+    this.filePath = dest;
+    this.rememberLastFile(dest);
   }
 
   /** 存盘用的文件名：文本谱存 `.pu`，其余存 `.jpwabc`。 */
@@ -1552,8 +1536,6 @@ export class App {
   /** 当前文档的标题（文本谱取头部第一条 T:/B:）。 */
   private documentTitle(): string {
     if (this.docFormat === "pu") {
-      const meta = this._puPainter ? null : null;
-      void meta;
       const first = this.getText()
         .split(/\r?\n/)
         .map((l) => /^\s*[TB]\s*[:：](.*)$/.exec(l))

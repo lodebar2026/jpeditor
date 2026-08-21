@@ -140,10 +140,15 @@ export async function exportMusicXml(app: App): Promise<void> {
   } else {
     xml = scoreToMusicXml(app.painter.score);
   }
+  await finishMusicXml(app, xml);
+}
+
+/** MusicXML 导出的共同收尾：解析校验 → 补版面 → 序列化 → 补回 XML 声明 → 落盘。
+ *  XMLSerializer 不输出 XML 声明（DOCTYPE 会保留），不补回部分软件拒绝打开。 */
+async function finishMusicXml(app: App, xml: string): Promise<void> {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   if (doc.querySelector("parsererror")) throw new Error("生成的 MusicXML 无法解析");
   annotateLayout(doc); // 分行沿用底本 <print>，版面参数用 A4 常量表
-  // XMLSerializer 不输出 XML 声明（DOCTYPE 会保留），手动补回，否则部分软件拒绝打开。
   let out = new XMLSerializer().serializeToString(doc);
   if (!out.startsWith("<?xml")) out = `<?xml version="1.0" encoding="UTF-8"?>\n${out}`;
   await saveBytes(new TextEncoder().encode(out), `${baseName(app)}.musicxml`, MUSICXML_MIME);
@@ -153,13 +158,7 @@ export async function exportMusicXml(app: App): Promise<void> {
 export async function exportPuMusicXml(app: App): Promise<void> {
   const puDoc = app.puDoc();
   if (!puDoc) throw new Error("这份文本谱里没有可导出的曲行");
-  let xml = puToMusicXml(puDoc);
-  const doc = new DOMParser().parseFromString(xml, "application/xml");
-  if (doc.querySelector("parsererror")) throw new Error("生成的 MusicXML 无法解析");
-  annotateLayout(doc);
-  xml = new XMLSerializer().serializeToString(doc);
-  if (!xml.startsWith("<?xml")) xml = `<?xml version="1.0" encoding="UTF-8"?>\n${xml}`;
-  await saveBytes(new TextEncoder().encode(xml), `${baseName(app)}.musicxml`, MUSICXML_MIME);
+  await finishMusicXml(app, puToMusicXml(puDoc));
 }
 
 /** 文本谱 → `.jpwabc`。JP-Word 的 .Voice 只有单声部，多声部时只导第一声部。 */

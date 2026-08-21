@@ -31,18 +31,20 @@ export function decodeJpwabc(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(bytes);
 }
 
-/** Save bytes to disk: Tauri save dialog + writeFile, else browser download. */
+/** 落盘：Tauri 走保存对话框 + writeFile，浏览器走 a[download]。
+ *  返回落盘路径（仅 Tauri；用户取消或浏览器下载返回 null）。 */
 export async function saveBytes(
   bytes: Uint8Array,
   defaultName: string,
   mime = "application/octet-stream",
-): Promise<void> {
+): Promise<string | null> {
   if (isTauriRuntime()) {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const dest = await save({ defaultPath: defaultName });
-    if (!dest) return;
+    if (!dest) return null;
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     await writeFile(dest, bytes);
+    return dest;
   } else {
     const ab = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(ab).set(bytes);
@@ -56,6 +58,7 @@ export async function saveBytes(
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return null;
   }
 }
 
