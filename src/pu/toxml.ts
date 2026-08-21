@@ -10,6 +10,7 @@
 import { Fraction } from "../common/fraction";
 import { Key, MusicCommon } from "../score/score";
 import { escapeXml, spellPitch, typeOfDuration } from "../score/musicxmlout";
+import { harmonyXml } from "../score/harmonyxml";
 import type {
   BarlineElement,
   Mark,
@@ -241,48 +242,6 @@ function notationsFor(
   if (ornaments.length) parts.push(`<ornaments>${ornaments.join("")}</ornaments>`);
 
   return parts.length ? `<notations>${parts.join("")}</notations>` : "";
-}
-
-/** `"hx:C♯m"` → <harmony>。解析不出根音就退回 <direction><words>。 */
-function harmonyXml(chord: string): string {
-  const m = /^([A-G])([#♯b♭]?)(.*)$/.exec(chord.trim());
-  if (!m) {
-    return `<direction placement="above"><direction-type><words>${escapeXml(chord)}</words>` +
-      `</direction-type></direction>`;
-  }
-  const alter = m[2] === "#" || m[2] === "♯" ? 1 : m[2] === "b" || m[2] === "♭" ? -1 : 0;
-  let rest = m[3] ?? "";
-  let bass = "";
-  const slash = rest.indexOf("/");
-  if (slash >= 0) {
-    bass = rest.slice(slash + 1);
-    rest = rest.slice(0, slash);
-  }
-  const kind = kindOf(rest);
-  let xml = `<harmony><root><root-step>${m[1]}</root-step>` +
-    (alter !== 0 ? `<root-alter>${alter}</root-alter>` : "") +
-    `</root><kind text="${escapeAttr(rest)}">${kind}</kind>`;
-  const b = /^([A-G])([#♯b♭]?)/.exec(bass);
-  if (b) {
-    const ba = b[2] === "#" || b[2] === "♯" ? 1 : b[2] === "b" || b[2] === "♭" ? -1 : 0;
-    xml += `<bass><bass-step>${b[1]}</bass-step>` +
-      (ba !== 0 ? `<bass-alter>${ba}</bass-alter>` : "") + `</bass>`;
-  }
-  return xml + `</harmony>`;
-}
-
-function kindOf(suffix: string): string {
-  const s = suffix.toLowerCase();
-  if (s === "") return "major";
-  if (/^m(?!aj)/.test(s)) return s.includes("7") ? "minor-seventh" : "minor";
-  if (s.startsWith("maj7") || s.startsWith("m7")) return "major-seventh";
-  if (s.startsWith("dim")) return "diminished";
-  if (s.startsWith("aug") || s === "+") return "augmented";
-  if (s.startsWith("sus")) return "suspended-fourth";
-  if (s === "7") return "dominant";
-  if (s === "6") return "major-sixth";
-  if (s === "9") return "dominant-ninth";
-  return "other";
 }
 
 /** 给重叠的弧线分配 number（MusicXML 靠它配对）。 */

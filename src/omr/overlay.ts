@@ -302,6 +302,11 @@ function buildOverlayGroup(
   if (opts?.lyrics !== false) {
     renderLyricsAligned(g, score.lyricRegions ?? [], lyrH);
   }
+  // 和弦记号：印在谱行上方，按源图框原位绘制（与页眉同一套画法——整段一串、无逐字位）。
+  for (const r of score.chordRegions ?? []) {
+    if (rowSet && !score.rows.some((row, ri) => rowSet.has(ri) && rcy(r.bbox) > row.topY - noteH * 3 && rcy(r.bbox) < row.topY)) continue;
+    renderHeaderRegion(g, r, "omr-chord");
+  }
   score.rows.forEach((row, ri) => {
     if (rowSet && !rowSet.has(ri)) return;
     const fit = rowFits[ri];

@@ -604,9 +604,11 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
   let lyricRegions: RecognizedScore["lyricRegions"];
+  let chordRegions: RecognizedScore["chordRegions"];
   if (ocr.recognizeTexts) {
     const lr = await recognizeLyrics(bin, comps, useRows, numH, ocr);
-    lyricRegions = lr.length ? lr : undefined;
+    lyricRegions = lr.lyrics.length ? lr.lyrics : undefined;
+    chordRegions = lr.chords.length ? lr.chords : undefined;
   }
 
   // 房内只印一行歌词时，歌词识别天然把它放在 W1；但二房的这行实际属于第 2 遍，应迁到 W2。
@@ -688,5 +690,5 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   const dotDiam = dotSizes.length ? median(dotSizes) : undefined;
 
-  return { key: "C", fifths, beats, beatType, rows: useRows, title, credits, tempo, headerRegions, lyricRegions, dotDiam };
+  return { key: "C", fifths, beats, beatType, rows: useRows, title, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
 }

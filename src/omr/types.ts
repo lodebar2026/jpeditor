@@ -42,6 +42,13 @@ export interface JpNum {
   // 段落标记（Intro/Verse/Chorus/Coda…，谱面上多印成方框）：标在该段起始音符上。
   // → MusicXML `<direction><words>`，下游供乐句排版按段落硬换行（见 score/phrase.ts）。
   sectionMark?: string;
+  // 和弦符号（归一后的原文，如 "Am" / "G/B" / "Gsus4"）。印在本谱行音符**上方**，识别见 chordline.ts。
+  // → MusicXML `<harmony>` 与文本谱 `"hx:…"`；.jpwabc / Score 模型装不下和弦，那一路会丢（同力度、渐强渐弱）。
+  chord?: string;
+  // 和弦在本音符时值内的拍位偏移，取 0..1 的比例（缺省=正对音符本身）。简谱上和弦常印在
+  // 两音符之间的拍点上，故不能只表达「挂在某音符」。MusicXML 那路折成 <harmony><offset>（乘本音符
+  // divisions）；文本谱 `"hx:"` 挂不住偏移，只能就近挂到本音符（有损）。
+  chordOffset?: number;
   // 圆滑线/连音线（音符上方弧形 ⌒）。一个音符可同时是上一条的结束与下一条的开始，故各用布尔。
   slurStart?: boolean; // 圆滑线起点 → MusicXML <slur type="start">
   slurStop?: boolean;  // 圆滑线终点 → <slur type="stop">
@@ -85,5 +92,6 @@ export interface RecognizedScore {
   tempo?: number; // 速度 ♩=NN（仅进 MusicXML；当前下游导入器不读 tempo）
   headerRegions?: TextRegion[]; // 页眉文本的源图定位（识别模式按原位叠加）
   lyricRegions?: TextRegion[]; // 歌词单字的源图定位+字号（识别模式按原图位置/大小叠加）
+  chordRegions?: TextRegion[]; // 和弦记号的源图定位（识别模式按原位叠加）
   dotDiam?: number; // 八度点/附点在源图的统计直径（识别模式按原图大小画点，非按字号推算）
 }

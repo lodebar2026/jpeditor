@@ -257,8 +257,11 @@ export function toPuText(
         meta.noteRanges[noteIdx] = tb.push(noteToken(n, dialect));
         // 休止本不跟词；识别到它带词时补 `@` 翻转 lyricAnchor，否则歌词整行错位
         if (n.digit === 0 && (n.lyrics ?? []).some((t) => t)) tb.push("@");
-        // 段落标记 → 音符上方的注释。写在音符**之后**：双引号注释挂的是前一个符号，
-        // 写在前面会挂到上一个音符上（行首更是无处可挂，直接丢）。
+        // 和弦 / 段落标记 → 音符上方的注释。写在音符**之后**：双引号注释挂的是前一个符号，
+        // 写在前面会挂到上一个音符上（行首更是无处可挂，直接丢）。两条注释可以连着写，
+        // 解析端 applyQuoted 分别落到 chord 与 annotation 两个字段上，不互相覆盖。
+        // 拍内偏移（chordOffset）在文本谱里表达不了，就近挂本音符（有损，MusicXML 那路保得住）。
+        if (n.chord) tb.push(`"hx:${n.chord}"`);
         if (n.sectionMark) tb.push(`"${n.sectionMark}"`);
         tb.push(")".repeat(closes.get(noteIdx) ?? 0)); // 收弧要在增时线之前，弧才止于本音符
         tb.push(" -".repeat(Math.max(0, n.augment)));

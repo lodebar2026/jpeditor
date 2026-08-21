@@ -4,6 +4,7 @@ import type { RecognizedScore, JpNum, StaffRow } from "./types";
 import { rright } from "./types";
 // 简谱数字→音高拼写：与 MusicXML 导出（score/musicxmlout.ts）共用同一份换算，见该文件说明。
 import { jpPitch } from "../score/jppitch";
+import { harmonyXml } from "../score/harmonyxml";
 
 /** 数字音符 → {step, alter, octave(科学记号)}。可动 do：数字 1=主音，按调号求该音级的升降。 */
 function pitchOf(num: JpNum, fifths: number): { step: string; alter: number; octave: number } {
@@ -329,7 +330,14 @@ export function toMusicXml(score: RecognizedScore): string {
     // 符杠按拍分组：8 分拍号（6/8 等）一组是 3 个八分，其余一拍一组。
     const beatDiv = score.beatType === 8 ? QUARTER * 3 / 2 : QUARTER * 4 / score.beatType;
     const beams = beamsOfMeasure(notes, beatDiv);
-    const noteEls = notes.map((n) => noteXml(n, score.fifths, arcs, beams.get(n))).join("");
+    // 和弦符号：MusicXML 要求 <harmony> 紧接其所辖音符**之前**。chordOffset 是本音符时值内的
+    // 比例（和弦印在两音符之间的拍点上时非 0），这里折成 divisions 交给 <offset>。
+    const noteEls = notes.map((n) => {
+      const harm = n.chord
+        ? harmonyXml(n.chord, Math.round((n.chordOffset ?? 0) * durationOf(n).divisions))
+        : "";
+      return harm + noteXml(n, score.fifths, arcs, beams.get(n));
+    }).join("");
     const leftBar = structuralBarlineXml(notes, "left");
     const rightBar = structuralBarlineXml(notes, "right");
     return `<measure number="${mi}">${printEl}${attrs}${leftBar}${tempoEl}${markEl}${noteEls}${jumpEl}${rightBar}</measure>`;

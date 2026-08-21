@@ -91,6 +91,10 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   回归 `node measure-all.mjs`、`node bench-lyrics.mjs`、`node check-gt.mjs`。
   篇中逐条记录了几何启发式的判据与反例（八度点/附点/减时线/衬词行/歌词标点/反复房/页眉著作者…），
   **动那些阈值前必看**——每条都是拿具体曲子换来的。
+  **和弦符号**（`src/omr/chordline.ts`）：印在谱行上方的 `Am`/`G/B`/`Gsus4` 也识别出来，
+  挂 `JpNum.chord` → MusicXML `<harmony>` 与文本谱 `"hx:…"` 两路；**`.jpwabc`/Score 装不下和弦**，
+  那一路会丢（有意为之，不扩 jpwabc 语法）。和弦与圆滑线同处一带、与段落方框共用文法判定，
+  阈值全是拿具体曲子换来的——动前必看那篇的「和弦符号」一节。
   识别输出格式可选 `jpwabc`（默认）/ 番茄简谱 / 诗歌本文本谱（工具栏「核对」组下拉，持久化）：
   内存里留着格式无关的 `RecognizedScore`，**换格式只重走 emitter，绝不重跑识别**；
   文本谱那路是 `src/omr/topu.ts` 直出原文（不过 Score），回归 `node omr-pu-check.mjs`。
@@ -112,9 +116,10 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
 - **[播放速度](docs/实现/播放速度.md)**（`score/timeline.ts`）——谱面 `♩=` × 用户倍率，
   以及它怎么经 `.Title` 的 `Expression` 字段往返 `.jpwabc`。
 - **[MusicXML 导出](docs/实现/MusicXML-导出.md)**（`score/musicxmlout.ts`、`musicxmlpatch.ts`、
-  `musicxmllayout.ts`）——工具栏「导出 → MusicXML」。**有 MusicXML 底本（OMR/ABC/导入的 xml）
+  `harmonyxml.ts`、`musicxmllayout.ts`）——工具栏「导出 → MusicXML」。**有 MusicXML 底本（OMR/ABC/导入的 xml）
   就在底本上做增量 patch，绝不整体重生成**（.jpwabc 承载的信息更少，重生成 = 降采样）；
-  patch 刻意不碰 barline/ending/repeat/direction 等 jpwabc 表达不了的结构。全量序列化那条路
+  patch 刻意不碰 barline/ending/repeat/direction/harmony 等 jpwabc 表达不了的结构
+  （`harmonyxml.ts` 是和弦符号 → `<harmony>` 的公共实现，文本谱直出与简谱 OMR 共用）。全量序列化那条路
   有四个要害（divisions/音高拼写/调号推断/type-dot 互逆），改之前必看那篇。
   回归 `node xml-roundtrip.mjs`、`node omr-export-check.mjs`。
 

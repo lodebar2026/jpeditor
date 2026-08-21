@@ -8,6 +8,8 @@
 import type { Binary, Component, JpNum, Rect, StaffRow, TextRegion } from "./types";
 import { rright, rbottom, rcx, rcy } from "./types";
 import type { OcrBackend } from "./ocr";
+import type { ChordCand } from "./chordline";
+import { chordCandidates, isAnnotationLine, placeChords } from "./chordline";
 
 const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
@@ -68,11 +70,6 @@ function parseVerseLabel(raw: string): number[] | null {
   if (!nums.length || (raw.slice(m[0].length).match(/[一-鿿]/g) ?? []).length < 2) return null;
   return nums;
 }
-// 注记行判定用（比上面多收 fine 等，这类行同样不是歌词、要从歌词带里剔掉）。
-const SECTION_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|fine|tag|refrain)\d*/gi;
-// 中文谱常把备选和弦写成 `F或C`，升降根音也可能写成 `升F` / `降B`。这些少量汉字属于
-// 和弦语法而非歌词；先折成分隔符再做根音形态判断。除此以外只要含汉字，仍按真歌词处理。
-const CHORD_HANZI_RE = /[或升降]/g;
 // 页脚版权/制作声明的 OCR 经常有少量错字（如「用途」→「用速」），所以不用整句精确匹配，
 // 而要求一条较长文本同时命中至少两个强语义词。正常歌词偶见「制作」等单词也不会被误删。
 const FOOTER_CUE_RE = /(版权|版权所有|制作|团队|原版|音频|音頻|歌谱|歌譜|商业|商業|用途|翻印|请勿|請勿|仅供|僅供)/g;
@@ -82,44 +79,6 @@ function isFooterNoticeLine(text: string): boolean {
   const cues = new Set(compact.match(FOOTER_CUE_RE) ?? []);
   return cues.size >= 2;
 }
-// 单个和弦记号：根音 [A-G]（OCR 大小写不可靠，两者都收）+ 可选升降号 + 可选性质符 + 可选数字
-// + 可选 sus/add 扩展 + 可选转位低音（`/D#`）。交替里长后缀在前——JS 取**首个**成功的分支而非最长，
-// `maj7` 若先命中 `m` 就会剩下 "aj7" 变成未覆盖。
-const CHORD_TOKEN_RE = /^[A-Ga-g][#♯b♭]?(?:maj|min|dim|aug|sus|add|m|M)?\d*(?:sus\d*|add\d*)?(?:\/[A-Ga-g][#♯b♭]?)?/;
-// 一行文本被和弦记号覆盖的字符比例 + 记号个数。OCR 常把整行和弦连写成一串（"C#mF#mBmBm7E"），
-// 故不切 token，而从左到右贪心逐个吃和弦，吃不动就跳一个字符记为未覆盖。
-function chordCoverage(s: string): { cov: number; count: number } {
-  let hit = 0, total = 0, count = 0;
-  for (let i = 0; i < s.length;) {
-    if (/[\s()\-–—_,.·、|]/.test(s[i])) { i++; continue; }   // 分隔/标点不计入分母
-    const m = CHORD_TOKEN_RE.exec(s.slice(i));
-    if (m && m[0].length) { hit += m[0].length; total += m[0].length; i += m[0].length; count++; }
-    else { total++; i++; }
-  }
-  return { cov: total ? hit / total : 0, count };
-}
-/** 整行 rec 原文是否为和弦/段落标记行（而非歌词）。
- *  ① 无歌词汉字（只允许和弦语法里的「或/升/降」）；② 整行几乎能被一串**和弦记号**贪心覆盖
- *  （见 chordCoverage）。旧判据按 `[A-Za-z]+` 切字母簇、要求每簇首字母是 A-G 根音，但升降号与
- *  数字会把簇切断——`C#mF#mBm7E` 切出 `mF`/`mBmBm`、`E7sus4` 切出 `sus`，首字母都不是根音，
- *  于是整行和弦被当成歌词（「再次将我更新」的 W2/W3 就是这么来的）。改看覆盖率后二者都能吃完。
- *  不依赖大小写正确（OCR 常把 C 读成 c）；英文歌词的音节吃不动（"still"/"azing" 起头即失败），
- *  覆盖率立刻塌下去，故不会误伤。 */
-function isAnnotationLine(text0: string): boolean {
-  // 方括号里的是编者注/段落标记（「立定心志」和弦行末的 `[下面一行也可用]`、`【Chorus】`），
-  // 从来不是唱词。不先剥掉，一句中文编者注就会让整行和弦行被当成真歌词（该曲的 W2 = 和弦）。
-  const text = text0.replace(/[[【][^\]】]*[\]】]/g, " ");
-  const hanzi = text.match(/[一-鿿]/g) ?? [];
-  if (hanzi.some((ch) => !/[或升降]/.test(ch))) return false;  // 除和弦连接/升降记号外有汉字 → 真歌词行
-  const rest = text.replace(SECTION_RE, " ").replace(CHORD_HANZI_RE, " ");
-  if (!rest.trim()) return text0.trim().length > 0;             // 纯段落标记（Intro/Chorus…）或纯方括号注
-  if (!/[A-Za-z]/.test(rest)) return false;                      // 无字母 → 交给下游伪 verse 过滤
-  const { cov, count } = chordCoverage(rest);
-  // 两个以上和弦时容一点残渣（OCR 掉字/多字）；只有一个记号的短行要求完全吃净，免得把
-  // 单个英文词（"Be"、"Ah"）当成和弦行整条丢掉。
-  return count >= 2 ? cov >= 0.85 : count === 1 && cov === 1;
-}
-
 /** 把一行(同 y)的连通块按 x 邻近并成字格。返回每个字格的合并包围盒，按 x 排序。 */
 export function mergeToChars(line: Component[], charH: number): Rect[] {
   const sorted = [...line].sort((a, b) => a.bbox.x - b.bbox.x);
@@ -143,7 +102,9 @@ export function mergeToChars(line: Component[], charH: number): Rect[] {
 }
 
 // 一个 rec 块：本乐谱行(rowIdx)某 verse 的若干相邻字格（拼一条横图整体 rec）。
-interface Chunk { rowIdx: number; verse: number; cells: Rect[]; maxGap: number; mark?: boolean; }
+// above=true 的块来自**第 0 谱行上方**那条带（rowIdx=-1）：那里没有可归属的歌词行，只可能是
+// 和弦/段落方框，故永不参与歌词装配。
+interface Chunk { rowIdx: number; verse: number; cells: Rect[]; maxGap: number; mark?: boolean; above?: boolean; }
 
 // 调试可视化用：设 globalThis.__lyricTrace={} 后 recognizeLyrics 逐步把各阶段 I/O 记进来（供生成算法说明 HTML）。
 export interface LyricTrace {
@@ -382,13 +343,13 @@ function fillLeadingVerses(staff: StaffRow[]): void {
   }
 }
 
-/** 识别歌词并写回各音符的 lyrics[]；返回每个歌词单元的源图定位+字号（识别模式按原位/原字号叠加）。
- *  staff 为乐谱行(按出现顺序)，comps 为全图连通块。 */
+/** 识别歌词与和弦并写回各音符（lyrics[] / chord）；返回二者各自的源图定位+字号
+ *  （识别模式按原位/原字号叠加）。staff 为乐谱行(按出现顺序)，comps 为全图连通块。 */
 export async function recognizeLyrics(
   bin: Binary, comps: Component[], staff: StaffRow[], numH: number, ocr: OcrBackend,
-): Promise<TextRegion[]> {
+): Promise<{ lyrics: TextRegion[]; chords: TextRegion[] }> {
   const regions: TextRegion[] = [];
-  if (!ocr.recognizeTexts || !staff.length) return regions;
+  if (!ocr.recognizeTexts || !staff.length) return { lyrics: regions, chords: [] };
 
   const charMin = numH * 0.5; // 歌词字号下限（约等于音符字号）
   const src = srcCanvasOf(bin);
@@ -403,13 +364,23 @@ export async function recognizeLyrics(
   const dBot = (nums: JpNum[]) => Math.max(...nums.map((n) => rbottom(n.bbox) - k * rcx(n.bbox)));
   if (TR) { TR.numH = numH; TR.charMin = charMin; TR.slope = k; TR.rows = []; }
 
-  for (let i = 0; i < staff.length; i++) {
-    const row = staff[i];
+  // i 从 **-1** 起：第 i 行的「下方带」就是第 i+1 行的「上方带」，是同一条带；唯独第 0 行的
+  // 上方带原先没有任何一条带覆盖，那里的和弦（多数带和弦的谱子第一行就有）落进页眉 ROI 后
+  // 被 header.ts 的 `hanziCount<2` 静默丢掉。i=-1 即那条补上的带，只走和弦/段落标记通道。
+  for (let i = -1; i < staff.length; i++) {
+    const row = staff[Math.max(0, i)];   // i=-1 时以第 0 行作 cov/房号的参照
     if (!row.nums.length) continue;
+    const above = i < 0;
     // S1 歌词带（deslant 空间）：本谱行 deslant 下缘 → 下一谱行 deslant 上缘。
-    const yTop = dBot(row.nums) + numH * 0.15;
-    const yBot = i + 1 < staff.length && staff[i + 1].nums.length
-      ? dTop(staff[i + 1].nums) - numH * 0.15 : Infinity;
+    // i=-1 的上方带没有「上一行下缘」可依，改从第 0 行上缘往上量 numH*2.5 —— 和弦紧贴谱行，
+    // 标题/词曲/调号/表情记号在更上方。这个倍数是拿页眉版式换来的：放到 3.5 就会把「沧海一声笑」
+    // 页眉里的表情记号卷进这条带，那首的 Expression 字段随之丢失、歌词准确率从 99.4% 掉到 80.8%；
+    // 代价是够不着「再次将我更新」第一谱行的和弦（它与谱行之间还隔着一排圆滑线，距顶 2.54 个
+    // 字号，差 1px 就在带外）——那 5 个和弦是本实现已知的漏检，宁可漏也不动页眉。
+    const yTop = above ? Math.max(0, dTop(row.nums) - numH * 2.5) : dBot(row.nums) + numH * 0.15;
+    const yBot = above ? dTop(row.nums) - numH * 0.15
+      : i + 1 < staff.length && staff[i + 1].nums.length
+        ? dTop(staff[i + 1].nums) - numH * 0.15 : Infinity;
     if (yBot - yTop < charMin) continue;
 
     const inBand = (c: Component) => { const y = dcy(c); return y >= yTop && y <= yBot; };
@@ -489,12 +460,21 @@ export async function recognizeLyrics(
       }
       return best;
     };
+    // 「够高」的门槛按 0.5 字高而非矮行剔除用的 0.6：charH 统计自**汉字**，而和弦是拉丁字母，
+    // 天然矮一截（「再次将我更新」汉字 41px、和弦 22px，卡 0.6 就一个都不算数）。放低不冒险——
+    // 够高的块只用来决定「这行要不要单独送 rec 提和弦」，认不出和弦的整块作废。
+    const tallMin = charH * 0.5;
     const lineInfo = mergedBlocks.map((blocks) => {
       const cells = blocks.map((b) => blockRect(b, k));
       const longGapBefore = blocks.map((b) => b.gapBefore > longGap);
       const lx0 = cells.length ? Math.min(...cells.map((c) => c.x)) : 0;
       const lx1 = cells.length ? Math.max(...cells.map((c) => rright(c))) : 0;
-      return { cells, longGapBefore, cov: cells.length ? covOf(lx0, lx1) : 0, h: median(cells.map((c) => c.h)) };
+      // tall = 行内达到正常字高的块数。圆滑线弧被列投影切成的碎段又窄又矮，混进同一行时会把
+      // 中位字高拉到弧高上（弧与其上方的和弦 deslant-y 只差十几像素，常被并成一行），整行随即
+      // 被下面的「矮行剔除」丢掉——「主祢真伟大」的 C/Am/Am/F 与 C/G/Am 两条和弦行就是这么丢的。
+      // 中位数照旧不动（动它会放行真正的弧线伪行），另记 tall 供那条剔除规则开一道窄口。
+      return { cells, longGapBefore, cov: cells.length ? covOf(lx0, lx1) : 0,
+        h: median(cells.map((c) => c.h)), tall: cells.filter((c) => c.h >= tallMin).length };
     });
     const maxCov = Math.max(0, ...lineInfo.map((L) => L.cov));
     // 圆滑线/连音线弧、下划线等：横跨谱行(cov 高)但**矮**（弧高 ~0.5 字高），会被当成一整条伪歌词行
@@ -506,13 +486,28 @@ export async function recognizeLyrics(
       noteBoxes: row.nums.map((n) => n.bbox), verses: [] as Array<{ verse: number; cells: Rect[]; cov: number; longGapBefore?: boolean[] }> } : null;
     if (TR && rowT) TR.rows!.push(rowT);
 
-    // 被 cov 过滤掉的**短行**（占谱行宽不足 35%）里混着段落方框 Intro/Verse/Chorus/Coda —— 它们
-    // 不是歌词（丢弃是对的），但标出了段落起点，对乐句排版有用。故也送去 rec，只用来提段落词
-    // （`mark: true` 的块不参与歌词装配）。限短行（≤5 格）以免白跑 OCR。
+    // 没进歌词的行里还藏着两样有用的东西，都只送 rec 提词、不参与歌词装配（`mark: true`）：
+    //  ① 段落方框 Intro/Verse/Chorus/Coda —— 被 cov 过滤掉的短行，标出段落起点，供乐句排版；
+    //  ② 和弦记号 —— 它与谱行上方的圆滑线 deslant-y 只差十几像素，常被并进同一行，而弧被列投影
+    //     切成的碎段又矮又碎，把行的中位字高压到几像素，整行随即被上面的「矮行剔除」丢掉
+    //     （「主祢真伟大」九行里有五行的和弦这么没的）。故行内有 ≥2 个**正常字高**的块时，
+    //     单把这些块拎出来送 rec，滤掉同行的弧线碎段。
+    // 走 mark 通道而不是放回 kept：这类行的内容未必是和弦（「世上所有的民族」row3 的弧线行里
+    // 也凑得出 4 个够高的碎块，rec 出来是一串乱码），放回歌词会多出一条伪 verse，其噪声字落到
+    // 休止音上，触发 jianpu.ts 的「有词的 0 必是误判」把休止复原成音——那首音符从 100% 掉下来。
+    // mark 通道只在**确实认得出和弦**时才取用（isAnnotationLine），认不出就整块作废，代价为零。
     for (const L of lineInfo) {
-      if (kept.includes(L) || !L.cells.length || L.cells.length > 5) continue;
-      chunks.push({ rowIdx: i, verse: -1, cells: L.cells, maxGap, mark: true });
-      strips.push(buildStrip(src, L.cells, STRIP_H, maxGap));
+      if (kept.includes(L) || !L.cells.length) continue;
+      const cells = L.tall >= 2 ? L.cells.filter((c) => c.h >= tallMin)
+        : (L.cells.length <= 5 ? L.cells : null);   // 短行（≤5 格）整块送，长行不白跑 OCR
+      if (!cells?.length) continue;
+      chunks.push({ rowIdx: i, verse: -1, cells, maxGap, mark: true, above });
+      strips.push(buildStrip(src, cells, STRIP_H, maxGap));
+      // mark 块也记进 trace：recPerChunk 是按 strips 全量记的，这里漏记会让下游调试脚本的
+      // chunk↔rec 索引整体错位（曾据此误判和弦行的归属）。
+      if (TR) { const x0 = Math.min(...cells.map((r) => r.x)), y0 = Math.min(...cells.map((r) => r.y));
+        const x1 = Math.max(...cells.map((r) => rright(r))), y1 = Math.max(...cells.map((r) => rbottom(r)));
+        (TR.chunks ??= []).push({ rowIdx: i, verse: -1, cells, crop: { x: x0 - 4, y: y0 - 4, w: x1 - x0 + 8, h: y1 - y0 + 8 }, maxGap }); }
     }
 
     kept.forEach(({ cells, longGapBefore, cov }, verse) => {
@@ -521,7 +516,7 @@ export async function recognizeLyrics(
       // 自然区域整体 rec——多字上下文远比逐字准（实测单字 ~85% vs 自然区域 ~98%）。宽上限已含字间空白，
       // 真正的大段乐句空白会撑到上限自然断开，不会把整行压扁。
       for (const chunkCellsArr of chunkCells(cells, maxGap)) {
-        chunks.push({ rowIdx: i, verse, cells: chunkCellsArr, maxGap });
+        chunks.push({ rowIdx: i, verse, cells: chunkCellsArr, maxGap, above });
         strips.push(buildStrip(src, chunkCellsArr, STRIP_H, maxGap));
         if (TR) { const x0 = Math.min(...chunkCellsArr.map((r) => r.x)), y0 = Math.min(...chunkCellsArr.map((r) => r.y));
           const x1 = Math.max(...chunkCellsArr.map((r) => rright(r))), y1 = Math.max(...chunkCellsArr.map((r) => rbottom(r)));
@@ -530,7 +525,7 @@ export async function recognizeLyrics(
     });
   }
 
-  if (!strips.length) return regions;
+  if (!strips.length) return { lyrics: regions, chords: [] };
   // 优先用**带字位**的 rec：每字带 xFrac → 直接落回源图 x，免去"字数↔连通块格数"按序硬配（错位根源）。
   const posMode = !!ocr.recognizeTextsPos;
   const textsPos = posMode ? await ocr.recognizeTextsPos!(strips) : null;
@@ -545,6 +540,42 @@ export async function recognizeLyrics(
   const lineSeen = new Set<string>();
   const marks: { rowIdx: number; word: string; x: number }[] = []; // 段落标记（印在下一谱行上方）
   const jumps: { rowIdx: number; word: string; x: number; y: number; key: string }[] = []; // 跳转记号
+  const chordCands = new Map<number, ChordCand[]>();   // rowIdx（和弦所在带的上一谱行）→ 待落位的记号
+
+  // ── 趟 1：把每块的 rec 原文定下来（含「一」改判），按 (row,verse) 拼成**整行**原文 ──
+  // 和弦行判定必须以整行为单位：短块上覆盖率不稳，单个 `Be`/`Ah` 会被误当成和弦。
+  const rawTexts: string[] = [];
+  for (let s = 0; s < chunks.length; s++) {
+    const { rowIdx, verse, cells, mark, above } = chunks[s];
+    const raw0 = textsPos ? textsPos[s].map((c) => c.ch).join("") : texts![s];
+    let rawText = raw0;
+    // 歌词里的「一」是孤零零一根横，自成一块送 rec 时常被读成 "1"（也见过 "-"/"—"）——这些字符
+    // 走不进下面任何一个装配分支，被整个丢掉，那个音符就空出来、后面一串词跟着往前挪一格
+    // （「因有主同在」的 `我愿/意将一生/奉献` 读成 `我愿/意将/生/奉献`）。中文谱的歌词块里
+    // 这些字符没有别的合理来源：段号在行首另有处理，英文音节的连字符必然挨着字母、不会独占一块。
+    // 只在**整块就这一个字符**时改判成「一」，不动任何多字符块。
+    // 例外：**行首**、落在本谱行第一个音符左侧的单字符块是歌词行首的**段号**（多段谱的 `1.`/`2.`），
+    // 它本就该被丢弃、不占音符位。不排除的话「沧海一声笑」六段词的段号会全变成「一」字。
+    // 上方带（above）不改判：那里根本没有歌词，把短横改成汉字只会让整行不再被判为和弦行。
+    const notes0 = rowIdx >= 0 ? staff[rowIdx].nums : [];
+    const beforeFirstNote = notes0.length > 0 && rright(cells[cells.length - 1]) < rcx(notes0[0].bbox);
+    if (!above && !beforeFirstNote && /^[-‐‑–—1]$/.test(rawText.trim())) {
+      rawText = "一";
+      if (textsPos) textsPos[s] = textsPos[s].map((c) => ({ ...c, ch: "一" }));
+    }
+    rawTexts[s] = rawText;
+    // 整行原文按**改判前**的 rec 文本拼：改判把弧线碎块读出的 `-`/`1` 一律当成歌词的「一」，
+    // 而和弦行上方常有圆滑线，其碎块正落在同一行——一个凭空的「一」就让整行「含汉字」，
+    // 和弦行判定当场失效（「主祢真伟大」的 C/G/Am 两行就这么丢的）。装配那一步照旧用改判后的
+    // rawTexts，两者互不干扰；页脚版权那条判据看的是长中文句，用哪份都一样。
+    if (!mark) rawByKey.set(`${rowIdx}:${verse}`, (rawByKey.get(`${rowIdx}:${verse}`) ?? "") + raw0);
+  }
+  // 和弦/段落标记行（Am、G/B、Gsus4、Chorus…）：判出后**不进歌词装配**，转走和弦通道。
+  // 与旧版的差别只在时机——过去是装配完再 delete 整行，现在它根本没进来，于是它误捞的跳转
+  // 记号（和弦行连写成 `G/D C` → 读出一个 `DC`）也不必再事后撤销。判据与阈值一字未改。
+  const chordKeys = new Set([...rawByKey.keys()].filter((k) => isAnnotationLine(rawByKey.get(k)!)));
+
+  // ── 趟 2：段落标记/跳转记号就地捞取 + 歌词装配 ──
   for (let s = 0; s < chunks.length; s++) {
     const { rowIdx, verse, cells, maxGap } = chunks[s];
     const key = `${rowIdx}:${verse}`;
@@ -564,23 +595,14 @@ export async function recognizeLyrics(
       return last.sx0 + last.sw;
     };
 
-    let rawText = textsPos ? textsPos[s].map((c) => c.ch).join("") : texts![s];
-    // 歌词里的「一」是孤零零一根横，自成一块送 rec 时常被读成 "1"（也见过 "-"/"—"）——这些字符
-    // 走不进下面任何一个装配分支，被整个丢掉，那个音符就空出来、后面一串词跟着往前挪一格
-    // （「因有主同在」的 `我愿/意将一生/奉献` 读成 `我愿/意将/生/奉献`）。中文谱的歌词块里
-    // 这些字符没有别的合理来源：段号在行首另有处理，英文音节的连字符必然挨着字母、不会独占一块。
-    // 只在**整块就这一个字符**时改判成「一」，不动任何多字符块。
-    // 例外：**行首**、落在本谱行第一个音符左侧的单字符块是歌词行首的**段号**（多段谱的 `1.`/`2.`），
-    // 它本就该被丢弃、不占音符位。不排除的话「沧海一声笑」六段词的段号会全变成「一」字。
-    const notes0 = staff[rowIdx].nums;
-    const beforeFirstNote = notes0.length > 0 && rright(cells[cells.length - 1]) < rcx(notes0[0].bbox);
-    if (!beforeFirstNote && /^[-‐‑–—1]$/.test(rawText.trim())) {
-      rawText = "一";
-      if (textsPos) textsPos[s] = textsPos[s].map((c) => ({ ...c, ch: "一" }));
-    }
+    const rawText = rawTexts[s];
     // 段落方框 Intro/Verse/Chorus/Coda：可能独占一块（被 cov 过滤的短行），也可能与和弦行同块
     // （"Gsus4G" 与 "Chorus" 同一 verse 行）。在任何块里就地捞出，x 取该词首字。
-    {
+    // **上方带（above）除外**：那条带是为和弦新开的，本不在旧管线的视野里，让它也产出段落标记
+    // 就等于凭空改动既有行为——它收的多是音符上方的下划线/弧线碎块，rec 出的噪声足以命中
+    // SECTION_MARK_RE，给首行安一个假段落起点，乐句排版据此硬换行，整首的 .Words 分行跟着走样
+    // （「沧海一声笑」六段词的歌词准确率因此从 99.4% 掉到 80.8%）。跳转记号同理。
+    if (!chunks[s].above) {
       const hit = SECTION_MARK_RE.exec(rawText);
       if (hit) {
         let acc = 0, xf = 0;
@@ -593,20 +615,43 @@ export async function recognizeLyrics(
     // 只在**无汉字**的块里找，免得歌词里的 "Do"/"Si" 等被误当记号。
     // 含汉字的块用严格写法（见 INLINE_JUMP_RE），无汉字的注记块沿用宽松写法。
     let jumpSpan: [number, number] | null = null;
-    {
+    if (!chunks[s].above) {
       const hit = (/[一-鿿]/.test(rawText) ? INLINE_JUMP_RE : JUMP_MARK_RE).exec(rawText);
       if (hit) {
         let acc = 0, xf = 0;
         if (textsPos) for (const c of textsPos[s]) { if (acc >= hit.index) { xf = c.xFrac; break; } acc += c.ch.length; }
         const jy = (Math.min(...cells.map((c) => c.y)) + Math.max(...cells.map((c) => rbottom(c)))) / 2;
-        jumps.push({ rowIdx, word: normalizeJump(hit[0]), x: textsPos ? fracToSrcX(xf) : cells[0].x, y: jy, key });
+        // 和弦行里捞出的记号是误检（连写的 `G/D C` → `DC`，「立定心志」因此被展开成十遍）：
+        // 整行既然不是歌词，记号也不作数。真的 D.C./Fine 印在音符下方自己那一小块里。
+        if (!chordKeys.has(key)) jumps.push({ rowIdx, word: normalizeJump(hit[0]), x: textsPos ? fracToSrcX(xf) : cells[0].x, y: jy, key });
         const span = JUMP_SPAN_RE.exec(rawText.slice(hit.index));
         jumpSpan = [hit.index, hit.index + (span?.[0].length ?? hit[0].length)];
       }
     }
+    // 和弦通道：整行判为和弦行 → 就地切记号 + 取每个记号的**起始 x**（与段落方框同一取位法）。
+    // 被 cov 过滤成 mark 的短和弦行也走这里，用块级判定——它本就整块丢弃，误伤代价低。
+    // 但**跳转记号优先**：`D.C.` 的两个字母恰好都是合法根音、点算分隔符，覆盖率满分，块级判据
+    // 会把它切成 D、C 两个和弦（「沧海一声笑」的 D.C. 就这么变出两个凭空的和弦）。整行和弦
+    // 那一支不受这条约束——那里的 jumpSpan 本身才是误检（连写的 `G/D C` → `DC`）。
+    const isChordChunk = chordKeys.has(key) || (chunks[s].mark === true && !jumpSpan && isAnnotationLine(rawText));
+    if (isChordChunk) {
+      const by0 = Math.min(...cells.map((c) => c.y)), by1 = Math.max(...cells.map((c) => rbottom(c)));
+      const srcXAt = (idx: number): number => {
+        if (!textsPos) return cells[0].x;
+        let acc = 0;
+        for (const c of textsPos[s]) { if (acc >= idx) return fracToSrcX(c.xFrac); acc += c.ch.length; }
+        return fracToSrcX(1); // 下标越界（记号收在行末）→ 该条右缘
+      };
+      const cands = chordCandidates(rawText, srcXAt, (x0, x1) => ({ x: x0, y: by0, w: x1 - x0, h: by1 - by0 }));
+      if (cands.length) chordCands.set(rowIdx, [...(chordCands.get(rowIdx) ?? []), ...cands]);
+    }
     if (chunks[s].mark) continue; // 只为提段落词而 rec 的块：不参与歌词装配
+    // 上方带（rowIdx=-1）没有可归属的歌词行，非和弦的内容一概丢弃。
+    if (rowIdx < 0) continue;
+    // 和弦行**照旧先装配、再整行剔除**（见下方 dropKeys）。看似绕，但装配这一步有下游依赖：
+    // 休止复原（jianpu.ts 的「digit=0 却对齐到歌词」）看的是装配后的 lyrics[]，跳过装配会让
+    // 「世上所有的民族」少复原一个被误读成 0 的音。提前分流只用于**收集和弦**，不动歌词那条路。
 
-    rawByKey.set(key, (rawByKey.get(key) ?? "") + rawText);
     if (!perLine.has(key)) perLine.set(key, []);
     const placed = perLine.get(key)!;
     // 字格纵向范围 + 中位字宽（仅供识别模式叠加按源图定位/取大小）
@@ -694,25 +739,18 @@ export async function recognizeLyrics(
     }
   }
 
-  // 剔除和弦/段落标记行（Am、G/B、Gsus4、Chorus…）及页脚版权声明：它们同样可能落在歌词带内，
-  // 放开拉丁字符/最后一行开放带后会成为伪 verse。按整行 rec 原文形态判，剔掉后把该谱行剩余 verse
-  // 按原顺序重新编号（保持各行 W1/W2 对齐；无注记行时是恒等变换）。
+  // 剔除和弦/段落标记行（判定已在装配前做好，见 chordKeys）与页脚版权声明：它们同样落在歌词带内，
+  // 放开拉丁字符/最后一行开放带后会成为伪 verse。剔掉后把该谱行剩余 verse 按原顺序重新编号
+  // （保持各行 W1/W2 对齐；无注记行时是恒等变换）。
   const dropped = new Set<TextRegion>();
   {
-    const annotKeys = [...perLine.keys()].filter((k) => {
-      const raw = rawByKey.get(k) ?? "";
-      return isAnnotationLine(raw) || isFooterNoticeLine(raw);
-    });
-    for (const k of annotKeys) {
+    const dropKeys = [...perLine.keys()].filter((k) => chordKeys.has(k) || isFooterNoticeLine(rawByKey.get(k) ?? ""));
+    for (const k of dropKeys) {
       for (const p of perLine.get(k)!) if (p.region) dropped.add(p.region);
       perLine.delete(k);
       rawByKey.delete(k);
     }
-    // 和弦行里就地捞出的「跳转记号」同样是误检（`G/D C` → `DC`）：整行既然不是歌词，
-    // 记号也不作数。真的 D.C./Fine 印在音符下方的自己那一小块里，不在和弦行上。
-    const annotSet = new Set(annotKeys);
-    for (let i = jumps.length - 1; i >= 0; i--) if (annotSet.has(jumps[i].key)) jumps.splice(i, 1);
-    if (annotKeys.length) {
+    if (dropKeys.length) {   // 只看**真被删掉**的 perLine 行；上方带的和弦 key 不在 perLine 里，不该触发重编号
       const byRow = new Map<number, number[]>();
       for (const k of perLine.keys()) {
         const [rowIdx, verse] = k.split(":").map(Number);
@@ -740,6 +778,14 @@ export async function recognizeLyrics(
     const barX = row.barlineXs.filter((x) => x < rcx(row.nums[bi].bbox)).pop() ?? -Infinity;
     while (bi > 0 && rcx(row.nums[bi - 1].bbox) > barX) bi--;
     row.nums[bi].sectionMark = mk.word;
+  }
+
+  // 和弦落位：和弦印在**下一谱行**音符的上方（与段落方框同理）。上方带的 rowIdx=-1 自然落到
+  // 第 0 行——「第一谱行不做特例」正是这么兑现的。归到哪个音符/拍位见 chordline.placeChords。
+  const chordRegions: TextRegion[] = [];
+  for (const [rowIdx, cands] of chordCands) {
+    const row = staff[rowIdx + 1];
+    if (row) placeChords(row, cands, chordRegions);
   }
 
   // 跳转记号落位：作用于记号所在处的小节末 → 归到 x 处或其左侧最近的那个音符（记号总略偏右于末音）。
@@ -863,5 +909,5 @@ export async function recognizeLyrics(
   }
 
   fillLeadingVerses(staff);
-  return dropped.size ? regions.filter((r) => !dropped.has(r)) : regions;
+  return { lyrics: dropped.size ? regions.filter((r) => !dropped.has(r)) : regions, chords: chordRegions };
 }

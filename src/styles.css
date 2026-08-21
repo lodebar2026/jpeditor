@@ -384,6 +384,7 @@ button:focus-visible, select:focus-visible {
 .omr-overlay .omr-barline { stroke: #1565ff; stroke-linecap: round; opacity: 0.95; }
 .omr-overlay text.omr-header { fill: #0a7d2c; }
 .omr-overlay text.omr-lyric { fill: #6a1b9a; }
+.omr-overlay text.omr-chord { fill: #b35c00; }
 .omr-overlay .omr-slur { stroke: #e65100; }
 .omr-overlay .omr-tie { stroke: #00838f; }
 
