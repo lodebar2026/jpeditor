@@ -15,9 +15,8 @@ import { recognizeLyrics } from "./lyrics";
 import { recognizeHeader } from "./header";
 import { detectSlurs } from "./slur";
 import { detectRepeatsAndEndings } from "./repeats";
+import { median, overlapX } from "./geom";
 
-const overlapX = (a: Rect, b: Rect) => Math.max(0, Math.min(rright(a), rright(b)) - Math.max(a.x, b.x));
-const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
 
 /** 一个数字格：紧包围盒 + 自身下划线条数(div)。 */
 interface DigitCore {

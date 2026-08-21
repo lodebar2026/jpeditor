@@ -5,6 +5,7 @@
 import type { Binary, RecognizedScore, JpNum, Rect } from "./types";
 import { rcx, rcy, rright } from "./types";
 import { srcCanvasOf } from "./lyrics";
+import { clusterRectsByY, median } from "./geom";
 import { measureGlyphText } from "../common/measure";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -138,13 +139,6 @@ function mean(xs: number[], fallback: number): number {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : fallback;
 }
 
-/** 一组数的中位数（空集回退 fallback）。 */
-function median(xs: number[], fallback: number): number {
-  if (!xs.length) return fallback;
-  const s = [...xs].sort((a, b) => a - b);
-  return s[s.length >> 1];
-}
-
 /** 最小二乘拟合一条直线 y=m·x+c，返回 x→y 的求值函数。
  *  用于把同一行音符/歌词的纵向中心拟合成一条**可倾斜**的直线（图片可能歪）——
  *  既顺着倾斜走、又抹平单元抖动，而非强行压到同一水平 y。点 <2 时退化为水平线。 */
@@ -167,13 +161,8 @@ function fitLine(pts: { x: number; y: number }[]): (x: number) => number {
  *  故每行单独取 min(中位字高, 中位字距) 当字号，既贴源图大小又不重叠。 */
 /** 歌词按 y 聚成 verse 行（返回按 y 升序、即 W1、W2… 的行组）。 */
 function clusterLyricLines(regions: { text: string; bbox: Rect }[], lyrH: number): { text: string; bbox: Rect }[][] {
-  const sorted = [...regions].sort((a, b) => rcy(a.bbox) - rcy(b.bbox));
-  const lines: { text: string; bbox: Rect }[][] = [];
-  for (const r of sorted) {
-    const ln = lines.find((L) => Math.abs(median(L.map((k) => rcy(k.bbox)), 0) - rcy(r.bbox)) < lyrH * 0.7);
-    if (ln) ln.push(r); else lines.push([r]);
-  }
-  return lines;
+  // 0.7×歌词字高：与 lyrics.ts 里汉字主体归 verse 行同一判据（那边尺子是 numH）。
+  return clusterRectsByY(regions, lyrH * 0.7);
 }
 
 /** 各 verse 行的中心 y（按 W1、W2… 顺序）。歌词命中框竖向定位用。 */

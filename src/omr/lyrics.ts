@@ -10,8 +10,8 @@ import { rright, rbottom, rcx, rcy } from "./types";
 import type { OcrBackend } from "./ocr";
 import type { ChordCand } from "./chordline";
 import { chordCandidates, isAnnotationLine, placeChords } from "./chordline";
+import { clusterByY, findLineByY, median } from "./geom";
 
-const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
 // 歌词里贴在字尾的标点。简谱印刷用全角，但 PP-OCR 常把 ，；：！？ 识成半角 , ; : ! ? ——
 // 一并收下、统一折成全角（与 GT 一致；半角句点 . 不收，避免撞段号 "1." / 小数点）。
@@ -390,17 +390,14 @@ export async function recognizeLyrics(
     if (!band.length) continue;
 
     // S2① 按 deslant-y 分 verse 行（斜线已拉平，同一行 dcy 相近）。
-    const sortedY = [...band].sort((a, b) => dcy(a) - dcy(b));
-    const lines: Component[][] = [];
-    for (const c of sortedY) {
-      const ln = lines.find((L) => Math.abs(median(L.map(dcy)) - dcy(c)) < numH * 0.7);
-      if (ln) ln.push(c); else lines.push([c]);
-    }
+    // 0.7×numH：汉字主体归行的容差，远小于 verse 行距。
+    const lines = clusterByY(band, dcy, numH * 0.7);
     // 细而宽的横笔（如"一"，高度不足 charMin）：并入 deslant-y 足够近的 verse 行，扩其 x 范围/投影窗口。
     for (const c of comps) {
       const b = c.bbox;
       if (!inBand(c) || b.h >= charMin || b.h < 2 || b.w < charMin * 0.6) continue;
-      const ln = lines.find((L) => Math.abs(median(L.map(dcy)) - dcy(c)) < numH * 0.45);
+      // 0.45（严于主体的 0.7）：细横笔本身没有字高可依，放宽会误挂到相邻 verse 行。
+      const ln = findLineByY(lines, dcy, dcy(c), numH * 0.45);
       if (ln) ln.push(c);
     }
     // 行末/句末标点（；。，等）小巧、不在 band，落在末字右侧空档 → 只扫到字身右缘就永远采不到。
@@ -416,7 +413,7 @@ export async function recognizeLyrics(
       // 卡在原来的 numH*0.5(=10) 边界上——不同浏览器/WebView 的 JPEG 解码有 ±1px 抖动即可让它时收时漏
       // （同一图在无头 Edge 收得到、在 tauri WebView 却漏 W1 句号）。放宽到 0.9 远离边界，仍远小于 verse
       // 行距一半(~1.3字号)，不会误挂到相邻 verse 行。
-      const ln = lines.find((L) => Math.abs(median(L.map(dcy)) - dcy(c)) < numH * 0.9);
+      const ln = findLineByY(lines, dcy, dcy(c), numH * 0.9);
       if (!ln) continue;
       const lx0 = Math.min(...ln.map((k2) => k2.bbox.x)), lx1 = Math.max(...ln.map((k2) => rright(k2.bbox)));
       if ((c.cx > lx1 && c.cx <= lx1 + numH * 1.1) || (c.cx < lx0 && c.cx >= lx0 - numH * 1.1)) ln.push(c);

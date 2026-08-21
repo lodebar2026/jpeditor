@@ -7,6 +7,7 @@
 // divisions（见 toxml.ts）。
 
 import type { Dialect } from "./dialect";
+import { Fraction } from "../common/fraction";
 
 export interface SourceSpan {
   /** 0 基行号 */
@@ -298,4 +299,81 @@ export function* eachNoteInElements(elements: readonly MusicElement[]): Generato
     if (el.kind === "note") yield el;
     else if (el.kind === "inline-layer") yield* eachNoteInElements(el.elements);
   }
+}
+
+// ---------------- AST 查询（解析器与三个消费者：排版 / toScore / toXml 共用） ----------------
+// 这些以前在 layout.ts / toscore.ts / toxml.ts 里各写一份，判据必须一致——
+// 「哪些符号跟词」「多连音占几拍」一旦两边不同，排版上看着对、导出的就错。
+
+/** 一个声部的全部曲行（跨 system 接起来）。 */
+export function linesOfVoice(song: PuSong, voice: number): ScoreLine[] {
+  const out: ScoreLine[] = [];
+  for (const page of song.pages) {
+    for (const group of page.groups) {
+      for (const v of group.voices) if (v.voice === voice) out.push(v);
+    }
+  }
+  return out;
+}
+
+/** 一首曲子里出现过的声部号（按首次出现排序）。一个都没有时退回 [1]。 */
+export function voiceNumbers(song: PuSong): number[] {
+  const seen: number[] = [];
+  for (const page of song.pages) {
+    for (const group of page.groups) {
+      for (const v of group.voices) if (!seen.includes(v.voice)) seen.push(v.voice);
+    }
+  }
+  return seen.length > 0 ? seen : [1];
+}
+
+/** 该符号是否跟歌词。语义在解析期就定好了（休止 `0`、增时线 `-`、诗歌本的 `9`
+ *  默认不跟，写 `@` 翻转），这里只是取用。 */
+export function takesLyric(el: MusicElement): boolean {
+  return (el.kind === "note" || el.kind === "sustain") && el.lyricAnchor;
+}
+
+/** 一行曲里，某个元素下标上开始/结束的某类记号（弧线 / 多连音）。 */
+export function marksAt(marks: readonly Mark[], index: number, type: Mark["type"]): Mark[] {
+  return marks.filter((m) => m.type === type && (m.start === index || m.end === index));
+}
+
+/** 每个元素下标的多连音比例：n 连音占 n−1 个基本时值。未落在多连音里的为 undefined。 */
+export function tupletRatios(
+  line: ScoreLine, count = line.elements.length,
+): Array<{ num: number; den: number } | undefined> {
+  const out = new Array<{ num: number; den: number } | undefined>(count);
+  for (const mk of line.marks) {
+    if (mk.type !== "tuplet") continue;
+    const n = mk.end - mk.start + 1;
+    if (n <= 1) continue;
+    for (let i = mk.start; i <= mk.end && i < count; i++) out[i] = { num: n - 1, den: n };
+  }
+  return out;
+}
+
+/** 音符/增时线的时值，以四分音符为 1。附点 ×(2−2^−n)；多连音比例由调用方另乘。 */
+export function elementQuarters(el: MusicElement): Fraction {
+  if (el.kind === "sustain") return new Fraction(1);
+  if (el.kind !== "note") return new Fraction(0);
+  const base = new Fraction(4, el.duration);
+  if (el.dots <= 0) return base;
+  const denom = 1 << el.dots;
+  return base.timesInt(2 * denom - 1).divInt(denom);
+}
+
+/** 按 cursors 顺序取该行各 verse 的下一个音节，展开成 {verse, text} 列表（含尾随标点）。
+ *  cursors 就地推进——**无论有没有字都要推进**，否则后面的字会整体错位。 */
+export function nextSyllables(
+  lyrics: readonly LyricLine[], cursors: number[],
+): Array<{ verse: number; text: string }> {
+  const out: Array<{ verse: number; text: string }> = [];
+  lyrics.forEach((line, li) => {
+    const syl = line.syllables[cursors[li] ?? 0];
+    cursors[li] = (cursors[li] ?? 0) + 1;
+    if (!syl || syl.text.length === 0) return;
+    const text = syl.text + (syl.trailingPunctuation ?? "");
+    for (let v = line.verseFrom; v <= line.verseTo; v += 1) out.push({ verse: v, text });
+  });
+  return out;
 }

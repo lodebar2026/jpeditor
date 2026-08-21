@@ -20,6 +20,7 @@ import type {
   VoiceGroup,
 } from "./ast";
 import { contentWidth, type PuMetrics } from "./metrics";
+import { elementQuarters, takesLyric, tupletRatios } from "./ast";
 
 /** 一个占位的谱面符号（音符 / 增时线 / 小节线）。 */
 export interface PlacedItem {
@@ -133,21 +134,13 @@ export interface PlacedScore {
   contentRight: number;
 }
 
-/** 音符/增时线的时值（拍）。附点按 2-2^-n 累乘，多连音由调用方另乘比例。 */
+/** 音符/增时线的时值（拍）。实现在 ast.ts::elementQuarters（与导出侧共用同一份精确算法）。 */
 export function elementBeats(el: MusicElement): number {
-  if (el.kind === "sustain") return 1;
-  if (el.kind !== "note") return 0;
-  return (4 / el.duration) * (2 - Math.pow(2, -el.dots));
+  return elementQuarters(el).toFloat();
 }
 
 function isBeamed(el: MusicElement): boolean {
   return el.kind === "note" && el.duration > 4;
-}
-
-/** 该符号是否跟歌词。语义在解析期就定好了（休止 `0`、增时线 `-`、诗歌本的 `9`
- *  默认不跟，写 `@` 翻转），这里只是取用。 */
-function takesLyric(el: MusicElement): boolean {
-  return (el.kind === "note" || el.kind === "sustain") && el.lyricAnchor;
 }
 
 /**
@@ -165,25 +158,13 @@ function assignLyrics(items: PlacedItem[], lyrics: readonly LyricLine[]): void {
   });
 }
 
-/** 多连音成员的时值比例：n 连音占 n-1 个基本时值。 */
-function tupletRatios(voice: ScoreLine, count: number): number[] {
-  const ratio = new Array(count).fill(1);
-  for (const mark of voice.marks) {
-    if (mark.type !== "tuplet") continue;
-    const n = mark.end - mark.start + 1;
-    if (n <= 1) continue;
-    for (let i = mark.start; i <= mark.end && i < count; i++) ratio[i] = (n - 1) / n;
-  }
-  return ratio;
-}
-
 /** 算一行的自然布局（x 从 0 起），返回符号序列与自然总宽。 */
 function layoutVoiceLine(voice: ScoreLine, m: PuMetrics): { items: PlacedItem[]; width: number } {
   // 只有音符/增时线/小节线占位；`~`/`^` 与内联层不进步进序列。
   const flat = voice.elements.filter(
     (el) => el.kind === "note" || el.kind === "sustain" || el.kind === "barline",
   );
-  const ratios = tupletRatios(voice, voice.elements.length);
+  const ratios = tupletRatios(voice);
   // `{dsb}` 并排块的花括号要挤在前一个符号与并排段之间，得先给它让出位置；
   // 并排段**结束**那头还有一个右括号，同样要让
   const splitAt = new Set<number>();
@@ -211,7 +192,8 @@ function layoutVoiceLine(voice: ScoreLine, m: PuMetrics): { items: PlacedItem[];
 
   flat.forEach((el, i) => {
     const srcIndex = voice.elements.indexOf(el);
-    const beats = elementBeats(el) * (ratios[srcIndex] ?? 1);
+    const r = ratios[srcIndex];
+    const beats = elementBeats(el) * (r ? r.num / r.den : 1);
     items.push({
       index: i,
       srcIndex,

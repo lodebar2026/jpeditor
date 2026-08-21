@@ -25,16 +25,11 @@ import type {
   PuSong,
   ScoreLine,
 } from "./ast";
+import {
+  elementQuarters, linesOfVoice, marksAt, nextSyllables, tupletRatios, voiceNumbers,
+} from "./ast";
 import { DYNAMICS, TERMS } from "./glyph";
 
-/** 音符时值（以四分音符为 1）。多连音比例由调用方另乘。 */
-function noteQuarters(el: NoteElement | { duration: number; dots: number }): Fraction {
-  const base = new Fraction(4, el.duration);
-  if (el.dots <= 0) return base;
-  // 附点：×(2 − 2^−n)
-  const denom = 1 << el.dots;
-  return base.timesInt(2 * denom - 1).divInt(denom);
-}
 
 /** `&xx` 记号 → MusicXML 的 articulations / ornaments 元素名。 */
 const ARTICULATION: Readonly<Record<string, string>> = {
@@ -80,31 +75,6 @@ function spell(el: NoteElement, ctx: Ctx): { step: string; alter: number; octave
   return spellPitch(pitch, MusicCommon.jpToStep(digit, ctx.fifths));
 }
 
-/** 某个元素下标上开始/结束的记号。 */
-function marksAt(marks: readonly Mark[], index: number, type: Mark["type"]): Mark[] {
-  return marks.filter((m) => m.type === type && (m.start === index || m.end === index));
-}
-
-/** 一个声部的全部曲行（跨 system 接起来）。 */
-function linesOfVoice(song: PuSong, voice: number): ScoreLine[] {
-  const out: ScoreLine[] = [];
-  for (const page of song.pages) {
-    for (const group of page.groups) {
-      for (const v of group.voices) if (v.voice === voice) out.push(v);
-    }
-  }
-  return out;
-}
-
-function voiceNumbers(song: PuSong): number[] {
-  const seen: number[] = [];
-  for (const page of song.pages) {
-    for (const group of page.groups) {
-      for (const v of group.voices) if (!seen.includes(v.voice)) seen.push(v.voice);
-    }
-  }
-  return seen.length > 0 ? seen : [1];
-}
 
 /** 全曲扫一遍定 divisions：所有音符时值分母的最小公倍数。 */
 function collectDivisions(song: PuSong): number {
@@ -114,30 +84,18 @@ function collectDivisions(song: PuSong): number {
       const ratios = tupletRatios(line);
       line.elements.forEach((el, i) => {
         if (el.kind !== "note") return;
-        let q = noteQuarters(el);
+        let q = elementQuarters(el);
         const r = ratios[i];
         if (r) q = q.timesInt(r.num).divInt(r.den);
         div = lcm(div, q.denominator);
         for (const g of [...el.graceBefore, ...el.graceAfter]) {
-          div = lcm(div, noteQuarters(g).denominator);
+          div = lcm(div, elementQuarters(g).denominator);
         }
       });
     }
   }
   if (div > 1024) console.warn(`文本谱导出 MusicXML：divisions=${div} 过大`);
   return div;
-}
-
-/** 每个元素下标的多连音比例（n 连音占 n−1 个基本时值）。 */
-function tupletRatios(line: ScoreLine): Array<{ num: number; den: number } | undefined> {
-  const out = new Array<{ num: number; den: number } | undefined>(line.elements.length);
-  for (const mk of line.marks) {
-    if (mk.type !== "tuplet") continue;
-    const n = mk.end - mk.start + 1;
-    if (n <= 1) continue;
-    for (let i = mk.start; i <= mk.end && i < out.length; i++) out[i] = { num: n - 1, den: n };
-  }
-  return out;
 }
 
 function meterXml(m: Meter): string {
@@ -450,7 +408,7 @@ function partXml(
 
       // 倚音
       for (const g of el.graceBefore) body.push(graceXml(g, ctx));
-      let q = noteQuarters(el);
+      let q = elementQuarters(el);
       const r = ratios[index];
       if (r) q = q.timesInt(r.num).divInt(r.den);
       lastNoteXmlIndex = body.length;
@@ -504,7 +462,7 @@ function noteXml(
   ratio: { num: number; den: number } | undefined,
 ): string {
   const duration = durationTicks(quarters, ctx.divisions, "文本谱导出 MusicXML");
-  const { type, dots } = typeOfDuration(noteQuarters(el));
+  const { type, dots } = typeOfDuration(elementQuarters(el));
 
   let head: string;
   if (el.sound === "rhythm") {
@@ -527,15 +485,9 @@ function noteXml(
   // 歌词：按「跟词」的符号顺序发放
   let lyricXml = "";
   if (el.lyricAnchor) {
-    line.lyrics.forEach((lyricLine, li) => {
-      const syl = lyricLine.syllables[cursors[li]!];
-      cursors[li] = (cursors[li] ?? 0) + 1;
-      if (!syl || syl.text.length === 0) return;
-      const text = syl.text + (syl.trailingPunctuation ?? "");
-      for (let v = lyricLine.verseFrom; v <= lyricLine.verseTo; v += 1) {
-        lyricXml += lyricElementXml(String(v), text);
-      }
-    });
+    for (const { verse, text } of nextSyllables(line.lyrics, cursors)) {
+      lyricXml += lyricElementXml(String(verse), text);
+    }
   }
 
   return (

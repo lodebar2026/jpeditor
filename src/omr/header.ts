@@ -4,8 +4,8 @@
 import type { Binary, Component, Rect, TextRegion } from "./types";
 import type { OcrBackend } from "./ocr";
 import { srcCanvasOf, mergeToChars, chunkCells, buildStrip } from "./lyrics";
+import { clusterByY, median, overlapRatioX, unionRect, unionRects } from "./geom";
 
-const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
 const hanziCount = (s: string) => (s.match(/[一-鿿]/g) || []).length;
 
 export interface HeaderInfo {
@@ -85,11 +85,7 @@ export function fifthsToKey(f: number | undefined): string {
 }
 
 /** 一组连通块的并集包围盒（源图像素坐标）。 */
-function unionBox(cs: Component[]): Rect {
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const c of cs) { const b = c.bbox; x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }
-  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-}
+const unionBox = (cs: Component[]): Rect => unionRects(cs.map((c) => c.bbox));
 
 /** 从页眉小字区解析调号("1=♭B")与速度("♩=76")。OCR 常把 ♭→b、♩→J；页眉碎片散落，
  *  故按碎片就地匹配、必要时空间最近邻配对，避免跨列拼接误配。 */
@@ -142,10 +138,6 @@ function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number; beats?: n
 /** 合法拍号：分母为 2 的幂(2/4/8/16，偶含 1/2 拍 → beatType 2)，分子 1..16。 */
 const validBeatType = (d: number) => d === 1 || d === 2 || d === 4 || d === 8 || d === 16;
 const validBeats = (n: number) => n >= 1 && n <= 16;
-const union2 = (a: Rect, b: Rect): Rect => {
-  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
-  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
-};
 
 /** 解析拍号：先认含斜杠的碎片 "X/Y"（含调号同块 "1=C 4/4"）；否则认上下竖排两碎片(分子在上、
  *  分母在下、同列)。返回分子/分母与**叠加标注的源图 bbox**。 */
@@ -173,7 +165,7 @@ function parseTime(lines: HLine[], fifthsLine?: HLine): { beats: number; beatTyp
     if (!validBeats(n) || !validBeatType(d)) continue;
     // 越靠近调号行越可信（拍号紧跟调号）；以分子块到调号行的距离择优。
     const score = fifthsLine ? Math.abs(a.cy - fifthsLine.cy) + Math.abs(a.cx - fifthsLine.cx) : dy + dx;
-    if (score < bd) { bd = score; best = { beats: n, beatType: d, bbox: union2(a.bbox, b.bbox) }; } // bbox 跨分子+分母
+    if (score < bd) { bd = score; best = { beats: n, beatType: d, bbox: unionRect(a.bbox, b.bbox) }; } // bbox 跨分子+分母
   }
   return best;
 }
@@ -184,10 +176,6 @@ function parseTime(lines: HLine[], fifthsLine?: HLine): { beats: number; beatTyp
 function mergeStackedColumns(comps: Component[], numH: number): Component[] {
   const boxes = comps.map((c) => ({ ...c.bbox }));
   const alive = boxes.map(() => true);
-  const xOverlap = (a: typeof boxes[0], b: typeof boxes[0]) => {
-    const o = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
-    return o / Math.min(a.w, b.w);
-  };
   for (let changed = true; changed; ) {
     changed = false;
     for (let i = 0; i < boxes.length; i++) {
@@ -197,9 +185,8 @@ function mergeStackedColumns(comps: Component[], numH: number): Component[] {
         const a = boxes[i], b = boxes[j];
         const top = a.y <= b.y ? a : b, bot = a.y <= b.y ? b : a;
         const gap = bot.y - (top.y + top.h);          // <0 表示竖向有重叠
-        if (xOverlap(a, b) < 0.35 || gap > numH * 0.35) continue; // 非同列、或隔了整行行距 → 不并
-        const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
-        const nb = { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+        if (overlapRatioX(a, b) < 0.35 || gap > numH * 0.35) continue; // 非同列、或隔了整行行距 → 不并
+        const nb = unionRect(a, b);
         if (nb.h > numH * 3) continue;                 // 防止串列失控
         if (nb.w / nb.h < 0.5) continue;               // 合出来又高又窄 → 多半是竖排拍号(4/4)等 meta，非方块汉字，别并
         boxes[i] = nb; alive[j] = false; changed = true;
@@ -258,12 +245,8 @@ export async function recognizeHeader(
   // 分块：先按 y 分行，再行内按大 x 间隙(>2×字高)切块 —— 分开页眉里横向并列的区块
   // （左:作词作曲 / 中:标题、调号 / 右:页码）。
   const splitBlocks = (cs: Component[]): Component[][] => {
-    const sortedY = [...cs].sort((a, b) => a.cy - b.cy);
-    const yRows: Component[][] = [];
-    for (const c of sortedY) {
-      const r = yRows.find((R) => Math.abs(median(R.map((k) => k.cy)) - c.cy) < numH * 0.6);
-      if (r) r.push(c); else yRows.push([c]);
-    }
+    // 0.6×numH：页眉是小字（比歌词/音符小），行距也更紧，容差比歌词那边(0.7)略严。
+    const yRows = clusterByY(cs, (c) => c.cy, numH * 0.6);
     const blocks: Component[][] = [];
     for (const r of yRows) {
       const rowH = median(r.map((k) => k.bbox.h));

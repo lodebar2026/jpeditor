@@ -8,9 +8,9 @@
 //   - 数字块 h ≥ 0.55×字号 才算，弧线更矮 → 不会被当成假音符（classify 里已落到 hlines 或被丢弃）。
 import type { Component, StaffRow } from "./types";
 import { rright, rbottom, rcx } from "./types";
+import { median } from "./geom";
 
 const between = (v: number, lo: number, hi: number) => v >= lo && v <= hi;
-const median = (xs: number[]) => { const s = [...xs].sort((p, q) => p - q); return s.length ? s[s.length >> 1] : 0; };
 
 /** 在 comps 里为每个 staff 行检测上方弧线，置位音符的 slurStart/Stop 或 tieStart/Stop。 */
 export function detectSlurs(comps: Component[], rows: StaffRow[], numH: number): void {

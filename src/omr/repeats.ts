@@ -4,11 +4,7 @@
 import type { Binary, Component, Rect, StaffRow } from "./types";
 import { rcx, rcy, rright } from "./types";
 import type { OcrBackend } from "./ocr";
-
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  return s.length ? s[s.length >> 1] : 0;
-};
+import { median } from "./geom";
 
 function detectRepeatBarlines(dots: Component[], rows: StaffRow[], numH: number): void {
   for (const row of rows) {

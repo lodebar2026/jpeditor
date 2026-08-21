@@ -9,6 +9,7 @@
 
 import { Fraction } from "../common/fraction";
 import { applyJpPitch, type JpKeyState } from "../score/jppitch";
+import { linesOfVoice, marksAt, nextSyllables, takesLyric, voiceNumbers } from "./ast";
 import {
   BarStyle,
   BarlineEntry,
@@ -26,12 +27,9 @@ import {
   Time,
 } from "../score/score";
 import type {
-  LyricLine,
   Mark,
-  MusicElement,
   NoteElement,
   PuDoc,
-  PuSong,
   ScoreLine,
 } from "./ast";
 
@@ -56,24 +54,16 @@ function alterOf(el: NoteElement): string {
   }
 }
 
-/** 一行曲里，某个元素下标属于哪些记号（弧线 / 多连音）。 */
-function marksAt(marks: readonly Mark[], index: number, type: Mark["type"]): {
+/** 一行曲里，某个元素下标是某类记号的起点/终点。 */
+function marksEdgeAt(marks: readonly Mark[], index: number, type: Mark["type"]): {
   starts: boolean;
   ends: boolean;
 } {
-  let starts = false;
-  let ends = false;
-  for (const mk of marks) {
-    if (mk.type !== type) continue;
-    if (mk.start === index) starts = true;
-    if (mk.end === index) ends = true;
-  }
-  return { starts, ends };
-}
-
-/** 该符号是否跟歌词（与排版侧同一判据）。 */
-function takesLyric(el: MusicElement): boolean {
-  return (el.kind === "note" || el.kind === "sustain") && el.lyricAnchor;
+  const hit = marksAt(marks, index, type);
+  return {
+    starts: hit.some((m) => m.start === index),
+    ends: hit.some((m) => m.end === index),
+  };
 }
 
 
@@ -209,12 +199,12 @@ function buildPart(
       }
       applyJpPitch(b.stat, nt);
 
-      const tup = marksAt(line.marks, index, "tuplet");
+      const tup = marksEdgeAt(line.marks, index, "tuplet");
       if (tup.starts) nt.tupletBegin = true;
       if (tup.ends) nt.tupletEnd = true;
       if (nt.tupletBegin || nt.tupletEnd) b.tupletNotes.push(nt);
 
-      const slur = marksAt(line.marks, index, "slur");
+      const slur = marksEdgeAt(line.marks, index, "slur");
       if (slur.starts) {
         ch.slurStart = true;
         b.slurOpen = ch;
@@ -281,39 +271,14 @@ function attachLyrics(
   cursors: number[],
   ch: Chord,
 ): void {
-  line.lyrics.forEach((lyricLine: LyricLine, li) => {
-    const syl = lyricLine.syllables[cursors[li]!];
-    cursors[li] = (cursors[li] ?? 0) + 1;
-    if (!syl || syl.text.length === 0) return;
-    for (let v = lyricLine.verseFrom; v <= lyricLine.verseTo; v += 1) {
-      const lrc = new Lyric();
-      lrc.number = v;
-      lrc.text = syl.text + (syl.trailingPunctuation ?? "");
-      ch.notes[0]!.lyrics.push(lrc);
-    }
-  });
+  for (const { verse, text } of nextSyllables(line.lyrics, cursors)) {
+    const lrc = new Lyric();
+    lrc.number = verse;
+    lrc.text = text;
+    ch.notes[0]!.lyrics.push(lrc);
+  }
 }
 
-/** 一首曲子里出现过的声部号（按首次出现排序）。 */
-function voiceNumbers(song: PuSong): number[] {
-  const seen: number[] = [];
-  for (const page of song.pages) {
-    for (const group of page.groups) {
-      for (const v of group.voices) if (!seen.includes(v.voice)) seen.push(v.voice);
-    }
-  }
-  return seen.length > 0 ? seen : [1];
-}
-
-function linesOfVoice(song: PuSong, voice: number): ScoreLine[] {
-  const out: ScoreLine[] = [];
-  for (const page of song.pages) {
-    for (const group of page.groups) {
-      for (const v of group.voices) if (v.voice === voice) out.push(v);
-    }
-  }
-  return out;
-}
 
 export interface ToScoreOptions {
   /** 取第几首（`-----` 分出的多唱法）。默认第一首。 */
