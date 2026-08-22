@@ -156,16 +156,16 @@ async function boot() {
   }
   const recognizeBtn = document.getElementById("btn-recognize") as HTMLButtonElement | null;
   if (recognizeBtn) {
-    app.setRecognizeBtn(recognizeBtn);
-    recognizeBtn.addEventListener("click", () => void app.toggleRecognize());
+    app.omr.setRecognizeBtn(recognizeBtn);
+    recognizeBtn.addEventListener("click", () => void app.omr.toggle());
   }
   const recogViewSel = document.getElementById("sel-recog-view") as HTMLSelectElement | null;
   if (recogViewSel) {
-    app.setRecogViewSelect(recogViewSel);
-    recogViewSel.addEventListener("change", () => app.setRecogView(recogViewSel.value as import("./omr").RecogView));
+    app.omr.setRecogViewSelect(recogViewSel);
+    recogViewSel.addEventListener("change", () => app.omr.setRecogView(recogViewSel.value as import("./omr").RecogView));
   }
   const recogFormatSel = document.getElementById("sel-recog-format") as HTMLSelectElement | null;
-  if (recogFormatSel) app.bindOmrFormatSelect(recogFormatSel); // 选项与 change 都在 App 里接
+  if (recogFormatSel) app.omr.bindFormatSelect(recogFormatSel); // 选项与 change 都在 App 里接
   const originalLayoutBtn = document.getElementById("btn-layout-original") as HTMLButtonElement | null;
   const phraseBtn = document.getElementById("btn-phrase") as HTMLButtonElement | null;
   if (originalLayoutBtn && phraseBtn) {
@@ -334,7 +334,7 @@ async function pickRecognitionFile(app: App, hooks: RecognitionPickerHooks): Pro
     hooks.onPicked();
     let success = false;
     try {
-      success = await app.recognizeBytes({ bytes: await readFile(sel) });
+      success = await app.omr.recognizeBytes({ bytes: await readFile(sel) });
     } finally {
       hooks.onDone(success);
     }
@@ -350,7 +350,7 @@ async function pickRecognitionFile(app: App, hooks: RecognitionPickerHooks): Pro
     hooks.onPicked();
     let success = false;
     try {
-      success = await app.recognizeBytes({
+      success = await app.omr.recognizeBytes({
         bytes: new Uint8Array(await file.arrayBuffer()),
         mime: file.type,
       });
@@ -381,7 +381,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
           hooks.onRecognitionStart();
           let success = false;
           try {
-            success = await app.recognizeBytes({ bytes });
+            success = await app.omr.recognizeBytes({ bytes });
           } finally {
             hooks.onRecognitionDone(success);
           }
@@ -413,7 +413,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
         hooks.onRecognitionStart();
         let success = false;
         try {
-          success = await app.recognizeBytes({ bytes: buf, mime: file.type });
+          success = await app.omr.recognizeBytes({ bytes: buf, mime: file.type });
         } finally {
           hooks.onRecognitionDone(success);
         }
