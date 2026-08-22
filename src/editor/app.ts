@@ -1005,6 +1005,13 @@ export class App implements OmrHost {
   }
 
   // ---------------- OmrHost：识别控制器要的那几样能力 ----------------
+  /** 混排排版器（导出 PDF/PNG 要）。没进过混排预览就是 null。
+   *  以前导出侧靠 `app["_mixedPainter"]` 索引签名绕过 private——字段一改名，编译期静默
+   *  通过、运行期直接 return，「导出 PDF 点了没反应」且无报错。 */
+  get mixedPainter(): MixedPainter | null {
+    return this._mixedPainter;
+  }
+
   /** 最近一次 MusicXML 导入产出的代码区间映射。 */
   get lastImportMeta(): JpwMeta | null {
     return this._lastImportMeta;

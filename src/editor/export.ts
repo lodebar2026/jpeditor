@@ -174,8 +174,8 @@ export async function exportPuJpwabc(app: App): Promise<void> {
 
 /** Export staff pages to a directly downloadable PDF. */
 export async function exportMixedPdf(app: App): Promise<void> {
-  if (!app["_mixedPainter"] || app.mode !== "mixed") return;
-  const painter = app["_mixedPainter"] as import("../mixed/painter").MixedPainter;
+  const painter = app.mixedPainter;
+  if (!painter || app.mode !== "mixed") return;
   const wPt = painter.pageWidthPt;
   const hPt = painter.pageHeightPt;
 
@@ -209,6 +209,37 @@ export async function exportMixedPdf(app: App): Promise<void> {
     await saveBytes(bytes, `${painter.title || "五线谱"}.pdf`, "application/pdf");
   }
 }
+
+/** 一个导出项：显示名 + 在什么状态下可用 + 怎么导。
+ *  以前这份规则散在 6 处（对话框里按 (docFormat, mode) 元组分三支，每个 exporter 内部
+ *  又各自重判一次），加一种导出格式要挨个找齐。 */
+interface ExportItem {
+  label: string;
+  available(app: App): boolean;
+  run(app: App): Promise<void>;
+}
+
+const isMixed = (app: App): boolean => app.mode === "mixed";
+const isPu = (app: App): boolean => app.docFormat === "pu" && !isMixed(app);
+const isJp = (app: App): boolean => !isPu(app) && !isMixed(app);
+
+/** 顺序即对话框里的顺序。 */
+const EXPORT_ITEMS: readonly ExportItem[] = [
+  // 文本谱（非混排预览）：走 pu 自己的排版器与直出路径
+  { label: "PPTX", available: isPu, run: exportPptx },
+  { label: "MIDI", available: isPu, run: exportMidi },
+  { label: "MusicXML", available: isPu, run: exportPuMusicXml },
+  { label: "JPWABC（简谱）", available: isPu, run: exportPuJpwabc },
+  // 混排（五线谱预览）
+  { label: "PNG", available: isMixed, run: exportCurrentPagePng },
+  { label: "PDF", available: isMixed, run: exportMixedPdf },
+  { label: "MIDI", available: isMixed, run: exportMidi },
+  { label: "MusicXML", available: isMixed, run: exportMusicXml },
+  // 简谱
+  { label: "PPTX", available: isJp, run: exportPptx },
+  { label: "MIDI", available: isJp, run: exportMidi },
+  { label: "MusicXML", available: isJp, run: exportMusicXml },
+];
 
 export function showExportDialog(app: App): void {
   const overlay = document.createElement("div");
@@ -246,20 +277,8 @@ export function showExportDialog(app: App): void {
     };
     list.append(btn);
   };
-  if (app.docFormat === "pu" && app.mode !== "mixed") {
-    item("PPTX", () => exportPptx(app));
-    item("MIDI", () => exportMidi(app));
-    item("MusicXML", () => exportPuMusicXml(app));
-    item("JPWABC（简谱）", () => exportPuJpwabc(app));
-  } else if (app.mode === "mixed") {
-    item("PNG", () => exportCurrentPagePng(app));
-    item("PDF", () => exportMixedPdf(app));
-    item("MIDI", () => exportMidi(app));
-    item("MusicXML", () => exportMusicXml(app));
-  } else {
-    item("PPTX", () => exportPptx(app));
-    item("MIDI", () => exportMidi(app));
-    item("MusicXML", () => exportMusicXml(app));
+  for (const it of EXPORT_ITEMS) {
+    if (it.available(app)) item(it.label, () => it.run(app));
   }
 
   const footer = document.createElement("div");
