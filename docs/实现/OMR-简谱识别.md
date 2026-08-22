@@ -182,6 +182,29 @@ w/h≥4**——弧越长越扁（7.3），段落方框（"Chorus" 带框 w98 h36
 在任何块的 rec 原文里用 `SECTION_MARK_RE` 就地捞词（Chorus 常与和弦同块）。落位：方框印在**下一谱行**
 音符上方 → 归到该行、标记 x 所在**小节的首音**（`JpNum.sectionMark`）→ `<direction><words>`。
 `musicxml.ts` 吐 `<lyric number>`，下游 `score/musicxml.ts` 导入器接管 → 排版/存 `.Words`。
+### 按 y 聚成行的五个阈值（`geom.ts::clusterByY`）
+
+「把墨块按纵向中心聚成一行」这个操作在管线里出现五次。实现只有一份（`omr/geom.ts::clusterByY` /
+`findLineByY`），但**容差 tol 一律由调用点传入、不设默认值**——五处语义不同，统一会改识别结果：
+
+| 位置 | tol | 聚的是什么 | 尺子 |
+|---|---|---|---|
+| `lyrics.ts` S2① | `numH*0.7` | 汉字主体归 verse 行 | numH（音符数字高） |
+| `overlay.ts::clusterLyricLines` | `lyrH*0.7` | OCR 文本区域归 verse 行 | lyrH（歌词字高） |
+| `header.ts::splitBlocks` | `numH*0.6` | 页眉连通域分行（几何法 fallback） | numH |
+| `lyrics.ts` 细横笔补收 | `numH*0.45` | 把「一」这类矮而宽的笔画并入**已有**行 | numH |
+| `lyrics.ts` 句末标点补收 | `numH*0.9` | 把坐在基线、中心偏低半字高的标点并入已有行 | numH |
+
+前两个 0.7 是同一判据、只是尺子不同，本就一致。后两个是刻意的**双向偏离**：0.45 严于主体，
+因为细横笔没有字高可依、放宽会误挂到相邻 verse 行；0.9 松于主体，因为句末标点中心比本行字心低
+约半个字高（实测 dcy 差 ~9~11px），卡在 0.5 边界上时 JPEG 解码的 ±1px 抖动就足以让它时收时漏
+（同一图在无头 Edge 收得到、在 tauri WebView 却漏 W1 句号）。这两条**不要统一**。
+
+页眉的 0.6 与主体的 0.7 曾试着并成一个值：14 首夹具下 `measure-all` 全档一字不变。但那个结论是空的
+——`splitBlocks` 只在 DBNet 检测返回空时才走，14 首全都走了 det 路径。用 `globalThis.__headerDet=false`
+强制走几何法再 A/B，标题/词曲逐首输出**仍然完全相同**。即：现有语料区分不了 0.6 与 0.7，
+没有证据支持改动，故**保持 0.6 原样**。
+
 ### 和弦符号（`chordline.ts`）
 
 吉他和弦（`Am` / `G/B` / `Gsus4` / `F#m7`）印在谱行音符**上方**，与段落方框同处歌词带。文法判定
