@@ -7,6 +7,7 @@ import { Fraction } from "../common/fraction";
 import { Matrix33 } from "../common/geom";
 import { Font } from "../layout/font";
 import { GraphicLine, GraphicPath, Group, PageItem, TextFrame } from "../layout/layout";
+import type { PagePainter } from "../layout/pagepainter";
 import { LCR, MixedOptions, MixedScore, Notation, ScoreCredit, Sys, SysStaff } from "./model";
 import { loadMixedXml } from "./loader";
 import { drawSystem } from "./render";
@@ -228,9 +229,9 @@ function drawFrames(
 }
 
 // -----------------------------------------------------------------------
-// MixedPainter（接口对齐 JinpuPainter：load/pageCount/renderPage/pageWidthPt/pageHeightPt）
+// MixedPainter。对外契约见 layout/pagepainter.ts::PagePainter（以前只写在这行注释里）。
 
-export class MixedPainter {
+export class MixedPainter implements PagePainter {
   private score: MixedScore | null = null;
   private meta: MetaData | null = null;
   private _pages: Group[] = [];
@@ -259,6 +260,11 @@ export class MixedPainter {
 
   get pageCount(): number {
     return this._pages.length;
+  }
+
+  /** PagePainter：用 tenths（MusicXML 的版面单位），调用方只拿它定宽高比。 */
+  pageSize(_index: number): { w: number; h: number } {
+    return { w: this.pageWidthTenths, h: this.pageHeightTenths };
   }
 
   /** Score title (first line), for export filenames. */
@@ -313,7 +319,15 @@ export class MixedPainter {
 }
 
 // -----------------------------------------------------------------------
-// PageItem → SVGElement (mirrors painter.ts renderPageItem but for mixed-only types)
+// PageItem → SVGElement。
+//
+// **不要与 layout/painter.ts::renderPageItem 合并**——两者看着像，语义不同：
+//   - 那边把 matrix 加在包裹的 <g> 上、子节点递归进这个 g，叶子元素自身不带 transform；
+//     这边把 matrix 加在**叶子元素**上（TextFrame 更是无条件加，matrix 里就含 x/y 平移），
+//     只有 Group 才产生 <g>。
+//   - 那边用 item 自己的 fillColor/strokeColor/color；这边线与文字一律写死 black
+//     （musicpp 的五线谱层本就是纯黑）。
+// 合并任一条都会改变渲染结果。真正共用的是 renderPageSvg（外壳），已在 layout/painter.ts。
 
 function renderGroup(grp: Group): SVGGElement {
   const g = document.createElementNS(SVG_NS, "g") as SVGGElement;

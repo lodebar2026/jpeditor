@@ -420,20 +420,14 @@ export class App {
     const painter = this._puPainter;
     if (!painter) return;
     this._player?.stop();
-    this.scorePane.replaceChildren();
-    this.pageEls = [];
     this.selectedEl = null;
-    for (let i = 0; i < painter.pageCount; i++) {
-      const svg = painter.renderPage(i);
-      const wrap = document.createElement("div");
-      wrap.className = "score-page-wrap";
-      // 文本谱的「原版」是连续长图，宽高比随谱而变，不能用 CSS 里写死的 960/540
-      wrap.style.aspectRatio = `${painter.pageWidth} / ${painter.pageHeight}`;
-      wrap.appendChild(svg);
-      this.scorePane.appendChild(wrap);
-      this.pageEls.push(wrap);
-    }
-    this.pageIndex = Math.min(this.pageIndex, Math.max(0, this.pageEls.length - 1));
+    this._renderPagesWith(painter.pageCount, (i) => painter.renderPage(i), {
+      aspectRatio: (i) => {
+        // 文本谱的「原版」是连续长图，宽高比随谱而变，不能用 CSS 里写死的 960/540
+        const { w, h } = painter.pageSize(i);
+        return `${w} / ${h}`;
+      },
+    });
   }
 
   /** 文本谱版面切换（原版 / PPT）。 */
@@ -537,22 +531,49 @@ export class App {
     this._syncFormatLabel();
   }
 
-  private renderPages(): void {
-    this._player?.stop(); // relayout invalidates chord objects / highlight
+  /** 把若干页铺进 #score-pane。四种预览（简谱 / 文本谱 / 识别核对 / 混排）共用这一条骨架，
+   *  差异全走 opts：各自的容器样式、每页要挂的事件、页码是清零还是夹取。 */
+  private _renderPagesWith(
+    count: number,
+    svgOf: (i: number) => SVGSVGElement,
+    opts: {
+      /** 容器宽高比（连续长图/混排纸张随谱而变，不能用 CSS 里写死的 960/540）。 */
+      aspectRatio?: (i: number) => string;
+      /** 容器宽度（覆盖 CSS 默认）。 */
+      width?: string;
+      /** 容器 position（识别浮窗要相对它绝对定位）。 */
+      position?: string;
+      /** 每页渲染完的额外处理（挂事件、改样式）。 */
+      onPage?: (svg: SVGSVGElement, wrap: HTMLDivElement, i: number) => void;
+      /** true = 页码清零（单页视图/换文档），false = 夹到新页数内（重排后保持当前页）。 */
+      resetPageIndex?: boolean;
+    } = {},
+  ): void {
     this.scorePane.replaceChildren();
     this.pageEls = [];
-    this.selectedEl = null;
-    for (let i = 0; i < this.painter.pageCount; i++) {
-      const svg = this.painter.renderPage(i);
+    for (let i = 0; i < count; i++) {
+      const svg = svgOf(i);
       const wrap = document.createElement("div");
       wrap.className = "score-page-wrap";
+      if (opts.aspectRatio) wrap.style.aspectRatio = opts.aspectRatio(i);
+      if (opts.width) wrap.style.width = opts.width;
+      if (opts.position) wrap.style.position = opts.position;
       wrap.appendChild(svg);
-      const idx = i;
-      svg.addEventListener("click", (e) => this.onPageClick(idx, svg, e));
+      opts.onPage?.(svg, wrap, i);
       this.scorePane.appendChild(wrap);
       this.pageEls.push(wrap);
     }
-    this.pageIndex = Math.min(this.pageIndex, Math.max(0, this.pageEls.length - 1));
+    this.pageIndex = opts.resetPageIndex
+      ? 0
+      : Math.min(this.pageIndex, Math.max(0, this.pageEls.length - 1));
+  }
+
+  private renderPages(): void {
+    this._player?.stop(); // relayout invalidates chord objects / highlight
+    this.selectedEl = null;
+    this._renderPagesWith(this.painter.pageCount, (i) => this.painter.renderPage(i), {
+      onPage: (svg, _wrap, i) => svg.addEventListener("click", (e) => this.onPageClick(i, svg, e)),
+    });
   }
 
   // ---------------- picking / selection ----------------
@@ -1057,17 +1078,14 @@ export class App {
     this._recogPopupEl = null;
     if (!this._recogBin || !this._recogScore) return;
     const bin = this._recogBin;
-    const svg = renderRecognitionSvg(bin, this._recogScore, this.recogView);
-    const wrap = document.createElement("div");
-    wrap.className = "score-page-wrap";
-    wrap.style.position = "relative"; // 浮窗绝对定位相对此容器
-    wrap.style.aspectRatio = `${bin.w} / ${bin.h}`;
-    wrap.style.width = "calc(min(960px, 100%) * var(--score-zoom, 1))";
-    wrap.appendChild(svg);
-    this._wireRecognizeInteraction(svg, wrap);
-    this.scorePane.appendChild(wrap);
-    this.pageEls.push(wrap);
-    this.pageIndex = 0;
+    const score = this._recogScore;
+    this._renderPagesWith(1, () => renderRecognitionSvg(bin, score, this.recogView), {
+      aspectRatio: () => `${bin.w} / ${bin.h}`,
+      width: "calc(min(960px, 100%) * var(--score-zoom, 1))",
+      position: "relative", // 浮窗绝对定位相对此容器
+      onPage: (svg, wrap) => this._wireRecognizeInteraction(svg, wrap),
+      resetPageIndex: true,
+    });
   }
 
   /** 识别 SVG 交互：点选命中对象→选中对应 jpwabc 代码；悬停高亮；floating 视图弹行/页眉浮窗。 */
@@ -1300,23 +1318,20 @@ export class App {
     if (this.mixedXmlText) {
       await this._mixedPainter.load(this.mixedXmlText);
     }
-    // Portrait paper sized from the MusicXML page dimensions.
-    const aspect = `${this._mixedPainter.pageWidthTenths} / ${this._mixedPainter.pageHeightTenths}`;
-    this.scorePane.replaceChildren();
-    this.pageEls = [];
-    for (let i = 0; i < this._mixedPainter.pageCount; i++) {
-      const svg = this._mixedPainter.renderPage(i);
-      svg.style.width = "100%";
-      svg.style.display = "block";
-      const wrap = document.createElement("div");
-      wrap.className = "score-page-wrap";
-      wrap.style.aspectRatio = aspect;
-      wrap.style.width = "calc(min(620px, 100%) * var(--score-zoom, 1))";
-      wrap.appendChild(svg);
-      this.scorePane.appendChild(wrap);
-      this.pageEls.push(wrap);
-    }
-    this.pageIndex = 0;
+    const painter = this._mixedPainter;
+    this._renderPagesWith(painter.pageCount, (i) => painter.renderPage(i), {
+      // Portrait paper sized from the MusicXML page dimensions.
+      aspectRatio: (i) => {
+        const { w, h } = painter.pageSize(i);
+        return `${w} / ${h}`;
+      },
+      width: "calc(min(620px, 100%) * var(--score-zoom, 1))",
+      onPage: (svg) => {
+        svg.style.width = "100%";
+        svg.style.display = "block";
+      },
+      resetPageIndex: true,
+    });
   }
 
   /** 记住上次打开/保存的文件路径（仅 Tauri：浏览器路径不可复读）。 */

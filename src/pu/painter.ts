@@ -13,7 +13,7 @@ import { Font } from "../layout/font";
 import { Matrix33, Point, type Rect } from "../common/geom";
 import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFrame } from "../layout/layout";
 import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
-import { renderPageItem } from "../layout/painter";
+import { renderPageSvg } from "../layout/painter";
 import type { LyricSyllable, Metadata, NoteElement, PuDoc } from "./ast";
 import { primaryMetadata } from "./ast";
 import {
@@ -263,6 +263,11 @@ export class PuPainter {
   constructor(profile: PageProfileName = "print") {
     this.profile = profile;
     this.metrics = metricsFor(profile);
+  }
+
+  /** PagePainter：连续长图模式下宽高随谱而变，故不是常数。 */
+  pageSize(_index: number): { w: number; h: number } {
+    return { w: this.pageWidth, h: this.pageHeight };
   }
 
   get pageCount(): number {
@@ -1242,12 +1247,7 @@ export class PuPainter {
 
   /** 渲染某一页为独立的 <svg>。 */
   renderPage(pageIndex: number): SVGSVGElement {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("class", "score-page");
-    svg.setAttribute("viewBox", `0 0 ${this.pageWidth} ${this.pageHeight}`);
-    const pg = this.layout.pages[pageIndex];
-    if (pg) svg.appendChild(renderPageItem(pg, this.nodeMap));
-    return svg;
+    return renderPageSvg(this.layout.pages[pageIndex], this.pageWidth, this.pageHeight, this.nodeMap);
   }
 
   // ---------------- 播放逐字高亮 ----------------

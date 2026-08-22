@@ -14,10 +14,11 @@ import {
   SmuflText,
 } from "./layout";
 import { Chord, Score } from "../score/score";
+import type { PagePainter } from "./pagepainter";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-export class JinpuPainter {
+export class JinpuPainter implements PagePainter {
   layout: Layout;
   score = new Score();
   pageWidth = 0;
@@ -150,12 +151,7 @@ export class JinpuPainter {
 
   /** Render one page group into a standalone <svg> of pageWidth x pageHeight. */
   renderPage(pageIndex: number): SVGSVGElement {
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("class", "score-page");
-    svg.setAttribute("viewBox", `0 0 ${this.pageWidth} ${this.pageHeight}`);
-    const pg = this.layout.pages[pageIndex];
-    svg.appendChild(renderPageItem(pg, this.nodeMap));
-    return svg;
+    return renderPageSvg(this.layout.pages[pageIndex], this.pageWidth, this.pageHeight, this.nodeMap);
   }
 
   /** Walk up from a picked item to its enclosing "entry" group (else the item). */
@@ -170,6 +166,11 @@ export class JinpuPainter {
 
   get pageCount(): number {
     return this.layout.pages.length;
+  }
+
+  /** PagePainter：本排版器所有页同尺寸（resize 给定的纸张）。 */
+  pageSize(_index: number): { w: number; h: number } {
+    return { w: this.pageWidth, h: this.pageHeight };
   }
 
   // ---------------- picking (Phase 3) ----------------
@@ -237,6 +238,21 @@ export class JinpuPainter {
     const [p] = this.pick(pg, pos.x, pos.y);
     return p;
   }
+}
+
+/** 一页的页面树 → 独立 `<svg>`。JinpuPainter 与 PuPainter 共用（两者的页面树是同一套
+ *  PageItem，只是排版器不同）。`root` 为空时给出一个空白页而不是抛错。 */
+export function renderPageSvg(
+  root: PageItem | undefined,
+  width: number,
+  height: number,
+  nodeMap?: WeakMap<PageItem, SVGGElement>,
+): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "score-page");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  if (root) svg.appendChild(renderPageItem(root, nodeMap));
+  return svg;
 }
 
 // Recursively build an SVG <g> for a PageItem (matrix transform + self shape +
