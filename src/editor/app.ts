@@ -7,7 +7,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { jpwHighlighter } from "./highlight";
 import { puHighlighter } from "../pu/highlight";
 import { PuPainter } from "../pu/painter";
-import { parsePu, puToScore, sniffDialect, dialectSpec } from "../pu";
+import { parsePu, puToScore, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import type { Chord, Score } from "../score/score";
 import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
 import type { PageProfileName } from "../pu/metrics";
@@ -46,6 +46,16 @@ export class App implements OmrHost, PlaybackHost {
   /** 文本谱的版面：原版 A4 / PPT 16:9。 */
   puProfile: PageProfileName = "print";
   private _puPainter: PuPainter | null = null;
+  /** 已解析出的文本谱方言，用于代码区标签（解析前未知）。 */
+  private _puDialect: Dialect | null = null;
+  /** 上次解析结果的缓存（同一份文本不重复解析）。 */
+  private _puDoc: { text: string; doc: PuDoc } | null = null;
+  /** 上次转出的 Score 及「Chord → AST 音符」的对照（试听逐字高亮靠它搭桥）。 */
+  private _puScoreCache: {
+    text: string;
+    score: Score | null;
+    noteMap: Map<Chord, PuNoteElement>;
+  } | null = null;
   private _puHighlightCompartment = new Compartment();
   private _puProfileSwitchEl: HTMLElement | null = null;
   private _puPrintBtnEl: HTMLButtonElement | null = null;
@@ -930,15 +940,6 @@ export class App implements OmrHost, PlaybackHost {
     const meta = document.getElementById("code-pane-meta");
     if (meta) meta.textContent = on ? "只读" : this._formatLabel();
   }
-
-  /** 已解析出的文本谱方言，用于代码区标签（解析前未知）。 */
-  private _puDialect: "tomato" | "shige" | null = null;
-  private _puDoc: { text: string; doc: PuDoc } | null = null;
-  private _puScoreCache: {
-    text: string;
-    score: Score | null;
-    noteMap: Map<Chord, PuNoteElement>;
-  } | null = null;
 
   /** 代码区右上角的格式标签。 */
   private _formatLabel(): string {

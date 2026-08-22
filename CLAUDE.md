@@ -40,6 +40,8 @@ npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿�
 
 `shot.mjs` 用 Playwright `channel: "msedge"` 驱动本地 Edge，serve `dist/`，加载后截图并
 打印页数/着色 token 数/控制台错误。改了渲染相关代码后用它做回归。
+所有 `.mjs` 的浏览器引导（MIME 表 / serve dist / 起 Edge / 遍历 testdata 夹具 / 读 GT）
+共用 `scripts/harness.mjs`，**加新资源类型只改那里的 MIME 表**；脚本里只留断言逻辑。
 `window.__app`（App 实例）在运行时暴露，便于脚本化测试（如 `__app.setText(...)`）。
 
 ## 目录与数据流
@@ -53,8 +55,15 @@ npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿�
   → SVG DOM                      painter.renderPage(i)
 ```
 
-- `src/common/` — `fraction.ts`、`geom.ts`（Point/Rect/Matrix33，含 `toSvg()`）、
-  `measure.ts`（SVG 测量基础设施，**核心**）。
+三个排版器（`JinpuPainter` / `PuPainter` / `MixedPainter`）实现同一个
+`layout/pagepainter.ts::PagePainter`（`pageCount` / `pageSize` / `renderPage`），
+编辑器的铺页逻辑（`App._renderPagesWith`）只依赖它。**高亮不在接口里**——三者语义不同。
+`mixed/painter.ts` 的 `renderItem` 与 `layout/painter.ts` 的 `renderPageItem` 看着像但
+**不要合并**（matrix 加在 `<g>` 还是叶子上、颜色取 item 还是写死 black），理由写在前者的注释里。
+
+- `src/common/` — `fraction.ts`（含 `gcd`/`lcm`）、`geom.ts`（Point/Rect/Matrix33，含
+  `toSvg()`）、`measure.ts`（SVG 测量基础设施，**核心**）、`filetypes.ts`（能打开哪些
+  扩展名——**只在这里写一次**）。
 - `src/smufl/smufl.ts` — Bravura 元数据加载（`public/redist/bravura_metadata.json`）+
   GlyphCodes。**PUA 码位用 `String.fromCharCode(0x...)`，切勿在源码里写字面 PUA 字符**
   （Write 工具会损坏这些字节）。
@@ -65,7 +74,13 @@ npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿�
   （跨过 `/`、`-`、`()` 等记号，否则 `日光/之下` 会被拆开导致词汇级转换失效），转换结果按原位
   逐字回填，长度对不上就退回逐字转换，绝不错位。
 - `src/editor/` — `app.ts`（编辑器↔实时重排↔翻页↔文件 I/O 控制器）、`highlight.ts`
-  （CodeMirror 装饰）、`fileio.ts`（UTF-16LE 编解码 + Tauri 运行时探测）。
+  （CodeMirror 装饰）、`fileio.ts`（UTF-16LE 编解码 + Tauri 运行时探测）、
+  `settings.ts`（localStorage 持久化，只管存取不管应用）。
+  两块从 `app.ts` 切出来的控制器，各自通过一个**列全了的**宿主接口向 App 要能力
+  （那个接口就是「这摊事到底依赖编辑器多少东西」的清单，加东西前先想想）：
+  `omrctl.ts::OmrController`（识别 → 出文本 → 叠加核对 → 点选定位，入口 `app.omr.*`）、
+  `playback.ts::PlaybackController`（播放器/速度/音量，入口 `app.playback.*`；
+  **谱面高亮不在里面**，那属于「谁在画谱面」，留在 App）。
 - `src/jpword/parser/` — **ANTLR 生成代码，勿手改**，每个文件首行 `// @ts-nocheck`。
 
 ## 与原 Kotlin 的对应
@@ -99,6 +114,8 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   文本谱那路落到对应的增时线上（`- "hx:…"`）。
   识别输出格式可选 `jpwabc`（默认）/ 番茄简谱 / 诗歌本文本谱（工具栏「核对」组下拉，持久化）：
   内存里留着格式无关的 `RecognizedScore`，**换格式只重走 emitter，绝不重跑识别**；
+  格式清单是 `src/omr/emit.ts` 的注册表（加一种 = 补一项，文本谱那几种由 `DIALECTS` 派生），
+  几何/统计小工具在 `src/omr/geom.ts`（`clusterByY` 的容差**一律由调用点传**，见那篇）；
   文本谱那路是 `src/omr/topu.ts` 直出原文（不过 Score），回归 `node omr-pu-check.mjs`。
 - **[简谱纵向栅格](docs/实现/简谱纵向栅格.md)**（`src/layout/layout.ts`）——高音点/低音点、slur/tie、
   三连音、fermata、减时线、小节线高度共用的一把尺子（唯一常量 `jpStackGap`，墨迹到墨迹等距；
@@ -118,7 +135,8 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
 - **[播放速度](docs/实现/播放速度.md)**（`score/timeline.ts`）——谱面 `♩=` × 用户倍率，
   以及它怎么经 `.Title` 的 `Expression` 字段往返 `.jpwabc`。
 - **[MusicXML 导出](docs/实现/MusicXML-导出.md)**（`score/musicxmlout.ts`、`musicxmlpatch.ts`、
-  `harmonyxml.ts`、`musicxmllayout.ts`）——工具栏「导出 → MusicXML」。**有 MusicXML 底本（OMR/ABC/导入的 xml）
+  `harmonyxml.ts`、`musicxmllayout.ts`；公共件 `xmlutil.ts` 管字符串拼装
+  （escape/外壳/`<barline>` 子元素顺序/duration 取整）、`xmldom.ts` 管 DOM 后处理）——工具栏「导出 → MusicXML」。**有 MusicXML 底本（OMR/ABC/导入的 xml）
   就在底本上做增量 patch，绝不整体重生成**（.jpwabc 承载的信息更少，重生成 = 降采样）；
   patch 刻意不碰 barline/ending/repeat/direction/harmony 等 jpwabc 表达不了的结构
   （`harmonyxml.ts` 是和弦符号 → `<harmony>` 的公共实现，文本谱直出与简谱 OMR 共用）。全量序列化那条路

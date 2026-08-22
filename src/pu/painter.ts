@@ -16,6 +16,7 @@ import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmon
 import { renderPageSvg } from "../layout/painter";
 import type { LyricSyllable, Metadata, NoteElement, PuDoc } from "./ast";
 import { primaryMetadata } from "./ast";
+import type { Dialect } from "./dialect";
 import {
   layoutDocument,
   noteInkBottom,
@@ -258,7 +259,7 @@ export class PuPainter {
   private highlighted: PageItem[] = [];
 
   private profile: PageProfileName;
-  private dialect: "tomato" | "shige" = "tomato";
+  private dialect: Dialect = "tomato";
 
   constructor(profile: PageProfileName = "print") {
     this.profile = profile;
