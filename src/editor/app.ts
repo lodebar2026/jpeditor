@@ -22,6 +22,7 @@ import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
+import { DOC_EXT, acceptAttr, isPuFile } from "../common/filetypes";
 import { MixedPainter } from "../mixed/painter";
 import { ScorePlayer, type PlayState } from "./player";
 import { playTempo, SPEED_STEPS, type PlayOptions } from "../score/timeline";
@@ -29,7 +30,6 @@ import { OmrController, type OmrHost } from "./omrctl";
 export type { OmrFormat } from "../omr";
 
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
-const PU_EXT_RE = /\.(pu|fq|jps|txt)$/i;
 
 export class App implements OmrHost {
   painter: JinpuPainter;
@@ -525,6 +525,13 @@ export class App implements OmrHost {
     if (this.statusEl) this.statusEl.textContent = s;
   }
 
+  /** 当前状态栏文本。main.ts 以前直接 getElementById("status").textContent 反读，
+   *  两边各自硬编码同一个 DOM id 做通信。 */
+  get status(): string {
+    if (!this.statusEl) this.statusEl = document.getElementById("status");
+    return this.statusEl?.textContent ?? "";
+  }
+
   // ---------------- paging ----------------
   goToPage(i: number): void {
     const np = Math.max(0, Math.min(i, this.pageEls.length - 1));
@@ -700,7 +707,7 @@ export class App implements OmrHost {
       }
     }
     // 文本谱（番茄 / 诗歌本）：原文就是源格式，直接进编辑器，不做任何转换。
-    if (PU_EXT_RE.test(name)) {
+    if (isPuFile(name)) {
       const puText = new TextDecoder(
         bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
       ).decode(bytes);
@@ -1138,7 +1145,7 @@ export class App implements OmrHost {
         resolve(opened);
       };
       input.type = "file";
-      input.accept = ".jpwabc,.pu,.fq,.jps,.txt,.xml,.musicxml,.abc";
+      input.accept = acceptAttr(DOC_EXT);
       input.onchange = async () => {
         changeStarted = true;
         const file = input.files?.[0];

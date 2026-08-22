@@ -3,6 +3,7 @@ import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
 import { asset } from "./common/asset";
 import { App } from "./editor/app";
+import { IMAGE_EXT, IMAGE_ACCEPT, isDocFile, isImageFile, isConvertedFile } from "./common/filetypes";
 import { showOptionsDialog, showHanConvDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
 import { showHelpDialog } from "./editor/help";
@@ -123,7 +124,7 @@ async function boot() {
         setMobileView("score");
         revealWorkspace();
       } else if (appRoot.classList.contains("is-starting")) {
-        setStartFeedback(document.getElementById("status")?.textContent || "识别失败，请更换图片后重试");
+        setStartFeedback(app.status || "识别失败，请更换图片后重试");
       }
     },
   });
@@ -190,7 +191,46 @@ async function boot() {
   mobileCodeBtn.addEventListener("click", () => setMobileView("code"));
   mobileScoreBtn.addEventListener("click", () => setMobileView("score"));
 
-  // zoom controls
+  const updateZoom = wireZoomControls(app, scorePane, on);
+
+  // paging / zoom keys
+  window.addEventListener("keydown", (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); app.zoomBy(1.2); updateZoom(); }
+    else if (mod && e.key === "-") { e.preventDefault(); app.zoomBy(1 / 1.2); updateZoom(); }
+    else if (mod && e.key === "0") { e.preventDefault(); app.resetZoom(); updateZoom(); }
+    else if (e.key === "PageDown") app.nextPage();
+    else if (e.key === "PageUp") app.prevPage();
+    else if (e.key === "Home" && e.ctrlKey) app.goToPage(0);
+    else if (e.key === "End" && e.ctrlKey) app.goToPage(1e9);
+  });
+
+  await wireDragDrop(app, workspace, {
+    onOpened: revealWorkspace,
+    onRecognitionStart: () => { setStartFeedback(""); setRecognitionBusy(true); },
+    onRecognitionDone: (success) => {
+      setRecognitionBusy(false);
+      if (success) {
+        setMobileView("score");
+        revealWorkspace();
+      } else if (appRoot.classList.contains("is-starting")) {
+        setStartFeedback(app.status || "识别失败，请更换图片后重试");
+      }
+    },
+  });
+
+  // 自动加载上次打开的文件（仅 Tauri；失败则保持示例文本）
+  if (await app.tryRestoreLastFile()) revealWorkspace();
+}
+
+
+/** 缩放：按钮 + 指针锚定的滚轮/捏合手势。自成一体的一块，从 boot() 里拆出来。
+ *  返回 updateZoom，供快捷键那边刷新百分比标签。 */
+function wireZoomControls(
+  app: App,
+  scorePane: HTMLElement,
+  on: (id: string, fn: () => void) => void,
+): () => void {
   const zoomLabel = document.getElementById("btn-zoom-reset");
   const updateZoom = () => {
     if (zoomLabel) zoomLabel.textContent = `${Math.round(app.zoom * 100)}%`;
@@ -285,37 +325,8 @@ async function boot() {
   });
   scorePane.addEventListener("gestureend", (ev) => ev.preventDefault());
 
-  // paging / zoom keys
-  window.addEventListener("keydown", (e) => {
-    const mod = e.ctrlKey || e.metaKey;
-    if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); app.zoomBy(1.2); updateZoom(); }
-    else if (mod && e.key === "-") { e.preventDefault(); app.zoomBy(1 / 1.2); updateZoom(); }
-    else if (mod && e.key === "0") { e.preventDefault(); app.resetZoom(); updateZoom(); }
-    else if (e.key === "PageDown") app.nextPage();
-    else if (e.key === "PageUp") app.prevPage();
-    else if (e.key === "Home" && e.ctrlKey) app.goToPage(0);
-    else if (e.key === "End" && e.ctrlKey) app.goToPage(1e9);
-  });
-
-  await wireDragDrop(app, workspace, {
-    onOpened: revealWorkspace,
-    onRecognitionStart: () => { setStartFeedback(""); setRecognitionBusy(true); },
-    onRecognitionDone: (success) => {
-      setRecognitionBusy(false);
-      if (success) {
-        setMobileView("score");
-        revealWorkspace();
-      } else if (appRoot.classList.contains("is-starting")) {
-        setStartFeedback(document.getElementById("status")?.textContent || "识别失败，请更换图片后重试");
-      }
-    },
-  });
-
-  // 自动加载上次打开的文件（仅 Tauri；失败则保持示例文本）
-  if (await app.tryRestoreLastFile()) revealWorkspace();
+  return updateZoom;
 }
-
-const RECOG_EXT_RE = /\.(png|jpe?g|webp|bmp|gif|pdf)$/i;
 
 interface RecognitionPickerHooks {
   onPicked: () => void;
@@ -328,7 +339,7 @@ async function pickRecognitionFile(app: App, hooks: RecognitionPickerHooks): Pro
     const { readFile } = await import("@tauri-apps/plugin-fs");
     const sel = await open({
       multiple: false,
-      filters: [{ name: "简谱图片 / PDF", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif", "pdf"] }],
+      filters: [{ name: "简谱图片 / PDF", extensions: [...IMAGE_EXT] }],
     });
     if (typeof sel !== "string") return;
     hooks.onPicked();
@@ -343,7 +354,7 @@ async function pickRecognitionFile(app: App, hooks: RecognitionPickerHooks): Pro
 
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = "image/png,image/jpeg,image/webp,image/bmp,image/gif,application/pdf,.pdf";
+  input.accept = IMAGE_ACCEPT;
   input.onchange = async () => {
     const file = input.files?.[0];
     if (!file) return;
@@ -375,7 +386,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
       if (event.payload.type === "drop") {
         const path = event.payload.paths[0];
         if (!path) return;
-        if (RECOG_EXT_RE.test(path)) {
+        if (isImageFile(path)) {
           // 拖入图片 → 本地 OMR 识别，完成后默认显示可编辑的排版结果。
           const bytes = await readFile(path);
           hooks.onRecognitionStart();
@@ -387,10 +398,10 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
           }
           return;
         }
-        if (!/\.(jpwabc|pu|fq|jps|txt|xml|musicxml|abc)$/i.test(path)) return;
+        if (!isDocFile(path)) return;
         const bytes = await readFile(path);
         app.importBytes(bytes, path);
-        if (!/\.(xml|musicxml|abc)$/i.test(path)) app.filePath = path;
+        if (!isConvertedFile(path)) app.filePath = path;
         app.rememberLastFile(path);
         hooks.onOpened();
       }
@@ -409,7 +420,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
       const buf = new Uint8Array(await file.arrayBuffer());
-      if (RECOG_EXT_RE.test(file.name) || file.type.startsWith("image/")) {
+      if (isImageFile(file.name) || file.type.startsWith("image/")) {
         hooks.onRecognitionStart();
         let success = false;
         try {
@@ -419,6 +430,8 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
         }
         return;
       }
+      // 与 Tauri 分支同一套白名单：以前这里不判，拖进任意文件都会试着导入。
+      if (!isDocFile(file.name)) return;
       app.importBytes(buf, file.name);
       hooks.onOpened();
     });
