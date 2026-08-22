@@ -24,14 +24,16 @@ import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/han
 import { decodeJpwabc, encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { DOC_EXT, acceptAttr, isPuFile } from "../common/filetypes";
 import { MixedPainter } from "../mixed/painter";
-import { ScorePlayer, type PlayState } from "./player";
-import { playTempo, SPEED_STEPS, type PlayOptions } from "../score/timeline";
+import { PlaybackController, type PlaybackHost } from "./playback";
 import { OmrController, type OmrHost } from "./omrctl";
+import {
+  loadPersistedSettings, savePersistedSettings, loadLastFile, saveLastFile, clearLastFile,
+} from "./settings";
 export type { OmrFormat } from "../omr";
 
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 
-export class App implements OmrHost {
+export class App implements OmrHost, PlaybackHost {
   painter: JinpuPainter;
   view!: EditorView;
   scorePane: HTMLElement;
@@ -80,19 +82,13 @@ export class App implements OmrHost {
   private zoomSaveTimer: ReturnType<typeof setTimeout> | undefined;
   private selectedEl: SVGGElement | null = null;
   statusEl: HTMLElement | null = null;
-  private _player: ScorePlayer | null = null;
-  private _playBtnEl: HTMLButtonElement | null = null;
-  private _speedSelEl: HTMLSelectElement | null = null;
-  /** Per-part linear volume in [0,1]; index = part index. Missing = 1 (full). */
-  partVolumes: number[] = [];
+  /** 试听播放的那一摊（播放器、速度倍率、分声部音量）——见 editor/playback.ts。 */
+  readonly playback: PlaybackController = new PlaybackController(this);
   /** 试听/导出 MIDI 的速度倍率（1 = 谱面标注速度）。持久化。 */
-  playSpeed = 1;
   // Selected note (for "play from here"): its chord + which verse/pass row.
   private _selectedChord: import("../score/score").Chord | null = null;
   private _selectedVerse = 0;
 
-  private static readonly SETTINGS_KEY = "jpeditor-render-settings";
-  private static readonly LAST_FILE_KEY = "jpeditor-last-file";
 
   constructor(meta: MetaData, scorePane: HTMLElement) {
     this.meta = meta;
@@ -128,53 +124,40 @@ export class App implements OmrHost {
     this.reload(this.getText());
   }
 
-  /** Restore persisted render settings; call before mountEditor() so first render uses them. */
+  /** Restore persisted render settings; call before mountEditor() so first render uses them.
+   *  存取机制在 editor/settings.ts；这里只管「哪个值落到哪个属性」。 */
   loadSettings(): void {
-    try {
-      const raw = localStorage.getItem(App.SETTINGS_KEY);
-      if (!raw) return;
-      const s = JSON.parse(raw) as Partial<{
-        pageW: number; pageH: number; fontSize: number;
-        titleSize: number; creditSize: number; color: number; zoom: number;
-        mixedHideBarNumber: boolean; mixedShowJianpuLayer: boolean; playSpeed: number;
-        omrFormat: unknown;
-      }>;
-      this.omr.loadSettings(s);
-      if (s.playSpeed) this.playSpeed = Math.max(0.25, Math.min(3, s.playSpeed));
-      if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
-      if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
-      if (s.pageW) this.pageW = s.pageW;
-      if (s.pageH) this.pageH = s.pageH;
-      if (s.titleSize !== undefined) this.titleSize = s.titleSize;
-      if (s.creditSize !== undefined) this.creditSize = s.creditSize;
-      if (s.color !== undefined) this.color = s.color;
-      if (s.zoom) this.zoom = s.zoom;
-      this._applyZoom();
-      this._rebuildPainter(s.fontSize);
-    } catch {
-      // corrupt storage — ignore
-    }
+    const s = loadPersistedSettings();
+    if (!s) return;
+    this.omr.loadSettings(s);
+    this.playback.loadSettings(s);
+    if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
+    if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
+    if (s.pageW) this.pageW = s.pageW;
+    if (s.pageH) this.pageH = s.pageH;
+    if (s.titleSize !== undefined) this.titleSize = s.titleSize;
+    if (s.creditSize !== undefined) this.creditSize = s.creditSize;
+    if (s.color !== undefined) this.color = s.color;
+    if (s.zoom) this.zoom = s.zoom;
+    this._applyZoom();
+    this._rebuildPainter(s.fontSize);
   }
 
-  /** OmrHost 也要用（切输出格式后持久化）。 */
+  /** 两个控制器也要用（切输出格式 / 改速度后持久化）。 */
   saveSettings(): void {
-    try {
-      localStorage.setItem(App.SETTINGS_KEY, JSON.stringify({
-        pageW: this.pageW,
-        pageH: this.pageH,
-        fontSize: this.fontSize,
-        titleSize: this.titleSize,
-        creditSize: this.creditSize,
-        color: this.color,
-        zoom: this.zoom,
-        mixedHideBarNumber: this.mixedHideBarNumber,
-        mixedShowJianpuLayer: this.mixedShowJianpuLayer,
-        playSpeed: this.playSpeed,
-        omrFormat: this.omr.format,
-      }));
-    } catch {
-      // storage unavailable — ignore
-    }
+    savePersistedSettings({
+      pageW: this.pageW,
+      pageH: this.pageH,
+      fontSize: this.fontSize,
+      titleSize: this.titleSize,
+      creditSize: this.creditSize,
+      color: this.color,
+      zoom: this.zoom,
+      mixedHideBarNumber: this.mixedHideBarNumber,
+      mixedShowJianpuLayer: this.mixedShowJianpuLayer,
+      playSpeed: this.playback.speed,
+      omrFormat: this.omr.format,
+    });
   }
 
   // ---------------- zoom ----------------
@@ -279,7 +262,7 @@ export class App implements OmrHost {
       return false;
     }
     this.renderPages();
-    this.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换
+    this.playback.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换
     return true;
   }
 
@@ -329,7 +312,7 @@ export class App implements OmrHost {
   private renderPuPages(): void {
     const painter = this._puPainter;
     if (!painter) return;
-    this._player?.stop();
+    this.playback.stop();
     this.selectedEl = null;
     this._renderPagesWith(painter.pageCount, (i) => painter.renderPage(i), {
       aspectRatio: (i) => {
@@ -479,7 +462,7 @@ export class App implements OmrHost {
   }
 
   private renderPages(): void {
-    this._player?.stop(); // relayout invalidates chord objects / highlight
+    this.playback.stop(); // relayout invalidates chord objects / highlight
     this.selectedEl = null;
     this._renderPagesWith(this.painter.pageCount, (i) => this.painter.renderPage(i), {
       onPage: (svg, _wrap, i) => svg.addEventListener("click", (e) => this.onPageClick(i, svg, e)),
@@ -538,23 +521,37 @@ export class App implements OmrHost {
     this.pageIndex = np;
     this.pageEls[np]?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
-  // ---------------- playback ----------------
-  setPlaybackBtn(el: HTMLButtonElement): void {
-    this._playBtnEl = el;
-    this.onPlayState("stopped");
+  // ---------------- playback（控制器在 editor/playback.ts，这里只留与谱面相关的部分） ----------------
+  /** PlaybackHost：混排/识别核对下不试听。 */
+  get canPlay(): boolean {
+    return this.mode === "jp";
   }
 
-  private player(): ScorePlayer {
-    if (!this._player) {
-      this._player = new ScorePlayer(
-        (chord, pass) => this.onPlayChord(chord, pass),
-        (state) => this.onPlayState(state),
-      );
-    }
-    return this._player;
+  /** PlaybackHost：当前该播哪份 Score（文本谱要先转一遍）。 */
+  playableScore(): Score | null {
+    return this.docFormat === "pu" ? this.puScore() : this.painter.score;
   }
 
-  private onPlayChord(chord: import("../score/score").Chord | null, pass: number): void {
+  /** PlaybackHost：谱面标注的速度 ♩=NN（0 = 未标注，试听按默认 90）。 */
+  get scoreTempo(): number {
+    return this.painter.score.playData.tempo;
+  }
+
+  /** PlaybackHost：算「当前实际 BPM」用的那份 Score。 */
+  get tempoScore(): Score {
+    return this.painter.score;
+  }
+
+  /** PlaybackHost：用户在谱面上选中了某个音就从那儿起播。 */
+  startPoint(): { chord: Chord; pass: number } | undefined {
+    return this._selectedChord !== null
+      ? { chord: this._selectedChord, pass: this._selectedVerse }
+      : undefined;
+  }
+
+  /** PlaybackHost：播到某个和弦 → 谱面高亮 + 保证可见。
+   *  高亮留在 App 而不进控制器：简谱与文本谱走各自排版器的索引，那属于「谁在画谱面」。 */
+  highlightPlaying(chord: Chord | null, pass: number): void {
     // 文本谱：播放器给的是 Chord，「原版」谱面按 AST 节点索引，靠 noteMap 搭桥
     if (this.docFormat === "pu") {
       const painter = this._puPainter;
@@ -575,108 +572,14 @@ export class App implements OmrHost {
     }
   }
 
-  private onPlayState(state: PlayState): void {
-    if (!this._playBtnEl) return;
-    const label = state === "loading" ? "加载中" : state === "playing" ? "停止" : "播放";
-    const icon = this._playBtnEl.querySelector<HTMLElement>(".playback-icon");
-    const labelEl = this._playBtnEl.querySelector<HTMLElement>(".playback-label");
-    this._playBtnEl.dataset.state = state;
-    this._playBtnEl.disabled = state === "loading";
-    this._playBtnEl.setAttribute("aria-label", label);
-    this._playBtnEl.title = state === "playing" ? "停止试听" : state === "loading" ? "正在加载试听音色" : "播放试听";
-    if (labelEl) labelEl.textContent = label;
-    if (icon) {
-      icon.classList.toggle("is-loading", state === "loading");
-      icon.textContent = state === "playing" ? "■" : state === "loading" ? "" : "▶";
-    }
-  }
-
   /** Number of parts in the current score (for the mixer UI). */
   get partCount(): number {
     return this.painter.score.parts.length;
   }
-  getPartVolume(i: number): number {
-    const v = this.partVolumes[i];
-    return v === undefined ? 1 : v;
-  }
-  setPartVolume(i: number, v: number): void {
-    this.partVolumes[i] = Math.max(0, Math.min(1, v));
-  }
 
-  /** 试听/导出 MIDI 共用的播放参数。 */
-  playOptions(): PlayOptions {
-    return { partVolumes: this.partVolumes, speed: this.playSpeed };
-  }
-
-  /** 谱面标注的速度 ♩=NN（0 = 未标注，试听按默认 90）。 */
-  get scoreTempo(): number {
-    return this.painter.score.playData.tempo;
-  }
-
-  /** 设置速度倍率并持久化；正在播放时按新速度重播（音已排好队，只能重来）。 */
-  setPlaySpeed(mul: number): void {
-    const v = Math.max(0.25, Math.min(3, mul));
-    if (v === this.playSpeed) return;
-    this.playSpeed = v;
-    this.saveSettings();
-    this.refreshSpeedUi();
-    if (this._player?.state === "playing") void this.playScore();
-  }
-
-  /** 工具条速度下拉与谱速提示的同步（换谱、改倍率后调用）。 */
-  refreshSpeedUi(): void {
-    const sel = this._speedSelEl;
-    if (!sel) return;
-    sel.value = String(this.playSpeed);
-    const bpm = Math.round(playTempo(this.painter.score, this.playOptions()));
-    const marked = this.scoreTempo > 0 ? `谱面 ♩=${this.scoreTempo}` : "谱面未标速度，按 ♩=90";
-    sel.title = `播放速度：${marked}，当前 ♩=${bpm}`;
-  }
-
-  bindSpeedSelect(el: HTMLSelectElement): void {
-    this._speedSelEl = el;
-    el.innerHTML = "";
-    for (const v of SPEED_STEPS) {
-      const o = document.createElement("option");
-      o.value = String(v);
-      o.textContent = v === 1 ? "原速" : `×${v}`;
-      el.append(o);
-    }
-    el.addEventListener("change", () => this.setPlaySpeed(parseFloat(el.value) || 1));
-    this.refreshSpeedUi();
-  }
-
-  async playScore(): Promise<void> {
-    if (this.mode !== "jp") return; // playback is jianpu-mode only
-    // 文本谱先转成 Score（谱面高亮走 PuPainter 自己的索引，见 _puPlaybackScore）
-    const score = this.docFormat === "pu" ? this.puScore() : this.painter.score;
-    if (!score) {
-      this.setStatus("这份文本谱里没有可试听的曲行");
-      return;
-    }
-    const start =
-      this._selectedChord !== null
-        ? { chord: this._selectedChord, pass: this._selectedVerse }
-        : undefined;
-    try {
-      await this.player().play(score, this.playOptions(), start);
-    } catch (e) {
-      console.error("playback failed", e);
-      this._player?.stop();
-      this.setStatus("试听加载失败：" + (e instanceof Error ? e.message : String(e)));
-    }
-  }
-
-  async togglePlayback(): Promise<void> {
-    if (this._player?.state === "playing" || this._player?.state === "loading") {
-      this.stopPlayback();
-      return;
-    }
-    await this.playScore();
-  }
-
+  /** 停止试听。四处铺页前都要调，故留一个短名字在 App 上。 */
   stopPlayback(): void {
-    this._player?.stop();
+    this.playback.stop();
   }
 
   nextPage(): void {
@@ -1076,30 +979,13 @@ export class App implements OmrHost {
 
   /** 记住上次打开/保存的文件路径（仅 Tauri：浏览器路径不可复读）。 */
   rememberLastFile(path: string): void {
-    try {
-      localStorage.setItem(App.LAST_FILE_KEY, path);
-    } catch {
-      // storage unavailable — ignore
-    }
-  }
-
-  private clearLastFile(): void {
-    try {
-      localStorage.removeItem(App.LAST_FILE_KEY);
-    } catch {
-      // ignore
-    }
+    saveLastFile(path);
   }
 
   /** 启动时尝试复读上次打开的文件（仅 Tauri）。返回 true 表示已加载，false 则保持示例文本。 */
   async tryRestoreLastFile(): Promise<boolean> {
     if (!isTauriRuntime()) return false;
-    let path: string | null;
-    try {
-      path = localStorage.getItem(App.LAST_FILE_KEY);
-    } catch {
-      return false;
-    }
+    const path = loadLastFile();
     if (!path) return false;
     try {
       const { readFile } = await import("@tauri-apps/plugin-fs");
@@ -1109,7 +995,7 @@ export class App implements OmrHost {
       return true;
     } catch {
       // 文件已被移动/删除/不可读 — 忘掉它，回退到示例
-      this.clearLastFile();
+      clearLastFile();
       return false;
     }
   }

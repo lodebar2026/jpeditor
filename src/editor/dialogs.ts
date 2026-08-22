@@ -172,13 +172,13 @@ export function showOptionsDialog(app: App): void {
       s.type = "range";
       s.min = "0";
       s.max = "100";
-      s.value = String(Math.round(app.getPartVolume(i) * 100));
+      s.value = String(Math.round(app.playback.getPartVolume(i) * 100));
       volSliders.push(s);
       body.append(labeled(`声部 ${i + 1}`, s));
     }
   }
   modal("设置", body, () => {
-    volSliders.forEach((s, i) => app.setPartVolume(i, (parseInt(s.value, 10) || 0) / 100));
+    volSliders.forEach((s, i) => app.playback.setPartVolume(i, (parseInt(s.value, 10) || 0) / 100));
     const [w, h] = RATIOS[sel.value] ?? [app.pageW, app.pageH];
     const fontSize = parseInt(fs.value, 10) || app.fontSize;
     const titleSize = parseInt(titleSz.value, 10) || app.titleSize;

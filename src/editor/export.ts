@@ -96,7 +96,7 @@ export async function exportCurrentPagePng(app: App): Promise<void> {
 export async function exportMidi(app: App): Promise<void> {
   const score = app.docFormat === "pu" ? app.puScore() : app.painter.score;
   if (!score) throw new Error("这份文本谱里没有可导出的曲行");
-  const bytes = scoreToMidi(score, app.playOptions());
+  const bytes = scoreToMidi(score, app.playback.options());
   await saveBytes(bytes, `${baseName(app)}.mid`, "audio/midi");
 }
 

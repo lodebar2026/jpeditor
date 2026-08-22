@@ -176,11 +176,11 @@ async function boot() {
   }
   const playBtn = document.getElementById("btn-play") as HTMLButtonElement | null;
   if (playBtn) {
-    app.setPlaybackBtn(playBtn);
-    playBtn.addEventListener("click", () => void app.togglePlayback());
+    app.playback.setPlaybackBtn(playBtn);
+    playBtn.addEventListener("click", () => void app.playback.toggle());
   }
   const speedSel = document.getElementById("sel-speed") as HTMLSelectElement | null;
-  if (speedSel) app.bindSpeedSelect(speedSel);
+  if (speedSel) app.playback.bindSpeedSelect(speedSel);
   const openScore = async () => { if (await app.openFile()) revealWorkspace(); };
   document.getElementById("btn-open")?.addEventListener("click", () => void openScore());
   document.getElementById("btn-start-score")?.addEventListener("click", () => void openScore());
