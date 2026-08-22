@@ -13,7 +13,6 @@ import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
 import type { PageProfileName } from "../pu/metrics";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
-import { PlayItem } from "../score/score";
 import { JinpuPainter } from "../layout/painter";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/layout";
 import { Point } from "../common/geom";
@@ -75,7 +74,8 @@ export class App implements OmrHost {
   mixedHideBarNumber = false; // 混排：隐藏小节号
   mixedShowJianpuLayer = true;
   zoom = 1; // 谱面显示缩放（应用到 #score-pane 的 --score-zoom）
-  private meta: MetaData;
+  /** SMuFL 字体元数据。help.ts 渲染记谱法示例时也要用同一份。 */
+  readonly meta: MetaData;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private zoomSaveTimer: ReturnType<typeof setTimeout> | undefined;
   private selectedEl: SVGGElement | null = null;
@@ -283,72 +283,6 @@ export class App implements OmrHost {
     return true;
   }
 
-  /**
-   * Render a standalone `.jpwabc` snippet to its own `<svg>` for the help /
-   * notation documentation examples. Uses a throwaway painter (does not touch
-   * the live score) sharing this app's SMuFL metadata. Returns null on parse/
-   * layout failure so the caller can silently drop unsupported examples.
-   * The svg keeps the full page viewBox; crop to content via getBBox after it
-   * is attached to the DOM.
-   *
-   * `titlePage: true` renders the standalone title page (Title/SubTitle/credit/
-   * expression layout); otherwise renders the first content page with its
-   * footer (running title + page number) stripped so only the music remains.
-   */
-  renderExampleSvg(jpwabc: string, opts: { width?: number; height?: number; titlePage?: boolean } = {}): SVGSVGElement | null {
-    const width = opts.width ?? 1600;
-    const height = opts.height ?? 540;
-    let f: JpwFile | null;
-    try {
-      f = JpwFile.fromString(jpwabc);
-    } catch {
-      return null;
-    }
-    if (!f) return null;
-    let score;
-    try {
-      score = fromJpw(f);
-    } catch {
-      return null;
-    }
-    if (!score) return null;
-    // Lyric-less snippets get pass=0 → empty playData → blank layout. Synthesize
-    // a single play pass over all measures so examples without .Words still render.
-    if (score.playData.measures.length === 0 && score.parts[0]) {
-      const pi = new PlayItem();
-      pi.pass = 1;
-      pi.mid = 0;
-      pi.end = score.parts[0].measures.length;
-      score.playData.measures.push(pi);
-      score.playData.isSimpple = true;
-    }
-    const p = new JinpuPainter(this.fontSize);
-    p.layout.options.smuflMeta = this.meta;
-    // 示例画在压暗的米白纸上（styles.css 的 --help-paper），墨色也从纯黑收一档，
-    // 免得深色界面上黑白对比过硬。真正的谱面预览仍是纯白纸 + 用户设定的颜色。
-    p.layout.options.color = 0xff1a1a1a;
-    p.score = score;
-    const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
-    try {
-      if (opts.titlePage) {
-        // resize() prepends a standalone title page at index 0.
-        p.resize(width, height, breakDesc);
-        return p.renderPage(0);
-      }
-      p.pageWidth = width;
-      p.pageHeight = height;
-      p.layout.fromScore(score, breakDesc, width, height);
-      const pg = p.layout.pages[0];
-      if (!pg) return null;
-      // fromScore appends a running-title + page-number footer as the last two
-      // children of each page; drop them so examples show only the music.
-      if (pg.children.length > 2) pg.children.splice(pg.children.length - 2, 2);
-      pg.update();
-      return p.renderPage(0);
-    } catch {
-      return null;
-    }
-  }
 
   /** 文本谱（番茄 / 诗歌本）：解析 → 专用排版 → 渲染。 */
   private reloadPu(text: string): boolean {
@@ -778,11 +712,7 @@ export class App implements OmrHost {
       }
       this.mixedXmlText = null;
       this._mixedPainter = null;
-      if (this.mode === "mixed") {
-        this.mode = "jp";
-        this._setMixedLayout(false);
-        this._setPreviewModeActive("jp");
-      }
+      this._setMode("jp");
       this._setDocFormat("pu");
       this.setText(puText);
       return;
@@ -799,11 +729,7 @@ export class App implements OmrHost {
       // 多声部（SATB 等）歌谱默认进入混排模式
       const autoMixed = this.mode !== "mixed" && isMultiPartXml(xml);
       if (this.mode === "mixed" || autoMixed) {
-        if (autoMixed) {
-          this.mode = "mixed";
-          this._setMixedLayout(true);
-          this._setPreviewModeActive("mixed");
-        }
+        if (autoMixed) this._setMode("mixed");
         // 仍填充编辑器的简谱转换文本，便于切回「简谱」（best-effort）
         try {
           const score = loadMusicXml(xml);
@@ -828,11 +754,7 @@ export class App implements OmrHost {
       this._mixedPainter = null;
       this._setMixedAvailable(false);
       this._disablePhrase();
-      if (this.mode === "mixed") {
-        this.mode = "jp";
-        this._setMixedLayout(false);
-        this._setPreviewModeActive("jp");
-      }
+      this._setMode("jp");
       this.setText(decodeJpwabc(bytes));
     }
   }
@@ -904,14 +826,7 @@ export class App implements OmrHost {
     if (!this.mixedXmlText || !this._origLayoutText) return;
     if (this._phraseOn === phrase) return;
     // 乐句排版要看的是排版结果 → 先退出识别/混排叠加视图，回到简谱模式，否则 reload 直接返回不重排。
-    if (this.mode === "recognize") {
-      this.mode = "jp";
-      this.omr.leaveLayout();
-    } else if (this.mode === "mixed") {
-      this.mode = "jp";
-      this._setMixedLayout(false);
-      this._setPreviewModeActive("jp");
-    }
+    this._setMode("jp");
     if (!phrase) {
       this._phraseOn = false;
       this._setPhraseActive(false);
@@ -1035,16 +950,7 @@ export class App implements OmrHost {
 
   /** 进入/退出识别模式：改 mode，并在进入时先退掉混排布局。 */
   setRecognizeMode(on: boolean): void {
-    if (on) {
-      // 从混排切入识别：先退混排布局
-      if (this.mode === "mixed") {
-        this._setMixedLayout(false);
-        this._setPreviewModeActive("jp");
-      }
-      this.mode = "recognize";
-    } else {
-      this.mode = "jp";
-    }
+    this._setMode(on ? "recognize" : "jp");
   }
 
   /** 文本谱产物落地：丢掉混排底本、切 docFormat、清文件路径，再设文本。 */
@@ -1052,23 +958,31 @@ export class App implements OmrHost {
     this.mixedXmlText = null;
     this._mixedPainter = null;
     this._setMixedAvailable(false);
-    if (this.mode === "mixed") {
-      this.mode = "jp";
-      this._setMixedLayout(false);
-      this._setPreviewModeActive("jp");
-    }
+    this._setMode("jp");
     this._setDocFormat("pu");
     this.filePath = null;
     this.setText(text);
   }
 
+  /** 预览模式切换的**唯一**入口：退出当前模式的副作用 + 进入新模式的副作用。
+   *
+   *  以前这三连（`mode = …` / `_setMixedLayout` / `_setPreviewModeActive`）在五处各写一遍，
+   *  漏一处就出「按钮亮着但布局是另一个模式」。识别模式的那套布局由 OmrController 自己接管
+   *  （omrctl.ts::setLayout），这里只管 mode 与混排布局。 */
+  private _setMode(next: "jp" | "mixed" | "recognize"): void {
+    if (this.mode === next) return;
+    if (this.mode === "recognize") this.omr.leaveLayout();
+    if (this.mode === "mixed") this._setMixedLayout(false);
+    this.mode = next;
+    if (next === "mixed") this._setMixedLayout(true);
+    // 识别模式沿用「简谱」这个预览档（工具条上它不是独立一档）。
+    this._setPreviewModeActive(next === "mixed" ? "mixed" : "jp");
+  }
+
   async showJpPreview(): Promise<void> {
     if (this.mode === "jp") return;
     this.stopPlayback();
-    if (this.mode === "recognize") this.omr.leaveLayout();
-    if (this.mode === "mixed") this._setMixedLayout(false);
-    this.mode = "jp";
-    this._setPreviewModeActive("jp");
+    this._setMode("jp");
     this.reload(this.getText());
   }
 
@@ -1076,10 +990,7 @@ export class App implements OmrHost {
     if (!this.mixedXmlText) return;
     if (this.mode === "mixed") return;
     this.stopPlayback();
-    if (this.mode === "recognize") this.omr.leaveLayout();
-    this.mode = "mixed";
-    this._setMixedLayout(true);
-    this._setPreviewModeActive("mixed");
+    this._setMode("mixed");
     await this._renderMixedPages();
   }
 

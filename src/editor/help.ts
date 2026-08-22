@@ -2,6 +2,87 @@
 // showExportDialog），复用 .modal-overlay/.modal-box 样式 + 本文件专属的 .help-* 样式。
 // 功能帮助 = 可展开主题列表（<details>）；记谱法 = 分节说明 + 实时渲染的 SVG 示例。
 import type { App } from "./app";
+import { JinpuPainter } from "../layout/painter";
+import { JpwFile, LayoutSection } from "../jpword/jpwfile";
+import { fromJpw } from "../score/jpwimport";
+import { PlayItem } from "../score/score";
+import type { MetaData } from "../smufl/smufl";
+
+// ---- 记谱法示例的渲染 -------------------------------------------------------
+// 从 app.ts 搬来：它用的是一次性的 painter、不碰实时谱面，和编辑器本身没有关系，
+// 只有本文件（帮助对话框的「记谱法」页）调它。
+
+/**
+ * Render a standalone `.jpwabc` snippet to its own `<svg>` for the help /
+ * notation documentation examples. Uses a throwaway painter (does not touch
+ * the live score) sharing this app's SMuFL metadata. Returns null on parse/
+ * layout failure so the caller can silently drop unsupported examples.
+ * The svg keeps the full page viewBox; crop to content via getBBox after it
+ * is attached to the DOM.
+ *
+ * `titlePage: true` renders the standalone title page (Title/SubTitle/credit/
+ * expression layout); otherwise renders the first content page with its
+ * footer (running title + page number) stripped so only the music remains.
+ */
+export function renderExampleSvg(
+meta: MetaData,
+fontSize: number,
+jpwabc: string, opts: { width?: number; height?: number; titlePage?: boolean } = {},
+): SVGSVGElement | null {
+  const width = opts.width ?? 1600;
+  const height = opts.height ?? 540;
+  let f: JpwFile | null;
+  try {
+    f = JpwFile.fromString(jpwabc);
+  } catch {
+    return null;
+  }
+  if (!f) return null;
+  let score;
+  try {
+    score = fromJpw(f);
+  } catch {
+    return null;
+  }
+  if (!score) return null;
+  // Lyric-less snippets get pass=0 → empty playData → blank layout. Synthesize
+  // a single play pass over all measures so examples without .Words still render.
+  if (score.playData.measures.length === 0 && score.parts[0]) {
+    const pi = new PlayItem();
+    pi.pass = 1;
+    pi.mid = 0;
+    pi.end = score.parts[0].measures.length;
+    score.playData.measures.push(pi);
+    score.playData.isSimpple = true;
+  }
+  const p = new JinpuPainter(fontSize);
+  p.layout.options.smuflMeta = meta;
+  // 示例画在压暗的米白纸上（styles.css 的 --help-paper），墨色也从纯黑收一档，
+  // 免得深色界面上黑白对比过硬。真正的谱面预览仍是纯白纸 + 用户设定的颜色。
+  p.layout.options.color = 0xff1a1a1a;
+  p.score = score;
+  const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
+  try {
+    if (opts.titlePage) {
+      // resize() prepends a standalone title page at index 0.
+      p.resize(width, height, breakDesc);
+      return p.renderPage(0);
+    }
+    p.pageWidth = width;
+    p.pageHeight = height;
+    p.layout.fromScore(score, breakDesc, width, height);
+    const pg = p.layout.pages[0];
+    if (!pg) return null;
+    // fromScore appends a running-title + page-number footer as the last two
+    // children of each page; drop them so examples show only the music.
+    if (pg.children.length > 2) pg.children.splice(pg.children.length - 2, 2);
+    pg.update();
+    return p.renderPage(0);
+  } catch {
+    return null;
+  }
+}
+
 
 // ---- 小工具 ----------------------------------------------------------------
 
@@ -364,7 +445,7 @@ function buildNotationHelp(app: App): HTMLElement {
     card.append(pre);
 
     const renderText = ex.render ?? (ex.code.trimStart().startsWith(".") ? ex.code : wrapVoice(ex.code));
-    const svg = app.renderExampleSvg(renderText, { titlePage: ex.titlePage });
+    const svg = renderExampleSvg(app.meta, app.fontSize, renderText, { titlePage: ex.titlePage });
     if (svg) {
       const box = el("div", "help-render");
       svg.classList.add("help-svg");
