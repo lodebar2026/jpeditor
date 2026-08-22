@@ -11,6 +11,8 @@
 //   每个附点额外                  → +12.5
 // 行内算完自然宽度后再整体拉伸/压缩到版心宽度（两端对齐）。
 
+import type { Dialect } from "./dialect";
+
 /** 版面预设：print 忠实原版 A4；slide 是投影用的 16:9。 */
 export type PageProfileName = "print" | "slide";
 
@@ -339,9 +341,15 @@ function applyShige(m: PuMetrics): PuMetrics {
   };
 }
 
-export function metricsFor(profile: PageProfileName, dialect: "tomato" | "shige" = "tomato"): PuMetrics {
+/** 各方言对基础度量的修正。番茄用原值，故是恒等；加方言在这张表里补一项，不要写 if。 */
+const DIALECT_TWEAK: Record<Dialect, (m: PuMetrics) => PuMetrics> = {
+  tomato: (m) => m,
+  shige: applyShige,
+};
+
+export function metricsFor(profile: PageProfileName, dialect: Dialect = "tomato"): PuMetrics {
   const base = profile === "slide" ? { ...SLIDE } : { ...PRINT };
-  return dialect === "shige" ? applyShige(base) : base;
+  return DIALECT_TWEAK[dialect](base);
 }
 
 /** 版心宽度。 */

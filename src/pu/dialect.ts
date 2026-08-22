@@ -16,7 +16,10 @@ export type Dialect = "tomato" | "shige";
 
 export interface DialectSpec {
   id: Dialect;
+  /** 完整显示名（诊断信息里用） */
   name: string;
+  /** 短显示名（工具栏/状态栏的「文本谱·X」里用） */
+  shortName: string;
   /** 升高一个八度的字符 */
   octaveUp: string;
   /** 降低一个八度的字符 */
@@ -31,11 +34,37 @@ export interface DialectSpec {
   lyricSkip: readonly string[];
   /** 小节线写法，按**从长到短**匹配 */
   barlines: ReadonlyArray<readonly [string, import("./ast").BarlineType]>;
+  /** 歌词里分隔两个音节的字符（番茄用 `/`，诗歌本用空格） */
+  wordSeparator: string;
+  /** 并字连接号：把本字并到前一个音节。没有这种写法就留空 */
+  joinToken?: string;
+  /** 头部字段的写法。**只有 emitter 用**——解析侧两边字段都认，不需要分方言。 */
+  header: HeaderStyle;
+}
+
+/** 头部字段怎么写。加第三种方言时补一份数据，而不是在 emitter 里再写一个 if。 */
+export interface HeaderStyle {
+  /** 版本行（番茄的 `V:1.0`）。没有就不写 */
+  versionLine?: string;
+  /** 标题字段名 */
+  titleField: string;
+  /** 著作者字段名 */
+  creditField: string;
+  /** 速度字段名 */
+  tempoField: string;
+  /** 调号+拍号：split=各占一行（番茄 `D:` / `P:`），combined=合成一行（诗歌本 `1=C4/4`） */
+  keyMeter: "split" | "combined";
+  /** split 时的调号 / 拍号字段名 */
+  keyField?: string;
+  meterField?: string;
+  /** 调号写法：prefix=`bB`（降号在前），suffix=`Bb`（降号在后） */
+  keyStyle: "prefix" | "suffix";
 }
 
 const TOMATO: DialectSpec = {
   id: "tomato",
   name: "番茄简谱",
+  shortName: "番茄",
   octaveUp: "'",
   octaveDown: ",",
   accidentals: { "#": "sharp", $: "flat", "=": "natural" },
@@ -54,11 +83,24 @@ const TOMATO: DialectSpec = {
     ["|*", "invisible"],
     ["|", "normal"],
   ],
+  wordSeparator: "/",
+  joinToken: "~",
+  header: {
+    versionLine: "V:1.0", // 与 D:/P: 一同构成 sniffDialect 的番茄特征
+    titleField: "B",
+    creditField: "Z",
+    tempoField: "J",
+    keyMeter: "split",
+    keyField: "D",
+    meterField: "P",
+    keyStyle: "prefix",
+  },
 };
 
 const SHIGE: DialectSpec = {
   id: "shige",
   name: "诗歌本文本谱",
+  shortName: "诗歌本",
   octaveUp: "g",
   octaveDown: "d",
   accidentals: {
@@ -86,6 +128,14 @@ const SHIGE: DialectSpec = {
     ["|*", "invisible"],
     ["|", "normal"],
   ],
+  wordSeparator: " ",
+  header: {
+    titleField: "T",
+    creditField: "Z",
+    tempoField: "J",
+    keyMeter: "combined", // 诗歌本把调号与拍号写在一行：`1=G4/4`
+    keyStyle: "suffix",
+  },
 };
 
 export const DIALECTS: Readonly<Record<Dialect, DialectSpec>> = { tomato: TOMATO, shige: SHIGE };

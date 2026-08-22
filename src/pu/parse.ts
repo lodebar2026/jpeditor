@@ -662,7 +662,7 @@ export function parseLyricBody(ctx: Ctx, src: string, startColumn: number): Lyri
   const d = ctx.dialect;
   const out: LyricSyllable[] = [];
   const skipChars = new Set(d.lyricSkip);
-  const wordSeparator = d.id === "tomato" ? "/" : " ";
+  const wordSeparator = d.wordSeparator;
 
   const pushSyllable = (text: string, column: number, length: number): void => {
     out.push({ text, source: span(ctx, column, length) });
@@ -799,8 +799,8 @@ export function parseLyricBody(ctx: Ctx, src: string, startColumn: number): Lyri
     if (!isCjk(text) && cp < 0x7f) {
       report(ctx, "unexpected-lyric-char", `歌词里无法识别的字符 '${text}'`, i, chLen);
     }
-    // 番茄的并字连接号 `~`：把本字并到前一个音节
-    if (text === "~" && d.id === "tomato") {
+    // 并字连接号（番茄的 `~`）：把本字并到前一个音节
+    if (d.joinToken !== undefined && text === d.joinToken) {
       i += chLen;
       const nextCp = src.codePointAt(i);
       if (nextCp !== undefined) {

@@ -7,7 +7,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { jpwHighlighter } from "./highlight";
 import { puHighlighter } from "../pu/highlight";
 import { PuPainter } from "../pu/painter";
-import { parsePu, puToScore, sniffDialect } from "../pu";
+import { parsePu, puToScore, sniffDialect, dialectSpec } from "../pu";
 import type { Chord, Score } from "../score/score";
 import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
 import type { PageProfileName } from "../pu/metrics";
@@ -27,21 +27,16 @@ import { showConfirmDialog } from "./dialogs";
 import { MixedPainter } from "../mixed/painter";
 import { ScorePlayer, type PlayState } from "./player";
 import { playTempo, SPEED_STEPS, type PlayOptions } from "../score/timeline";
-import { recognizeMusicppDetailed, renderRecognitionSvg, renderRowPopup, renderHeaderPopup, toMusicXml, toPuText, type RecogView } from "../omr";
+import {
+  recognizeMusicppDetailed, renderRecognitionSvg, renderRowPopup, renderHeaderPopup,
+  OMR_EMITTERS, DEFAULT_OMR_FORMAT, isOmrFormat, omrEmitter,
+  type OmrFormat, type RecogView,
+} from "../omr";
+export type { OmrFormat } from "../omr";
 import type { Binary, RecognizedScore } from "../omr";
 
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 const PU_EXT_RE = /\.(pu|fq|jps|txt)$/i;
-
-/** 识别结果的输出格式。文本谱两种方言各算一种。 */
-export type OmrFormat = "jpwabc" | "tomato" | "shige";
-
-/** 下拉选项（值, 显示名）。顺序即下拉里的顺序，jpwabc 为默认。 */
-export const OMR_FORMATS: ReadonlyArray<readonly [OmrFormat, string]> = [
-  ["jpwabc", "简谱 jpwabc"],
-  ["tomato", "番茄简谱"],
-  ["shige", "诗歌本文本谱"],
-];
 
 export class App {
   painter: JinpuPainter;
@@ -77,7 +72,7 @@ export class App {
   private _recogMeta: JpwMeta | null = null;
   // 识别结果的输出格式。识别产物（RecognizedScore）本身与格式无关，切换只是重出文本，
   // **不重跑识别**。持久化，下次识别沿用。
-  omrFormat: OmrFormat = "jpwabc";
+  omrFormat: OmrFormat = DEFAULT_OMR_FORMAT;
   private _recogFormatSelectEl: HTMLSelectElement | null = null;
   private _recogFormatFieldEl: HTMLElement | null = null;
   /** 上一次由识别产出的文本；与当前文本不等即说明用户手改过（切格式前要确认）。 */
@@ -164,7 +159,7 @@ export class App {
         mixedHideBarNumber: boolean; mixedShowJianpuLayer: boolean; playSpeed: number;
         omrFormat: OmrFormat;
       }>;
-      if (s.omrFormat && OMR_FORMATS.some(([v]) => v === s.omrFormat)) this.omrFormat = s.omrFormat;
+      if (isOmrFormat(s.omrFormat)) this.omrFormat = s.omrFormat;
       if (s.playSpeed) this.playSpeed = Math.max(0.25, Math.min(3, s.playSpeed));
       if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
       if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
@@ -410,7 +405,7 @@ export class App {
     this.setStatus(
       warns === 0
         ? ""
-        : `${doc.dialect === "tomato" ? "番茄简谱" : "诗歌本文本谱"}：${warns} 处需要留意` +
+        : `${dialectSpec(doc.dialect).name}：${warns} 处需要留意` +
             `（第 ${doc.diagnostics[0]!.source.line + 1} 行 ${doc.diagnostics[0]!.message}）`,
     );
     return true;
@@ -1301,7 +1296,7 @@ export class App {
   private _formatLabel(): string {
     if (this.docFormat !== "pu") return "JPWABC";
     if (this._puDialect === null) return "文本谱";
-    return this._puDialect === "shige" ? "文本谱·诗歌本" : "文本谱·番茄";
+    return `文本谱·${dialectSpec(this._puDialect).shortName}`;
   }
 
   private _syncFormatLabel(): void {
@@ -1424,19 +1419,20 @@ export class App {
 
   // ---------------- OMR：识别结果 → 编辑器文本 ----------------
   /**
-   * 把一份识别结果按当前 `omrFormat` 出成编辑器文本。
+   * 把一份识别结果按当前 `omrFormat` 出成编辑器文本。格式清单与各自的产出在
+   * omr/emit.ts 的注册表里，这里只管把产物落到编辑器（两种落法：走 MusicXML 导入
+   * 路径，或直接设文本）。**不重跑识别。**
    *
-   * `RecognizedScore` 是格式无关的那一份，留在内存里；换格式只重走这里，**不重跑识别**。
-   * 两条分支产出的 meta 都按同一套音符序（flatten(rows[].nums)）编号，
-   * 所以「原图对照」的点选定位对两种格式通用（见 `_rangeOfHit`）。
+   * 各 emitter 的 meta 都按同一套音符序（flatten(rows[].nums)）编号，
+   * 所以「原图对照」的点选定位对所有格式通用（见 `_rangeOfHit`）。
    */
   private _emitRecognition(rec: RecognizedScore, bin: Binary): void {
-    if (this.omrFormat === "jpwabc") {
+    const out = omrEmitter(this.omrFormat).emit(rec);
+    if (out.kind === "musicxml") {
       // importBytes 开头会 _clearRecognition()，故必须先导入、后回填本次产物。
-      this.importBytes(new TextEncoder().encode(toMusicXml(rec)), "omr.musicxml");
+      this.importBytes(new TextEncoder().encode(out.text), "omr.musicxml");
       this._recogMeta = this._lastImportMeta; // 接管导入时序列化产出的代码区间映射
     } else {
-      const { text, meta } = toPuText(rec, this.omrFormat);
       this._clearRecognition();
       this.mixedXmlText = null;
       this._mixedPainter = null;
@@ -1448,8 +1444,8 @@ export class App {
       }
       this._setDocFormat("pu");
       this.filePath = null;
-      this.setText(text);
-      this._recogMeta = meta;
+      this.setText(out.text);
+      this._recogMeta = out.meta;
     }
     this._recogBin = bin;
     this._recogScore = rec;
@@ -1482,7 +1478,7 @@ export class App {
       const wasRecognize = this.mode === "recognize";
       this._emitRecognition(rec, bin);
       if (wasRecognize && this.mode !== "recognize") await this.toggleRecognize();
-      const name = OMR_FORMATS.find(([v]) => v === format)?.[1] ?? format;
+      const name = omrEmitter(format).label;
       this.setStatus(`已切换输出格式：${name}（未重新识别）`);
     }
   }
@@ -1492,9 +1488,9 @@ export class App {
     this._recogFormatSelectEl = el;
     this._recogFormatFieldEl = el.closest(".toolbar-select-field") ?? el;
     el.replaceChildren();
-    for (const [value, label] of OMR_FORMATS) {
+    for (const { id, label } of OMR_EMITTERS) {
       const opt = document.createElement("option");
-      opt.value = value;
+      opt.value = id;
       opt.textContent = label;
       el.appendChild(opt);
     }

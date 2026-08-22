@@ -8,12 +8,12 @@
 //   - 逐音符的多段歌词（JpNum.lyrics[verse]）原样在手，不必经 Score 的段落/副歌再拆分；
 //   - 小节线位置按 row.barlineXs 落位，跨行开口小节不用像 MusicXML 那样合并再补。
 //
-// 方言差异一律从 dialectSpec() 取（八度字符、变音记号、节奏音符、跳词字符、小节线写法），
-// **不要在两套方言之间写 if**——那正是 DialectSpec 存在的理由。
+// 方言差异一律从 dialectSpec() 取（八度字符、变音记号、节奏音符、跳词字符、小节线写法、
+// 音节分隔符、头部字段写法），**不要在两套方言之间写 if**——那正是 DialectSpec 存在的理由。
 
 import type { RecognizedScore, JpNum, StaffRow } from "./types";
 import { rright } from "./types";
-import { dialectSpec, type Dialect } from "../pu/dialect";
+import { dialectSpec, type Dialect, type DialectSpec } from "../pu/dialect";
 import type { BarlineType } from "../pu/ast";
 import { STEPS, tonicStep, keyAlter } from "../score/jppitch";
 import type { JpwMeta, JpwRange } from "../score/jpscore";
@@ -161,40 +161,33 @@ function noteToken(n: JpNum, dialect: Dialect): string {
   return s;
 }
 
-/** 头部：两方言各写各的字段，且都必须能被 sniffDialect 判回本方言。 */
-function headerLines(score: RecognizedScore, dialect: Dialect, tb: TextBuilder, meta: JpwMeta): void {
-  const key = keyNameOf(score.fifths, dialect === "shige" ? "suffix" : "prefix");
+/** 头部：字段名与调号/拍号的排布全从 DialectSpec.header 取，
+ *  产出必须能被 sniffDialect 判回本方言（omr-pu-check 的断言 1）。 */
+function headerLines(score: RecognizedScore, d: DialectSpec, tb: TextBuilder, meta: JpwMeta): void {
+  const h = d.header;
+  const key = keyNameOf(score.fifths, h.keyStyle);
+  const meter = `${score.beats}/${score.beatType}`;
   const push = (s: string) => tb.push(s + "\n");
-  if (dialect === "tomato") {
-    push("V:1.0"); // 番茄的版本行；与 D:/P: 一同构成 sniffDialect 的番茄特征
-    if (score.title) {
-      tb.push("B:");
-      meta.titleRange = tb.push(score.title);
-      tb.push("\n");
-    }
-    for (const c of score.credits ?? []) {
-      tb.push("Z:");
-      const range = tb.push(c);
-      meta.authorRanges.push({ text: c, range });
-      tb.push("\n");
-    }
-    push(`D:${key}`);
-    push(`P:${score.beats}/${score.beatType}`);
-  } else {
-    if (score.title) {
-      tb.push("T:");
-      meta.titleRange = tb.push(score.title);
-      tb.push("\n");
-    }
-    for (const c of score.credits ?? []) {
-      tb.push("Z:");
-      const range = tb.push(c);
-      meta.authorRanges.push({ text: c, range });
-      tb.push("\n");
-    }
-    push(`1=${key}${score.beats}/${score.beatType}`); // 诗歌本把调号与拍号写在一行
+
+  if (h.versionLine) push(h.versionLine);
+  if (score.title) {
+    tb.push(`${h.titleField}:`);
+    meta.titleRange = tb.push(score.title);
+    tb.push("\n");
   }
-  if (score.tempo) push(`J:${score.tempo}`);
+  for (const c of score.credits ?? []) {
+    tb.push(`${h.creditField}:`);
+    const range = tb.push(c);
+    meta.authorRanges.push({ text: c, range });
+    tb.push("\n");
+  }
+  if (h.keyMeter === "split") {
+    push(`${h.keyField}:${key}`);
+    push(`${h.meterField}:${meter}`);
+  } else {
+    push(`1=${key}${meter}`);
+  }
+  if (score.tempo) push(`${h.tempoField}:${score.tempo}`);
   push("");
 }
 
@@ -210,11 +203,11 @@ export function toPuText(
 ): { text: string; meta: JpwMeta } {
   const d = dialectSpec(dialect);
   const skip = d.lyricSkip[0] ?? "@";
-  const wordSeparator = dialect === "tomato" ? "/" : " ";
+  const wordSeparator = d.wordSeparator;
   const tb = new TextBuilder();
   const meta: JpwMeta = { noteRanges: [], lyricRanges: [], authorRanges: [] };
 
-  headerLines(score, dialect, tb, meta);
+  headerLines(score, d, tb, meta);
 
   const { opens, closes } = pairCurves(score.rows.flatMap((r) => r.nums));
 
