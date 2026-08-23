@@ -785,6 +785,36 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   }
 
 
+  // ── 13. 和弦带里的**词曲署名**。第一谱行上方那一块「作词 / 作曲 + 英文人名 + 年份」
+  //        与和弦同带同高，会被整块读成一串假和弦（023 首因此在序列里多出 `B`、`F9`，
+  //        全书 806 项「PDF 有 GT 无」的和弦里这是最大的一撮）。
+  //        分得开的是**排布**：和弦是一个个孤立的短记号，彼此隔着大半个小节；
+  //        署名是密排的一长串。按 x 把同一谱行的和弦对象串成连续段，段里超过 6 个字的
+  //        就不是和弦（最长的和弦记号 `D/#Fm` 也只有 5 个字形）。门槛试过 5/6/8/9，7 最好。
+  //        **必须排在最后**：排在调号拍号（10e/10f）之前会把「1=F 4/4」整块判成署名
+  //        （调号 93.0% → 14.1%）；排在「标记重复描边」（11）之前则每个字都有 fill/stroke
+  //        两份，串长直接翻倍，四个字的和弦也过了 7 的门槛（和弦 88.6% → 86.4%）。
+  for (const bd of bands) {
+    const idx = [];
+    for (let i = 0; i < objs.length; i++) if (out[i].cls === "chord" && !out[i].dup && out[i].row === bd.index) idx.push(i);
+    idx.sort((a, b) => objs[a].bbox.x - objs[b].bbox.x);
+    let run: number[] = [];
+    const flush = () => {
+      if (run.length >= 7) for (const i of run) set(i, "credit", `和弦带里密排 ${run.length} 字，是词曲署名`);
+      run = [];
+    };
+    for (const i of idx) {
+      const prev = run.length ? objs[run[run.length - 1]].bbox : null;
+      // 同一串还要**同一条基线**：署名印在和弦上方一两行，与和弦的下缘差着二三十个点。
+      // 只按 x 串会把夹在署名横向范围里的真和弦一起串进去（p55 的 `Dm`、`G`）。
+      const sameLine = prev ? Math.abs(bottom(objs[i].bbox) - bottom(prev)) <= noteH * 0.35 : true;
+      if (prev && (!sameLine || objs[i].bbox.x - right(prev) > noteH * 0.8)) flush();
+      run.push(i);
+    }
+    flush();
+  }
+
+
   const counts: Record<string, number> = {};
   for (const c of out) counts[c.cls] = (counts[c.cls] ?? 0) + 1;
 
@@ -915,11 +945,11 @@ function collectRuns(idx: number[], objs: VecObj[], horizontal: boolean, lineTol
     for (let k = 1; k < seq.length; k++) {
       if (pos(seq[k]) - end(seq[k - 1]) <= gapMax) run.push(seq[k]);
       else {
-        if (run.length >= 8) out.push({ idx: run, horizontal });
+        if (run.length >= 7) out.push({ idx: run, horizontal });
         run = [seq[k]];
       }
     }
-    if (run.length >= 8) out.push({ idx: run, horizontal });
+    if (run.length >= 7) out.push({ idx: run, horizontal });
   };
   for (const i of sorted) {
     if (line.length && Math.abs(key(i) - key(line[line.length - 1])) > lineTol) {
