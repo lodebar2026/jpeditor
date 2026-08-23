@@ -759,6 +759,14 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       set(i, "slur", `和弦带里的宽扁弧 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
       continue;
     }
+    // **和弦不会是满格汉字**：和弦是拉丁窄字，字高只有音符那号（7 上下）。
+    // 一行歌词那号字的方块字落在两谱行之间时，按距离会判给下面那行的和弦带——
+    // 022 首的第 2 段就整段印在下一谱行上方，于是整段歌词没了。它属于**上面**那行谱。
+    if (above >= 0 && b.h >= lyricH * 0.9 && b.w / Math.max(b.h, 0.1) >= 0.85) {
+      out[i].row = above;
+      set(i, "lyric", `谱行 ${above} 下方 ${dAbove.toFixed(1)} 的满格汉字`);
+      continue;
+    }
     const chordish = below >= 0 && dBelow < noteH * (narrow ? 2.4 : 1.6);
     // 整行合成的 path 只在**谱行上方**这一侧参与（署名、经文都印在那儿）。
     // 让它也去当歌词行反而更糟：一整行歌词是一个对象，归段/折行那套按字数算的判据

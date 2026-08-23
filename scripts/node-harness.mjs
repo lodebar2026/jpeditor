@@ -286,7 +286,13 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
     // 挤在第 1 段之前，把整叠段序推下去一位（068 首因此三段词全错位）。
     // 判据：只有一两个对象，而且贴着某条实打实的歌词行（不到一个字高）。
     const solid = lines.filter((ln) => ln.items.length >= 5);
-    const stray = (ln) => ln.items.length <= 2 && solid.some((s2) => s2 !== ln && Math.abs(s2.y - ln.y) <= cell * 0.8);
+    // 歌词行都从版心左边起排；一两个字、又不在行首那一栏的，是落进歌词带的零星记号
+    // （041 首谱行间那个孤零零的「4」把整叠段序推了一位）。
+    const leftEdge = solid.length ? Math.min(...solid.map((s2) => s2.items[0].obj.bbox.x)) : 0;
+    const stray = (ln) =>
+      ln.items.length <= 2 &&
+      (solid.some((s2) => s2 !== ln && Math.abs(s2.y - ln.y) <= cell * 0.8) ||
+        (ln.items.length === 1 && ln.items[0].obj.bbox.x > leftEdge + cell * 3));
 
     const keep = [];
     for (const ln of lines) {
