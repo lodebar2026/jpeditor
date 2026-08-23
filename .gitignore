@@ -17,6 +17,7 @@ dist-cli
 measure-all.csv
 pdf-diff.csv
 pdf-diff/
+pdf-diff-marks.json
 pdf-pages.csv
 pdf-pages/
 pdf-layout.json
