@@ -311,6 +311,7 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
   const numbered = (ln) => verseNoAt(ln);
   const anchor = new Map(); // 段号字形 → 段序号
   const numberedVerse = new Set(); // 哪些段是「行首印着段号」的——它们不是折行，别归并
+  const misprintedNo = []; // 谱面印错的段号：{ objs, want }（want 是按位置该有的段序，0 基）
   {
     let best = -1;
     let bestN = 1; // 只有一行带段号的谱行没有样板价值
@@ -338,12 +339,21 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
     // 混进歌词带的和弦行/音符行开头也常是「窄字 + 小点」（`7` 后面跟个减时点），
     // 一误判就把整个谱行切到 vi=0，三段词叠成一段（279 首第 2 页实测）。
     // 段号**重号**的谱行不能按段号归：那是谱面印错了（379 首第 2 谱行印成「1. 2. 4. 4.」，
-    // 第 3 段那行被标成 4）。同一谱行里的歌词行自上而下就是段序，重号时按位置排回去。
+    // 第 3 段那行被标成 4）。同一谱行里的歌词行自上而下就是段序，重号时按位置排回去，
+    // 并把印错的那个段号记下来（调用方据此标红、给出应有的段号）。
     const wants = lines.filter((ln) => numbered(ln)).map((ln) => anchor.get(keyOfLine(ln)));
-    const dupNo = new Set(wants.filter((v) => v != null)).size !== wants.filter((v) => v != null).length;
+    const known = wants.filter((v) => v != null);
+    const dupNo = new Set(known).size !== known.length;
     const anchored = useAnchor && !dupNo && lines.some((ln) => numbered(ln) && anchor.has(keyOfLine(ln)));
     if (!anchored) {
-      lines.forEach((ln, vi) => (verses[vi] ??= []).push(...ln));
+      lines.forEach((ln, vi) => {
+        if (dupNo && numbered(ln)) {
+          const got = anchor.get(keyOfLine(ln));
+          // 位置说它是第 vi 段，段号却印着别的数 → 谱面这个段号印错了
+          if (got != null && got !== vi) misprintedNo.push({ objs: ln.slice(0, 2), want: vi });
+        }
+        (verses[vi] ??= []).push(...(dupNo ? stripVerseNo(ln) : ln));
+      });
       continue;
     }
     let vi = -1; // 还没遇到段号的行：杂物/续行先归到第 1 段
@@ -385,7 +395,7 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
     }
   }
   const kept = verses.filter((v) => v && v.length);
-  return { notes, chords, title, verses: kept, folds, dropped };
+  return { notes, chords, title, verses: kept, folds, dropped, misprintedNo };
 }
 
 /** MusicXML 的 `<harmony>` → 谱面上印的和弦文本序列。

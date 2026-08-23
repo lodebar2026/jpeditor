@@ -85,9 +85,12 @@ const drawable = (ch) => {
   }
   return ok;
 };
+// **先换写法再问字体**：`♭` 这类音乐符号宋体里有码位却是空字形，
+// `encodeText` 不报错，画出来是一个个豆腐块。
 const encodable = (t) =>
   [...t]
-    .map((ch) => (drawable(ch) ? ch : (FALLBACK[ch] ?? (drawable(FALLBACK[ch] ?? "") ? FALLBACK[ch] : ""))))
+    .map((ch) => FALLBACK[ch] ?? ch)
+    .filter((ch) => drawable(ch))
     .join("");
 
 let drawn = 0;

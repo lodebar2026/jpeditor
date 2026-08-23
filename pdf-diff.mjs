@@ -104,6 +104,35 @@ function matchVerses(gtVerses, recVerses) {
   };
 }
 
+/**
+ * 从「GT 有 PDF 无」里拣出**共用副歌**：谱面上副歌只印一遍（挂在某一段的行上），
+ * `.jpwabc` 却给每一段都记了一遍（135 首的四段各带一遍「求主耶稣进入我心…」）。
+ * 那不是漏印、更不是录错，是两边表述不同——单列一栏，不进内容差异。
+ *
+ * 判据保守：**连着缺的一整串**（≥6 字）要能在**别的段**里原样找到，才算共用副歌。
+ * 找不到的照旧算内容差异。
+ */
+function splitSharedRefrain(ops, others) {
+  const content = [];
+  const shared = [];
+  let run = [];
+  const flush = () => {
+    if (!run.length) return;
+    const text = run.map((op) => op[3]).join("");
+    (text.length >= 6 && others.some((o) => o.includes(text)) ? shared : content).push(...run);
+    run = [];
+  };
+  for (const op of ops) {
+    if (op[0] === "del") run.push(op);
+    else {
+      flush();
+      content.push(op);
+    }
+  }
+  flush();
+  return { content, shared };
+}
+
 function splitOps(ops) {
   const content = [];
   const unread = [];
@@ -161,11 +190,14 @@ for (const [id, entries] of byId) {
   if (count++ >= limit) break;
 
   const marks = [];
+  const badVerseNos = [];
+  const boxOf = (o) => ({ page: o.page, idx: o.idx, box: [o.obj.bbox.x, o.obj.bbox.y, o.obj.bbox.w, o.obj.bbox.h] });
   const notes = [];
   const verseRows = [];
   const title = [];
   const chords = [];
   const keyMeters = [];
+  const credits = [];
   const arcs = [];
   let repeatDots = 0;
   let brackets = 0;
@@ -194,10 +226,18 @@ for (const [id, entries] of byId) {
     const got = collectSongGlyphs(inv, e, profile, cli.shapeKey);
     folds += got.folds ?? 0;
     strayLines += got.dropped ?? 0;
+    // 谱面印错的段号：标红，并在上方用黄色补上按位置该有的段号
+    for (const bad of got.misprintedNo ?? []) {
+      badVerseNos.push(bad);
+      for (const o of bad.objs) marks.push({ ...boxOf(o), kind: "wrong", what: "段号", gt: `${bad.want + 1}.` });
+      const b = bad.objs[0].obj.bbox;
+      marks.push({ page: bad.objs[0].page, kind: "missing", what: "段号", text: `${bad.want + 1}.`, box: [b.x, b.y - b.h * 1.15, b.h, b.h] });
+    }
     const inSpan = (o) => o.obj.bbox.y >= (e.yFrom ?? 0) && o.obj.bbox.y < (e.yTo ?? 1e9);
     for (const o of inv.objs) {
       if (o.dup || !inSpan(o)) continue;
       if (o.cls === "keyMeter") keyMeters.push(o);
+      else if (o.cls === "credit") credits.push(o);
       else if (o.cls === "slur") arcs.push({ o, bandNotes: null });
       else if (o.cls === "repeatDot") repeatDots++;
       else if (o.cls === "bracket") brackets++;
@@ -275,6 +315,23 @@ for (const [id, entries] of byId) {
   // 真正的识别失败是「没读到」。拍号同理（`4/4` ↔ `2/2` 是记法之别）。
   const keyState = keyOk == null ? null : keyOk ? "ok" : recKeys.length ? "differs" : "missing";
   const meterState = meterOk == null ? null : meterOk ? "ok" : recMeter ? "differs" : "missing";
+
+  // ── 词曲署名：GT 取 `.Title` 的 `WordsByAndMusicBy`，识别侧取归类为 credit 的那一撮。
+  //    两边的标点/空格/换行都随排版走，**只比汉字、拉丁字母与数字**。
+  //    署名是两行交错排的（作词一行、作曲一行），要**先按基线分行再按 x 排**，
+  //    照 x 一路读会把两行的字母穿插起来。
+  const creditNorm = (t) => (t.replace(/\\n/g, "").match(/[\u4e00-\u9fff0-9A-Za-z\ufffd]/g) ?? []).join("");
+  const gtCredit = creditNorm(/WordsByAndMusicBy\s*=\s*\{?([^}\r\n]*)\}?/.exec(sec.Title ?? "")?.[1] ?? "");
+  const creditLines = [];
+  for (const o of [...credits].sort((a, b) => a.obj.bbox.y + a.obj.bbox.h - (b.obj.bbox.y + b.obj.bbox.h))) {
+    const bot = o.obj.bbox.y + o.obj.bbox.h;
+    const last = creditLines[creditLines.length - 1];
+    if (last && bot - last.bot <= 3) last.items.push(o);
+    else creditLines.push({ bot, items: [o] });
+  }
+  const recCredit = creditNorm(creditLines.map((ln) => readSeq(ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x))).join(""));
+  const dCredit = gtCredit ? alignOps(gtCredit, recCredit) : null;
+  const sCredit = dCredit ? splitOps(dCredit.ops) : null;
 
   // ── 圆滑线 / 连音线：两边都表示成「覆盖了第几个到第几个音符」。
   //    矢量层分不出圆滑线和连音线（都是一条弧），故 GT 侧把 slur 与 tied 合起来比。
@@ -414,7 +471,19 @@ for (const [id, entries] of byId) {
     const a = gtVerses[pr.i];
     const b = recVerses[pr.j];
     const d = alignOps(a, b);
-    verseDiffs.push({ verse: pr.i + 1, pdfVerse: pr.j + 1, gt: a, rec: b, recSeq: recVerseSeqs[pr.j] ?? [], ...d, ...splitOps(d.ops) });
+    const sp = splitOps(d.ops);
+    const sr = splitSharedRefrain(sp.content, recVerses.filter((_, j) => j !== pr.j));
+    verseDiffs.push({
+      verse: pr.i + 1,
+      pdfVerse: pr.j + 1,
+      gt: a,
+      rec: b,
+      recSeq: recVerseSeqs[pr.j] ?? [],
+      ...d,
+      ...sp,
+      content: sr.content,
+      shared: sr.shared,
+    });
     lyricDist += d.dist;
     lyricLen += Math.max(a.length, b.length);
   }
@@ -441,12 +510,11 @@ for (const [id, entries] of byId) {
   // 反复与房号**只记录、不计进内容差异**：识别侧只有几何（反复冒号的点、房号括线），
   // 三连音的括线脚、别处的小圆点都会混进来，数量对不上是判据太粗，不是 GT 与 PDF 不一致。
   const unreadDiffs =
-    sNote.unread.length + sTitle.unread.length + verseDiffs.reduce((a, d) => a + d.unread.length, 0);
+    sNote.unread.length + sTitle.unread.length + (sCredit?.unread.length ?? 0) + verseDiffs.reduce((a, d) => a + d.unread.length, 0);
 
   // ── 差异标记：把每一处差异落到**具体的页面对象**上，供 pdf-mark.mjs 生成标记版 PDF。
   //    红 = 页面读出来的这个对象有问题（录错 / 页面多出）；黄 = GT 有而页面没有，补在原位；
   //    橙 = 字形没读出来（本工具的局限，不是录错）。
-  const boxOf = (o) => ({ page: o.page, idx: o.idx, box: [o.obj.bbox.x, o.obj.bbox.y, o.obj.bbox.w, o.obj.bbox.h] });
   const markOps = (ops, seq, what) => {
     for (const [op, , ri, g2, b2] of ops) {
       if (op === "ins" || op === "sub") {
@@ -464,7 +532,7 @@ for (const [id, entries] of byId) {
         const b = anchorObj.obj.bbox;
         const last = marks[marks.length - 1];
         if (last && last.kind === "missing" && last.what === what && last.anchor === anchorObj.idx && last.page === anchorObj.page) {
-          last.text += g2;
+          last.text += (what === "和弦" ? " " : "") + g2; // 和弦是一个个记号，连写会糊成一串
           continue;
         }
         marks.push({
@@ -491,6 +559,21 @@ for (const [id, entries] of byId) {
       marks.push({ page: first.page, kind: "missing", what: "调号拍号", text: want, box: [b.x, b.y - b.h * 1.4, b.h, b.h] });
     }
   }
+
+  // 「表述或结构不一致」：两边都没错，只是记法/排法不同。**单独记一类**，不混进内容差异，
+  // 也不当成没事——它们是回改 GT 或改排版判据时要看的东西。
+  const sharedRefrain = verseDiffs.reduce((a, d) => a + (d.shared?.length ?? 0), 0);
+  const structDiffs =
+    (badVerseNos.length ?? 0) +
+    sharedRefrain +
+    (keyState === "differs" ? 1 : 0) +
+    (meterState === "differs" ? 1 : 0) +
+    (noteRepeat > 1 ? 1 : 0) +
+    (chordRepeat > 1 ? 1 : 0) +
+    extraVerses.length +
+    vm.gtOnly.length +
+    folds +
+    alignOps(gtPunct, recPunct).dist;
 
   const r = {
     id,
@@ -555,7 +638,15 @@ for (const [id, entries] of byId) {
     gtNotes: gtNotesEff,
     recNotes,
     noteRepeat,
+    structDiffs,
+    sharedRefrain,
+    gtCredit,
+    recCredit,
+    creditDiffs: sCredit ? sCredit.content.length : null,
+    creditAcc: gtCredit ? acc(gtCredit, recCredit, dCredit.dist) : null,
+    sCredit,
     marks,
+    badVerseNos: badVerseNos.map((b) => b.want + 1),
   };
   rows.push(r);
 }
@@ -567,7 +658,7 @@ for (const [id, entries] of byId) {
 //   版面     —— 折行、段数这类排版事实，记录但不算差异
 const head = [
   "曲号", "曲名", "页",
-  "内容差异合计", "音符内容差异", "歌词内容差异", "标题内容差异", "和弦内容差异", "弧线内容差异",
+  "内容差异合计", "表述结构不一致", "音符内容差异", "歌词内容差异", "标题内容差异", "和弦内容差异", "弧线内容差异", "词曲署名差异",
   "未识别合计", "音符未识别", "歌词未识别",
   "折行", "标点差异", "段数GT/识别",
   "音符准确率", "音符GT数", "音符识别数", "歌词准确率", "标题准确率", "识别标题",
@@ -585,11 +676,13 @@ for (const r of rows) {
       r.title,
       r.pages,
       r.contentDiffs,
+      r.structDiffs,
       r.sNote.content.length,
       r.verseDiffs.reduce((a, d) => a + d.content.length, 0),
       r.sTitle.content.length,
       r.chordDiffs ?? "",
       r.arcDiffs ?? "",
+      r.creditDiffs ?? "",
       r.unreadDiffs,
       r.sNote.unread.length,
       r.verseDiffs.reduce((a, d) => a + d.unread.length, 0),
@@ -630,11 +723,13 @@ csv.push(
   csvRow([
     "合计/平均", "", "",
     sum((r) => r.contentDiffs),
+    sum((r) => r.structDiffs),
     sum((r) => r.sNote.content.length),
     sum((r) => r.verseDiffs.reduce((a, d) => a + d.content.length, 0)),
     sum((r) => r.sTitle.content.length),
     sum((r) => r.chordDiffs ?? 0),
     sum((r) => r.arcDiffs ?? 0),
+    sum((r) => r.creditDiffs ?? 0),
     sum((r) => r.unreadDiffs),
     sum((r) => r.sNote.unread.length),
     sum((r) => r.verseDiffs.reduce((a, d) => a + d.unread.length, 0)),
@@ -689,6 +784,11 @@ for (const r of rows) {
     L.push(...fmt(r.sTitle.content, r.gtTitleN, 4));
   }
 
+  if (r.sCredit?.content.length) {
+    L.push(`  词曲署名 ${r.sCredit.content.length} 项：GT「${r.gtCredit}」 PDF「${r.recCredit}」`);
+    L.push(...fmt(r.sCredit.content, r.gtCredit, 4));
+  }
+
   if (r.chordDiffs != null && r.chordDiffs > 0) {
     L.push(`  和弦 ${r.chordDiffs} 项（GT<harmony> ${r.chordGt}${r.chordRepeat > 1 ? `×${r.chordRepeat}遍` : ""} / PDF ${r.chordRec}）`);
     const gtSeq = r.dChord.ops;
@@ -715,30 +815,40 @@ for (const r of rows) {
       L.push(`  歌词第 ${d.verse} 段 ${d.unread.length}：` + d.unread.map(([, gi, , g2]) => `@${gi}=${g2 || "?"}`).join(" "));
     }
     if (r.sTitle.unread.length) L.push(`  标题 ${r.sTitle.unread.length}`);
+    if (r.sCredit?.unread.length) L.push(`  词曲署名 ${r.sCredit.unread.length}`);
   }
+
+  // 「表述或结构不一致」：两边都没错、只是记法/排法不同。**单列一类**，既不混进内容差异，
+  // 也不当作没发生——回改 GT 或调排版判据时看的就是这一节。
+  const mis = [];
+  const ms = (t) => mis.push(t);
+  if (r.badVerseNos?.length) ms(`  谱面段号印错 ${r.badVerseNos.length} 处（按位置应是第 ${r.badVerseNos.join("、")} 段），已按位置归段并标红`);
+  if (r.sharedRefrain) ms(`  共用副歌 ${r.sharedRefrain} 字（谱面只印一遍，GT 每段各记一遍）`);
+  if (r.keyState === "differs") ms(`  调号与谱面不同：GT「${r.keyGt}」PDF「${r.keyRec}」（GT 按主音和弦订正过）`);
+  if (r.meterState === "differs") ms(`  拍号记法不同：GT「${r.meterGt}」PDF「${r.meterRec}」`);
+  if (r.noteRepeat > 1) ms(`  PDF 把旋律印了 ${r.noteRepeat} 遍（GT 只记一遍，靠多段歌词表示）`);
+  if (r.chordRepeat > 1) ms(`  PDF 把和弦印了 ${r.chordRepeat} 遍`);
+  if (r.folds) ms(`  歌词折行归并 ${r.folds} 字（排不下折到下一行，不是新的一段）`);
+  if (r.punctDiffs) ms(`  标点差异 ${r.punctDiffs} 处（GT ${r.gtPunctN} / PDF ${r.recPunctN}；标点位置随排版走）`);
+  if (r.extraVerses?.length) {
+    ms(`  PDF 多出 ${r.extraVerses.length} 行歌词（GT 里没有对应段，多为副歌另起行）：`);
+    for (const v of r.extraVerses) ms(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
+  }
+  if (r.gtOnlyVerses?.length) {
+    ms(`  GT 有 ${r.gtOnlyVerses.length} 段在 PDF 里没找到对应：`);
+    for (const v of r.gtOnlyVerses) ms(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
+  }
+  if (mis.length) L.push("", `## 表述或结构不一致 ${r.structDiffs} 项（两边都没错，记法/排法不同）`, ...mis);
 
   const layout = [];
   const lay = (t) => layout.push(t);
-  if (r.folds || r.strayLines)
-    lay(`  歌词折行归并 ${r.folds} 字${r.strayLines ? `，歌词带里剔掉的非歌词对象 ${r.strayLines} 个（零星记号 / 曲末经文出处）` : ""}`);
-  if (r.punctDiffs) lay(`  标点差异 ${r.punctDiffs} 处（GT ${r.gtPunctN} / PDF ${r.recPunctN}；标点位置随排版走，不算录错）`);
-  if (r.noteRepeat > 1) lay(`  **PDF 把旋律印了 ${r.noteRepeat} 遍**（GT 只记一遍，靠多段歌词表示）`);
+  if (r.strayLines) lay(`  歌词带里剔掉的非歌词对象 ${r.strayLines} 个（零星记号 / 曲末经文出处）`);
   if (r.misLyric?.length) {
     lay(`  ${r.misLyric.length} 行被归成歌词但读不出汉字（多半是和弦行/音符行归错了），已排除：`);
     for (const v of r.misLyric) lay(`    「${v.slice(0, 36)}${v.length > 36 ? "…" : ""}」`);
   }
-  if (r.extraVerses?.length) {
-    lay(`  PDF 多出 ${r.extraVerses.length} 行歌词（GT 里没有对应段，多为副歌另起行）：`);
-    for (const v of r.extraVerses) lay(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
-  }
-  if (r.gtOnlyVerses?.length) {
-    lay(`  GT 有 ${r.gtOnlyVerses.length} 段在 PDF 里没找到对应：`);
-    for (const v of r.gtOnlyVerses) lay(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
-  }
   const [vg, vr] = r.verses.split("/");
   if (vg !== vr) lay(`  段数 GT ${vg} / PDF ${vr}`);
-  if (r.keyState === "differs") lay(`  调号与谱面不同：GT「${r.keyGt}」PDF「${r.keyRec}」（GT 按主音和弦订正过，不算录错）`);
-  if (r.meterState === "differs") lay(`  拍号与谱面不同：GT「${r.meterGt}」PDF「${r.meterRec}」（记法之别，不算录错）`);
   if (r.repeatGt !== r.repeatRec || r.endingGt !== r.endingRec)
     lay(
       `  反复 GT ${r.repeatGt} / PDF ${r.repeatRec}，房号 GT ${r.endingGt} / PDF ${r.endingRec}` +
@@ -777,12 +887,19 @@ console.log(
   console.log(`反复 GT ${sum((r) => r.repeatGt)} / PDF ${sum((r) => r.repeatRec)}；房号 GT ${sum((r) => r.endingGt)} / PDF ${sum((r) => r.endingRec)}`);
 }
 {
+  const withCr = rows.filter((r) => r.creditAcc != null);
+  if (withCr.length)
+    console.log(
+      `词曲署名平均 ${((withCr.reduce((a, r) => a + r.creditAcc, 0) / withCr.length) * 100).toFixed(2)}%（${withCr.length} 首有署名）` +
+        `——**不计进内容差异**：这一路刚接上，拉丁小字号的字典还很稀，会把另外几项盖住`,
+    );
   const withC = rows.filter((r) => r.chordAcc != null);
   if (withC.length) console.log(`和弦平均准确率 ${((withC.reduce((a, r) => a + r.chordAcc, 0) / withC.length) * 100).toFixed(2)}%（${withC.length} 首有 <harmony>）`);
 }
 console.log(
-  `未识别合计 ${sum((r) => r.unreadDiffs)}，折行归并 ${sum((r) => r.folds)} 字，剔掉非歌词对象 ${sum((r) => r.strayLines)} 个，` +
-    `非歌词行剔除 ${sum((r) => r.misLyric?.length ?? 0)}，标点差异 ${sum((r) => r.punctDiffs)}，未归类对象 ${sum((r) => r.unclassified)}`,
+  `表述或结构不一致合计 ${sum((r) => r.structDiffs)}（共用副歌 ${sum((r) => r.sharedRefrain)} 字 / 折行 ${sum((r) => r.folds)} 字 / 标点 ${sum((r) => r.punctDiffs)} / 段号印错 ${sum((r) => r.badVerseNos?.length ?? 0)} 处 / 调号拍号记法 ${sum((r) => (r.keyState === "differs" ? 1 : 0) + (r.meterState === "differs" ? 1 : 0))} / 旋律或和弦印两遍 ${sum((r) => (r.noteRepeat > 1 ? 1 : 0) + (r.chordRepeat > 1 ? 1 : 0))} / PDF 多出 ${sum((r) => r.extraVerses.length)} 段 / GT 多出 ${sum((r) => r.gtOnlyVerses.length)} 段）\n` +
+  `未识别合计 ${sum((r) => r.unreadDiffs)}（其中词曲署名 ${sum((r) => r.sCredit?.unread.length ?? 0)}），` +
+    `歌词带里剔掉的非歌词对象 ${sum((r) => r.strayLines)} 个，非歌词行 ${sum((r) => r.misLyric?.length ?? 0)}，未归类对象 ${sum((r) => r.unclassified)}`,
 );
 // 分两档报：和弦是新接上的一路、准确率还低，混在一起会把另外三项的成绩盖住
 const cleanNoChord = rows.filter(
