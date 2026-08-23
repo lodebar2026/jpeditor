@@ -237,7 +237,13 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       // **小节线明显比字高**（实测 13.8 vs 字高 8.3，比值 1.66）。门槛设在 1.15 字高，
       // 正好把拉丁人名里的竖笔（D/l/d，与字等高）挡在外面——那是词曲署名行被误判成
       // 谱行的根因（p300 曾因此多出两个假谱行、40 个假音符）。
-      if (h >= noteH * 1.15) {
+      if (h > noteH * 2.5) {
+        // **太高的不是小节线，是框的竖边**：这本书的小节线一律 13.8 高（1.66 个字号），
+        // 而曲末注解框的竖边有 45 高。不挡住的话，一个框的两条竖边跨度够大，
+        // 会被第 2 步凑成一个假谱行——框里那句经文的「106」于是成了音符
+        //（004 首因此多出四个音符）。
+        set(i, "rule", `竖线太高（${h.toFixed(1)}），是框的竖边`);
+      } else if (h >= noteH * 1.15) {
         barlineIdx.push(i);
         set(i, "barline", `细高竖线 ${w.toFixed(1)}×${h.toFixed(1)}`);
       } else {
@@ -320,6 +326,33 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     for (const b of bands) if (bottom(r) >= b.top - slackAbove && r.y <= b.bottom + slackBelow) return b.index;
     return -1;
   };
+
+  // ── 2b. **通栏双线框**：曲末的经文/注记有时不用花边围，而是上下各画一道通栏横线
+  //       （实测 p36 是 y475/478 与 y520/522 两对，中间夹着「神的慈爱永远长存 诗(106:1)」）。
+  //       框里的东西一律只当注解正文，跟花边框一个待遇——不然那句经文里的「106」
+  //       会被当成音符混进音符序列（004 首因此多出四个音符）。
+  //       判据：两条通栏横线之间**不夹谱行**、间距不超过八个字高。
+  {
+    const wide = hLineIdx
+      .filter((i) => objs[i].bbox.w > page.width * 0.5)
+      .sort((a, b) => cy(objs[a].bbox) - cy(objs[b].bbox));
+    for (let a = 0; a < wide.length; a++) {
+      for (let b = a + 1; b < wide.length; b++) {
+        const y0 = bottom(objs[wide[a]].bbox);
+        const y1 = objs[wide[b]].bbox.y;
+        const gap = y1 - y0;
+        if (gap <= lyricH * 0.5) continue; // 紧挨着的两条是同一道双线
+        if (gap > lyricH * 8) break; // 太远，中间不是一个框
+        if (bands.some((bd) => bd.top < y1 && bd.bottom > y0)) break; // 中间夹着谱行，那不是框
+        for (let i = 0; i < objs.length; i++) {
+          if (out[i].cls !== "unclassified") continue;
+          const bb = objs[i].bbox;
+          if (bb.y >= y0 && bottom(bb) <= y1) set(i, "storyText", "通栏双线框内的注解正文");
+        }
+        break;
+      }
+    }
+  }
 
   // ── 3. 音符数字
   const noteBoxes: { i: number; box: Rect; row: number }[] = [];
