@@ -784,11 +784,6 @@ for (const r of rows) {
     L.push(...fmt(r.sTitle.content, r.gtTitleN, 4));
   }
 
-  if (r.sCredit?.content.length) {
-    L.push(`  词曲署名 ${r.sCredit.content.length} 项：GT「${r.gtCredit}」 PDF「${r.recCredit}」`);
-    L.push(...fmt(r.sCredit.content, r.gtCredit, 4));
-  }
-
   if (r.chordDiffs != null && r.chordDiffs > 0) {
     L.push(`  和弦 ${r.chordDiffs} 项（GT<harmony> ${r.chordGt}${r.chordRepeat > 1 ? `×${r.chordRepeat}遍` : ""} / PDF ${r.chordRec}）`);
     const gtSeq = r.dChord.ops;
@@ -805,6 +800,13 @@ for (const r of rows) {
   }
   if (r.keyState === "missing") L.push(`  调号没读到（GT「${r.keyGt}」）`);
   if (r.meterState === "missing") L.push(`  拍号没读到（GT「${r.meterGt}」）`);
+
+  // 词曲署名单列一节：这一路刚接上，拉丁小字号的字典还很稀，混进内容差异会把别的项盖住。
+  if (r.sCredit?.content.length) {
+    L.push("", `## 词曲署名 ${r.sCredit.content.length} 项（单列，不计进内容差异）`);
+    L.push(`  GT「${r.gtCredit}」`, `  PDF「${r.recCredit}」`);
+    L.push(...fmt(r.sCredit.content, r.gtCredit, 4));
+  }
 
   // 为 0 的项一律不印：一首没几处差异的曲子，报告里全是「0 处」「（无）」反而看不见重点。
   if (r.unreadDiffs) {

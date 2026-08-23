@@ -83,6 +83,7 @@ for (const [id, entries] of byId) {
   const verseRows = [];
   const title = [];
   const chords = [];
+  const credits = [];
   const category = [];
   const footers = [];
   for (const e of entries) {
@@ -98,6 +99,18 @@ for (const [id, entries] of byId) {
     for (const o of got.notes) notes.push(noteOf(o));
     for (const o of got.title) title.push(noteOf(o));
     for (const o of got.chords) chords.push(noteOf(o));
+    // 词曲署名：**按基线分行再按 x 排**（作词一行、作曲一行交错排，照 x 直读会串行）
+    {
+      const lines = [];
+      for (const o of inv.objs
+        .filter((x) => x.cls === "credit" && !x.dup && x.obj.bbox.y >= (e.yFrom ?? 0) && x.obj.bbox.y < (e.yTo ?? 1e9))
+        .sort((a, b) => bot(a) - bot(b))) {
+        const last = lines[lines.length - 1];
+        if (last && bot(o) - last.bot <= 3) last.items.push(o);
+        else lines.push({ bot: bot(o), items: [o] });
+      }
+      for (const ln of lines) for (const o of ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x)) credits.push(noteOf(o));
+    }
     if (e.startsHere) {
       for (const o of inv.objs.filter((x) => x.cls === "category" && !x.dup).sort((a, b) => a.obj.bbox.x - b.obj.bbox.x))
         category.push(noteOf(o));
@@ -119,10 +132,16 @@ for (const [id, entries] of byId) {
     gtTitle: song.title,
     gtChords: gt.musicxml ? gtHarmonies(gt.musicxml).join("") : "",
     gtCategory: (song.category ?? "").replace(/\s+/g, ""),
+    // GT 的署名字段：`词曲：(加)宣信(1843-1919)`。谱面上的标点/空格随排版走，只留字与数
+    gtCredit: (/WordsByAndMusicBy\s*=\s*\{?([^}\r\n]*)\}?/.exec(sec.Title ?? "")?.[1] ?? "")
+      .replace(/\\n/g, "")
+      .match(/[\u4e00-\u9fff0-9A-Za-z]/g)
+      ?.join("") ?? "",
     notes,
     verses: verseRows.map((r) => r.map(noteOf)),
     title,
     chords,
+    credits,
     category,
     footers,
   });
@@ -237,6 +256,7 @@ for (let round = 1; round <= ROUNDS; round++) {
     // 和弦来自 musicxml 的 <harmony>；页眉是曲目的分类名；页脚是「·书页码·」
     alignVote(it.gtChords, it.chords, votes);
     alignVote(it.gtCategory, it.category, votes);
+    alignVote(it.gtCredit, it.credits, votes);
     for (const f of it.footers) alignVote(f.text, f.keys, votes);
     for (let v = 0; v < Math.min(it.gtVerses.length, it.verses.length); v++) {
       alignVote(it.gtVerses[v], it.verses[v], votes);
