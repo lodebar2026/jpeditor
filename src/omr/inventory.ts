@@ -1161,7 +1161,8 @@ function detectOrnamentFrames(objs: VecObj[], noteH: number): OrnamentHit[] {
   if (runs.length < 2) return [];
 
   // 把交叠/相邻的线并成一个框（一圈花边由几条线组成）
-  const used = new Set<number>();
+  const used = new Set<number>(); // 已并进某个组（不论那组是否被采纳）
+  const accepted = new Set<number>(); // 真的成了一个框的 run
   const out: OrnamentHit[] = [];
   for (let a = 0; a < runs.length; a++) {
     if (used.has(a)) continue;
@@ -1198,6 +1199,7 @@ function detectOrnamentFrames(objs: VecObj[], noteH: number): OrnamentHit[] {
     const mid = { x: x0 + w / 3, y: y0 + h / 3, w: w / 3, h: h / 3 };
     if (bs.filter((b) => intersectRect(b, mid)).length > idx.length * 0.03) continue;
     const edge = Math.max(noteH * 0.8, Math.min(w, h) * 0.06);
+    for (const g of group) accepted.add(g);
     out.push({
       idx,
       box: { x: x0, y: y0, w, h },
@@ -1205,6 +1207,48 @@ function detectOrnamentFrames(objs: VecObj[], noteH: number): OrnamentHit[] {
       tileW: median(bs.map((b) => b.w)),
       tileH: median(bs.map((b) => b.h)),
     });
+  }
+
+  // **只有上下两条边的框**：有的注解框不画竖边，只在上下各铺一条纹样
+  //（p479 的纹样是「十」字，上下各 30 片，两头各一个角标）。上面那套要求一横一竖，
+  // 认不出来，框里那段圣诗故事就流进歌词带去了（408 首第 2 段多出「首页十…」）。
+  // 判据收紧到很窄：**同一形状、两条横边、横向范围基本重合、竖向隔开**。
+  for (let a = 0; a < runs.length; a++) {
+    if (accepted.has(a) || !runs[a].horizontal) continue;
+    for (let b = a + 1; b < runs.length; b++) {
+      if (accepted.has(b) || !runs[b].horizontal) continue;
+      // 上下两条边得是**同一种纹样**，否则页面上任意两条装饰线都能凑成一个「框」
+      if (coarseKey(objs[runs[a].idx[0]]) !== coarseKey(objs[runs[b].idx[0]])) continue;
+      const A = runs[a].idx.map((i) => objs[i].bbox);
+      const B = runs[b].idx.map((i) => objs[i].bbox);
+      const ax0 = Math.min(...A.map((r) => r.x));
+      const ax1 = Math.max(...A.map(right));
+      const bx0 = Math.min(...B.map((r) => r.x));
+      const bx1 = Math.max(...B.map(right));
+      const ay = Math.max(...A.map(bottom));
+      const by = Math.min(...B.map((r) => r.y));
+      const gap = by - ay;
+      if (gap < noteH * 2 || gap > noteH * 30) continue;
+      const ov = Math.min(ax1, bx1) - Math.max(ax0, bx0);
+      if (ov <= 0 || ov < Math.max(ax1 - ax0, bx1 - bx0) * 0.8) continue;
+      accepted.add(a);
+      accepted.add(b);
+      const idx = [...runs[a].idx, ...runs[b].idx];
+      const bs = idx.map((i) => objs[i].bbox);
+      const x0 = Math.min(ax0, bx0);
+      const x1 = Math.max(ax1, bx1);
+      const y0 = Math.min(...A.map((r) => r.y));
+      const y1 = Math.max(...B.map(bottom));
+      const edge = Math.max(noteH * 0.8, Math.min(x1 - x0, y1 - y0) * 0.06);
+      out.push({
+        idx,
+        box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
+        inner: { x: x0 + edge, y: y0 + edge, w: x1 - x0 - edge * 2, h: y1 - y0 - edge * 2 },
+        tileW: median(bs.map((r) => r.w)),
+        tileH: median(bs.map((r) => r.h)),
+      });
+      break;
+    }
   }
   return out;
 }
