@@ -908,7 +908,11 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       ln.sort((a, b) => objs[a].bbox.x - objs[b].bbox.x);
       let run: number[] = [];
       const flush = () => {
-        if (run.length >= 7) for (const i of run) set(i, "credit", `和弦带里密排 ${run.length} 字，是词曲署名`);
+        // 密排还不够，还得是**小字号**：谱行上下印着的经文/注记也是密排的一长串，
+        // 但它用歌词那号字（一行中位 10.5），署名只有 6.5~8.1
+        //（031 首曲末那句经文七个字，正好卡在密排门槛上被当成署名）。
+        if (run.length >= 7 && median(run.map((i) => objs[i].bbox.h)) <= lyricH * 0.92)
+          for (const i of run) set(i, "credit", `和弦带里密排 ${run.length} 个小字，是词曲署名`);
         run = [];
       };
       for (const i of ln) {
@@ -937,7 +941,11 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       if (idx.filter((j) => Math.abs(bottom(objs[j].bbox) - b) <= noteH * 0.4).length >= 3 && b > base) base = b;
     }
     if (base === -Infinity) continue;
-    //       还要**小字号**：谱行上方有时印着整段经文（022 首「主命令众星宿…」），
+    //       **位置判据试过，不如这条**：署名的版面位置很固定（标题之下、第一谱行之上、
+  //       靠右半边，左半边是「1=F 4/4」），照这个框去收，署名反而从 87.3% 掉到 83.6%——
+  //       同一带里还夹着页眉分类词、经文、副标题，而 13/15 看的是「与和弦基线的高差 +
+  //       字号」，比位置准。位置只在一处非用不可：**大字标题隔开半页起的两首**（见第 10 步）。
+  //       还要**小字号**：谱行上方有时印着整段经文（022 首「主命令众星宿…」），
     //       它也比和弦线高，但用的是歌词那号字（一行的中位高 10.3~11.1），署名只有 6.5~8.1。
     //       **字号要按行取中位**，不能逐字判：汉字的墨迹高度差得远（「上」才 7 高、
     //       「日」有 10），逐字判会从经文里挑出一半来当署名。
