@@ -29,7 +29,6 @@ testdata/*
 # 只有 2.6KB，入库。pagemap.json / glyphdict.json 都能由它 + 语料重新生成，不入库。
 !testdata/500/
 testdata/500/*
-!testdata/500/glyph-seed.tsv
 
 # pdf.js 位图解码器 wasm：来自 pdfjs-dist 包，构建时从 node_modules 拷入（见 vite.config.ts），不入库
 public/redist/pdfjs
