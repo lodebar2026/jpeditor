@@ -780,7 +780,9 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       }
       continue;
     }
-    if (chordish && (dBelow <= dAbove || narrow)) {
+    // 「窄字优先判和弦」这条要有个度：`日` `白` `曲` 这些字本来就窄（7.1×9.2），
+    // 离上一行谱明明近一半，却因为窄被判进下一行的和弦带，歌词里就少了那个字。
+    if (chordish && (dBelow <= dAbove || (narrow && dBelow <= dAbove * 1.5))) {
       out[i].row = below;
       set(i, "chord", `谱行 ${below} 上方 ${dBelow.toFixed(1)}${narrow ? "，窄字" : ""}`);
     } else if (above >= 0) {
