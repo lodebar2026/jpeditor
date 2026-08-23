@@ -8,7 +8,7 @@
 // 它直接承载简谱层的表述：音符数字、歌词分段、标题、词曲）。
 // **纯 Node，不起浏览器。**
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, collectSongGlyphs, csvRow, CORPUS_PDF } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, collectSongGlyphs, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
 const args = process.argv.slice(2);
 const flags = Object.fromEntries(args.filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")));
@@ -329,7 +329,19 @@ for (const [id, entries] of byId) {
     if (last && bot - last.bot <= 3) last.items.push(o);
     else creditLines.push({ bot, items: [o] });
   }
-  const recCredit = creditNorm(creditLines.map((ln) => readSeq(ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x))).join(""));
+  // 标点不进序列（判据见 `isCreditWordGlyph`，与建库那边共用）：GT 侧只留字与数，
+  // 识别侧要是把 `：` `.` `(` `)` 留成 `�`，凭空多出九百多处「未识别」。
+  const recCredit = creditNorm(
+    creditLines
+      .map((ln) =>
+        ln.items
+          .sort((a, b) => a.obj.bbox.x - b.obj.bbox.x)
+          .filter((o) => isCreditWordGlyph(o.obj.bbox))
+          .map(charAt)
+          .join(""),
+      )
+      .join(""),
+  );
   const dCredit = gtCredit ? alignOps(gtCredit, recCredit) : null;
   const sCredit = dCredit ? splitOps(dCredit.ops) : null;
 

@@ -398,6 +398,26 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
   return { notes, chords, title, verses: kept, folds, dropped, misprintedNo };
 }
 
+/**
+ * 词曲署名里的字形，是不是**该进比对序列**的字（不是标点）。
+ * GT 的 `WordsByAndMusicBy` 只留字与数，识别侧也得按同一口径剔掉标点，两边才对得齐。
+ *
+ * **高和宽要一起看**，单看哪一维都会误伤：
+ *  - 只看宽：`i` `l` 只有 1.9 宽，跟 `(` 一样窄，一刀切会把这两个字母丢掉——GT 里却留着，
+ *    序列一长一短就对不上，自举于是永远学不会它们（`William` 读成 `Wm11mam` 就是这么来的）。
+ *  - 只看高：`e` `n` `r` `o` 这些没有上下伸的小写字母才 4.3~4.4 高，与冒号同档，
+ *    按高度一刀切会把半个名字丢掉（`Heber` 读成 `Hb`）。
+ * 两维一起就很干净：点/冒号又矮又窄（≤4.5 × ≤2.4），括号又高又窄（≥8.5 × ≤3），
+ * 字母不会同时满足。
+ *
+ * gen-glyphdict.mjs（建库）与 pdf-diff.mjs（比对）共用——两边必须一模一样。
+ */
+export function isCreditWordGlyph(b) {
+  if (b.h <= 4.5 && b.w <= 2.4) return false; // 「.」「：」
+  if (b.h >= 8.5 && b.w <= 3) return false; // 「(」「)」
+  return true;
+}
+
 /** MusicXML 的 `<harmony>` → 谱面上印的和弦文本序列。
  *  谱面写法是**升降号在前**（`#Fm`、`♭B`），与 MusicXML 的 root-step + root-alter 顺序相反。 */
 export function gtHarmonies(musicxml) {

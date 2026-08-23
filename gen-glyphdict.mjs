@@ -14,7 +14,7 @@
 //
 //   npm run build:cli && node gen-pagemap.mjs && node gen-glyphdict.mjs
 import { readFile, writeFile } from "node:fs/promises";
-import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, collectSongGlyphs } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, collectSongGlyphs, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
 const SEED = "testdata/500/glyph-seed.tsv";
 const PAGEMAP = "testdata/500/pagemap.json";
@@ -109,7 +109,9 @@ for (const [id, entries] of byId) {
         if (last && bot(o) - last.bot <= 3) last.items.push(o);
         else lines.push({ bot: bot(o), items: [o] });
       }
-      for (const ln of lines) for (const o of ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x)) credits.push(noteOf(o));
+      // 标点（`：` `.` `(` `)`）不进这条序列：GT 那边只留字与数，留着两边永远对不齐
+      for (const ln of lines)
+        for (const o of ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x)) if (isCreditWordGlyph(o.obj.bbox)) credits.push(noteOf(o));
     }
     if (e.startsHere) {
       for (const o of inv.objs.filter((x) => x.cls === "category" && !x.dup).sort((a, b) => a.obj.bbox.x - b.obj.bbox.x))
