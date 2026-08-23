@@ -35,6 +35,7 @@ npm run build && node xml-roundtrip.mjs                # MusicXML 导出回归�
 npm run build && node omr-export-check.mjs             # 同上，但底本取自真跑一遍 OMR 的识别原文
 npm run build && node abc-shot.mjs <abc> /tmp/abc.png  # 拖入 .abc 端到端渲染核对
 npm run build && node omr-pu-check.mjs                 # 识别→文本谱原文→回解析 逐项对拍
+npm run build:cli && node pdf-diff.mjs && node pdf-mark.mjs   # 矢量 PDF 识别 ↔ GT 对比 + 差异标记版 PDF
 npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿（须人工核对后才算 GT）
 ```
 
@@ -111,13 +112,15 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   `inventory.ts` / `glyphdict.ts`）——**文字转曲**的印刷歌本 PDF 直接读矢量对象，不栅格化、不跑 OCR。
   重叠对象在矢量层天然分离（`jianpu.ts` 那五处拆粘连启发式全都用不上），全书 666 页 6.5 秒。
   字形按轮廓聚类后用 GT 语料自举标注（36.6 万对象 → 6186 个形状类）。
-  568 首基线：音符 99.4%、歌词 97.4%、标题 99.1%、和弦 95.5%、圆滑线 96.3%、调号 97.0%、拍号 99.1%
+  568 首基线：音符 99.7%、歌词 97.6%、标题 99.1%、和弦 96.2%、圆滑线 96.6%、调号 97.0%、拍号 99.1%
   （后四项以 musicxml 为基准——.jpwabc 装不下和弦，slur/tie/调号拍号也是 musicxml 才全），
-  全书未归类对象 1/365694，内容完全一致（音符+歌词+标题）327/568。
+  全书未归类对象 0/365694，内容完全一致（音符+歌词+标题）358/568。
   **归类判据一改就要重跑 `gen-glyphdict.mjs`**（再把上一版的 OCR 标注并回未定类）——
   字形自举靠 GT 与页面序列对齐投票，归类错位时学到的字符也跟着错。
   对比报告把「内容差异 / 未识别 / 版面」分三类记，
   折行、标点位置、旋律重复这些排版事实单列，不混进「录错」。
+  `pdf-mark.mjs` 出**差异标记版 PDF**（红 = 页面读错/多出、黄 = GT 有页面无、橙 = 字形未读出，
+  盖在原件上，默认只出有标记的页）；位置由 pdf-diff 写的 `pdf-diff-marks.json` 提供。
   另有 page-report.mjs 出逐页排版信息（页型/曲目落位/页眉页脚/花边文字框/边框类型，未安置 0），
   relayout.mjs 从版面规格排回去：outline 模式做对象级核对（全书 spurious 0、unplaced 21/308278），
   text 模式用 pdf-lib 直出 666 页文字版 PDF（可选中可搜索，12.3MB，不经浏览器故字体只嵌一份）。
