@@ -755,12 +755,24 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   //   （标题以下不可能属于上一首）从根上解决了，那道口子就撤了——撤掉之后
   //   调号 97.0%→97.4%、拍号 99.1%→99.6%，可见它自己也在误伤。
   {
+    // 等号的**左边必须紧挨着一个窄字**——调号永远写作「1=X」，那个 `1` 宽只有高的四成。
+    // 少了这一条，词曲署名里的 `W`（6.2×4.3、curves=0，横平竖直没有一段曲线）会被当成等号，
+    // 底下那个「一路往外长」的循环再把半行人名吞成调号（290 首的 `EHewitt(1851-` 整段）。
+    const narrowLeftOf = (eb: Rect) =>
+      objs.some((o, j) => {
+        if (out[j].dup) return false;
+        const b = o.bbox;
+        if (Math.abs(cy(b) - cy(eb)) > noteH * 0.95) return false;
+        const gap = eb.x - right(b);
+        return gap >= -0.5 && gap <= noteH * 0.75 && b.w / Math.max(b.h, 0.1) < 0.6;
+      });
     const eqs: number[] = [];
     for (let i = 0; i < objs.length; i++) {
       if (out[i].cls !== "chord" || out[i].dup) continue;
       const b = objs[i].bbox;
       const ratio = b.w / Math.max(b.h, 0.1);
       if (objs[i].curves !== 0 || b.h < noteH * 0.28 || b.h > noteH * 0.55 || ratio < 1.3 || ratio > 2.6) continue;
+      if (!narrowLeftOf(b)) continue;
       eqs.push(i);
     }
     for (const e of eqs) {
@@ -770,13 +782,16 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       // 替代调「(1=D)」的括号隔着「1」和音名，离等号一个多字距，收不到就留在和弦带里，
       // 还会被自举投成某个字母（实测那个 3.0×10.6 的括号被投成 `E`，
       // 全书和弦序列凭空多出上百个 E，和弦准确率掉 1.5 个点）。
+      // 往外长也要有个边：调号拍号连括号一共不过五六个字宽，长过头就是长进署名里了
       const grp = [eb];
+      const limit = noteH * 7;
       for (let pass = 0; pass < 4; pass++) {
         let grew = false;
         for (let i = 0; i < objs.length; i++) {
           if (out[i].cls !== "chord" || out[i].dup) continue;
           const b = objs[i].bbox;
           if (Math.abs(cy(b) - cy(eb)) > noteH * 0.95) continue;
+          if (Math.abs(cx(b) - cx(eb)) > limit) continue;
           if (!grp.some((q) => Math.min(Math.abs(b.x - right(q)), Math.abs(q.x - right(b))) <= noteH * 0.75)) continue;
           set(i, "keyMeter", `紧挨调号，调号的一部分`);
           grp.push(b);
