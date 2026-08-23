@@ -1002,8 +1002,12 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
             if (j === i || paired.has(j) || out[j].dup) continue;
             const B = objs[j];
             if (out[i].cls !== out[j].cls) continue;
-            if (A.paint === B.paint) continue; // 一个 fill 一个 stroke 才是重复描边
-            const tolp = Math.max(A.lineWidth, B.lineWidth, 0.3) * 2;
+            // 一个 fill 一个 stroke 是常见的那种重复描边；**也有画两遍 fill 的**——
+            // 那种两份一模一样（同 bbox、同段数），得按「严丝合缝地重合」认，
+            // 不然 003 首那个 `♭B` 会读成 `♭B` + `B`，多出一个和弦。
+            const samePaint = A.paint === B.paint;
+            if (samePaint && (A.curves !== B.curves || A.segs !== B.segs)) continue;
+            const tolp = samePaint ? 0.1 : Math.max(A.lineWidth, B.lineWidth, 0.3) * 2;
             if (
               Math.abs(A.bbox.x - B.bbox.x) <= tolp &&
               Math.abs(A.bbox.y - B.bbox.y) <= tolp &&
