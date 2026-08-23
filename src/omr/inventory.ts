@@ -572,6 +572,24 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
         const b = objs[i].bbox;
         if (b.y < ty0 - 2 || bottom(b) > ty1 + 2) continue;
         if (right(b) < tx0 - lyricH || b.x > tx1 + lyricH) continue;
+        // **标题外侧的字要看它是不是页眉分类词**：分类词（「敬拜 赞美」）紧挨在标题右边，
+        // 离标题末字只差七八个点，与标题末尾那些够不着大字号门槛的扁字（「心」「一」）
+        // 一样近——按距离、按字号都分不开（试过按字号切：标题 99.2% → 98.0%）。
+        // 分得开的是**它右边还有没有同伙**：分类词是一小串小字，一路排到版心右边缘；
+        // 标题的末字右边什么都没有（曲号是大字，不算同伙）。
+        if (b.x > tx1) {
+          // 分得开的是**它右边紧不紧跟着同伙**：分类词是一小串小字挨着排（间距一两个点），
+          // 标题末尾那个扁字右边要么什么都没有，要么隔着老远才是分类词（058 首隔了 71 点）。
+          const tight = objs.some((o2, j) => {
+            if (j === i || out[j].dup) return false;
+            const q = o2.bbox;
+            if (q.h >= titleH) return false; // 大字（曲号）不算同伙
+            if (q.y < ty0 - 2 || bottom(q) > ty1 + 2) return false;
+            const gap = q.x - right(b);
+            return gap >= -1 && gap <= lyricH * 0.8;
+          });
+          if (tight) continue;
+        }
         set(i, "title", `标题行内的标点 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
       }
     }
