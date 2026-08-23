@@ -584,7 +584,10 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   const pendingSet = new Set(pendingYi);
   //      和弦印在谱行正上方（一个字高以内）；歌词在谱行下方 1~3 字高。
   for (let i = 0; i < objs.length; i++) {
-    if (out[i].cls !== "unclassified" || pendingSet.has(i)) continue;
+    // `textLine`（一整行文字合成一个 path）也要在这里分：它就是一行字，
+    // 只是没拆成单字。**OCR 兜底把整行的文本补进字典之后**，它能像别的字一样参与比对
+    // （016 首的词曲署名就是这么一个对象，不放进来就永远读不出）。
+    if ((out[i].cls !== "unclassified" && out[i].cls !== "textLine") || pendingSet.has(i)) continue;
     const o = objs[i];
     const b = o.bbox;
     let above = -1;
@@ -620,6 +623,18 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       continue;
     }
     const chordish = below >= 0 && dBelow < noteH * (narrow ? 2.4 : 1.6);
+    // 整行合成的 path 只在**谱行上方**这一侧参与（署名、经文都印在那儿）。
+    // 让它也去当歌词行反而更糟：一整行歌词是一个对象，归段/折行那套按字数算的判据
+    // 全失灵（实测歌词 98.29% → 98.17%，剔掉的非歌词对象从 1296 涨到 4031）。
+    // 上方这一侧的门槛要放宽到几个字高——署名印在第一谱行上方三四个字高处，
+    // 按和弦那 1.6 字高的门槛够不着。
+    if (out[i].cls === "textLine") {
+      if (below >= 0 && dBelow <= dAbove && dBelow < noteH * 5) {
+        out[i].row = below;
+        set(i, "chord", `谱行 ${below} 上方 ${dBelow.toFixed(1)} 的整行文字`);
+      }
+      continue;
+    }
     if (chordish && (dBelow <= dAbove || narrow)) {
       out[i].row = below;
       set(i, "chord", `谱行 ${below} 上方 ${dBelow.toFixed(1)}${narrow ? "，窄字" : ""}`);
