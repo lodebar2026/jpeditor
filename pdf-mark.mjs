@@ -35,6 +35,30 @@ const YELLOW = rgb(1, 0.9, 0.25);
 const INK = rgb(0.15, 0.1, 0);
 
 const data = JSON.parse(await readFile(MARKS, "utf8"));
+// **marks 是 pdf-diff 的产物，本脚本不碰语料**：GT 改过之后只重出 PDF 是不会生效的。
+// 比一下时间戳，过期就直说（改了一首 musicxml 只重跑 pdf-mark，白跑一趟很难发现）。
+{
+  const { statSync } = await import("node:fs");
+  const { readdirSync } = await import("node:fs");
+  const marksAt = statSync(MARKS).mtimeMs;
+  const xmlDir = CORPUS_PDF.replace(/\/[^/]*$/, "/500");
+  let newest = 0;
+  let newestName = "";
+  try {
+    for (const f of readdirSync(xmlDir)) {
+      if (!f.endsWith(".musicxml")) continue;
+      const t = statSync(`${xmlDir}/${f}`).mtimeMs;
+      if (t > newest) {
+        newest = t;
+        newestName = f;
+      }
+    }
+  } catch {
+    /* 没有语料目录就不比 */
+  }
+  if (newest > marksAt) console.log(`⚠ ${MARKS} 比语料旧（${newestName} 更新过）——先跑 node pdf-diff.mjs`);
+  if (data.songs < 100) console.log(`⚠ ${MARKS} 里只有 ${data.songs} 首，多半是上次带曲号跑的 pdf-diff——全量请跑 node pdf-diff.mjs`);
+}
 let pages = Object.entries(data.pages).map(([p, ms]) => ({ page: Number(p), marks: ms }));
 if (only.size) pages = pages.filter((p) => p.marks.some((m) => only.has(m.id)));
 pages.sort((a, b) => a.page - b.page);
