@@ -173,6 +173,11 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   const objs = page.objs;
   const out: ClassifiedObj[] = objs.map((o) => ({ obj: o, cls: "unclassified" as ObjClass, row: -1, why: "" }));
   const set = (i: number, cls: ObjClass, why: string) => {
+    // **花边框里的东西一律只当注解正文**：框内印的是圣诗故事/经文/注记，与乐谱无关。
+    // 0a 一进来就把框内定成 storyText，这里守住不许后面的判据再改判——
+    // 「整行合成 path」那一步原先不看已有归类，把框里 2662 行正文全改判成了 textLine，
+    // 它们于是又流回谱行的判据里去（当署名、当歌词）。
+    if (out[i].cls === "storyText" && cls !== "storyText") return;
     out[i].cls = cls;
     out[i].why = why;
   };
@@ -186,11 +191,13 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   for (const orn of ornaments) {
     for (const i of orn.idx) set(i, "ornament", `重复纹样 ×${orn.idx.length}，围成 ${orn.box.w.toFixed(0)}×${orn.box.h.toFixed(0)} 的框`);
   }
-  // 框内的一切都是注解正文，不是乐谱——直接定案，跳过后续所有判据。
+  // 框内的一切都是注解正文，不是乐谱——直接定案，跳过后续所有判据（`set` 里有一道锁）。
+  // 范围取**整个框**而不是 inner：inner 往里缩了一圈边宽，压在那一圈上的文字收不到，
+  // 全书还剩 566 行正文流回谱面判据里去。框的一圈纹样自己早已定成 ornament，不受影响。
   for (const orn of ornaments) {
     for (let i = 0; i < objs.length; i++) {
       if (out[i].cls !== "unclassified") continue;
-      if (intersectRect(objs[i].bbox, orn.inner)) set(i, "storyText", "花边框内的注解正文");
+      if (intersectRect(objs[i].bbox, orn.box)) set(i, "storyText", "花边框内的注解正文");
     }
   }
 
@@ -213,7 +220,11 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     const { w, h } = o.bbox;
     const ew = effW(o);
     const eh = effH(o);
-    if (eh / ew >= 2.5 && ew <= noteH * 0.35) {
+    // 竖线必须**一条曲线都没有**（是个矩形）：全书 2676 条小节线无一例外 curves=0，
+    // 而拉丁小写 `l` 是 2.4×7.3 的细竖笔、带一点衬线弧（curves=1），
+    // 不卡这一条它就被当成短竖线收走了——词曲署名里 `Walter` 读成 `Water`、
+    // `Gluck` 读成 `Guck`，全书少了 78 个 `l`。
+    if (o.curves === 0 && eh / ew >= 2.5 && ew <= noteH * 0.35) {
       // **小节线明显比字高**（实测 13.8 vs 字高 8.3，比值 1.66）。门槛设在 1.15 字高，
       // 正好把拉丁人名里的竖笔（D/l/d，与字等高）挡在外面——那是词曲署名行被误判成
       // 谱行的根因（p300 曾因此多出两个假谱行、40 个假音符）。
@@ -524,8 +535,26 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     }
   }
 
-  // ── 8c. 页眉带里没被标题收走的，才是页眉分类词。
+  // ── 8c. 页眉分类词。两条来源，缺一不可：
+  //       - 全书统计出的页眉带里、没被标题收走的（原有判据）；
+  //       - **y 方向与大标题有重叠的小字**：分类词就印在标题两侧、与标题同高
+  //         （「基督」「信徒生活／事奉献身」）。这一条不依赖全书带位，
+  //         半页起的曲子、带位不准的页也管用。标题自己的标点已在 8b 收走，
+  //         那些落在标题的 x 范围内，不会被这一条误收。
   for (const i of headerPending) if (out[i].cls === "unclassified") set(i, "category", "页眉带");
+  {
+    const tRows = out
+      .filter((c) => c.cls === "title" && !c.dup)
+      .map((c) => c.obj.bbox)
+      .filter((b) => b.h >= titleH);
+    for (let i = 0; i < objs.length; i++) {
+      if (out[i].cls !== "unclassified") continue;
+      const b = objs[i].bbox;
+      if (b.h >= titleH) continue;
+      if (!tRows.some((t) => b.y < bottom(t) && bottom(b) > t.y)) continue;
+      set(i, "category", "与大标题同高的小字，是页眉分类词");
+    }
+  }
 
   // ── 8d. 大字号里再把**曲号**摘出来。曲号与标题同在标题带、同属大字号，
   //       曲号贴版心左右边缘（对开页左右交替），标题居中。
@@ -737,13 +766,23 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     for (const e of eqs) {
       const eb = objs[e].bbox;
       set(e, "keyMeter", `等号 ${eb.w.toFixed(1)}×${eb.h.toFixed(1)}`);
-      // 等号左右紧挨着的就是「1」和音名；括号一并收走
-      for (let i = 0; i < objs.length; i++) {
-        if (out[i].cls !== "chord" || out[i].dup) continue;
-        const b = objs[i].bbox;
-        if (Math.abs(cy(b) - cy(eb)) > noteH * 0.95) continue;
-        const gap = b.x > eb.x ? b.x - right(eb) : eb.x - right(b);
-        if (gap <= noteH * 0.75) set(i, "keyMeter", `紧挨等号，调号的一部分`);
+      // 等号左右紧挨着的就是「1」和音名。**要一路往外长**，不能只看与等号的距离：
+      // 替代调「(1=D)」的括号隔着「1」和音名，离等号一个多字距，收不到就留在和弦带里，
+      // 还会被自举投成某个字母（实测那个 3.0×10.6 的括号被投成 `E`，
+      // 全书和弦序列凭空多出上百个 E，和弦准确率掉 1.5 个点）。
+      const grp = [eb];
+      for (let pass = 0; pass < 4; pass++) {
+        let grew = false;
+        for (let i = 0; i < objs.length; i++) {
+          if (out[i].cls !== "chord" || out[i].dup) continue;
+          const b = objs[i].bbox;
+          if (Math.abs(cy(b) - cy(eb)) > noteH * 0.95) continue;
+          if (!grp.some((q) => Math.min(Math.abs(b.x - right(q)), Math.abs(q.x - right(b))) <= noteH * 0.75)) continue;
+          set(i, "keyMeter", `紧挨调号，调号的一部分`);
+          grp.push(b);
+          grew = true;
+        }
+        if (!grew) break;
       }
     }
   }
@@ -957,6 +996,15 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       else lines2.push([i]);
     }
     for (const ln of lines2) {
+      // **还得密排**：房号（一房二房）会把那一行的和弦整排抬高一个字，
+      // 抬上去之后它们同样「比和弦基线高一个字高」，于是被当成署名接到人名后面
+      //（037 首的署名尾巴上多出 `CFFCCF`）。署名是挤在一起的一串，
+      //  和弦是隔着大半个小节的孤立记号——按「墨迹宽 / 跨度」一量就分开了（门槛试过 0.3/0.45/0.6，0.3 最好；
+      //  另外试过再加「一行至少四个字」，短署名反被剔掉，署名 88.0→87.7）。
+      const xs = ln.map((i) => objs[i].bbox);
+      const span = Math.max(...xs.map(right)) - Math.min(...xs.map((b) => b.x));
+      const ink = xs.reduce((a, b) => a + b.w, 0);
+      if (span > 0 && ink / span < 0.3) continue;
       const h = median(ln.map((i) => objs[i].bbox.h));
       if (h > lyricH * 0.92) continue; // 这一行是经文/正文，不是署名
       // **靠左/靠右分不开**：署名行的左缘中位虽在版心 57% 处，但长署名（外文人名 + 生卒年）
