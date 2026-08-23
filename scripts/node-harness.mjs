@@ -310,6 +310,7 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
   const keyOfLine = (ln) => (shapeKey && verseNoAt(ln) ? shapeKey(ln[0].obj.data) : null);
   const numbered = (ln) => verseNoAt(ln);
   const anchor = new Map(); // 段号字形 → 段序号
+  const numberedVerse = new Set(); // 哪些段是「行首印着段号」的——它们不是折行，别归并
   {
     let best = -1;
     let bestN = 1; // 只有一行带段号的谱行没有样板价值
@@ -336,7 +337,11 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
     // **必须以「行首那个字形在样板里查得到」为准**，不能只看「像不像段号」：
     // 混进歌词带的和弦行/音符行开头也常是「窄字 + 小点」（`7` 后面跟个减时点），
     // 一误判就把整个谱行切到 vi=0，三段词叠成一段（279 首第 2 页实测）。
-    const anchored = useAnchor && lines.some((ln) => numbered(ln) && anchor.has(keyOfLine(ln)));
+    // 段号**重号**的谱行不能按段号归：那是谱面印错了（379 首第 2 谱行印成「1. 2. 4. 4.」，
+    // 第 3 段那行被标成 4）。同一谱行里的歌词行自上而下就是段序，重号时按位置排回去。
+    const wants = lines.filter((ln) => numbered(ln)).map((ln) => anchor.get(keyOfLine(ln)));
+    const dupNo = new Set(wants.filter((v) => v != null)).size !== wants.filter((v) => v != null).length;
+    const anchored = useAnchor && !dupNo && lines.some((ln) => numbered(ln) && anchor.has(keyOfLine(ln)));
     if (!anchored) {
       lines.forEach((ln, vi) => (verses[vi] ??= []).push(...ln));
       continue;
@@ -345,8 +350,10 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
     for (const ln of lines) {
       if (numbered(ln)) {
         const k = keyOfLine(ln);
-        vi = anchor.has(k) ? anchor.get(k) : vi + 1;
+        const want = anchor.has(k) ? anchor.get(k) : vi + 1;
+        vi = want > vi ? want : vi + 1; // 段号只能一路往下走
       }
+      if (numbered(ln)) numberedVerse.add(Math.max(vi, 0));
       (verses[Math.max(vi, 0)] ??= []).push(...stripVerseNo(ln));
     }
   }
@@ -369,6 +376,7 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
       const avgMain = sizes.slice(0, mainIdx).reduce((a, b) => a + b, 0) / mainIdx;
       for (let k = mainIdx; k < verses.length; k++) {
         if (!verses[k]?.length) continue;
+        if (numberedVerse.has(k)) continue; // 行首自己印着段号，那就是一段，再短也不是折行
         if (verses[k].length >= avgMain * 0.25) continue; // 够长，是真的一段，别动
         verses[(k - mainIdx) % mainIdx].push(...verses[k]);
         folds += verses[k].length;
