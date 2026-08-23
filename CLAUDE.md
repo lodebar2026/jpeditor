@@ -67,6 +67,12 @@ npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿�
 - `src/smufl/smufl.ts` — Bravura 元数据加载（`public/redist/bravura_metadata.json`）+
   GlyphCodes。**PUA 码位用 `String.fromCharCode(0x...)`，切勿在源码里写字面 PUA 字符**
   （Write 工具会损坏这些字节）。
+- **矢量 PDF 路**（**目前只有 CLI 脚本走这条路，编辑器尚未接**——`isVectorPdf` 已备好
+  但还没有调用方；接进去时才是「为真走矢量、否则退回 `decode.ts`」）：
+  `src/omr/vector.ts`（读 PDF 路径对象，**不得碰 canvas/document**——Node CLI 要 import 它）、
+  `bookprofile.ts`（字号族/版心统计）、`inventory.ts`（对象归类，硬指标是未归类数）、
+  `glyphdict.ts`（形状→字符字典）。引导在 `scripts/node-harness.mjs`（**不起浏览器**，
+  与起 Edge 的 `harness.mjs` 分工）。详见 [矢量PDF识别](docs/实现/矢量PDF识别.md)。
 - `src/jpword/tokens.ts` — `TokenData` 分词器，仅用于编辑器语法高亮（非语义解析）。
 - `src/jpword/hanconv.ts` — 简繁转换（工具栏「简繁」）。词表用 opencc-js，按方向动态
   `import()`（`opencc-js/cn2t` / `opencc-js/t2cn`，各自独立 chunk，首屏不加载）。只转
@@ -101,6 +107,19 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
 下面每块只在**改到该模块**时才需要展开；`docs/实现/` 里是完整的原委与踩坑记录，
 改行为前先读对应那篇，别照直觉改。
 
+- **[矢量 PDF 识别](docs/实现/矢量PDF识别.md)**（`src/omr/vector.ts` / `bookprofile.ts` /
+  `inventory.ts` / `glyphdict.ts`）——**文字转曲**的印刷歌本 PDF 直接读矢量对象，不栅格化、不跑 OCR。
+  重叠对象在矢量层天然分离（`jianpu.ts` 那五处拆粘连启发式全都用不上），全书 666 页 6.5 秒。
+  字形按轮廓聚类后用 GT 语料自举标注（36.6 万对象 → 6186 个形状类）。
+  568 首基线：音符 98.9%、歌词 94.5%、标题 93.1%、和弦 86.8%、圆滑线 88.3%、调号 92.6%、拍号 95.1%
+  （后四项以 musicxml 为基准——.jpwabc 装不下和弦，slur/tie/调号拍号也是 musicxml 才全），
+  全书未归类对象 1/365694。对比报告把「内容差异 / 未识别 / 版面」分三类记，
+  折行、标点位置、旋律重复这些排版事实单列，不混进「录错」。
+  另有 page-report.mjs 出逐页排版信息（页型/曲目落位/页眉页脚/花边文字框/边框类型，未安置 0），
+  relayout.mjs 从版面规格排回去：outline 模式做对象级核对（全书 spurious 0、unplaced 21/308278），
+  text 模式用 pdf-lib 直出 666 页文字版 PDF（可选中可搜索，12.3MB，不经浏览器故字体只嵌一份）。
+  篇中逐条记录了归类判据的判据与反例（重复描边的 3×3 邻域配对、小节线高度门槛、
+  花边框的密排线判据、页顶续尾、段号重印…），**动那些阈值前必看**。
 - **[OMR 简谱识别](docs/实现/OMR-简谱识别.md)**（`src/omr/`，最长的一篇）——图片/PDF → MusicXML。
   全本地一条路：连通域几何 + PaddleOCR PP-OCRv6_small，浏览器离线。14 首 GT 基线：音符/八度/附点/小节/对位/标题/词曲 100%，slur-tie 99.8%、歌词 99.5%。
   回归 `node measure-all.mjs`、`node bench-lyrics.mjs`、`node check-gt.mjs`。

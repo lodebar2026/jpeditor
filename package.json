@@ -31,7 +31,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "build:cli": "vite build --config vite.cli.config.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.3",
@@ -52,8 +53,10 @@
     "smplr": "^1.0.0"
   },
   "devDependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "@tauri-apps/cli": "^2",
     "@types/opentype.js": "^1.3.10",
+    "pdf-lib": "^1.17.1",
     "playwright": "^1.60.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3"
