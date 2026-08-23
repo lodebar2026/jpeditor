@@ -414,6 +414,12 @@ for (const [id, entries] of byId) {
     let cur = null;
     for (const o of chords) {
       const b = o.obj.bbox;
+      // `D.C.` `D.S.` 里的点：和弦本身没有点这么小的部件（`♭` 2.6×4.2、`#` 2.9×3.8），
+      // 一撮里出现小圆点，整撮就是跳转记号，不是和弦（J21 首的 `D.C.` 曾被读成 `D`+`C`）。
+      if (b.w <= 2.5 && b.h <= 2.5) {
+        if (cur) cur.dot = true;
+        continue;
+      }
       if (cur && cur.row === o.row && b.x - cur.x1 <= 4) {
         cur.text += charOf.get(cli.shapeKey(o.obj.data)) ?? "";
         cur.x1 = Math.max(cur.x1, b.x + b.w);
@@ -432,10 +438,34 @@ for (const [id, entries] of byId) {
   // 先抹掉和弦里不可能出现的字符再切 token：和弦带里夹着读不出的字形（`�`）与标点——
   // 谱面上的 `♭` 常被拆成两个对象、其中一个读成「，」，夹在中间就把 `♭B` 切成了 `B`
   // （`♭B→B` 是全书最多的一类和弦差异，41 处）。
-  const normChords = (t) => (t.replace(/[^0-9A-Za-z#♭/]/g, "").match(CHORD_TOKEN) ?? []).join("|");
+  // **一撮要整个都是和弦才算**：谱面上的 `D.S.`、`Fine`、`Coda` 也印在和弦带里，
+  // 只按正则去「切」的话会从中切出 `D`、`F`、`C`（344 首末尾因此多一个 `D`）。
+  // 抹掉标点后，token 拼回去必须与整串一字不差。
+  // 从左往右一个个啃，**啃到小写字母就知道撞上单词了**：`Fine`、`Coda`、`al` 这些
+  // 跳转记号也印在和弦带里，还常与真和弦挨在一起粘成一撮（J21 首的 `D` 紧挨着 `Fine`）。
+  // 撞上时要连刚才那个 token 一起吐掉——`F` 本来就是 `Fine` 的头一个字母。
+  const CHORD_HEAD = new RegExp(`^(?:${CHORD_TOKEN.source})`);
+  const normChords = (t) => {
+    let rest = t.replace(/[^0-9A-Za-z#♭/]/g, "");
+    const toks = [];
+    while (rest) {
+      const m = CHORD_HEAD.exec(rest);
+      if (!m || !m[0]) {
+        rest = rest.slice(1); // 开头是杂字符（没读出来的上标之类），跳过接着啃
+        continue;
+      }
+      rest = rest.slice(m[0].length);
+      if (rest && /[a-z]/.test(rest[0])) break; // 后面还跟着小写字母：这是个单词，连这个 token 一起不要
+      toks.push(m[0]);
+    }
+    return toks.join("|");
+  };
   // 一撮可能切出不止一个和弦记号；每个记号都记着这一撮的对象，够画标记用了
   const recChordSeq = [];
-  for (const g of chordGroups) for (const tok of normChords(g.text).split("|").filter(Boolean)) recChordSeq.push({ ch: tok, objs: g.objs });
+  for (const g of chordGroups) {
+    if (g.dot) continue; // 带点的那一撮是 D.C./D.S.
+    for (const tok of normChords(g.text).split("|").filter(Boolean)) recChordSeq.push({ ch: tok, objs: g.objs });
+  }
   const recChords = recChordSeq.map((it) => it.ch).join("|");
   const gtChords = gt.musicxml ? normChords(gtHarmonies(gt.musicxml).join("")) : "";
   // **谱面把旋律印两遍时，和弦也跟着印两遍**（见下面音符那段的同一件事）：
