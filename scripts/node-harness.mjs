@@ -248,9 +248,11 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
   // **剔掉行首段号**：谱面上每个谱行都重印一次，GT 里只有一处。
   const stripVerseNo = (items) => (verseNoAt(items) ? items.slice(2) : items);
 
-  // 字格大小：拿歌词对象高度的中位数（汉字近方）
+  // 字格大小：拿歌词对象高度的**四分之三分位**（汉字近方）。
+  // 不能用中位数——歌词带里混进一整条花边框（每片才 4.3 高、几十片）时中位数会被拽小，
+  // 下面「稀疏行」的门槛跟着失灵，真歌词行反被剔掉、花边框倒留了下来（474 首实测）。
   const heights = [...mine("lyric")].map((o) => o.obj.bbox.h).sort((a, b) => a - b);
-  const cell = heights.length ? heights[heights.length >> 1] : 10.5;
+  const cell = heights.length ? heights[Math.min(heights.length - 1, Math.floor(heights.length * 0.75))] : 10.5;
 
   // 先把每个谱行下方的歌词聚成行
   let dropped = 0;
