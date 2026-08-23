@@ -828,7 +828,10 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       if (q.h < lyricH * 0.7) continue; // 拿满格的汉字当参照，标点不算
       if (Math.abs(cy(q) - mid) > lyricH * 0.28) continue; // 不在同一行
       const gap = q.x > b.x ? q.x - right(b) : b.x - right(q);
-      if (gap <= lyricH * 1.5) {
+      // 窗口放到 3.5 个字宽：行末那个「一」下面的音符常被拉得很开，与前一个汉字能隔到
+      // 两三个字宽（034 首隔了 28 点）。放宽到 2.5/3.5/5/8 实测都一样——真圆滑线是靠
+      // 「与汉字共基线」挡住的，不是靠这个窗口；完全一致 441→451 首。
+      if (gap <= lyricH * 3.5) {
         neighbor = bottom(q); // 记下参照汉字的下缘，供聚行用
         neighborRow = out[j].row; // 归行也跟着它走（见下）
         break;
