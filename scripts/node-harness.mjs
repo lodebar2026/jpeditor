@@ -184,13 +184,22 @@ export function gtNoteDigits(voiceText) {
 
 /** `.Words` 段 → 每段歌词的汉字串（按 verse）。 */
 export function gtLyricVerses(wordsText) {
+  // `W1-3@9,3` 是**几段共用的副歌**（全书只有 013 首这么写）。谱面把它印在**第 1 段那一行**
+  // 的后面（副歌那几个谱行只有一行词），所以它是第 1 段的一部分，不是「第 4 段」。
+  // 试过摊给范围内的每一段，反而更糟——谱面只印一遍，第 2、3 段会各多出一整段（013 首 36→72 项）。
   const verses = [];
+  const byVerse = new Map();
   let cur = null;
   for (const line of wordsText.split(/\r?\n/)) {
     const m = /^W(\d+)(?:-\d+)?(?:\([^)]*\))?@/.exec(line.trim());
     if (m) {
-      cur = { verse: Number(m[1]), text: "" };
-      verses.push(cur);
+      const v = Number(m[1]);
+      cur = byVerse.get(v);
+      if (!cur) {
+        cur = { verse: v, text: "" };
+        byVerse.set(v, cur);
+        verses.push(cur);
+      }
     } else if (cur) cur.text += line;
   }
   // 页面上印着的东西要全留下，才能和页面字形一一对上：
