@@ -16,6 +16,16 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, collectSongGlyphs, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
+/** `.Title` 里的 `WordsByAndMusicBy`。**取最后一条非空的**：有的文件写了两条，
+ *  第一条是空的；`=` 后面只吃横向空白，吃到换行就会把下一行整条卷进来。 */
+function creditField(titleSec) {
+  let out = "";
+  for (const m of (titleSec ?? "").matchAll(/WordsByAndMusicBy[^\S\r\n]*=[^\S\r\n]*\{?([^}\r\n]*)\}?/g)) {
+    if (m[1].trim()) out = m[1];
+  }
+  return out;
+}
+
 const SEED = "testdata/500/glyph-seed.tsv";
 const PAGEMAP = "testdata/500/pagemap.json";
 const OUT = "testdata/500/glyphdict.json";
@@ -106,7 +116,8 @@ for (const [id, entries] of byId) {
         .filter((x) => x.cls === "credit" && !x.dup && x.obj.bbox.y >= (e.yFrom ?? 0) && x.obj.bbox.y < (e.yTo ?? 1e9))
         .sort((a, b) => bot(a) - bot(b))) {
         const last = lines[lines.length - 1];
-        if (last && bot(o) - last.bot <= 3) last.items.push(o);
+        // 容差 5 而不是 3：生卒年印得略高，卡在 3 上会被切成另一行、排到人名前面（同 pdf-diff）
+        if (last && bot(o) - last.bot <= 5) last.items.push(o);
         else lines.push({ bot: bot(o), items: [o] });
       }
       // 标点（`：` `.` `(` `)`）不进这条序列：GT 那边只留字与数，留着两边永远对不齐
@@ -135,7 +146,7 @@ for (const [id, entries] of byId) {
     gtChords: gt.musicxml ? gtHarmonies(gt.musicxml).join("") : "",
     gtCategory: (song.category ?? "").replace(/\s+/g, ""),
     // GT 的署名字段：`词曲：(加)宣信(1843-1919)`。谱面上的标点/空格随排版走，只留字与数
-    gtCredit: (/WordsByAndMusicBy\s*=\s*\{?([^}\r\n]*)\}?/.exec(sec.Title ?? "")?.[1] ?? "")
+    gtCredit: (creditField(sec.Title))
       .replace(/\\n/g, "")
       .match(/[\u4e00-\u9fff0-9A-Za-z]/g)
       ?.join("") ?? "",

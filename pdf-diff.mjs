@@ -10,6 +10,16 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, collectSongGlyphs, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
+/** `.Title` 里的 `WordsByAndMusicBy`。**取最后一条非空的**：有的文件写了两条，
+ *  第一条是空的；`=` 后面只吃横向空白，吃到换行就会把下一行整条卷进来。 */
+function creditField(titleSec) {
+  let out = "";
+  for (const m of (titleSec ?? "").matchAll(/WordsByAndMusicBy[^\S\r\n]*=[^\S\r\n]*\{?([^}\r\n]*)\}?/g)) {
+    if (m[1].trim()) out = m[1];
+  }
+  return out;
+}
+
 const args = process.argv.slice(2);
 const flags = Object.fromEntries(args.filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")));
 const filters = args.filter((a) => !a.startsWith("--"));
@@ -321,12 +331,15 @@ for (const [id, entries] of byId) {
   //    署名是两行交错排的（作词一行、作曲一行），要**先按基线分行再按 x 排**，
   //    照 x 一路读会把两行的字母穿插起来。
   const creditNorm = (t) => (t.replace(/\\n/g, "").match(/[\u4e00-\u9fff0-9A-Za-z\ufffd]/g) ?? []).join("");
-  const gtCredit = creditNorm(/WordsByAndMusicBy\s*=\s*\{?([^}\r\n]*)\}?/.exec(sec.Title ?? "")?.[1] ?? "");
+  const gtCredit = creditNorm(creditField(sec.Title));
   const creditLines = [];
   for (const o of [...credits].sort((a, b) => a.obj.bbox.y + a.obj.bbox.h - (b.obj.bbox.y + b.obj.bbox.h))) {
     const bot = o.obj.bbox.y + o.obj.bbox.h;
     const last = creditLines[creditLines.length - 1];
-    if (last && bot - last.bot <= 3) last.items.push(o);
+    // 同一行的容差要**松一点**：署名里的生卒年印得略高（`(1820-1915)` 的基线比人名高四五个点），
+    // 卡在 3 点上会把它切成另一行，而行是按基线排的，年份于是跑到人名前面
+    //（197 首读成「18201915作词美芬尼…」）。
+    if (last && bot - last.bot <= 5) last.items.push(o);
     else creditLines.push({ bot, items: [o] });
   }
   // 标点不进序列（判据见 `isCreditWordGlyph`，与建库那边共用）：GT 侧只留字与数，
