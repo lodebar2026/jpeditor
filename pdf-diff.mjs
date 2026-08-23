@@ -584,7 +584,7 @@ for (const r of rows) {
     });
 
   L.push(`## 内容差异 ${r.contentDiffs} 项（GT 与 PDF 不一致）`);
-  if (!r.contentDiffs) L.push("  （无）");
+
   if (r.sNote.content.length) {
     L.push(`  音符 ${r.sNote.content.length} 项（GT ${r.noteGt}${r.noteRepeat > 1 ? `×${r.noteRepeat}遍` : ""} / PDF ${r.noteRec}）`);
     L.push(...fmt(r.sNote.content, r.gtNotes));
@@ -616,40 +616,46 @@ for (const r of rows) {
   if (r.keyOk === false) L.push(`  调号不同：GT「${r.keyGt}」 PDF「${r.keyRec || "(没读到)"}」`);
   if (r.meterOk === false) L.push(`  拍号不同：GT「${r.meterGt}」 PDF「${r.meterRec || "(没读到)"}」`);
 
-  L.push("", `## 未识别 ${r.unreadDiffs} 处（字形没读出来，不是两边的差异）`);
+  // 为 0 的项一律不印：一首没几处差异的曲子，报告里全是「0 处」「（无）」反而看不见重点。
   if (r.unreadDiffs) {
+    L.push("", `## 未识别 ${r.unreadDiffs} 处（字形没读出来，不是两边的差异）`);
     if (r.sNote.unread.length) L.push(`  音符 ${r.sNote.unread.length}：` + r.sNote.unread.map(([, gi, , g2]) => `GT[${gi}]=${g2 || "?"}`).join(" "));
     for (const d of r.verseDiffs) {
       if (!d.unread.length) continue;
       L.push(`  歌词第 ${d.verse} 段 ${d.unread.length}：` + d.unread.map(([, gi, , g2]) => `@${gi}=${g2 || "?"}`).join(" "));
     }
     if (r.sTitle.unread.length) L.push(`  标题 ${r.sTitle.unread.length}`);
-  } else L.push("  （无）");
+  }
 
-  L.push("", "## 版面（记录，不算差异）");
-  L.push(`  歌词折行归并 ${r.folds} 字${r.strayLines ? `，歌词带里剔掉的非歌词对象 ${r.strayLines} 个（零星记号 / 曲末经文出处）` : ""}`);
-  L.push(`  标点差异 ${r.punctDiffs} 处（GT ${r.gtPunctN} / PDF ${r.recPunctN}；标点位置随排版走，不算录错）`);
-  if (r.noteRepeat > 1) L.push(`  **PDF 把旋律印了 ${r.noteRepeat} 遍**（GT 只记一遍，靠多段歌词表示）`);
+  const layout = [];
+  const lay = (t) => layout.push(t);
+  if (r.folds || r.strayLines)
+    lay(`  歌词折行归并 ${r.folds} 字${r.strayLines ? `，歌词带里剔掉的非歌词对象 ${r.strayLines} 个（零星记号 / 曲末经文出处）` : ""}`);
+  if (r.punctDiffs) lay(`  标点差异 ${r.punctDiffs} 处（GT ${r.gtPunctN} / PDF ${r.recPunctN}；标点位置随排版走，不算录错）`);
+  if (r.noteRepeat > 1) lay(`  **PDF 把旋律印了 ${r.noteRepeat} 遍**（GT 只记一遍，靠多段歌词表示）`);
   if (r.misLyric?.length) {
-    L.push(`  ${r.misLyric.length} 行被归成歌词但读不出汉字（多半是和弦行/音符行归错了），已排除：`);
-    for (const v of r.misLyric) L.push(`    「${v.slice(0, 36)}${v.length > 36 ? "…" : ""}」`);
+    lay(`  ${r.misLyric.length} 行被归成歌词但读不出汉字（多半是和弦行/音符行归错了），已排除：`);
+    for (const v of r.misLyric) lay(`    「${v.slice(0, 36)}${v.length > 36 ? "…" : ""}」`);
   }
   if (r.extraVerses?.length) {
-    L.push(`  PDF 多出 ${r.extraVerses.length} 行歌词（GT 里没有对应段，多为副歌另起行）：`);
-    for (const v of r.extraVerses) L.push(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
+    lay(`  PDF 多出 ${r.extraVerses.length} 行歌词（GT 里没有对应段，多为副歌另起行）：`);
+    for (const v of r.extraVerses) lay(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
   }
   if (r.gtOnlyVerses?.length) {
-    L.push(`  GT 有 ${r.gtOnlyVerses.length} 段在 PDF 里没找到对应：`);
-    for (const v of r.gtOnlyVerses) L.push(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
+    lay(`  GT 有 ${r.gtOnlyVerses.length} 段在 PDF 里没找到对应：`);
+    for (const v of r.gtOnlyVerses) lay(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
   }
-  L.push(`  段数 GT ${r.verses.split("/")[0]} / PDF ${r.verses.split("/")[1]}`);
-  L.push(`  调号 GT「${r.keyGt}」PDF「${r.keyRec}」  拍号 GT「${r.meterGt}」PDF「${r.meterRec}」`);
-  L.push(
-    `  反复 GT ${r.repeatGt} / PDF ${r.repeatRec}，房号 GT ${r.endingGt} / PDF ${r.endingRec}` +
-      `（识别侧只有几何，判据粗，不计进内容差异）`,
-  );
-  L.push(`  和弦 GT ${r.chordGt} / PDF ${r.chordRec}${r.chordAcc != null ? `（准确率 ${(r.chordAcc * 100).toFixed(1)}%）` : ""}，花边框正文 ${r.storyChars} 字`);
-  L.push("", `## 覆盖：页面对象 ${r.objTotal}，未归类 ${r.unclassified}`);
+  const [vg, vr] = r.verses.split("/");
+  if (vg !== vr) lay(`  段数 GT ${vg} / PDF ${vr}`);
+  if (r.keyOk === false || r.meterOk === false) lay(`  调号 GT「${r.keyGt}」PDF「${r.keyRec}」  拍号 GT「${r.meterGt}」PDF「${r.meterRec}」`);
+  if (r.repeatGt !== r.repeatRec || r.endingGt !== r.endingRec)
+    lay(
+      `  反复 GT ${r.repeatGt} / PDF ${r.repeatRec}，房号 GT ${r.endingGt} / PDF ${r.endingRec}` +
+        `（识别侧只有几何，判据粗，不计进内容差异）`,
+    );
+  if (r.storyChars) lay(`  花边框正文 ${r.storyChars} 字`);
+  if (layout.length) L.push("", "## 版面（记录，不算差异）", ...layout);
+  L.push("", `## 覆盖：页面对象 ${r.objTotal}${r.unclassified ? `，未归类 ${r.unclassified}` : ""}`);
   L.push(`   准确率：音符 ${(r.noteAcc * 100).toFixed(1)}%  歌词 ${(r.lyricAcc * 100).toFixed(1)}%  标题 ${(r.titleAcc * 100).toFixed(1)}%`);
   await writeFile(`${OUTDIR}/${r.id}.txt`, L.join("\n"));
 }
