@@ -173,7 +173,7 @@ for (const [id, entries] of byId) {
     objTotal += inv.objs.length;
     unclassified += inv.unclassified.length;
     storyChars += inv.objs.filter((o) => o.cls === "storyText" && !o.dup && o.obj.bbox.y >= (e.yFrom ?? 0) && o.obj.bbox.y < (e.yTo ?? 1e9)).length;
-    const got = collectSongGlyphs(inv, e, profile);
+    const got = collectSongGlyphs(inv, e, profile, cli.shapeKey);
     folds += got.folds ?? 0;
     const inSpan = (o) => o.obj.bbox.y >= (e.yFrom ?? 0) && o.obj.bbox.y < (e.yTo ?? 1e9);
     for (const o of inv.objs) {

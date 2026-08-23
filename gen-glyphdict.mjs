@@ -94,7 +94,7 @@ for (const [id, entries] of byId) {
       inv = cli.classifyPage(vp, profile);
       invCache.set(e.page, inv);
     }
-    const got = collectSongGlyphs(inv, e, profile);
+    const got = collectSongGlyphs(inv, e, profile, cli.shapeKey);
     for (const o of got.notes) notes.push(noteOf(o));
     for (const o of got.title) title.push(noteOf(o));
     for (const o of got.chords) chords.push(noteOf(o));

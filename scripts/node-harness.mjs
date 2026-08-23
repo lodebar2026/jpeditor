@@ -214,7 +214,7 @@ export function gtLyricVerses(wordsText) {
  * @param entry pagemap 里的一条（含 page / yFrom / yTo / startsHere）
  * @returns { notes, chords, title, verses }，元素都是归类后的对象
  */
-export function collectSongGlyphs(inv, entry, profile) {
+export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
   const yFrom = entry.yFrom ?? 0;
   const yTo = entry.yTo ?? Infinity;
   const mine = (cls) => inv.objs.filter((o) => o.cls === cls && !o.dup && o.obj.bbox.y >= yFrom && o.obj.bbox.y < yTo);
@@ -236,16 +236,17 @@ export function collectSongGlyphs(inv, entry, profile) {
   }
   const verses = [];
   const dot = profile?.dotDiam ?? 2;
-  const stripVerseNo = (items) => {
-    // **剔掉行首段号**「1.」：谱面上每个谱行都重印一次，GT 里只有一处。
-    // 按几何认：第一个是窄字（数字），紧跟一个小点。
-    if (items.length < 2) return items;
+  /** 行首段号「1.」：第一个是窄字（数字），紧跟一个小点。 */
+  const verseNoAt = (items) => {
+    if (items.length < 2) return false;
     const a = items[0].obj.bbox;
     const b = items[1].obj.bbox;
     const narrow = a.w / Math.max(a.h, 0.1) < 0.72;
     const isDot = b.w <= dot * 2 && b.h <= dot * 2;
-    return narrow && isDot && b.x >= a.x ? items.slice(2) : items;
+    return narrow && isDot && b.x >= a.x;
   };
+  // **剔掉行首段号**：谱面上每个谱行都重印一次，GT 里只有一处。
+  const stripVerseNo = (items) => (verseNoAt(items) ? items.slice(2) : items);
 
   // 先把每个谱行下方的歌词聚成行
   const perRow = [];
@@ -257,10 +258,60 @@ export function collectSongGlyphs(inv, entry, profile) {
       if (last && bot(o) - last.y <= 4) last.items.push(o);
       else lines.push({ y: bot(o), items: [o] });
     }
-    perRow.push(lines.map((ln) => stripVerseNo(ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x))));
+    perRow.push(lines.map((ln) => ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x)));
   }
 
-  for (const lines of perRow) lines.forEach((ln, vi) => (verses[vi] ??= []).push(...ln));
+  // 每行归到第几段：**认行首那个段号数字，别按它在谱行里排第几**。
+  // 按下标排会被谱行里混进来的杂物整段带偏——升号「#」、`D.S.`、词曲署名都可能
+  // 落进歌词带自成一「行」，排在真歌词之前，后面每一段就全串了位
+  // （336 首因此第 1 段少了 16 字、多出一个第 6 段）。
+  // 段号数字本身不必查字典：同一首里同一个数字的**轮廓**一模一样，
+  // 拿段号最全的那个谱行当样板，后面各行按形状对回去即可。既能吸收杂物行，
+  // 也能对上「某一段中途没词」的谱行（那一行的段号会跳号）。
+  const keyOfLine = (ln) => (shapeKey && verseNoAt(ln) ? shapeKey(ln[0].obj.data) : null);
+  const numbered = (ln) => verseNoAt(ln);
+  const anchor = new Map(); // 段号字形 → 段序号
+  {
+    let best = -1;
+    let bestN = 1; // 只有一行带段号的谱行没有样板价值
+    perRow.forEach((lines, i) => {
+      const n = lines.filter(numbered).length;
+      if (n > bestN) {
+        bestN = n;
+        best = i;
+      }
+    });
+    if (best >= 0) {
+      let vi = -1;
+      for (const ln of perRow[best]) {
+        if (!numbered(ln)) continue;
+        vi++;
+        const k = keyOfLine(ln);
+        if (k && !anchor.has(k)) anchor.set(k, vi);
+      }
+    }
+  }
+  const useAnchor = anchor.size >= 2; // 这首确实每行印段号，才谈得上按段号归段
+  for (const lines of perRow) {
+    // 认不出段号的谱行（单段歌、副歌、末行）只能按上下次序排——那本来就是段序。
+    // **必须以「行首那个字形在样板里查得到」为准**，不能只看「像不像段号」：
+    // 混进歌词带的和弦行/音符行开头也常是「窄字 + 小点」（`7` 后面跟个减时点），
+    // 一误判就把整个谱行切到 vi=0，三段词叠成一段（279 首第 2 页实测）。
+    const anchored = useAnchor && lines.some((ln) => numbered(ln) && anchor.has(keyOfLine(ln)));
+    if (!anchored) {
+      lines.forEach((ln, vi) => (verses[vi] ??= []).push(...ln));
+      continue;
+    }
+    let vi = -1; // 还没遇到段号的行：杂物/续行先归到第 1 段
+    for (const ln of lines) {
+      if (numbered(ln)) {
+        const k = keyOfLine(ln);
+        vi = anchor.has(k) ? anchor.get(k) : vi + 1;
+      }
+      (verses[Math.max(vi, 0)] ??= []).push(...stripVerseNo(ln));
+    }
+  }
+  for (let i = 0; i < verses.length; i++) verses[i] ??= []; // 跳号会留空洞，补齐免得下面的统计吃到 undefined
 
   // **把折行归并回对应段。**（归并是版面处理，不是内容差异——归并了多少处会报给调用方，
   //   由 pdf-diff 单列一栏记账，不让它污染「音符/歌词录错」那类真实差异。）
