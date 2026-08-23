@@ -479,12 +479,23 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   //       但它们在谱面上就是标题的一部分，漏了标题就永远对不齐 GT。
   //       判据：与已认出的标题字同一行、且横向落在标题的范围内。
   {
+    // **必须按标题行分组来收**，不能拿整页标题的 y 包络当带位：一页上常印着两首歌
+    // （下半页起新曲），两个标题一上一下，包络一取就是整页——中间的歌词、音符会被
+    // 整片收成「标题里的标点」（实测 p606 的 75 个标题对象里 69 个是这么来的，
+    // J/D 那十首附录曲的标题因此全成了满页乱码，歌词也跟着少一片）。
     const titles = out.filter((c) => c.cls === "title" && !c.dup).map((c) => c.obj.bbox);
-    if (titles.length) {
-      const ty0 = Math.min(...titles.map((b) => b.y));
-      const ty1 = Math.max(...titles.map(bottom));
-      const tx0 = Math.min(...titles.map((b) => b.x));
-      const tx1 = Math.max(...titles.map(right));
+    const lines: Rect[][] = [];
+    for (const b of [...titles].sort((a, b) => a.y - b.y)) {
+      const last = lines[lines.length - 1];
+      // 同一行：与已归入这行的字在纵向上有重叠（标题字大小不一，按中心距会分不开）
+      if (last && b.y < Math.max(...last.map(bottom))) last.push(b);
+      else lines.push([b]);
+    }
+    for (const ln of lines) {
+      const ty0 = Math.min(...ln.map((b) => b.y));
+      const ty1 = Math.max(...ln.map(bottom));
+      const tx0 = Math.min(...ln.map((b) => b.x));
+      const tx1 = Math.max(...ln.map(right));
       for (let i = 0; i < objs.length; i++) {
         if (out[i].cls !== "unclassified") continue;
         const b = objs[i].bbox;
