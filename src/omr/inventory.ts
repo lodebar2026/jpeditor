@@ -611,6 +611,14 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     // 除了比上下距离，还要看**形状**：和弦是拉丁窄字（宽高比明显小于 1），
     // 歌词是近方的汉字。只比距离时，行距紧的页面会把和弦判进上一行的歌词。
     const narrow = b.w / Math.max(b.h, 0.1) < 0.82;
+    // **和弦带里宽扁带曲线的东西是短圆滑线，不是和弦**：和弦的字形没有比自己高还宽的
+    //（字母 6×7、`♭` 2.6×4.2、`/` 3×7.3），短弧却是 7.3×3.4。它卡在第 6 步弧线判据的
+    // 宽高比门槛（2.2）外面一点点，落到这里就成了假和弦（379 首多出三个 `D`）。
+    if (o.curves >= 1 && b.w >= noteH * 0.8 && b.w / Math.max(b.h, 0.1) >= 1.6 && b.h <= noteH * 0.5) {
+      out[i].row = bandOf(b, noteH * 1.6, noteH * 0.4);
+      set(i, "slur", `和弦带里的宽扁弧 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
+      continue;
+    }
     const chordish = below >= 0 && dBelow < noteH * (narrow ? 2.4 : 1.6);
     if (chordish && (dBelow <= dAbove || narrow)) {
       out[i].row = below;
