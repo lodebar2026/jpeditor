@@ -278,7 +278,13 @@ for (let round = 1; round <= ROUNDS; round++) {
       }
     }
     // 加权票：直配一次记 3 分，DP 对齐一次记 1 分。3 分起采纳。
-    if (best !== null && bestN >= 3 && bestN / total >= 0.7) {
+    // **宽扁的形状不收单字**：一个字再扁也扁不到宽是高的两倍半（「一」另有专门判据、
+    // 故意不进字典）。那些是短圆滑线、减时线之类，投票时被挤到某个字上，
+    // 收进字典就成了凭空多出的字（实测一个 10.6×3.0 的类被投成 `E`，
+    // 全书和弦序列里凭空多出上百个 E，和弦准确率掉 1.5 个点）。
+    const cls = classes.get(k);
+    const flat = cls && cls.h > 0 && cls.w >= cls.h * 2.5;
+    if (best !== null && !flat && bestN >= 3 && bestN / total >= 0.7) {
       known.set(k, best);
       sourceOf.set(k, "gt");
       added++;
