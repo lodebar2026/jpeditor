@@ -912,6 +912,26 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   }
 
 
+  // ── 15. 署名的**短行**兜底。13 只认「密排 ≥7 个字」的一串，
+  //       「词曲：唐崇明」这种六个字的短署名够不着门槛，会留在和弦里（002 首整条署名读不出）。
+  //       署名与和弦的区别不在长短，在**高度**：署名印在和弦线上方一整行以上，
+  //       而和弦（连同它的上标 `♭`、`m`、`7`）都贴着同一条基线。
+  //       所以：先取每个谱行里和弦的基线（最靠下、≥3 个的那一撮），
+  //       比它高出一个字高以上的整行，判为署名。
+  for (const bd of bands) {
+    const idx: number[] = [];
+    for (let i = 0; i < objs.length; i++) if (out[i].cls === "chord" && !out[i].dup && out[i].row === bd.index) idx.push(i);
+    if (idx.length < 3) continue;
+    let base = -Infinity;
+    for (const i of idx) {
+      const b = bottom(objs[i].bbox);
+      if (idx.filter((j) => Math.abs(bottom(objs[j].bbox) - b) <= noteH * 0.4).length >= 3 && b > base) base = b;
+    }
+    if (base === -Infinity) continue;
+    for (const i of idx) if (base - bottom(objs[i].bbox) > noteH * 1.2) set(i, "credit", `比和弦基线高出 ${(base - bottom(objs[i].bbox)).toFixed(1)}，是词曲署名`);
+  }
+
+
   const counts: Record<string, number> = {};
   for (const c of out) counts[c.cls] = (counts[c.cls] ?? 0) + 1;
 
