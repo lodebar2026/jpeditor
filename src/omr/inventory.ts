@@ -442,16 +442,25 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   // ── 8. 版面带：页脚 / 标题 / 曲号 / 页眉分类
   //     页脚按**本页**最底部那一小撮判（全局带位在内容多的页会误伤末行歌词）
   const pageFooterY = (() => {
-    // 下限：全书统计出的页脚带上沿。只按「本页最底部的空隙」找会翻车——
-    // 前言/目录页行距大，最靠下的那个大空隙可能出现在版心中部，
-    // 于是整块正文被判成页脚（实测 p30 曾误收 581 个对象）。
-    const floor = profile.footerBand ? profile.footerBand[0] : profile.contentBox.y + profile.contentBox.h;
-    const ys = objs.map((o) => cy(o.bbox)).sort((a, b) => a - b);
-    if (!ys.length) return Infinity;
-    for (let i = ys.length - 1; i > 0; i--) {
-      if (ys[i] - ys[i - 1] > lyricH * 1.5) return Math.max(ys[i] - lyricH * 0.5, floor);
+    // 页脚（页码）**按最底下那一撮的样子认**，不按「本页最底部的空隙」，也不拿全书版心下沿当兜底：
+    //  - 只找空隙会翻车：前言/目录页行距大，最靠下的那个大空隙可能出现在版心中部，
+    //    整块正文会被判成页脚（实测 p30 曾误收 581 个对象）。
+    //  - 拿版心下沿（全书 98% 分位）兜底也会翻车：排得满的页，最后一两行歌词本就压在
+    //    那条线以下，于是整行被当成页脚（279 首末页因此少了两段各 14 字的歌词）。
+    // 页码自己的样子很好认：**孤零零一小撮、字比歌词小、与上一行隔着一行以上**。
+    const lines: { cy: number; h: number[] }[] = [];
+    for (const o of [...objs].sort((a, b) => cy(a.bbox) - cy(b.bbox))) {
+      const last = lines[lines.length - 1];
+      if (last && cy(o.bbox) - last.cy <= lyricH * 0.6) last.h.push(o.bbox.h);
+      else lines.push({ cy: cy(o.bbox), h: [o.bbox.h] });
     }
-    return Math.max(floor, ys[ys.length - 1] - lyricH * 0.5);
+    const bottom2 = lines[lines.length - 1];
+    const above = lines[lines.length - 2];
+    if (!bottom2 || !above) return Infinity;
+    if (bottom2.h.length > 12) return Infinity; // 一大片，那是正文不是页码
+    if (bottom2.cy - above.cy <= lyricH * 1.2) return Infinity; // 贴着正文，不是单起一带
+    if (median(bottom2.h) > noteH * 1.05) return Infinity; // 页码用小字号，歌词字比它大一截
+    return bottom2.cy - lyricH * 0.5;
   })();
   const titleH = lyricH * 1.25;
   const headerPending: number[] = [];

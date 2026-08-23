@@ -270,6 +270,11 @@ for (const [id, entries] of byId) {
   }
   const keyOk = gtKT ? recKeys.includes(gtKT.key) : null;
   const meterOk = gtKT && gtKT.beats ? recMeter === `${gtKT.beats}/${gtKT.beatType}` : null;
+  // **读到了但与 GT 不同 ≠ 读错。** GT 的调号有一批是按主音和弦订正过的（谱面印 `1=G`、
+  // musicxml 记 `1=F`），那是两边表述不同，不是识别问题——单列一档，不进内容差异。
+  // 真正的识别失败是「没读到」。拍号同理（`4/4` ↔ `2/2` 是记法之别）。
+  const keyState = keyOk == null ? null : keyOk ? "ok" : recKeys.length ? "differs" : "missing";
+  const meterState = meterOk == null ? null : meterOk ? "ok" : recMeter ? "differs" : "missing";
 
   // ── 圆滑线 / 连音线：两边都表示成「覆盖了第几个到第几个音符」。
   //    矢量层分不出圆滑线和连音线（都是一条弧），故 GT 侧把 slur 与 tied 合起来比。
@@ -431,8 +436,8 @@ for (const [id, entries] of byId) {
     verseDiffs.reduce((a, d) => a + d.content.length, 0) +
     (gtChords ? dChord.ops.length : 0) +
     (gtST ? dArc.ops.length : 0) +
-    (keyOk === false ? 1 : 0) +
-    (meterOk === false ? 1 : 0);
+    (keyState === "missing" ? 1 : 0) +
+    (meterState === "missing" ? 1 : 0);
   // 反复与房号**只记录、不计进内容差异**：识别侧只有几何（反复冒号的点、房号括线），
   // 三连音的括线脚、别处的小圆点都会混进来，数量对不上是判据太粗，不是 GT 与 PDF 不一致。
   const unreadDiffs =
@@ -477,12 +482,12 @@ for (const [id, entries] of byId) {
   markOps(sTitle.content.concat(sTitle.unread), titleSeq, "标题");
   for (const d of verseDiffs) markOps(d.content.concat(d.unread), d.recSeq, `歌词第 ${d.verse} 段`);
   if (gtChords) markOps(dChord.ops, recChordSeq, "和弦");
-  if (keyOk === false || meterOk === false) {
+  if (keyState === "missing" || meterState === "missing") {
     for (const o of keyMeters) marks.push({ ...boxOf(o), kind: "wrong", what: "调号拍号", gt: "" });
     const first = keyMeters[0];
     if (first) {
       const b = first.obj.bbox;
-      const want = [keyOk === false ? gtKT?.key && `1=${gtKT.key}` : "", meterOk === false ? `${gtKT?.beats}/${gtKT?.beatType}` : ""].filter(Boolean).join(" ");
+      const want = [keyState === "missing" ? gtKT?.key && `1=${gtKT.key}` : "", meterState === "missing" ? `${gtKT?.beats}/${gtKT?.beatType}` : ""].filter(Boolean).join(" ");
       marks.push({ page: first.page, kind: "missing", what: "调号拍号", text: want, box: [b.x, b.y - b.h * 1.4, b.h, b.h] });
     }
   }
@@ -505,9 +510,11 @@ for (const [id, entries] of byId) {
     keyGt: gtKT ? `1=${gtKT.key}` : "",
     keyRec: recKeys.map((k) => `1=${k}`).join(" "),
     keyOk,
+    keyState,
     meterGt: gtKT && gtKT.beats ? `${gtKT.beats}/${gtKT.beatType}` : "",
     meterRec: recMeter,
     meterOk,
+    meterState,
     arcGt: gtArcs.length,
     arcRec: recArcs.length,
     arcDiffs: gtST ? dArc.ops.length : null,
@@ -603,10 +610,10 @@ for (const r of rows) {
       r.arcRec,
       r.keyGt,
       r.keyRec,
-      r.keyOk == null ? "" : r.keyOk ? "对" : "不同",
+      r.keyState == null ? "" : { ok: "对", differs: "不同调", missing: "没读到" }[r.keyState],
       r.meterGt,
       r.meterRec,
-      r.meterOk == null ? "" : r.meterOk ? "对" : "不同",
+      r.meterState == null ? "" : { ok: "对", differs: "不同记法", missing: "没读到" }[r.meterState],
       r.repeatGt,
       r.repeatRec,
       r.endingGt,
@@ -696,8 +703,8 @@ for (const r of rows) {
       L.push(`    ${op === "sub" ? "区间不同" : op === "del" ? "GT有·PDF无" : "PDF有·GT无"}  @${gi}  GT=${g2 || "-"}  PDF=${b2 || "-"}`);
     if (r.dArc.ops.length > 30) L.push(`    …（共 ${r.dArc.ops.length} 项）`);
   }
-  if (r.keyOk === false) L.push(`  调号不同：GT「${r.keyGt}」 PDF「${r.keyRec || "(没读到)"}」`);
-  if (r.meterOk === false) L.push(`  拍号不同：GT「${r.meterGt}」 PDF「${r.meterRec || "(没读到)"}」`);
+  if (r.keyState === "missing") L.push(`  调号没读到（GT「${r.keyGt}」）`);
+  if (r.meterState === "missing") L.push(`  拍号没读到（GT「${r.meterGt}」）`);
 
   // 为 0 的项一律不印：一首没几处差异的曲子，报告里全是「0 处」「（无）」反而看不见重点。
   if (r.unreadDiffs) {
@@ -730,7 +737,8 @@ for (const r of rows) {
   }
   const [vg, vr] = r.verses.split("/");
   if (vg !== vr) lay(`  段数 GT ${vg} / PDF ${vr}`);
-  if (r.keyOk === false || r.meterOk === false) lay(`  调号 GT「${r.keyGt}」PDF「${r.keyRec}」  拍号 GT「${r.meterGt}」PDF「${r.meterRec}」`);
+  if (r.keyState === "differs") lay(`  调号与谱面不同：GT「${r.keyGt}」PDF「${r.keyRec}」（GT 按主音和弦订正过，不算录错）`);
+  if (r.meterState === "differs") lay(`  拍号与谱面不同：GT「${r.meterGt}」PDF「${r.meterRec}」（记法之别，不算录错）`);
   if (r.repeatGt !== r.repeatRec || r.endingGt !== r.endingRec)
     lay(
       `  反复 GT ${r.repeatGt} / PDF ${r.repeatRec}，房号 GT ${r.endingGt} / PDF ${r.endingRec}` +
@@ -751,13 +759,20 @@ console.log(
     ` / 标题 ${sum((r) => r.sTitle.content.length)}` +
     ` / 和弦 ${sum((r) => r.chordDiffs ?? 0)}` +
     ` / 弧线 ${sum((r) => r.arcDiffs ?? 0)}` +
-    ` / 调号拍号 ${sum((r) => (r.keyOk === false ? 1 : 0) + (r.meterOk === false ? 1 : 0))}）`,
+    ` / 调号拍号没读到 ${sum((r) => (r.keyState === "missing" ? 1 : 0) + (r.meterState === "missing" ? 1 : 0))}）`,
 );
 {
   const k = rows.filter((r) => r.keyOk != null);
   const m = rows.filter((r) => r.meterOk != null);
   const a = rows.filter((r) => r.arcAcc != null);
-  if (k.length) console.log(`调号对 ${k.filter((r) => r.keyOk).length}/${k.length}（${((k.filter((r) => r.keyOk).length / k.length) * 100).toFixed(1)}%）  拍号对 ${m.filter((r) => r.meterOk).length}/${m.length}（${((m.filter((r) => r.meterOk).length / m.length) * 100).toFixed(1)}%）`);
+  const st = (rows2, field, kind) => rows2.filter((r) => r[field] === kind).length;
+  if (k.length)
+    console.log(
+      `调号 对 ${st(k, "keyState", "ok")}/${k.length}（${((st(k, "keyState", "ok") / k.length) * 100).toFixed(1)}%）` +
+        `，与谱面不同调 ${st(k, "keyState", "differs")}（GT 按主音和弦订正过，不算录错），没读到 ${st(k, "keyState", "missing")}\n` +
+        `拍号 对 ${st(m, "meterState", "ok")}/${m.length}（${((st(m, "meterState", "ok") / m.length) * 100).toFixed(1)}%）` +
+        `，记法不同 ${st(m, "meterState", "differs")}，没读到 ${st(m, "meterState", "missing")}`,
+    );
   if (a.length) console.log(`弧线平均准确率 ${((a.reduce((x, r) => x + r.arcAcc, 0) / a.length) * 100).toFixed(2)}%（GT 合计 ${sum((r) => r.arcGt)} 条 / PDF ${sum((r) => r.arcRec)} 条）`);
   console.log(`反复 GT ${sum((r) => r.repeatGt)} / PDF ${sum((r) => r.repeatRec)}；房号 GT ${sum((r) => r.endingGt)} / PDF ${sum((r) => r.endingRec)}`);
 }
