@@ -9,7 +9,7 @@
 // 段落与副歌的写法（`W1-3` 之类）还得另做口径对齐，两套 GT 并存只会各错一半。
 // **纯 Node，不起浏览器。**
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { loadCli, openPdf, loadCorpus, readSongGt, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, xmlNoteDigits, xmlLyricVerses, xmlTitle, xmlCredit, collectSongGlyphs, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, loadCorpus, readSongGt, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, xmlNoteDigits, xmlLyricVerses, xmlTitle, xmlCredit, collectSongGlyphs, mergePagemapEntries, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
 
 const args = process.argv.slice(2);
@@ -143,7 +143,7 @@ function splitOps(ops) {
 }
 
 const byId = new Map();
-for (const m of pm.map) {
+for (const m of mergePagemapEntries(pm.map)) {
   const a = byId.get(m.id) ?? [];
   a.push(m);
   byId.set(m.id, a);

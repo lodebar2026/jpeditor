@@ -216,6 +216,28 @@ export function gtLyricVerses(wordsText) {
 
 
 /**
+ * pagemap 里**同一首、同一页的相邻条目合成一条**。
+ *
+ * gen-pagemap 偶尔会把一首在同一页上切成两段（124 首切在 y=230.7，D04 也一样），
+ * 切口正好落在标题中间：两段各自取标题、再首尾相接，标题就成了「哈利路奇妙救主亚，」。
+ * 下游按 y 区间取字，合成一条即可，不必去改 pagemap 的切法。
+ */
+export function mergePagemapEntries(map) {
+  const out = [];
+  for (const e of map) {
+    const last = out[out.length - 1];
+    if (last && last.id === e.id && last.page === e.page) {
+      last.yFrom = Math.min(last.yFrom ?? 0, e.yFrom ?? 0);
+      last.yTo = Math.max(last.yTo ?? Infinity, e.yTo ?? Infinity);
+      last.startsHere = last.startsHere || e.startsHere;
+      continue;
+    }
+    out.push({ ...e });
+  }
+  return out;
+}
+
+/**
  * 从一页的归类结果里，按曲目分区取出该首的字形序列。
  * gen-glyphdict.mjs 与 pdf-diff.mjs 共用——两边的取法必须一模一样，
  * 否则建字典时的位置和查字典时的位置对不上。

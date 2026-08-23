@@ -14,7 +14,7 @@
 //
 //   npm run build:cli && node gen-pagemap.mjs && node gen-glyphdict.mjs
 import { readFile, writeFile } from "node:fs/promises";
-import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, collectSongGlyphs, isCreditWordGlyph } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, collectSongGlyphs, mergePagemapEntries, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
 /** `.Title` 里的 `WordsByAndMusicBy`。**取最后一条非空的**：有的文件写了两条，
  *  第一条是空的；`=` 后面只吃横向空白，吃到换行就会把下一行整条卷进来。 */
@@ -55,7 +55,7 @@ const profile = cli.detectProfile(sample, "hymn500");
 // ── 一次性抽取：每首歌的音符序列 / 各段歌词序列 / 标题序列（都存形状键）
 console.log("抽取页面字形序列…");
 const byId = new Map();
-for (const m of pm.map) {
+for (const m of mergePagemapEntries(pm.map)) {
   const a = byId.get(m.id) ?? [];
   a.push(m);
   byId.set(m.id, a);
