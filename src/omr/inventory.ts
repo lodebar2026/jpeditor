@@ -443,7 +443,6 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     return Math.max(floor, ys[ys.length - 1] - lyricH * 0.5);
   })();
   const titleH = lyricH * 1.25;
-  const bigIdx: number[] = [];
   const headerPending: number[] = [];
   for (let i = 0; i < objs.length; i++) {
     // 标题与曲号也可能整行合成一个 path（第 0 步会先把它们记成 textLine），
@@ -463,7 +462,6 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     }
     if (b.h >= titleH) {
       set(i, "title", `大字号 h=${b.h.toFixed(1)}`);
-      bigIdx.push(i);
       continue;
     }
     if (profile.headerBand && cy(b) <= profile.headerBand[1]) {
@@ -472,40 +470,6 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       //（「耶和华的心」少了「心」，全书这样的缺字上百处）。等 8b 认完标题行再说。
       headerPending.push(i);
       continue;
-    }
-  }
-
-  // ── 8a. 大字号里再把**曲号**摘出来。曲号与标题同在标题带、同属大字号，
-  //       曲号贴版心左右边缘（对开页左右交替），标题居中。
-  //       但不能**逐字**按「贴不贴边」判：长标题的头尾两个字本来就压到了 15%/85% 的边上，
-  //       于是「万福源头」少了「万」、「耶和华的心」少了「心」（全书 172 项标题缺字里
-  //       这是最大的一撮）。曲号真正的特征是**孤零零一撮**——与标题之间隔着一大段空白。
-  //       所以先按 x 串成撮，只有「贴边 + 不是最长的那撮」才是曲号。
-  {
-    const lines: number[][] = [];
-    for (const i of [...bigIdx].sort((a, b) => objs[a].bbox.y - objs[b].bbox.y)) {
-      const last = lines[lines.length - 1];
-      if (last && objs[i].bbox.y < Math.max(...last.map((j) => bottom(objs[j].bbox)))) last.push(i);
-      else lines.push([i]);
-    }
-    for (const ln of lines) {
-      const runs: number[][] = [];
-      for (const i of ln.slice().sort((a, b) => objs[a].bbox.x - objs[b].bbox.x)) {
-        const last = runs[runs.length - 1];
-        const prev = last ? objs[last[last.length - 1]].bbox : null;
-        if (prev && objs[i].bbox.x - right(prev) <= titleH * 1.2) last.push(i);
-        else runs.push([i]);
-      }
-      if (runs.length < 2) continue; // 只有一撮：整行都是标题
-      const longest = runs.reduce((a, b) => (b.length > a.length ? b : a), runs[0]);
-      for (const run of runs) {
-        if (run === longest) continue;
-        const x0 = Math.min(...run.map((i) => objs[i].bbox.x));
-        const x1 = Math.max(...run.map((i) => right(objs[i].bbox)));
-        const nearLeft = x0 < profile.contentBox.x + profile.contentBox.w * 0.15;
-        const nearRight = x1 > profile.contentBox.x + profile.contentBox.w * 0.85;
-        if (nearLeft || nearRight) for (const i of run) set(i, "songNumber", `大字号、孤立成撮、${nearLeft ? "贴左" : "贴右"}`);
-      }
     }
   }
 
@@ -542,6 +506,46 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
 
   // ── 8c. 页眉带里没被标题收走的，才是页眉分类词。
   for (const i of headerPending) if (out[i].cls === "unclassified") set(i, "category", "页眉带");
+
+  // ── 8d. 大字号里再把**曲号**摘出来。曲号与标题同在标题带、同属大字号，
+  //       曲号贴版心左右边缘（对开页左右交替），标题居中。
+  //       但不能**逐字**按「贴不贴边」判：长标题的头尾两个字本来就压到了 15%/85% 的边上，
+  //       于是「万福源头」少了「万」、「耶和华的心」少了「心」（全书 172 项标题缺字里
+  //       这是最大的一撮）。曲号真正的特征是**孤零零一撮**——与标题之间隔着一大段空白。
+  //       所以先按 x 串成撮，只有「贴边 + 不是最长的那撮 + 撮里不超过四个字」才是曲号。
+  //       **要排在 8b 之后**：标题里的扁字（「心」）是 8b 才认出来的，
+  //       少了它标题就断成两撮，反而是三位曲号成了「最长的一撮」（p386 的 330）。
+  {
+    const lines: number[][] = [];
+    const titleIdx: number[] = [];
+    for (let i = 0; i < objs.length; i++) if (out[i].cls === "title" && !out[i].dup) titleIdx.push(i);
+    for (const i of titleIdx.sort((a, b) => objs[a].bbox.y - objs[b].bbox.y)) {
+      const last = lines[lines.length - 1];
+      if (last && objs[i].bbox.y < Math.max(...last.map((j) => bottom(objs[j].bbox)))) last.push(i);
+      else lines.push([i]);
+    }
+    for (const ln of lines) {
+      const runs: number[][] = [];
+      for (const i of ln.slice().sort((a, b) => objs[a].bbox.x - objs[b].bbox.x)) {
+        const last = runs[runs.length - 1];
+        const prev = last ? objs[last[last.length - 1]].bbox : null;
+        if (prev && objs[i].bbox.x - right(prev) <= titleH * 1.2) last.push(i);
+        else runs.push([i]);
+      }
+      if (runs.length < 2) continue; // 只有一撮：整行都是标题
+      // 曲号最多四个字形（`J07`、`082A`），标题一撮至少五个——只摘短的那撮。
+      const longest = runs.reduce((a, b) => (b.length > a.length ? b : a), runs[0]);
+      for (const run of runs) {
+        if (run === longest || run.length > 4) continue;
+        const x0 = Math.min(...run.map((i) => objs[i].bbox.x));
+        const x1 = Math.max(...run.map((i) => right(objs[i].bbox)));
+        const nearLeft = x0 < profile.contentBox.x + profile.contentBox.w * 0.15;
+        const nearRight = x1 > profile.contentBox.x + profile.contentBox.w * 0.85;
+        if (nearLeft || nearRight) for (const i of run) set(i, "songNumber", `大字号、孤立成撮、${nearLeft ? "贴左" : "贴右"}`);
+      }
+    }
+  }
+
 
   // ── 9. 框内正文
   const boxes = [...frames, ...ornaments.map((o) => o.box)];
