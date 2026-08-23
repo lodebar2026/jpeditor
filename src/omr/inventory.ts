@@ -928,7 +928,22 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       if (idx.filter((j) => Math.abs(bottom(objs[j].bbox) - b) <= noteH * 0.4).length >= 3 && b > base) base = b;
     }
     if (base === -Infinity) continue;
-    for (const i of idx) if (base - bottom(objs[i].bbox) > noteH * 1.2) set(i, "credit", `比和弦基线高出 ${(base - bottom(objs[i].bbox)).toFixed(1)}，是词曲署名`);
+    //       还要**小字号**：谱行上方有时印着整段经文（022 首「主命令众星宿…」），
+    //       它也比和弦线高，但用的是歌词那号字（一行的中位高 10.3~11.1），署名只有 6.5~8.1。
+    //       **字号要按行取中位**，不能逐字判：汉字的墨迹高度差得远（「上」才 7 高、
+    //       「日」有 10），逐字判会从经文里挑出一半来当署名。
+    const above = idx.filter((i) => base - bottom(objs[i].bbox) > noteH * 1.2);
+    const lines2: number[][] = [];
+    for (const i of above.slice().sort((a, b) => bottom(objs[a].bbox) - bottom(objs[b].bbox))) {
+      const last = lines2[lines2.length - 1];
+      if (last && bottom(objs[i].bbox) - bottom(objs[last[last.length - 1]].bbox) <= noteH * 0.4) last.push(i);
+      else lines2.push([i]);
+    }
+    for (const ln of lines2) {
+      const h = median(ln.map((i) => objs[i].bbox.h));
+      if (h > lyricH * 0.92) continue; // 这一行是经文/正文，不是署名
+      for (const i of ln) set(i, "credit", `比和弦基线高出 ${(base - bottom(objs[i].bbox)).toFixed(1)} 的小字行，是词曲署名`);
+    }
   }
 
 
