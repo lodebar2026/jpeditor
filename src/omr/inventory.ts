@@ -443,6 +443,8 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     return Math.max(floor, ys[ys.length - 1] - lyricH * 0.5);
   })();
   const titleH = lyricH * 1.25;
+  const bigIdx: number[] = [];
+  const headerPending: number[] = [];
   for (let i = 0; i < objs.length; i++) {
     // 标题与曲号也可能整行合成一个 path（第 0 步会先把它们记成 textLine），
     // 所以这一步允许改判 textLine——实测 p474 的标题、p383 的三位曲号都是合成的。
@@ -460,18 +462,50 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       continue;
     }
     if (b.h >= titleH) {
-      // 曲号与标题同在标题带、同属大字号，但**曲号固定贴版心左右边缘**（对开页左右交替），
-      // 标题居中。只按宽高比分会把标题里的窄字（「!」「(」「了」）判成曲号。
-      // 纯按位置判：贴边=曲号，居中=标题。不看宽高比——多位曲号合成一个 path 后
-      // 宽高比会大于 1，用比例判会把它当成标题（实测 p383 的 "327"）。
-      const nearLeft = b.x < profile.contentBox.x + profile.contentBox.w * 0.15;
-      const nearRight = right(b) > profile.contentBox.x + profile.contentBox.w * 0.85;
-      set(i, nearLeft || nearRight ? "songNumber" : "title", `大字号 h=${b.h.toFixed(1)}${nearLeft ? "，贴左" : nearRight ? "，贴右" : "，居中"}`);
+      set(i, "title", `大字号 h=${b.h.toFixed(1)}`);
+      bigIdx.push(i);
       continue;
     }
     if (profile.headerBand && cy(b) <= profile.headerBand[1]) {
-      set(i, "category", "页眉带");
+      // **先记下、别定案**：标题里的扁字（「心」「一」「么」）够不着大字号门槛，
+      // 却与页眉分类词同在这一带，直接定成 category 就永远回不到标题里去
+      //（「耶和华的心」少了「心」，全书这样的缺字上百处）。等 8b 认完标题行再说。
+      headerPending.push(i);
       continue;
+    }
+  }
+
+  // ── 8a. 大字号里再把**曲号**摘出来。曲号与标题同在标题带、同属大字号，
+  //       曲号贴版心左右边缘（对开页左右交替），标题居中。
+  //       但不能**逐字**按「贴不贴边」判：长标题的头尾两个字本来就压到了 15%/85% 的边上，
+  //       于是「万福源头」少了「万」、「耶和华的心」少了「心」（全书 172 项标题缺字里
+  //       这是最大的一撮）。曲号真正的特征是**孤零零一撮**——与标题之间隔着一大段空白。
+  //       所以先按 x 串成撮，只有「贴边 + 不是最长的那撮」才是曲号。
+  {
+    const lines: number[][] = [];
+    for (const i of [...bigIdx].sort((a, b) => objs[a].bbox.y - objs[b].bbox.y)) {
+      const last = lines[lines.length - 1];
+      if (last && objs[i].bbox.y < Math.max(...last.map((j) => bottom(objs[j].bbox)))) last.push(i);
+      else lines.push([i]);
+    }
+    for (const ln of lines) {
+      const runs: number[][] = [];
+      for (const i of ln.slice().sort((a, b) => objs[a].bbox.x - objs[b].bbox.x)) {
+        const last = runs[runs.length - 1];
+        const prev = last ? objs[last[last.length - 1]].bbox : null;
+        if (prev && objs[i].bbox.x - right(prev) <= titleH * 1.2) last.push(i);
+        else runs.push([i]);
+      }
+      if (runs.length < 2) continue; // 只有一撮：整行都是标题
+      const longest = runs.reduce((a, b) => (b.length > a.length ? b : a), runs[0]);
+      for (const run of runs) {
+        if (run === longest) continue;
+        const x0 = Math.min(...run.map((i) => objs[i].bbox.x));
+        const x1 = Math.max(...run.map((i) => right(objs[i].bbox)));
+        const nearLeft = x0 < profile.contentBox.x + profile.contentBox.w * 0.15;
+        const nearRight = x1 > profile.contentBox.x + profile.contentBox.w * 0.85;
+        if (nearLeft || nearRight) for (const i of run) set(i, "songNumber", `大字号、孤立成撮、${nearLeft ? "贴左" : "贴右"}`);
+      }
     }
   }
 
@@ -505,6 +539,9 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       }
     }
   }
+
+  // ── 8c. 页眉带里没被标题收走的，才是页眉分类词。
+  for (const i of headerPending) if (out[i].cls === "unclassified") set(i, "category", "页眉带");
 
   // ── 9. 框内正文
   const boxes = [...frames, ...ornaments.map((o) => o.box)];
