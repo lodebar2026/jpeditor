@@ -1,0 +1,938 @@
+// 页面对象归类：把一页的每个矢量对象归到一个语义类，并**列出归不掉的**。
+//
+// 这是「尽量识别 PDF 中所有内容，不支持的也要列出来」那条要求的落点：
+// 硬指标是 `unclassified` 收敛到 0——归不掉的对象要么是我们还没认识的版面元素，
+// 要么是判据有洞，两种都必须暴露出来，不能默默丢掉。
+//
+// 归类只用几何 + profile 字号，**不需要认字**（认字是 glyphdict 的事）。
+// 无 DOM 依赖（Node CLI 要用）。
+//
+// 几条拿具体页换来的判据，改之前先看这里的注释：
+//  - **不是每个字都是一个 path**。歌词/音符是逐字一对象，但**花边框里的小字注解整行合成
+//    一个 path**（p42 底部那段圣诗故事：一行 = curves 548 的单个对象）。故先按 segs 把
+//    「整行文字」摘出来，否则它会被宽扁判据误当成圆滑线。
+//  - **花边不是虚线**。p42 的花边框是同一个装饰纹样（5.0×10.8, curves=36）沿矩形四边
+//    重复平铺出来的，页面上一个 setDash 都没有。故按「同形状对象沿周边重复」检测。
+//  - **花边检测必须排在结构线之前**。点线花边的每一个点都是细高小块，会被小节线判据收走
+//    （实测 p605 收了 60 条假小节线 → 造出 21 个假谱行 → 框内那段圣诗故事被当成音符和歌词）。
+//    识别出框以后，框内的对象一律归 storyText 并跳过后续判据——框里是注解正文，不是乐谱。
+//  - 谱行的基线要用**带内音符**统计，不能用小节线底——小节线比数字高，上下都超出，
+//    拿它当基线会把增时线和减时线判反。
+//  - **不能用「有没有曲线」判断是不是字**。这本书数字字体里的 1/4/7 等是纯折线（curves=0），
+//    拿 curves>=1 当门槛会把整行音符漏成未归类。改按**宽高比**认结构线，其余按字号认字。
+//  - **同一个字画了两遍**：一个 fill 一个 stroke（描边加粗），bbox 差约一个线宽。
+//    两个都要归类（否则重排核对会报 unplaced），但逻辑上是一个字——用 `dup` 标出描边那份，
+//    下游数音符/取文本时只认非 dup 的。
+import type { Rect } from "./types";
+import type { BookProfile } from "./bookprofile";
+import type { VecObj, VecPage } from "./vector";
+import { concatObjects, intersectRect } from "./vector";
+
+export type ObjClass =
+  // 乐谱本体
+  | "note" // 音符数字
+  | "octaveDot" // 八度点（音符上/下方的圆点）
+  | "augmentDot" // 附点（音符右侧的圆点）
+  | "divLine" // 减时线（音符下方短横）
+  | "augmentLine" // 增时线（与音符同基线的长横 "-"）
+  | "barline" // 小节线（细高竖线，含复纵线/终止线）
+  | "repeatDot" // 反复记号的冒号点
+  | "slur" // 圆滑线 / 连音线（宽扁弧）
+  | "tupletNum" // 三连音数字与其括线
+  | "keyMeter" // 调号拍号「1=F 4/4」
+  // 文字
+  | "title"
+  | "songNumber"
+  | "category" // 页眉分类词
+  | "credit" // 词曲署名
+  | "lyric" // 歌词
+  | "lyricYi" // 歌词里的「一」：扁横条，与短圆滑线同形，只能按「与歌词共基线」认，且不进字典
+  // 注：歌词里的「一」字在矢量层就是一条扁横线，与减时线/装饰线同形，
+  // 试过按「宽度≈一个字宽」把它捞回歌词（既走字典、也试过直接定案成「一」），
+  // 两种都会让歌词准确率不升反降（86.9% → 72.7% / 85.9%）——捞回来的多半不是「一」，
+  // 插进序列造成错位。收益上限只有约 0.6%，故**不捞**，归为装饰线，
+  // 「一」记为已知差异（全书约 584 处）。
+  | "verseNum" // 段号 1. 2. 3.
+  | "chord" // 和弦符号
+  | "sectionWord" // 段落词（副歌/间奏…）
+  | "textLine" // 整行合成一个 path 的文字，需再拆字
+  | "storyText" // 花边框内的注解正文（圣诗故事/经文/注记）
+  | "tocEntry" // 目录 / 首句索引页的条目文字（无谱行的纯文字页）
+  | "leader" // 目录里的引导点线 ……
+  | "footer" // 页码
+  // 版面
+  | "rule" // 通栏分隔线
+  | "frame" // 边框
+  | "ornament" // 花边装饰纹样
+  | "bracket" // 反复房号括线、三连音括线
+  | "unclassified";
+
+export interface ClassifiedObj {
+  obj: VecObj;
+  cls: ObjClass;
+  /** 归属的谱行下标（-1 = 不属于任何谱行）。 */
+  row: number;
+  /** 判据说明，便于回查为什么这么归。 */
+  why: string;
+  /** 同一字形的重复描边份（fill + stroke 画两遍中的后一份）。下游计数/取文本时应跳过。 */
+  dup?: boolean;
+  /** 归行用的基线。只有 `lyricYi` 会给：「一」只有一横、悬在字格中部，
+   *  它自己的下缘比同行汉字高四五个点，按下缘聚行会被分到别的行去。
+   *  这里存的是**参照汉字的下缘**，聚行时优先用它。 */
+  baseline?: number;
+}
+
+export interface StaffBand {
+  index: number;
+  /** 小节线覆盖的 y 区间。 */
+  top: number;
+  bottom: number;
+  /** 带内音符的顶/底/基线（音符 bbox 统计，非小节线）。 */
+  noteTop: number;
+  noteBottom: number;
+  x0: number;
+  x1: number;
+  barlineXs: number[];
+  noteCount: number;
+}
+
+/** 花边框：一圈重复纹样围出的矩形。 */
+export interface OrnamentFrame {
+  box: Rect;
+  /** 纹样实例数。 */
+  tiles: number;
+  tileW: number;
+  tileH: number;
+}
+
+export interface PageInventory {
+  page: number;
+  width: number;
+  height: number;
+  objs: ClassifiedObj[];
+  bands: StaffBand[];
+  frames: Rect[];
+  ornaments: OrnamentFrame[];
+  counts: Record<string, number>;
+  unclassified: ClassifiedObj[];
+}
+
+const cx = (r: Rect) => r.x + r.w / 2;
+const cy = (r: Rect) => r.y + r.h / 2;
+const bottom = (r: Rect) => r.y + r.h;
+const right = (r: Rect) => r.x + r.w;
+
+function overlap1d(a0: number, a1: number, b0: number, b1: number): number {
+  return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+}
+
+function median(v: number[]): number {
+  if (!v.length) return 0;
+  const s = [...v].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+
+/** 粗形状指纹：同一个装饰纹样在页面上重复出现时，这四项完全一致。
+ *  （精确到字符的形状键是 glyphdict 的事，这里只要能认出「同一个图形」。） */
+/** 有效宽/高：零宽的竖线（PDF 里靠 lineWidth 呈现）按线宽算，否则宽高比会算成无穷。 */
+const effW = (o: VecObj) => Math.max(o.bbox.w, o.lineWidth, 0.1);
+const effH = (o: VecObj) => Math.max(o.bbox.h, o.lineWidth, 0.1);
+
+function coarseKey(o: VecObj): string {
+  return `${o.curves}/${o.segs}/${o.bbox.w.toFixed(1)}/${o.bbox.h.toFixed(1)}`;
+}
+
+export interface ClassifyOptions {
+  /** 音符数字的高度；不给则从 profile 推。 */
+  noteH?: number;
+}
+
+/** 从 profile 推音符字号族（窄字、实例最多）。 */
+export function noteHeightOf(profile: BookProfile): number {
+  const f = profile.families
+    .filter((f) => f.count > 100 && f.w / f.h < 0.75 && f.h > 4)
+    .sort((a, b) => b.count - a.count)[0];
+  return f?.h ?? 8.3;
+}
+
+/** 从 profile 推主歌词字号族（近方汉字、比音符大、实例最多）。 */
+export function lyricHeightOf(profile: BookProfile, noteH: number): number {
+  const f = profile.families
+    .filter((f) => f.count > 100 && f.w / f.h > 0.85 && f.h > noteH)
+    .sort((a, b) => b.count - a.count)[0];
+  return f?.h ?? noteH * 1.25;
+}
+
+/**
+ * 归类一页。
+ *
+ * 顺序有讲究：结构线 → 谱行带 → 音符 → 圆点/横线（依赖音符位置）→ 弧线 →
+ * 花边与框 → 版面带 → 剩余文字按相对谱行的位置分。
+ */
+export function classifyPage(page: VecPage, profile: BookProfile, opts: ClassifyOptions = {}): PageInventory {
+  const objs = page.objs;
+  const out: ClassifiedObj[] = objs.map((o) => ({ obj: o, cls: "unclassified" as ObjClass, row: -1, why: "" }));
+  const set = (i: number, cls: ObjClass, why: string) => {
+    out[i].cls = cls;
+    out[i].why = why;
+  };
+
+  const noteH = opts.noteH ?? noteHeightOf(profile);
+  const lyricH = lyricHeightOf(profile, noteH);
+
+  // ── 0a. 花边框：同一批小纹样沿矩形四边重复平铺。**必须在结构线之前**，
+  //      否则点线花边的每个点都会被小节线判据收走。
+  const ornaments = detectOrnamentFrames(objs, noteH);
+  for (const orn of ornaments) {
+    for (const i of orn.idx) set(i, "ornament", `重复纹样 ×${orn.idx.length}，围成 ${orn.box.w.toFixed(0)}×${orn.box.h.toFixed(0)} 的框`);
+  }
+  // 框内的一切都是注解正文，不是乐谱——直接定案，跳过后续所有判据。
+  for (const orn of ornaments) {
+    for (let i = 0; i < objs.length; i++) {
+      if (out[i].cls !== "unclassified") continue;
+      if (intersectRect(objs[i].bbox, orn.inner)) set(i, "storyText", "花边框内的注解正文");
+    }
+  }
+
+  // ── 0. 整行合成的文字对象：段数远超单字，且宽扁。
+  //     必须最先摘出来，否则下面的宽扁判据会把它当成圆滑线。
+  for (let i = 0; i < objs.length; i++) {
+    const o = objs[i];
+    if (o.curves >= 40 && o.bbox.w > o.bbox.h * 3) set(i, "textLine", `整行合成 path（curves=${o.curves}）`);
+  }
+
+  // ── 1. 结构线：按**宽高比**认，不看有没有曲线（数字 1/4/7 也是纯折线）。
+  const barlineIdx: number[] = [];
+  const shortBarIdx: number[] = [];
+  const hLineIdx: number[] = [];
+  const frames: Rect[] = [];
+  for (let i = 0; i < objs.length; i++) {
+    if (out[i].cls !== "unclassified") continue;
+    const o = objs[i];
+    if (o.curves > 2) continue; // 带多段曲线的是字，不是线
+    const { w, h } = o.bbox;
+    const ew = effW(o);
+    const eh = effH(o);
+    if (eh / ew >= 2.5 && ew <= noteH * 0.35) {
+      // **小节线明显比字高**（实测 13.8 vs 字高 8.3，比值 1.66）。门槛设在 1.15 字高，
+      // 正好把拉丁人名里的竖笔（D/l/d，与字等高）挡在外面——那是词曲署名行被误判成
+      // 谱行的根因（p300 曾因此多出两个假谱行、40 个假音符）。
+      if (h >= noteH * 1.15) {
+        barlineIdx.push(i);
+        set(i, "barline", `细高竖线 ${w.toFixed(1)}×${h.toFixed(1)}`);
+      } else {
+        shortBarIdx.push(i); // 短竖线：房号括线脚/三连音括线脚，等谱行定了再判
+      }
+    } else if (ew / eh >= 2.5 && eh <= Math.max(2.5, noteH * 0.3)) {
+      hLineIdx.push(i); // 减时线/增时线/通栏线，等谱行定了再分
+    } else if (w > noteH * 3 && h > noteH * 1.5) {
+      frames.push(o.bbox);
+      set(i, "frame", `矩形框 ${w.toFixed(0)}×${h.toFixed(0)}${o.dash ? "（虚线）" : ""}`);
+    }
+  }
+
+  // ── 2. 谱行带：小节线的 y 区间聚类
+  const bands: StaffBand[] = [];
+  {
+    const bars = barlineIdx.map((i) => objs[i].bbox).sort((a, b) => cy(a) - cy(b));
+    for (const b of bars) {
+      const last = bands[bands.length - 1];
+      if (last && overlap1d(last.top, last.bottom, b.y, bottom(b)) > Math.min(last.bottom - last.top, b.h) * 0.4) {
+        last.top = Math.min(last.top, b.y);
+        last.bottom = Math.max(last.bottom, bottom(b));
+        last.x0 = Math.min(last.x0, b.x);
+        last.x1 = Math.max(last.x1, right(b));
+        last.barlineXs.push(cx(b));
+      } else {
+        bands.push({
+          index: bands.length,
+          top: b.y,
+          bottom: bottom(b),
+          noteTop: b.y,
+          noteBottom: bottom(b),
+          x0: b.x,
+          x1: right(b),
+          barlineXs: [cx(b)],
+          noteCount: 0,
+        });
+      }
+    }
+    // **谱行的小节线要成规模**：至少两条、且横向跨度可观，或者干脆四条以上。
+    // 不加这条会把词曲署名行判成谱行——拉丁人名里的竖笔（D/l/d）像小节线，
+    // 生卒年份（1851-1920）像音符（实测 p300 因此多出两个假谱行、40 个假音符）。
+    const minSpan = profile.contentBox.w * 0.12;
+    const keep = bands.filter((b) => {
+      if (b.barlineXs.length >= 3) return true;
+      const span = Math.max(...b.barlineXs) - Math.min(...b.barlineXs);
+      return span >= minSpan; // 只挡「两条紧挨的复纵线」这种退化情形
+    });
+    if (keep.length !== bands.length) {
+      // 被淘汰的带里那些「小节线」退回待定，交给后面的文字判据
+      const kept = new Set(keep);
+      for (const i of barlineIdx) {
+        const b = objs[i].bbox;
+        if (!keep.some((k) => overlap1d(k.top, k.bottom, b.y, bottom(b)) > 0)) {
+          out[i].cls = "unclassified";
+          out[i].why = "";
+        }
+      }
+      bands.length = 0;
+      for (const b of keep) if (kept.has(b)) bands.push(b);
+    }
+    bands.forEach((b, i) => {
+      b.index = i;
+      b.barlineXs.sort((a, c) => a - c);
+    });
+  }
+
+  const bandOf = (r: Rect, slackAbove: number, slackBelow: number): number => {
+    for (const b of bands) if (bottom(r) >= b.top - slackAbove && r.y <= b.bottom + slackBelow) return b.index;
+    return -1;
+  };
+
+  // ── 3. 音符数字
+  const noteBoxes: { i: number; box: Rect; row: number }[] = [];
+  for (let i = 0; i < objs.length; i++) {
+    if (out[i].cls !== "unclassified") continue;
+    const o = objs[i];
+    const { w, h } = o.bbox;
+    if (h < noteH * 0.75 || h > noteH * 1.3 || w > noteH * 1.1) continue;
+    const row = bandOf(o.bbox, noteH * 0.35, noteH * 0.35);
+    if (row < 0) continue;
+    set(i, "note", `谱行 ${row} 内、高 ${h.toFixed(1)}≈字号`);
+    out[i].row = row;
+    noteBoxes.push({ i, box: o.bbox, row });
+    bands[row].noteCount++;
+  }
+  // 用带内音符统计出真正的基线（小节线比数字高，不能拿它当基线）
+  for (const b of bands) {
+    const mine = noteBoxes.filter((n) => n.row === b.index);
+    if (mine.length) {
+      b.noteTop = median(mine.map((n) => n.box.y));
+      b.noteBottom = median(mine.map((n) => bottom(n.box)));
+    }
+  }
+  // **同一谱行的音符共一条基线**。小节线（实测 h≈13.8）比数字（8.3）高出一大截，
+  // 带内一收就把上方的和弦字母（h≈7.0，正好落在音符的高度区间里）也收成了音符——
+  // 实测全书页面音符数中位数比 GT 多 20 个，就是这么来的。
+  // 故按带内音符 cy 的中位数二次筛，偏离超过 0.45 字高的退回待定，交给后面的和弦/歌词判据。
+  for (const b of bands) {
+    const mine = noteBoxes.filter((n) => n.row === b.index);
+    if (mine.length < 3) continue;
+    const mid = median(mine.map((n) => cy(n.box)));
+    for (const n of mine) {
+      if (Math.abs(cy(n.box) - mid) > noteH * 0.45) {
+        out[n.i].cls = "unclassified";
+        out[n.i].row = -1;
+        out[n.i].why = "";
+        b.noteCount--;
+      }
+    }
+  }
+  for (let k = noteBoxes.length - 1; k >= 0; k--) if (out[noteBoxes[k].i].cls !== "note") noteBoxes.splice(k, 1);
+  for (const b of bands) {
+    const mine = noteBoxes.filter((n) => n.row === b.index);
+    if (mine.length) {
+      b.noteTop = median(mine.map((n) => n.box.y));
+      b.noteBottom = median(mine.map((n) => bottom(n.box)));
+    }
+  }
+  noteBoxes.sort((a, b) => a.box.x - b.box.x);
+
+  // ── 4. 圆点：八度点 / 附点 / 反复点
+  const dotMax = Math.max(profile.dotDiam * 1.8, noteH * 0.35);
+  for (let i = 0; i < objs.length; i++) {
+    if (out[i].cls !== "unclassified") continue;
+    const o = objs[i];
+    const { w, h } = o.bbox;
+    if (w > dotMax || h > dotMax) continue;
+    if (Math.abs(w - h) / Math.max(w, h) > 0.45) continue;
+    let best = -1;
+    let bestD = Infinity;
+    for (const n of noteBoxes) {
+      const d = Math.hypot(cx(o.bbox) - cx(n.box), cy(o.bbox) - cy(n.box));
+      if (d < bestD) {
+        bestD = d;
+        best = n.i;
+      }
+    }
+    if (best < 0 || bestD > noteH * 2.2) continue; // 留给后面的版面带判据
+    const nb = objs[best].bbox;
+    const dx = cx(o.bbox) - cx(nb);
+    const dyTop = nb.y - bottom(o.bbox);
+    out[i].row = out[best].row;
+    if (Math.abs(dx) <= nb.w * 0.6) set(i, "octaveDot", `与音符同 x（Δx=${dx.toFixed(1)}），在其${dyTop > 0 ? "上" : "下"}方`);
+    else if (dx > nb.w * 0.3 && Math.abs(cy(o.bbox) - cy(nb)) < nb.h * 0.6) set(i, "augmentDot", `音符右侧同高`);
+    else set(i, "repeatDot", `近音符但既不同 x 也不在右侧`);
+  }
+
+  // ── 4b. 短竖线：谱行内的是房号/三连音括线的脚，谱行外的当装饰线
+  for (const i of shortBarIdx) {
+    if (out[i].cls !== "unclassified") continue;
+    const row = bandOf(objs[i].bbox, noteH * 1.8, noteH * 0.4);
+    out[i].row = row;
+    set(i, row >= 0 ? "bracket" : "rule", `短竖线 h=${objs[i].bbox.h.toFixed(1)}${row >= 0 ? `，谱行 ${row} 附近` : ""}`);
+  }
+
+  // ── 5. 横线：减时线 / 增时线 / 通栏分隔线
+  for (const i of hLineIdx) {
+    if (out[i].cls !== "unclassified") continue;
+    const o = objs[i];
+    const { w, h } = o.bbox;
+    if (w > page.width * 0.5) {
+      set(i, "rule", `通栏横线 宽 ${w.toFixed(0)}`);
+      continue;
+    }
+    const row = bandOf(o.bbox, noteH * 0.4, noteH * 1.2);
+    if (row < 0) {
+      // 找不到所属谱行的横线：只有**宽度恰好一个字宽**的那种才可能是歌词里的「一」，
+      // 退回去交给文字判据；其余一律当装饰线定案。
+      // 不加这道闸的话，各种短横线退回后会被第 10 步当成歌词字收进去，
+      // 把歌词准确率从 89.6% 打到 74.2%。
+      set(i, "rule", `谱行外横线 ${w.toFixed(1)}×${h.toFixed(1)}`);
+      continue;
+    }
+    const b = bands[row];
+    // 减时线紧贴音符底线下方（一到两层），增时线穿过音符纵向中部。
+    // **下界必须卡死**：歌词里的「一」字也是一条扁横线（宽 ≈ 歌词字宽），
+    // 落在谱行下方一个字高开外，不卡下界就会被吞成减时线（实测全书漏掉 519 个「一」）。
+    if (o.bbox.y >= b.noteBottom - noteH * 0.1 && o.bbox.y <= b.noteBottom + noteH * 0.9) {
+      out[i].row = row;
+      set(i, "divLine", `音符底线下方 ${(o.bbox.y - b.noteBottom).toFixed(1)}，减时线`);
+    } else if (o.bbox.y < b.noteBottom - noteH * 0.1 && bottom(o.bbox) > b.noteTop) {
+      out[i].row = row;
+      set(i, "augmentLine", `与音符同高，增时线`);
+    }
+    // 其余退回待定：多半是歌词里的「一」，交给后面的文字判据
+  }
+
+  // ── 6. 弧线：宽扁、且**段数少**（整行文字已在第 0 步摘走，这里再加一道 segs 上限兜底）
+  const pendingYi: number[] = [];
+  for (let i = 0; i < objs.length; i++) {
+    if (out[i].cls !== "unclassified") continue;
+    const o = objs[i];
+    const { w, h } = o.bbox;
+    if (o.curves < 1 || o.segs > 12) continue;
+    if (w >= noteH * 0.8 && w / Math.max(h, 0.01) >= 2.2 && h <= noteH * 1.1) {
+      // 歌词里的「一」字也是宽扁带曲线的东西（宋体起笔顿角），会被吞成圆滑线。
+      // 拿 GT 的上下文回查过：它的字形恒定是 10.4×1.0（curves=4, fill），
+      // **和跨一个音符的短圆滑线尺寸完全一样**——只按尺寸放行会把真圆滑线一起放走，
+      // 那一版把歌词准确率从 86.9% 打到 72.7%。
+      // 真正分得开的是**位置**：圆滑线画在音符**上方**，歌词「一」在音符**下方**的歌词带里。
+      if (h <= 2.6 && w >= lyricH * 0.7 && w <= lyricH * 1.35) {
+        pendingYi.push(i); // 缓一步：等歌词都归好类，看它有没有同基线的邻居再定
+        continue;
+      }
+      out[i].row = bandOf(o.bbox, noteH * 1.6, noteH * 0.4);
+      set(i, "slur", `宽扁弧 ${w.toFixed(0)}×${h.toFixed(1)}，段数 ${o.segs}`);
+    }
+  }
+
+  // ── 8. 版面带：页脚 / 标题 / 曲号 / 页眉分类
+  //     页脚按**本页**最底部那一小撮判（全局带位在内容多的页会误伤末行歌词）
+  const pageFooterY = (() => {
+    // 下限：全书统计出的页脚带上沿。只按「本页最底部的空隙」找会翻车——
+    // 前言/目录页行距大，最靠下的那个大空隙可能出现在版心中部，
+    // 于是整块正文被判成页脚（实测 p30 曾误收 581 个对象）。
+    const floor = profile.footerBand ? profile.footerBand[0] : profile.contentBox.y + profile.contentBox.h;
+    const ys = objs.map((o) => cy(o.bbox)).sort((a, b) => a - b);
+    if (!ys.length) return Infinity;
+    for (let i = ys.length - 1; i > 0; i--) {
+      if (ys[i] - ys[i - 1] > lyricH * 1.5) return Math.max(ys[i] - lyricH * 0.5, floor);
+    }
+    return Math.max(floor, ys[ys.length - 1] - lyricH * 0.5);
+  })();
+  const titleH = lyricH * 1.25;
+  for (let i = 0; i < objs.length; i++) {
+    // 标题与曲号也可能整行合成一个 path（第 0 步会先把它们记成 textLine），
+    // 所以这一步允许改判 textLine——实测 p474 的标题、p383 的三位曲号都是合成的。
+    if (out[i].cls !== "unclassified" && !(out[i].cls === "textLine" && objs[i].bbox.h >= titleH)) continue;
+    const o = objs[i];
+    const b = o.bbox;
+    if (cy(b) >= pageFooterY) {
+      set(i, "footer", "本页最底部、与正文有明显空隙");
+      continue;
+    }
+    // 细长条（宽只有高的十分之一）不是字，是装饰线——标题带里混着它们，
+    // 会被当成标题的一部分（实测 33 首的识别标题以它们开头）。
+    if (b.h >= titleH && b.w / Math.max(b.h, 0.1) < 0.12) {
+      set(i, "rule", `标题带里的细长条 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
+      continue;
+    }
+    if (b.h >= titleH) {
+      // 曲号与标题同在标题带、同属大字号，但**曲号固定贴版心左右边缘**（对开页左右交替），
+      // 标题居中。只按宽高比分会把标题里的窄字（「!」「(」「了」）判成曲号。
+      // 纯按位置判：贴边=曲号，居中=标题。不看宽高比——多位曲号合成一个 path 后
+      // 宽高比会大于 1，用比例判会把它当成标题（实测 p383 的 "327"）。
+      const nearLeft = b.x < profile.contentBox.x + profile.contentBox.w * 0.15;
+      const nearRight = right(b) > profile.contentBox.x + profile.contentBox.w * 0.85;
+      set(i, nearLeft || nearRight ? "songNumber" : "title", `大字号 h=${b.h.toFixed(1)}${nearLeft ? "，贴左" : nearRight ? "，贴右" : "，居中"}`);
+      continue;
+    }
+    if (profile.headerBand && cy(b) <= profile.headerBand[1]) {
+      set(i, "category", "页眉带");
+      continue;
+    }
+  }
+
+  // ── 8b. 标题里的标点。「，」「！」只占字格的一小块，够不着大字号门槛，
+  //       但它们在谱面上就是标题的一部分，漏了标题就永远对不齐 GT。
+  //       判据：与已认出的标题字同一行、且横向落在标题的范围内。
+  {
+    const titles = out.filter((c) => c.cls === "title" && !c.dup).map((c) => c.obj.bbox);
+    if (titles.length) {
+      const ty0 = Math.min(...titles.map((b) => b.y));
+      const ty1 = Math.max(...titles.map(bottom));
+      const tx0 = Math.min(...titles.map((b) => b.x));
+      const tx1 = Math.max(...titles.map(right));
+      for (let i = 0; i < objs.length; i++) {
+        if (out[i].cls !== "unclassified") continue;
+        const b = objs[i].bbox;
+        if (b.y < ty0 - 2 || bottom(b) > ty1 + 2) continue;
+        if (right(b) < tx0 - lyricH || b.x > tx1 + lyricH) continue;
+        set(i, "title", `标题行内的标点 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
+      }
+    }
+  }
+
+  // ── 9. 框内正文
+  const boxes = [...frames, ...ornaments.map((o) => o.box)];
+  for (let i = 0; i < objs.length; i++) {
+    if (out[i].cls !== "unclassified") continue;
+    for (const f of boxes) {
+      if (intersectRect(objs[i].bbox, f)) {
+        set(i, "textLine", "落在框内");
+        break;
+      }
+    }
+  }
+
+  // ── 10. 剩余的字：看它离**上方谱行的底**近还是离**下方谱行的顶**近。
+  //        「一」候选要跳过——它们在 10c 单独裁定，混进这里会连同真圆滑线一起变成歌词。
+  const pendingSet = new Set(pendingYi);
+  //      和弦印在谱行正上方（一个字高以内）；歌词在谱行下方 1~3 字高。
+  for (let i = 0; i < objs.length; i++) {
+    if (out[i].cls !== "unclassified" || pendingSet.has(i)) continue;
+    const o = objs[i];
+    const b = o.bbox;
+    let above = -1;
+    let below = -1;
+    let dAbove = Infinity;
+    let dBelow = Infinity;
+    for (const bd of bands) {
+      if (bottom(b) <= bd.noteTop + noteH * 0.2) {
+        const d = bd.noteTop - bottom(b);
+        if (d < dBelow) {
+          dBelow = d;
+          below = bd.index;
+        }
+      }
+      if (b.y >= bd.noteBottom - noteH * 0.2) {
+        const d = b.y - bd.noteBottom;
+        if (d < dAbove) {
+          dAbove = d;
+          above = bd.index;
+        }
+      }
+    }
+    // 谱行之间的那一带既可能是上一行的歌词，也可能是下一行的和弦。
+    // 除了比上下距离，还要看**形状**：和弦是拉丁窄字（宽高比明显小于 1），
+    // 歌词是近方的汉字。只比距离时，行距紧的页面会把和弦判进上一行的歌词。
+    const narrow = b.w / Math.max(b.h, 0.1) < 0.82;
+    const chordish = below >= 0 && dBelow < noteH * (narrow ? 2.4 : 1.6);
+    if (chordish && (dBelow <= dAbove || narrow)) {
+      out[i].row = below;
+      set(i, "chord", `谱行 ${below} 上方 ${dBelow.toFixed(1)}${narrow ? "，窄字" : ""}`);
+    } else if (above >= 0) {
+      out[i].row = above;
+      set(i, "lyric", `谱行 ${above} 下方 ${dAbove.toFixed(1)}`);
+    } else if (below >= 0) {
+      out[i].row = below;
+      set(i, "chord", `谱行 ${below} 上方 ${dBelow.toFixed(1)}`);
+    }
+  }
+
+  // ── 10b. 无谱行的纯文字页（目录 / 首句索引 / 前言）：没有谱行可依，按行聚类兜底。
+  //        这些页占全书约 60 页，不兜底的话它们的对象会全数落进 unclassified。
+  if (!bands.length) {
+    for (let i = 0; i < objs.length; i++) {
+      if (out[i].cls !== "unclassified") continue;
+      const { w, h } = objs[i].bbox;
+      // 引导点：目录里 "……" 的那一串小点
+      if (w <= profile.dotDiam * 2 && h <= profile.dotDiam * 2) set(i, "leader", "目录引导点");
+      else set(i, "tocEntry", "无谱行页的条目文字");
+    }
+  }
+
+  // ── 10c. 裁定缓下来的「一」候选。
+  //        歌词里的「一」在矢量层是 10.4×1.0 的扁横条，**与跨一个音符的短圆滑线尺寸完全一样**，
+  //        只按尺寸分会把真圆滑线一起放走（歌词准确率 86.9% → 72.7%）；
+  //        只按「在谱行下方多远」也不行，上一行的圆滑线正好落在那个区间里。
+  //        真正分得开的是：**「一」嵌在歌词行里，与左右汉字共基线**，圆滑线不会。
+  for (const i of pendingYi) {
+    if (out[i].cls !== "unclassified") continue;
+    const b = objs[i].bbox;
+    // 比**字格中心**而不是基线：「一」只有一横、悬在字格中部（h≈1.0），
+    // 同行汉字是满格（h≈10.5）贴着基线，两者的下缘差着四五个点，按基线比会全部落空。
+    const mid = cy(b);
+    let neighbor = 0;
+    let neighborRow = -1;
+    for (let j = 0; j < objs.length; j++) {
+      if (out[j].cls !== "lyric" || out[j].dup) continue;
+      const q = objs[j].bbox;
+      if (q.h < lyricH * 0.7) continue; // 拿满格的汉字当参照，标点不算
+      if (Math.abs(cy(q) - mid) > lyricH * 0.28) continue; // 不在同一行
+      const gap = q.x > b.x ? q.x - right(b) : b.x - right(q);
+      if (gap <= lyricH * 1.5) {
+        neighbor = bottom(q); // 记下参照汉字的下缘，供聚行用
+        neighborRow = out[j].row; // 归行也跟着它走（见下）
+        break;
+      }
+    }
+    if (neighbor) {
+      // 单列一类而不是并进 lyric：它的轮廓（10.4×1.0）在字典里跟减时线等扁横条撞键，
+      // 自举投票会被冲散（试过，全书只学出一个「一」，还是标题里的）。
+      // 判据已经足够硬（共基线 + 相邻），直接按几何定案，取字时不查字典。
+      out[i].cls = "lyricYi";
+      out[i].baseline = neighbor;
+      out[i].why = `与歌词同行的扁横条 ${b.w.toFixed(1)}×${b.h.toFixed(1)}，是「一」`;
+      // **归行跟着参照汉字**，不能用 bandOf：第三、四段歌词离谱行底早超过 4 个字高，
+      // bandOf 给不出谱行（-1）。而下游按 row 聚段时 -1 排在所有谱行之前，那个「一」
+      // 就被塞进第 1 段的开头（实测全书三分之一的「一」如此，p46/47/48 的第 1 段
+      // 都以一个凭空多出的「一」起头）。参照汉字与它同行同段，它的 row 才是对的。
+      out[i].row = neighborRow >= 0 ? neighborRow : bandOf(b, noteH * 1.6, noteH * 4);
+    } else {
+      out[i].cls = "slur";
+      out[i].why = `宽扁弧 ${b.w.toFixed(0)}×${b.h.toFixed(1)}（无同基线歌词邻居）`;
+      out[i].row = bandOf(b, noteH * 1.6, noteH * 0.4);
+    }
+  }
+
+  // ── 10e. 把调号拍号从和弦带里摘出来。
+  //
+  //   「1=F 4/4 (1=D)」跟和弦印在同一带里，里头的 F、D 会被当成和弦塞进序列开头，
+  //   让整首的和弦比对从头错位。**别拿位置切**——第一谱行的头一个和弦本来就印在最左，
+  //   试过按「右缘在版心左 22% 以内」切，和弦准确率从 80.8% 掉到 66.3%。
+  //
+  //   分得开的是这两点：**和弦一行有好几个，调号整页只有一处；而调号的音名左边紧挨着等号。**
+  //   等号的几何很好认：两条平行横线，实测 5.8×3.3、curves=0——
+  //   和弦带里其它没有曲线的字（A、4）高度都是 7~8，差得远。
+  {
+    const eqs: number[] = [];
+    for (let i = 0; i < objs.length; i++) {
+      if (out[i].cls !== "chord" || out[i].dup) continue;
+      const b = objs[i].bbox;
+      const ratio = b.w / Math.max(b.h, 0.1);
+      if (objs[i].curves === 0 && b.h >= noteH * 0.28 && b.h <= noteH * 0.55 && ratio >= 1.3 && ratio <= 2.6) eqs.push(i);
+    }
+    for (const e of eqs) {
+      const eb = objs[e].bbox;
+      set(e, "keyMeter", `等号 ${eb.w.toFixed(1)}×${eb.h.toFixed(1)}`);
+      // 等号左右紧挨着的就是「1」和音名；括号一并收走
+      for (let i = 0; i < objs.length; i++) {
+        if (out[i].cls !== "chord" || out[i].dup) continue;
+        const b = objs[i].bbox;
+        if (Math.abs(cy(b) - cy(eb)) > noteH * 0.95) continue;
+        const gap = b.x > eb.x ? b.x - right(eb) : eb.x - right(b);
+        if (gap <= noteH * 0.75) set(i, "keyMeter", `紧挨等号，调号的一部分`);
+      }
+    }
+  }
+
+  // ── 10f. 拍号「4/4」：一条短分数线，上下各一个数字。三者一并归 keyMeter。
+  //        分数线常被前面的判据当成谱行外的装饰线（rule），所以这里连 rule 一起找。
+  {
+    for (let i = 0; i < objs.length; i++) {
+      if (out[i].cls !== "rule" && out[i].cls !== "chord") continue;
+      if (out[i].dup) continue;
+      const b = objs[i].bbox;
+      // 分数线：扁、短，宽度约一个到两个字宽
+      if (b.h > noteH * 0.15 || b.w < noteH * 0.8 || b.w > noteH * 2.4) continue;
+      const above: number[] = [];
+      const below: number[] = [];
+      for (let j = 0; j < objs.length; j++) {
+        if (j === i || out[j].dup) continue;
+        // 上下必须是和弦带里的字，**不能是音符**——增时线的宽度也落在分数线的区间里，
+        // 允许音符的话，一条增时线加上下两个音符就被当成了拍号（实测 p60 误收 7 个对象）。
+        if (out[j].cls !== "chord" && out[j].cls !== "keyMeter") continue;
+        const q = objs[j].bbox;
+        const qcx = q.x + q.w / 2;
+        if (qcx < b.x - noteH * 0.3 || qcx > right(b) + noteH * 0.3) continue; // 不在分数线的横向范围内
+        const dUp = b.y - bottom(q);
+        const dDown = q.y - bottom(b);
+        if (dUp >= -1 && dUp < noteH * 0.8) above.push(j);
+        else if (dDown >= -1 && dDown < noteH * 0.8) below.push(j);
+      }
+      if (!above.length || !below.length) continue; // 上下都得有数字才算拍号
+      set(i, "keyMeter", `拍号的分数线 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
+      for (const j of [...above, ...below]) set(j, "keyMeter", `拍号的数字`);
+    }
+  }
+
+  // ── 11. 标记重复描边：同一字形画了 fill 与 stroke 两遍，bbox 差约一个线宽。
+  //        两份都保留（重排核对要逐对象配对），但把后一份标成 dup，下游计数只认非 dup。
+  //        **必须查相邻网格**：只查自己那一格会漏掉骑在格边界上的一对
+  //        （实测因此漏配了一批，识别出来的音符串里出现成对重复的数字）。
+  {
+    const CELL = 4;
+    const byCell = new Map<string, number[]>();
+    for (let i = 0; i < objs.length; i++) {
+      const b = objs[i].bbox;
+      const k = `${Math.floor(b.x / CELL)},${Math.floor(b.y / CELL)}`;
+      const g = byCell.get(k);
+      if (g) g.push(i);
+      else byCell.set(k, [i]);
+    }
+    const paired = new Set<number>();
+    for (let i = 0; i < objs.length; i++) {
+      if (paired.has(i) || out[i].dup) continue;
+      const A = objs[i];
+      const gx = Math.floor(A.bbox.x / CELL);
+      const gy = Math.floor(A.bbox.y / CELL);
+      let mate = -1;
+      for (let dx = -1; dx <= 1 && mate < 0; dx++) {
+        for (let dy = -1; dy <= 1 && mate < 0; dy++) {
+          for (const j of byCell.get(`${gx + dx},${gy + dy}`) ?? []) {
+            if (j === i || paired.has(j) || out[j].dup) continue;
+            const B = objs[j];
+            if (out[i].cls !== out[j].cls) continue;
+            if (A.paint === B.paint) continue; // 一个 fill 一个 stroke 才是重复描边
+            const tolp = Math.max(A.lineWidth, B.lineWidth, 0.3) * 2;
+            if (
+              Math.abs(A.bbox.x - B.bbox.x) <= tolp &&
+              Math.abs(A.bbox.y - B.bbox.y) <= tolp &&
+              Math.abs(A.bbox.w - B.bbox.w) <= tolp &&
+              Math.abs(A.bbox.h - B.bbox.h) <= tolp
+            ) {
+              mate = j;
+              break;
+            }
+          }
+        }
+      }
+      if (mate < 0) continue;
+      // 描边那份算重复（填充那份才是字形本体）
+      const aStroke = A.paint.toLowerCase().includes("stroke") && !A.paint.toLowerCase().includes("fill");
+      const dupI = aStroke ? i : mate;
+      out[dupI].dup = true;
+      paired.add(i);
+      paired.add(mate);
+    }
+  }
+
+  // ── 12. 把拆成偏旁的字合回一个字形。
+  //        **必须排在「标记重复描边」之后**：那之前每个字都有 fill/stroke 两份几乎重合的对象，
+  //        它们的横向间距是负的，会被当成偏旁并掉。
+  //        转曲时左右结构的字有时会拆成两个 path（实测标题里的「祂」= 礻 + 也、
+  //        歌词里的「像」= 亻 + 象）。拆着查字典只查得到右半边，于是「祂」读成「也」、
+  //        「像」读成「象」——那些看着像「GT 与 PDF 用字不同」的差异，其实是这么来的。
+  //        判据：同类、同一行（下缘接近）、横向几乎挨着，且**合并后的宽度仍在一个字格内**。
+  for (const cls of ["lyric", "title", "tocEntry", "storyText", "category"] as ObjClass[]) {
+    const idx = out
+      .map((c, i) => ({ c, i }))
+      .filter((x) => x.c.cls === cls && !x.c.dup)
+      // **按 x 排序**。按下缘排会打乱 x 顺序（同一行里各字的下缘本就差着几个点），
+      // 于是相邻两项在横向上可能是反的，gap 算出负值 → 误判成偏旁，一路把整行并成一个
+      //（实测把「拥戴祂为王」并成了一个 102.9 宽的对象）。同行与否由下缘差单独判。
+      .sort((a, b) => a.c.obj.bbox.x - b.c.obj.bbox.x)
+      .map((x) => x.i);
+    if (idx.length < 2) continue;
+    // 一个字格有多宽：取本类里对象高度的中位数（汉字近方）
+    const cell = median(idx.map((i) => objs[i].bbox.h));
+    if (!cell) continue;
+    let k = 0;
+    while (k < idx.length - 1) {
+      const a = idx[k];
+      const group = [a];
+      while (k + 1 < idx.length) {
+        const b = idx[k + 1];
+        const A = objs[group[group.length - 1]].bbox;
+        const B = objs[b].bbox;
+        if (Math.abs(bottom(A) - bottom(B)) > cell * 0.25) break; // 不同行
+        const gap = B.x - (A.x + A.w);
+        if (gap > cell * 0.08) break; // 离得开，是相邻的两个字
+        const wide = B.x + B.w - objs[group[0]].bbox.x;
+        // 上限 1.55 个字格。左右结构的字本就排得开——实测「祂」的 礻+也 合起来 1.47 个字格；
+        // 而挨着的两个整字最少也要 1.74 个（还另有间距判据拦着），留得出余量。
+        if (wide > cell * 1.55) break;
+        // **必须有一个部件明显窄于字格**：偏旁才窄（「祂」的礻旁只有 0.4 个字宽），
+        // 两个挨着的整字都是满格宽。少了这条判据，歌词里相邻的字会被成对并掉——
+        // 形状类从 1.6 万炸到 5.1 万，自举只认得出 197 类。
+        if (Math.min(A.w, B.w) > cell * 0.55) break;
+        group.push(b);
+        k++;
+      }
+      if (group.length > 1) {
+        const merged = concatObjects(group.map((i) => objs[i]));
+        objs[group[0]] = merged;
+        out[group[0]].obj = merged;
+        out[group[0]].why += `（并入 ${group.length - 1} 个偏旁）`;
+        for (const j of group.slice(1)) out[j].dup = true;
+      }
+      k++;
+    }
+  }
+
+
+  const counts: Record<string, number> = {};
+  for (const c of out) counts[c.cls] = (counts[c.cls] ?? 0) + 1;
+
+  return {
+    page: page.page,
+    width: page.width,
+    height: page.height,
+    objs: out,
+    bands,
+    frames,
+    ornaments: ornaments.map((o) => ({ box: o.box, tiles: o.idx.length, tileW: o.tileW, tileH: o.tileH })),
+    counts,
+    unclassified: out.filter((c) => c.cls === "unclassified"),
+  };
+}
+
+
+/** 花边框检测的中间结果（带对象下标）。 */
+interface OrnamentHit {
+  idx: number[];
+  box: Rect;
+  /** 框内区域（去掉一圈纹样），框内正文落在这里。 */
+  inner: Rect;
+  tileW: number;
+  tileH: number;
+}
+
+/** 一条「同形状密排线」：花边的一条边。 */
+interface TileRun {
+  idx: number[];
+  horizontal: boolean;
+}
+
+/**
+ * 找出「同一批小纹样沿矩形四边重复平铺」围成的花边框。
+ *
+ * 判据是**同一形状连续密排成线**：花边的一条边就是同一个装饰字形挨着排十几二十个，
+ * 相邻间距不超过自身宽度的两三倍。汉字不会同一个字连排十次，所以这条判据很干净。
+ *
+ * 先试过「同形状重复多次 + 包络中心为空」，在 p300 翻了车：框内的高频汉字（的、一…）
+ * 也满足「重复多次 + 尺寸小」，把中心占满了，整框就被判掉。
+ *
+ * 为什么要把不同形状的线合起来：一圈花边常由几种纹样拼成（横边一种、竖边一种、角上一种）。
+ */
+function detectOrnamentFrames(objs: VecObj[], noteH: number): OrnamentHit[] {
+  const groups = new Map<string, number[]>();
+  for (let i = 0; i < objs.length; i++) {
+    const o = objs[i];
+    if (o.bbox.w > noteH * 1.6 || o.bbox.h > noteH * 1.6) continue;
+    const k = coarseKey(o);
+    const g = groups.get(k);
+    if (g) g.push(i);
+    else groups.set(k, [i]);
+  }
+
+  const runs: TileRun[] = [];
+  for (const [, idx] of groups) {
+    if (idx.length < 8) continue;
+    const w = median(idx.map((i) => Math.max(objs[i].bbox.w, 0.3)));
+    const h = median(idx.map((i) => Math.max(objs[i].bbox.h, 0.3)));
+    // 横向密排：同一 y 上连续排开
+    collectRuns(idx, objs, true, h * 0.6, w * 2.5, runs);
+    // 纵向密排
+    collectRuns(idx, objs, false, w * 0.6, h * 2.5, runs);
+  }
+  if (runs.length < 2) return [];
+
+  // 把交叠/相邻的线并成一个框（一圈花边由几条线组成）
+  const used = new Set<number>();
+  const out: OrnamentHit[] = [];
+  for (let a = 0; a < runs.length; a++) {
+    if (used.has(a)) continue;
+    const group = [a];
+    used.add(a);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let b = 0; b < runs.length; b++) {
+        if (used.has(b)) continue;
+        if (group.some((g) => runsNear(runs[g], runs[b], objs, noteH))) {
+          used.add(b);
+          group.push(b);
+          changed = true;
+        }
+      }
+    }
+    const idx = [...new Set(group.flatMap((g) => runs[g].idx))];
+    const bs = idx.map((i) => objs[i].bbox);
+    const x0 = Math.min(...bs.map((b) => b.x));
+    const y0 = Math.min(...bs.map((b) => b.y));
+    const x1 = Math.max(...bs.map(right));
+    const y1 = Math.max(...bs.map(bottom));
+    const w = x1 - x0;
+    const h = y1 - y0;
+    if (w < noteH * 4 || h < noteH * 3) continue;
+    // 至少要有一横一竖两条边，否则可能只是一行重复符号
+    const hasH = group.some((g) => runs[g].horizontal);
+    const hasV = group.some((g) => !runs[g].horizontal);
+    if (!hasH || !hasV) continue;
+    // **必须是「环」：中间三分之一区域基本没有本簇的纹样。**
+    // 目录页的引导点线（……）也是同形状密排、也凑得出一横一竖，但它布满整页中心；
+    // 少了这条约束，全书会误报 131 个花边框（真正带注解的框只有三十来个）。
+    const mid = { x: x0 + w / 3, y: y0 + h / 3, w: w / 3, h: h / 3 };
+    if (bs.filter((b) => intersectRect(b, mid)).length > idx.length * 0.03) continue;
+    const edge = Math.max(noteH * 0.8, Math.min(w, h) * 0.06);
+    out.push({
+      idx,
+      box: { x: x0, y: y0, w, h },
+      inner: { x: x0 + edge, y: y0 + edge, w: w - edge * 2, h: h - edge * 2 },
+      tileW: median(bs.map((b) => b.w)),
+      tileH: median(bs.map((b) => b.h)),
+    });
+  }
+  return out;
+}
+
+/** 在同形状的一组对象里，找沿某方向密排 ≥8 个的连续段。 */
+function collectRuns(idx: number[], objs: VecObj[], horizontal: boolean, lineTol: number, gapMax: number, out: TileRun[]): void {
+  const key = (i: number) => (horizontal ? cy(objs[i].bbox) : cx(objs[i].bbox));
+  const pos = (i: number) => (horizontal ? objs[i].bbox.x : objs[i].bbox.y);
+  const end = (i: number) => (horizontal ? right(objs[i].bbox) : bottom(objs[i].bbox));
+  const sorted = [...idx].sort((a, b) => key(a) - key(b));
+  let line: number[] = [];
+  const flush = () => {
+    if (line.length < 8) return;
+    const seq = [...line].sort((a, b) => pos(a) - pos(b));
+    let run: number[] = [seq[0]];
+    for (let k = 1; k < seq.length; k++) {
+      if (pos(seq[k]) - end(seq[k - 1]) <= gapMax) run.push(seq[k]);
+      else {
+        if (run.length >= 8) out.push({ idx: run, horizontal });
+        run = [seq[k]];
+      }
+    }
+    if (run.length >= 8) out.push({ idx: run, horizontal });
+  };
+  for (const i of sorted) {
+    if (line.length && Math.abs(key(i) - key(line[line.length - 1])) > lineTol) {
+      flush();
+      line = [];
+    }
+    line.push(i);
+  }
+  flush();
+}
+
+/** 两条密排线是否属于同一个框（端点相近或共边）。 */
+function runsNear(a: TileRun, b: TileRun, objs: VecObj[], noteH: number): boolean {
+  const bbox = (r: TileRun) => {
+    const bs = r.idx.map((i) => objs[i].bbox);
+    return {
+      x: Math.min(...bs.map((v) => v.x)),
+      y: Math.min(...bs.map((v) => v.y)),
+      w: Math.max(...bs.map(right)) - Math.min(...bs.map((v) => v.x)),
+      h: Math.max(...bs.map(bottom)) - Math.min(...bs.map((v) => v.y)),
+    };
+  };
+  const A = bbox(a);
+  const B = bbox(b);
+  const pad = noteH * 2;
+  return !!intersectRect({ x: A.x - pad, y: A.y - pad, w: A.w + pad * 2, h: A.h + pad * 2 }, B);
+}

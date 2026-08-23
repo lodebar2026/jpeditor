@@ -10,13 +10,25 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-cli
 *.local
 
 # OMR 批量测试输出
 measure-all.csv
+pdf-diff.csv
+pdf-diff/
+pdf-pages.csv
+pdf-pages/
+pdf-layout.json
+pdf-out/
 
 # OMR 测试数据（本地保留，不入库）
-testdata
+testdata/*
+# 例外：字形种子标注是**肉眼判形**得来的，是矢量路可复现性的起点（丢了要重标一遍），
+# 只有 2.6KB，入库。pagemap.json / glyphdict.json 都能由它 + 语料重新生成，不入库。
+!testdata/500/
+testdata/500/*
+!testdata/500/glyph-seed.tsv
 
 # pdf.js 位图解码器 wasm：来自 pdfjs-dist 包，构建时从 node_modules 拷入（见 vite.config.ts），不入库
 public/redist/pdfjs
