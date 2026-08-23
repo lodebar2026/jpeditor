@@ -260,7 +260,18 @@ for (const [id, entries] of byId) {
   //    矢量层分不出圆滑线和连音线（都是一条弧），故 GT 侧把 slur 与 tied 合起来比。
   const gtST = gt.musicxml ? gtSlurTie(gt.musicxml) : null;
   const gtArcs = gtST ? [...gtST.slurs, ...gtST.ties].sort((a, b) => a[0] - b[0] || a[1] - b[1]) : [];
-  const noteIndex = new Map(notes.map((n, i) => [n, i]));
+  // 音符序号只数**真的音符数字**：识别侧的 note 里混着升降号（谱面上它印在音符左上方）
+  // 和读不出的字形，每混进一个，弧的两端就同时错一位——全书 373 项「区间不同」里
+  // 250 项是这种两端等量平移（+1+1 140 项、+2+2 77 项…）。
+  const noteIndex = new Map();
+  {
+    let k = 0;
+    for (const n of notes) {
+      const c = charOf.get(cli.shapeKey(n.obj.data)) ?? "";
+      noteIndex.set(n, k);
+      if (/[0-7]/.test(c)) k++;
+    }
+  }
   const recArcs = arcs
     .filter((a) => a.bandNotes && a.bandNotes.length >= 2)
     .map((a) => [noteIndex.get(a.bandNotes[0]) ?? -1, noteIndex.get(a.bandNotes[a.bandNotes.length - 1]) ?? -1])
@@ -277,7 +288,10 @@ for (const [id, entries] of byId) {
   const gtVerses = gtVerseRaw.map(lyricNorm);
   const gtPunct = gtVerseRaw.map(punctOnly).join("");
 
-  const recNotes = dropParens(readSeq(notes));
+  // 识别侧的音符里混着升降号（谱面上印在音符左上方，归类时归到了音符带）与读不出的字形。
+  // **升降号两边口径不一致**（GT 侧 `gtNoteDigits` 只取 0-7），得一并剔掉才比得准；
+  // `�` 留着，那是「未识别」不是「录错」。
+  const recNotes = dropParens(readSeq(notes)).replace(/[^0-7\ufffd]/g, "");
   const recTitle = readSeq(title);
   // 有些「歌词行」其实是和弦行或音符行被归错了（读出来一个汉字都没有）。
   // 它们混进段落配对会制造假的「PDF 多出一段」，先按汉字占比剔掉，单列一栏。
