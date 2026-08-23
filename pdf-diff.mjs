@@ -308,6 +308,25 @@ for (const [id, entries] of byId) {
   // 这是「musicxml 为主、jpwabc 为辅」里 musicxml 独有的那一块。
   // 谱面上和弦带里还混着调号拍号（「1=F 4/4」），比对前按和弦的样子筛一遍。
   const recChordRaw = readSeq(chords);
+  // 和弦要**按记号成撮地读**，不能把整行拼成一串再切：一串里混着音符的升降号
+  // （谱面上印在音符左上方，归类时落进和弦带）和读不出的字形，拼在一起之后
+  // 一个孤零零的 `#` 会粘到后面那个和弦头上（`C→#C`、`G→#G`）、一个孤零零的数字
+  // 会粘成后缀（`F→F9`）。同一个和弦的字母彼此挨着（间距不到一个音符宽），
+  // 与相邻和弦之间隔着大半个小节。门槛试过 3/4/5/7/9 个点，3~5 都一样，取 4。
+  const chordGroups = [];
+  {
+    let cur = null;
+    for (const o of chords) {
+      const b = o.obj.bbox;
+      if (cur && cur.row === o.row && b.x - cur.x1 <= 4) {
+        cur.text += charOf.get(cli.shapeKey(o.obj.data)) ?? "";
+        cur.x1 = Math.max(cur.x1, b.x + b.w);
+      } else {
+        cur = { row: o.row, x1: b.x + b.w, text: charOf.get(cli.shapeKey(o.obj.data)) ?? "" };
+        chordGroups.push(cur);
+      }
+    }
+  }
   // **升降号在前**（谱面与 musicxml 侧都写作 `#Fm`、`♭B`）。
   // 写成「音名在后跟升降号」会把 `#` 算给前一个和弦——`G` 后面跟着 `#Fm` 就读成了 `G#` + `Fm`，
   // 整串跟着错位（实测 028 首八项和弦差异里六项是这么来的）。
@@ -317,7 +336,10 @@ for (const [id, entries] of byId) {
   // 谱面上的 `♭` 常被拆成两个对象、其中一个读成「，」，夹在中间就把 `♭B` 切成了 `B`
   // （`♭B→B` 是全书最多的一类和弦差异，41 处）。
   const normChords = (t) => (t.replace(/[^0-9A-Za-z#♭/]/g, "").match(CHORD_TOKEN) ?? []).join("|");
-  const recChords = normChords(recChordRaw);
+  const recChords = chordGroups
+    .map((g) => normChords(g.text))
+    .filter(Boolean)
+    .join("|");
   const gtChords = gt.musicxml ? normChords(gtHarmonies(gt.musicxml).join("")) : "";
   // **谱面把旋律印两遍时，和弦也跟着印两遍**（见下面音符那段的同一件事）：
   // musicxml 只记一遍，直接比会把整整一遍和弦报成几十项「PDF 有 GT 无」
