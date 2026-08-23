@@ -4,21 +4,13 @@
 //   node pdf-diff.mjs 028            # 只跑一首
 //   node pdf-diff.mjs --limit=30     # 只跑前 30 首
 //
-// 基准：`500/*.musicxml` 为主、`jpw/*.jpwabc` 为辅（当前实现先对 jpwabc 那一路，
-// 它直接承载简谱层的表述：音符数字、歌词分段、标题、词曲）。
+// **基准一律是 `500/*.musicxml`**：音符、歌词分段、标题、词曲署名、和弦、圆滑线、
+// 调号拍号、反复房号全从它来。`.jpwabc` 那一路已经不用了——它装不下和弦/slur，
+// 段落与副歌的写法（`W1-3` 之类）还得另做口径对齐，两套 GT 并存只会各错一半。
 // **纯 Node，不起浏览器。**
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, collectSongGlyphs, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, loadCorpus, readSongGt, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, xmlNoteDigits, xmlLyricVerses, xmlTitle, xmlCredit, collectSongGlyphs, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
-/** `.Title` 里的 `WordsByAndMusicBy`。**取最后一条非空的**：有的文件写了两条，
- *  第一条是空的；`=` 后面只吃横向空白，吃到换行就会把下一行整条卷进来。 */
-function creditField(titleSec) {
-  let out = "";
-  for (const m of (titleSec ?? "").matchAll(/WordsByAndMusicBy[^\S\r\n]*=[^\S\r\n]*\{?([^}\r\n]*)\}?/g)) {
-    if (m[1].trim()) out = m[1];
-  }
-  return out;
-}
 
 const args = process.argv.slice(2);
 const flags = Object.fromEntries(args.filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")));
@@ -195,7 +187,7 @@ const limit = flags.limit ? Number(flags.limit) : Infinity;
 
 for (const [id, entries] of byId) {
   const song = songs.get(id);
-  if (!song?.jpwabc) continue;
+  if (!song?.musicxml) continue;
   if (filters.length && !filters.some((f) => id.includes(f) || song.title.includes(f))) continue;
   if (count++ >= limit) break;
 
@@ -281,8 +273,7 @@ for (const [id, entries] of byId) {
   if (invCache.size > 40) invCache.clear();
 
   const gt = await readSongGt(song);
-  const sec = jpwSections(gt.jpwabc);
-  const gtNotes = dropParens(gtNoteDigits(sec.Voice || ""));
+  const gtNotes = xmlNoteDigits(gt.musicxml);
 
   // ── 调号拍号：GT 取 musicxml 的 <key>/<time>，识别侧从 keyMeter 那一撮文本里解析。
   //    谱面常写两个调（「1=F (1=D)」主调 + 括号里的替代调），GT 只记一个，命中任一即算对。
@@ -331,7 +322,7 @@ for (const [id, entries] of byId) {
   //    署名是两行交错排的（作词一行、作曲一行），要**先按基线分行再按 x 排**，
   //    照 x 一路读会把两行的字母穿插起来。
   const creditNorm = (t) => (t.replace(/\\n/g, "").match(/[\u4e00-\u9fff0-9A-Za-z\ufffd]/g) ?? []).join("");
-  const gtCredit = creditNorm(creditField(sec.Title));
+  const gtCredit = creditNorm(xmlCredit(gt.musicxml));
   const creditLines = [];
   for (const o of [...credits].sort((a, b) => a.obj.bbox.y + a.obj.bbox.h - (b.obj.bbox.y + b.obj.bbox.h))) {
     const bot = o.obj.bbox.y + o.obj.bbox.h;
@@ -386,7 +377,7 @@ for (const [id, entries] of byId) {
   const recRepeats = Math.round(repeatDots / 2); // 一个反复记号两个点
   const repeatDelta = gtRep ? recRepeats - gtRep.repeats.length : null;
   const endingDelta = gtRep ? brackets - gtRep.endings.length : null;
-  const gtVerseRaw = gtLyricVerses(sec.Words || "").map((v) => v.chars);
+  const gtVerseRaw = xmlLyricVerses(gt.musicxml).map((v) => v.chars);
   const gtVerses = gtVerseRaw.map(lyricNorm);
   const gtPunct = gtVerseRaw.map(punctOnly).join("");
 
@@ -410,8 +401,7 @@ for (const [id, entries] of byId) {
   const recVerses = lyricish.map(lyricNorm);
   const recPunct = lyricish.map(punctOnly).join("");
   const misLyric = rawVerses.filter((t) => !isLyricish(t));
-  // 和弦以 **musicxml 的 `<harmony>`** 为基准——`.jpwabc` 根本装不下和弦，
-  // 这是「musicxml 为主、jpwabc 为辅」里 musicxml 独有的那一块。
+  // 和弦以 musicxml 的 `<harmony>` 为基准。
   // 谱面上和弦带里还混着调号拍号（「1=F 4/4」），比对前按和弦的样子筛一遍。
   const recChordRaw = readSeq(chords);
   // 和弦要**按记号成撮地读**，不能把整行拼成一串再切：一串里混着音符的升降号
@@ -467,7 +457,7 @@ for (const [id, entries] of byId) {
     }
   }
 
-  // **谱面可能把旋律印了两遍**（各段词长不同时常这么排），而 .jpwabc 只记一遍、
+  // **谱面可能把旋律印了两遍**（各段词长不同时常这么排），而 GT 只记一遍、
   // 靠多段歌词表示。直接比会把整整一遍旋律报成上百项「PDF 有 GT 无」（实测 024 首 71 项）。
   // 先试 GT 重复 k 遍，取最贴合的那个，重复本身当结构差异单列。
   let dNote = alignOps(gtNotes, recNotes);
@@ -483,7 +473,7 @@ for (const [id, entries] of byId) {
   }
   const gtNotesEff = noteRepeat > 1 ? gtNotes.repeat(noteRepeat) : gtNotes;
   // 标题同样只比汉字：它的标点也是随排版走的（「圣哉，圣哉，圣哉」的顿号常识别不全）
-  const gtTitleN = lyricNorm(song.title);
+  const gtTitleN = lyricNorm(xmlTitle(gt.musicxml) || song.title);
   const recTitleN = lyricNorm(recTitle);
   const dTitle = alignOps(gtTitleN, recTitleN);
   const sNote = splitOps(dNote.ops);

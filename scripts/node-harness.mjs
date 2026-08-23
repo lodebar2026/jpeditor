@@ -427,6 +427,85 @@ export function isCreditWordGlyph(b) {
   return true;
 }
 
+/** 音名字母 → 音阶序号。简谱数字按**拼写**算（见 CLAUDE.md 里 jpToStep 那条刻意背离）。 */
+const STEP_IDX = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
+
+/**
+ * MusicXML → 简谱音符数字串（0-7，0=休止）。**以 musicxml 为准**那一路的音符来源。
+ *
+ * 简谱数字是「相对主音的音阶级数」：`fifths` 定主音（`FIFTHS_KEY`），
+ * 数字 = (音名序号 − 主音序号 mod 7) + 1。**只看字母、不看升降号**——
+ * 谱面上升降号印在音符左上方、是另一个对象，两边都不计（识别侧同样只取 0-7）。
+ *
+ * 和弦附音（`<chord/>`）不占格；`<rest/>` 记 0，谱面上休止就印作 `0`。
+ */
+export function xmlNoteDigits(musicxml) {
+  // 注：`<note[ >]` 不能写成 `<note\b`——`\b` 在 `<note-size>`（`<defaults>` 里的）
+  // 前面也成立，那一匹配会一路吞到第一个 `</note>`，把开头的调号和首音一起吃掉。
+  const out = [];
+  let tonic = 0;
+  // **要按文档顺序走**，遇到 `<fifths>` 就换主音：曲中转调的谱面从那里起按新调记数字
+  // （021/137 首 ♭E 转 F、144 首 F 转 G），只认第一个调号会让转调之后整段全错。
+  for (const m of musicxml.matchAll(/<fifths>(-?\d+)<\/fifths>|<note[ >][\s\S]*?<\/note>/g)) {
+    if (m[1] !== undefined) {
+      const key = FIFTHS_KEY[String(Number(m[1]))] ?? "C";
+      tonic = STEP_IDX[key[key.length - 1]] ?? 0;
+      continue;
+    }
+    const seg = m[0];
+    if (/<chord\s*\/>/.test(seg)) continue;
+    if (/<rest\s*\/?>/.test(seg)) {
+      out.push("0");
+      continue;
+    }
+    const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
+    if (!step) continue;
+    out.push(String(((((STEP_IDX[step] - tonic) % 7) + 7) % 7) + 1));
+  }
+  return out.join("");
+}
+
+/**
+ * MusicXML → 各段歌词（`<lyric number="N">` 按音符顺序拼）。
+ * 一个音符上可能挂多段；段号就是 `number`。
+ */
+export function xmlLyricVerses(musicxml) {
+  const byVerse = new Map();
+  for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
+    for (const l of m[0].matchAll(/<lyric\b[^>]*number="(\d+)"[^>]*>([\s\S]*?)<\/lyric>/g)) {
+      const v = Number(l[1]);
+      const txt = [...l[2].matchAll(/<text>([^<]*)<\/text>/g)].map((x) => x[1]).join("");
+      byVerse.set(v, (byVerse.get(v) ?? "") + txt);
+    }
+  }
+  // 行首段号「1.」谱面上每个谱行都重印一次、识别侧按几何剔掉了，GT 侧也剔
+  return [...byVerse.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([verse, text]) => ({ verse, chars: unescapeXml(text).replace(/^\s*\d+\s*[.．、]\s*/, "") }));
+}
+
+/** MusicXML → 曲名。 */
+export function xmlTitle(musicxml) {
+  const t = /<movement-title>([^<]*)<\/movement-title>/.exec(musicxml)?.[1] ?? /<work-title>([^<]*)<\/work-title>/.exec(musicxml)?.[1] ?? "";
+  return unescapeXml(t).trim();
+}
+
+/** MusicXML → 词曲署名。
+ *  全书 485 首把两行都塞在一个 `<creator type="composer">` 里（「作词：…\n作曲：…」），
+ *  个别几首拆成 composer + lyricist 两条——**要按谱面的次序排：先词后曲**。 */
+export function xmlCredit(musicxml) {
+  const rank = { lyricist: 0, poet: 0, translator: 1, composer: 2, arranger: 3 };
+  return [...musicxml.matchAll(/<creator\b[^>]*type="(\w+)"[^>]*>([\s\S]*?)<\/creator>/g)]
+    .map((m) => ({ r: rank[m[1]] ?? 9, t: unescapeXml(m[2]) }))
+    .sort((a, b) => a.r - b.r)
+    .map((x) => x.t)
+    .join("");
+}
+
+function unescapeXml(t) {
+  return t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
+
 /** MusicXML 的 `<harmony>` → 谱面上印的和弦文本序列。
  *  谱面写法是**升降号在前**（`#Fm`、`♭B`），与 MusicXML 的 root-step + root-alter 顺序相反。 */
 export function gtHarmonies(musicxml) {
@@ -473,7 +552,7 @@ export function gtSlurTie(musicxml) {
   const openSlur = new Map(); // number → 起始音符序号
   let openTie = null;
   let n = -1;
-  for (const m of musicxml.matchAll(/<note\b[\s\S]*?<\/note>/g)) {
+  for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
     const seg = m[0];
     if (/<chord\s*\/>/.test(seg)) continue; // 和弦附音不单独占一格
     n++;
