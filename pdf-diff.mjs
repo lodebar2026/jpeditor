@@ -133,7 +133,9 @@ const dropParens = (s) => s.replace(/[()（）]/g, "");
  *    是排版差异不是录错，另计一栏。
  * 「副歌」这类段落标记同样不算歌词。 */
 const SECTION_WORDS = /(副歌|间奏|前奏|尾声|反复|齐唱|独唱|合唱)/g;
-const lyricNorm = (t) => (t.replace(SECTION_WORDS, "").match(/[\u4e00-\u9fff]/g) ?? []).join("");
+// `\ufffd`（读不出的字形）要**留着**：抹掉的话对齐时它就成了「GT 有 PDF 无」，
+// 字典的窟窿会被记成「录错」——那是本工具的局限，该进「未识别」那一栏。
+const lyricNorm = (t) => (t.replace(SECTION_WORDS, "").match(/[\u4e00-\u9fff\ufffd]/g) ?? []).join("");
 /** 只取标点，用来单独统计标点差异。 */
 const punctOnly = (t) => (t.match(/[\u3000-\u303f\uff01-\uff20\uff3b-\uff65]/g) ?? []).join("");
 
@@ -161,6 +163,7 @@ for (const [id, entries] of byId) {
   let unclassified = 0;
   let storyChars = 0;
   let folds = 0;
+  let strayLines = 0;
   for (const e of entries) {
     let inv = invCache.get(e.page);
     if (!inv) {
@@ -175,6 +178,7 @@ for (const [id, entries] of byId) {
     storyChars += inv.objs.filter((o) => o.cls === "storyText" && !o.dup && o.obj.bbox.y >= (e.yFrom ?? 0) && o.obj.bbox.y < (e.yTo ?? 1e9)).length;
     const got = collectSongGlyphs(inv, e, profile, cli.shapeKey);
     folds += got.folds ?? 0;
+    strayLines += got.dropped ?? 0;
     const inSpan = (o) => o.obj.bbox.y >= (e.yFrom ?? 0) && o.obj.bbox.y < (e.yTo ?? 1e9);
     for (const o of inv.objs) {
       if (o.dup || !inSpan(o)) continue;
@@ -382,6 +386,7 @@ for (const [id, entries] of byId) {
     id,
     title: song.title,
     folds,
+    strayLines,
     contentDiffs,
     unreadDiffs,
     sNote,
@@ -586,7 +591,7 @@ for (const r of rows) {
   } else L.push("  （无）");
 
   L.push("", "## 版面（记录，不算差异）");
-  L.push(`  歌词折行归并 ${r.folds} 字`);
+  L.push(`  歌词折行归并 ${r.folds} 字${r.strayLines ? `，歌词带里剔掉的非歌词对象 ${r.strayLines} 个（零星记号 / 曲末经文出处）` : ""}`);
   L.push(`  标点差异 ${r.punctDiffs} 处（GT ${r.gtPunctN} / PDF ${r.recPunctN}；标点位置随排版走，不算录错）`);
   if (r.noteRepeat > 1) L.push(`  **PDF 把旋律印了 ${r.noteRepeat} 遍**（GT 只记一遍，靠多段歌词表示）`);
   if (r.misLyric?.length) {
@@ -636,7 +641,7 @@ console.log(
   if (withC.length) console.log(`和弦平均准确率 ${((withC.reduce((a, r) => a + r.chordAcc, 0) / withC.length) * 100).toFixed(2)}%（${withC.length} 首有 <harmony>）`);
 }
 console.log(
-  `未识别合计 ${sum((r) => r.unreadDiffs)}，折行归并 ${sum((r) => r.folds)} 字，` +
+  `未识别合计 ${sum((r) => r.unreadDiffs)}，折行归并 ${sum((r) => r.folds)} 字，剔掉非歌词对象 ${sum((r) => r.strayLines)} 个，` +
     `非歌词行剔除 ${sum((r) => r.misLyric?.length ?? 0)}，标点差异 ${sum((r) => r.punctDiffs)}，未归类对象 ${sum((r) => r.unclassified)}`,
 );
 // 分两档报：和弦是新接上的一路、准确率还低，混在一起会把另外三项的成绩盖住

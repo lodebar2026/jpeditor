@@ -248,7 +248,12 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
   // **剔掉行首段号**：谱面上每个谱行都重印一次，GT 里只有一处。
   const stripVerseNo = (items) => (verseNoAt(items) ? items.slice(2) : items);
 
+  // 字格大小：拿歌词对象高度的中位数（汉字近方）
+  const heights = [...mine("lyric")].map((o) => o.obj.bbox.h).sort((a, b) => a - b);
+  const cell = heights.length ? heights[heights.length >> 1] : 10.5;
+
   // 先把每个谱行下方的歌词聚成行
+  let dropped = 0;
   const perRow = [];
   for (const row of [...byRow.keys()].sort((a, b) => a - b)) {
     const objs = byRow.get(row).sort((a, b) => bot(a) - bot(b));
@@ -258,7 +263,39 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
       if (last && bot(o) - last.y <= 4) last.items.push(o);
       else lines.push({ y: bot(o), items: [o] });
     }
-    perRow.push(lines.map((ln) => ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x)));
+    for (const ln of lines) ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x);
+
+    // **不是歌词的那几「行」要在归段之前扔掉**，否则它们会挤占段序、把整叠词串位。
+    // 两种，判据都只看排布：
+    //  - **稀疏行**：三五个对象铺满整个版心宽（曲末的小装饰、落在歌词带里的记号）。
+    //    真歌词一字一个音符，再宽也密得多。
+    //  - **掉队行**：与上一行隔着两三行的空当（曲末的经文出处「爱永远长存 诗：」、
+    //    版权注记）。歌词各段是紧挨着叠起来的，隔那么远的不是下一段。
+    // 落在真歌词行旁边的零星记号（圆滑线残片、升号）会自成一「行」，
+    // 挤在第 1 段之前，把整叠段序推下去一位（068 首因此三段词全错位）。
+    // 判据：只有一两个对象，而且贴着某条实打实的歌词行（不到一个字高）。
+    const solid = lines.filter((ln) => ln.items.length >= 5);
+    const stray = (ln) => ln.items.length <= 2 && solid.some((s2) => s2 !== ln && Math.abs(s2.y - ln.y) <= cell * 0.8);
+
+    const keep = [];
+    for (const ln of lines) {
+      if (stray(ln)) {
+        dropped += ln.items.length;
+        continue;
+      }
+      const it = ln.items;
+      const w = it[it.length - 1].obj.bbox.x + it[it.length - 1].obj.bbox.w - it[0].obj.bbox.x;
+      if (it.length >= 2 && w > cell * 6 && (it.length * cell) / w < 0.3) {
+        dropped += it.length;
+        continue;
+      }
+      if (keep.length && ln.y - keep[keep.length - 1].y > cell * 3.5) {
+        dropped += it.length;
+        continue;
+      }
+      keep.push(ln);
+    }
+    perRow.push(keep.map((ln) => ln.items));
   }
 
   // 每行归到第几段：**认行首那个段号数字，别按它在谱行里排第几**。
@@ -338,7 +375,7 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
     }
   }
   const kept = verses.filter((v) => v && v.length);
-  return { notes, chords, title, verses: kept, folds };
+  return { notes, chords, title, verses: kept, folds, dropped };
 }
 
 /** MusicXML 的 `<harmony>` → 谱面上印的和弦文本序列。
