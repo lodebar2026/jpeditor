@@ -942,6 +942,9 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     for (const ln of lines2) {
       const h = median(ln.map((i) => objs[i].bbox.h));
       if (h > lyricH * 0.92) continue; // 这一行是经文/正文，不是署名
+      // **靠左/靠右分不开**：署名行的左缘中位虽在版心 57% 处，但长署名（外文人名 + 生卒年）
+      // 从 15% 处就起排，而经文也顶到右边界。试过把左缘门槛设在 0.15/0.22/0.30，
+      // 署名准确率分别掉到 81.5/80.5/80.5（不设是 82.8）——分得开的是字号，不是对齐。
       for (const i of ln) set(i, "credit", `比和弦基线高出 ${(base - bottom(objs[i].bbox)).toFixed(1)} 的小字行，是词曲署名`);
     }
   }
