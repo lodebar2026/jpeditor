@@ -770,7 +770,34 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       set(i, "lyric", `谱行 ${above} 下方 ${dAbove.toFixed(1)} 的满格汉字`);
       continue;
     }
-    const chordish = below >= 0 && dBelow < noteH * (narrow ? 2.4 : 1.6);
+    // 距离门槛按**字形像不像和弦**放宽：和弦字母就音符那么高（6.2~8.7）、不比自己宽。
+    // 房号（一房二房）的括线会把那一行的和弦整排顶高一倍（164 首顶到 20 点，
+    // 常规只有 7~8），按 1.6 个字高卡就够不着，那四个和弦全掉成了歌词。
+    // 距离门槛只在**中间隔着房号括线**时放宽：一房二房的括线会把那一行的和弦整排顶高
+    // 一倍（164 首顶到 20 点，常规只有 7~8），按 1.6 个字高卡就够不着，那四个和弦
+    // 全掉成了歌词。不能无条件放宽——放宽到 3 个字高时，歌词行首的段号数字
+    // （窄、又正好一个音符高）会被下一行的和弦带吸走，段号一丢整叠段序就乱（歌词 99.2%→97.8%）。
+    const voltaBelow =
+      below >= 0 &&
+      out.some(
+        (c, j) =>
+          (c.cls === "bracket" || c.cls === "rule") &&
+          !c.dup &&
+          objs[j].bbox.y >= bottom(b) &&
+          bottom(objs[j].bbox) <= bands[below].noteTop + noteH * 0.2 &&
+          right(objs[j].bbox) > b.x - noteH &&
+          objs[j].bbox.x < right(b) + noteH,
+      );
+    // 放宽还要再加一道：这一行上**没有汉字**才行。歌词行首的段号也是又窄又矮，
+    // 它旁边紧跟着汉字，一看就知道那是歌词行不是和弦行。
+    const hanOnLine =
+      voltaBelow &&
+      objs.some((o2, j) => {
+        if (j === i || out[j].dup) return false;
+        const q = o2.bbox;
+        return q.h >= lyricH * 0.85 && q.w >= lyricH * 0.6 && Math.abs(bottom(q) - bottom(b)) <= 3 && Math.abs(cx(q) - cx(b)) <= lyricH * 8;
+      });
+    const chordish = below >= 0 && dBelow < noteH * (voltaBelow && !hanOnLine ? 3.0 : narrow ? 2.4 : 1.6);
     // 整行合成的 path 只在**谱行上方**这一侧参与（署名、经文都印在那儿）。
     // 让它也去当歌词行反而更糟：一整行歌词是一个对象，归段/折行那套按字数算的判据
     // 全失灵（实测歌词 98.29% → 98.17%，剔掉的非歌词对象从 1296 涨到 4031）。
