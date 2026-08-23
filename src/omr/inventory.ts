@@ -261,10 +261,21 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     // 不加这条会把词曲署名行判成谱行——拉丁人名里的竖笔（D/l/d）像小节线，
     // 生卒年份（1851-1920）像音符（实测 p300 因此多出两个假谱行、40 个假音符）。
     const minSpan = profile.contentBox.w * 0.12;
+    // 音符大小的字形：末行那种「只有一小节」的谱行靠它救回来（判据同第 3 步）
+    const noteSized = (b: Rect) => b.h >= noteH * 0.75 && b.h <= noteH * 1.3 && b.w <= noteH * 1.1;
     const keep = bands.filter((b) => {
       if (b.barlineXs.length >= 3) return true;
       const span = Math.max(...b.barlineXs) - Math.min(...b.barlineXs);
-      return span >= minSpan; // 只挡「两条紧挨的复纵线」这种退化情形
+      if (span >= minSpan) return true;
+      // **末行常常只有一小节**：一个音符 + 一条终止线（001 首末行就是 `1 - - -‖`），
+      // 整带只有紧挨的两条复纵线，跨度到不了门槛。但它**带着音符**，署名行没有——
+      // 署名里的竖笔够不上 1.15 字高，第 1 步就挡掉了，压根进不了这里。
+      // 不救的话，那一行的音符与和弦会被当成歌词，报成「GT 有 PDF 无」。
+      return objs.some((o, i) => {
+        if (out[i].cls !== "unclassified" || !noteSized(o.bbox)) return false;
+        const c = cy(o.bbox);
+        return c >= b.top && c <= b.bottom;
+      });
     });
     if (keep.length !== bands.length) {
       // 被淘汰的带里那些「小节线」退回待定，交给后面的文字判据

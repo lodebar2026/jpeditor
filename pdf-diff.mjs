@@ -8,7 +8,7 @@
 // 它直接承载简谱层的表述：音符数字、歌词分段、标题、词曲）。
 // **纯 Node，不起浏览器。**
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, collectSongGlyphs, csvRow } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, collectSongGlyphs, csvRow, CORPUS_PDF } from "./scripts/node-harness.mjs";
 
 const args = process.argv.slice(2);
 const flags = Object.fromEntries(args.filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")));
@@ -119,7 +119,8 @@ for (const m of pm.map) {
 }
 const bot = (o) => o.obj.bbox.y + o.obj.bbox.h;
 // lyricYi 是按「与歌词共基线」认出来的「一」，轮廓与扁横条撞键，不进字典，直接给字。
-const readSeq = (arr) => arr.map((o) => (o.cls === "lyricYi" ? "一" : charOf.get(cli.shapeKey(o.obj.data)) ?? "�")).join("");
+const charAt = (o) => (o.cls === "lyricYi" ? "一" : charOf.get(cli.shapeKey(o.obj.data)) ?? "\ufffd");
+const readSeq = (arr) => arr.map(charAt).join("");
 // 圆滑线在 .Voice 里写成 `(` `)`，谱面上却画成弧（另有 slur 对象），两边语义不同，
 // 不参与音符序列比对。
 const dropParens = (s) => s.replace(/[()（）]/g, "");
@@ -136,6 +137,14 @@ const SECTION_WORDS = /(副歌|间奏|前奏|尾声|反复|齐唱|独唱|合唱)
 // `\ufffd`（读不出的字形）要**留着**：抹掉的话对齐时它就成了「GT 有 PDF 无」，
 // 字典的窟窿会被记成「录错」——那是本工具的局限，该进「未识别」那一栏。
 const lyricNorm = (t) => (t.replace(SECTION_WORDS, "").match(/[\u4e00-\u9fff\ufffd]/g) ?? []).join("");
+/** 与 `lyricNorm` 同一套规则，但保留每个字对应的页面对象——画差异标记要拿它定位。
+ *  两者必须一致：这里改了那里也要改。 */
+const lyricNormSeq = (items) => {
+  const text = items.map((it) => it.ch).join("");
+  const drop = new Set();
+  for (const m of text.matchAll(SECTION_WORDS)) for (let k = 0; k < m[0].length; k++) drop.add(m.index + k);
+  return items.filter((it, i) => !drop.has(i) && /[\u4e00-\u9fff\ufffd]/.test(it.ch));
+};
 /** 只取标点，用来单独统计标点差异。 */
 const punctOnly = (t) => (t.match(/[\u3000-\u303f\uff01-\uff20\uff3b-\uff65]/g) ?? []).join("");
 
@@ -151,6 +160,7 @@ for (const [id, entries] of byId) {
   if (filters.length && !filters.some((f) => id.includes(f) || song.title.includes(f))) continue;
   if (count++ >= limit) break;
 
+  const marks = [];
   const notes = [];
   const verseRows = [];
   const title = [];
@@ -173,6 +183,11 @@ for (const [id, entries] of byId) {
       inv = cli.classifyPage(vp, profile);
       invCache.set(e.page, inv);
     }
+    // 画差异标记要知道对象在哪一页、在 inv.objs 里排第几（pdf-mark.mjs 按下标取回轮廓）
+    inv.objs.forEach((o, i) => {
+      o.page ??= e.page;
+      o.idx ??= i;
+    });
     objTotal += inv.objs.length;
     unclassified += inv.unclassified.length;
     storyChars += inv.objs.filter((o) => o.cls === "storyText" && !o.dup && o.obj.bbox.y >= (e.yFrom ?? 0) && o.obj.bbox.y < (e.yTo ?? 1e9)).length;
@@ -291,16 +306,20 @@ for (const [id, entries] of byId) {
   // 识别侧的音符里混着升降号（谱面上印在音符左上方，归类时归到了音符带）与读不出的字形。
   // **升降号两边口径不一致**（GT 侧 `gtNoteDigits` 只取 0-7），得一并剔掉才比得准；
   // `�` 留着，那是「未识别」不是「录错」。
-  const recNotes = dropParens(readSeq(notes)).replace(/[^0-7\ufffd]/g, "");
+  const noteSeq = notes.map((o) => ({ ch: charAt(o), o })).filter((it) => /[0-7\ufffd]/.test(it.ch));
+  const recNotes = noteSeq.map((it) => it.ch).join("");
   const recTitle = readSeq(title);
+  const titleSeq = lyricNormSeq(title.map((o) => ({ ch: charAt(o), o })));
   // 有些「歌词行」其实是和弦行或音符行被归错了（读出来一个汉字都没有）。
   // 它们混进段落配对会制造假的「PDF 多出一段」，先按汉字占比剔掉，单列一栏。
+  const verseSeqs = verseRows.map((row) => row.map((o) => ({ ch: charAt(o), o })));
   const rawVerses = verseRows.map(readSeq);
   const isLyricish = (t) => {
     const han = (t.match(/[\u4e00-\u9fff]/g) ?? []).length;
     return t.length > 0 && han / t.length >= 0.3;
   };
   const lyricish = rawVerses.filter(isLyricish);
+  const recVerseSeqs = verseSeqs.filter((_, i) => isLyricish(rawVerses[i])).map(lyricNormSeq);
   const recVerses = lyricish.map(lyricNorm);
   const recPunct = lyricish.map(punctOnly).join("");
   const misLyric = rawVerses.filter((t) => !isLyricish(t));
@@ -321,8 +340,9 @@ for (const [id, entries] of byId) {
       if (cur && cur.row === o.row && b.x - cur.x1 <= 4) {
         cur.text += charOf.get(cli.shapeKey(o.obj.data)) ?? "";
         cur.x1 = Math.max(cur.x1, b.x + b.w);
+        cur.objs.push(o);
       } else {
-        cur = { row: o.row, x1: b.x + b.w, text: charOf.get(cli.shapeKey(o.obj.data)) ?? "" };
+        cur = { row: o.row, x1: b.x + b.w, text: charOf.get(cli.shapeKey(o.obj.data)) ?? "", objs: [o] };
         chordGroups.push(cur);
       }
     }
@@ -336,10 +356,10 @@ for (const [id, entries] of byId) {
   // 谱面上的 `♭` 常被拆成两个对象、其中一个读成「，」，夹在中间就把 `♭B` 切成了 `B`
   // （`♭B→B` 是全书最多的一类和弦差异，41 处）。
   const normChords = (t) => (t.replace(/[^0-9A-Za-z#♭/]/g, "").match(CHORD_TOKEN) ?? []).join("|");
-  const recChords = chordGroups
-    .map((g) => normChords(g.text))
-    .filter(Boolean)
-    .join("|");
+  // 一撮可能切出不止一个和弦记号；每个记号都记着这一撮的对象，够画标记用了
+  const recChordSeq = [];
+  for (const g of chordGroups) for (const tok of normChords(g.text).split("|").filter(Boolean)) recChordSeq.push({ ch: tok, objs: g.objs });
+  const recChords = recChordSeq.map((it) => it.ch).join("|");
   const gtChords = gt.musicxml ? normChords(gtHarmonies(gt.musicxml).join("")) : "";
   // **谱面把旋律印两遍时，和弦也跟着印两遍**（见下面音符那段的同一件事）：
   // musicxml 只记一遍，直接比会把整整一遍和弦报成几十项「PDF 有 GT 无」
@@ -389,7 +409,7 @@ for (const [id, entries] of byId) {
     const a = gtVerses[pr.i];
     const b = recVerses[pr.j];
     const d = alignOps(a, b);
-    verseDiffs.push({ verse: pr.i + 1, pdfVerse: pr.j + 1, gt: a, rec: b, ...d, ...splitOps(d.ops) });
+    verseDiffs.push({ verse: pr.i + 1, pdfVerse: pr.j + 1, gt: a, rec: b, recSeq: recVerseSeqs[pr.j] ?? [], ...d, ...splitOps(d.ops) });
     lyricDist += d.dist;
     lyricLen += Math.max(a.length, b.length);
   }
@@ -417,6 +437,55 @@ for (const [id, entries] of byId) {
   // 三连音的括线脚、别处的小圆点都会混进来，数量对不上是判据太粗，不是 GT 与 PDF 不一致。
   const unreadDiffs =
     sNote.unread.length + sTitle.unread.length + verseDiffs.reduce((a, d) => a + d.unread.length, 0);
+
+  // ── 差异标记：把每一处差异落到**具体的页面对象**上，供 pdf-mark.mjs 生成标记版 PDF。
+  //    红 = 页面读出来的这个对象有问题（录错 / 页面多出）；黄 = GT 有而页面没有，补在原位；
+  //    橙 = 字形没读出来（本工具的局限，不是录错）。
+  const boxOf = (o) => ({ page: o.page, idx: o.idx, box: [o.obj.bbox.x, o.obj.bbox.y, o.obj.bbox.w, o.obj.bbox.h] });
+  const markOps = (ops, seq, what) => {
+    for (const [op, , ri, g2, b2] of ops) {
+      if (op === "ins" || op === "sub") {
+        const it = seq[ri];
+        if (!it) continue;
+        const objs = it.objs ?? [it.o];
+        for (const o of objs) marks.push({ ...boxOf(o), kind: b2 === "\ufffd" ? "unread" : "wrong", what, gt: op === "sub" ? g2 : "" });
+      } else if (op === "del") {
+        // 页面没有这个字：贴在左邻居右侧（没有左邻居就贴右邻居左侧）。
+        // **连着缺的一串要并成一条**：一段词整块没印时，每个字各标一条会几十条叠在同一点上。
+        const prev = seq[ri - 1];
+        const next = seq[ri];
+        const anchorObj = (prev?.objs ?? (prev ? [prev.o] : []))?.slice(-1)[0] ?? (next?.objs ?? (next ? [next.o] : []))?.[0];
+        if (!anchorObj) continue;
+        const b = anchorObj.obj.bbox;
+        const last = marks[marks.length - 1];
+        if (last && last.kind === "missing" && last.what === what && last.anchor === anchorObj.idx && last.page === anchorObj.page) {
+          last.text += g2;
+          continue;
+        }
+        marks.push({
+          page: anchorObj.page,
+          kind: "missing",
+          what,
+          text: g2,
+          anchor: anchorObj.idx,
+          box: [prev ? b.x + b.w : b.x - b.h, b.y, b.h, b.h],
+        });
+      }
+    }
+  };
+  markOps(sNote.content.concat(sNote.unread), noteSeq, "音符");
+  markOps(sTitle.content.concat(sTitle.unread), titleSeq, "标题");
+  for (const d of verseDiffs) markOps(d.content.concat(d.unread), d.recSeq, `歌词第 ${d.verse} 段`);
+  if (gtChords) markOps(dChord.ops, recChordSeq, "和弦");
+  if (keyOk === false || meterOk === false) {
+    for (const o of keyMeters) marks.push({ ...boxOf(o), kind: "wrong", what: "调号拍号", gt: "" });
+    const first = keyMeters[0];
+    if (first) {
+      const b = first.obj.bbox;
+      const want = [keyOk === false ? gtKT?.key && `1=${gtKT.key}` : "", meterOk === false ? `${gtKT?.beats}/${gtKT?.beatType}` : ""].filter(Boolean).join(" ");
+      marks.push({ page: first.page, kind: "missing", what: "调号拍号", text: want, box: [b.x, b.y - b.h * 1.4, b.h, b.h] });
+    }
+  }
 
   const r = {
     id,
@@ -479,6 +548,7 @@ for (const [id, entries] of byId) {
     gtNotes: gtNotesEff,
     recNotes,
     noteRepeat,
+    marks,
   };
   rows.push(r);
 }
@@ -571,6 +641,19 @@ csv.push(
   ]),
 );
 await writeFile("pdf-diff.csv", "﻿" + csv.join("\n"));
+
+// ── 差异标记：按页归拢，交给 pdf-mark.mjs 盖在原件上（见那个脚本的注释）
+{
+  const byPage = {};
+  for (const r of rows)
+    for (const m of r.marks ?? []) {
+      (byPage[m.page] ??= []).push({ id: r.id, ...m, page: undefined });
+    }
+  await writeFile(
+    "pdf-diff-marks.json",
+    JSON.stringify({ pdf: CORPUS_PDF, songs: rows.length, marks: Object.values(byPage).reduce((a, v) => a + v.length, 0), pages: byPage }),
+  );
+}
 
 // ── 逐首明细。**按「这是什么」分节**：
 //    内容差异是 GT 与 PDF 真的不一样（要找的就是它）；
