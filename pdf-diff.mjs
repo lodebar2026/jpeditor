@@ -506,7 +506,13 @@ for (const [id, entries] of byId) {
   const gtTitleN = lyricNorm(xmlTitle(gt.musicxml) || song.title);
   const recTitleN = lyricNorm(recTitle);
   const dTitle = alignOps(gtTitleN, recTitleN);
-  const sNote = splitOps(dNote.ops);
+  const sNoteAll = splitOps(dNote.ops);
+  // **休止怎么记不算录错**：谱面上一拍一个 `0`（二分休止「0 0」、全休止「0 0 0 0」），
+  // 也有印成一个 `0` 加增时线的；musicxml 只记一个 `<rest>`。两边多一个少一个 `0`，
+  // 是记法之别，归到「表述或结构不一致」那一类（019 首的 8 处全是这个）。
+  // 试过两边都把连零压成一个，或按拍把 GT 的休止展开——都会连累别的曲子（完全一致 452→444/449）。
+  const restOps = sNoteAll.content.filter(([op, , , g2, b2]) => (op === "del" ? g2 : op === "ins" ? b2 : null) === "0");
+  const sNote = { ...sNoteAll, content: sNoteAll.content.filter((o) => !restOps.includes(o)) };
   const sTitle = splitOps(dTitle.ops);
   const verseDiffs = [];
   let lyricDist = 0;
@@ -630,7 +636,7 @@ for (const [id, entries] of byId) {
     sNote,
     sTitle,
     pages: entries.map((e) => e.page).join(" "),
-    noteAcc: acc(gtNotesEff, recNotes, dNote.dist),
+    noteAcc: acc(gtNotesEff, recNotes, dNote.dist - restOps.length), // 休止记法不算错
     noteGt: gtNotes.length,
     noteRec: recNotes.length,
     noteDiffs: dNote.ops.length,
@@ -683,7 +689,8 @@ for (const [id, entries] of byId) {
     gtNotes: gtNotesEff,
     recNotes,
     noteRepeat,
-    structDiffs,
+    structDiffs: structDiffs + restOps.length,
+    restDiffs: restOps.length,
     sharedRefrain,
     gtCredit,
     recCredit,
@@ -873,6 +880,7 @@ for (const r of rows) {
   if (r.sharedRefrain) ms(`  共用副歌 ${r.sharedRefrain} 字（谱面只印一遍，GT 每段各记一遍）`);
   if (r.keyState === "differs") ms(`  调号与谱面不同：GT「${r.keyGt}」PDF「${r.keyRec}」（GT 按主音和弦订正过）`);
   if (r.meterState === "differs") ms(`  拍号记法不同：GT「${r.meterGt}」PDF「${r.meterRec}」`);
+  if (r.restDiffs) ms(`  休止记法不同 ${r.restDiffs} 处（谱面一拍一个 0，GT 一个休止记一次）`);
   if (r.noteRepeat > 1) ms(`  PDF 把旋律印了 ${r.noteRepeat} 遍（GT 只记一遍，靠多段歌词表示）`);
   if (r.chordRepeat > 1) ms(`  PDF 把和弦印了 ${r.chordRepeat} 遍`);
   if (r.folds) ms(`  歌词折行归并 ${r.folds} 字（排不下折到下一行，不是新的一段）`);
@@ -944,7 +952,7 @@ console.log(
   if (withC.length) console.log(`和弦平均准确率 ${((withC.reduce((a, r) => a + r.chordAcc, 0) / withC.length) * 100).toFixed(2)}%（${withC.length} 首有 <harmony>）`);
 }
 console.log(
-  `表述或结构不一致合计 ${sum((r) => r.structDiffs)}（共用副歌 ${sum((r) => r.sharedRefrain)} 字 / 折行 ${sum((r) => r.folds)} 字 / 标点 ${sum((r) => r.punctDiffs)} / 段号印错 ${sum((r) => r.badVerseNos?.length ?? 0)} 处 / 调号拍号记法 ${sum((r) => (r.keyState === "differs" ? 1 : 0) + (r.meterState === "differs" ? 1 : 0))} / 旋律或和弦印两遍 ${sum((r) => (r.noteRepeat > 1 ? 1 : 0) + (r.chordRepeat > 1 ? 1 : 0))} / PDF 多出 ${sum((r) => r.extraVerses.length)} 段 / GT 多出 ${sum((r) => r.gtOnlyVerses.length)} 段）\n` +
+  `表述或结构不一致合计 ${sum((r) => r.structDiffs)}（休止记法 ${sum((r) => r.restDiffs ?? 0)} 处 / 共用副歌 ${sum((r) => r.sharedRefrain)} 字 / 折行 ${sum((r) => r.folds)} 字 / 标点 ${sum((r) => r.punctDiffs)} / 段号印错 ${sum((r) => r.badVerseNos?.length ?? 0)} 处 / 调号拍号记法 ${sum((r) => (r.keyState === "differs" ? 1 : 0) + (r.meterState === "differs" ? 1 : 0))} / 旋律或和弦印两遍 ${sum((r) => (r.noteRepeat > 1 ? 1 : 0) + (r.chordRepeat > 1 ? 1 : 0))} / PDF 多出 ${sum((r) => r.extraVerses.length)} 段 / GT 多出 ${sum((r) => r.gtOnlyVerses.length)} 段）\n` +
   `未识别合计 ${sum((r) => r.unreadDiffs)}（其中词曲署名 ${sum((r) => r.sCredit?.unread.length ?? 0)}），` +
     `歌词带里剔掉的非歌词对象 ${sum((r) => r.strayLines)} 个，非歌词行 ${sum((r) => r.misLyric?.length ?? 0)}，未归类对象 ${sum((r) => r.unclassified)}`,
 );

@@ -474,15 +474,30 @@ export function xmlNoteDigits(musicxml) {
   let tonic = 0;
   // **要按文档顺序走**，遇到 `<fifths>` 就换主音：曲中转调的谱面从那里起按新调记数字
   // （021/137 首 ♭E 转 F、144 首 F 转 G），只认第一个调号会让转调之后整段全错。
-  for (const m of musicxml.matchAll(/<fifths>(-?\d+)<\/fifths>|<note[ >][\s\S]*?<\/note>/g)) {
+  let divisions = 1;
+  let beatType = 4;
+  for (const m of musicxml.matchAll(
+    /<fifths>(-?\d+)<\/fifths>|<divisions>(\d+)<\/divisions>|<beat-type>(\d+)<\/beat-type>|<note[ >][\s\S]*?<\/note>/g,
+  )) {
     if (m[1] !== undefined) {
       const key = FIFTHS_KEY[String(Number(m[1]))] ?? "C";
       tonic = STEP_IDX[key[key.length - 1]] ?? 0;
       continue;
     }
+    if (m[2] !== undefined) {
+      divisions = Number(m[2]) || 1;
+      continue;
+    }
+    if (m[3] !== undefined) {
+      beatType = Number(m[3]) || 4;
+      continue;
+    }
     const seg = m[0];
     if (/<chord\s*\/>/.test(seg)) continue;
     if (/<rest\s*\/?>/.test(seg)) {
+      // **休止按拍数写 `0`**：谱面上二分休止印「0 0」、全休止印「0 0 0 0」，
+      // musicxml 只记一个 `<rest>`（019 首因此报出 8 处「PDF 多出 0」）。
+      // 一拍 = 拍号分母那个音符：4/4 是四分音符，6/8 是八分音符。
       out.push("0");
       continue;
     }
