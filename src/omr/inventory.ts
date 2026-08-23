@@ -1019,7 +1019,9 @@ function collectRuns(idx: number[], objs: VecObj[], horizontal: boolean, lineTol
   const sorted = [...idx].sort((a, b) => key(a) - key(b));
   let line: number[] = [];
   const flush = () => {
-    if (line.length < 8) return;
+    // 7 而不是 8：短框的一条竖边只有 7 片（p555 那个框左右各 7 片，卡在 8 上整框都没认出来，
+    // 于是框里的注解正文全落进歌词带）。与下面 run 的门槛保持一致。
+    if (line.length < 7) return;
     const seq = [...line].sort((a, b) => pos(a) - pos(b));
     let run: number[] = [seq[0]];
     for (let k = 1; k < seq.length; k++) {
