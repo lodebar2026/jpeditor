@@ -132,6 +132,15 @@ function median(v: number[]): number {
   return s[Math.floor(s.length / 2)];
 }
 
+/** 四分之三分位。量「这一行是多大的字」要用它而不是中位数：
+ *  行里夹着标点、上标数字（才 2.9 高），中位数会被它们拽下去，
+ *  一行歌词那号字的经文（10.6）中位能掉到 9.6，字号闸就形同虚设。 */
+function q75(v: number[]): number {
+  if (!v.length) return 0;
+  const a = [...v].sort((x, y) => x - y);
+  return a[Math.min(a.length - 1, Math.floor(a.length * 0.75))];
+}
+
 /** 粗形状指纹：同一个装饰纹样在页面上重复出现时，这四项完全一致。
  *  （精确到字符的形状键是 glyphdict 的事，这里只要能认出「同一个图形」。） */
 /** 有效宽/高：零宽的竖线（PDF 里靠 lineWidth 呈现）按线宽算，否则宽高比会算成无穷。 */
@@ -959,6 +968,9 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       else lines.push([i]);
     }
     for (const ln of lines) {
+      // 字号要按**整行**量，不能按 run 量：谱行上下印着的经文用歌词那号字（整行中位 10.0），
+      // 但其中七八个字凑出来的一小段中位可能只有 9.5，卡不住（105 首曲末那句经文）。
+      if (q75(ln.map((i) => objs[i].bbox.h)) > lyricH * 0.92) continue;
       ln.sort((a, b) => objs[a].bbox.x - objs[b].bbox.x);
       let run: number[] = [];
       const flush = () => {
@@ -1020,7 +1032,7 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       const span = Math.max(...xs.map(right)) - Math.min(...xs.map((b) => b.x));
       const ink = xs.reduce((a, b) => a + b.w, 0);
       if (span > 0 && ink / span < 0.3) continue;
-      const h = median(ln.map((i) => objs[i].bbox.h));
+      const h = q75(ln.map((i) => objs[i].bbox.h));
       if (h > lyricH * 0.92) continue; // 这一行是经文/正文，不是署名
       // **靠左/靠右分不开**：署名行的左缘中位虽在版心 57% 处，但长署名（外文人名 + 生卒年）
       // 从 15% 处就起排，而经文也顶到右边界。试过把左缘门槛设在 0.15/0.22/0.30，
