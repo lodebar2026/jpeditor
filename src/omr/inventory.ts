@@ -583,6 +583,12 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   //        「一」候选要跳过——它们在 10c 单独裁定，混进这里会连同真圆滑线一起变成歌词。
   const pendingSet = new Set(pendingYi);
   //      和弦印在谱行正上方（一个字高以内）；歌词在谱行下方 1~3 字高。
+  //
+  //      **大字标题把两首歌隔开**：半页起的曲子，它的调号、词曲署名夹在上一首的末行谱
+  //      与本首第一谱行之间，离上一行谱更近，于是被判成上一首的歌词
+  //      （102 首的署名一个字都读不出；调号拍号当年也栽在这儿，10e/10f 里另有兜底）。
+  //      隔着一条标题就不可能是上一首的东西——把「上方那一行谱」这个选项直接掐掉。
+  const titleBoxes = out.filter((c) => c.cls === "title" && !c.dup).map((c) => c.obj.bbox);
   for (let i = 0; i < objs.length; i++) {
     // `textLine`（一整行文字合成一个 path）也要在这里分：它就是一行字，
     // 只是没拆成单字。**OCR 兜底把整行的文本补进字典之后**，它能像别的字一样参与比对
@@ -604,6 +610,8 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       }
       if (b.y >= bd.noteBottom - noteH * 0.2) {
         const d = b.y - bd.noteBottom;
+        // 两者之间夹着标题 = 这一行谱是上一首的，不能算
+        if (titleBoxes.some((t) => t.y >= bd.noteBottom && bottom(t) <= b.y)) continue;
         if (d < dAbove) {
           dAbove = d;
           above = bd.index;
@@ -713,30 +721,17 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
   //   等号的几何很好认：两条平行横线，实测 5.8×3.3、curves=0——
   //   和弦带里其它没有曲线的字（A、4）高度都是 7~8，差得远。
   //
-  //   **半页起的曲子，调号会落在歌词带里**：它印在上一首末行歌词与本首第一谱行之间，
-  //   离上一行谱更近，于是整块被判成 lyric（全书 20 首因此一个调号拍号都没读出来）。
-  //   所以候选也收 lyric——但那要多一道闸：歌词里的「二」跟等号同形（字典就是这么读的），
-  //   只有「左边紧挨着一个窄字（那个 `1`）、右边还有东西（音名）」才当等号。
+  //   **半页起的曲子**，调号印在上一首末行歌词与本首第一谱行之间，离上一行谱更近。
+  //   这里曾为它开过一道「候选也收 lyric」的口子，后来第 10 步用**大字标题隔开两首**
+  //   （标题以下不可能属于上一首）从根上解决了，那道口子就撤了——撤掉之后
+  //   调号 97.0%→97.4%、拍号 99.1%→99.6%，可见它自己也在误伤。
   {
-    const near = (i: number, eb: Rect, side: -1 | 1) => {
-      for (let j = 0; j < objs.length; j++) {
-        if (j === i || out[j].dup) continue;
-        const b = objs[j].bbox;
-        if (Math.abs(cy(b) - cy(eb)) > noteH * 0.95) continue;
-        const gap = side > 0 ? b.x - right(eb) : eb.x - right(b);
-        if (gap < 0 || gap > noteH * 0.75) continue;
-        if (side < 0 && b.w / Math.max(b.h, 0.1) >= 0.6) continue; // 左边必须是窄字「1」
-        return true;
-      }
-      return false;
-    };
     const eqs: number[] = [];
     for (let i = 0; i < objs.length; i++) {
-      if ((out[i].cls !== "chord" && out[i].cls !== "lyric") || out[i].dup) continue;
+      if (out[i].cls !== "chord" || out[i].dup) continue;
       const b = objs[i].bbox;
       const ratio = b.w / Math.max(b.h, 0.1);
       if (objs[i].curves !== 0 || b.h < noteH * 0.28 || b.h > noteH * 0.55 || ratio < 1.3 || ratio > 2.6) continue;
-      if (out[i].cls === "lyric" && !(near(i, b, -1) && near(i, b, 1))) continue;
       eqs.push(i);
     }
     for (const e of eqs) {
@@ -744,7 +739,7 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       set(e, "keyMeter", `等号 ${eb.w.toFixed(1)}×${eb.h.toFixed(1)}`);
       // 等号左右紧挨着的就是「1」和音名；括号一并收走
       for (let i = 0; i < objs.length; i++) {
-        if ((out[i].cls !== "chord" && out[i].cls !== "lyric") || out[i].dup) continue;
+        if (out[i].cls !== "chord" || out[i].dup) continue;
         const b = objs[i].bbox;
         if (Math.abs(cy(b) - cy(eb)) > noteH * 0.95) continue;
         const gap = b.x > eb.x ? b.x - right(eb) : eb.x - right(b);
@@ -768,8 +763,7 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
         if (j === i || out[j].dup) continue;
         // 上下必须是和弦带里的字，**不能是音符**——增时线的宽度也落在分数线的区间里，
         // 允许音符的话，一条增时线加上下两个音符就被当成了拍号（实测 p60 误收 7 个对象）。
-        // 半页起的曲子，拍号数字跟调号一样落在歌词带里（见 10e），所以 lyric 也收
-        if (out[j].cls !== "chord" && out[j].cls !== "keyMeter" && out[j].cls !== "lyric") continue;
+        if (out[j].cls !== "chord" && out[j].cls !== "keyMeter") continue;
         const q = objs[j].bbox;
         const qcx = q.x + q.w / 2;
         if (qcx < b.x - noteH * 0.3 || qcx > right(b) + noteH * 0.3) continue; // 不在分数线的横向范围内
