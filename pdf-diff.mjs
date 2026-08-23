@@ -295,10 +295,30 @@ for (const [id, entries] of byId) {
   // 整串跟着错位（实测 028 首八项和弦差异里六项是这么来的）。
   // 数字后缀只认真实存在的（6/7/9/11/13）：不限的话调号「1=F 4/4」里的 `F4` 会被当成一个和弦。
   const CHORD_TOKEN = /(?:#|♭|b)?[A-G](?:maj|min|sus|dim|aug|add|m)?(?:6|7|9|11|13)?(?:\/(?:#|♭|b)?[A-G])?/g;
-  const normChords = (t) => (t.match(CHORD_TOKEN) ?? []).join("|");
+  // 先抹掉和弦里不可能出现的字符再切 token：和弦带里夹着读不出的字形（`�`）与标点——
+  // 谱面上的 `♭` 常被拆成两个对象、其中一个读成「，」，夹在中间就把 `♭B` 切成了 `B`
+  // （`♭B→B` 是全书最多的一类和弦差异，41 处）。
+  const normChords = (t) => (t.replace(/[^0-9A-Za-z#♭/]/g, "").match(CHORD_TOKEN) ?? []).join("|");
   const recChords = normChords(recChordRaw);
   const gtChords = gt.musicxml ? normChords(gtHarmonies(gt.musicxml).join("")) : "";
-  const dChord = alignOps(gtChords.split("|").filter(Boolean), recChords.split("|").filter(Boolean));
+  // **谱面把旋律印两遍时，和弦也跟着印两遍**（见下面音符那段的同一件事）：
+  // musicxml 只记一遍，直接比会把整整一遍和弦报成几十项「PDF 有 GT 无」
+  // （024 首 GT 23 / PDF 48，26 项差异里全是这么来的）。同样先试 GT 重复 k 遍。
+  const gtChordArr = gtChords.split("|").filter(Boolean);
+  const recChordArr = recChords.split("|").filter(Boolean);
+  let dChord = alignOps(gtChordArr, recChordArr);
+  let chordRepeat = 1;
+  for (let k = 2; k <= 4; k++) {
+    if (!gtChordArr.length) break;
+    if (Math.abs(recChordArr.length - gtChordArr.length * k) > gtChordArr.length * 0.3) continue;
+    const rep = [];
+    for (let i = 0; i < k; i++) rep.push(...gtChordArr);
+    const d = alignOps(rep, recChordArr);
+    if (d.dist < dChord.dist) {
+      dChord = d;
+      chordRepeat = k;
+    }
+  }
 
   // **谱面可能把旋律印了两遍**（各段词长不同时常这么排），而 .jpwabc 只记一遍、
   // 靠多段歌词表示。直接比会把整整一遍旋律报成上百项「PDF 有 GT 无」（实测 024 首 71 项）。
@@ -405,7 +425,8 @@ for (const [id, entries] of byId) {
     chordGt: gtChords ? gtChords.split("|").filter(Boolean).length : 0,
     chordRec: recChords ? recChords.split("|").filter(Boolean).length : 0,
     chordDiffs: gtChords ? dChord.ops.length : null,
-    chordAcc: gtChords ? 1 - dChord.dist / Math.max(gtChords.split("|").length, recChords.split("|").length, 1) : null,
+    chordRepeat,
+    chordAcc: gtChords ? 1 - dChord.dist / Math.max(gtChordArr.length * chordRepeat, recChordArr.length, 1) : null,
     dChord,
     storyChars,
     objTotal,
@@ -538,7 +559,7 @@ for (const r of rows) {
   }
 
   if (r.chordDiffs != null && r.chordDiffs > 0) {
-    L.push(`  和弦 ${r.chordDiffs} 项（GT<harmony> ${r.chordGt} / PDF ${r.chordRec}）`);
+    L.push(`  和弦 ${r.chordDiffs} 项（GT<harmony> ${r.chordGt}${r.chordRepeat > 1 ? `×${r.chordRepeat}遍` : ""} / PDF ${r.chordRec}）`);
     const gtSeq = r.dChord.ops;
     for (const [op, gi, ri, g2, b2] of gtSeq.slice(0, 40))
       L.push(`    ${op === "sub" ? "不同" : op === "del" ? "GT有·PDF无" : "PDF有·GT无"}  @${gi}  GT=${g2 || "-"}  PDF=${b2 || "-"}`);
