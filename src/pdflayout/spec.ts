@@ -161,20 +161,26 @@ export function toTextRun(objs: ClassifiedObj[], lookup: CharLookup): TextRun | 
   return {
     text: chars.map((c) => c.ch).join(""),
     box: unionBox(boxes),
-    baselineY: Math.round(median(boxes.map(bottom)) * 100) / 100,
+    // 行基线取中位数，且「一」用它的参照基线参与（见 baseOf）——否则一行里有几个「一」
+    // 就会把整行的基线拉高。
+    baselineY: Math.round(median(sorted.map(baseOf)) * 100) / 100,
     size: Math.round(median(boxes.map((b) => b.h)) * 100) / 100,
     chars,
   };
 }
 
+/** 归行用的基线：一般取字形下缘；`lyricYi`（歌词里的「一」）只有一横、悬在字格中部，
+ *  它的下缘比同行汉字高半个字，得用 inventory 记下的参照基线，否则自成一行。 */
+const baseOf = (o: ClassifiedObj) => o.baseline ?? bottom(o.obj.bbox);
+
 /** 按**下缘**（基线）把对象聚成行。标点只占字格下部，按顶边聚会把它们拆成独立行。 */
 export function groupLines(objs: ClassifiedObj[], tol = 4): ClassifiedObj[][] {
-  const sorted = [...objs].sort((a, b) => bottom(a.obj.bbox) - bottom(b.obj.bbox));
+  const sorted = [...objs].sort((a, b) => baseOf(a) - baseOf(b));
   const lines: { y: number; items: ClassifiedObj[] }[] = [];
   for (const o of sorted) {
     const last = lines[lines.length - 1];
-    if (last && bottom(o.obj.bbox) - last.y <= tol) last.items.push(o);
-    else lines.push({ y: bottom(o.obj.bbox), items: [o] });
+    if (last && baseOf(o) - last.y <= tol) last.items.push(o);
+    else lines.push({ y: baseOf(o), items: [o] });
   }
   return lines.map((l) => l.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x));
 }
@@ -271,7 +277,9 @@ export function buildPageSpec(
           inv.objs.filter((o) => o.cls === cls && !o.dup && o.row === b.index && !used.has(o)).map(take);
         const notes = inBand("note").sort((a, b2) => a.obj.bbox.x - b2.obj.bbox.x);
         const chordObjs = inBand("chord");
-        const lyricObjs = inBand("lyric");
+        // 「一」也是歌词字（inventory 单列成 lyricYi 只因为它的轮廓与短圆滑线同形）。
+        // 不收的话它会掉进 textLines 兜底，重排出来歌词就少字：「一生一世」变成「生世」。
+        const lyricObjs = [...inBand("lyric"), ...inBand("lyricYi")];
         return {
           index: b.index,
           noteTop: Math.round(b.noteTop * 100) / 100,

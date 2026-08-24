@@ -246,6 +246,10 @@ export class Chord extends Entry {
   slurEnd = false;
   slurEndChord: Chord | null = null;
   fermata = false;
+  /** 印在这个音符上方的和弦符号（"Am7" / "G/B"）。来自 musicxml 的 `<harmony>`，
+   *  与 OMR 的 `JpNum.chord`、文本谱的 `"hx:…"` 是同一层表示。
+   *  `.jpwabc` 装不下它（既定，不扩语法），所以走 jpscore 那条路会丢。 */
+  harmony: string | null = null;
 
   hasLrc(num: number): boolean {
     for (const nt of this.notes) {

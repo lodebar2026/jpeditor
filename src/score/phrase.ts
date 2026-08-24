@@ -25,24 +25,24 @@ const PUNCT_END = /[。！？…；]$/;
 const PUNCT_MID = /[，、：]$/;
 
 // 行长以「小节数」计（简谱/圣诗按小节成行，与音符密度无关）。经验初值，可回归调参。
-const MIN_MEAS = 3;
-const TARGET_MEAS = 4;
-const MAX_MEAS = 7;
+const DEF_MIN_MEAS = 3;
+const DEF_TARGET_MEAS = 4;
+const DEF_MAX_MEAS = 7;
 // 但密集小节（如流行敬拜谱副歌每小节 7 个八分音符）光按小节数会排出一行 30 格、超出页宽被迫折行，
 // 故再加一条**每行格数**上限。格 = 简谱横向占位：一个音符 1 格，长音的每根增时线 `-` 各占 1 格
 // （`5---`=4 格）。实测印刷简谱一行 ~21~23 格。只作上限，不参与行长目标。
 // 增时线渲染得比数字窄（`5 - - -` 明显短于 `3 1 2 5`），按 1 整格算会高估长音行的宽度，把
 // 「超长音收尾」挤到下一行去（实测副歌 `…手心|中5---|5` 的「中」被甩到行首）。按实测比例折算。
-const MAX_CELLS = 25;
+const DEF_MAX_CELLS = 25;
 // **一整句独占一行**（行尾恰是句末、行内不跨句末）时，行长上限比普通行放宽——中文简谱里
 // 「一行一句」比机械地卡在 25 格 / 7 小节更能体现乐句。实测 33 格 / 8 小节仍排得进版心
 //（「我們成為一家人」副歌 `因著耶穌得潔淨，…同享復活的生命；` 8 小节 32.5 格，无头渲染核对过）。
 // 超出则回退到普通上限，真正的长句仍会正常分行。
-const MAX_SENTENCE_CELLS = 33;
-const MAX_SENTENCE_MEAS = 8;
+const DEF_MAX_SENTENCE_CELLS = 33;
+const DEF_MAX_SENTENCE_MEAS = 8;
 // 行长下限也认格数：行从小节中间起头时（前一行在长音 tie 收尾处断），按小节数算会偏小，
 // 但内容量其实够——`MIN_MEAS` 与 `MIN_CELLS` 满足其一即可。
-const MIN_CELLS = 14;
+const DEF_MIN_CELLS = 14;
 // 「这里是乐句收尾」的音乐凭据：够长的长音（≥3 拍）、延长号、休止。作曲家在句子真正收尾处
 // 留的音明显比句中的停顿长——「耶稣普治」每句中间的逗号落在 4 拍全音符上，而「我們成為一家人」
 // 副歌句中的逗号只有 2 拍、句末才是 4 拍。故 2 拍不算凭据，否则两者分不开。
@@ -65,7 +65,39 @@ function measureFp(chords: Chord[]): string {
     .join(",");
 }
 
-export function computePhraseBreaks(part: Part): PhraseBreaks {
+/** 行长参数。默认值是拿具体曲子调出来的（见上面各常量的注释），**别随手改默认**；
+ *  成书排版要更均匀的行长时按需收紧上限（见 rebuild.mjs）。 */
+export interface PhraseOptions {
+  targetMeas?: number;
+  minMeas?: number;
+  maxMeas?: number;
+  maxSentenceMeas?: number;
+  /** 一行最多几格。**成书排版按纸张宽度算**（版心宽 ÷ 音符步距），
+   *  而不是用这里那个按经验定的 25——版心窄的书一行本来就放不下 25 格。 */
+  maxCells?: number;
+  maxSentenceCells?: number;
+  /** 断点强度的权重。调大 = 更看重「断在乐句真正收尾的地方」（长音、延长号、句末标点）。
+   *  默认 1 时，断点代价被钳在 0 以上（`max(0, BASE_BREAK − 强度)`），
+   *  于是 8 分的强断点和 10 分的更强断点**代价一样**，「更长的音符 + 标点」体现不出优势。
+   *  调大之后强断点能挣出净收益（有封顶），乐句收尾处就会压过「各行一样长」。 */
+  breakWeight?: number;
+  /** 行长代价的权重。调大 = 更看重「各行一样长」。
+   *  默认 1 是编辑器那条路调出来的；成书要工整的行长，调到 2 以上，
+   *  16 小节的歌才会选 4+4+4+4 而不是 4+6+6（后者行长代价 8，但少断一次省 8 分，默认权重下打平）。 */
+  lenWeight?: number;
+}
+
+export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): PhraseBreaks {
+  const TARGET_MEAS = opts.targetMeas ?? DEF_TARGET_MEAS;
+  const MIN_MEAS = opts.minMeas ?? DEF_MIN_MEAS;
+  const MAX_MEAS = opts.maxMeas ?? DEF_MAX_MEAS;
+  const MAX_SENTENCE_MEAS = opts.maxSentenceMeas ?? DEF_MAX_SENTENCE_MEAS;
+  const MAX_CELLS = opts.maxCells ?? DEF_MAX_CELLS;
+  const MAX_SENTENCE_CELLS = opts.maxSentenceCells ?? Math.max(DEF_MAX_SENTENCE_CELLS, MAX_CELLS);
+  const LEN_WEIGHT = opts.lenWeight ?? 1;
+  const BREAK_WEIGHT = opts.breakWeight ?? 1;
+  // 行长下限跟着上限走：版心窄时上限本来就小，14 格的下限会把断点全顶掉
+  const MIN_CELLS = Math.min(DEF_MIN_CELLS, Math.round(MAX_CELLS * 0.6));
   const measures = part.measures;
   const n = measures.length;
   const measureBreaks = new Set<number>();
@@ -339,7 +371,7 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
   // 行长约束一律是**软惩罚**而非硬禁：可断点稀疏时（弧线跨小节连成一片，如「主祢真伟大」副歌
   // 每小节末都在 slur 内）硬禁会让整段找不到任何合法切法、退化成一整行。软罚则总能挑出最不坏的一种。
   const lenCost = (meas: number, cells: number, segEnd: boolean, maxCells = MAX_CELLS, maxMeas = MAX_MEAS): number =>
-    (meas - TARGET_MEAS) ** 2 +
+    LEN_WEIGHT * (meas - TARGET_MEAS) ** 2 +
     (meas > maxMeas ? (meas - maxMeas) ** 2 * 40 : 0) +
     (cells > maxCells ? (cells - maxCells) ** 2 * 8 : 0) +
     // 段末/曲末行是唯一可短于 MIN 的行，但也**不该短到只剩一小节**——软罚让 DP 宁可把前面几行
@@ -370,8 +402,11 @@ export function computePhraseBreaks(part: Part): PhraseBreaks {
         // 行内罚只压**弱信号**的行内断点：句号/长音/延长号/重复边界（score≥4）落在小节内时，
         // 那本就是乐句真正的收尾处，不该因为「没赶上小节线」被罚。
         const sc = b === hi ? 0 : scoreAt(cand[b - 1]);
+        // 强断点可以挣出净收益（封顶 BASE_BREAK，免得一路狂断）；BREAK_WEIGHT=1 时
+        // 退化成原来的 max(0, …)，编辑器那条路的行为不变。
         const bc = b === hi ? 0
-          : Math.max(0, BASE_BREAK - sc) + (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6);
+          : Math.max(BREAK_WEIGHT > 1 ? -BASE_BREAK : 0, BASE_BREAK - sc * BREAK_WEIGHT) +
+            (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6);
         const crossed = crossedEndPunct(a, b);
         const endsAtSentence = punctAfter[idxAt[b]] === 6;
         // 若从本行起点继续到下一个句号仍不超过「完整句」宽度，就不要提前在逗号/弱音乐信号处拆开。

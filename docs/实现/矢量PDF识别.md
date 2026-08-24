@@ -326,33 +326,203 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
   「剩余的文本行」——否则重排时记号那条路径和文本那条路径会各画一遍
   （那一版凭空多出 651 个对象）。花边纹样也别提前标成已用，否则谁都不收它们（少 9324 个）。
 
-### `--mode=text` 文字版 PDF（交付物）
+### `--mode=text` 文字版 PDF（原位替换版）
 
-输出**可选中、可搜索、可复制**的 666 页 PDF，页序与页数照抄原件。
+**位置照原件、把曲线换成真文字**：输出可选中、可搜索、可复制的 666 页 PDF，页序与页数照抄原件。
 歌词/标题/署名/和弦/页眉页脚/音符数字都落成真实文字对象，
 减时线/增时线/小节线/圆滑线/八度点/花边纹样仍画矢量图形。
+
+与另一条路（`rebuild.mjs`，从数据重排）共用两样东西：
+**书籍样式 `BookStyle`**（字体·字号·间距，见下节）与**中间格式 `DrawList`**。
+`relayout.mjs` 的活因此只剩「PageSpec → DrawList」这一步（`src/pdflayout/drawlist.ts::specToDrawPage`），
+写 PDF 的事全在 `scripts/pdfwrite.mjs`。
 
 **用 pdf-lib 直接写 PDF，不经浏览器。** 先试过 Chromium 打印（把 SVG 的 `<text>` 打成 PDF），
 不成：printToPDF 经 CDP 把整份 PDF 传回来，页一多就 `Printing failed`，两三百页后干脆
 `Page crashed`；只能分批打印再合并，而**每一批都会各自嵌一份字体子集**——
 666 页合出来 43.5 MB、跑 4 分 22 秒，还因为 Chromium 的 ToUnicode 映射偏差，
-提取出来一堆康熙部首（`⼼` 而不是 `心`），能搜到曲名的起始页只有 56%。
-
-改用 pdf-lib 之后：**12.3 MB、16 秒、字体只嵌一份子集**，能搜到曲名的起始页 **88.0%**。
+提取出来一堆康熙部首（`⼼` 而不是 `心`）。
 
 | | |
 |---|---|
 | 页数 / 尺寸与原件一致 | **666 / 666** |
-| 有文字层的页 | 662（其余 4 页是空白页与整页位图） |
-| 可提取字符 | 228,356 |
-| 起始页能搜到 GT 曲名 | **88.0%**（491/558） |
+| 体积 / 用时 | 17.4 MB / 约 20 秒 |
+| 落成文字的字数 | 255,437 |
+| 字体缺字（画不出的） | **0** |
+| 仍读不出的字（写成空位） | 8,140，来自 **1,188 个形状类** |
+
+读不出的那 8,140 个字里，乐谱页 6,938、目录 1,015，其余在前言与索引。
+按角色看：歌词 3,685、注解正文 1,262、调号拍号 845、目录行 867、页眉 563、署名 691。
+**GT 回填帮不上大忙**（`gen-backfill.mjs` 只补回 19 个字）：这些字多半落在 GT 覆盖不到的地方
+——调号拍号、段落词、目录索引、花边框正文本来就不在 musicxml 里。
+剩下的走人工：`relayout.mjs --db` 把它们按形状键落进 `校对.db` 的 `unread_glyph` 表，
+**补 1,188 个字就能全清**。
+
+写 PDF 这一步的四处要害（都在 `scripts/pdfwrite.mjs`）：
+
+- **只嵌真正用到的字体**。嵌进去却一个字都没画的 CFF 字体，子集是空的，
+  pdf-lib 保存时崩在 CFF 编码里（`RangeError: value argument is out of bounds`）。
+- **缺字要自己判**，不能靠 `font.encodeText` 抛错——pdf-lib 对缺字不报错，
+  静默画成 `.notdef`，回读出来是 U+0000。用 fontkit 的 `hasGlyphForCodePoint`，
+  缺了就按字体链回退（`♭` 只有 Bravura 有、`祂` 那几个字方正字库没有）。
+- **pdf-lib 的 `drawSvgPath` 不支持二次贝塞尔 `Q`**，它把 Q 派给三次曲线的处理函数、参数少两个，
+  直接崩在 `numberToString` 里且看不出出处。矢量抽取器与字体轮廓都会产出 Q，统一升成 C（`quadToCubic`）。
+- **字距用 Tc 撑开，一段一次 `showText`**。逐字画的话，pdfjs 一类的提取器会按字距插空格，
+  「神配受崇拜」变成「神 配 受 崇 拜」，搜索直接落空。简谱歌词的字距是为对位撑开的（比字宽宽 40%），
+  Tc 也救不了，所以含汉字的行**再补一层不可见的紧排文字**（`Tr 3`）当搜索层——扫描件 OCR 的文本层就是这么做的。
 
 字体：macOS 的中文字体几乎都是 `.ttc`，而 pdf-lib 和 opentype.js 都只吃单个 sfnt
 （直接喂会报 `Unsupported OpenType signature ttcf`）。`scripts/ttc.mjs` 负责从 ttc 里
-按名字抽出一个独立 sfnt——**不能整段切**，ttc 的各子字体常共享同一份表数据，
-得按表记录重新拼。默认用 `Songti SC Regular`，`--font` / `--face` 可换。
+按名字抽出一个独立 sfnt——**不能整段切**，ttc 的各子字体常共享同一份表数据，得按表记录重新拼。
 
-SVG 仍然照常产出（`pdf-out/p<页>.svg`），供肉眼核对与其它用途。
+## 书籍样式（`src/pdflayout/bookstyle.ts` + `gen-bookstyle.mjs`）
+
+两条重排路唯一共享的东西：这本书「长什么样」的完整参数集——页面/版心、各角色的字体与字号、各处间距。
+值全部由 `src/pdflayout/stats.ts` 从 `pdf-layout.json` 统计**中位数**得来
+（`node gen-bookstyle.mjs` → `testdata/500/bookstyle.json` + `bookstyle-report.md`）。
+
+**角色判定用 PageSpec 的字段位置**，不是 `BookProfile.families[].role`（那个字段全书恒为 `"unknown"`，
+没有任何回填方），也不重跑 `classifyPage`——spec 的具名字段本身就是归类判据的产物。
+`tuplet` / `verseNum` / `sectionWord` 这三个 ObjClass **只在类型里声明、从没被赋值过**，
+所以 tuplet 从音符带里按字高分档取，另两个按印刷惯例从 lyric 派生（报告里逐条标明来源）。
+
+统计的两个口径坑，都是拿肉眼看出来的：
+
+- **字号要剔掉标点与上标再取中位**。标点只占字格下部（逗号高 1.5pt，正文 10.5pt），
+  混进去会把中位数拉偏——次号歌词那一档的离散度从 0.54 掉到 0.16 就是这么来的。
+- **量到的是墨迹高度，不是 font-size**。两者差一个「墨迹占 em 的比例」，而这个比例各族不同：
+  Times 的数字约 0.66em、宋体汉字约 0.9em。直接把墨迹高当字号灌进排版器，
+  数字会比歌词多缩三成，**音符与歌词的大小关系就跟原书对不上**（一眼就看得出别扭）。
+  `browser.ts::fontSizeFor` 实测样本字的墨迹比例再反算字号。
+
+同样的道理适用于**绘制厚度**：`slurTieThickness`(6) / `jpBeamWidth`(1.5) / 小节线(2/3.5)
+是排版引擎按 `fontSize≈28` 调出来的**绘制参数**，而原书量到的 `ink*` 是印刷成品的**描边宽**（0.19pt 上下）。
+把后者塞给前者，圆滑线会退化成一条等宽细线。所以：
+**弧与小节线按字号等比缩放，减时线用原书的墨迹宽**（它本来就是一条细线）。
+
+`metrics` 里 `*Em` 后缀的随字号缩放（基准是音符墨迹高），其余为 pt；
+`titleBlock` 存的是页内绝对 y（原书整本一套版式，实测离散度 0.002）。
+
+## 数据重排版（`rebuild.mjs`）
+
+**从 musicxml / 文本谱 / .jpwabc 重新排一本书**，乐句优先、页数由排版决定。
+
+```
+musicxml → loadMusicXml → Score → computePhraseBreaks → applyPhraseBreaks（写 LineBreak）
+        → JinpuPainter（applyBookStyle 注入样式）→ pageItemsToDrawPage → DrawList
+        → scripts/pdfwrite.mjs → PDF
+```
+
+排版引擎依赖 `common/measure.ts` 的 `getBBox`，只能在浏览器里跑；pdf-lib 只能在 Node。
+中间格式因此是 **DrawList**（`src/pdflayout/drawlist.ts`）：页内把页面树扁平化成绝对坐标 + 逐字笔位，
+Node 侧照着画，两端不必共享字体度量。**不用 SVG 字符串**——那要在 Node 侧反解嵌套 transform
+与字体度量，等于把 painter 再写一遍；而页面树本来就只有三种叶子
+（`GraphicPath` / `GraphicLine` / `TextFrame`），照着 `painter.ts::renderPageItem` 的递归扁平化一次就完事。
+
+### 多段歌词：叠排，而且不展开反复
+
+原书是**一行谱下叠几行词**（行首带「1.」「2.」段号），而排版引擎的老行为是
+**逐段重复整条谱行**（jpword/musicpp 那套，流行敬拜谱常见）。照老行为排，568 首要 1400 页。
+
+`LayoutOptions.lyricStack > 0` 打开叠排（默认 0，编辑器行为不变），它做两件事：
+
+1. `addLyric` 把这个音符底下的各段歌词一行行摞起来，段间距取原书的 `lyricToLyric`；
+   行首挂段号——段号**挂在行上、用绝对坐标**，挂进 NoteEntry 的话随后的 `update()` 会把那点负 x 归一掉。
+2. `fromScore` **按原谱排一遍，不展开任何反复**。反复本来就是用记号表示的（`‖:` `:‖`、房号、D.S.），
+   而 `playData` 是给试听用的展开序列：多段歌词在那里被摊成好几遍，
+   064《啊！圣善夜》甚至摊成 10 遍（歌词只有 3 段）——照着它排，一首歌能排出十几页。
+
+叠排之后：**568 首 648 页**（原书乐谱页 605），492 首一页排完，最多 3 页。
+
+### 行长：只由纸张定，工整靠加权
+
+`computePhraseBreaks` 的行长常量（`MAX_MEAS=7` / `MAX_CELLS=25`）是拿具体曲子调出来的，
+**成书这条路不改它们的默认值**，而是按参数覆盖：
+
+- **上限来自纸张**：一行放得下几格由 `browser.ts::measureCellsPerLine` **空排一遍量出来**——
+  排版器空排时按宽度塞满再折行，「装得最多的那一行」就是容量。
+  不能拿字宽估（高估一倍），也不能拿相邻音符 x 差的中位数算（会被八度点、附点这些同格里的
+  小东西带偏，实测算出 98 格、实际只放得下 13）。
+- **工整靠加权**：`lenWeight` 放大行长代价。16 小节的歌在默认权重下会排成 4+6+6
+  （行长代价 8，但比 4+4+4+4 少断一次、正好省回来，打平），权重调到 4 才让长音上的那个断点胜出、选 4+4+4+4（权重 2 仍打平）。
+- **每行都在小节线上收尾**：成书关掉行内断点（`useMidBreaks: false`）。
+  那是给弱起谱留的（乐句尾被并进下一小节），原书没有这种排法。
+- **两道保险**，因为「格数」与排版器的「像素宽度」只是近似对应：
+  1. `applybreaks.ts::enforceLineCapacity` 在写 LineBreak 之前按容量与小节数补几刀。
+     光看格数会漏掉「九小节一行」——增时线在乐句分析里按 0.7 折算、排版器却是整格
+     （006《颂赞归与耶稣圣名》的主歌就是这样，排版器随后硬折，甩出一行只剩 "3 2 1--"）。
+  2. `rebuild.mjs` 排完数一遍谱行数，**多出来就把格数收紧再排**，最多四轮。
+
+### 和弦
+
+`loadMusicXml` 原本整个跳过 `<harmony>`（CLAUDE.md 记的「Score 装不下和弦」说的是 **jpwabc 那条路**，
+Score 这边只是一直没做）。现在 `src/score/harmonyparse.ts` 把它读成 `Chord.harmony`，
+`NoteEntry.addHarmony` 排到音符正上方，富文本分段复用 `layout/harmony.ts`（与五线谱、文本谱同一套）。
+导出侧的既定约束不变：`musicxmlpatch` 仍然不碰 harmony。
+
+两处要害：
+
+- 和弦**按基线对齐**（同一行的和弦要齐平），不能按墨迹顶或底摆：带升降号的用 Bravura 的 csym 字形，
+  em 框比字母高得多，按墨迹摆会比邻近的和弦高出十来个点。`g.update()` 之后 `g.y` 正好是
+  「墨迹顶相对基线」的偏移，所以**累加**目标基线而不是赋值。
+- 和弦里的 SMuFL 段要用**紧包围盒**（`TextFrame.inkBound`）。Bravura 的 `ascent − descent` 是 **4.02 em**，
+  一个和弦里夹一个升号，这一行就凭空高出四个字号——行距全乱、一页少装两行。
+
+### 圆滑线：方向与弧度
+
+两处都出在 musicpp 那条弧高公式 `log10(dist) * 17 − 16` 上，它是按 `fontSize≈28` 的绝对像素调的：
+
+- **方向**：短弧（`dist < 8.7pt`）算出来是负值，弧就翻过来开口朝上了。
+  简谱的圆滑线/连音线**方向固定**（弧在音符上方、开口朝下），所以先钳住下限再取负。
+- **弧度**：换成成书的小字号后，若按字号等比缩（0.42 倍）弧会压成一条平线，几乎看不出弧度。
+  所以给一个**物理目标** `metrics.slurArcEm`（弧的凸起高度 × 音符字高，默认 0.9），
+  由 `applyBookStyle` 按「典型跨度（3 个音符步距）」反算 `slurHeightScale`。
+  这个值**不从原书量**：那边量到的 `slurHeight` 是 slur 对象的包围盒高（含描边外扩、且短弧居多）。
+
+### 成书骨架
+
+曲号 / 标题 / 词曲署名 / 调号拍号 / 页眉 / 页码不经排版引擎，由 `rebuild.mjs` 在整本那一层按
+`style.titleBlock` 的绝对 y 摆（`LayoutOptions.pageFurniture = "none"` 关掉引擎自带的「本曲第 i/n 页」）。
+**对开页镜像**：奇数书页页眉靠装订侧（左）、曲号靠切口侧（右），偶数页反过来——实测原书就是这样。
+
+首页要给标题块让位，做法是**在页内平移**（`pageItemsToDrawPage` 的 `offset`）：
+先排一遍量出首行音符的墨迹上缘，再整页挪到原书那条线上。事后去改 DrawList 不行，路径的坐标已经烘进 `d` 里了。
+
+### 字体
+
+按角色配置（`bookstyle.json` 的 `fonts` + `roles[].font`），本机用的是原书那四款方正字体：
+
+| 角色 | 字体 |
+|---|---|
+| 标题 | 方正魏碑简体 `FZWeiBei-S03S` |
+| 歌词 / 正文 / 目录 | 方正报宋简体 `FZBaoSong-Z04S` |
+| 词曲署名 | 方正楷体简体 `FZKai-Z03S` |
+| 曲号 / 分类页眉 | 方正黑体简体 `FZHei-B01S` |
+| 音符 / 和弦 / 调号拍号 / 页码 | Times New Roman |
+| SMuFL 记号 | Bravura（走轮廓，见下） |
+
+- 方正那四款是印刷字库，字表**不含**「祂」「衪」「捨」这些（歌本里真的会用到），
+  所以留了一个 `fallbackCjk`（Songti SC）兜底，用不到就不会被嵌进 PDF。
+- `FontRef.mode = "path"` 让某个字体**走轮廓**而不是嵌字体。给两种情况用：
+  SMuFL（免嵌 Bravura，也绕开 PUA 码位在子集 cmap 上的编码风险）；
+  以及子集化后不合规的字体——系统自带的 `WeibeiSC-Bold.otf` 是 CFF，
+  pdf-lib 的子集产物 poppler 与 pdfjs 都报 `Unable to detect correct font file Type/Subtype`。
+  轮廓取自 **fontkit**（就是算度量那一份），不用 opentype.js：后者对这套魏碑的少数字形
+  会吐出带 NaN / 参数不全的路径（实测「作」「渣」「你」三个字）。
+  走轮廓的行没有可见文字层，隐藏搜索层会借一个能嵌的中文字体补上。
+
+### 产物
+
+```
+node gen-bookstyle.mjs                       # 统计 → testdata/500/bookstyle.json + bookstyle-report.md
+node gen-backfill.mjs                        # GT 回填未读字形 → testdata/500/backfill.json
+node relayout.mjs --mode=text [--db]         # A 路 → pdf-out/诗歌500首-文字版.pdf + relayout.csv/-report.json
+node rebuild.mjs [--one=028] [--name=x.pdf]  # B 路 → pdf-out/诗歌500首-重排版.pdf + rebuild.csv + rebuild-drawlist.json
+```
+
+`校对.db`（`scripts/checkdb.mjs`，用 `node:sqlite`，不引新依赖）：
+`run` / `run_metric` / `diff` / `unread_glyph` / `glyph_fix` 五张表 + `pending_diff` 视图，
+表名字段名一律英文；库里原有的中文列名 `check` 表是人工校对表，不动它，按曲号 join。
 
 ## 对比（`pdf-diff.mjs`）
 
