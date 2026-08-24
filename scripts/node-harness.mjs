@@ -635,3 +635,102 @@ export function gtRepeats(musicxml) {
     .filter((b) => b !== "regular");
   return { repeats, endings, barStyles };
 }
+
+
+/** `.Title` 里的 `WordsByAndMusicBy`。**取最后一条非空的**：有的文件写了两条，
+ *  第一条是空的；`=` 后面只吃横向空白，吃到换行就会把下一行整条卷进来。 */
+export function creditField(titleSec) {
+  let out = "";
+  for (const m of (titleSec ?? "").matchAll(/WordsByAndMusicBy[^\S\r\n]*=[^\S\r\n]*\{?([^}\r\n]*)\}?/g)) {
+    if (m[1].trim()) out = m[1];
+  }
+  return out;
+}
+
+/**
+ * 逐曲采集「页面字形序列 + 对应的 GT 串」。
+ *
+ * 字形自举（gen-glyphdict）与补字表（gen-backfill）**必须共用这一份取法**：
+ * 两边若对不同的序列做对齐，学到的字与补上的字就会打架。
+ *
+ * @param keyOf 形状键回调。gen-glyphdict 传的是「注册进形状表并返回代表键」，
+ *              gen-backfill 传的是纯 shapeKey。
+ */
+export async function collectSongItems({ cli, doc, OPS, profile, byId, songs, keyOf, invCache = new Map() }) {
+  const items = [];
+  const bot = (o) => o.obj.bbox.y + o.obj.bbox.h;
+for (const [id, entries] of byId) {
+  const song = songs.get(id);
+  if (!song?.jpwabc) continue;
+  const notes = [];
+  const verseRows = [];
+  const title = [];
+  const chords = [];
+  const credits = [];
+  const category = [];
+  const footers = [];
+  for (const e of entries) {
+    let inv = invCache.get(e.page);
+    if (!inv) {
+      const g = await doc.getPage(e.page);
+      const vp = await cli.extractVectorPage(g, OPS);
+      g.cleanup();
+      inv = cli.classifyPage(vp, profile);
+      invCache.set(e.page, inv);
+    }
+    const got = collectSongGlyphs(inv, e, profile, cli.shapeKey);
+    for (const o of got.notes) notes.push(keyOf(o));
+    for (const o of got.title) title.push(keyOf(o));
+    for (const o of got.chords) chords.push(keyOf(o));
+    // 词曲署名：**按基线分行再按 x 排**（作词一行、作曲一行交错排，照 x 直读会串行）
+    {
+      const lines = [];
+      for (const o of inv.objs
+        .filter((x) => x.cls === "credit" && !x.dup && x.obj.bbox.y >= (e.yFrom ?? 0) && x.obj.bbox.y < (e.yTo ?? 1e9))
+        .sort((a, b) => bot(a) - bot(b))) {
+        const last = lines[lines.length - 1];
+        // 容差 5 而不是 3：生卒年印得略高，卡在 3 上会被切成另一行、排到人名前面（同 pdf-diff）
+        if (last && bot(o) - last.bot <= 5) last.items.push(o);
+        else lines.push({ bot: bot(o), items: [o] });
+      }
+      // 标点（`：` `.` `(` `)`）不进这条序列：GT 那边只留字与数，留着两边永远对不齐
+      for (const ln of lines)
+        for (const o of ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x)) if (isCreditWordGlyph(o.obj.bbox)) credits.push(keyOf(o));
+    }
+    if (e.startsHere) {
+      for (const o of inv.objs.filter((x) => x.cls === "category" && !x.dup).sort((a, b) => a.obj.bbox.x - b.obj.bbox.x))
+        category.push(keyOf(o));
+      // 页脚是「·书页码·」。首曲 001 在 PDF 第 33 页、书页 1，故书页码 = PDF 页 − 32。
+      footers.push({ keys: inv.objs.filter((x) => x.cls === "footer" && !x.dup).sort((a, b) => a.obj.bbox.x - b.obj.bbox.x).map(keyOf), text: `\u00b7${e.page - 32}\u00b7` });
+    }
+    got.verses.forEach((ln, vi) => {
+      (verseRows[vi] ??= []).push(...ln);
+    });
+  }
+  if (invCache.size > 40) invCache.clear();
+
+  const gt = await readSongGt(song);
+  const sec = jpwSections(gt.jpwabc);
+  items.push({
+    id,
+    gtNotes: gtNoteDigits(sec.Voice || ""),
+    gtVerses: gtLyricVerses(sec.Words || "").map((v) => v.chars),
+    gtTitle: song.title,
+    gtChords: gt.musicxml ? gtHarmonies(gt.musicxml).join("") : "",
+    gtCategory: (song.category ?? "").replace(/\s+/g, ""),
+    // GT 的署名字段：`词曲：(加)宣信(1843-1919)`。谱面上的标点/空格随排版走，只留字与数
+    gtCredit: (creditField(sec.Title))
+      .replace(/\\n/g, "")
+      .match(/[\u4e00-\u9fff0-9A-Za-z]/g)
+      ?.join("") ?? "",
+    notes,
+    verses: verseRows.map((r) => r.map(keyOf)),
+    title,
+    chords,
+    credits,
+    category,
+    footers,
+  });
+}
+  return items;
+}

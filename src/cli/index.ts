@@ -9,4 +9,8 @@ export * from "../omr/bookprofile";
 export * from "../omr/inventory";
 export * from "../omr/glyphdict";
 export * from "../pdflayout/spec";
+export * from "../pdflayout/bookstyle";
+export * from "../pdflayout/stats";
+export * from "../pdflayout/drawlist";
+export * from "../pdflayout/align";
 export type { Binary, Component, Rect, JpNum, StaffRow, RecognizedScore, TextRegion } from "../omr/types";

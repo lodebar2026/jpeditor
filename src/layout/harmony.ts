@@ -35,10 +35,16 @@ export function layoutHarmonySegs(
   color: number,
 ): Group {
   const grp = new Group();
+  // 标记成和弦：成书重排把页面树扁平化成 DrawList 时靠它认角色（选字体、选是否走轮廓）。
+  // 不标的话这几个 TextFrame 只是「小一号的普通文字」，会被当歌词排。
+  grp.classes.add("chord");
   let xpos = 0;
   for (const s of segs) {
     const font = s.music ? musicFont : wordFont;
     const t = new TextFrame();
+    t.classes.add(s.music ? "chord-music" : "chord");
+    // 音乐字体（Bravura）的全局 ascent/descent 是 4 个字号高，不能拿它当行高
+    t.inkBound = s.music;
     t.text = s.text;
     t.font = font;
     t.color = color;

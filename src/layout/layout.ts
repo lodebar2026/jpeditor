@@ -7,6 +7,7 @@ import { Point, Rect, Matrix33, newMatrix, Colors } from "../common/geom";
 import { pathTightBounds } from "../common/measure";
 import { Font } from "./font";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
+import { chordTextSegs, layoutHarmonySegs } from "./harmony";
 import * as S from "../score/score";
 
 function getOrNull<T>(arr: T[], i: number): T | null {
@@ -237,6 +238,11 @@ export class TextFrame extends PageItem {
   font!: Font;
   previous: TextFrame | null = null;
   next: TextFrame | null = null;
+  /** 用**紧包围盒**而不是字体的全局 ascent/descent 来算 bound。
+   *  给 SMuFL 那类字体用：Bravura 的 ascent−descent 是 4.02 em，一个和弦里夹一个升号，
+   *  这一行就凭空高出四个字号——行距全乱。SmuflText 自己重写了 bound，
+   *  但 layout/harmony.ts 里的音乐段是普通 TextFrame，靠这个开关。 */
+  inkBound = false;
 
   measureText(beg = 0, len = -1): number {
     const str = len < 0 ? this.text.substring(beg) : this.text.substring(beg, beg + len);
@@ -244,6 +250,10 @@ export class TextFrame extends PageItem {
   }
 
   override get bound(): Rect {
+    if (this.inkBound) {
+      const b = this.font.charBound(this.text);
+      return new Rect(0, Math.min(b.top, 0), this.width, Math.max(b.bottom, 0));
+    }
     const fm = this.font.metrics;
     return new Rect(0, fm.ascent, this.width, fm.descent);
   }
@@ -382,7 +392,7 @@ export class Lyric extends TextFrame {
 }
 
 export abstract class SlurTieBase extends Group {
-  static calcSlurPoints(pl: Point, pr: Point): [Point, Point, number] {
+  static calcSlurPoints(pl: Point, pr: Point, heightScale = 1): [Point, Point, number] {
     const xr = pr.x, xl = pl.x, yr = pr.y, yl = pl.y;
     const dx = xr - xl, dy = yr - yl;
     const square = dx * dx + dy * dy;
@@ -391,7 +401,11 @@ export abstract class SlurTieBase extends Group {
     const cos = Math.cos(-theta);
     const sin = Math.sin(-theta);
     const xlen = Math.min(dist * 0.04 + 10, dist * 0.25);
-    let h = Math.log10(dist) * 17 - 16;
+    // 弧高。musicpp 的公式（按 jianpuFont≈28 调的绝对像素）在**短弧**上会算出负值
+    // ——dist < 10^(16/17) ≈ 8.7pt 时 h 变正，弧就翻过来开口朝上了。
+    // 简谱的圆滑线/连音线**方向固定**（弧在音符上方、开口朝下），所以先钳住下限再取负；
+    // `heightScale` 让整条弧随字号缩放（成书排版用小字号，绝对像素会显得过高）。
+    let h = Math.max(Math.log10(dist) * 17 - 16, 1.2) * heightScale;
     h *= -1;
     let p1 = new Point(xlen, h).rotate(cos, sin);
     let p2 = new Point(dist - xlen, h).rotate(cos, sin);
@@ -400,8 +414,8 @@ export abstract class SlurTieBase extends Group {
     return [p1, p2, cos];
   }
 
-  init(pl: Point, pr: Point, thickness: number, clr: number): void {
-    const [pt0, pt1, cos] = SlurTieBase.calcSlurPoints(pl, pr);
+  init(pl: Point, pr: Point, thickness: number, clr: number, heightScale = 1, outlineWidth = 0.7): void {
+    const [pt0, pt1, cos] = SlurTieBase.calcSlurPoints(pl, pr, heightScale);
     const lw0 = thickness / cos;
 
     // musicpp drawSlurTied (render.cpp:1078-1104): a filled crescent — out
@@ -422,7 +436,7 @@ export abstract class SlurTieBase extends Group {
     const outline = new GraphicPath();
     outline.fill = false;
     outline.stroke = true;
-    outline.strokeWidth = 0.7;
+    outline.strokeWidth = outlineWidth;
     outline.strokeColor = clr;
     outline.moveTo(pl);
     outline.cubicTo(pt0.offset(0, lw0 / 4), pt1.offset(0, lw0 / 4), pr);
@@ -545,6 +559,8 @@ export class NoteEntry extends Entry {
   chord!: S.Chord;
   verse = 0; // repeat pass / lyric verse this rendered entry belongs to
   lrc: Lyric | null = null;
+  /** 叠排时这个音符底下的各段歌词（lrc 是其中第一段，供既有的宽度/链表逻辑用）。 */
+  lrcs: Lyric[] = [];
   number: JpNumber | null = null;
   accidental: TextFrame | null = null;
   beams = 0;
@@ -561,6 +577,27 @@ export class NoteEntry extends Entry {
   get numberPos(): number {
     return this.number!.numberPos;
   }
+  /** 和弦符号：排在音符正上方（以数字墨迹中心对齐）。
+   *  富文本分段（根音升降号走 SMuFL、后缀上标）复用 layout/harmony.ts，与五线谱、文本谱同一套。 */
+  static addHarmony(ch: S.Chord, opt: LayoutOptions, ent: NoteEntry, num: JpNumber): void {
+    if (!ch.harmony || opt.chordSize <= 0) return;
+    const wordFont = opt.numberFont.makeWithSize(opt.chordSize);
+    const musicFont = opt.smuflFont.makeWithSize(opt.chordSize);
+    const g = layoutHarmonySegs(chordTextSegs(ch.harmony), wordFont, musicFont, opt.color);
+    g.update();
+    g.x = num.x + num.cx - g.width / 2;
+    // 挂在这个音符**已有内容的栈顶**之上（八度点已经加过了），不是固定高度——
+    // 否则带高音点的音符上，和弦会压到点上。原书的 chordGap 就是量的这个净距。
+    //
+    // 和弦一律**按基线对齐**（同一行的和弦要齐平），不能按墨迹顶或底摆：
+    // 带升降号的那些用 Bravura 的 csym 字形，em 框比字母高得多，按墨迹摆会比邻近的
+    // 和弦高出十来个点。`g.update()` 之后 `g.y` 正好是「墨迹顶相对基线」的偏移，
+    // 所以这里**累加**目标基线，而不是赋值。
+    const top = Math.min(-opt.numberSize, ent.group.childrenBound.top);
+    g.y += top - opt.chordGap;
+    ent.group.add(g);
+  }
+
   addAccidental(tf: TextFrame): void {
     this.accidental = tf;
     this.group.add(tf);
@@ -570,7 +607,8 @@ export class NoteEntry extends Entry {
       this.number = item;
       this.group.add(item);
     } else {
-      this.lrc = item;
+      if (this.lrc === null) this.lrc = item;
+      this.lrcs.push(item);
       this.group.add(item);
     }
   }
@@ -682,8 +720,14 @@ export class NoteEntry extends Entry {
     }
   }
   static addLyric(ch: S.Chord, options: LayoutOptions, ent: NoteEntry, it: JpNumber, lrc: number): void {
-    for (const l of ch.notes[0].lyrics) {
-      if (!l.refrain) {
+    // 叠排：这个音符底下把各段歌词一行行摞起来（原书的排法）。段序按 lyric.number。
+    const stack = options.lyricStack > 0;
+    const all = stack
+      ? [...ch.notes[0].lyrics].sort((a, b) => a.number - b.number)
+      : ch.notes[0].lyrics;
+    let row = 0;
+    for (const l of all) {
+      if (!stack && !l.refrain) {
         if (l.number !== lrc) continue;
       }
       let text = l.text;
@@ -700,7 +744,8 @@ export class NoteEntry extends Entry {
       }
       const lit = new Lyric();
       lit.font = options.lrcFont;
-      lit.y = 1.0 * options.numberFont.size;
+      lit.y = 1.0 * options.numberFont.size + (stack ? row * options.lyricStack : 0);
+      row++;
       lit.text = options.halfWidthPunct ? CJKUtil.toHalfWidth(text) : text;
       lit.color = options.color;
       lit.update();
@@ -741,6 +786,7 @@ export class NoteEntry extends Entry {
     NoteEntry.octaveDot(ch, options, ent);
     NoteEntry.addLyric(ch, options, ent, it, lrc);
     NoteEntry.addNotations(ch, options, ent);
+    NoteEntry.addHarmony(ch, options, ent, it);
     ent.update();
     res.push(ent);
     for (let i = 1; i < ch.beats; i++) {
@@ -772,9 +818,9 @@ export class Barline extends Entry {
     const bot = opt.jpStaffBottom;
     this.defaultTop = top;
     this.bot = bot;
-    const heavyWidth = 3.5;
+    const heavyWidth = opt.finalBarlineWidth;
     const res = this.group;
-    const widths = [2]; // musicpp lineWidths.lightBarline (pptutil.cpp:139)
+    const widths = [opt.barlineWidth]; // musicpp lineWidths.lightBarline (pptutil.cpp:139)
     if (final) widths.push(heavyWidth);
     const dist = heavyWidth;
     let xpos = 0;
@@ -879,6 +925,9 @@ export class Line {
   chordEntry = new Map<S.Chord, NoteEntry>();
   /** Arcs drawn on this line, in line coordinates (see clipBarlinesUnderSlurs). */
   slurTies: SlurTieBase[] = [];
+  /** 弧的缩放与描边宽，由 addTie/addSlur 从 LayoutOptions 暂存下来（addSlurTie 拿不到 opt）。 */
+  private slurHeightScale = 1;
+  private slurOutlineWidth = 0.7;
 
   private addEntry(e: Entry): void {
     if (e instanceof NoteEntry) {
@@ -1137,7 +1186,7 @@ export class Line {
     if (a.tiePrev !== null || a.tupletEnd) pl = pl.offset(dx, 0);
     if (b.tieNext !== null) pr = pr.offset(-dx, 0);
     pr = pr.offset(enb!.group.x - ena!.group.x, 0);
-    grp.init(pl, pr, thickness, clr);
+    grp.init(pl, pr, thickness, clr, this.slurHeightScale, this.slurOutlineWidth);
     grp.x += ena!.group.x;
     grp.normalizeX();
     grp.normalizeY();
@@ -1176,6 +1225,8 @@ export class Line {
   }
 
   private addTie(opt: LayoutOptions): void {
+    this.slurHeightScale = opt.slurHeightScale;
+    this.slurOutlineWidth = opt.slurOutlineWidth;
     const thickness = opt.slurTieThickness;
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
@@ -1217,6 +1268,8 @@ export class Line {
     return res;
   }
   private addSlur(opt: LayoutOptions): void {
+    this.slurHeightScale = opt.slurHeightScale;
+    this.slurOutlineWidth = opt.slurOutlineWidth;
     const thickness = opt.slurTieThickness;
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
@@ -1244,6 +1297,7 @@ export class Line {
       l.updateLyricY(opt);
       l.group.normalizeY();
       l.group.update();
+      l.addVerseNumbers(opt);
     }
     return this.layoutVertically(lines, opt, height);
   }
@@ -1350,10 +1404,48 @@ export class Line {
         dy = Math.max(dy, ey);
       }
     }
+    // 成书排版给定「歌词基线到音符基线」的定值时，按它来（减掉 addLyric 已经给的初值）：
+    // 原书每一行的歌词都排在同一高度上，不管这一行有没有减时线、低音点；
+    // 按自然栈高排会让带减时线的行把歌词推下去，行距忽大忽小。
+    if (opt.lyricBaselineGap > 0) dy = opt.lyricBaselineGap - opt.numberFont.size;
     for (const e of this.entries) {
       if (e instanceof NoteEntry) {
         if (e.lrc === null) continue;
-        e.lrc.y += dy;
+        // 一律**累加**：`lrc.y` 是相对 NoteEntry 组原点的偏移，组早已 update 归一过，
+        // 直接赋绝对值会把歌词甩到音符行里去。叠排时各段一起挪，段间距在 addLyric 里给过了。
+        for (const li of e.lrcs) li.y += dy;
+      }
+    }
+  }
+
+  /** 叠排时给每个视觉行的**行首**歌词挂段号（原书的「1.」「2.」…，悬在第一个字左边）。
+   *  段号不能直接拼进歌词文本——那会把第一个字挤离它对位的音符。 */
+  addVerseNumbers(opt: LayoutOptions): void {
+    if (opt.lyricStack <= 0) return;
+    let atLineStart = true;
+    for (const e of this.entries) {
+      if (e instanceof LineBreak) {
+        atLineStart = true;
+        continue;
+      }
+      if (!(e instanceof NoteEntry) || e.lrcs.length < 2) continue;
+      if (!atLineStart) continue;
+      atLineStart = false;
+      // **挂在行上、用绝对坐标**：挂进 NoteEntry.group 的话，随后的 update() 会把
+      // 段号那点负 x 归一掉（首字被挤走、段号压在首字上）。
+      // 本方法因此排在 group.update() 之后，此时各 entry 的位置已经定稿。
+      for (let k = 0; k < e.lrcs.length; k++) {
+        const li = e.lrcs[k];
+        if (!li.text) continue;
+        const tag = new TextFrame();
+        tag.font = opt.lrcFont;
+        tag.color = opt.color;
+        tag.text = `${k + 1}.`;
+        tag.update();
+        tag.x = e.group.x + li.x - tag.width;
+        tag.y = e.group.y + li.y;
+        this.group.children.push(tag);
+        tag.parent = this.group;
       }
     }
   }
@@ -1457,16 +1549,41 @@ export class LayoutOptions {
   creditSize = 36;
 
   smuflAsPath = false;
+  /** 和弦符号的字号与它到音符墨迹上缘的距离。0 = 不排和弦（默认：编辑器与 OMR 那两条路
+   *  的 Score 里本来就没有 harmony，排了也不会变，但留一道闸更明确）。 */
+  chordSize = 0;
+  chordGap = 0;
+  /** 歌词基线到音符基线的距离。0 = 用引擎自算的（贴着音符下方的减时线/低音点）。
+   *  成书排版给原书量到的定值，让每一行的歌词都排在同一高度上；
+   *  某一行的栈比它还深时仍按栈走（**只放大不缩小**，不会压到减时线上）。 */
+  lyricBaselineGap = 0;
+  /** 多段歌词的排法：0 = **逐段重复整条谱行**（jpword/musicpp 的老行为，流行敬拜谱常见）；
+   *  >0 = **一行谱下叠多行词**（传统圣诗本的排法，原书 500 首就是这样），值为段间行距。
+   *  只在「无反复、纯多段」（PlayData.isSimpple）的曲子上生效——有反复房号的谱
+   *  每一遍的谱面本来就不同，叠不到一起。 */
+  lyricStack = 0;
   halfWidthPunct = true;
   ignoreVerseNumber = true;
-  slurTieThickness = 6; // musicpp render.cpp:1076 (`lw0 = 6/cos`)
+  slurTieThickness = 6; // musicpp render.cpp:1076 (`lw0 = 6/cos`)，按 fontSize≈28 调
+  /** 弧高与弧描边宽。同样是按 fontSize≈28 调出来的绝对值，换字号排版要跟着缩。 */
+  slurHeightScale = 1;
+  slurOutlineWidth = 0.7;
+  /** 小节线粗细。musicpp lineWidths.lightBarline / heavyBarline（pptutil.cpp:139），
+   *  同样是按 fontSize≈28 调出来的绝对值——换字号排版时要等比缩，否则小节线相对字会变粗。 */
+  barlineWidth = 2;
+  finalBarlineWidth = 3.5;
   staffDist = 0;
-  marginTop: number;
-  marginBottom: number;
+  marginTop!: number;
+  marginBottom!: number;
   marginLeft = 50;
-  maxLineDist: number;
+  /** 右边距。默认与 marginLeft 相同（原来左右共用一个值）；成书排版要对开页镜像时分开给。 */
+  marginRight = 50;
+  /** 页面装饰：`song` = 每页底部印「曲名 + 第 i/n 页」（编辑器/单曲预览的老行为）；
+   *  `none` = 什么都不印，页眉页脚由整本合成那一层统一加（见 rebuild.mjs）。 */
+  pageFurniture: "song" | "none" = "song";
+  maxLineDist!: number;
   maxHorizontalScale = 2.0;
-  jpBeamDist: number;
+  jpBeamDist!: number;
 
   // --- jianpu vertical grid ---------------------------------------------
   // Everything stacked above (and below) a jianpu digit — octave dots, the
@@ -1484,13 +1601,13 @@ export class LayoutOptions {
   // (Before this, the project mixed three unrelated steps —
   // `dotBound.height*1.5` ≈ 4.2px, `numberSize/8` = 3.5px and
   // `numberSize/2` = 14px.)
-  jpStackGap: number;
+  jpStackGap!: number;
   /** Baseline → first beam (减时线). musicpp draws level 0 at y=35 with the
    * digit baseline at 30 (render.cpp:161, and processLevelJp's `lev >= cnt`
    * makes the level 0-based), i.e. 5 units at jianpuFont 30 = 1/6 em.
    * Without it the first beam sat at `jpBeamDist` (1/8 em) and crowded the
    * digit, more so once the stroke widened to musicpp's 1.5. */
-  jpBeamTop: number;
+  jpBeamTop!: number;
   jpBeamWidth = 1.5; // musicpp lineWidths.jpBeam (pptutil.cpp:138)
 
   /** One rung of the stack: a dot plus the gap above it. Also the amount by
@@ -1514,6 +1631,14 @@ export class LayoutOptions {
     this.lrcFont = new Font(cjk, fontSize);
     this.numberFont = new Font(cjk, fontSize);
     this.smuflFont = new Font("Bravura", fontSize);
+    this.applyFontSize(fontSize);
+  }
+
+  /** 由字号派生的那几个间距。构造时算一次；成书排版会在之后按 BookStyle 逐项覆盖
+   *  （见 src/pdflayout/browser.ts::applyBookStyle）——**默认值必须原样保持**，
+   *  编辑器与 OMR 那两条路的观感不能变。 */
+  applyFontSize(fontSize: number): void {
+    this.fontSize = fontSize;
     this.marginTop = fontSize * 1.5;
     this.marginBottom = fontSize * 3;
     this.maxLineDist = fontSize * 0.75;
@@ -1659,12 +1784,29 @@ export class Layout {
 
   fromScore(scr: S.Score, dur: string | null, width: number, height: number): void {
     this.pages = [];
-    const cw = width - this.options.marginLeft * 2;
+    const cw = width - this.options.marginLeft - this.options.marginRight;
     const ch = height - this.options.marginTop - this.options.marginBottom;
     const p = scr.parts[0];
     if (dur !== null) scr.clearSystemBreak();
     const l = new Line();
-    const repMeasures = scr.playData.measures;
+    let repMeasures = scr.playData.measures;
+    // 叠排 = **按原谱排一遍**：不展开任何反复。
+    //
+    // 反复本来就是用记号表示的（`‖:` `:‖`、房号、D.S.），原书 500 首就是印一遍谱 +
+    // 记号 + 底下叠几段歌词。而 playData 是给**试听**用的展开序列：多段歌词在那里被摊成
+    // 好几遍，064《啊！圣善夜》甚至摊成 10 遍——照着它排，一首歌能排出十几页。
+    if (this.options.lyricStack > 0) {
+      repMeasures = p.measures.map((_, i) => {
+        const it = new S.PlayItem();
+        it.mid = i;
+        it.end = i + 1;
+        it.pass = 0;
+        it.skip = 0;
+        it.limit = -1;
+        it.endOfPass = false;
+        return it;
+      });
+    }
     repMeasures.forEach((it, idx) => {
       for (let mid = it.mid; mid < it.end; mid++) {
         const m = p.measures[mid];
@@ -1697,6 +1839,11 @@ export class Layout {
   }
 
   titleAndPageNumber(title: string, width: number, height: number, cw: number): void {
+    if (this.options.pageFurniture === "none") {
+      // 成书：页眉页脚由整本那一层按书页码统一加，这里印「第 i/n 页」只会打架
+      for (const pg of this.pages) pg.x += this.options.marginLeft;
+      return;
+    }
     this.pages.forEach((pg, idx) => {
       pg.x += this.options.marginLeft;
       const tf = new TextFrame();

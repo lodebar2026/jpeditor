@@ -3,11 +3,14 @@
 //   node relayout.mjs --mode=outline 55-62   保真复现：按字符查回**原件的原始字形轮廓**画路径。
 //                                            不依赖任何外部字体，用来做**对象级核对**——
 //                                            它把「版面规格是否记全了」变成可判定的。
-//   node relayout.mjs --mode=text 55-62      文字版：输出可选中/可搜索的 PDF。
+//   node relayout.mjs --mode=text 55-62      文字版：位置照原件，把曲线换成真文字。
 //
-// outline 模式纯 Node；text 模式要起浏览器（Chromium 打印 SVG 的 <text> 才有文字层）。
+// **两种模式都是纯 Node，不起浏览器。** text 模式经 DrawList 交 scripts/pdfwrite.mjs 出 PDF：
+// 字号取同类型中位数（testdata/500/bookstyle.json，由 gen-bookstyle.mjs 统计），
+// 按角色分别嵌字体，读不出的字形先按 GT 回填（testdata/500/backfill.json）。
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { loadCli, openPdf, parsePageRange } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, parsePageRange, csvRow } from "./scripts/node-harness.mjs";
+import { writePdf } from "./scripts/pdfwrite.mjs";
 
 const args = process.argv.slice(2);
 const flags = Object.fromEntries(args.filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")));
@@ -20,6 +23,11 @@ const TOL = Number(flags.tol ?? 0.5); // 位置容差（pt）
 const cli = await loadCli();
 const { doc, OPS } = await openPdf();
 const dict = JSON.parse(await readFile("testdata/500/glyphdict.json", "utf8"));
+const style = cli.validateBookStyle(JSON.parse(await readFile(flags.style ?? "testdata/500/bookstyle.json", "utf8"))).style;
+/** 读不出的字形按形状键回填（GT 对齐的结果，见 backfill.ts）。没有这份文件也能跑。 */
+const backfill = await readFile(flags.backfill ?? "testdata/500/backfill.json", "utf8").then(JSON.parse).catch(() => ({ byKey: {} }));
+// 字典里同一字形的分身都指向代表键（`g`），补字表按代表键存，查的时候先折过去。
+const fallbackChar = (key) => backfill.byKey?.[dict.classes[key]?.g ?? key] ?? null;
 const pm = JSON.parse(await readFile("testdata/500/pagemap.json", "utf8"));
 const byKey = new Map(Object.entries(dict.classes));
 const charOf = new Map();
@@ -59,6 +67,8 @@ function placeGlyph(cls, x, yBottom, size, fill = "#000") {
 }
 
 const report = [];
+const drawPages = [];
+const unreadTally = new Map();
 for (const pn of pages) {
   const g = await doc.getPage(pn);
   const vec = await cli.extractVectorPage(g, OPS);
@@ -70,6 +80,30 @@ for (const pn of pages) {
 }, entriesByPage.get(pn) ?? []);
 
   const [W, H] = spec.size;
+
+  // text 模式：规格 → DrawList，位置照原件、样式来自 bookstyle（见 src/pdflayout/drawlist.ts）
+  if (MODE === "text") {
+    const r = cli.specToDrawPage(spec, style, { fallbackChar });
+    drawPages.push(r.page);
+    for (const u of r.unreadKeys) {
+      const cur = unreadTally.get(u.key) ?? { shape_key: u.key, instances: 0, first_page: pn, role: u.role, song_no: spec.songs[0]?.id ?? null };
+      cur.instances++;
+      unreadTally.set(u.key, cur);
+    }
+    report.push({
+      page: pn,
+      kind: spec.kind,
+      w: W,
+      h: H,
+      objects: inv.objs.filter((o) => !o.dup).length,
+      chars: r.page.items.reduce((a, i) => a + (i.t === "text" ? [...i.text].length : 0), 0),
+      filled: r.filled,
+      unread: r.unread,
+      keptOwnSize: r.keptOwnSize,
+    });
+    continue;
+  }
+
   const parts = [];
   const placed = []; // 重排出来的对象（用于核对）
 
@@ -211,80 +245,40 @@ for (const pn of pages) {
   });
 }
 
-// text 模式：用 pdf-lib **直接**生成 PDF，不经浏览器。
-//
-// 为什么不走 Chromium 打印：printToPDF 经 CDP 把整份 PDF 传回来，页一多就 "Printing failed"
-// / "Page crashed"，只能分批打印再合并；而**每一批都会各自嵌一份字体子集**，
-// 合出来的整本重复嵌了几十份字体（实测 666 页 43MB）。
-// pdf-lib 直接写 PDF：字体只嵌一次子集，无浏览器、无分批、无重复。
-//
-// SVG 仍然照常产出（`pdf-out/p<页>.svg`），供肉眼核对与其它用途。
+// text 模式：DrawList → PDF（scripts/pdfwrite.mjs，A/B 两路共用的唯一写 PDF 处）。
 if (MODE === "text") {
-  const { PDFDocument, rgb } = await import("pdf-lib");
-  const fontkit = (await import("@pdf-lib/fontkit")).default;
-  const { extractTtc } = await import("./scripts/ttc.mjs");
-
-  // macOS 的中文字体是 ttc，pdf-lib 只吃单个 sfnt，先抽出来（见 scripts/ttc.mjs）
-  const FONT = flags.font ?? "/System/Library/Fonts/Supplemental/Songti.ttc";
-  const FACE = flags.face ?? "Songti SC Regular";
-  const fontBytes = /\.ttc$/i.test(FONT) ? await extractTtc(FONT, FACE) : new Uint8Array(await readFile(FONT));
-
-  const doc = await PDFDocument.create();
-  doc.registerFontkit(fontkit);
-  const font = await doc.embedFont(fontBytes, { subset: true });
-  doc.setTitle("诗歌500首（文字版）");
-  doc.setCreator("jpeditor 矢量 PDF 识别 · relayout.mjs");
-
-  const canEncode = new Map();
-  const drawable = (ch) => {
-    let ok = canEncode.get(ch);
-    if (ok === undefined) {
-      try {
-        font.encodeText(ch);
-        ok = true;
-      } catch {
-        ok = false;
-      }
-      canEncode.set(ch, ok);
-    }
-    return ok;
-  };
-
-  let skipped = 0;
-  for (const r of report) {
-    const pg = doc.addPage([r.w, r.h]);
-    // pdf-lib 的原点在左下、y 朝上；规格里的坐标是 SVG 那套（左上、y 朝下）
-    const flip = (y) => r.h - y;
-    for (const m of r.marks) {
-      if (m.d) pg.drawSvgPath(m.d, { x: 0, y: r.h, color: rgb(0, 0, 0), borderWidth: 0 });
-      else
-        pg.drawRectangle({
-          x: m.box.x,
-          y: flip(m.box.y + Math.max(m.box.h, 0.15)),
-          width: Math.max(m.box.w, 0.15),
-          height: Math.max(m.box.h, 0.15),
-          color: rgb(0, 0, 0),
-        });
-    }
-    for (const t of r.texts) {
-      for (const c of t.chars) {
-        if (c.ch === "\ufffd" || !c.ch.trim()) continue;
-        if (!drawable(c.ch)) {
-          skipped++;
-          continue;
-        }
-        pg.drawText(c.ch, { x: c.x, y: flip(t.baselineY), size: t.size, font, color: rgb(0, 0, 0) });
-      }
-    }
-  }
-
   const out = `${OUTDIR}/${OUTNAME}`;
-  await writeFile(out, await doc.save());
-  const bytes = (await import("node:fs")).statSync(out).size;
-  console.log(
-    `文字版 PDF → ${out}（${doc.getPageCount()} 页${doc.getPageCount() === report.length ? "，与原件页数一致" : `，原件 ${report.length} 页 ⚠`}，` +
-      `${(bytes / 1048576).toFixed(1)} MB，字体 ${FACE} 子集嵌入一份${skipped ? `，字体缺字跳过 ${skipped} 处` : ""}）`,
+  const res = await writePdf({ style, source: "relayout", pages: drawPages }, { out, title: "诗歌500首（原位文字版）", strict: "strict" in flags });
+  const sumOf = (f) => report.reduce((a, r) => a + f(r), 0);
+  const miss = new Map();
+  for (const m of res.missing) miss.set(m.ch, (miss.get(m.ch) ?? 0) + 1);
+  const stat = { pages: res.pages, bytes: res.bytes, chars: sumOf((r) => r.chars), filled: sumOf((r) => r.filled), unread: sumOf((r) => r.unread), keptOwnSize: sumOf((r) => r.keptOwnSize), fontMissing: res.missing.length };
+  await writeFile(`${OUTDIR}/relayout-report.json`, JSON.stringify({ mode: MODE, style: style.id, ...stat, missingFonts: res.missingFonts, missingChars: [...miss].sort((a, b) => b[1] - a[1]).slice(0, 50), missingDetail: res.missing.slice(0, 20) }, null, 2));
+  await writeFile(
+    `${OUTDIR}/relayout.csv`,
+    "\ufeff" + [csvRow(["页", "类型", "对象数", "字数", "回填", "未读出", "保留原字号"]), ...report.map((r) => csvRow([r.page, r.kind, r.objects, r.chars, r.filled, r.unread, r.keptOwnSize]))].join("\n"),
   );
+  console.log(
+    `文字版 PDF → ${out}（${res.pages} 页，${(res.bytes / 1048576).toFixed(1)} MB）\n` +
+      `字 ${stat.chars}，GT 回填 ${stat.filled}，仍读不出 ${stat.unread}，保留原字号的行 ${stat.keptOwnSize}，字体缺字 ${stat.fontMissing}` +
+      (res.missingFonts.length ? `\n⚠ 字体找不到：${res.missingFonts.map((f) => `${f.id}(${f.family})`).join(" ")}` : ""),
+  );
+  console.log(`→ ${OUTDIR}/relayout-report.json, ${OUTDIR}/relayout.csv`);
+
+  if ("db" in flags) {
+    const { openDb, newRunId, recordRun, recordMetrics, recordUnread } = await import("./scripts/checkdb.mjs");
+    const db = openDb();
+    const runId = newRunId("relayout");
+    recordRun(db, { run_id: runId, route: "relayout", config: style.id, artifact: out, page_count: res.pages, byte_size: res.bytes, cmd: `relayout.mjs --mode=text ${rangeSpec}`.trim() });
+    recordMetrics(db, runId, {
+      chars: stat.chars, filled: stat.filled, unread: stat.unread,
+      kept_own_size: stat.keptOwnSize, font_missing: stat.fontMissing, pages: res.pages,
+    });
+    recordUnread(db, [...unreadTally.values()].sort((a, b) => b.instances - a.instances));
+    db.close();
+    console.log(`→ 校对.db：批次 ${runId}，未读字形 ${unreadTally.size} 类`);
+  }
+  process.exit(process.exitCode ?? 0);
 }
 
 const sum = (f) => report.reduce((a, r) => a + f(r), 0);

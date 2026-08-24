@@ -20,6 +20,7 @@ export const MIME = {
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
   ".otf": "font/otf",
+  ".ttc": "font/collection",
   ".svg": "image/svg+xml",
   ".wasm": "application/wasm",
   ".onnx": "application/octet-stream",

@@ -14,17 +14,7 @@
 //
 //   npm run build:cli && node gen-pagemap.mjs && node gen-glyphdict.mjs
 import { readFile, writeFile } from "node:fs/promises";
-import { loadCli, openPdf, loadCorpus, readSongGt, jpwSections, gtNoteDigits, gtLyricVerses, gtHarmonies, collectSongGlyphs, mergePagemapEntries, isCreditWordGlyph } from "./scripts/node-harness.mjs";
-
-/** `.Title` 里的 `WordsByAndMusicBy`。**取最后一条非空的**：有的文件写了两条，
- *  第一条是空的；`=` 后面只吃横向空白，吃到换行就会把下一行整条卷进来。 */
-function creditField(titleSec) {
-  let out = "";
-  for (const m of (titleSec ?? "").matchAll(/WordsByAndMusicBy[^\S\r\n]*=[^\S\r\n]*\{?([^}\r\n]*)\}?/g)) {
-    if (m[1].trim()) out = m[1];
-  }
-  return out;
-}
+import { loadCli, openPdf, loadCorpus, mergePagemapEntries, collectSongItems } from "./scripts/node-harness.mjs";
 
 const SEED = "testdata/500/glyph-seed.tsv";
 const PAGEMAP = "testdata/500/pagemap.json";
@@ -86,83 +76,8 @@ const noteOf = (o) => {
   }
   return key;
 };
-const bot = (o) => o.obj.bbox.y + o.obj.bbox.h;
-
-const items = []; // { id, notes:[key], verses:[[key]], title:[key] }
 const invCache = new Map();
-for (const [id, entries] of byId) {
-  const song = songs.get(id);
-  if (!song?.jpwabc) continue;
-  const notes = [];
-  const verseRows = [];
-  const title = [];
-  const chords = [];
-  const credits = [];
-  const category = [];
-  const footers = [];
-  for (const e of entries) {
-    let inv = invCache.get(e.page);
-    if (!inv) {
-      const g = await doc.getPage(e.page);
-      const vp = await cli.extractVectorPage(g, OPS);
-      g.cleanup();
-      inv = cli.classifyPage(vp, profile);
-      invCache.set(e.page, inv);
-    }
-    const got = collectSongGlyphs(inv, e, profile, cli.shapeKey);
-    for (const o of got.notes) notes.push(noteOf(o));
-    for (const o of got.title) title.push(noteOf(o));
-    for (const o of got.chords) chords.push(noteOf(o));
-    // 词曲署名：**按基线分行再按 x 排**（作词一行、作曲一行交错排，照 x 直读会串行）
-    {
-      const lines = [];
-      for (const o of inv.objs
-        .filter((x) => x.cls === "credit" && !x.dup && x.obj.bbox.y >= (e.yFrom ?? 0) && x.obj.bbox.y < (e.yTo ?? 1e9))
-        .sort((a, b) => bot(a) - bot(b))) {
-        const last = lines[lines.length - 1];
-        // 容差 5 而不是 3：生卒年印得略高，卡在 3 上会被切成另一行、排到人名前面（同 pdf-diff）
-        if (last && bot(o) - last.bot <= 5) last.items.push(o);
-        else lines.push({ bot: bot(o), items: [o] });
-      }
-      // 标点（`：` `.` `(` `)`）不进这条序列：GT 那边只留字与数，留着两边永远对不齐
-      for (const ln of lines)
-        for (const o of ln.items.sort((a, b) => a.obj.bbox.x - b.obj.bbox.x)) if (isCreditWordGlyph(o.obj.bbox)) credits.push(noteOf(o));
-    }
-    if (e.startsHere) {
-      for (const o of inv.objs.filter((x) => x.cls === "category" && !x.dup).sort((a, b) => a.obj.bbox.x - b.obj.bbox.x))
-        category.push(noteOf(o));
-      // 页脚是「·书页码·」。首曲 001 在 PDF 第 33 页、书页 1，故书页码 = PDF 页 − 32。
-      footers.push({ keys: inv.objs.filter((x) => x.cls === "footer" && !x.dup).sort((a, b) => a.obj.bbox.x - b.obj.bbox.x).map(noteOf), text: `\u00b7${e.page - 32}\u00b7` });
-    }
-    got.verses.forEach((ln, vi) => {
-      (verseRows[vi] ??= []).push(...ln);
-    });
-  }
-  if (invCache.size > 40) invCache.clear();
-
-  const gt = await readSongGt(song);
-  const sec = jpwSections(gt.jpwabc);
-  items.push({
-    id,
-    gtNotes: gtNoteDigits(sec.Voice || ""),
-    gtVerses: gtLyricVerses(sec.Words || "").map((v) => v.chars),
-    gtTitle: song.title,
-    gtChords: gt.musicxml ? gtHarmonies(gt.musicxml).join("") : "",
-    gtCategory: (song.category ?? "").replace(/\s+/g, ""),
-    // GT 的署名字段：`词曲：(加)宣信(1843-1919)`。谱面上的标点/空格随排版走，只留字与数
-    gtCredit: (creditField(sec.Title))
-      .replace(/\\n/g, "")
-      .match(/[\u4e00-\u9fff0-9A-Za-z]/g)
-      ?.join("") ?? "",
-    notes,
-    verses: verseRows.map((r) => r.map(noteOf)),
-    title,
-    chords,
-    credits,
-    category,
-    footers,
-  });
-}
+const items = await collectSongItems({ cli, doc, OPS, profile, byId, songs, keyOf: noteOf, invCache });
 console.log(`  ${items.length} 首，形状类 ${classes.size}`);
 
 // 再扫一遍全书，把**所有文字类对象**都注册进形状表。
@@ -262,68 +177,20 @@ for (const k of known.keys()) sourceOf.set(k, "manual");
 /** 用当前字典把形状序列翻成字符数组（未知为 null）。 */
 const decode = (keys) => keys.map((k) => known.get(k) ?? null);
 
-/**
- * 对齐 GT 字符串与页面形状序列，把对上的位置记票。
- * 已知形状：字符相同给高分、不同给罚分；未知形状：给一个中性偏正的分（当通配），
- * 这样它更倾向于落在对应的 GT 字符上，从而被标注出来。
- */
+/** 对齐 GT 字符串与页面形状序列，把对上的位置记票（对齐判据见 src/pdflayout/align.ts）。 */
 function alignVote(gtStr, keys, votes) {
-  const n = gtStr.length;
-  const m = keys.length;
-  if (!n || !m || Math.abs(n - m) > Math.max(8, Math.min(n, m) * 0.4)) return;
   const dec = decode(keys);
+  const r = cli.alignSeq(gtStr, dec);
+  if (!r) return;
   const vote = (k, ch, w) => {
     if (known.has(k)) return;
     const v = votes.get(k) ?? new Map();
     v.set(ch, (v.get(ch) ?? 0) + w);
     votes.set(k, v);
   };
-
-  // 长度完全相等 = 无歧义直配，一次就能定案（权重 3，抵得上三次 DP 对齐的票）。
-  // 标题尤其依赖这条：一首一个标题、字几乎不重复，靠投票永远凑不够票数
-  //（实测只靠 DP 投票时标题准确率卡在 73%）。
-  // 前提是这条序列里**已经认识的字**大体对得上，否则说明整条是错位的，不能信。
-  if (n === m) {
-    let kn = 0;
-    let ok = 0;
-    for (let t = 0; t < m; t++) {
-      if (dec[t] !== null) {
-        kn++;
-        if (dec[t] === gtStr[t]) ok++;
-      }
-    }
-    if (kn === 0 || ok / kn >= 0.6) {
-      for (let t = 0; t < m; t++) vote(keys[t], gtStr[t], 3);
-      return;
-    }
-  }
-  const GAP = -1.2;
-  const score = (i, j) => {
-    const c = dec[j];
-    if (c === null) return 0.6; // 未知形状：通配
-    return c === gtStr[i] ? 2 : -1.5;
-  };
-  // DP
-  // 用普通数组存：Float32Array 会把双精度加法的结果截断，回溯时的等值比较就永远不成立。
-  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-  for (let i = 1; i <= n; i++) dp[i][0] = i * GAP;
-  for (let j = 1; j <= m; j++) dp[0][j] = j * GAP;
-  for (let i = 1; i <= n; i++) {
-    for (let j = 1; j <= m; j++) {
-      dp[i][j] = Math.max(dp[i - 1][j - 1] + score(i - 1, j - 1), dp[i - 1][j] + GAP, dp[i][j - 1] + GAP);
-    }
-  }
-  // 回溯
-  let i = n;
-  let j = m;
-  while (i > 0 && j > 0) {
-    if (dp[i][j] === dp[i - 1][j - 1] + score(i - 1, j - 1)) {
-      vote(keys[j - 1], gtStr[i - 1], 1);
-      i--;
-      j--;
-    } else if (dp[i][j] === dp[i - 1][j] + GAP) i--;
-    else j--;
-  }
+  // 直配一次记 3 分（无歧义），DP 对齐一次记 1 分
+  const w = r.direct ? 3 : 1;
+  for (const { i, j } of r.pairs) vote(keys[j], gtStr[i], w);
 }
 
 for (let round = 1; round <= ROUNDS; round++) {
@@ -397,5 +264,6 @@ for (const [key, c] of rawClasses) {
 }
 for (const [k] of known) if (!dict.classes[k]) dict.classes[k] = { key: k, char: known.get(k), source: sourceOf.get(k) ?? null, count: 0, h: 0, w: 0, bbox: null, d: "" };
 await writeFile(OUT, JSON.stringify(dict));
+
 const defined = Object.values(dict.classes).filter((c) => c.char).length;
 console.log(`→ ${OUT}：${Object.keys(dict.classes).length} 类，已定 ${defined}`);

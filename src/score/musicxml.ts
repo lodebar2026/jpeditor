@@ -3,6 +3,7 @@
 // Reuses the existing TS Score model + Fraction/MusicCommon/AccidentalStat.
 
 import { Fraction } from "../common/fraction";
+import { harmonyElemToText } from "./harmonyparse";
 import {
   BarStyle,
   BarlineEntry,
@@ -258,9 +259,22 @@ function loadMeasure(
     m.time.beatType = prev.time.beatType;
   }
   const st: MState = { pos: new Fraction(0), noteEnd: new Fraction(0) };
+  // `<harmony>` 印在**它后面那个音符**的上方（MusicXML 的约定）。
+  let pendingHarmony: string | null = null;
   for (const item of Array.from(measureEl.children)) {
     switch (item.tagName) {
-      case "note": onNote(m, item, tmp, div, st); break;
+      case "harmony": pendingHarmony = harmonyElemToText(item) ?? pendingHarmony; break;
+      case "note": {
+        onNote(m, item, tmp, div, st);
+        if (pendingHarmony) {
+          const last = m.entries[m.entries.length - 1];
+          if (last instanceof Chord && !last.harmony) {
+            last.harmony = pendingHarmony;
+            pendingHarmony = null;
+          }
+        }
+        break;
+      }
       case "backup": st.pos = st.pos.minus(new Fraction(intOf(item, "duration") ?? 0)); st.noteEnd = st.pos; break;
       case "attributes": parseAttribute(m, item); break;
       case "print": parsePrint(m, item); break;

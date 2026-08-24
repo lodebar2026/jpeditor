@@ -43,15 +43,25 @@ const pages = parsePageRange(rangeSpec, doc.numPages);
 await mkdir(OUTDIR, { recursive: true });
 
 const specs = [];
+// 有几类字（三连音数字、段号、段落词）PageSpec 里没有独立字段，只在归类结果里。
+// 顺带把它们的字高收下来，gen-bookstyle 才能给这几个角色定字号——否则要为这点数据
+// 把 666 页的 classifyPage 再跑一遍。
+const CLASS_HIST = ["tupletNum", "verseNum", "sectionWord", "category", "songNumber", "title", "note", "lyric"];
+const classHeights = Object.fromEntries(CLASS_HIST.map((c) => [c, []]));
 for (const pn of pages) {
   const g = await doc.getPage(pn);
   const vec = await cli.extractVectorPage(g, OPS);
   g.cleanup();
   const inv = cli.classifyPage(vec, profile);
+  for (const o of inv.objs) {
+    if (o.dup) continue;
+    const a = classHeights[o.cls];
+    if (a) a.push(Number(o.obj.bbox.h.toFixed(3)));
+  }
   specs.push(cli.buildPageSpec(vec, inv, lookup, entriesByPage.get(pn) ?? []));
 }
 
-await writeFile("pdf-layout.json", JSON.stringify({ pdf: pm.pdf, profile, pages: specs }));
+await writeFile("pdf-layout.json", JSON.stringify({ pdf: pm.pdf, profile, classHeights, pages: specs }));
 
 // ── CSV：一页一行
 const head = ["页", "类型", "尺寸", "曲号", "标题", "页眉", "页脚", "谱行", "花边框", "线框", "文本行", "真实文字层", "对象数", "未安置", "仅兜底收走", "未读出"];
