@@ -22,6 +22,10 @@ import {
   STYLE_ROLES,
 } from "./bookstyle";
 
+/** 段落词（副歌/间奏…）印在和弦带里，字号是那一带的（实测 7pt 上下），
+ *  不是歌词那一档。词表与 bookmeta.ts 的 SECTION_WORDS 同源——两边要一致。 */
+const SECTION_WORD = /(副歌|间奏|前奏|尾奏|结束句|齐唱|独唱|轮唱|合唱|重唱|末节|尾声)/;
+
 const bottom = (r: Rect) => r.y + r.h;
 const right = (r: Rect) => r.x + r.w;
 const cx = (r: Rect) => r.x + r.w / 2;
@@ -111,8 +115,18 @@ export function collectRoleSamples(pages: PageSpec[], opt: SampleOptions = {}): 
 
   for (const p of pages) {
     const inRange = p.page >= from && p.page <= to;
-    if (p.kind === "toc" || p.kind === "index") {
-      for (const t of p.textLines) pushRun(out, "toc", t, p.page);
+    if (p.kind === "toc" || p.kind === "index" || p.kind === "front-matter") {
+      // 目录/索引/扉页那几页混着四档字：页题（「目录」「诗题笔划索引」）、
+      // 一级分类、二级小标题、条目正文。按「有没有尾页码 + 字号」分开收，
+      // 混成一桶的话条目那一档会被大字拉高（实测拉到 8.9pt，真值 7.8）。
+      for (const t of p.textLines) {
+        const txt = t.text.trim();
+        const entry = /[（(]\d+[)）]\s*$/.test(txt) || /\d\s*$/.test(txt);
+        if (entry) pushRun(out, "toc", t, p.page);
+        else if (t.size >= 16) pushRun(out, "frontTitle", t, p.page);
+        else if (t.size >= 12.5) pushRun(out, "tocHeading", t, p.page);
+        else if (t.size >= 9.8) pushRun(out, "tocSub", t, p.page);
+      }
     }
     if (p.header) pushRun(out, "header", p.header, p.page);
     if (p.footer) pushRun(out, "footer", p.footer, p.page);
@@ -133,7 +147,7 @@ export function collectRoleSamples(pages: PageSpec[], opt: SampleOptions = {}): 
           const role: StyleRole = noteMed > 0 && c.h < noteMed * 0.72 ? "tuplet" : "note";
           out.push({ role, h: c.h, w: c.w, page: p.page, ch: c.ch });
         }
-        for (const c of y.chordLines) pushRun(out, chordLineRole(c), c, p.page);
+        for (const c of y.chordLines) pushRun(out, SECTION_WORD.test(c.text) ? "sectionWord" : chordLineRole(c), c, p.page);
         for (const l of y.lyricLines) {
           const h = runBodyHeight(l);
           if (h < lyricMid * 0.5) continue; // 整行标点/记号：不是歌词，别拿去算字号
@@ -402,6 +416,54 @@ export interface StyleReport {
   warnings: string[];
 }
 
+/**
+ * 目录/索引的版面几何：行距、首行基线、左右缘、页题基线。
+ *
+ * 判据：**目录条目认「尾部带圆括号页码」，索引条目认「以数字收尾」**——两者行距不同
+ *（实测 19.4 与 15.8），混在一起量会得到一个两不像的中位数。
+ * 页题基线取整页最大那行（「目录」18.3pt、「诗题笔划索引」16.1pt）。
+ */
+export function inferTocRule(pages: PageSpec[]): Partial<BookStyle["toc"]> {
+  const tocGaps: number[] = [];
+  const tocFirst: number[] = [];
+  const idxGaps: number[] = [];
+  const idxFirst: number[] = [];
+  const lefts: number[] = [];
+  const rights: number[] = [];
+  const titles: number[] = [];
+  for (const p of pages) {
+    if (p.kind !== "toc" && p.kind !== "index") continue;
+    const isTocEntry = (t: string) => /[（(]\d+[)）]\s*$/.test(t.trim());
+    const isIdxEntry = (t: string) => !isTocEntry(t) && /\d\s*$/.test(t.trim());
+    for (const kind of ["toc", "index"] as const) {
+      const lines = p.textLines.filter((l) => (kind === "toc" ? isTocEntry(l.text) : isIdxEntry(l.text)));
+      if (lines.length < 5) continue;
+      const bl = lines.map((l) => l.baselineY).sort((a, b) => a - b);
+      for (let i = 1; i < bl.length; i++) {
+        const d = bl[i] - bl[i - 1];
+        if (d > 4) (kind === "toc" ? tocGaps : idxGaps).push(d);
+      }
+      (kind === "toc" ? tocFirst : idxFirst).push(bl[0]);
+      for (const l of lines) {
+        lefts.push(l.box.x);
+        rights.push(right(l.box));
+      }
+    }
+    const big = [...p.textLines].sort((a, b) => b.size - a.size)[0];
+    if (big && big.size >= 15) titles.push(big.baselineY);
+  }
+  const round = (v: number) => Number(v.toFixed(2));
+  const out: Partial<BookStyle["toc"]> = {};
+  if (tocGaps.length) out.lineGap = round(med(tocGaps));
+  if (tocFirst.length) out.firstBaseline = round(med(tocFirst));
+  if (idxGaps.length) out.indexLineGap = round(med(idxGaps));
+  if (idxFirst.length) out.indexFirstBaseline = round(med(idxFirst));
+  if (lefts.length) out.left = round(med(lefts));
+  if (rights.length) out.right = round(med(rights));
+  if (titles.length) out.titleBaseline = round(med(titles));
+  return out;
+}
+
 /** 统计 → BookStyle。`fonts` 不由统计产生（转曲 PDF 里没有字体资源），由调用方给。 */
 export function inferBookStyle(
   profile: BookProfile,
@@ -591,6 +653,7 @@ export function inferBookStyle(
     fonts,
     roles,
     metrics,
+    toc: { ...base.toc, ...inferTocRule(pages) },
     titleBlock: {
       numberBaseline: pt(ms.numberBaseline) || base.titleBlock.numberBaseline,
       titleBaseline: pt(ms.titleBaseline) || base.titleBlock.titleBaseline,

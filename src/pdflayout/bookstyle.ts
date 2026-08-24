@@ -32,6 +32,9 @@ export type StyleRole =
   | "sectionWord" // 段落词（副歌…）
   | "story" // 花边框内的注解正文
   | "toc" // 目录/索引正文
+  | "tocHeading" // 目录里的一级分类标题
+  | "tocSub" // 目录里的二级小标题
+  | "frontTitle" // 扉页/前言/索引的页题（「附 录」「诗题笔划索引」）
   | "header" // 页眉
   | "footer" // 页码
   | "smufl"; // SMuFL 记号（延长号、跳转记号…）——B 路才有，A 路的这些是几何对象
@@ -51,6 +54,9 @@ export const STYLE_ROLES: StyleRole[] = [
   "sectionWord",
   "story",
   "toc",
+  "tocHeading",
+  "tocSub",
+  "frontTitle",
   "header",
   "footer",
   "smufl",
@@ -225,6 +231,17 @@ export interface TocRule {
   byCategory: boolean;
   /** 形如 "{no}  {title} {leader} {page}"。 */
   entry: string;
+  /** 以下为版面几何（pt，由 stats.ts 从原书目录/索引页实测）。 */
+  lineGap: number;
+  firstBaseline: number;
+  left: number;
+  right: number;
+  /** 首句/笔划索引是两栏，行距比目录紧。 */
+  indexColumns: number;
+  indexLineGap: number;
+  indexFirstBaseline: number;
+  /** 页题基线（「目录」「诗题笔划索引」）。 */
+  titleBaseline: number;
 }
 
 export interface BookStyle {
@@ -289,6 +306,9 @@ const ROLE_FONT: Record<StyleRole, { font: string; align: AlignMode }> = {
   sectionWord: { font: "serif", align: "left" },
   story: { font: "serif", align: "left" },
   toc: { font: "serif", align: "left" },
+  tocHeading: { font: "hei", align: "center" },
+  tocSub: { font: "hei", align: "center" },
+  frontTitle: { font: "wei", align: "center" },
   header: { font: "hei", align: "outer" },
   footer: { font: "times", align: "outer" },
   // SMuFL 走轮廓（fonts.music.mode = "path"）：PDF 里就不必嵌 Bravura，
@@ -372,7 +392,20 @@ export function defaultBookStyle(): BookStyle {
     },
     header: { enable: true, rule: "category", band: [24, 46], align: "outer" },
     footer: { enable: true, rule: "pageNumber", format: "·{n}·", band: [560, 585], align: "outer", skipKinds: ["blank", "cover"] },
-    toc: { columns: 2, leader: "……", byCategory: true, entry: "{no}  {title} {leader} {page}" },
+    toc: {
+      columns: 1,
+      leader: "…",
+      byCategory: true,
+      entry: "{no}  {title} {leader} {page}",
+      lineGap: 19.4,
+      firstBaseline: 109,
+      left: 52,
+      right: 361.5,
+      indexColumns: 2,
+      indexLineGap: 15.8,
+      indexFirstBaseline: 116,
+      titleBaseline: 78.5,
+    },
     titleBlock: {
       numberBaseline: 77.9,
       titleBaseline: 77.9,
