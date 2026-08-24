@@ -4,12 +4,16 @@
 //   node pdf-mark.mjs 279 135        # 只出这几首所在的页
 //   node pdf-mark.mjs --all          # 全书 666 页（默认只出有标记的页）
 //   node pdf-mark.mjs --out=x.pdf
+//   node pdf-mark.mjs --punct        # 连标点差异一起画（默认不画）
 //
-// 三种标记（颜色对应 pdf-diff 报告里的三档）：
+// 四种标记（颜色对应 pdf-diff 报告里的分档）：
 //   **红** —— 页面上这个对象与 GT 不符（录错，或页面多出 GT 没有的）。做法是把该对象的
 //             轮廓原样用红色再画一遍，正好盖住原来的黑字，所以「这个字变红了」。
 //   **黄** —— GT 有、页面没有的内容，按原位补在旁边（黄底黑字，插在左邻居右侧）。
 //   **橙** —— 字形没读出来（`�`）。是本工具的局限，不是录错，故与红分开。
+//   **蓝** —— 标点与 GT 不一致。标点跟着排版走，两边位置未必一致，属「表述或结构不一致」，
+//             不是录错。**默认不画**（要看加 `--punct`）：全书七百多处，蓝点铺满大半本书，
+//             页数翻一倍，真正要看的红标反被淹掉。差异明细照旧进 `pdf-diff/<曲号>.txt`。
 //
 // 位置从 `pdf-diff-marks.json` 来，那里只记「哪一页、inv.objs 里第几个」；
 // 轮廓要现取——本脚本重跑一遍 extract+classify（只跑要标的页，快），
@@ -32,6 +36,8 @@ const { extractTtc } = await import("./scripts/ttc.mjs");
 const RED = rgb(0.85, 0.05, 0.05);
 const ORANGE = rgb(1, 0.5, 0);
 const YELLOW = rgb(1, 0.9, 0.25);
+const BLUE = rgb(0.1, 0.35, 0.9);
+const PALEBLUE = rgb(0.72, 0.85, 1);
 const INK = rgb(0.15, 0.1, 0);
 
 const data = JSON.parse(await readFile(MARKS, "utf8"));
@@ -59,7 +65,13 @@ const data = JSON.parse(await readFile(MARKS, "utf8"));
   if (newest > marksAt) console.log(`⚠ ${MARKS} 比语料旧（${newestName} 更新过）——先跑 node pdf-diff.mjs`);
   if (data.songs < 100) console.log(`⚠ ${MARKS} 里只有 ${data.songs} 首，多半是上次带曲号跑的 pdf-diff——全量请跑 node pdf-diff.mjs`);
 }
-let pages = Object.entries(data.pages).map(([p, ms]) => ({ page: Number(p), marks: ms }));
+// 标点差异**默认不画**（`--punct` 打开）：全书七百多处，蓝点铺满大半本书，
+// 页数从 155 涨到 310、体积翻一倍，真正要看的红标反被淹掉。差异明细照旧进报告。
+const PUNCT_KINDS = new Set(["punct", "punctMissing"]);
+const withPunct = "punct" in flags;
+let pages = Object.entries(data.pages)
+  .map(([p, ms]) => ({ page: Number(p), marks: withPunct ? ms : ms.filter((m) => !PUNCT_KINDS.has(m.kind)) }))
+  .filter((p) => p.marks.length);
 if (only.size) pages = pages.filter((p) => p.marks.some((m) => only.has(m.id)));
 pages.sort((a, b) => a.page - b.page);
 if (!pages.length) {
@@ -132,7 +144,7 @@ for (let k = 0; k < keep.length; k++) {
   const inv = cli.classifyPage(vp, profile);
 
   for (const m of ms) {
-    if (m.kind === "missing") {
+    if (m.kind === "missing" || m.kind === "punctMissing") {
       const [x, y, , h] = m.box;
       const text = encodable(m.text ?? "");
       if (!text) {
@@ -146,7 +158,7 @@ for (let k = 0; k < keep.length; k++) {
       while (show.length > 1 && font.widthOfTextAtSize(show + "…", size) > room) show = show.slice(0, -1);
       if (show !== text) show += "…";
       const w = font.widthOfTextAtSize(show, size);
-      pg.drawRectangle({ x: x - 0.5, y: H - (y + h), width: w + 1, height: h, color: YELLOW, opacity: 0.75 });
+      pg.drawRectangle({ x: x - 0.5, y: H - (y + h), width: w + 1, height: h, color: m.kind === "punctMissing" ? PALEBLUE : YELLOW, opacity: 0.75 });
       pg.drawText(show, { x, y: H - (y + h * 0.86), size, font, color: INK });
       drawn++;
       continue;
@@ -154,7 +166,7 @@ for (let k = 0; k < keep.length; k++) {
     // 红 / 橙：把该对象的轮廓原样再画一遍盖住原字。**连描边一起盖**——
     // 书里每个字都画了 fill 与 stroke 两份，只填色会留一圈黑边。
     const o = inv.objs[m.idx];
-    const color = m.kind === "unread" ? ORANGE : RED;
+    const color = m.kind === "unread" ? ORANGE : m.kind === "punct" ? BLUE : RED;
     // 轮廓存的是**局部坐标**，要带上对象自己的 ctm 才落到页面上（同 pdflayout/spec.ts）
     const d = o && cli.toSvgPathTransformed(o.obj.data, o.obj.ctm);
     if (d) {
@@ -170,7 +182,9 @@ for (let k = 0; k < keep.length; k++) {
   // 页脚小注：这一页标了些什么
   const n = (kind) => ms.filter((m) => m.kind === kind).length;
   const ids = [...new Set(ms.map((m) => m.id))].join(" ");
-  const legend = `p${pageNo} ${ids}　红 录错/多出 ${n("wrong")}　黄 GT有页面无 ${n("missing")}　橙 未读出 ${n("unread")}`;
+  const legend =
+    `p${pageNo} ${ids}　红 录错/多出 ${n("wrong")}　黄 GT有页面无 ${n("missing")}　橙 未读出 ${n("unread")}` +
+    (n("punct") + n("punctMissing") ? `　蓝 标点不一致 ${n("punct") + n("punctMissing")}` : "");
   pg.drawRectangle({ x: 8, y: 6, width: font.widthOfTextAtSize(legend, 7) + 6, height: 11, color: rgb(1, 1, 1), opacity: 0.85 });
   pg.drawText(encodable(legend), { x: 11, y: 9, size: 7, font, color: RED });
 }
@@ -183,6 +197,7 @@ console.log(
     `标记 ${drawn} 处：红 ${data.marks && ""}` +
     `${pages.reduce((a, p) => a + p.marks.filter((m) => m.kind === "wrong").length, 0)} / ` +
     `黄 ${pages.reduce((a, p) => a + p.marks.filter((m) => m.kind === "missing").length, 0)} / ` +
-    `橙 ${pages.reduce((a, p) => a + p.marks.filter((m) => m.kind === "unread").length, 0)}` +
+    `橙 ${pages.reduce((a, p) => a + p.marks.filter((m) => m.kind === "unread").length, 0)} / ` +
+    `蓝 ${pages.reduce((a, p) => a + p.marks.filter((m) => m.kind === "punct" || m.kind === "punctMissing").length, 0)}` +
     `${lost ? `，字体缺字跳过 ${lost} 处` : ""}`,
 );

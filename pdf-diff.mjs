@@ -176,10 +176,30 @@ const lyricNormSeq = (items) => {
   for (const m of text.matchAll(SECTION_WORDS)) for (let k = 0; k < m[0].length; k++) drop.add(m.index + k);
   return items.filter((it, i) => !drop.has(i) && /[\u4e00-\u9fff\ufffd]/.test(it.ch));
 };
+/** 汉字 + 标点（段落词照旧剔掉，与 `lyricNorm` 同口径）。标点比对拿它当尺子：
+ *  汉字把标点钉在原位，落点才对得上。三者必须一起改。 */
+const mixNorm = (t) => (t.replace(SECTION_WORDS, "").match(/[\u4e00-\u9fff\ufffd\u3000-\u303f\uff01-\uff20\uff3b-\uff65]/g) ?? []).join("");
+const mixNormSeq = (items) => {
+  const text = items.map((it) => it.ch).join("");
+  const drop = new Set();
+  for (const m of text.matchAll(SECTION_WORDS)) for (let k = 0; k < m[0].length; k++) drop.add(m.index + k);
+  return items.filter((it, i) => !drop.has(i) && /[\u4e00-\u9fff\ufffd\u3000-\u303f\uff01-\uff20\uff3b-\uff65]/.test(it.ch));
+};
+
 /** 只取标点，用来单独统计标点差异。 */
-const punctOnly = (t) => (t.match(/[\u3000-\u303f\uff01-\uff20\uff3b-\uff65]/g) ?? []).join("");
+const PUNCT_RE = /[\u3000-\u303f\uff01-\uff20\uff3b-\uff65]/;
+const punctOnly = (t) => (t.match(new RegExp(PUNCT_RE, "g")) ?? []).join("");
+/** 与 `punctOnly` 同一套规则，但保留每个标点对应的页面对象——画差异标记要拿它定位。 */
+const punctSeqOf = (items) => items.filter((it) => PUNCT_RE.test(it.ch));
 
 await mkdir(OUTDIR, { recursive: true });
+// **全量跑先清空**：上一轮留下的报告（这一轮已经全对、或曲号变了）会一直残着，
+// 让人以为还有问题。带曲号过滤时只重写那几首，不动别的。
+if (!filters.length && !flags.limit) {
+  const { readdir, unlink } = await import("node:fs/promises");
+  for (const f of await readdir(OUTDIR)) if (f.endsWith(".txt")) await unlink(`${OUTDIR}/${f}`);
+}
+let skipped = 0;
 const rows = [];
 const invCache = new Map();
 let count = 0;
@@ -278,7 +298,12 @@ for (const [id, entries] of byId) {
   // ── 调号拍号：GT 取 musicxml 的 <key>/<time>，识别侧从 keyMeter 那一撮文本里解析。
   //    谱面常写两个调（「1=F (1=D)」主调 + 括号里的替代调），GT 只记一个，命中任一即算对。
   const gtKT = gt.musicxml ? gtKeyTime(gt.musicxml) : null;
-  const kmText = keyMeters
+  // **只认最上面那一撮**：曲子中途改拍号时，谱行里也印着「3/4」（同样归 keyMeter），
+  // 混进来会让 `1=F` 那串按 x 一排就断开、分数线也可能取到谱行里的那一条
+  //（403 首因此调号拍号双双读不出）。曲首那一撮总在最上面，高不过三四个字。
+  const kmY0 = keyMeters.length ? Math.min(...keyMeters.map((o) => o.obj.bbox.y)) : 0;
+  const kmHead = keyMeters.filter((o) => o.obj.bbox.y < kmY0 + 30);
+  const kmText = kmHead
     .sort((a, b) => a.obj.bbox.x - b.obj.bbox.x || a.obj.bbox.y - b.obj.bbox.y)
     .map((o) => charOf.get(cli.shapeKey(o.obj.data)) ?? "")
     .join("");
@@ -288,12 +313,12 @@ for (const [id, entries] of byId) {
   // 不能按 kmText 的先后取前两个数字——那串是按 x 排的，上下两个数字 x 几乎相同，
   // 谁先谁后全看零点几个点的抖动，于是 3/4 有 98 首被读成了 4/3。
   // 也不能一个数字只取一位，否则 12/8 会变成 1/8。
-  const kmLine = keyMeters.find((o) => o.obj.bbox.h < 1 && o.obj.bbox.w > 3);
+  const kmLine = kmHead.find((o) => o.obj.bbox.h < 1 && o.obj.bbox.w > 3);
   let recMeter = "";
   if (kmLine) {
     const lb = kmLine.obj.bbox;
     const pick = (up) =>
-      keyMeters
+      kmHead
         .filter((o) => {
           const b = o.obj.bbox;
           if (b.h < 1) return false;
@@ -397,7 +422,9 @@ for (const [id, entries] of byId) {
     return t.length > 0 && han / t.length >= 0.3;
   };
   const lyricish = rawVerses.filter(isLyricish);
-  const recVerseSeqs = verseSeqs.filter((_, i) => isLyricish(rawVerses[i])).map(lyricNormSeq);
+  // `lyricNormSeq` 会把标点滤掉，标点那一路要用**没滤过**的同一批（下标一一对应）
+  const recVerseRawSeqs = verseSeqs.filter((_, i) => isLyricish(rawVerses[i]));
+  const recVerseSeqs = recVerseRawSeqs.map(lyricNormSeq);
   const recVerses = lyricish.map(lyricNorm);
   const recPunct = lyricish.map(punctOnly).join("");
   const misLyric = rawVerses.filter((t) => !isLyricish(t));
@@ -409,24 +436,62 @@ for (const [id, entries] of byId) {
   // 一个孤零零的 `#` 会粘到后面那个和弦头上（`C→#C`、`G→#G`）、一个孤零零的数字
   // 会粘成后缀（`F→F9`）。同一个和弦的字母彼此挨着（间距不到一个音符宽），
   // 与相邻和弦之间隔着大半个小节。门槛试过 3/4/5/7/9 个点，3~5 都一样，取 4。
+  //
+  // 并撮**还要看基线**：音符的升降号印在音符左上方，归类时落进和弦带，但它贴的是
+  // **音符的基线**——比和弦基线低八九个点。只按 x 并撮的话，一个 `♭` 和一个 `#`
+  // 会从两头夹进 `Cdim` 里读成 `bCdi#m`，整个和弦作废（410B 首）。
+  // 同一个和弦内部的高差最多四点（`♭B` 的 ♭ 高 3.9、`D/#F` 的 # 高 4.0、
+  // `C7` 的上标 7 低 1.3），音符升降号差 8.6~9.6，门槛取 6 点分得开。
+  //
+  // **不能按基线把整个谱行先分排**：同一行里的和弦本来就不等高（房号括线、`rit.`
+  // 之类会把其中几个整个顶上去），一分排就把它们劈成两摞（试过，和弦差异 123→1251）。
+  // 要的是**逐撮比**：同时开着几撮，来一个字就挑「够得着（x 距 ≤4）且基线对得上」的那撮，
+  // 挑不到才另起一撮。`Cdim` 中间夹进一个 `#` 之后，后面的 `m` 照样能并回 `Cdi` 那撮。
   const chordGroups = [];
   {
-    let cur = null;
+    const botOf = (b) => b.y + b.h;
+    let open = []; // 同一谱行上还够得着的几撮
     for (const o of chords) {
       const b = o.obj.bbox;
+      if (open.length && open[0].row !== o.row) open = [];
+      open = open.filter((g) => b.x - g.x1 <= 4);
       // `D.C.` `D.S.` 里的点：和弦本身没有点这么小的部件（`♭` 2.6×4.2、`#` 2.9×3.8），
       // 一撮里出现小圆点，整撮就是跳转记号，不是和弦（J21 首的 `D.C.` 曾被读成 `D`+`C`）。
+      // **点得真挨着这一撮才算**：房号括线的端头在矢量层是 0.4×0.4 的碎点，落在和弦带里，
+      // 隔着大半个小节、甚至隔着一整行谱，照样把刚读到的那一撮判成跳转记号——
+      // 037/084/116/158 首各丢了两三个和弦（084 首那个点还在下一行谱上）。
       if (b.w <= 2.5 && b.h <= 2.5) {
-        if (cur) cur.dot = true;
+        // 点要**贴着字母的基线**：`D.C.` 的点与字母同底（差 0.1），而变拍号的分数线
+        // 碎片、房号括线的端头虽然也小、也挨着，却差着十来点（401 首的 `F` 就是被
+        // 一个高出 12.3 点的碎点判成了跳转记号）。
+        // 比的是**紧挨着的那个字母**的底，不是整撮的底：同一撮里 `C` 比 `D` 低 2.7
+        //（344 首的 `C D.S.`），拿整撮的最低处比就差 2.6，一卡就把点甩了。
+        let near = null;
+        for (const c of open) if (c.lastBot != null && Math.abs(b.y + b.h - c.lastBot) <= 2.5 && (!near || c.x1 > near.x1)) near = c;
+        // **只把点算给它前面那一个字母，不废掉整撮**：`C` 紧挨着 `D.S.` 印在一起时
+        //（344 首行末），整撮一废，那个真和弦 `C` 也跟着没了。
+        if (near && near.chars.length) near.chars[near.chars.length - 1].dotted = true;
         continue;
       }
-      if (cur && cur.row === o.row && b.x - cur.x1 <= 4) {
-        cur.text += charOf.get(cli.shapeKey(o.obj.data)) ?? "";
-        cur.x1 = Math.max(cur.x1, b.x + b.w);
-        cur.objs.push(o);
+      const ch = charOf.get(cli.shapeKey(o.obj.data)) ?? "";
+      // 挑**基线最贴的**那一撮，不是最靠右的：152 首那个 `C7` 的上标 7 与左边一个
+      // 贴着音符顶的宽扁记号 x 只差半点，按靠右挑就挑错了撮，`C7` 读成了 `C`。
+      let g = null;
+      for (const c of open) {
+        const d = Math.abs(botOf(b) - c.bot);
+        if (d > 6) continue;
+        if (!g || d < Math.abs(botOf(b) - g.bot) || (d === Math.abs(botOf(b) - g.bot) && c.x1 > g.x1)) g = c;
+      }
+      if (g) {
+        g.chars.push({ ch, dotted: false });
+        g.x1 = Math.max(g.x1, b.x + b.w);
+        g.bot = Math.max(g.bot, botOf(b));
+        g.lastBot = botOf(b);
+        g.objs.push(o);
       } else {
-        cur = { row: o.row, x1: b.x + b.w, text: charOf.get(cli.shapeKey(o.obj.data)) ?? "", objs: [o] };
-        chordGroups.push(cur);
+        g = { row: o.row, x0: b.x, x1: b.x + b.w, bot: botOf(b), lastBot: botOf(b), chars: [{ ch, dotted: false }], objs: [o] };
+        chordGroups.push(g);
+        open.push(g);
       }
     }
   }
@@ -455,7 +520,13 @@ for (const [id, entries] of byId) {
         continue;
       }
       rest = rest.slice(m[0].length);
-      if (rest && /[a-z]/.test(rest[0])) break; // 后面还跟着小写字母：这是个单词，连这个 token 一起不要
+      if (rest && /[a-z]/.test(rest[0])) {
+        // 后面还跟着小写字母：这是个单词，连这个 token 一起不要。
+        // **吐掉这一个词就接着往下啃，别整撮不要**：跳转记号常与真和弦挤成一撮
+        //（J21 首那一撮是 `D` `Fine` `D`），整撮丢掉就连后面那个 `D` 也没了。
+        rest = rest.replace(/^[a-z]+/, "");
+        continue;
+      }
       toks.push(m[0]);
     }
     return toks.join("|");
@@ -463,8 +534,9 @@ for (const [id, entries] of byId) {
   // 一撮可能切出不止一个和弦记号；每个记号都记着这一撮的对象，够画标记用了
   const recChordSeq = [];
   for (const g of chordGroups) {
-    if (g.dot) continue; // 带点的那一撮是 D.C./D.S.
-    for (const tok of normChords(g.text).split("|").filter(Boolean)) recChordSeq.push({ ch: tok, objs: g.objs });
+    // 带点的字母是 `D.C.`/`D.S.` 的一部分，剔掉；同一撮里没带点的照旧当和弦读
+    const text = g.chars.filter((c) => !c.dotted).map((c) => c.ch).join("");
+    for (const tok of normChords(text).split("|").filter(Boolean)) recChordSeq.push({ ch: tok, objs: g.objs });
   }
   const recChords = recChordSeq.map((it) => it.ch).join("|");
   const gtChords = gt.musicxml ? normChords(gtHarmonies(gt.musicxml).join("")) : "";
@@ -514,6 +586,56 @@ for (const [id, entries] of byId) {
   const restOps = sNoteAll.content.filter(([op, , , g2, b2]) => (op === "del" ? g2 : op === "ins" ? b2 : null) === "0");
   const sNote = { ...sNoteAll, content: sNoteAll.content.filter((o) => !restOps.includes(o)) };
   const sTitle = splitOps(dTitle.ops);
+  /** 一段的标点比对：ops + 画标记要的对象 + 报告里那几行**带上下文**的明细。
+   *
+   *  **拿整段原文（汉字 + 标点）对齐，再从编辑脚本里挑出与标点有关的那些**。
+   *  只拿标点串对齐不行：一段里五六个「，」彼此一模一样，DP 把插入摆在哪个位置上
+   *  距离都一样，落点全凭回溯的先后——007 首每段真正少的是句末那个「；」，
+   *  按标点串比却指到了段首那个「，」，标记版 PDF 上也跟着标错了字。
+   *  两边的汉字把标点钉死在原位，落点才对得上。
+   *
+   *  只报个数字没法核对（007 首报「标点差异 9 处」，看谱面却处处对得上——
+   *  其实是 GT 每段少记两个），所以明细里带上识别侧那一段的原文上下文。
+   */
+  const punctDiff = (gtRaw, rawSeq) => {
+    const isP = (ch) => PUNCT_RE.test(ch);
+    const gtMix = mixNorm(gtRaw);
+    const seq = mixNormSeq(rawSeq);
+    const recText = seq.map((it) => it.ch).join("");
+    // 与标点无关的那些编辑（汉字对不上）归歌词那一路，这里不重复记
+    const ops = alignOps(gtMix, recText).ops.filter(([, , , g2, b2]) => (g2 || b2) && (!g2 || isP(g2)) && (!b2 || isP(b2)));
+    // **同一个标点一边删一边插 = 它挪了位置**，不是谁少了一个。按整段原文对齐之后
+    // 才看得见这种事（按标点串比时两个「，」直接对上了，位置差异根本报不出来）。
+    // 配对之后措辞才准：007 首是 GT 真少了九个，005 首是同一批标点印在了别处。
+    const moved = new Set();
+    const pool = new Map();
+    ops.forEach((o, i) => o[0] === "ins" && pool.set(o[4], [...(pool.get(o[4]) ?? []), i]));
+    ops.forEach((o, i) => {
+      if (o[0] !== "del") return;
+      const q = pool.get(o[3]);
+      if (q?.length) {
+        moved.add(i);
+        moved.add(q.shift());
+      }
+    });
+    const lines = ops.map(([op, gi, ri, g2, b2], i) => {
+      const k = op === "del" ? ri - 1 : ri;
+      const around = `    …${recText.slice(Math.max(0, k - 5), k + (op === "del" ? 1 : 0))}▸${recText.slice(k + (op === "del" ? 1 : 0), k + 6)}…`;
+      const tag = moved.has(i) ? (op === "del" ? "位置不同·GT在此" : "位置不同·谱面在此") : op === "sub" ? "不同" : op === "del" ? "GT有·PDF无" : "PDF有·GT无";
+      return `    ${tag}  @${gi}  GT=${g2 || "-"}  PDF=${b2 || "-"}${around}`;
+    });
+    return {
+      punctOps: ops,
+      punctSeq: seq,
+      punctLines: lines,
+      punctKinds: {
+        moved: moved.size / 2,
+        gtMissing: ops.filter((o, i) => o[0] === "ins" && !moved.has(i)).length,
+        pageMissing: ops.filter((o, i) => o[0] === "del" && !moved.has(i)).length,
+        sub: ops.filter((o) => o[0] === "sub").length,
+      },
+    };
+  };
   const verseDiffs = [];
   let lyricDist = 0;
   let lyricLen = 0;
@@ -530,6 +652,9 @@ for (const [id, entries] of byId) {
       gt: a,
       rec: b,
       recSeq: recVerseSeqs[pr.j] ?? [],
+      // 标点**按配对好的段逐段比**，不把各段拼成一整串：拼起来比，某一段多一个逗号
+      // 后面所有段就全错位。留着对象是为了在标记版 PDF 上把差异点出来。
+      ...punctDiff(gtVerseRaw[pr.i], recVerseRawSeqs[pr.j] ?? []),
       ...d,
       ...sp,
       content: sr.content,
@@ -566,13 +691,13 @@ for (const [id, entries] of byId) {
   // ── 差异标记：把每一处差异落到**具体的页面对象**上，供 pdf-mark.mjs 生成标记版 PDF。
   //    红 = 页面读出来的这个对象有问题（录错 / 页面多出）；黄 = GT 有而页面没有，补在原位；
   //    橙 = 字形没读出来（本工具的局限，不是录错）。
-  const markOps = (ops, seq, what) => {
+  const markOps = (ops, seq, what, kind = null) => {
     for (const [op, , ri, g2, b2] of ops) {
       if (op === "ins" || op === "sub") {
         const it = seq[ri];
         if (!it) continue;
         const objs = it.objs ?? [it.o];
-        for (const o of objs) marks.push({ ...boxOf(o), kind: b2 === "\ufffd" ? "unread" : "wrong", what, gt: op === "sub" ? g2 : "" });
+        for (const o of objs) marks.push({ ...boxOf(o), kind: kind ?? (b2 === "\ufffd" ? "unread" : "wrong"), what, gt: op === "sub" ? g2 : "" });
       } else if (op === "del") {
         // 页面没有这个字：贴在左邻居右侧（没有左邻居就贴右邻居左侧）。
         // **连着缺的一串要并成一条**：一段词整块没印时，每个字各标一条会几十条叠在同一点上。
@@ -581,14 +706,15 @@ for (const [id, entries] of byId) {
         const anchorObj = (prev?.objs ?? (prev ? [prev.o] : []))?.slice(-1)[0] ?? (next?.objs ?? (next ? [next.o] : []))?.[0];
         if (!anchorObj) continue;
         const b = anchorObj.obj.bbox;
+        const missKind = kind === "punct" ? "punctMissing" : "missing";
         const last = marks[marks.length - 1];
-        if (last && last.kind === "missing" && last.what === what && last.anchor === anchorObj.idx && last.page === anchorObj.page) {
+        if (last && last.kind === missKind && last.what === what && last.anchor === anchorObj.idx && last.page === anchorObj.page) {
           last.text += (what === "和弦" ? " " : "") + g2; // 和弦是一个个记号，连写会糊成一串
           continue;
         }
         marks.push({
           page: anchorObj.page,
-          kind: "missing",
+          kind: missKind,
           what,
           text: g2,
           anchor: anchorObj.idx,
@@ -600,6 +726,9 @@ for (const [id, entries] of byId) {
   markOps(sNote.content.concat(sNote.unread), noteSeq, "音符");
   markOps(sTitle.content.concat(sTitle.unread), titleSeq, "标题");
   for (const d of verseDiffs) markOps(d.content.concat(d.unread), d.recSeq, `歌词第 ${d.verse} 段`);
+  // 标点**单独一色**（蓝）：它属于「表述或结构不一致」——标点跟着排版走，两边位置
+  // 未必一致，不是录错。混进红色里会把真正的录错淹掉（全书标点八百多处、录错才几百）。
+  for (const d of verseDiffs) markOps(d.punctOps, d.punctSeq, `第 ${d.verse} 段标点`, "punct");
   if (gtChords) markOps(dChord.ops, recChordSeq, "和弦");
   if (keyState === "missing" || meterState === "missing") {
     for (const o of keyMeters) marks.push({ ...boxOf(o), kind: "wrong", what: "调号拍号", gt: "" });
@@ -624,7 +753,7 @@ for (const [id, entries] of byId) {
     extraVerses.length +
     vm.gtOnly.length +
     folds +
-    alignOps(gtPunct, recPunct).dist;
+    verseDiffs.reduce((a, d) => a + d.punctOps.length, 0);
 
   const r = {
     id,
@@ -661,7 +790,7 @@ for (const [id, entries] of byId) {
     endingGt: gtRep ? gtRep.endings.length : 0,
     endingRec: brackets,
     endingDelta,
-    punctDiffs: alignOps(gtPunct, recPunct).dist,
+    punctDiffs: verseDiffs.reduce((a, d) => a + d.punctOps.length, 0),
     gtPunctN: gtPunct.length,
     recPunctN: recPunct.length,
     gtOnlyVerses: vm.gtOnly.map((i) => gtVerses[i]),
@@ -884,7 +1013,29 @@ for (const r of rows) {
   if (r.noteRepeat > 1) ms(`  PDF 把旋律印了 ${r.noteRepeat} 遍（GT 只记一遍，靠多段歌词表示）`);
   if (r.chordRepeat > 1) ms(`  PDF 把和弦印了 ${r.chordRepeat} 遍`);
   if (r.folds) ms(`  歌词折行归并 ${r.folds} 字（排不下折到下一行，不是新的一段）`);
-  if (r.punctDiffs) ms(`  标点差异 ${r.punctDiffs} 处（GT ${r.gtPunctN} / PDF ${r.recPunctN}；标点位置随排版走）`);
+  if (r.punctDiffs) {
+    // **分方向说**：「位置随排版走」只适用于两边都有、只是位置不同的那种；
+    // 一边整个少几个是 GT 漏记（007 首每段少两个），说成「位置不同」会把人引偏。
+    const k = r.verseDiffs.reduce(
+      (a, d) => ({
+        moved: a.moved + (d.punctKinds?.moved ?? 0),
+        gtMissing: a.gtMissing + (d.punctKinds?.gtMissing ?? 0),
+        pageMissing: a.pageMissing + (d.punctKinds?.pageMissing ?? 0),
+        sub: a.sub + (d.punctKinds?.sub ?? 0),
+      }),
+      { moved: 0, gtMissing: 0, pageMissing: 0, sub: 0 },
+    );
+    const why =
+      [k.moved && `位置不同 ${k.moved} 处`, k.sub && `写法不同 ${k.sub}`, k.gtMissing && `GT 少 ${k.gtMissing} 个`, k.pageMissing && `谱面少 ${k.pageMissing} 个`]
+        .filter(Boolean)
+        .join(" / ") || "位置随排版走";
+    ms(`  标点差异 ${r.punctDiffs} 处（GT ${r.gtPunctN} / PDF ${r.recPunctN}；${why}）`);
+    for (const d of r.verseDiffs) {
+      if (!d.punctLines?.length) continue;
+      mis.push(`    第 ${d.verse} 段：`);
+      mis.push(...d.punctLines.map((t) => "  " + t));
+    }
+  }
   if (r.extraVerses?.length) {
     ms(`  PDF 多出 ${r.extraVerses.length} 行歌词（GT 里没有对应段，多为副歌另起行）：`);
     for (const v of r.extraVerses) ms(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
@@ -911,6 +1062,18 @@ for (const r of rows) {
     );
   if (r.storyChars) lay(`  花边框正文 ${r.storyChars} 字`);
   if (layout.length) L.push("", "## 版面（记录，不算差异）", ...layout);
+  // **一处可说的都没有就不出文件**：内容差异 0、未识别 0、署名 0、表述结构 0，
+  // 报告里只剩「覆盖」那两行，留着只会让人在几百个文件里翻找哪几个是有事的。
+  // **「版面」那一节不算数**——它自己就写着「记录，不算差异」：剔掉几个非歌词对象、
+  // 花边框里多少字、反复房号数量对不上（识别侧只有几何，判据本来就粗），
+  // 都不是要人去核对的东西（272 首整个文件就只有一行「房号 GT 0 / PDF 14」）。
+  // 例外是里头那两条**确实是问题**的：有歌词行一个汉字都读不出、段数对不上。
+  // 全量跑时开头会把 OUTDIR 清空，所以上一轮留下的空报告不会残着。
+  const layoutNotable = (r.misLyric?.length ?? 0) > 0 || vg !== vr;
+  if (!r.contentDiffs && !r.unreadDiffs && !(r.sCredit?.content.length ?? 0) && !mis.length && !layoutNotable) {
+    skipped++;
+    continue;
+  }
   L.push("", `## 覆盖：页面对象 ${r.objTotal}${r.unclassified ? `，未归类 ${r.unclassified}` : ""}`);
   L.push(`   准确率：音符 ${(r.noteAcc * 100).toFixed(1)}%  歌词 ${(r.lyricAcc * 100).toFixed(1)}%  标题 ${(r.titleAcc * 100).toFixed(1)}%`);
   await writeFile(`${OUTDIR}/${r.id}.txt`, L.join("\n"));
@@ -967,4 +1130,4 @@ console.log(
 );
 const worst = [...rows].sort((a, b) => b.contentDiffs - a.contentDiffs).slice(0, 8);
 console.log("内容差异最多:", worst.map((r) => `${r.id}:${r.contentDiffs}项`).join(" "));
-console.log(`→ pdf-diff.csv, ${OUTDIR}/<曲号>.txt`);
+console.log(`→ pdf-diff.csv, ${OUTDIR}/<曲号>.txt（完全没事可说的 ${skipped} 首不出文件）`);
