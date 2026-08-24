@@ -339,7 +339,14 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     // 框对象与一套「框内文字」，重排时和正文那条路径重复画（实测目录页多出几百个对象）。
     // **只在乐谱页上认**：目录/索引页整页都是同形状的引导点行，两两一配就能圈住半页条目
     // （实测那样会把七千个对象误收成注解正文）。乐谱页有谱行，目录页没有。
-    const tileRows = new Map<string, { key: string; y: number; x0: number; x1: number; n: number }[]>();
+    // 框内的东西**不止「未定类的带曲线单字」**：
+    //  - 整行合成一个 path 的（第 0 步已定成 textLine）也是框里的正文（408 首那句
+    //    「《快乐日》…的曲调是林伯特…」，`快乐日` 三个字就是一个合成对象）；
+    //  - `《`『」』这类全直笔的标点 curves=0，照 curves 卡会漏掉。
+    // 结构线（减时线/增时线/通栏线，这会儿还没定案）仍要放过——它们又扁又平，按高度挡。
+    const inBoxText = (i: number) =>
+      (out[i].cls === "unclassified" || out[i].cls === "textLine") && (objs[i].curves >= 1 || objs[i].bbox.h > noteH * 0.3);
+    const tileRows = new Map<string, { key: string; y: number; x0: number; x1: number; idx: number[] }[]>();
     for (let i = 0; bands.length && i < objs.length; i++) {
       if (out[i].cls !== "unclassified") continue;
       const b = objs[i].bbox;
@@ -350,23 +357,23 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       if (row) {
         row.x0 = Math.min(row.x0, b.x);
         row.x1 = Math.max(row.x1, right(b));
-        row.n++;
-      } else rows.push({ key: k, y: cy(b), x0: b.x, x1: right(b), n: 1 });
+        row.idx.push(i);
+      } else rows.push({ key: k, y: cy(b), x0: b.x, x1: right(b), idx: [i] });
       tileRows.set(k, rows);
     }
     for (const rows of tileRows.values()) {
-      const edges = rows.filter((r) => r.n >= 8 && r.x1 - r.x0 > profile.contentBox.w * 0.3).sort((a, b) => a.y - b.y);
+      const edges = rows.filter((r) => r.idx.length >= 8 && r.x1 - r.x0 > profile.contentBox.w * 0.3).sort((a, b) => a.y - b.y);
       for (let a = 0; a + 1 < edges.length; a++) {
         const t = edges[a];
         const b2 = edges[a + 1];
         if (b2.y - t.y < lyricH * 2.5 || b2.y - t.y > lyricH * 30) continue;
         if (bands.some((bd) => bd.top < b2.y && bd.bottom > t.y)) continue;
+        // **边本身也要定案**：不定案的话，那一排纹样后面会被当成一整行歌词
+        //（408 首因此多出一段 28 个「十」的「歌词」）。
+        for (const i of [...t.idx, ...b2.idx]) set(i, "ornament", "注解框的纹样边");
         for (let i = 0; i < objs.length; i++) {
-          if (out[i].cls !== "unclassified") continue;
+          if (!inBoxText(i)) continue;
           const bb = objs[i].bbox;
-          // 只收**字**：减时线、增时线、通栏线这些结构线这会儿还没定案（第 5 步才分），
-          // 一并收走的话它们就不会被画成记号了（实测重排少了 1278 个对象）。字都带曲线。
-          if (objs[i].curves < 1) continue;
           if (cy(bb) > t.y && cy(bb) < b2.y && right(bb) > t.x0 - lyricH && bb.x < t.x1 + lyricH) set(i, "storyText", "上下两条纹样边之间的注解正文");
         }
       }
@@ -382,11 +389,21 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
         const gap = y1 - y0;
         if (gap <= lyricH * 0.5) continue; // 紧挨着的两条是同一道双线
         if (gap > lyricH * 8) break; // 太远，中间不是一个框
-        if (bands.some((bd) => bd.top < y1 && bd.bottom > y0)) break; // 中间夹着谱行，那不是框
+        // 两头各有一条把上下两道通栏线连起来的竖边 = 这是个实打实的矩形框，
+        // 框里不可能有谱行。**框里的经文会让第 2 步凑出假谱行**（368 首那个框里
+        // 凑出了一个只有 1 个音符的「谱行」），不认框就永远被这道判据挡在外面。
+        const hx0 = Math.min(objs[wide[a]].bbox.x, objs[wide[b]].bbox.x);
+        const hx1 = Math.max(right(objs[wide[a]].bbox), right(objs[wide[b]].bbox));
+        const vAt = (nearX: number) =>
+          objs.some((o2, j) => {
+            const q = o2.bbox;
+            return out[j].cls === "rule" && q.w <= 2 && q.y <= y0 + 2 && bottom(q) >= y1 - 2 && Math.abs(cx(q) - nearX) <= lyricH;
+          });
+        const boxed = vAt(hx0) && vAt(hx1);
+        if (!boxed && bands.some((bd) => bd.top < y1 && bd.bottom > y0)) break; // 中间夹着谱行，那不是框
         for (let i = 0; i < objs.length; i++) {
-          if (out[i].cls !== "unclassified") continue;
+          if (!inBoxText(i)) continue;
           const bb = objs[i].bbox;
-          if (objs[i].curves < 1) continue; // 同上：结构线还没定案，别顺手收走
           if (bb.y >= y0 && bottom(bb) <= y1) set(i, "storyText", "通栏双线框内的注解正文");
         }
         break;
@@ -555,6 +572,29 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     if (median(bottom2.h) > noteH * 1.05) return Infinity; // 页码用小字号，歌词字比它大一截
     return bottom2.cy - lyricH * 0.5;
   })();
+  // 页码还有一条**按样子认**的路，与上面那条「按空隙认」并行（哪条认出来都算）：
+  // 全书的页码一律是**两个小圆点夹着两三个数字**（`·259·`），孤零零印在版心最底下，
+  // 跨度只有二十来点。空隙那条判据挡不住末行歌词的标点掉到页码那一带——一掉下来，
+  // 「与上一行隔着一行以上」就不成立，整个页码跟着漏进歌词（215 首的页码因此成了
+  // 歌词里的一处「未识别」）。点是版式的一部分，跟着数字走，比空隙可靠。
+  const footerIdx = new Set<number>();
+  {
+    const order = objs.map((_, i) => i).sort((a, b) => cy(objs[a].bbox) - cy(objs[b].bbox));
+    const lines: number[][] = [];
+    for (const i of order) {
+      const last = lines[lines.length - 1];
+      if (last && cy(objs[i].bbox) - cy(objs[last[0]].bbox) <= lyricH * 0.6) last.push(i);
+      else lines.push([i]);
+    }
+    const ln = lines[lines.length - 1];
+    if (ln && ln.length >= 3 && ln.length <= 10) {
+      const bs = ln.map((i) => objs[i].bbox).sort((a, b) => a.x - b.x);
+      const tiny = (q: Rect) => q.w <= profile.dotDiam * 1.6 && q.h <= profile.dotDiam * 1.6;
+      const span = right(bs[bs.length - 1]) - bs[0].x;
+      if (span <= lyricH * 4 && tiny(bs[0]) && tiny(bs[bs.length - 1]) && median(bs.map((q) => q.h)) <= noteH * 1.05)
+        for (const i of ln) footerIdx.add(i);
+    }
+  }
   const titleH = lyricH * 1.25;
   const headerPending: number[] = [];
   for (let i = 0; i < objs.length; i++) {
@@ -563,8 +603,8 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     if (out[i].cls !== "unclassified" && !(out[i].cls === "textLine" && objs[i].bbox.h >= titleH)) continue;
     const o = objs[i];
     const b = o.bbox;
-    if (cy(b) >= pageFooterY) {
-      set(i, "footer", "本页最底部、与正文有明显空隙");
+    if (cy(b) >= pageFooterY || footerIdx.has(i)) {
+      set(i, "footer", footerIdx.has(i) ? "版心最底下、两个小点夹着数字，是页码" : "本页最底部、与正文有明显空隙");
       continue;
     }
     // 细长条（宽只有高的十分之一）不是字，是装饰线——标题带里混着它们，
@@ -578,11 +618,21 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       continue;
     }
     if (profile.headerBand && cy(b) <= profile.headerBand[1]) {
-      // **先记下、别定案**：标题里的扁字（「心」「一」「么」）够不着大字号门槛，
-      // 却与页眉分类词同在这一带，直接定成 category 就永远回不到标题里去
-      //（「耶和华的心」少了「心」，全书这样的缺字上百处）。等 8b 认完标题行再说。
-      headerPending.push(i);
-      continue;
+      // **续页第一谱行的和弦带就落在页眉带里**：接排的曲子这一页没有标题，头一行谱
+      // 顶到 y≈97，它上方那排和弦（y≈86~91）正好压在全书统计出的页眉带下沿上。
+      // 定成 category 之后第 10 步再也够不着，那一整行和弦就全没了
+      //（054 首页 87 少 5 个、136 首页 177 少 5 个；136 那行更刁——大写字母的中心
+      //  卡在带内、小写 `m` 的中心卡在带外，同一个和弦被劈成两半）。
+      // 页眉分类词离头一行谱远得很（054 页 87 / 136 页 177 / 169 页 211 都是 33~38 点，
+      // 合四个多字高），和弦只隔一个字高；房号括线顶着的那排和弦也不过 14 点（1.8 字高），
+      // 所以门槛取 3.2 个字高，两者分得开。
+      if (!bands.some((bd) => bd.noteTop >= bottom(b) && bd.noteTop - bottom(b) < noteH * 3.2)) {
+        // **先记下、别定案**：标题里的扁字（「心」「一」「么」）够不着大字号门槛，
+        // 却与页眉分类词同在这一带，直接定成 category 就永远回不到标题里去
+        //（「耶和华的心」少了「心」，全书这样的缺字上百处）。等 8b 认完标题行再说。
+        headerPending.push(i);
+        continue;
+      }
     }
   }
 
@@ -603,34 +653,56 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       else lines.push([b]);
     }
     for (const ln of lines) {
-      const ty0 = Math.min(...ln.map((b) => b.y));
-      const ty1 = Math.max(...ln.map(bottom));
-      const tx0 = Math.min(...ln.map((b) => b.x));
-      const tx1 = Math.max(...ln.map(right));
-      for (let i = 0; i < objs.length; i++) {
-        if (out[i].cls !== "unclassified") continue;
-        const b = objs[i].bbox;
-        if (b.y < ty0 - 2 || bottom(b) > ty1 + 2) continue;
-        if (right(b) < tx0 - lyricH || b.x > tx1 + lyricH) continue;
+      // **收一轮不够，要收到收不动为止**：标题的横向范围是拿「已认出的标题字」算的，
+      // 而末尾连着两个够不着大字号门槛的字时（「必有一日」的 `一` 和 `日`），
+      // 第一轮只够得着 `一`，`日` 在一轮制下永远收不进来。
+      // 空当也要按**标题字号**量，不能按歌词字号：`日` 的墨迹只有 9.5 宽（同行的
+      // `必` 有 17.1），字窄墨迹就离得远，`一` 与 `日` 的墨迹间距 10.9——按歌词
+      // 字号那 10.4 差半点就够不着；只有两个字的标题字距还拉得开（233 首「主日」
+      // 两字的墨迹间距 20.8），所以量到 1.8 个标题字号。放宽不怕误收页眉分类词——
+      // 真正把它们挡住的是下面那道「外侧紧不紧跟着同伙」。
+      // 233/247/449 三首的标题都是这么少了个「日」。
+      const mem = [...ln];
+      for (let pass = 0; pass < 8; pass++) {
+        const ty0 = Math.min(...mem.map((b) => b.y));
+        const ty1 = Math.max(...mem.map(bottom));
+        const tx0 = Math.min(...mem.map((b) => b.x));
+        const tx1 = Math.max(...mem.map(right));
+        let added = false;
+        for (let i = 0; i < objs.length; i++) {
+          if (out[i].cls !== "unclassified") continue;
+          const b = objs[i].bbox;
+          if (b.y < ty0 - 2 || bottom(b) > ty1 + 2) continue;
+          if (right(b) < tx0 - titleH * 1.8 || b.x > tx1 + titleH * 1.8) continue;
         // **标题外侧的字要看它是不是页眉分类词**：分类词（「敬拜 赞美」）紧挨在标题右边，
         // 离标题末字只差七八个点，与标题末尾那些够不着大字号门槛的扁字（「心」「一」）
         // 一样近——按距离、按字号都分不开（试过按字号切：标题 99.2% → 98.0%）。
         // 分得开的是**它右边还有没有同伙**：分类词是一小串小字，一路排到版心右边缘；
         // 标题的末字右边什么都没有（曲号是大字，不算同伙）。
-        if (b.x > tx1) {
-          // 分得开的是**它右边紧不紧跟着同伙**：分类词是一小串小字挨着排（间距一两个点），
-          // 标题末尾那个扁字右边要么什么都没有，要么隔着老远才是分类词（058 首隔了 71 点）。
-          const tight = objs.some((o2, j) => {
-            if (j === i || out[j].dup) return false;
-            const q = o2.bbox;
-            if (q.h >= titleH) return false; // 大字（曲号）不算同伙
-            if (q.y < ty0 - 2 || bottom(q) > ty1 + 2) return false;
-            const gap = q.x - right(b);
-            return gap >= -1 && gap <= lyricH * 0.8;
-          });
-          if (tight) continue;
+          if (b.x > tx1 || right(b) < tx0) {
+            // 分得开的是**它外侧紧不紧跟着同伙**：分类词是一小串小字挨着排（间距一两个点），
+            // 标题末尾那个扁字外侧要么什么都没有，要么隔着老远才是分类词（058 首隔了 71 点）。
+            // **两侧都要查**：分类词也印在标题左边（J08 首的「短歌 / 歌文」），
+            // 只查右侧的话，收到收不动为止那一轮会顺着它们一个个往左啃过去。
+            const outward = b.x > tx1 ? 1 : -1;
+            const tight = objs.some((o2, j) => {
+              if (j === i || out[j].dup) return false;
+              const q = o2.bbox;
+              if (q.h >= titleH) return false; // 大字（曲号）不算同伙
+              if (q.y < ty0 - 2 || bottom(q) > ty1 + 2) return false;
+              // 门槛量到一个字宽：页眉分类词「基督」两字的墨迹间距 8.5，卡在 0.8 个
+              // 字高（8.3）上差一点点，于是整个词又被当成标题收了进去（079/165 首）。
+              // 放宽不怕误收标题末字：真分类词离标题远着呢（058 首隔了 71 点）。
+              const gap = outward > 0 ? q.x - right(b) : b.x - right(q);
+              return gap >= -1 && gap <= lyricH;
+            });
+            if (tight) continue;
+          }
+          set(i, "title", `标题行内的标点 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
+          mem.push(b);
+          added = true;
         }
-        set(i, "title", `标题行内的标点 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
+        if (!added) break;
       }
     }
   }
@@ -751,6 +823,13 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     // 除了比上下距离，还要看**形状**：和弦是拉丁窄字（宽高比明显小于 1），
     // 歌词是近方的汉字。只比距离时，行距紧的页面会把和弦判进上一行的歌词。
     const narrow = b.w / Math.max(b.h, 0.1) < 0.82;
+    // **和弦是音符那号字，歌词字比它大一截**：`A`（6.4×7.1）不窄，却明明白白是和弦。
+    // 谱行之间夹着 `rit.` 之类的表情记号时，那几个和弦被整个顶上去（321 首顶到 15.8，
+    // 常规只有 7~8），按 1.6 个字高卡就够不着，`Am` 于是掉成了上一行的歌词。
+    // 门槛照**音符字号**划，不照歌词字号：和弦字母高 6.2~8.7，汉字再窄也有 9 往上
+    //（`日` 7.1×9.2、`白` 8.7×10.8、`五` 9.4），按歌词字号的 0.85 划会把它们一并吸走
+    //（353 首的歌词少了个「五」）。
+    const small = b.h <= noteH * 1.05;
     // **和弦带里宽扁带曲线的东西是短圆滑线，不是和弦**：和弦的字形没有比自己高还宽的
     //（字母 6×7、`♭` 2.6×4.2、`/` 3×7.3），短弧却是 7.3×3.4。它卡在第 6 步弧线判据的
     // 宽高比门槛（2.2）外面一点点，落到这里就成了假和弦（379 首多出三个 `D`）。
@@ -758,6 +837,27 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       out[i].row = bandOf(b, noteH * 1.6, noteH * 0.4);
       set(i, "slur", `和弦带里的宽扁弧 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
       continue;
+    }
+    // **倚音**：小号数字，**底下紧跟着一两条与它同宽的短横**（减时线）。
+    // 它是实打实的音符，GT 的 musicxml 记作 `<grace>`，漏掉音符序列就少一个
+    //（260 首少 5 个、264 首少 2 个）。光按尺寸认不行——三连音的 `3`、变拍号的数字
+    // 与倚音的字号完全重叠（都是 4.8~5.5 高），试过只按尺寸收，音符 27→70 项差异。
+    // 那条短横才是分得开的地方：
+    //  - 变拍号的分数线比数字宽一大截（9.1 对 3.7），按「与数字同宽」挡掉；
+    //  - 三连音的 `3` 与房号数字底下没有这样一条横。
+    if (below >= 0 && dBelow < noteH * 1.6 && b.h >= noteH * 0.5 && b.h <= noteH * 0.75 && b.w <= noteH * 0.6) {
+      const beamed = objs.some((o2, j) => {
+        if (j === i) return false;
+        const q = o2.bbox;
+        if (q.h > 1 || q.w > b.w * 1.8 || q.w < b.w * 0.6) return false;
+        if (Math.abs(cx(q) - cx(b)) > noteH * 0.3) return false;
+        return q.y >= bottom(b) - 1 && q.y <= bottom(b) + noteH * 0.9;
+      });
+      if (beamed) {
+        out[i].row = below;
+        set(i, "note", `谱行 ${below} 上方 ${dBelow.toFixed(1)} 的小号数字带减时线，倚音`);
+        continue;
+      }
     }
     // **和弦不会是满格汉字**：和弦是拉丁窄字，字高只有音符那号（7 上下）。
     // 一行歌词那号字的方块字落在两谱行之间时，按距离会判给下面那行的和弦带——
@@ -797,7 +897,7 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
         const q = o2.bbox;
         return q.h >= lyricH * 0.85 && q.w >= lyricH * 0.6 && Math.abs(bottom(q) - bottom(b)) <= 3 && Math.abs(cx(q) - cx(b)) <= lyricH * 8;
       });
-    const chordish = below >= 0 && dBelow < noteH * (voltaBelow && !hanOnLine ? 3.0 : narrow ? 2.4 : 1.6);
+    const chordish = below >= 0 && dBelow < noteH * (voltaBelow && !hanOnLine ? 3.0 : narrow || small ? 2.4 : 1.6);
     // 整行合成的 path 只在**谱行上方**这一侧参与（署名、经文都印在那儿）。
     // 让它也去当歌词行反而更糟：一整行歌词是一个对象，归段/折行那套按字数算的判据
     // 全失灵（实测歌词 98.29% → 98.17%，剔掉的非歌词对象从 1296 涨到 4031）。
@@ -812,15 +912,49 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     }
     // 「窄字优先判和弦」这条要有个度：`日` `白` `曲` 这些字本来就窄（7.1×9.2），
     // 离上一行谱明明近一半，却因为窄被判进下一行的和弦带，歌词里就少了那个字。
-    if (chordish && (dBelow <= dAbove || (narrow && dBelow <= dAbove * 1.5))) {
+    if (chordish && (dBelow <= dAbove || ((narrow || small) && dBelow <= dAbove * 1.5))) {
       out[i].row = below;
-      set(i, "chord", `谱行 ${below} 上方 ${dBelow.toFixed(1)}${narrow ? "，窄字" : ""}`);
+      set(i, "chord", `谱行 ${below} 上方 ${dBelow.toFixed(1)}${narrow ? "，窄字" : small ? "，小字" : ""}`);
     } else if (above >= 0) {
       out[i].row = above;
       set(i, "lyric", `谱行 ${above} 下方 ${dAbove.toFixed(1)}`);
     } else if (below >= 0) {
       out[i].row = below;
       set(i, "chord", `谱行 ${below} 上方 ${dBelow.toFixed(1)}`);
+    }
+  }
+
+  // ── 10a2. 和弦是**成排印的**，同一谱行上方的一排和弦共一条基线。
+  //         第 10 步只按「离上下哪一行谱近」加一条「窄不窄」来判，谱行之间夹着东西
+  //         （变拍号、三连音括线）把整排和弦顶高时，这一排里窄的（`C` 5.3×7.3）过了
+  //         2.4 字高那道松门槛、不窄的（`A` 6.4×7.1、`m` 7.0×4.3）卡在 1.6 上，
+  //         同一个 `Am` 就一半判和弦一半判歌词，最后整个和弦都没了（144 首的 `Am`）。
+  //         已经认定的那排和弦本身就是最好的凭据：与它们共基线的，也是和弦。
+  //         满格汉字除外——它是歌词，判据与第 10 步同一把尺子。
+  for (const bd of bands) {
+    const bots: number[] = [];
+    for (let i = 0; i < objs.length; i++) if (out[i].cls === "chord" && !out[i].dup && out[i].row === bd.index) bots.push(bottom(objs[i].bbox));
+    if (bots.length < 2) continue;
+    for (let i = 0; i < objs.length; i++) {
+      if (out[i].cls !== "lyric" || out[i].dup) continue;
+      const b = objs[i].bbox;
+      if (bottom(b) > bd.noteTop + noteH * 0.2) continue;
+      if (b.h >= lyricH * 0.85 && b.w >= lyricH * 0.6) continue;
+      if (bots.filter((y) => Math.abs(y - bottom(b)) <= noteH * 0.25).length < 2) continue;
+      // **这一行上有汉字就别动它**：歌词行首的段号（`1.`）又窄又矮，与和弦一样够不着
+      // 满格汉字的门槛，而它的基线常与下一行谱的和弦排对得上；把它收成和弦，
+      // 归段的锚点就没了，整叠歌词跟着串位（实测 100/446/170 首各多出几十项假差异）。
+      // 与第 10 步 `hanOnLine` 同一把尺子：同基线、左右八个字以内有满格汉字。
+      if (
+        objs.some((o2, j) => {
+          if (j === i || out[j].dup) return false;
+          const q = o2.bbox;
+          return q.h >= lyricH * 0.85 && q.w >= lyricH * 0.6 && Math.abs(bottom(q) - bottom(b)) <= 3 && Math.abs(cx(q) - cx(b)) <= lyricH * 8;
+        })
+      )
+        continue;
+      out[i].row = bd.index;
+      set(i, "chord", `与谱行 ${bd.index} 上方那排和弦共基线`);
     }
   }
 
@@ -975,6 +1109,42 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     }
   }
 
+  // ── 10g. 谱行**当中**的转拍号：曲子中途改拍号时，「3/4」直接印在谱行里，
+  //         两个数字都比音符小一号（实测 3.7×6.3 对音符的 5.4×8.1），中间一条短横。
+  //         不把它摘出来，上面那个数字就当成了音符（403 首多出一个 3）、
+  //         下面那个当成了歌词。10f 那条只认和弦带里的拍号，够不着谱行里的这一种：
+  //         这里的短横已经被判成增时线、数字已经被判成音符，都不在 10f 的候选里。
+  //         判据要紧：上下两个数字**都得比音符矮一截**，否则一条增时线加上下两个
+  //         正常音符就成了拍号。
+  {
+    for (let i = 0; i < objs.length; i++) {
+      const cls = out[i].cls;
+      if (cls !== "rule" && cls !== "augmentLine" && cls !== "divLine") continue;
+      const b = objs[i].bbox;
+      if (b.h > noteH * 0.15 || b.w < noteH * 0.8 || b.w > noteH * 2.4) continue;
+      const pick = (up: boolean) => {
+        const r: number[] = [];
+        for (let j = 0; j < objs.length; j++) {
+          if (j === i) continue;
+          // 和弦（连同它的上标 `m`/`7`）也够得着这个尺寸区间，别把它们收成拍号
+          if (out[j].cls === "chord" || out[j].cls === "credit" || out[j].cls === "storyText" || out[j].cls === "title") continue;
+          const q = objs[j].bbox;
+          if (q.h > noteH * 0.85 || q.h < noteH * 0.5 || q.w > noteH * 0.9) continue; // 比音符矮一截的数字
+          const qcx = cx(q);
+          if (qcx < b.x - noteH * 0.3 || qcx > right(b) + noteH * 0.3) continue;
+          const d = up ? b.y - bottom(q) : q.y - bottom(b);
+          if (d >= -1 && d < noteH * 0.5) r.push(j);
+        }
+        return r;
+      };
+      const up = pick(true);
+      const dn = pick(false);
+      if (!up.length || !dn.length) continue;
+      set(i, "keyMeter", `谱行内转拍号的分数线 ${b.w.toFixed(1)}×${b.h.toFixed(1)}`);
+      for (const j of [...up, ...dn]) set(j, "keyMeter", "谱行内转拍号的数字");
+    }
+  }
+
   // ── 11. 标记重复描边：同一字形画了 fill 与 stroke 两遍，bbox 差约一个线宽。
   //        两份都保留（重排核对要逐对象配对），但把后一份标成 dup，下游计数只认非 dup。
   //        **必须查相邻网格**：只查自己那一格会漏掉骑在格边界上的一对
@@ -1069,6 +1239,11 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
         // 两个挨着的整字都是满格宽。少了这条判据，歌词里相邻的字会被成对并掉——
         // 形状类从 1.6 万炸到 5.1 万，自举只认得出 197 类。
         if (Math.min(A.w, B.w) > cell * 0.55) break;
+        // **也必须两个部件都是满格高**：偏旁与它的主体一样高（「祂」的礻旁顶天立地），
+        // 而尾随的标点只占字格下部（「，」3.1 高，字格 10.5）——它又窄又矮，
+        // 上面那条「窄」的判据拦不住，于是被并进前一个字里，那个合起来的形状
+        // 字典里没有，整个字读不出、连带标点也少一个（009 首的「赞，」）。
+        if (Math.min(A.h, B.h) < cell * 0.55) break;
         group.push(b);
         k++;
       }
@@ -1105,6 +1280,16 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       if (last && bottom(objs[i].bbox) - bottom(objs[last[last.length - 1]].bbox) <= noteH * 0.35) last.push(i);
       else lines.push([i]);
     }
+    // 这一谱行的和弦基线（最靠下、≥3 个共线的那一撮），判据与 15 同一套。
+    let chordBase = -Infinity;
+    for (const i of idx) {
+      const b = bottom(objs[i].bbox);
+      const same = idx.filter((j) => Math.abs(bottom(objs[j].bbox) - b) <= noteH * 0.4);
+      if (same.length < 3) continue;
+      const span = Math.max(...same.map((j) => right(objs[j].bbox))) - Math.min(...same.map((j) => objs[j].bbox.x));
+      if (span < noteH * 4) continue;
+      if (b > chordBase) chordBase = b;
+    }
     for (const ln of lines) {
       // 字号要按**整行**量，不能按 run 量：谱行上下印着的经文用歌词那号字（整行中位 10.0），
       // 但其中七八个字凑出来的一小段中位可能只有 9.5，卡不住（105 首曲末那句经文）。
@@ -1115,7 +1300,27 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
         // 密排还不够，还得是**小字号**：谱行上下印着的经文/注记也是密排的一长串，
         // 但它用歌词那号字（一行中位 10.5），署名只有 6.5~8.1
         //（031 首曲末那句经文七个字，正好卡在密排门槛上被当成署名）。
-        if (run.length >= 7 && median(run.map((i) => objs[i].bbox.h)) <= lyricH * 0.92)
+        // **落在和弦基线上、而且这一行别处还有同基线的和弦，那就是和弦，再密也是**。
+        // 段落词（`(副歌)` 连着两个括线）紧挨着真和弦印在一起，一串就凑够七个字，
+        // 整块被判成署名——464 首页 543 的 `(副歌)#FmBm` 就是这么丢的两个和弦。
+        // 署名的立足点是「印在和弦基线之上一整行」（见 15），所以判据要连高度一起看：
+        // 只看「有没有同基线的伙伴」会误伤真署名——署名自己就是并排的一整行，
+        // 谱行上方三十几点处，同一行里当然彼此同基线（305 首整条署名因此没了）。
+        const runLo = run.length ? median(run.map((i) => bottom(objs[i].bbox))) : 0;
+        const runX0 = run.length ? Math.min(...run.map((i) => objs[i].bbox.x)) : 0;
+        const runX1 = run.length ? Math.max(...run.map((i) => right(objs[i].bbox))) : 0;
+        const onChordLine =
+          run.length > 0 &&
+          chordBase - runLo <= noteH * 1.2 &&
+          idx.filter((j) => {
+            if (run.includes(j)) return false;
+            const q = objs[j].bbox;
+            // 紧挨着这一串的不算「别处」：署名里一个空档（生卒年前的破折号）就足以把它
+            // 切成两串，两串当然彼此同基线，一比就把自己认成了和弦（305 首整条署名因此没了）。
+            if (q.x - runX1 < noteH * 4 && runX0 - right(q) < noteH * 4) return false;
+            return Math.abs(bottom(q) - runLo) <= noteH * 0.4;
+          }).length >= 2;
+        if (run.length >= 7 && !onChordLine && median(run.map((i) => objs[i].bbox.h)) <= lyricH * 0.92)
           for (const i of run) set(i, "credit", `和弦带里密排 ${run.length} 个小字，是词曲署名`);
         run = [];
       };
@@ -1139,10 +1344,19 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     const idx: number[] = [];
     for (let i = 0; i < objs.length; i++) if (out[i].cls === "chord" && !out[i].dup && out[i].row === bd.index) idx.push(i);
     if (idx.length < 3) continue;
+    // 基线要**横着铺开一整行**才算数。`rit.` `Fine` 这类表情记号印得比和弦低半个字
+    //（321 首的 `rit.` 低了 6.5 点），三个字母正好凑够「共线 ≥3 个」，按「最靠下」
+    // 一取基线就成了它；整排真和弦跟着「高出基线一个字高」，被 `rit.` 顶上去的那个
+    // `Am` 高出 10.6，直接接到署名尾巴上去了。和弦是隔着小节铺满整行的，
+    // 表情记号只占一个词的宽度——按跨度一量就分开了。
     let base = -Infinity;
     for (const i of idx) {
       const b = bottom(objs[i].bbox);
-      if (idx.filter((j) => Math.abs(bottom(objs[j].bbox) - b) <= noteH * 0.4).length >= 3 && b > base) base = b;
+      const same = idx.filter((j) => Math.abs(bottom(objs[j].bbox) - b) <= noteH * 0.4);
+      if (same.length < 3) continue;
+      const span = Math.max(...same.map((j) => right(objs[j].bbox))) - Math.min(...same.map((j) => objs[j].bbox.x));
+      if (span < noteH * 4) continue;
+      if (b > base) base = b;
     }
     if (base === -Infinity) continue;
     //       **位置判据试过，不如这条**：署名的版面位置很固定（标题之下、第一谱行之上、
@@ -1153,14 +1367,35 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     //       它也比和弦线高，但用的是歌词那号字（一行的中位高 10.3~11.1），署名只有 6.5~8.1。
     //       **字号要按行取中位**，不能逐字判：汉字的墨迹高度差得远（「上」才 7 高、
     //       「日」有 10），逐字判会从经文里挑出一半来当署名。
-    const above = idx.filter((i) => base - bottom(objs[i].bbox) > noteH * 1.2);
+    // **先按基线把整个谱行的和弦分行，再挑「整行都比基线高」的那些行**。
+    // 不能先按高度筛掉一半再分行：房号顶高的那一排和弦本就贴着 1.2 字高这条线，
+    // 排里有一个碰巧高出半点（164 首的 `D7` 高 0.5 点），它就自己单独成一「行」——
+    // 独字必然密排，下面那道密排判据形同虚设，于是那个 `D` 被接到署名尾巴上
+    //（识别出的署名成了「作曲王丽玲D」），和弦里少一个 `D7`。整排一起量，跨度一拉开，
+    // 密排判据立刻把它挡住。
+    // 分行**按行首那个基线量，不接龙**：接龙会让署名行顺着 0.5 点一档的小台阶
+    // 一路并到底下那排和弦上，整条署名跟着被否掉（064 首的「作曲 Adolphe…」）。
     const lines2: number[][] = [];
-    for (const i of above.slice().sort((a, b) => bottom(objs[a].bbox) - bottom(objs[b].bbox))) {
+    for (const i of idx.slice().sort((a, b) => bottom(objs[a].bbox) - bottom(objs[b].bbox))) {
       const last = lines2[lines2.length - 1];
-      if (last && bottom(objs[i].bbox) - bottom(objs[last[last.length - 1]].bbox) <= noteH * 0.4) last.push(i);
+      if (last && bottom(objs[i].bbox) - bottom(objs[last[0]].bbox) <= noteH * 0.4) last.push(i);
       else lines2.push([i]);
     }
     for (const ln of lines2) {
+      // 高度按**行的中位基线**量，不能逐字量：拉丁小写的降部（`p` `g` `y`）比同行低两点，
+      // 逐字量时一个 `p` 就能把整条署名否掉（064 首的「作曲 Adolphe…」）。
+      const lo = median(ln.map((i) => bottom(objs[i].bbox)));
+      if (base - lo <= noteH * 1.2) continue;
+      ln.sort((a, b) => objs[a].bbox.x - objs[b].bbox.x);
+      // 段落词 `(副歌)` 也印在和弦线上方一整行处，收成署名就凭空接到人名后面。
+      // 认它靠**两头那对括线**：又细又高（1.9×6.8，宽不到高的三成，高够着音符那号字），
+      // 署名里最细的 `l` `i` 也有 2.3~2.4 宽、而且不会正好排在一行的头尾两端。
+      const thinBar = (i: number) => {
+        const q = objs[i].bbox;
+        return q.w < q.h * 0.45 && q.h >= noteH * 0.7;
+      };
+      if (ln.length <= 4 && thinBar(ln[0]) && thinBar(ln[ln.length - 1])) continue;
+
       // **还得密排**：房号（一房二房）会把那一行的和弦整排抬高一个字，
       // 抬上去之后它们同样「比和弦基线高一个字高」，于是被当成署名接到人名后面
       //（037 首的署名尾巴上多出 `CFFCCF`）。署名是挤在一起的一串，
