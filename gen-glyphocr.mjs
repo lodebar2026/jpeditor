@@ -26,7 +26,29 @@ const MIN = Number(flags.min ?? 1);
 const DICT = "testdata/500/glyphdict.json";
 
 const dict = JSON.parse(await readFile(DICT, "utf8"));
-const todo = Object.values(dict.classes).filter((c) => !c.char && c.d && c.bbox && c.count >= MIN);
+// **同一个字形的分身一组只送一次**：`shapeKey` 对亚像素抖动不稳，同一个字常被切成
+// 好几个类（`gen-glyphdict` 归并后把代表键写在 `g` 字段里）。一组送一次，
+// 既省三成推理，也免得几个分身各 OCR 出一个字、彼此打架。
+const groupOf = (c) => c.g ?? c.key;
+const bestOfGroup = new Map();
+for (const c of Object.values(dict.classes)) {
+  if (!c.d || !c.bbox) continue;
+  const g = groupOf(c);
+  const cur = bestOfGroup.get(g);
+  if (!cur || c.count > cur.count) bestOfGroup.set(g, c);
+}
+const groupHasChar = new Set();
+for (const c of Object.values(dict.classes)) if (c.char) groupHasChar.add(groupOf(c));
+const todo = [...bestOfGroup.values()].filter((c) => !groupHasChar.has(groupOf(c)) && c.count >= MIN);
+/** 结果发给**整组**：分身查表时用的是自己的键，不写进去就还是读不出。 */
+const members = new Map();
+for (const c of Object.values(dict.classes)) (members.get(groupOf(c)) ?? members.set(groupOf(c), []).get(groupOf(c))).push(c);
+const setGroup = (key, ch, src) => {
+  for (const c of members.get(groupOf(dict.classes[key])) ?? [dict.classes[key]]) {
+    c.char = ch;
+    c.source = src;
+  }
+};
 /** 整行合成的 path：宽是高的三倍以上。单字再扁也扁不到这个地步。 */
 const isLine = (c) => c.w >= c.h * 3;
 console.log(
@@ -111,13 +133,11 @@ for (const r of results) {
       junk++;
       continue;
     }
-    dict.classes[r.key].char = cleaned;
-    dict.classes[r.key].source = "ocr-line";
+    setGroup(r.key, cleaned, "ocr-line");
     filled++;
     continue;
   }
-  dict.classes[r.key].char = t;
-  dict.classes[r.key].source = "ocr";
+  setGroup(r.key, t, "ocr");
   filled++;
 }
 await writeFile(DICT, JSON.stringify(dict));

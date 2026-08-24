@@ -72,12 +72,16 @@ const noteOf = (o) => {
     // bbox 记路径**自身坐标系**下的紧包围盒：`d` 是原样导出的路径，
     // 要把它渲染出来（OCR 兜底、重排取原字形）就得知道该怎么摆。
     const rb = cli.pathBoundsRaw(o.obj.data);
+    const bb = o.obj.bbox;
     classes.set(key, {
       count: 1,
-      h: o.obj.bbox.h,
-      w: o.obj.bbox.w,
+      h: bb.h,
+      w: bb.w,
       d: cli.toSvgPath(o.obj.data),
       bbox: rb ? [rb.x0, rb.y0, rb.x1, rb.y1].map((v) => Math.round(v * 100) / 100) : null,
+      // 32×32 签名，归并同一字形的分身用。**细长条不记**：签名按 max(w,h) 等比缩放，
+      // 「一」、目录引导点行、注解框的纹样边压扁之后都是同一条横带，会撞在一起。
+      sig: Math.min(bb.w, bb.h) / Math.max(bb.w, bb.h, 0.01) < 0.25 ? null : cli.encodeSig(cli.shapeSig(o.obj.data)),
     });
   }
   return key;
@@ -187,9 +191,70 @@ console.log(`  ${items.length} 首，形状类 ${classes.size}`);
   console.log(`  全书文字类形状表：${classes.size} 类（其中 ${extra} 类只出现在无 GT 的页上）`);
 }
 
+// ── 形状类归并：**同一个字形常被切成好几个键**，合起来再自举。
+//
+// `shapeKey` 把轮廓按高度归一到 50 格再取整。一个汉字上千个坐标，页面上同一个字印在
+// 不同位置时坐标差着零点零几个点——单看每个坐标都不影响取整，上千个里总有一两个正好
+// 卡在 .5 上翻过去，键就变了。全书 16234 个类按 32×32 签名只剩一万来组，
+// **近四千个类是同一字形的分身**。
+//
+// 分身各学各的字就会打架：011 首「晨光著现」印两遍，两处的路径 501 段只差末位四舍五入、
+// 签名逐位相同，却一个被投成「着」一个「著」，同一段里前后不一。
+// **合了再投**，票攒到一处，这类冲突从根上没有了（自举完还会再多认出一批字）。
+//
+// 组内还要**尺寸相近**（±12%）：签名等比缩放，标题里大一号的同形字签名也一样，
+// 但那本来就该分开记（渲染取原字形时要用各自的 d）。
+const rep = new Map();
+{
+  const bySig = new Map();
+  for (const [k, c] of classes) if (c.sig) (bySig.get(c.sig) ?? bySig.set(c.sig, []).get(c.sig)).push(k);
+  let groups = 0;
+  let folded = 0;
+  for (const ks of bySig.values()) {
+    if (ks.length < 2) continue;
+    ks.sort((a, b) => classes.get(b).count - classes.get(a).count); // 实例最多的那个当代表
+    const ref = classes.get(ks[0]);
+    let n = 0;
+    for (const k of ks.slice(1)) {
+      const c = classes.get(k);
+      if (Math.abs(c.h - ref.h) > ref.h * 0.12 || Math.abs(c.w - ref.w) > ref.w * 0.12) continue;
+      rep.set(k, ks[0]);
+      n++;
+    }
+    if (n) {
+      groups++;
+      folded += n;
+    }
+  }
+  console.log(`  按签名归并：${groups} 组，${folded} 个类并进代表类（形状类 ${classes.size} → ${classes.size - folded}）`);
+}
+/** 原始键 → 代表键。字典最后**每个原始键都要写一条**，运行时按自己的键查得到。 */
+const R = (k) => rep.get(k) ?? k;
+/** 归并前的逐键信息（d / bbox / 各自的实例数），写字典时要用。
+ *  **要浅拷贝**：下面把分身的实例数并进代表，共享同一个对象的话原始条目也跟着被改。 */
+const rawClasses = new Map([...classes].map(([k, c]) => [k, { ...c }]));
+// 票投给代表：把各分身的实例数并过去，代表之外的从投票表里撤掉
+for (const [k, r] of rep) {
+  const a = classes.get(r);
+  const c = classes.get(k);
+  if (a && c) a.count += c.count;
+  classes.delete(k);
+}
+// 语料里记下的键也一并换成代表键
+const mapKeys = (a) => a.map(R);
+for (const it of items) {
+  it.notes = mapKeys(it.notes);
+  it.title = mapKeys(it.title);
+  it.chords = mapKeys(it.chords);
+  it.credits = mapKeys(it.credits);
+  it.category = mapKeys(it.category);
+  it.verses = it.verses.map(mapKeys);
+  it.footers = it.footers.map((f) => ({ ...f, keys: mapKeys(f.keys) }));
+}
+
 // ── 自举
 /** key → char（已定）。 */
-const known = new Map(seed);
+const known = new Map([...seed].map(([k, v]) => [R(k), v]));
 for (const [k] of known) if (!classes.has(k)) classes.set(k, { count: 0, h: 0, w: 0, d: "" });
 const sourceOf = new Map();
 for (const k of known.keys()) sourceOf.set(k, "manual");
@@ -293,8 +358,11 @@ for (let round = 1; round <= ROUNDS; round++) {
     // 故意不进字典）。那些是短圆滑线、减时线之类，投票时被挤到某个字上，
     // 收进字典就成了凭空多出的字（实测一个 10.6×3.0 的类被投成 `E`，
     // 全书和弦序列里凭空多出上百个 E，和弦准确率掉 1.5 个点）。
+    // **「一」是例外**：它本来就扁（标题里的 16.2×3.9）。这条闸是拦「短圆滑线、减时线
+    // 被投成某个字」的，不是拦「一」——挡住它，标题里的「一」就永远只能靠 OCR，
+    // 而扁横条送行识别多半读成 `1`（实测 22 首标题因此把「一」读成了「1」）。
     const cls = classes.get(k);
-    const flat = cls && cls.h > 0 && cls.w >= cls.h * 2.5;
+    const flat = cls && cls.h > 0 && cls.w >= cls.h * 2.5 && best !== "一";
     if (best !== null && !flat && bestN >= 3 && bestN / total >= 0.7) {
       known.set(k, best);
       sourceOf.set(k, "gt");
@@ -309,12 +377,17 @@ for (let round = 1; round <= ROUNDS; round++) {
   if (!added) break;
 }
 
+// **每个原始键各写一条**（运行时按自己的键查表），字与来源取自它所属的代表类；
+// d / bbox / 尺寸仍用各自的——渲染（OCR 兜底、重排取原字形）要的是这个键自己的轮廓。
+// `g` 记代表键：gen-glyphocr 靠它一组只送一次 OCR，gen-glyphmerge 靠它回填。
 const dict = { book: "hymn500", quant: 50, classes: {} };
-for (const [key, c] of classes) {
+for (const [key, c] of rawClasses) {
+  const r = R(key);
   dict.classes[key] = {
     key,
-    char: known.get(key) ?? null,
-    source: sourceOf.get(key) ?? null,
+    g: r === key ? undefined : r,
+    char: known.get(r) ?? null,
+    source: sourceOf.get(r) ?? null,
     count: c.count,
     h: Math.round(c.h * 100) / 100,
     w: Math.round(c.w * 100) / 100,
@@ -322,6 +395,7 @@ for (const [key, c] of classes) {
     d: c.d,
   };
 }
+for (const [k] of known) if (!dict.classes[k]) dict.classes[k] = { key: k, char: known.get(k), source: sourceOf.get(k) ?? null, count: 0, h: 0, w: 0, bbox: null, d: "" };
 await writeFile(OUT, JSON.stringify(dict));
 const defined = Object.values(dict.classes).filter((c) => c.char).length;
 console.log(`→ ${OUT}：${Object.keys(dict.classes).length} 类，已定 ${defined}`);
