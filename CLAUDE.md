@@ -36,6 +36,8 @@ npm run build && node omr-export-check.mjs             # 同上，但底本取�
 npm run build && node abc-shot.mjs <abc> /tmp/abc.png  # 拖入 .abc 端到端渲染核对
 npm run build && node omr-pu-check.mjs                 # 识别→文本谱原文→回解析 逐项对拍
 npm run build:cli && node pdf-diff.mjs && node pdf-mark.mjs   # 矢量 PDF 识别 ↔ GT 对比 + 差异标记版 PDF
+node gen-storyocr.mjs && node gen-glyphsheet.mjs               # 整行 OCR 补字 + 人工确认表
+node gen-bookmeta.mjs [--check]                                # 书级内容（调号拍号/目录/索引/注解…）入 校对.db
 node gen-glyphmerge.mjs        # 字形建库第三步：同一字形的分身归并、标注取齐
 npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿（须人工核对后才算 GT）
 ```
@@ -123,6 +125,10 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   16180 个类其实只有 10269 个字形，分身各学各的字会打架；归并已挪到自举之前，
   `gen-glyphmerge` 只做收尾对齐）。**对比报告只出有事可说的那些**，全量跑会先清空 `pdf-diff/`。
   **花边框里的文字一律只当注解正文**（`inventory.ts` 的 `set` 里有一道锁），不进音符/歌词。
+  **书级内容**（`bookmeta.ts` → 校对.db 八张表 → `bookparts.ts` 排回去）：调号拍号原文
+  （拍号上下叠排）、段落词、花边框正文、目录、两份索引（尾数是**曲号**不是页码）、扉页前言；
+  补字靠 `gen-storyocr.mjs`（**整行**送 OCR + 锚点分段，标点另按墨迹高判）与
+  `gen-glyphsheet.mjs`（人工确认表）。整本 700 页、注解 164/164 排入、缺字 0。
   **归类判据一改就要重跑 `gen-glyphdict.mjs`**（再把上一版的 OCR 标注并回未定类）——
   字形自举靠 GT 与页面序列对齐投票，归类错位时学到的字符也跟着错。
   对比报告把「内容差异 / 表述或结构不一致 / 未识别 / 版面」分四类记（**表述不一致要记账不要吞掉**：
