@@ -174,6 +174,9 @@ function sectionTokens(run: TextRun, ov?: CharOverride): { text: string; x: numb
 
 export interface Annotation {
   songId: string | null;
+  /** 原书这一框的正文字号（墨迹高中位）。同一批花边框里 6.5~10.5 都有——
+   *  原书是按剩余空间缩排的，重排时按它反算行距比例。 */
+  size: number;
   /** 有没有花边框。经文有时不装框，直接印在谱行下方（p36 / p39）。 */
   framed: boolean;
   text: string;
@@ -468,7 +471,8 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
         null;
       const text = regroupBoxLines(box.lines, ov).join("\n");
       if (text.replace(/\s/g, "").length < 4) continue;
-      meta.annotations.push({ songId: owner, framed: true, text, box: box.box, page: spec.page });
+      const hs = box.lines.flatMap((l) => l.chars.map((c) => c.h)).filter((h) => h > 2);
+      meta.annotations.push({ songId: owner, framed: true, size: Number(median(hs).toFixed(2)), text, box: box.box, page: spec.page });
     }
     // 未装框的经文（p36 / p39 那种，印在谱行下方、没有花边）。
     // 门槛 4 个字：乐谱页的 textLines 里绝大多数是掉出谱行的「一」，那些不能算。
@@ -488,6 +492,7 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
         meta.annotations.push({
           songId: owner,
           framed: false,
+          size: Number(median(rows.flatMap((r) => r.l.chars.map((c) => c.h)).filter((h) => h > 2)).toFixed(2)),
           text: rows.map((r) => r.t).join("\n"),
           box: {
             x,
@@ -568,10 +573,25 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
       continue;
     }
     if (spec.kind === "front-matter" && spec.textLines.length) {
+      // 带谱的前置页（p4 是配了曲调的主祷文、p664 是简谱旋律索引）不算前言正文：
+      // 它们的「正文」抽出来是一串音符数字，照排就是一页乱码。
+      const musicMarks = spec.marks.filter((m) => m.cls === "barline" || m.cls === "divLine" || m.cls === "augmentLine").length;
+      if (musicMarks >= 5) {
+        meta.problems.push(`前置页 p${spec.page} 带谱（记号 ${musicMarks}），不当前言正文收`);
+        continue;
+      }
       const rows = spec.textLines.map((l) => ({ t: runText(l, ov).trim(), size: l.size })).filter((r) => r.t);
       if (!rows.length) continue;
       const big = [...rows].sort((a, b) => b.size - a.size)[0];
       const divider = rows.length <= 3;
+      // 简谱旋律索引（p664）没有小节线、却是整页音符数字，上面那条判据够不着；
+      // 前言正文里汉字总该过半。
+      const all = rows.map((r) => r.t).join("");
+      const cjkRatio = (all.match(/[一-鿿]/g) ?? []).length / Math.max(1, all.length);
+      if (!divider && cjkRatio < 0.5) {
+        meta.problems.push(`前置页 p${spec.page} 汉字只占 ${(cjkRatio * 100).toFixed(0)}%，多半是音符索引，不当前言正文收`);
+        continue;
+      }
       meta.front.push({
         page: spec.page,
         kind: divider ? "divider" : "prose",

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS section_word (
   id INTEGER PRIMARY KEY, song_no TEXT, text TEXT,
   note_ordinal INT, measure_index INT, system_index INT, source_page INT);
 CREATE TABLE IF NOT EXISTS annotation (
-  id INTEGER PRIMARY KEY, song_no TEXT, framed INT, seq INT, text TEXT,
+  id INTEGER PRIMARY KEY, song_no TEXT, framed INT, seq INT, text TEXT, size REAL,
   box_x REAL, box_y REAL, box_w REAL, box_h REAL, source_page INT);
 CREATE TABLE IF NOT EXISTS toc_row (
   id INTEGER PRIMARY KEY, seq INT, kind TEXT, text TEXT, song_no TEXT,

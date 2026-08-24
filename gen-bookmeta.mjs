@@ -65,6 +65,7 @@ const annotations = meta.annotations.map((a, i) => ({
   framed: a.framed ? 1 : 0,
   seq: i,
   text: a.text,
+  size: a.size,
   box_x: +a.box.x.toFixed(2),
   box_y: +a.box.y.toFixed(2),
   box_w: +a.box.w.toFixed(2),
@@ -141,7 +142,7 @@ if (CHECK) {
 }
 replaceTable(db, "song_meta", ["song_no", "tonic", "beats", "beat_type", "alt_tonic", "key_raw", "category", "source_page"], songMeta);
 replaceTable(db, "section_word", ["song_no", "text", "note_ordinal", "measure_index", "system_index", "source_page"], sectionWords);
-replaceTable(db, "annotation", ["song_no", "framed", "seq", "text", "box_x", "box_y", "box_w", "box_h", "source_page"], annotations);
+replaceTable(db, "annotation", ["song_no", "framed", "seq", "text", "size", "box_x", "box_y", "box_w", "box_h", "source_page"], annotations);
 replaceTable(db, "toc_row", ["seq", "kind", "text", "song_no", "printed_page", "source_page"], tocRows);
 replaceTable(db, "index_row", ["seq", "kind", "index_name", "text", "song_no", "source_page"], indexRows);
 replaceTable(db, "front_page", ["source_page", "kind", "title", "body", "note"], frontRows);

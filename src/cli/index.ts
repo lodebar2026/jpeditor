@@ -14,4 +14,5 @@ export * from "../pdflayout/stats";
 export * from "../pdflayout/drawlist";
 export * from "../pdflayout/align";
 export * from "../pdflayout/bookmeta";
+export * from "../pdflayout/bookparts";
 export type { Binary, Component, Rect, JpNum, StaffRow, RecognizedScore, TextRegion } from "../omr/types";
