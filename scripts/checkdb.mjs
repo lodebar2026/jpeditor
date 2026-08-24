@@ -41,8 +41,8 @@ CREATE TABLE IF NOT EXISTS toc_row (
   id INTEGER PRIMARY KEY, seq INT, kind TEXT, text TEXT, song_no TEXT,
   printed_page INT, source_page INT);
 CREATE TABLE IF NOT EXISTS index_row (
-  id INTEGER PRIMARY KEY, seq INT, first_line TEXT, song_no TEXT,
-  printed_page INT, source_page INT, column_no INT);
+  id INTEGER PRIMARY KEY, seq INT, kind TEXT, index_name TEXT, text TEXT,
+  song_no TEXT, source_page INT);
 CREATE TABLE IF NOT EXISTS front_page (
   id INTEGER PRIMARY KEY, source_page INT, kind TEXT, title TEXT, body TEXT, note TEXT);
 CREATE TABLE IF NOT EXISTS page_label (
