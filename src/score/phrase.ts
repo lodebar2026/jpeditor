@@ -94,15 +94,41 @@ export interface PhraseOptions {
   repeatLenBonus?: boolean;
   /** 行长代价的权重。调大 = 更看重「各行一样长」。
    *  默认 1 是编辑器那条路调出来的；成书要工整的行长，调到 2 以上，
-   *  16 小节的歌才会选 4+4+4+4 而不是 4+6+6（后者行长代价 8，但少断一次省 8 分，默认权重下打平）。 */
+   *  16 小节的歌才会选 4+4+4+4 而不是 4+6+6（后者行长代价 8，但少断一次省 8 分，默认权重下打平）。
+   *  **`targetMeas` 由容量折算时要反过来调小**（成书那条路 0.25）：目标行长已经就是版心宽，
+   *  行长代价再重就会压过「断在乐句收尾处」，把行末从标点上挪走（实测全书行末收标点 94% → 81%）。 */
   lenWeight?: number;
+}
+
+/**
+ * 一行放得下 `cells` 格时，行长目标该定几小节。
+ *
+ * 行长目标本来是个固定的小节数（4），靠排完再两两并短行去凑满版心；但**并行只能成对**，
+ * 一段里落单的那一行就并不进去，于是同一首里会出现一行 12 小节、下一行 6 小节
+ * （377《我宁愿有耶稣》副歌）。目标直接按容量定，DP 一次就能挑中那个最强的断点
+ * （该曲副歌「…所苦害，」的长音 tie 收尾，强度 22，是全段最高的）。
+ *
+ * 「一小节几格」随拍号与音符密度而变（005 每小节 3.2 格、001 每小节 4 格），所以要按本曲实测。
+ */
+export function targetMeasForCells(part: Part, cells: number): number {
+  let tot = 0;
+  let nm = 0;
+  for (const m of part.measures) {
+    nm++;
+    for (const c of chordsOf(m)) tot += cellsOf(c);
+  }
+  if (!nm || !(cells > 0)) return DEF_TARGET_MEAS;
+  return Math.max(3, Math.min(12, Math.round(cells / Math.max(0.5, tot / nm))));
 }
 
 export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): PhraseBreaks {
   const TARGET_MEAS = opts.targetMeas ?? DEF_TARGET_MEAS;
   const MIN_MEAS = opts.minMeas ?? DEF_MIN_MEAS;
-  const MAX_MEAS = opts.maxMeas ?? DEF_MAX_MEAS;
-  const MAX_SENTENCE_MEAS = opts.maxSentenceMeas ?? DEF_MAX_SENTENCE_MEAS;
+  // 目标行长由容量折算过来（成书那条路）时，上限跟着目标走——固定的 7 / 8 小节是按
+  // 「目标 4 小节」调出来的，配上 9 小节的目标就成了硬顶，DP 只能改断在别处。
+  const scaled = opts.targetMeas !== undefined && opts.targetMeas > DEF_TARGET_MEAS;
+  const MAX_MEAS = opts.maxMeas ?? (scaled ? Math.round(TARGET_MEAS * 1.3) : DEF_MAX_MEAS);
+  const MAX_SENTENCE_MEAS = opts.maxSentenceMeas ?? (scaled ? Math.round(TARGET_MEAS * 1.4) : DEF_MAX_SENTENCE_MEAS);
   const MAX_CELLS = opts.maxCells ?? DEF_MAX_CELLS;
   const MAX_SENTENCE_CELLS = opts.maxSentenceCells ?? Math.max(DEF_MAX_SENTENCE_CELLS, MAX_CELLS);
   const LEN_WEIGHT = opts.lenWeight ?? 1;

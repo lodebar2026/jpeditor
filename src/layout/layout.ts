@@ -1003,6 +1003,8 @@ export interface SectionWordGeom {
   /** 本小节的左右界（上一条 / 下一条小节线） */
   barLeft: number;
   barRight: number;
+  /** 段落词最左能到哪儿：一般就是 `barLeft`，**行首那一条**可以伸进左边距（见下） */
+  hangLeft: number;
 }
 
 /** 段落词的落点。 */
@@ -1015,11 +1017,23 @@ export interface SectionWordSlot {
 }
 
 /**
+ * 段落词能往左挂多远。锚点左边还有小节线（`barLeft` 找得到）就不许越过它——越过去
+ * 就成了上一小节的标记；**行首**那一条左边没有小节线，准它伸进左边距（原书在行尾
+ * 也让段落词伸出版心）。留一成边距不占，免得贴到装订线上。
+ */
+function sectionWordHangLeft(barLeft: number | undefined, opt: LayoutOptions): number {
+  return barLeft ?? -opt.marginLeft * 0.9;
+}
+
+/**
  * 段落词摆哪儿——**纯几何，不碰页面树**。
  *
  * 先按锚点音符摆在和弦基线上，撞上和弦就**沿 x 让**：右移到那个和弦右边（一路跳过挨着的
- * 和弦找空档，和弦密的行上第一个空档往往在两三个和弦之后），右边出了小节就左移，
- * **行首/小节首只许右移**。都让不开才退到和弦**上方**一行，那样虽然多占一层，至少不叠字。
+ * 和弦找空档，和弦密的行上第一个空档往往在两三个和弦之后），右边出了小节就左移。
+ * 小节首本来只许右移，但**行首**那一条例外：可以整个挂到锚点音符**左边**、伸进左边距
+ * （`hangLeft`）——原书在行尾也是这么让它伸出版心的。这一步比撑开整个小节省地方，
+ * 381《进深进深入主仁爱深渊》的弱起「（副歌）」原来要把弱起小节撑宽一个词。
+ * 都让不开才退到和弦**上方**一行，那样虽然多占一层，至少不叠字。
  *
  * 这个判据被两处共用，**必须是同一份代码**：`Line.spreadForSectionWords`（排版前预演，
  * 据此算要撑开多少）与 `Line.addSectionWords`（justify 之后真正摆）。各写一套就会错配——
@@ -1039,7 +1053,11 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
   for (let c = hit(cand); c; c = hit(cand)) cand = c.x1 + gap;
   if (cand + g.width <= g.barRight) return { x: cand, lifted: false, shortfall: 0 };
   const left = first.x0 - g.width - gap;
-  if (left >= g.barLeft && !hit(left) && g.anchorX > g.barLeft) return { x: left, lifted: false, shortfall: 0 };
+  if (left >= g.hangLeft && !hit(left) && g.anchorX > g.hangLeft) return { x: left, lifted: false, shortfall: 0 };
+  // 让不开就挂到锚点音符左边——行首那一条 `hangLeft` 在左边距里，够挂；
+  // 行中的 `hangLeft` 就是 `barLeft`，挂不出去，照旧往下走抬升。
+  const hang = g.anchorX - g.width - gap;
+  if (hang >= g.hangLeft && !hit(hang)) return { x: hang, lifted: false, shortfall: 0 };
   return { x: g.anchorX, lifted: true, shortfall: cand + g.width - g.barRight };
 }
 
@@ -1276,7 +1294,8 @@ export class Line {
       const anchorX = e.group.x + item.x;
       const lastEnt = this.entries[this.entries.length - 1];
       const barRight0 = this.entries[endIdx]?.group.x ?? lastEnt.group.x + lastEnt.group.width;
-      const barLeft = [...bars].reverse().map((b) => this.entries[b].group.x).find((bx) => bx <= anchorX) ?? 0;
+      const barLeftAt = [...bars].reverse().map((b) => this.entries[b].group.x).find((bx) => bx <= anchorX);
+      const barLeft = barLeftAt ?? 0;
       const width = font.measureText(e.chord.sectionWord);
       const at = (spread: number): SectionWordSlot =>
         placeSectionWord({
@@ -1287,6 +1306,7 @@ export class Line {
           chords: chordBase.map((c) => ({ x0: c.x0 + spread * c.f, x1: c.x1 + spread * c.f, y: c.y })),
           barLeft,
           barRight: barRight0 + spread,
+          hangLeft: sectionWordHangLeft(barLeftAt, opt),
         });
       const now = at(0);
       if (!now.lifted) continue;
@@ -1611,22 +1631,31 @@ export class Line {
       path.fill = false;
       path.stroke = true;
       path.strokeColor = opt.color;
-      path.moveTo(0, 0);
-      path.lineTo(0, y);
-      path.lineTo(width / 2 - numberSize / 3, y);
-      path.moveTo(width, 0);
-      path.lineTo(width, y);
-      path.lineTo(width / 2 + numberSize / 3, y);
       const txt = new SmuflText(opt);
       txt.color = opt.color;
       txt.text = GlyphCodes.tuplet3;
-      const w = txt.measureText();
-      txt.x = width / 2 - w / 2;
-      // 数字要**按墨迹**与横线垂直居中：SmuflText 的 bound 是紧包围盒（相对基线，top 为负），
-      // 墨迹中心 = (top + bottom) / 2，把它对到横线 y 上。按字号估偏移（0.28em 那种）对不准——
-      // Bravura 的 tuplet 字形墨迹只占 em 的一小截。
-      const bd = txt.bound;
-      txt.y = y - (bd.top + bd.bottom) / 2;
+      // 数字要**按墨迹**与横线上下、左右都居中。这里自己拿 SMuFL 元数据算，
+      // **不走 SmuflText.bound**：那个 bound 是从元数据直接换算的，y 轴还是 SMuFL 的
+      // 「上为正」，与页面坐标反号（top/bottom 也因此对调）。拿它算墨迹中心会把数字
+      // 往上推整整一倍墨迹高的一半（看着就是“飘在括线上方”）。
+      // 按字号估偏移（0.28em 那种）同样不准——Bravura 的 tuplet 字形墨迹只占 em 的一小截。
+      const box = opt.smuflMeta.getBBox(GlyphCodes.tuplet3);
+      if (!box) throw new Error("no smufl bbox: tuplet3");
+      const sp = txt.font.size / 4; // SMuFL：字号 = 4 个 staff space
+      const inkCx = ((box.bBoxSW[0] + box.bBoxNE[0]) / 2) * sp;
+      const inkCy = -((box.bBoxSW[1] + box.bBoxNE[1]) / 2) * sp; // 页面坐标上为负
+      const inkHalfW = ((box.bBoxNE[0] - box.bBoxSW[0]) / 2) * sp;
+      txt.x = width / 2 - inkCx;
+      txt.y = y - inkCy;
+      // 缺口按数字的**墨迹宽**开（原先写死的 numberSize/3 与字形无关，
+      // 书级重排那一路的小字号下会宽出一大截空），两边各留一道约 0.15em 的气。
+      const halfGap = inkHalfW + txt.font.size * 0.15;
+      path.moveTo(0, 0);
+      path.lineTo(0, y);
+      path.lineTo(width / 2 - halfGap, y);
+      path.moveTo(width, 0);
+      path.lineTo(width, y);
+      path.lineTo(width / 2 + halfGap, y);
       tupGrp.add(path);
       tupGrp.add(txt);
       this.group.add(tupGrp);
@@ -1761,14 +1790,16 @@ export class Line {
       // 所以不为它撑开音符间距；能不能放下只看「本小节内有没有不撞和弦的空档」。
       const anchorX = e.group.x + item.x;
       const baseY = this.sectionWordBaseY(e, opt, chords);
+      const barLeftAt = [...barXs].reverse().find((bx) => bx <= anchorX);
       const slot = placeSectionWord({
         anchorX,
         width: tf.width,
         size,
         baseY,
         chords,
-        barLeft: [...barXs].reverse().find((bx) => bx <= anchorX) ?? 0,
+        barLeft: barLeftAt ?? 0,
         barRight: barXs.find((bx) => bx > anchorX) ?? lineRight,
+        hangLeft: sectionWordHangLeft(barLeftAt, opt),
       });
       tf.x = slot.x;
       tf.y = slot.lifted ? baseY - size * 1.5 : baseY;

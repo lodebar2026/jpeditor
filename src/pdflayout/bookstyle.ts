@@ -197,12 +197,15 @@ export interface TitleBlock {
 export interface BookLayoutOpts {
   linesPerPage: number;
   phrase: boolean;
-  /** 乐句排版的目标行长（小节数）。**行长的硬约束来自纸张**——一行能放几格由版心宽
-   *  ÷ 音符步距算出来（见 rebuild.mjs），这里只是「一行大致几小节」的偏好。 */
+  /** 乐句排版的目标行长（小节数）。**0 = 按版心容量折算**（`phrase.ts::targetMeasForCells`），
+   *  成书走这个：容量由版心宽 ÷ 音符步距实测（见 rebuild.mjs），除以本曲「每小节几格」
+   *  就是一行该放几小节。给死一个小节数（原来是 4）就得靠「两两并短行」去凑满版心，
+   *  而并行只能成对，段里落单的那一行并不进去——377《我宁愿有耶稣》副歌因此排成
+   *  12 小节 + 6 小节两行。 */
   phraseTargetMeas: number;
-  /** 行长代价的权重。成书要工整的行长，默认调到 4。
-   *  16 小节的歌在权重 1（编辑器那条路的默认）下会排成 4+6+6——行长代价 8，
-   *  但比 4+4+4+4 少断一次、正好省回来，打平；权重 2 仍打平，4 才让长音上的断点胜出。 */
+  /** 行长代价的权重。**目标行长按容量折算之后要调小**（0.25）：目标本身已经是版心宽，
+   *  行长代价再重就会压过「断在乐句收尾处」，把行末从标点上挪走
+   *  （全书实测：行末收标点 94.1% → 81.2%，权重 4 时）。 */
   phraseLenWeight: number;
   /** 断点强度的权重：让「断在长音 + 标点上」压过「各行一样长」。 */
   phraseBreakWeight: number;
@@ -410,9 +413,9 @@ export function defaultBookStyle(): BookStyle {
       // 编辑器那条路（jpscore）另有自己的 4。
       linesPerPage: 0,
       phrase: true,
-      phraseTargetMeas: 4,
-      phraseLenWeight: 4,
-      phraseBreakWeight: 1.5,
+      phraseTargetMeas: 0,
+      phraseLenWeight: 0.25,
+      phraseBreakWeight: 3,
       phraseMidBreak: true,
       phraseMergeShort: true,
       verseNumbers: "auto",

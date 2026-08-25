@@ -234,8 +234,13 @@ for (const s of picked) {
         let expect = 1;
         if (st.layout.phrase && score.parts[0]) {
           score.clearSystemBreak();
+          // 行长目标：0 = 按版心容量折算（成书默认）。固定的小节数要靠「两两并短行」去凑满
+          // 版心，而并行只能成对，段里落单的那一行就并不进去（377 副歌一行 12 小节、下一行 6）。
+          const targetMeas = st.layout.phraseTargetMeas > 0
+            ? st.layout.phraseTargetMeas
+            : B.targetMeasForCells(score.parts[0], cells);
           const brk = B.computePhraseBreaks(score.parts[0], {
-            targetMeas: st.layout.phraseTargetMeas,
+            targetMeas,
             lenWeight: st.layout.phraseLenWeight,
             breakWeight: st.layout.phraseBreakWeight,
             // 成书专用的两条权重（编辑器那条路默认不开，基线不动）：
@@ -245,7 +250,7 @@ for (const s of picked) {
             maxCells: cells,
             maxSentenceCells: cells,
           });
-          B.enforceLineCapacity(score.parts[0], brk, cells, st.layout.phraseTargetMeas, st.layout.phraseMidBreak);
+          B.enforceLineCapacity(score.parts[0], brk, cells, targetMeas, st.layout.phraseMidBreak);
           // 再两两并一次短行：乐句分析按「小节数」定行长，每小节几格随拍号而变，
           // 小节短的谱（005 每小节 3.2 格）一句一行只用得上半幅版心，原书那首就是一行两句。
           if (st.layout.phraseMergeShort)
