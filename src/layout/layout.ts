@@ -989,6 +989,60 @@ class Page {
   lines: Line[] = [];
 }
 
+/** 段落词落点的几何输入（一行之内，坐标以该行的 group 为原点）。 */
+export interface SectionWordGeom {
+  /** 锚点音符的墨迹左缘 */
+  anchorX: number;
+  /** 段落词的文字宽 */
+  width: number;
+  /** 段落词字号：让位间隙与抬升量都按它算 */
+  size: number;
+  /** 和弦那条基线 */
+  baseY: number;
+  chords: { x0: number; x1: number; y: number }[];
+  /** 本小节的左右界（上一条 / 下一条小节线） */
+  barLeft: number;
+  barRight: number;
+}
+
+/** 段落词的落点。 */
+export interface SectionWordSlot {
+  x: number;
+  /** 让不开，只能抬到和弦上方一层 */
+  lifted: boolean;
+  /** 要不抬起来，本小节右界还差多少（lifted 时 > 0） */
+  shortfall: number;
+}
+
+/**
+ * 段落词摆哪儿——**纯几何，不碰页面树**。
+ *
+ * 先按锚点音符摆在和弦基线上，撞上和弦就**沿 x 让**：右移到那个和弦右边（一路跳过挨着的
+ * 和弦找空档，和弦密的行上第一个空档往往在两三个和弦之后），右边出了小节就左移，
+ * **行首/小节首只许右移**。都让不开才退到和弦**上方**一行，那样虽然多占一层，至少不叠字。
+ *
+ * 这个判据被两处共用，**必须是同一份代码**：`Line.spreadForSectionWords`（排版前预演，
+ * 据此算要撑开多少）与 `Line.addSectionWords`（justify 之后真正摆）。各写一套就会错配——
+ * 129 首《荣耀的一天》的「（副歌）」曾因此被抬到和弦上方（spread 那边只按「锚点到小节线
+ * 够不够放下这几个字」算，没算跳过和弦这一段）。
+ */
+export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
+  const gap = g.size * 0.3;
+  // 压不压字看**全行的和弦**（段落词本来就可以伸出小节线，撞的往往是下一小节的第一个和弦）；
+  // 但**让位只能在本小节内**——这两件事口径不同，别混。撞上小节外的和弦时右移左移都没用，
+  // 只能靠 spreadForSectionWords 撑开本小节：小节线右边的东西整体右移，段落词留在原处，空档就出来了。
+  const hit = (x: number): { x0: number; x1: number } | undefined =>
+    g.chords.find((c) => Math.abs(c.y - g.baseY) < g.size && x < c.x1 && c.x0 < x + g.width);
+  const first = hit(g.anchorX);
+  if (!first) return { x: g.anchorX, lifted: false, shortfall: 0 };
+  let cand = first.x1 + gap;
+  for (let c = hit(cand); c; c = hit(cand)) cand = c.x1 + gap;
+  if (cand + g.width <= g.barRight) return { x: cand, lifted: false, shortfall: 0 };
+  const left = first.x0 - g.width - gap;
+  if (left >= g.barLeft && !hit(left) && g.anchorX > g.barLeft) return { x: left, lifted: false, shortfall: 0 };
+  return { x: g.anchorX, lifted: true, shortfall: cand + g.width - g.barRight };
+}
+
 export class Line {
   group = new Group();
   entries: Entry[] = [];
@@ -1122,8 +1176,6 @@ export class Line {
 
   /** 由 layout(opt) 注入，供 calcXPos 用（Line 自己不持有 LayoutOptions）。 */
   lyricGap = 0;
-  /** 段落词的字体（撑开那个音符时要量宽度）。null = 不排段落词。 */
-  sectionWordFont: Font | null = null;
 
   /**
    * 相邻的两条小节线只留一条。
@@ -1187,32 +1239,83 @@ export class Line {
    * 锚点那一个音符上**——那一处的间距会突兀地大出一截。这里把需要的量**均摊到锚点所在
    * 小节里余下的每个音符间距**上，小节之后的内容整体右移同样的量。
    * 段落词本身仍可横向伸出音符的范围，撑开只为躲开**后面的和弦**。
+   *
+   * 撑多少**由 `placeSectionWord` 说了算**（与真正摆的 `addSectionWords` 同一个判据）：
+   * 「够不够」不是「锚点到小节线放不放得下这几个字」，而是「跳过挨着的和弦之后还有没有空档」。
+   * 两处各算各的会错配——129 首就是这么抬起来的：spread 按锚点算只差 2pt、撑完仍让不开。
+   * 而且均摊是**整条小节一起拉伸**，末尾那个空档只分到 1/steps，所以要的是「撑多少才够」，
+   * 不是「差多少」——这里按落点判据二分求最小的撑开量。
    */
-  private spreadForSectionWords(): void {
-    if (!this.sectionWordFont) return;
+  spreadForSectionWords(opt: LayoutOptions): void {
+    if (opt.sectionWordSize <= 0) return;
+    const size = opt.sectionWordSize;
+    const font = opt.lrcFont.makeWithSize(size);
     const bars: number[] = [];
     this.entries.forEach((e, i) => { if (e instanceof Barline) bars.push(i); });
     for (let i = 0; i < this.entries.length; i++) {
       const e = this.entries[i];
       if (!(e instanceof NoteEntry) || !e.chord.sectionWord) continue;
+      const item = e.entryItem();
+      if (!item) continue;
       const endIdx = bars.find((b) => b > i) ?? this.entries.length;
-      const barX = this.entries[endIdx]?.group.x ?? this.entries[this.entries.length - 1].group.x;
-      // 锚点音符**自己**带和弦时，段落词会被推到那个和弦右边（addSectionWords 的右移），
-      // 所以要留的地方从和弦右缘算起——不算这一截，129 首那种「和弦与段落词挂同一个音符」
-      // 的谱撑不开，只能抬到和弦上方去。
-      let ownChordW = 0;
-      for (const it of e.group.children)
-        if (it instanceof Group && it.classes.has("chord-group")) ownChordW = Math.max(ownChordW, it.width);
-      const gap = this.sectionWordFont.size * 0.3;
-      const startX = e.group.x + (ownChordW > 0 ? ownChordW + gap : 0);
-      const need = startX + this.sectionWordFont.measureText(e.chord.sectionWord) + this.lyricGap - barX;
-      if (need <= 0) continue;
-      const inBar = [];
+      const inBar: number[] = [];
       for (let k = i + 1; k < endIdx; k++) inBar.push(k);
       const steps = inBar.length + 1; // 锚点到小节线之间有这么多段间距
+      /** 撑开量 S 里有多大一份落到第 k 个条目上（锚点不动、小节线整条右移 S）。 */
+      const shiftFrac = (k: number): number => {
+        if (k <= i) return 0;
+        if (k >= endIdx) return 1;
+        return (inBar.indexOf(k) + 1) / steps;
+      };
+      const chordBase: { x0: number; x1: number; y: number; f: number }[] = [];
+      this.entries.forEach((ent, k) => {
+        if (!(ent instanceof NoteEntry)) return;
+        for (const it of this.chordGroups(ent))
+          chordBase.push({ x0: ent.group.x + it.x, x1: ent.group.x + it.x + it.width, y: ent.group.y + it.y, f: shiftFrac(k) });
+      });
+      const anchorX = e.group.x + item.x;
+      const lastEnt = this.entries[this.entries.length - 1];
+      const barRight0 = this.entries[endIdx]?.group.x ?? lastEnt.group.x + lastEnt.group.width;
+      const barLeft = [...bars].reverse().map((b) => this.entries[b].group.x).find((bx) => bx <= anchorX) ?? 0;
+      const width = font.measureText(e.chord.sectionWord);
+      const at = (spread: number): SectionWordSlot =>
+        placeSectionWord({
+          anchorX,
+          width,
+          size,
+          baseY: this.sectionWordBaseY(e, opt, chordBase),
+          chords: chordBase.map((c) => ({ x0: c.x0 + spread * c.f, x1: c.x1 + spread * c.f, y: c.y })),
+          barLeft,
+          barRight: barRight0 + spread,
+        });
+      const now = at(0);
+      if (!now.lifted) continue;
+      // 上界：末尾那个空档只分到 1/steps 的撑开量（空档更靠前的话分到的更多），
+      // 所以 shortfall × steps 一定够；撑到上界仍让不开就别白撑（左右都是密和弦），维持抬起。
+      let hi = now.shortfall * steps + size;
+      if (at(hi).lifted) continue;
+      let lo = 0;
+      while (hi - lo > 0.25) {
+        const mid = (lo + hi) / 2;
+        if (at(mid).lifted) lo = mid;
+        else hi = mid;
+      }
+      const need = hi;
       inBar.forEach((k, n) => { this.entries[k].group.x += (need * (n + 1)) / steps; });
       for (let k = endIdx; k < this.entries.length; k++) this.entries[k].group.x += need;
     }
+  }
+
+  /** 段落词的基线：本行有和弦就对到和弦那一条（原书就是并排的），一个都没有才自己算。 */
+  private sectionWordBaseY(e: NoteEntry, opt: LayoutOptions, chords: { y: number }[]): number {
+    if (chords.length) return chords[0].y + opt.sectionWordSize;
+    const inkTop = Math.min(opt.numberBound("1").top, e.group.childrenBound.top);
+    return e.group.y + inkTop - opt.chordGap;
+  }
+
+  /** 一个音符条目上挂的和弦组（`addHarmony` 打的 `chord-group` 标记）。 */
+  private chordGroups(e: NoteEntry): Group[] {
+    return e.group.children.filter((it): it is Group => it instanceof Group && it.classes.has("chord-group"));
   }
 
   private doLineBreak(width: number): Line[] {
@@ -1251,13 +1354,17 @@ export class Line {
     return res;
   }
 
-  private updateXPos(l: Line, width: number, maxHorizontalScale: number): void {
+  private updateXPos(l: Line, width: number, opt: LayoutOptions): void {
     const first = l.entries[0];
     const dx = first.group.x;
     for (const e of l.entries) e.group.x -= dx;
     const last = l.entries[l.entries.length - 1];
     if (last.group.width < 0) throw new Error("");
-    l.adjust(width, maxHorizontalScale);
+    // 段落词的撑开要在 **justify 之前、分行之后**：分行前撑的是错的锚点（段落词落到行末时
+    // 会被挪到下一行行首去，见 layout() 里那段），而 justify 只会往空档里**加**距离、不会收窄，
+    // 所以这里放得下，justify 之后也放得下。
+    l.spreadForSectionWords(opt);
+    l.adjust(width, opt.maxHorizontalScale);
   }
 
   private layoutVertically(lines: Line[], opt: LayoutOptions, height: number): Group[] {
@@ -1428,10 +1535,8 @@ export class Line {
 
   layout(width: number, height: number, opt: LayoutOptions): Group[] {
     this.lyricGap = opt.lyricGap;
-    this.sectionWordFont = opt.sectionWordSize > 0 ? opt.lrcFont.makeWithSize(opt.sectionWordSize) : null;
     this.dropDoubledBarlines();
     this.calcXPos();
-    this.spreadForSectionWords();
     const lines = this.doLineBreak(width);
     // 段落词挂在**行末那个音符**上时，它标的其实是下一行的起句（「（副歌）」印在主歌
     // 最后一行的行尾没有意义，副歌是从下一行开始唱的）——挪到下一行行首那个音符上。
@@ -1446,7 +1551,7 @@ export class Line {
       last.chord.sectionWord = null;
     }
     for (const l of lines) {
-      this.updateXPos(l, width, opt.maxHorizontalScale);
+      this.updateXPos(l, width, opt);
       l.addBeams(opt);
       l.addTuplet(opt);
       l.addTie(opt);
@@ -1616,10 +1721,8 @@ export class Line {
 
   /**
    * 段落词（「（副歌）」「（间奏）」）。原书印在**和弦那一带、与和弦同一条基线**，
-   * 左右并排（`G（副歌）C` 这种）——所以先按锚点音符摆在和弦的基线上，
-   * 撞上和弦再**沿 x 让**：右移到那个和弦右边，右边没地方（出版心、或紧跟着别的和弦）就左移，
-   * **行首只许右移**（左边是行头，挪出去就出界了）。都让不开才退到和弦**上方**一行，
-   * 那样虽然多占一层，至少不叠字。
+   * 左右并排（`G（副歌）C` 这种）——落点由 `placeSectionWord` 定（与 spreadForSectionWords
+   * 同一个判据、同一份代码，见那边的注释）。
    */
   addSectionWords(opt: LayoutOptions): void {
     if (opt.sectionWordSize <= 0) return;
@@ -1629,17 +1732,14 @@ export class Line {
     const chords: { x0: number; x1: number; y: number }[] = [];
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
-      for (const it of e.group.children) {
-        if (!(it instanceof Group) || !it.classes.has("chord-group")) continue;
-        const x = it.pos(this.group).x;
-        chords.push({ x0: x, x1: x + it.width, y: it.pos(this.group).y });
-      }
+      for (const it of this.chordGroups(e))
+        chords.push({ x0: e.group.x + it.x, x1: e.group.x + it.x + it.width, y: e.group.y + it.y });
     }
     const lineRight = this.group.width || Infinity;
     // 小节线的 x：段落词让位**不许跨过它们**（跨过去就成了下一小节的标记）
     const barXs = this.entries
       .filter((e): e is Barline => e instanceof Barline)
-      .map((b) => b.group.pos(this.group).x)
+      .map((b) => b.group.x)
       .sort((a, b) => a - b);
     // 同一个 Chord 可能在一行里出现**好几个 NoteEntry**：长音的增时线各占一个，
     // 不展开叠排时（有反复房号的谱）整条谱行还会按遍数重复装载。
@@ -1659,38 +1759,19 @@ export class Line {
       tf.update();
       // 段落词**可以横向伸出锚点音符的范围**（它只是个标记，原书也这么印），
       // 所以不为它撑开音符间距；能不能放下只看「本小节内有没有不撞和弦的空档」。
-      const x0 = item.pos(this.group).x;
-      // 与和弦**同一条基线**：本行有和弦就直接对到它们那一条（原书就是并排的），
-      // 一个和弦都没有时才按「音符墨迹顶 − chordGap」自己算。
-      const inkTop = Math.min(opt.numberBound("1").top, e.group.childrenBound.top);
-      const ownY = e.group.pos(this.group).y + inkTop - opt.chordGap;
-      const baseY = chords.length ? chords[0].y + size : ownY;
-      const overlaps = (x: number) =>
-        chords.find((c) => Math.abs(c.y - baseY) < size && x < c.x1 && c.x0 < x + tf.width);
-      let x = x0;
-      const first = overlaps(x);
-      if (first) {
-        // 右移：**一路跳过挨着的和弦**找空档（和弦密的行上第一个空档往往在两三个和弦之后），
-        // 直到出了行宽为止；再不行才往左（行首不许左移）；都让不开就抬到和弦上方。
-        // 本小节的右界（下一条小节线）与左界（上一条），让位只能在这中间
-        const barRight = barXs.find((bx) => bx > x0) ?? lineRight;
-        const barLeft = [...barXs].reverse().find((bx) => bx <= x0) ?? 0;
-        let cand = first.x1 + size * 0.3;
-        let hit = overlaps(cand);
-        while (hit && cand + tf.width <= barRight) {
-          cand = hit.x1 + size * 0.3;
-          hit = overlaps(cand);
-        }
-        const canRight = !hit && cand + tf.width <= barRight;
-        const left = first.x0 - tf.width - size * 0.3;
-        const canLeft = left >= barLeft && !overlaps(left) && x0 > barLeft;
-        if (canRight) x = cand;
-        else if (canLeft) x = left;
-        tf.y = canRight || canLeft ? baseY : baseY - size * 1.5;
-      } else {
-        tf.y = baseY;
-      }
-      tf.x = x;
+      const anchorX = e.group.x + item.x;
+      const baseY = this.sectionWordBaseY(e, opt, chords);
+      const slot = placeSectionWord({
+        anchorX,
+        width: tf.width,
+        size,
+        baseY,
+        chords,
+        barLeft: [...barXs].reverse().find((bx) => bx <= anchorX) ?? 0,
+        barRight: barXs.find((bx) => bx > anchorX) ?? lineRight,
+      });
+      tf.x = slot.x;
+      tf.y = slot.lifted ? baseY - size * 1.5 : baseY;
       this.group.children.push(tf);
       tf.parent = this.group;
     }
