@@ -42,10 +42,21 @@ function matOf(it: PageItem): Mat6 {
 
 /** 页面树里的一个叶子该按哪个角色落字（决定字体与是否走轮廓）。
  *  用 instanceof 判，不用 classes：排版件本来就有 JpNumber / Lyric / SmuflText 这些类型。 */
+/** 增时线要往上挪多少，才能让它的墨迹中心与数字的墨迹中心（＝小节线中点）齐平。 */
+function dashInkShift(opt: LayoutOptions): number {
+  const nb = opt.numberBound("1");
+  const db = opt.numberBound("-");
+  return (nb.top + nb.bottom) / 2 - (db.top + db.bottom) / 2;
+}
+
 function roleOfItem(it: TextFrame, opt: LayoutOptions): StyleRole {
   // 和弦是 layout/harmony.ts 造的普通 TextFrame，只有 classes 认得出来（见那边的注释）
   if (it.classes.has("chord-music")) return "smufl";
   if (it.classes.has("chord")) return "chord";
+  // 房号（1./2.）归 verseNum 那一档：字体与段号同源，**且不能算成 note**——
+  // countStaffRows / measureCellsPerLine 数「占一格的音符」时会把 "1." 当成音符，
+  // 一个房号就凭空多出一条谱行（010 曾因此每轮都判成折行、迭代六轮都收不住）。
+  if (it.classes.has("ending")) return "verseNum";
   if (it instanceof SmuflText) return "smufl";
   if (it instanceof JpNumber || it instanceof JpOctaveDot) return "note";
   if (it instanceof Lyric) return "lyric";
@@ -104,13 +115,20 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
       // 逐字笔位用**浏览器实测的 advance 前缀和**：落位就是排版器排的那一版，
       // Node 侧字体度量的微差不再影响布局。
       const xs = chars.map((_, i) => applyX(m, it.measureText(0, i), 0));
+      // 增时线**按墨迹与数字（以及小节线中点）对齐**：Times 的连字符墨迹挂得比数字中线低
+      //（实测差 1.37pt），照字体基线摆就一排音符里高一道低一道。
+      // 只在**画的时候**补这一下——排版度量（entry 高度、纵向栅格、行容量）不能动，
+      // 那是「简谱纵向栅格」那把统一的尺子。
+      const role0 = roleOfItem(it, o.options);
+      const dy = role0 === "note" && (it.text === "-" || it.text === "\u2013") ? dashInkShift(o.options) : 0;
       const y = applyY(m, 0, 0);
       const t: DrawText = {
         t: "text",
         y,
+        ...(dy ? { dy } : {}),
         text: it.text,
         size: (it.font?.size ?? 10) * scaleOf(m),
-        role: roleOfItem(it, o.options),
+        role: role0,
         align: "pen",
         xs,
         color: argbToRgb(it.color),
@@ -205,7 +223,20 @@ export function applyBookStyle(opt: LayoutOptions, s: BookStyle): void {
   opt.chordSize = fontSizeFor(s, "chord");
   opt.lyricBaselineGap = 0; // 歌词基线交给引擎自算（覆盖它会把带减时线的行推歪）
   opt.lyricStack = em(m.lyricToLyricEm); // 多段歌词叠排，段间距取原书的行距
+  opt.lyricGap = (m.lyricGapEm ?? 0) * lyric; // 歌词字距（排版器自己只保证不重叠）
+  // 反复点与房号：原书的谱面本来就有 `‖:`、`:‖`、1./2. 房，重排要照画
+  opt.repeatDotRadius = m.repeatDotDiam > 0 ? m.repeatDotDiam / 2 : 0;
+  // 房号数字用**三连音那一档**：原书房号与三连音数字同号（墨迹高 4.92pt，
+  // 对应 musicxml 里 `<ending font-size="6.25">`）。verseNum 是歌词那么大的段号，会大三倍。
+  opt.endingSize = fontSizeFor(s, "tuplet");
+  // 房号/三连音括线：线宽与「脚」长都用原书量到的（inventory 的 bracket 那一类，n=233）
+  opt.bracketWidth = m.inkBracketWidth && m.inkBracketWidth > 0 ? m.inkBracketWidth : opt.barlineWidth;
+  // 转拍号的分数线：与书首那个拍号同一根尺子（bookparts.ts::keyMeterItems 画的 rect h=0.3）
+  opt.timeSigRuleWidth = 0.3;
+  opt.verseNumbers = s.layout.verseNumbers ?? "auto";
+  opt.bracketFoot = m.bracketFootEm && m.bracketFootEm > 0 ? em(m.bracketFootEm) : 0;
   opt.chordGap = em(m.chordToNoteEm);
+  opt.sectionWordSize = fontSizeFor(s, "sectionWord");
   opt.pageFurniture = "none";
 }
 
@@ -252,13 +283,23 @@ export function fontSizeFor(s: BookStyle, role: StyleRole): number {
   return Number((target / ratio).toFixed(3));
 }
 
-/** 数一份 DrawList 里有几条谱行（按音符的基线分组；只数占一格的数字与增时线）。 */
+/** 占一格的音符：数字（含**带附点的** `5·`、休止 `0`）与增时线。
+ *  八度点（`.`）也是 note 角色，但它在音符上/下方、自成一「行」，不能算格。
+ *  **附点必须算进来**——漏掉它会把容量少算三成（012《主我感激祢》量出 15 格、实际放得下 22）。 */
+const isCellNote = (t: string): boolean => /^[0-9]/.test(t) || t === "-" || t === "\u2013";
+
+/** 数一份 DrawList 里有几条谱行（按音符的基线分组；只数占一格的数字与增时线）。
+ *  **要按页分组**：各页的谱行落在同样几条基线上，把全书的 y 混进一个集合，
+ *  第二页起的行就被当成第一页那几行、行数少算（rebuild 的「有没有被二次折行」保险因此漏判）。 */
 export function countStaffRows(pages: DrawPage[]): number {
-  const ys = new Set<number>();
-  for (const p of pages)
+  let n = 0;
+  for (const p of pages) {
+    const ys = new Set<number>();
     for (const it of p.items)
-      if (it.t === "text" && it.role === "note" && /^[0-9\u2013-]$/.test(it.text)) ys.add(Math.round(it.y));
-  return ys.size;
+      if (it.t === "text" && it.role === "note" && isCellNote(it.text)) ys.add(Math.round(it.y));
+    n += ys.size;
+  }
+  return n;
 }
 
 /**
@@ -273,6 +314,10 @@ export function measureCellsPerLine(score: Score, style: BookStyle, smuflMeta?: 
   applyBookStyle(p.layout.options, style);
   // 不注入的话 layout 会在延长号/跳转记号上抛 "no smufl bbox"
   if (smuflMeta) p.layout.options.smuflMeta = smuflMeta;
+  // **先清掉原谱的换行**：不清的话排版器照 musicxml 的 `<print new-system>` 分行，
+  // 量到的是「原书每行几格」而不是「一行放得下几格」——005《荣耀归与天父》原书那几行是
+  // 30/26/27/17 格，量出 27，可它其实放得下 30。清掉之后排版器才真的按宽度塞满再折行。
+  score.clearSystemBreak();
   p.score = score;
   p.resize(style.page.w, style.page.h, null);
   const opt = p.layout.options;
@@ -282,7 +327,7 @@ export function measureCellsPerLine(score: Score, style: BookStyle, smuflMeta?: 
   // 不是「歌词字宽」那么简单——照字宽估会高估一倍，乐句断点算出的行长排版器根本放不下。
   // **按行分组**再量：全页的 x 混在一起排序，跨行的 x 会回绕，
   // 相邻差就成了八度点那种零点几个点的值（实测中位数 3.2pt，格数算出 98）。
-  const byRow = new Map<number, number[]>();
+  const byRow = new Map<string, number[]>();
   for (let i = 1; i < p.pageCount; i++) {
     const dp = pageItemsToDrawPage(p.layout.pages[i], style.page.w, style.page.h, {
       style,
@@ -293,19 +338,20 @@ export function measureCellsPerLine(score: Score, style: BookStyle, smuflMeta?: 
     for (const it of dp.items) {
       // 只数**占一格**的：数字与增时线。八度点（"."）也是 note 角色，
       // 但它在音符上/下方、自成一「行」，混进来会把行的计数搅乱。
-      if (it.t !== "text" || it.role !== "note" || !/^[0-9\u2013-]$/.test(it.text)) continue;
-      const key = Math.round(it.y);
+      if (it.t !== "text" || it.role !== "note" || !isCellNote(it.text)) continue;
+      // 按**页 + 基线**分组：各页的谱行落在同样几条基线上，只用 y 会把跨页的行并成一行、计数翻倍
+      const key = `${i}:${Math.round(it.y)}`;
       const a = byRow.get(key) ?? [];
       a.push(it.xs[0]);
       byRow.set(key, a);
     }
   }
-  // 空排时排版器是**按宽度塞满**再折行的，所以「装得最多的那一行」就是容量。
+  // 空排（已清掉原谱换行）时排版器是**按宽度塞满**再折行的，所以「装得最多的那一行」就是容量。
   // 比按字宽估、或按相邻 x 差的中位数算都可靠——那些量法会被八度点、附点、
   // 增时线这些同格里的小东西带偏（实测中位数法算出 98 格，实际只放得下 13）。
-  // 取**中位数**而不是最大值：八度点、附点这些同格里的小东西偶尔会跟音符落在同一个
-  // 取整后的 y 上，把个别行的计数抬高（实测最大值 33、中位数 13，实际容量就是 13）。
+  // 取**最大值**：塞满折行后每行都顶着版心宽，只有末行短，中位数反而被末行拖低
+  //（005 塞满后各行 30 格上下、末行短，中位数只有 27，于是「赞美主…」那两句并不到一行去）。
   const counts = [...byRow.values()].map((r) => r.length).sort((a, b) => a - b);
-  const cells = counts.length ? counts[Math.floor(counts.length / 2)] : 0;
+  const cells = counts.length ? counts[counts.length - 1] : 0;
   return Math.max(6, cells || Math.floor(cw / opt.lrcFont.measureText("国")));
 }

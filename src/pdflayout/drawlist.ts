@@ -19,6 +19,10 @@ export interface DrawText {
   t: "text";
   /** 基线 y。 */
   y: number;
+  /** 画的时候在基线上再挪这么多（正数向下）。**只影响绘制，不进任何度量**——
+   *  增时线要按墨迹与数字对齐，而 `countStaffRows` / `measureCellsPerLine` 是按 y 聚谱行的，
+   *  直接改 y 会让它被当成另一条谱行（实测全书从 619 页涨到 1529 页）。 */
+  dy?: number;
   text: string;
   size: number;
   role: StyleRole;

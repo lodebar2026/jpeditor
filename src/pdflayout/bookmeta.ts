@@ -21,15 +21,28 @@ const UNREAD = "�";
 
 /** 一个 run 的文本，套上人工/OCR 补字。读不出的位置留空（**绝不写问号**，
  *  那会跟着排进 PDF）。 */
+/** 西文（拉丁字母 / 数字）—— 只有这两族之间才按字距补空格。 */
+const LATIN_EDGE = /[A-Za-z0-9]$/;
+const LATIN_HEAD = /^[A-Za-z0-9]/;
+
 export function runText(run: TextRun | null | undefined, ov?: CharOverride): string {
   if (!run) return "";
-  return run.chars
-    .map((c) => {
-      const fixed = ov?.(c.key, c.ch) ?? null;
-      if (fixed) return fixed;
-      return c.ch === UNREAD ? "" : c.ch;
-    })
-    .join("");
+  const out: string[] = [];
+  let prev: { text: string; right: number; h: number } | null = null;
+  for (const c of run.chars) {
+    const text = ov?.(c.key, c.ch) ?? (c.ch === UNREAD ? "" : c.ch);
+    if (!text) continue;
+    // **空格在矢量 PDF 里没有对象**，只能按字距还原：西文词之间的空档比字内间隙宽得多
+    //（037 的「Martin Luther」两个对象之间空 4.5pt，字号才 8.8）。
+    // 只在两侧都是西文时补——汉字之间本来就疏，照这个补会到处塞空格。
+    if (prev && LATIN_EDGE.test(prev.text) && LATIN_HEAD.test(text)) {
+      const gap = c.x - prev.right;
+      if (gap > Math.max(prev.h, c.h) * 0.22) out.push(" ");
+    }
+    out.push(text);
+    prev = { text, right: c.x + c.w, h: c.h };
+  }
+  return out.join("");
 }
 
 /** 逐字展开（覆盖后一个元素可能是多字：花边框正文常把一段字合成一个 path 对象）。 */
@@ -177,12 +190,83 @@ export interface Annotation {
   /** 原书这一框的正文字号（墨迹高中位）。同一批花边框里 6.5~10.5 都有——
    *  原书是按剩余空间缩排的，重排时按它反算行距比例。 */
   size: number;
-  /** 有没有花边框。经文有时不装框，直接印在谱行下方（p36 / p39）。 */
+  /** 有没有花边框（`ornament` 纹样拼的那种）。 */
   framed: boolean;
+  /** 框的样子：`tile` = 花边纹样框、`line` = 双细线矩形框（022/023 那种）、`none` = 不装框。
+   *  原先只认花边框，线框被当成「没框」，重排时那一圈线就丢了。 */
+  frame?: "tile" | "line" | "none";
+  /** 线框的外框线宽与内外两圈的间距（pt，实测；`frame === "line"` 时有值）。 */
+  frameOuterWidth?: number;
+  frameInnerWidth?: number;
+  frameGap?: number;
   text: string;
   box: Rect;
   page: number;
 }
+
+/** b 是否整个落在 a 里（留一点余量：文字包围盒偶尔擦着框线）。 */
+function contains(a: Rect, b: Rect): boolean {
+  const m = 2;
+  return b.x >= a.x - m && b.y >= a.y - m && b.x + b.w <= a.x + a.w + m && b.y + b.h <= a.y + a.h + m;
+}
+
+export interface RuleFrame {
+  box: Rect;
+  /** 外圈线宽、内圈线宽、两圈之间的空隙（pt）。 */
+  outer: number;
+  inner: number;
+  gap: number;
+}
+
+/**
+ * 把页面上的直线（`rule-h` / `rule-v`）聚成一圈圈**矩形线框**。
+ *
+ * 原书的经文框是内外两圈：外圈约 1.5pt 见方、内圈约 0.4pt，中间空 1.7pt 左右
+ * （022/023 那两页量到的）。识别时不分内外圈，先按「互相挨着」并成一簇，
+ * 再用簇的包围盒当框；内外两圈的粗细与间距从簇里的线宽分布反推，重排照画。
+ * 至少四条线才算框——单条 rule 是分隔线，不是框。
+ */
+export function clusterRuleFrames(frames: { type: string; box: Rect; lineWidth: number }[]): RuleFrame[] {
+  const rules = frames.filter((f) => f.type === "rule-h" || f.type === "rule-v");
+  if (rules.length < 4) return [];
+  const parent = rules.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const near = (a: Rect, b: Rect): boolean => {
+    const m = 4; // 内外两圈之间空 1.7pt，四角也不一定严丝合缝
+    return a.x - m <= b.x + b.w && b.x - m <= a.x + a.w && a.y - m <= b.y + b.h && b.y - m <= a.y + a.h;
+  };
+  for (let i = 0; i < rules.length; i++)
+    for (let j = i + 1; j < rules.length; j++)
+      if (near(rules[i].box, rules[j].box)) parent[find(i)] = find(j);
+  const byRoot = new Map<number, number[]>();
+  for (let i = 0; i < rules.length; i++) {
+    const r = find(i);
+    const a = byRoot.get(r) ?? [];
+    a.push(i);
+    byRoot.set(r, a);
+  }
+  const out: RuleFrame[] = [];
+  for (const idxs of byRoot.values()) {
+    if (idxs.length < 4) continue;
+    const bs = idxs.map((i) => rules[i].box);
+    const x = Math.min(...bs.map((b) => b.x));
+    const y = Math.min(...bs.map((b) => b.y));
+    const w = Math.max(...bs.map((b) => b.x + b.w)) - x;
+    const h = Math.max(...bs.map((b) => b.y + b.h)) - y;
+    if (w < 40 || h < 10) continue; // 太小的不是框
+    // 线宽：横线取 h、竖线取 w（转曲后的线是细长矩形，lineWidth 字段未必可靠）
+    const ws = idxs.map((i) => (rules[i].type === "rule-h" ? rules[i].box.h : rules[i].box.w)).sort((a, b) => a - b);
+    const inner = ws[0];
+    const outer = ws[ws.length - 1];
+    // 内外圈的间距：外圈内缘到内圈外缘
+    const inners = idxs.filter((i) => (rules[i].type === "rule-h" ? rules[i].box.h : rules[i].box.w) <= (inner + outer) / 2);
+    const gap = inners.length ? Math.max(0, Math.min(...inners.map((i) => rules[i].box.y - y)) - outer) : 0;
+    out.push({ box: { x, y, w, h }, outer: r2(outer), inner: r2(inner), gap: r2(gap) });
+  }
+  return out;
+}
+
+const r2 = (v: number): number => Number(v.toFixed(2));
 
 /**
  * 框内文字重新聚行。
@@ -208,12 +292,19 @@ export function regroupBoxLines(lines: TextRun[], ov?: CharOverride): string[] {
     else rows.push({ y: bottom(c), items: [c] });
   }
   return rows
-    .map((r) =>
-      r.items
-        .sort((a, b) => a.x - b.x)
-        .map((c) => c.ch)
-        .join(""),
-    )
+    .map((r) => {
+      // 与 runText 同一套：西文词之间按字距补回空格（矢量层没有空格对象）
+      const items = r.items.sort((a, b) => a.x - b.x).filter((c) => c.ch);
+      let out = "";
+      let prev: (typeof items)[number] | null = null;
+      for (const c of items) {
+        if (prev && LATIN_EDGE.test(prev.ch) && LATIN_HEAD.test(c.ch) && c.x - (prev.x + prev.w) > Math.max(prev.h, c.h) * 0.22)
+          out += " ";
+        out += c.ch;
+        prev = c;
+      }
+      return out;
+    })
     // 花边框四角的纹样偶尔被当成字（读作 X / XX），一两个拉丁字母独占一行
     // 在这本书的注解正文里不可能出现，丢掉。
     .filter((t) => t.trim().length >= 2 && !/^[A-Za-z]{1,2}$/.test(t.trim()));
@@ -463,6 +554,10 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
       measBase.set(song.id, nMeas);
     }
 
+    // 线框（022/023 那种双细线矩形）：把 rule-h / rule-v 按「互相挨着」聚成一圈圈框。
+    // 原书这类框是**内外两圈**：外圈粗（1.5pt 见方）、内圈细（0.4pt），中间空 1.7pt 左右。
+    const lineBoxes = clusterRuleFrames(spec.frames);
+
     // 花边框：归给 y 区间包住它的那首（一页两首时靠这个分开）
     for (const box of spec.storyBoxes) {
       const owner =
@@ -472,7 +567,7 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
       const text = regroupBoxLines(box.lines, ov).join("\n");
       if (text.replace(/\s/g, "").length < 4) continue;
       const hs = box.lines.flatMap((l) => l.chars.map((c) => c.h)).filter((h) => h > 2);
-      meta.annotations.push({ songId: owner, framed: true, size: Number(median(hs).toFixed(2)), text, box: box.box, page: spec.page });
+      meta.annotations.push({ songId: owner, framed: true, frame: "tile", size: Number(median(hs).toFixed(2)), text, box: box.box, page: spec.page });
     }
     // 未装框的经文（p36 / p39 那种，印在谱行下方、没有花边）。
     // 门槛 4 个字：乐谱页的 textLines 里绝大多数是掉出谱行的「一」，那些不能算。
@@ -489,17 +584,22 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
         const owner = spec.songs[spec.songs.length - 1]?.id ?? null;
         const x = Math.min(...rows.map((r) => r.l.box.x));
         const y = Math.min(...rows.map((r) => r.l.box.y));
+        const textBox = {
+          x,
+          y,
+          w: Math.max(...rows.map((r) => r.l.box.x + r.l.box.w)) - x,
+          h: Math.max(...rows.map((r) => r.l.box.y + r.l.box.h)) - y,
+        };
+        // 这段文字是不是**框在线框里**（022/023）：找一圈把它围住的矩形
+        const lf = lineBoxes.find((f) => contains(f.box, textBox));
         meta.annotations.push({
           songId: owner,
           framed: false,
+          frame: lf ? "line" : "none",
+          ...(lf ? { frameOuterWidth: lf.outer, frameInnerWidth: lf.inner, frameGap: lf.gap } : {}),
           size: Number(median(rows.flatMap((r) => r.l.chars.map((c) => c.h)).filter((h) => h > 2)).toFixed(2)),
           text: rows.map((r) => r.t).join("\n"),
-          box: {
-            x,
-            y,
-            w: Math.max(...rows.map((r) => r.l.box.x + r.l.box.w)) - x,
-            h: Math.max(...rows.map((r) => r.l.box.y + r.l.box.h)) - y,
-          },
+          box: lf ? lf.box : textBox,
           page: spec.page,
         });
       }

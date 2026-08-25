@@ -26,6 +26,10 @@ for (const d of dirs) {
   const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase())) ?? files.find((f) => extname(f).toLowerCase() === ".pdf");
   if (!img) continue;
   const cacheFile = join(CACHE, d.name + ".musicxml");
+  // 无参跑（回归基线那 15 首）时跳过没缓存的目录：testdata 下还放着 500 首矢量语料、
+  // 文本谱语料这类**不是单曲歌谱**的文件夹，照直送去 OMR 只会崩在解码上。
+  // 要给新曲子建缓存就指定歌名子串（`node phrase-lines.mjs 脚步`）。
+  if (!filter && !existsSync(cacheFile)) continue;
   let xml;
   if (existsSync(cacheFile) && !process.env.PHRASE_FRESH) {
     xml = await readFile(cacheFile, "utf8");

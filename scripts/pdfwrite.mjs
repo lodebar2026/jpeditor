@@ -250,7 +250,7 @@ export async function writePdf(book, opt) {
           break;
         }
         case "text":
-          drawText(pg, it, p, flip(it.y));
+          drawText(pg, it, p, flip(it.y + (it.dy ?? 0)));
           break;
       }
     }
@@ -324,7 +324,7 @@ export async function writePdf(book, opt) {
           const c = chars[k];
           if (!c.trim()) continue;
           if (fontFor(it.role, c) !== id) break;
-          const d = quadToCubic(glyphPath(id, charFor(it.role, c), it.size, pens[k], it.y));
+          const d = quadToCubic(glyphPath(id, charFor(it.role, c), it.size, pens[k], it.y + (it.dy ?? 0)));
           let ok = false;
           if (d && !badPath(d)) {
             try {

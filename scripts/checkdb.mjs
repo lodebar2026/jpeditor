@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS section_word (
   note_ordinal INT, measure_index INT, system_index INT, source_page INT);
 CREATE TABLE IF NOT EXISTS annotation (
   id INTEGER PRIMARY KEY, song_no TEXT, framed INT, seq INT, text TEXT, size REAL,
-  box_x REAL, box_y REAL, box_w REAL, box_h REAL, source_page INT);
+  box_x REAL, box_y REAL, box_w REAL, box_h REAL, source_page INT,
+  -- 框的样子：tile 花边纹样框 / line 双细线矩形框 / none 不装框；后三列是线框的实测几何
+  frame_kind TEXT, frame_outer REAL, frame_inner REAL, frame_gap REAL);
 CREATE TABLE IF NOT EXISTS toc_row (
   id INTEGER PRIMARY KEY, seq INT, kind TEXT, text TEXT, song_no TEXT,
   printed_page INT, source_page INT);
@@ -144,7 +146,15 @@ export function updateUnreadGuess(db, rows) {
 }
 
 /** 书级元数据：**同表整批覆盖写**（重跑不留残留），照 recordDiffs 的成例。 */
+/** 老库补列（SQLite 的 ALTER TABLE ADD COLUMN 是幂等不了的，先查一下）。 */
+function ensureColumns(db, table, cols) {
+  const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name));
+  for (const [name, type] of cols) if (!have.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+}
+
 export function replaceTable(db, table, columns, rows) {
+  if (table === "annotation")
+    ensureColumns(db, table, [["frame_kind", "TEXT"], ["frame_outer", "REAL"], ["frame_inner", "REAL"], ["frame_gap", "REAL"]]);
   db.exec(`DELETE FROM ${table}`);
   if (!rows.length) return 0;
   const st = db.prepare(`INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`);

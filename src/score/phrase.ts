@@ -47,6 +47,10 @@ const DEF_MIN_CELLS = 14;
 // 留的音明显比句中的停顿长——「耶稣普治」每句中间的逗号落在 4 拍全音符上，而「我們成為一家人」
 // 副歌句中的逗号只有 2 拍、句末才是 4 拍。故 2 拍不算凭据，否则两者分不开。
 const LONG_NOTE_BEATS = 3;
+// 「前奏/间奏」至少这么多个连续的**无词小节**，其后的交界才算乐句起点
+//（按小节而不是按音符：唱段的第一个字常是弱起、写在交界小节的末尾，
+//  按音符判会把断点定在那个字之前、把小节劈开；原书是整小节整小节地换行）。
+const INTRO_MIN_MEAS = 2;
 const DASH_W = 0.7;
 const cellsOf = (c: Chord): number => 1 + Math.max(0, Math.floor(c.beats) - 1) * DASH_W;
 
@@ -81,6 +85,13 @@ export interface PhraseOptions {
    *  于是 8 分的强断点和 10 分的更强断点**代价一样**，「更长的音符 + 标点」体现不出优势。
    *  调大之后强断点能挣出净收益（有封顶），乐句收尾处就会压过「各行一样长」。 */
   breakWeight?: number;
+  /** 「很短的分句」的字数上限：从上一个标点起唱了这么几个字以内，句末标点的分**减半**
+   *  （「哈利路亚！」「阿们！」这类呼语句句带感叹号，与整句同权会主导整个行结构）。
+   *  **默认 0 = 关**：编辑器那条路的分行基线是按原权重调出来的；成书排版传 5。 */
+  shortSentenceWords?: number;
+  /** 重复段边界是否**按重复长度加分**（越长的重复越该整段成行）。默认 false = 一律 +8，
+   *  编辑器那条路行为不变；成书排版打开（015《赞美真神》结尾三句「哈利路亚！」）。 */
+  repeatLenBonus?: boolean;
   /** 行长代价的权重。调大 = 更看重「各行一样长」。
    *  默认 1 是编辑器那条路调出来的；成书要工整的行长，调到 2 以上，
    *  16 小节的歌才会选 4+4+4+4 而不是 4+6+6（后者行长代价 8，但少断一次省 8 分，默认权重下打平）。 */
@@ -95,6 +106,8 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const MAX_CELLS = opts.maxCells ?? DEF_MAX_CELLS;
   const MAX_SENTENCE_CELLS = opts.maxSentenceCells ?? Math.max(DEF_MAX_SENTENCE_CELLS, MAX_CELLS);
   const LEN_WEIGHT = opts.lenWeight ?? 1;
+  const SHORT_WORDS = opts.shortSentenceWords ?? 0;
+  const REPEAT_LEN_BONUS = opts.repeatLenBonus ?? false;
   const BREAK_WEIGHT = opts.breakWeight ?? 1;
   // 行长下限跟着上限走：版心窄时上限本来就小，14 格的下限会把断点全顶掉
   const MIN_CELLS = Math.min(DEF_MIN_CELLS, Math.round(MAX_CELLS * 0.6));
@@ -118,8 +131,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
 
   // 重复旋律/歌词：按位移 d 扫出**极大**重复连续段（长度 ≥2 小节），其两端加为断点边界。
   // 极大性很重要：逐个长度 L 枚举会把所有子段的边界也塞进来，遍地边界等于没有边界。
-  const repeatEdges = new Set<number>(); // 小节下标 i：i 之后是重复段边界
+  // 小节下标 i → 「i 之后是重复段边界」，值是该重复段有多长（小节数）。
+  // **长度要记下来**：重复越长，这个边界作为行首/行末就越有说服力。015《赞美真神》
+  // 结尾三句「哈利路亚！」，按句末感叹号断会切在第一句之后，而按更长的那段重复断，
+  // 第 2、4 行的开头就都是同一段旋律、对齐得上（用户口径：「2、4 行的开头重复长度值更大」）。
+  const repeatEdges = new Map<number, number>();
   const markRepeats = (fp: string[]) => {
+    const mark = (i: number, len: number) => repeatEdges.set(i, Math.max(repeatEdges.get(i) ?? 0, len));
     for (let d = 1; d < n; d++) {
       let i = 0;
       while (i + d < n) {
@@ -127,8 +145,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         let j = i;
         while (j + d < n && fp[j] && fp[j] === fp[j + d]) j++;   // [i,j) 与 [i+d,j+d) 逐节相同
         if (j - i >= 2) {
-          repeatEdges.add(i - 1); repeatEdges.add(j - 1);
-          repeatEdges.add(i + d - 1); repeatEdges.add(j + d - 1);
+          const len = j - i;
+          mark(i - 1, len); mark(j - 1, len);
+          mark(i + d - 1, len); mark(j + d - 1, len);
         }
         i = j;
       }
@@ -184,13 +203,21 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   {
     let depth = 0;
     let pending = 0;
+    let sinceLastPunct = 0; // 上一个标点之后唱了几个字
     for (let idx = 0; idx < K; idx++) {
       const c = flat[idx].chord;
       const nt = c.notes[0];
       depth += okStart[idx];
       const lrc = nt?.lyrics.find((l) => l.number === 1 || l.refrain) ?? nt?.lyrics[0];
       const txt = lrc?.text ?? "";
-      const p = PUNCT_END.test(txt) ? 6 : PUNCT_MID.test(txt) ? 4 : 0;
+      if (txt) sinceLastPunct++;
+      let p = PUNCT_END.test(txt) ? 6 : PUNCT_MID.test(txt) ? 4 : 0;
+      // **很短的分句减半**：「哈利路亚！」「阿们！」这种呼语句句带感叹号，若与整句同权，
+      // 连着三句就断出三个满分断点，行结构反而被它们主导
+      //（015《赞美真神》结尾三句「哈利路亚！」，按句末断会把第一句留在上一行、
+      //  与第 2 行开头那段更长的重复旋律对不齐）。短句仍是断点，只是让位给更长的乐句信号。
+      if (p > 0 && sinceLastPunct <= SHORT_WORDS) p = Math.round(p / 2);
+      if (txt && p > 0) sinceLastPunct = 0;
       if (p > pending) pending = p;
       depth -= okEnd[idx];
       depthAfter[idx] = depth;
@@ -215,11 +242,46 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     }
     return idx;
   };
-  const repeatBreakIdx = new Set<number>();
-  for (const mi of repeatEdges) {
+  // 反过来，重复段的起句常是**弱起**：第二遍的第一个音写在上一小节末，边界压在它之后就把
+  // 那个弱起音留在了上一行（009《荣耀归与至高神》的 `…天下万有赞祂不休， | 天上众军…`：
+  // 「天」是下一句的第一个字，却被留在行尾，「天上」被拆开）。往前找最多两个音，
+  // 那里若有句读标点就把边界移过去——断在标点上，两句相同的旋律也各自从行首起唱。
+  // 只跨得过**短音**：一旦遇上长音，那是上一句的收尾，边界本就该落在它之后。
+  const retreatToPunct = (from: number): number => {
+    for (let j = from - 1; j >= 0 && from - j <= 2; j--) {
+      if (depthAfter[j] !== 0) break;
+      if (punctAfter[j] > 0) return j;
+      if (flat[j].chord.beats > 1) break;
+    }
+    return from;
+  };
+  const repeatBreakIdx = new Map<number, number>(); // flat 下标 → 重复段长度（小节）
+  for (const [mi, len] of repeatEdges) {
     const idx = flat.findIndex((f) => f.isLast && f.mi === mi);
     if (idx < 0) continue;
-    repeatBreakIdx.add(advancePastLongTie(idx));
+    const at = retreatToPunct(advancePastLongTie(idx));
+    repeatBreakIdx.set(at, Math.max(repeatBreakIdx.get(at) ?? 0, len));
+  }
+
+  // 反复房（ending / volta）**整体不可拆**：房是「这一遍才唱的那几小节」，
+  // 断在房中间，反复记号与房号就没法画了，唱的人也读不出这是同一个房
+  //（010《愿祢崇高》的第一房只有一小节 `苍。我要`，断点落在「苍。」后面就把它劈成了两行）。
+  // 只有房的**最后一个小节末**可断——那里正是 `:‖` 或房的收尾。
+  const inEnding = new Array<boolean>(n).fill(false);
+  const endingLast = new Array<boolean>(n).fill(false);
+  for (let i = 0; i < n; i++) {
+    if (!measures[i].endingLeft) continue;
+    // 房的收尾：`<ending type="stop|discontinue">`。**没闭合的不算房**——
+    // OMR 识别出的谱常只认出房号的一端，把「开着的房」一路认到曲末，
+    // 那样整首都成了不可断区（15 首基线里「爱是不保留」「沧海一声笑」就是这样被封死的）。
+    // 同样地，房也不该长得离谱：超过 MAX_MEAS 就当它不是房。
+    let j = i;
+    while (j < n && measures[j].endingRight === null && (j === i || !measures[j].endingLeft)) j++;
+    if (j >= n || measures[j].endingRight === null) continue;
+    if (j - i > MAX_MEAS) continue;
+    for (let k = i; k <= j; k++) inEnding[k] = true;
+    endingLast[j] = true;
+    i = j;
   }
 
   // 断点候选的乐句强度分（在该和弦之后换行）。
@@ -233,6 +295,15 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 圆滑线/连音线刚收尾（一字多音唱完）：本身是弱信号，主要为让它**进入候选**——密集副歌里小节末
     // 全被跨小节的弧封锁时，这是唯一能切开长行的地方。但若它收的是一个**长音**（`5---|5)` 这种
     // tie 延续），乐句实际就在这里收尾，把长音的分带过来：长音落在小节内，断点自然也在小节内。
+    // **前奏/间奏与唱段的交界**：连着好几个音都没有歌词（前奏、间奏、尾奏），
+    // 其后第一个有词的音是新乐句的起唱——断在交界上，前奏独占一行、唱词从行首起
+    //（028《全然向祢》的前奏 4 小节，不断在这里就会把弱起的「当」拽到前奏那一行行尾）。
+    // 要求无词段够长（≥2 个整小节），否则一字多音（melisma）的收尾处处都成断点。
+    if (ci.isLast && lyrPer[ci.mi] === "" && ci.mi + 1 < n && lyrPer[ci.mi + 1] !== "") {
+      let run = 0;
+      for (let j = ci.mi; j >= 0 && lyrPer[j] === "" && run < INTRO_MIN_MEAS; j--) run++;
+      if (run >= INTRO_MIN_MEAS) s += 6;
+    }
     if (okEnd[idx] > 0) {
       s += 1;
       const st = tieFrom[idx];
@@ -241,10 +312,18 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     if (ci.isLast) {
       const m = measures[ci.mi];
       if (m.repeatBackward || m.barline === BarStyle.LIGHT_HEAVY || m.barline === BarStyle.LIGHT_LIGHT) s += 5;
+      // 房（ending）收尾：房整体不可拆，那么房的末尾就是天然的换行处——
+      // 下一个房从行首起唱，反复记号与房号也才画得完整。
+      if (endingLast[ci.mi]) s += 6;
     }
     // 重复段边界**优先作行首/行末**：重复的乐句排在相同的行结构里是简谱排版的惯例，
-    // 也最贴近原谱分行。给到 BASE_BREAK 满分 → 在这里断行完全免罚。
-    if (repeatBreakIdx.has(idx)) s += 8;
+    // 也最贴近原谱分行。两小节的重复给到 BASE_BREAK 满分（在这里断行完全免罚），
+    // **更长的重复再往上加**——重复得越长，把它整段排成一行就越值，
+    // 值得压过「在句末标点上断」（015 结尾那三句「哈利路亚！」）。
+    const rep = repeatBreakIdx.get(idx);
+    // 封顶 10：再往上就会盖过「句末长音」（`6 + 4`）那种最硬的乐句收尾，
+    // 把下一句的弱起拽到上一行行尾（15 首基线里「爱是不保留」的「惟求」就是这么被拽走的）。
+    if (rep !== undefined) s += REPEAT_LEN_BONUS ? Math.min(10, 6 + rep) : 8;
     return s;
   };
 
@@ -252,6 +331,8 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const cand: number[] = [];
   for (let idx = 0; idx < K; idx++) {
     if (depthAfter[idx] !== 0) continue;
+    const mi = flat[idx].mi;
+    if (inEnding[mi] && !(flat[idx].isLast && endingLast[mi])) continue;
     if (flat[idx].isLast || scoreAt(idx) > 0) cand.push(idx);
   }
   if (cand[cand.length - 1] !== K - 1) cand.push(K - 1);
@@ -455,5 +536,23 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     if (b < M) brk(b);
     a = b;
   }
+  // 行首不留一个孤零零的休止：断点之后只剩一个休止就到小节线的话，下一行开头是个「空拍」，
+  // 唱的人也不知道要等谁——把它并到上一行去（193《主恩更多》第二行开头就是这样）。
+  // 整小节都是休止的同理，整节挂到上一行。放不下时容量保险会再切开，不会撑爆版心。
+  for (const c of [...midBreaks]) {
+    const idx = flat.findIndex((f) => f.chord === c);
+    const nx = flat[idx + 1];
+    if (idx < 0 || !nx || !nx.chord.rest || !nx.isLast) continue;
+    midBreaks.delete(c);
+    if (nx.isLast) measureBreaks.add(nx.mi + 1);
+    else midBreaks.add(nx.chord);
+  }
+  for (const mi of [...measureBreaks]) {
+    if (mi >= n || !chordsPer[mi].length) continue;
+    if (!chordsPer[mi].every((c) => c.rest)) continue;
+    measureBreaks.delete(mi);
+    if (mi + 1 < n) measureBreaks.add(mi + 1);
+  }
+
   return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut };
 }

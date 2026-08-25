@@ -63,6 +63,11 @@ const sectionWords = meta.sectionWords.map((s) => ({
 const annotations = meta.annotations.map((a, i) => ({
   song_no: a.songId,
   framed: a.framed ? 1 : 0,
+  // 框的样子：tile 花边纹样框 / line 双细线矩形框（022、023 那种）/ none 不装框
+  frame_kind: a.frame ?? (a.framed ? "tile" : "none"),
+  frame_outer: a.frameOuterWidth ?? 0,
+  frame_inner: a.frameInnerWidth ?? 0,
+  frame_gap: a.frameGap ?? 0,
   seq: i,
   text: a.text,
   size: a.size,
@@ -87,7 +92,7 @@ const kmMiss = [...songs.values()].filter((s) => s.musicxml && !songMeta.some((m
 console.log(`调号拍号 ${songMeta.length}（语料 ${withXml} 首，缺 ${kmMiss.length}：${kmMiss.slice(0, 6).map((s) => s.id).join(" ")}）`);
 console.log(`  拍号读不出的 ${songMeta.filter((s) => !s.beats).length}，带移调建议的 ${songMeta.filter((s) => s.alt_tonic).length}`);
 console.log(`段落词 ${sectionWords.length}（${[...new Set(sectionWords.map((s) => s.text))].slice(0, 8).join(" ")}）`);
-console.log(`注解 ${annotations.length}（带花边框 ${annotations.filter((a) => a.framed).length}，未装框 ${annotations.filter((a) => !a.framed).length}，归不到曲目的 ${annotations.filter((a) => !a.song_no).length}）`);
+console.log(`注解 ${annotations.length}（花边框 ${annotations.filter((a) => a.frame_kind === "tile").length}，线框 ${annotations.filter((a) => a.frame_kind === "line").length}，不装框 ${annotations.filter((a) => a.frame_kind === "none").length}，归不到曲目的 ${annotations.filter((a) => !a.song_no).length}）`);
 console.log(`目录 ${tocRows.length} 行（条目 ${tocRows.filter((t) => t.kind === "entry").length}，一级 ${tocRows.filter((t) => t.kind === "category").length}，二级 ${tocRows.filter((t) => t.kind === "subcategory").length}）`);
 console.log(`索引 ${indexRows.length} 行（诗题笔划 ${indexRows.filter((r) => r.index_name === "title").length}，歌词首句 ${indexRows.filter((r) => r.index_name === "firstline").length}，分节标题 ${indexRows.filter((r) => r.kind === "heading").length}，认到曲号 ${indexRows.filter((r) => r.song_no).length}）`);
 console.log(`扉页前言 ${frontRows.length} 页，印刷页码 ${labelRows.filter((p) => p.printed_no !== null).length}/${labelRows.length}，花边纹样母题 ${tileRows.length}`);
@@ -142,7 +147,7 @@ if (CHECK) {
 }
 replaceTable(db, "song_meta", ["song_no", "tonic", "beats", "beat_type", "alt_tonic", "key_raw", "category", "source_page"], songMeta);
 replaceTable(db, "section_word", ["song_no", "text", "note_ordinal", "measure_index", "system_index", "source_page"], sectionWords);
-replaceTable(db, "annotation", ["song_no", "framed", "seq", "text", "size", "box_x", "box_y", "box_w", "box_h", "source_page"], annotations);
+replaceTable(db, "annotation", ["song_no", "framed", "frame_kind", "frame_outer", "frame_inner", "frame_gap", "seq", "text", "size", "box_x", "box_y", "box_w", "box_h", "source_page"], annotations);
 replaceTable(db, "toc_row", ["seq", "kind", "text", "song_no", "printed_page", "source_page"], tocRows);
 replaceTable(db, "index_row", ["seq", "kind", "index_name", "text", "song_no", "source_page"], indexRows);
 replaceTable(db, "front_page", ["source_page", "kind", "title", "body", "note"], frontRows);

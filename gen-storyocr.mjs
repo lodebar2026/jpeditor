@@ -193,7 +193,10 @@ for (let i = 0; i < lines.length; i++) {
   const hs = elems.map((e) => e.h).sort((a, b) => a - b);
   const body = hs[Math.floor(hs.length * 0.7)] || 1;
   const cellW = median(elems.map((e) => e.w)) || 1;
-  const PUNCT_OK = /^[\u3000-\u303f\uff01-\uff20\uff3b-\uff40\uff5b-\uff65·～]+$/;
+  // 全角标点 + **半角标点**：英文人名、曲号里用的是半角 `( ) - : ,`
+  //（037「《坚固保障》(61首)」的右括号、「Martin Luther 1483-1546」的连字符都是半角，
+  //  只认全角的话它们永远补不回来）。
+  const PUNCT_OK = /^[\u3000-\u303f\uff01-\uff20\uff3b-\uff40\uff5b-\uff65·～()\-:;,.[\]]+$/;
   const takeable = (j, text) => {
     const e = elems[j];
     const n = [...text].length;

@@ -119,12 +119,20 @@ export function collectRoleSamples(pages: PageSpec[], opt: SampleOptions = {}): 
       // 目录/索引/扉页那几页混着四档字：页题（「目录」「诗题笔划索引」）、
       // 一级分类、二级小标题、条目正文。按「有没有尾页码 + 字号」分开收，
       // 混成一桶的话条目那一档会被大字拉高（实测拉到 8.9pt，真值 7.8）。
+      // **扉页/前言的正文不能进目录那几档**：它们也是「以数字结尾」的普通行，
+      // 一并收进来会把条目字号的中位数从 8.7 拉到 7.8（n=20350，其中七成是前言正文），
+      // 目录与歌词的字号比也就跟原书对不上了（原书 8.68 : 10.56 ≈ 0.82）。
+      const tocPage = p.kind === "toc" || p.kind === "index";
       for (const t of p.textLines) {
         const txt = t.text.trim();
         const entry = /[（(]\d+[)）]\s*$/.test(txt) || /\d\s*$/.test(txt);
-        if (entry) pushRun(out, "toc", t, p.page);
-        else if (t.size >= 16) pushRun(out, "frontTitle", t, p.page);
-        else if (t.size >= 12.5) pushRun(out, "tocHeading", t, p.page);
+        if (t.size >= 16) pushRun(out, "frontTitle", t, p.page);
+        else if (!tocPage) continue;
+        else if (entry) pushRun(out, "toc", t, p.page);
+        // 一级分类标题（目录页的「敬拜赞美」「教会」）实测 13.8~14.7pt；
+        // 12.5 的门槛会把索引页那一档 12.x 的小标题也收进来，把中位数压到 12.99，
+        // 与条目的比例就跟原书对不上了（原书 14.4 : 7.8 ≈ 1.84）。
+        else if (t.size >= 13.5) pushRun(out, "tocHeading", t, p.page);
         else if (t.size >= 9.8) pushRun(out, "tocSub", t, p.page);
       }
     }
@@ -174,6 +182,10 @@ export interface MetricSamples {
   divLineStep: number[];
   divLineLen: number[];
   divLineWidth: number[];
+  /** 房号/三连音括线：线宽、脚（下垂那一小段）的长度；以及三连音数字的墨迹高。 */
+  bracketWidth: number[];
+  bracketFootLen: number[];
+  tupletNumH: number[];
   augmentLineLen: number[];
   augmentLineWidth: number[];
   augmentDotGap: number[];
@@ -212,6 +224,7 @@ function emptySamples(): MetricSamples {
     divLineGap: [], divLineStep: [], divLineLen: [], divLineWidth: [],
     augmentLineLen: [], augmentLineWidth: [], augmentDotGap: [],
     barlineHeight: [], barlineWidth: [], repeatDotDiam: [],
+    bracketWidth: [], bracketFootLen: [], tupletNumH: [],
     slurThickness: [], slurHeight: [],
     chordToNote: [], musicToLyric: [], lyricToLyric: [],
     titleToSystem: [], creditToSystem: [], keyMeterToSystem: [],
@@ -244,6 +257,16 @@ export function collectMetricSamples(pages: PageSpec[], opt: SampleOptions = {})
 
   for (const p of pages) {
     if (p.kind !== "score" || p.page < from || p.page > to) continue;
+    // 房号/三连音的括线归在 frames 里（spec.ts 的「线框」那一档）：
+    // 横的那条给线宽，竖的那条（脚）给下垂长度。音符字高在下面的谱行循环里才有，
+    // 所以这里先按 pt 收，最后统一按字高归一。
+    for (const f of p.frames) {
+      if (f.type !== "bracket") continue;
+      // 线宽取**几何短边**（转曲后的线是细长矩形），`lineWidth` 字段是笔宽默认值 1，不作数：
+      // 实测房号括线只有 0.43pt，比小节线（1.01pt）细一半多。
+      out.bracketWidth.push(Math.min(f.box.w, f.box.h));
+      if (f.box.h > f.box.w && f.box.h > 1) out.bracketFootLen.push(f.box.h);
+    }
     let pageX0 = Infinity;
     let pageX1 = -Infinity;
     for (const s of p.songs) {
@@ -322,6 +345,9 @@ export function collectMetricSamples(pages: PageSpec[], opt: SampleOptions = {})
                 out.barlineHeight.push(m.box.h / noteH);
                 out.barlineWidth.push(m.box.w);
               }
+              break;
+            case "tupletNum":
+              if (m.box.h > 2) out.tupletNumH.push(m.box.h);
               break;
             case "repeatDot": {
               const d = Math.max(m.box.w, m.box.h);
@@ -431,6 +457,9 @@ export function inferTocRule(pages: PageSpec[]): Partial<BookStyle["toc"]> {
   const lefts: number[] = [];
   const rights: number[] = [];
   const titles: number[] = [];
+  // 分类标题（行楷那一档）上下的净距：上一条目基线 → 标题基线、标题基线 → 下一条目基线。
+  const headAbove: number[] = [];
+  const headBelow: number[] = [];
   for (const p of pages) {
     if (p.kind !== "toc" && p.kind !== "index") continue;
     const isTocEntry = (t: string) => /[（(]\d+[)）]\s*$/.test(t.trim());
@@ -449,6 +478,22 @@ export function inferTocRule(pages: PageSpec[]): Partial<BookStyle["toc"]> {
         rights.push(right(l.box));
       }
     }
+    // 目录页里的分类标题：既不是「…(123)」的条目、也不是页题，字号比条目大
+    if (p.kind === "toc") {
+      const entries = p.textLines.filter((l) => isTocEntry(l.text));
+      const entrySize = entries.length ? med(entries.map((l) => l.size)) : 0;
+      if (entrySize > 0) {
+        // 门槛拉到 1.4 倍：目录页里掉出条目的碎片（「2一」「12的一天1」）字号只比条目大一点点，
+        // 混进来会把「标题上下的净距」摊平（原书真正的分类标题是 13.8~14.7pt，条目 8.7pt）。
+        const heads = p.textLines.filter((l) => !isTocEntry(l.text) && l.size > entrySize * 1.4 && l.size < 16);
+        for (const h of heads) {
+          const above = entries.filter((e) => e.baselineY < h.baselineY).sort((a, b) => b.baselineY - a.baselineY)[0];
+          const below = entries.filter((e) => e.baselineY > h.baselineY).sort((a, b) => a.baselineY - b.baselineY)[0];
+          if (above) headAbove.push(h.baselineY - above.baselineY);
+          if (below) headBelow.push(below.baselineY - h.baselineY);
+        }
+      }
+    }
     const big = [...p.textLines].sort((a, b) => b.size - a.size)[0];
     if (big && big.size >= 15) titles.push(big.baselineY);
   }
@@ -461,6 +506,8 @@ export function inferTocRule(pages: PageSpec[]): Partial<BookStyle["toc"]> {
   if (lefts.length) out.left = round(med(lefts));
   if (rights.length) out.right = round(med(rights));
   if (titles.length) out.titleBaseline = round(med(titles));
+  if (headAbove.length) out.headingGapAbove = round(med(headAbove));
+  if (headBelow.length) out.headingGapBelow = round(med(headBelow));
   return out;
 }
 
@@ -482,12 +529,26 @@ export function inferBookStyle(
   const ms = collectMetricSamples(pages, opt);
   const warnings: string[] = [];
 
+  // 汉字档的字号**只按汉字量**：一档里混着数字、标点和「一」这种扁字，中位数会被压下去
+  //（目录条目 8.7 → 7.8，与歌词的比例就跟原书对不上了；fontSizeFor 反算时用的样本字也是「国」，
+  //  两边口径必须一致）。过滤后没样本的角色（纯西文的那几档）退回全部样本。
+  const CJK_ROLES = new Set<StyleRole>([
+    "lyric", "lyric2", "title", "credit", "story", "toc", "tocHeading", "tocSub",
+    "frontTitle", "category", "header", "sectionWord",
+  ]);
+  const isCjk = (ch: string | undefined): boolean => !!ch && /[\u4e00-\u9fff]/.test(ch);
   const byRole = new Map<StyleRole, number[]>();
+  const byRoleAll = new Map<StyleRole, number[]>();
   for (const s of samples) {
+    const all = byRoleAll.get(s.role) ?? [];
+    all.push(s.h);
+    byRoleAll.set(s.role, all);
+    if (CJK_ROLES.has(s.role) && !isCjk(s.ch)) continue;
     const a = byRole.get(s.role) ?? [];
     a.push(s.h);
     byRole.set(s.role, a);
   }
+  for (const [role, all] of byRoleAll) if (!byRole.get(role)?.length) byRole.set(role, all);
   // 没有 PageSpec 字段的那几个角色，从归类字高直方图补
   const CLASS_ROLE: Record<string, StyleRole> = {
     tupletNum: "tuplet",
@@ -562,6 +623,9 @@ export function inferBookStyle(
   rec("barlineHeight", ms.barlineHeight, false);
   rec("barlineWidth", ms.barlineWidth, false);
   rec("repeatDotDiam", ms.repeatDotDiam, false);
+  rec("bracketWidth", ms.bracketWidth, false);
+  rec("bracketFootLen", ms.bracketFootLen, false);
+  rec("tupletNumH", ms.tupletNumH, false);
   rec("slurThickness", ms.slurThickness, false);
   rec("slurHeight", ms.slurHeight, false);
   rec("chordToNote", ms.chordToNote, true);
@@ -609,6 +673,10 @@ export function inferBookStyle(
     barlineHeightEm: pt(ms.barlineHeight),
     inkBarlineWidth: pt(ms.barlineWidth),
     repeatDotDiam: pt(ms.repeatDotDiam),
+    // 房号（1./2.）与三连音的括线：原书量到的线宽与「脚」长（脚长按音符字高归一）
+    inkBracketWidth: pt(ms.bracketWidth),
+    bracketFootEm: em(ms.bracketFootLen),
+    tupletNumEm: em(ms.tupletNumH),
     inkSlurWidth: pt(ms.slurThickness),
     slurHeightEm: pt(ms.slurHeight),
     // slurArcEm 不从原书量：那边量到的是 slur 对象的包围盒高（含描边外扩、且短弧居多），

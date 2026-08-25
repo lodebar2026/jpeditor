@@ -107,6 +107,14 @@ export interface BookMetrics {
   // —— 谱行与行内 ——
   systemGapEm: number; // 谱行净距：上一行末条歌词 baseline → 下一行 noteTop
   noteStepEm: number; // 同一谱行相邻音符的 x 步距（去掉跨小节线那一档）
+  /** 相邻歌词字的**间隙** ÷ 歌词字号。排版器只保证歌词不重叠，字距会压到 0；
+   *  原书的歌词字之间是有呼吸的，不给这道间隙，一行会挤进三十几个字。 */
+  lyricGapEm?: number;
+  /** 房号/三连音括线的线宽（pt）与「脚」长 ÷ 音符字高，三连音数字高 ÷ 音符字高。
+   *  都是从原书量的（inventory 的 `bracket` / `tupletNum` 两类）。 */
+  inkBracketWidth?: number;
+  bracketFootEm?: number;
+  tupletNumEm?: number;
   barGapEm: number; // 小节线两侧到相邻音符的间距
 
   // —— 纵向栅格（八度点/减时线，见 docs/实现/简谱纵向栅格.md）——
@@ -198,8 +206,19 @@ export interface BookLayoutOpts {
   phraseLenWeight: number;
   /** 断点强度的权重：让「断在长音 + 标点上」压过「各行一样长」。 */
   phraseBreakWeight: number;
-  /** 是否允许在小节中间换行。成书默认不允许——原书每一行都在小节线上收尾。 */
+  /** 是否允许在小节中间换行。**默认允许**：原书每行都在小节线上收尾，但那是固定版式的结果——
+   *  弱起谱（005《荣耀归与天父》）每句都收在小节中间的长音上，只认小节线就一条乐句断点都找不到，
+   *  只能靠容量保险每 6 小节机械切一刀，句子被拦腰截断。phrase 的 DP 本来就给行内断点加罚 6、
+   *  只有句号/长音级的强信号才用得上它，交给它判断比在这里一刀切掉更准。
+   *  全书实测：行末收在标点上的谱行 60.7% → 89.3%，过短行 9.4% → 7.3%，谱行数 +7%。 */
   phraseMidBreak: boolean;
+  /** 排完再**两两并短行**（`applybreaks.ts::mergeShortLines`）：相邻两行都远短于版心容量、
+   *  并起来仍放得下时，删掉中间那个断点。行长目标以小节数计，而每小节几格随拍号而变，
+   *  小节短的谱一句一行只用得上半幅版心（005 每行 13 格 / 容量 27，原书那首是一行两句）。 */
+  phraseMergeShort: boolean;
+  /** 歌词段号（行首 `1.` `2.`）：`always` / `never` / `auto`（段数多于 3 才标）。
+   *  成书默认 `auto`——原书两三段的谱不标段号，段数多的才标。 */
+  verseNumbers: "always" | "never" | "auto";
   justify: boolean;
   songStart: "any" | "odd" | "new";
   maxHorizontalScale: number;
@@ -242,6 +261,10 @@ export interface TocRule {
   indexFirstBaseline: number;
   /** 页题基线（「目录」「诗题笔划索引」）。 */
   titleBaseline: number;
+  /** 分类标题上下的净距（上一条目基线 → 标题基线 / 标题基线 → 下一条目基线），
+   *  由 stats.ts 从原书目录页实测。缺省时按行距推。 */
+  headingGapAbove?: number;
+  headingGapBelow?: number;
 }
 
 export interface BookStyle {
@@ -282,6 +305,7 @@ export function defaultFonts(): Record<string, FontRef> {
     serif: { family: "FZBaoSong-Z04S", file: `${FZ}/方正报宋简体.ttf` }, // 歌词与正文
     kai: { family: "FZKai-Z03S", file: `${FZ}/方正楷体简体.ttf` }, // 词曲署名
     hei: { family: "FZHei-B01S", file: `${FZ}/方正黑体简体.TTF` }, // 曲号、分类页眉
+    xingkai: { family: "FZXingKai-S04", file: `${FZ}/方正行楷_GBK.ttf` }, // 目录的分类标题
     times: { family: "Times New Roman", file: "/System/Library/Fonts/Supplemental/Times New Roman.ttf" },
     // 兜底：方正那四款是印刷字库，字表不含「祂」「衪」「啰」这些（歌本里真的会用到）。
     // 只在主字体缺字时才用得上，用不到就不会被嵌进 PDF。
@@ -305,9 +329,10 @@ const ROLE_FONT: Record<StyleRole, { font: string; align: AlignMode }> = {
   lyric2: { font: "serif", align: "inkCenter" },
   sectionWord: { font: "serif", align: "left" },
   story: { font: "serif", align: "left" },
-  toc: { font: "serif", align: "left" },
-  tocHeading: { font: "hei", align: "center" },
-  tocSub: { font: "hei", align: "center" },
+  // 目录：歌名用楷体、分类标题用行楷（原书就是这么排的）
+  toc: { font: "kai", align: "left" },
+  tocHeading: { font: "xingkai", align: "center" },
+  tocSub: { font: "xingkai", align: "center" },
   frontTitle: { font: "wei", align: "center" },
   header: { font: "hei", align: "outer" },
   footer: { font: "times", align: "outer" },
@@ -342,6 +367,10 @@ export function defaultBookStyle(): BookStyle {
     metrics: {
       systemGapEm: 2.2,
       noteStepEm: 1.5,
+      lyricGapEm: 0.1,
+      inkBracketWidth: 0,
+      bracketFootEm: 0,
+      tupletNumEm: 0,
       barGapEm: 0.6,
       octaveDotUpGapEm: 0.17,
       octaveDotDownGapEm: 0.17,
@@ -384,7 +413,9 @@ export function defaultBookStyle(): BookStyle {
       phraseTargetMeas: 4,
       phraseLenWeight: 4,
       phraseBreakWeight: 1.5,
-      phraseMidBreak: false,
+      phraseMidBreak: true,
+      phraseMergeShort: true,
+      verseNumbers: "auto",
       justify: true,
       songStart: "any",
       maxHorizontalScale: 2,

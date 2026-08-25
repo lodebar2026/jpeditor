@@ -250,6 +250,9 @@ export class Chord extends Entry {
    *  与 OMR 的 `JpNum.chord`、文本谱的 `"hx:…"` 是同一层表示。
    *  `.jpwabc` 装不下它（既定，不扩语法），所以走 jpscore 那条路会丢。 */
   harmony: string | null = null;
+  /** 印在这个音符上方的**段落词**（「（副歌）」「（间奏）」…）。原书印在和弦那一带，
+   *  与和弦同一条基线、左右并排。成书重排从 `校对.db::section_word` 按音符序号注进来。 */
+  sectionWord: string | null = null;
 
   hasLrc(num: number): boolean {
     for (const nt of this.notes) {
@@ -473,6 +476,13 @@ export class Measure {
   lineBreak(pg: boolean): void {
     const lb = new LineBreak(this);
     lb.newPage = pg;
+    // 位置要落在**小节末**：autoBeamGroup 会按 position 把整节 entries 重排一遍，
+    // 默认的 0 会让它挤到第一个和弦之后（同为 0、稳定排序），于是行尾丢掉小节后半——
+    // 句末的长音与标点被甩到下一行行首（001《圣哉，圣哉，圣哉》的「宰！」就是这么跑的）。
+    lb.position = this.entries.reduce((p, e) => {
+      const end = e.duration ? e.position.plus(e.duration) : e.position;
+      return end.compareTo(p) > 0 ? end : p;
+    }, new Fraction(0));
     this.entries.push(lb);
   }
 }

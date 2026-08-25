@@ -66,6 +66,9 @@ if (!picked.length) {
   process.exit(1);
 }
 
+/** 页眉排两行时的行距 ÷ 页眉墨迹高。原书 p382 实测：两行的墨迹顶差 13.9pt、墨迹高 8.9。 */
+const HEADER_LINE_GAP = 1.56;
+
 /** 版心左右缘（对开页镜像：奇数书页 inner 在左）。 */
 function contentEdges(style, pageNo) {
   const m = style.page.margin;
@@ -89,7 +92,20 @@ function decorate(dp, ctx) {
 
   // 页眉在装订侧、曲号在切口侧（实测：奇数书页页眉靠左、曲号靠右，偶数页镜像）
   const odd = dp.pageNo % 2 === 1;
-  if (st.header.enable && ctx.category) put(ctx.category, "header", tb.headerBaseline, odd ? "left" : "right", odd ? left : right);
+  // 页眉的分类名**长的排两行**：原书「信徒生活（灵交）」印成「信徒生活 / （灵交）」两行
+  //（p382 那个页眉框高 22.4pt，正好两行）。括号那一截另起一行，两行都靠装订侧对齐。
+  if (st.header.enable && ctx.category) {
+    const hx = odd ? left : right;
+    const align = odd ? "left" : "right";
+    // 括号是**语料里的写法**，原书页眉印的是「信徒生活 / 灵交」两行、没有括号
+    const two = /^(.+?)[（(](.+?)[）)]$/.exec(ctx.category);
+    if (two) {
+      put(two[1], "header", tb.headerBaseline, align, hx);
+      put(two[2], "header", tb.headerBaseline + st.roles.header.size * HEADER_LINE_GAP, align, hx);
+    } else {
+      put(ctx.category, "header", tb.headerBaseline, align, hx);
+    }
+  }
   if (st.footer.enable && ctx.label)
     put(st.footer.format.replace("{n}", ctx.label), "footer", tb.footerBaseline, "center", center);
 
@@ -136,46 +152,15 @@ function noteItems(dps) {
   return out;
 }
 
-/** 段落词落位：锚点音符的正上方、和弦那一带。 */
+/** 段落词的字号（浏览器侧按墨迹比例反算的那一份，随第一首返回值更新）。 */
 let sectionWordSize = style.roles.sectionWord.size;
-function placeSectionWords(dps, rows) {
-  if (!rows.length) return;
-  const notes = noteItems(dps);
-  if (!notes.length) return;
-  // 字号要按**墨迹比例**反算（浏览器侧实测的那一份），直接拿 roles.size 当字号会小一圈
-  const size = sectionWordSize;
-  for (const r of rows) {
-    const anchor = notes[Math.min(r.note_ordinal, notes.length - 1)];
-    if (!anchor) continue;
-    // 音符的墨迹上缘：Times 的数字墨迹约占 0.66em（见 browser.ts::fontSizeFor 那套口径）
-    const inkTop = anchor.it.y - anchor.it.size * 0.66;
-    const y = inkTop - style.metrics.chordToNoteEm * style.roles.note.size;
-    const text = r.text;
-    const x = anchor.it.xs[0];
-    const w = measure("sectionWord", text, size);
-    // 和弦占的也是这一带。撞上了就往上抬一行——原书是排版时人工避开的，
-    // 重排的断行不一样，撞不撞只能现算。
-    const hit = anchor.dp.items.some(
-      (it) =>
-        it.t === "text" &&
-        it.role === "chord" &&
-        Math.abs(it.y - y) < size * 0.6 &&
-        it.xs[0] < x + w &&
-        x < it.xs[it.xs.length - 1] + measure("chord", it.text.slice(-1), it.size),
-    );
-    if (process.env.DIAG) console.log(`  DIAG 段落词 ${text} y=${y.toFixed(1)} x=${x.toFixed(1)} w=${w.toFixed(1)} 撞和弦=${hit}`);
-    anchor.dp.items.push({
-      t: "text", y: hit ? y - size * 1.6 : y, text, size, role: "sectionWord", align: "left",
-      xs: [x], box: { x, w: 0 },
-    });
-  }
-}
+
 for (const s of picked) {
   const xml = await readFile(s.musicxml, "utf8");
   let res;
   try {
     res = await page.evaluate(
-    async ([xmlText, st, id]) => {
+    async ([xmlText, st, id, sectionRows]) => {
       const B = await window.__book;
       /** Score → 每页的 DrawPage[]（含首页给标题块让位的整页平移）。 */
       const renderPages = (score) => {
@@ -215,11 +200,37 @@ for (const s of picked) {
       // 一旦排版器在断点之外又折了一刀，行尾就会甩出两三个音的尾巴
       //（实测 006 一行塞满 + 一行只剩 "3 2 1--"）。
       // 所以排完数一下谱行数：多出来就把格数收紧再排，最多四轮。
+      /** 段落词注入：按「第几个音符」挂到 Chord 上，排版引擎自己去摆（Line.addSectionWords）。
+       *  整本那一层只管书级装饰，音符数据区的东西不在那里落位。 */
+      const putSectionWords = (score) => {
+        if (!sectionRows.length) return;
+        const chords = [];
+        for (const m of score.parts[0].measures) for (const e of m.entries) if (e.notes) chords.push(e);
+        // 副歌那一条**优先挂到副歌真正的起句**上：`note_ordinal` 是按原书的音符序号记的，
+        // 重排后（断行不同、反复展开方式不同）常常差着几个音，023 首就落在了副歌前一行。
+        // Score 里副歌歌词带 `refrain` 标记（只有一段、各主歌共用的那些），拿它定位最稳。
+        const refrainAt = chords.findIndex((c) =>
+          (c.notes?.[0]?.lyrics ?? []).some((l) => l.refrain && l.text),
+        );
+        for (const r of sectionRows) {
+          const at = /副歌/.test(r.text) && refrainAt >= 0 ? refrainAt : Math.min(r.note_ordinal, chords.length - 1);
+          const c = chords[at];
+          if (c) c.sectionWord = r.text;
+        }
+      };
       let cells = B.measureCellsPerLine(B.loadMusicXml(xmlText), st, window.__app.meta);
+      // 并短行的余量。二次折行多半是「并到贴着容量上限」惹的（格数是近似，歌词字多的行更宽），
+      // 先加余量少并一点，比整首收紧格数温和——后者会把没溢出的行也一起切短
+      //（285《主啊我要做祢信徒》收紧到 31 格时从 2 行变成 4 行）。
+      let slack = 0;
       let score = null;
       let pageItems = null;
-      for (let iter = 0; iter < 4; iter++) {
+      let expectLines = 1;
+      let iters = 0;
+      for (let iter = 0; iter < 6; iter++) {
+        iters = iter + 1;
         score = B.loadMusicXml(xmlText);
+        putSectionWords(score);
         let expect = 1;
         if (st.layout.phrase && score.parts[0]) {
           score.clearSystemBreak();
@@ -227,30 +238,46 @@ for (const s of picked) {
             targetMeas: st.layout.phraseTargetMeas,
             lenWeight: st.layout.phraseLenWeight,
             breakWeight: st.layout.phraseBreakWeight,
+            // 成书专用的两条权重（编辑器那条路默认不开，基线不动）：
+            // 短呼语句（「哈利路亚！」）的句末标点减半、重复段按长度加分。
+            shortSentenceWords: 5,
+            repeatLenBonus: true,
             maxCells: cells,
             maxSentenceCells: cells,
           });
-          B.enforceLineCapacity(score.parts[0], brk, cells, st.layout.phraseTargetMeas);
+          B.enforceLineCapacity(score.parts[0], brk, cells, st.layout.phraseTargetMeas, st.layout.phraseMidBreak);
+          // 再两两并一次短行：乐句分析按「小节数」定行长，每小节几格随拍号而变，
+          // 小节短的谱（005 每小节 3.2 格）一句一行只用得上半幅版心，原书那首就是一行两句。
+          if (st.layout.phraseMergeShort)
+            B.mergeShortLines(score.parts[0], brk, cells, { useMidBreaks: st.layout.phraseMidBreak, slack });
           const ab = B.applyPhraseBreaks(score.parts[0], brk, {
             linesPerPage: st.layout.linesPerPage,
             useMidBreaks: st.layout.phraseMidBreak,
           });
           expect = ab.lines + 1;
         }
+        expectLines = expect;
         pageItems = renderPages(score);
-        if (!st.layout.phrase || B.countStaffRows(pageItems) <= expect || cells <= 8) break;
-        cells = Math.max(8, cells - 2);
+        const rows = B.countStaffRows(pageItems);
+        if (!st.layout.phrase || rows <= expect || cells <= 8) break;
+        // 先松合并（最多两轮），再收紧格数。收紧**按实测比例一步到位**：排版器折出了
+        // rows 行而计划只有 expect 行，说明这些内容真正要占 rows/expect 倍的宽度
+        //（297《让神儿子的爱围绕你》量出 50 格、实际只放得下 ~30，一次 2 格地减要减十轮）。
+        if (st.layout.phraseMergeShort && slack < 6) slack += 3;
+        else cells = Math.max(8, Math.min(cells - 2, Math.round((cells * expect) / rows)));
       }
       const out = pageItems;
+      // 排版口径的自检：迭代了几轮、最后还有没有「断点之外又折一刀」（见下面的汇总打印）
+      const fit = { iters, slack, cells, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
       // 装饰层（标题/曲号/页眉页脚）在 Node 侧排，但字号得按**浏览器实测的墨迹比例**反算，
       // 否则同一个 size 在不同字体里墨迹大小不一样（见 browser.ts::fontSizeFor）。
       const sizes = {};
       for (const r of ["title", "songNumber", "category", "credit", "keyMeter", "header", "footer", "sectionWord", "story", "toc", "tocHeading", "tocSub", "frontTitle"]) sizes[r] = B.fontSizeFor(st, r);
       // creator 是 Map<type, text>（musicxml 的 <creator type="composer">…）
       const cr = score.creator instanceof Map ? [...score.creator] : Object.entries(score.creator ?? {});
-      return { pages: out, title: score.title, credits: cr.map(([type, text]) => ({ type, text })), sizes };
+      return { pages: out, title: score.title, credits: cr.map(([type, text]) => ({ type, text })), sizes, fit };
     },
-      [xml, style, s.id],
+      [xml, style, s.id, meta.section.get(s.id) ?? []],
     );
   } catch (e) {
     // 一首排不出来不该炸整本：记账、跳过、继续
@@ -270,15 +297,24 @@ for (const s of picked) {
   // 段落词：原书印在和弦带里，锚在第 n 个音符上（gen-bookmeta 记的 note_ordinal）。
   // 排版引擎不认这东西，所以在整本这一层按音符落位摆——**不动 layout.ts**。
   if (res.sizes?.sectionWord) sectionWordSize = res.sizes.sectionWord;
-  placeSectionWords(res.pages, meta.section.get(s.id) ?? []);
   songBlocks.push({
     id: s.id,
     title: res.title,
     pages: res.pages,
     ctx: { sizes: res.sizes, id: s.id, title: res.title, credits: res.credits, category: s.category ?? "", km },
   });
-  perSong.push({ id: s.id, title: res.title, pages: res.pages.length });
+  perSong.push({ id: s.id, title: res.title, pages: res.pages.length, fit: res.fit });
   if (only || picked.length < 30) console.log(`  ${s.id} ${res.title}：${res.pages.length} 页`);
+}
+
+// 排版口径自检：容量（格数）只是像素宽度的近似，量偏了排版器就会在断点之外又折一刀。
+// 迭代（先松并短行的余量、再收紧格数）能兜住，这里把兜的次数与没兜住的曲子亮出来。
+{
+  const fits = perSong.map((p) => p.fit).filter(Boolean);
+  const retried = fits.filter((f) => f.iters > 1).length;
+  const over = perSong.filter((p) => p.fit?.overflow > 0);
+  console.log(`排版口径：${fits.length} 首中 ${retried} 首要重排（容量量偏了），仍有二次折行 ${over.length} 首` +
+    (over.length ? `：${over.slice(0, 8).map((p) => `${p.id}(+${p.fit.overflow})`).join(" ")}` : ""));
 }
 
 await browser.close();
@@ -337,6 +373,11 @@ function placeAnnotations() {
         const b = cli.annotationBlock(style, {
           text: a.text,
           framed: !!a.framed,
+          // 022/023 那种双细线矩形框：几何用 gen-bookmeta 实测的外圈/内圈/空隙
+          frame: a.frame_kind ?? (a.framed ? "tile" : "none"),
+          frameOuter: a.frame_outer || undefined,
+          frameInner: a.frame_inner || undefined,
+          frameGap: a.frame_gap || undefined,
           left: m.left,
           right: m.right,
           top,
@@ -466,13 +507,16 @@ for (let iter = 0; iter < 3; iter++) {
   const prose = meta.front.filter((f) => f.kind === "prose").map((f) => ({ kind: "prose", title: f.title, body: f.body }));
   const dividers = meta.front.filter((f) => f.kind === "divider").map((f) => ({ kind: "divider", title: f.title, body: "" }));
   front = cli.frontPages(style, prose, { startPageNo: 1, measure });
-  const toc = meta.toc.length ? cli.tocPages(style, tocItems(pageOfSong), { startPageNo: front.length + 1, measure, title: "目录" }) : [];
+  // 各角色的字号（浏览器侧按墨迹比例反算过的）。每首返回的都一样，取第一首即可；
+  // 一首都没排出来时退回 roles[*].size（bookparts 内部有同样的兜底）。
+  const roleSizes = songBlocks[0]?.ctx?.sizes ?? {};
+  const toc = meta.toc.length ? cli.tocPages(style, tocItems(pageOfSong), { startPageNo: front.length + 1, measure, title: "目录", sizes: roleSizes }) : [];
   front = [...front, ...toc, ...cli.frontPages(style, dividers, { startPageNo: front.length + toc.length + 1, measure })];
   // 后附索引：接着乐谱页往下编号
   back = [];
   for (const [name, title] of [["title", "诗题笔划索引"], ["firstline", "歌词首句索引"]]) {
     const items = indexItems(name, firstLines);
-    if (items.length) back.push(...cli.indexPages(style, items, { startPageNo: 1, measure, title }));
+    if (items.length) back.push(...cli.indexPages(style, items, { startPageNo: 1, measure, title, sizes: roleSizes }));
   }
   if (same) break;
 }
