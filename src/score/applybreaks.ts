@@ -106,66 +106,50 @@ function measureCells(m: Measure): number {
 export function enforceLineCapacity(part: Part, breaks: PhraseBreaks, cells: number, targetMeas = 4, useMidBreaks = true): void {
   const ms = part.measures;
   if (!ms.length || cells <= 0) return;
-  // 行边界 = 小节末断点 ∪ **行内断点所在的小节**。行内断点也把行切开了，漏算它们就会在
-  // 已经够短的行上再补一刀：弱起谱（005《荣耀归与天父》每句都收在小节中间的长音上）
-  // 一条小节末断点都没有，只算 measureBreaks 等于把整曲看成一行，机械地每 6 小节切一次。
-  // 行内断点落在小节中间，这里按「该小节归上一行」近似——容量保险本来就只是个兜底。
-  const midMi = new Set<number>();
-  if (useMidBreaks) {
-    for (let i = 0; i < ms.length; i++)
-      for (const c of chordsOf(ms[i]))
-        if (breaks.midBreaks.has(c) || breaks.sectionCutChords.has(c)) midMi.add(i + 1);
-  }
-  const cut = [...new Set([...breaks.measureBreaks, ...midMi])].sort((a, b) => a - b);
-  const bounds = [0, ...cut.filter((i) => i > 0 && i < ms.length), ms.length];
   // 小节数也设一道闸：格数是近似（增时线在乐句分析里按 0.7 折算，排版器却是整格），
   // 光看格数会漏掉「九小节一行」这种——006 的主歌就是这样，排版器随后硬折，
   // 甩出一行只剩 "3 2 1--"。
   const hardMeas = Math.max(targetMeas + 1, Math.ceil(targetMeas * 1.5));
   const pre = [0];
   for (const m of ms) pre.push(pre[pre.length - 1] + measureCells(m));
-  for (let b = 0; b + 1 < bounds.length; b++) {
-    const from = bounds[b];
-    const to = bounds[b + 1];
-    for (const at of splitEvenly(from, to, pre, cells, hardMeas)) breaks.measureBreaks.add(at);
+  // **照真正的行来判**（`describeLines`），别拿小节下标去重建行边界：行内断点落在小节中间，
+  // 按「该小节归上一行」近似出来的边界与真实的行差着一格，于是一条本来放得下的行被判成超容量
+  // 又切一刀，甩出个六格的小尾巴（286《耶和华祝福满满》的第 3 行）。
+  for (const l of describeLines(part, breaks, useMidBreaks)) {
+    const k = Math.max(Math.ceil(l.cells / cells), Math.ceil(l.bars / hardMeas));
+    if (k <= 1) continue;
+    // 能落刀的只有**这一行内部**的小节线：行首若是残小节，第一刀最早只能落在下一条小节线上
+    const from = l.head.full ? l.fromMi : l.fromMi + 1;
+    const to = l.mi !== null || l.chord === null ? l.toMi + 1 : l.toMi; // 行尾收在小节线上才算到 toMi
+    for (const at of splitEvenly(from, to, pre, k)) breaks.measureBreaks.add(at);
   }
 }
 
 /**
- * 把 [from,to) 这一段**均匀**切成够短的几行，返回切点（小节下标）。
+ * 把 [from,to) 这一段**均匀**切成 k 行，返回切点（小节下标）。
  *
  * 原来是贪心：从左往右塞满就切一刀，于是 9 小节 / 容量 4 小节切成 4+4+1，
  * 末尾甩出一个只有一小节的行（22/319/374/378/390/419 那一批「中间行过短」的来源之一）。
- * 改成先算这一段**至少要几行**，再按「每行 总量/k」找最接近的小节边界落刀：同样是 9 小节，
- * 切成 3+3+3。切完仍有超容量的行就加一行重来（段里的小节长短不一时会遇上）。
+ * 改成按「每行 总量/k」找最接近的小节边界落刀：同样是 9 小节，切成 3+3+3。
  */
-function splitEvenly(from: number, to: number, pre: number[], cells: number, hardMeas: number): number[] {
+function splitEvenly(from: number, to: number, pre: number[], k: number): number[] {
   const meas = to - from;
   const total = pre[to] - pre[from];
-  if (meas <= 1) return [];
-  let k = Math.max(Math.ceil(total / cells), Math.ceil(meas / hardMeas));
-  if (k <= 1) return []; // 放得下就别动——这一步只是兜底，不是分行的主力
-  for (; k <= meas; k++) {
-    const cuts: number[] = [];
-    let prev = from;
-    let ok = true;
-    for (let j = 1; j < k && ok; j++) {
-      const want = pre[from] + (total * j) / k;
-      // 落刀范围：至少给前面留一小节，也要给后面剩下的 k-j 行各留一小节
-      let best = -1;
-      for (let i = prev + 1; i <= to - (k - j); i++)
-        if (best < 0 || Math.abs(pre[i] - want) < Math.abs(pre[best] - want)) best = i;
-      if (best < 0) ok = false;
-      else { cuts.push(best); prev = best; }
-    }
-    if (!ok) continue;
-    const edges = [from, ...cuts, to];
-    const bad = edges.some((e, i) => i + 1 < edges.length &&
-      (pre[edges[i + 1]] - pre[e] > cells || edges[i + 1] - e > hardMeas));
-    if (!bad) return cuts;
-    if (k === meas) return cuts; // 每行一小节都还超容量：格数量偏了，交给排版器折
+  if (meas <= 1 || k <= 1) return [];
+  const n = Math.min(k, meas);
+  const cuts: number[] = [];
+  let prev = from;
+  for (let j = 1; j < n; j++) {
+    const want = pre[from] + (total * j) / n;
+    // 落刀范围：至少给前面留一小节，也要给后面剩下的 n-j 行各留一小节
+    let best = -1;
+    for (let i = prev + 1; i <= to - (n - j); i++)
+      if (best < 0 || Math.abs(pre[i] - want) < Math.abs(pre[best] - want)) best = i;
+    if (best < 0) break;
+    cuts.push(best);
+    prev = best;
   }
-  return [];
+  return cuts;
 }
 
 /** 一行的行首「残小节」：从行首到第一条小节线之间的那点内容。 */

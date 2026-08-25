@@ -209,6 +209,12 @@ export interface BookLayoutOpts {
   phraseLenWeight: number;
   /** 断点强度的权重：让「断在长音 + 标点上」压过「各行一样长」。 */
   phraseBreakWeight: number;
+  /** **摊匀行长**的权重（`phrase.ts` 跑第二遍 DP 用；0 = 关）。行数由第一遍定，
+   *  第二遍把目标改成「本段小节数 ÷ 行数」——原书每行都差不多长，只按容量排会
+   *  一行顶格、一行半幅（051《赞美我主君王》12/14/24 格）。 */
+  phraseEvenWeight?: number;
+  /** 「别把一句话的最后一小截甩到下一行开头」的权重（`phrase.ts::headPenalty`；0 = 关）。 */
+  phraseTailWeight?: number;
   /** 是否允许在小节中间换行。**默认允许**：原书每行都在小节线上收尾，但那是固定版式的结果——
    *  弱起谱（005《荣耀归与天父》）每句都收在小节中间的长音上，只认小节线就一条乐句断点都找不到，
    *  只能靠容量保险每 6 小节机械切一刀，句子被拦腰截断。phrase 的 DP 本来就给行内断点加罚 6、

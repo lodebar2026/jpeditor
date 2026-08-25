@@ -104,6 +104,24 @@ export interface PhraseOptions {
   /** 重复段边界是否**按重复长度加分**（越长的重复越该整段成行）。默认 false = 一律 +8，
    *  编辑器那条路行为不变；成书排版打开（015《赞美真神》结尾三句「哈利路亚！」）。 */
   repeatLenBonus?: boolean;
+  /** `maxCells` 的单位是不是**排版器数出来的「个数」**（音符与增时线各算一个）。
+   *  成书那条路的容量由 `measureCellsPerLine` 数出来，就是这个单位；而 `cellsOf` 为了行长目标
+   *  把增时线折算成 0.7 格，两把尺子混用会把长音多的行判成「放得下」而实际折行
+   *  （378《主耶稣我爱祢》副歌 32 个格、容量 31，折算后只有 28.x）。
+   *  **默认 false**：编辑器那条路的 `DEF_MAX_CELLS = 25` 是按折算后的格数调出来的。 */
+  cellsAreItems?: boolean;
+  /** 「别把一句话的最后一小截甩到下一行开头」的权重（0 = 关）。
+   *  419《人生崎岖路》第 6 行开头的「却成了祝福。」——上一行明明还差好几格。
+   *  **默认关**：15 首编辑器基线里它会把「至高的爱尽见于刺 / 穿的手」这样的词劈开
+   *  （断点被推去了别处），成书那条路才打开。 */
+  tailWeight?: number;
+  /** **摊匀行长**的权重（0 = 关）。开着时 DP 跑两遍：第一遍定下「这一段要几行」，
+   *  第二遍把行长目标改成「本段小节数 ÷ 行数」、行长代价按这个权重加重，
+   *  在同样的行数里挑长短最接近的那套断点。默认 0——编辑器那条路的基线是按一遍调出来的；
+   *  成书排版打开（原书每一行都差不多长，我们却会一行顶格、一行半幅）。 */
+  evenWeight?: number;
+  /** 多排一行的代价（`evenWeight > 0` 时的方案评分用）。默认 20。 */
+  rowCost?: number;
   /** 「末两行别一长一短」的权重。一段的最后两行长短悬殊最扎眼（125《主名至宝》、
    *  404《你若不压橄榄成渣》都是倒数第二行短、末行长），而普通的行长代价管不到它——
    *  末行本来就允许短。默认 1；0 = 关。 */
@@ -152,6 +170,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const REPEAT_LEN_BONUS = opts.repeatLenBonus ?? false;
   const BREAK_WEIGHT = opts.breakWeight ?? 1;
   const LAST_PAIR_WEIGHT = opts.lastPairWeight ?? 1;
+  const EVEN_WEIGHT = opts.evenWeight ?? 0;
+  const TAIL_WEIGHT = opts.tailWeight ?? 0;
+  const CELLS_ARE_ITEMS = opts.cellsAreItems ?? false;
+  // 多排一行的代价（评分用）。定得太低会把每首都摊成一堆短行；太高就退回「能挤则挤」。
+  // 20 是拿 051/052/378/374 试出来的：副歌那种「一行顶格、主歌两行很稀」会拆成两行，
+  // 而本来就匀的谱不会平白多出一行。
+  const ROW_COST = opts.rowCost ?? 20;
   // 行长下限跟着上限走：版心窄时上限本来就小，14 格的下限会把断点全顶掉
   const MIN_CELLS = Math.min(DEF_MIN_CELLS, Math.round(MAX_CELLS * 0.6));
   const measures = part.measures;
@@ -373,6 +398,19 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 长音起头本身就不对：乐句是从短音起唱的，行首那个长音多半是上一句的延音收尾
     //（15 首基线里「一生中最可 / 贵」就是这么把词劈开的）。带标点的更是明摆着的收尾。
     if (nx.chord.beats >= 2 && punctScore(mainLyricText(nx.chord)) > 0) s += 10;
+    // (d) **别把一句话的最后一小截甩到下一行开头**：断点之后没几个字就到句号了的话，
+    // 那截尾巴属于本行（419《人生崎岖路》第 6 行开头的「却成了祝福。」，
+    // 上一行明明还差好几格）。越近罚得越狠；离得够远（一行的三成以上）就不管——
+    // 长句本来就要分行。
+    const tailMax = MAX_CELLS * 0.35;
+    if (TAIL_WEIGHT > 0) {
+      let run = 0;
+      for (let j = idx + 1; j < K; j++) {
+        run += cellsOf(flat[j].chord);
+        if (run > tailMax) break;
+        if (punctAfter[j] === 6 && j < K - 1) { s += TAIL_WEIGHT * 10 * (1 - run / tailMax); break; }
+      }
+    }
     return s;
   };
 
@@ -538,6 +576,14 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const cellsUpto = new Array<number>(K + 1).fill(0); // 前缀格数：cellsUpto[i]=前 i 个和弦占的格数
   for (let i = 0; i < K; i++) cellsUpto[i + 1] = cellsUpto[i] + cellsOf(flat[i].chord);
   const cellsBetween = (a: number, b: number) => cellsUpto[idxAt[b] + 1] - cellsUpto[idxAt[a] + 1];
+  // **容量那一档要按「整格」数**：`cellsOf` 把增时线折算成 0.7 格（它们画得比数字窄，
+  // 用于行长目标很合适），但**容量是排版器数出来的**（`measureCellsPerLine` 数的是音符与增时线的
+  // 个数，一根算一个）。两把尺子混用，长音多的谱就会被判成「放得下」而实际折行——
+  // 378《主耶稣我爱祢》的副歌 32 个格、容量 31，DP 按 0.7 折算成 28.x，以为宽宽有余。
+  const cellsIntUpto = new Array<number>(K + 1).fill(0);
+  for (let i = 0; i < K; i++) cellsIntUpto[i + 1] = cellsIntUpto[i] + Math.max(1, Math.floor(flat[i].chord.beats) || 1);
+  const cellsIntBetween = (a: number, b: number) =>
+    CELLS_ARE_ITEMS ? cellsIntUpto[idxAt[b] + 1] - cellsIntUpto[idxAt[a] + 1] : cellsBetween(a, b);
   // 完整句末的前缀计数。仅提高「跨过句末、把下一句弱起塞到本行」的代价；若断点本身就在
   // 句末则不罚。这样 `…便要走！ 而…`、`…长存不朽！ 谁人…` 会优先在 `！` 后换行，
   // 同时很短的句子仍可在行长收益足够大时合排，不把句末标点做成绝对硬断点。
@@ -547,14 +593,27 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     endPunctUpto[idxAt[b]] - endPunctUpto[idxAt[a] + 1];
   const INF = Number.POSITIVE_INFINITY;
   const BASE_BREAK = 8;
+  /** 在 b 处断行要付的代价（不含行长）：乐句信号越强越便宜。段末（b === hi）不付。
+   *  **强断点可以挣出净收益**（封顶 BASE_BREAK，免得一路狂断）；BREAK_WEIGHT=1 时
+   *  退化成原来的 max(0, …)，编辑器那条路的行为不变。
+   *  **行内断点（非小节末）另加重罚**——简谱通常在小节线处换行，行内断只该用在乐句尾恰落小节内
+   *  （句号/长音，那时 scoreAt 高足以抵消）或实在别无选择时；只压**弱信号**（score < 4）。 */
+  const breakCost = (b: number, hi: number): number => {
+    if (b === hi) return 0;
+    const sc = scoreAt(cand[b - 1]);
+    return Math.max(0, BASE_BREAK - sc * BREAK_WEIGHT) +
+      (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6) +
+      headPenalty(cand[b - 1]);
+  };
   const CROSSED_END_PUNCT_COST = 4;
   const SPLIT_SHORT_SENTENCE_COST = 24;
   // 行长约束一律是**软惩罚**而非硬禁：可断点稀疏时（弧线跨小节连成一片，如「主祢真伟大」副歌
   // 每小节末都在 slur 内）硬禁会让整段找不到任何合法切法、退化成一整行。软罚则总能挑出最不坏的一种。
-  const lenCost = (meas: number, cells: number, segEnd: boolean, maxCells = MAX_CELLS, maxMeas = MAX_MEAS): number =>
-    LEN_WEIGHT * (meas - TARGET_MEAS) ** 2 +
+  const lenCost = (meas: number, cells: number, segEnd: boolean, maxCells = MAX_CELLS, maxMeas = MAX_MEAS,
+                   target = TARGET_MEAS, lenW = LEN_WEIGHT, cellsInt = cells): number =>
+    lenW * (meas - target) ** 2 +
     (meas > maxMeas ? (meas - maxMeas) ** 2 * 40 : 0) +
-    (cells > maxCells ? (cells - maxCells) ** 2 * 8 : 0) +
+    (cellsInt > maxCells ? (cellsInt - maxCells) ** 2 * 8 : 0) +
     // 段末/曲末行是唯一可短于 MIN 的行，但也**不该短到只剩一小节**——软罚让 DP 宁可把前面几行
     // 各让出一点，也别甩出一个孤零零的尾巴（"不要有只有一节的情况"）。
     (segEnd && meas < MIN_MEAS ? (MIN_MEAS - meas) ** 2 * 10 : 0) +
@@ -563,15 +622,18 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 同一口径——非段末行是硬约束，段末行仍只软罚（末行本来就可以短一些）。
     (segEnd && cells < MIN_CELLS ? (MIN_CELLS - cells) ** 2 : 0);
 
-  const dp = new Array<number>(M + 1).fill(INF);
-  const nextB = new Array<number>(M + 1).fill(-1);
   // 按段界把 [0,M] 切成若干闭区间，逐段跑同一套 DP：段末等同曲末（末行可短、无断点罚）。
   const cuts = [0, ...new Set(sectionCuts)].sort((p, q) => p - q);
   if (cuts[cuts.length - 1] !== M) cuts.push(M);
+  /** 跑一遍 DP。`targetFor(s)` 给第 s 段的行长目标（小节数），`lenW` 是行长代价的权重。 */
+  const runDP = (targetFor: (s: number) => number, lenW: number): { dp: number[]; nextB: number[] } => {
+  const dp = new Array<number>(M + 1).fill(INF);
+  const nextB = new Array<number>(M + 1).fill(-1);
   dp[M] = 0;
   for (let s = cuts.length - 1; s >= 1; s--) {
     // 段末 dp[hi] 已就绪：末段是曲末 dp[M]=0，其余在后一段里作为起点算过。
     const lo = cuts[s - 1], hi = cuts[s];
+    const target = targetFor(s);
     for (let a = hi - 1; a >= lo; a--) {
       for (let b = a + 1; b <= hi; b++) {
         const meas = ends[b] - ends[a], cells = cellsBetween(a, b);
@@ -582,13 +644,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         // 行内断只该用在乐句尾恰落小节内（句号/长音，那时 scoreAt 高足以抵消）或实在别无选择时。
         // 行内罚只压**弱信号**的行内断点：句号/长音/延长号/重复边界（score≥4）落在小节内时，
         // 那本就是乐句真正的收尾处，不该因为「没赶上小节线」被罚。
-        const sc = b === hi ? 0 : scoreAt(cand[b - 1]);
-        // 强断点可以挣出净收益（封顶 BASE_BREAK，免得一路狂断）；BREAK_WEIGHT=1 时
-        // 退化成原来的 max(0, …)，编辑器那条路的行为不变。
-        const bc = b === hi ? 0
-          : Math.max(0, BASE_BREAK - sc * BREAK_WEIGHT) +
-            (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6) +
-            headPenalty(cand[b - 1]);
+        const bc = breakCost(b, hi);
         const crossed = crossedEndPunct(a, b);
         const endsAtSentence = punctAfter[idxAt[b]] === 6;
         // 若从本行起点继续到下一个句号仍不超过「完整句」宽度，就不要提前在逗号/弱音乐信号处拆开。
@@ -623,13 +679,100 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         const lastPair = b < hi && nextB[b] === hi
           ? Math.min(40, LAST_PAIR_WEIGHT * (meas - (ends[hi] - ends[b])) ** 2)
           : 0;
-        const cost = lenCost(meas, cells, b === hi, lineMaxCells, lineMaxMeas) + bc + splitSentence +
+        const cost = lenCost(meas, cells, b === hi, lineMaxCells, lineMaxMeas, target, lenW, cellsIntBetween(a, b)) + bc + splitSentence +
           lastPair + crossed * CROSSED_END_PUNCT_COST + dp[b];
         if (cost < dp[a]) { dp[a] = cost; nextB[a] = b; }
       }
       // 无解（段内可断点太稀，够不着 MIN 又超不出扫描上界）→ 退到最近的候选断点，宁可短行也别整段一行。
-      if (dp[a] === INF) { const b = Math.min(a + 1, hi); dp[a] = dp[b] + lenCost(ends[b] - ends[a], cellsBetween(a, b), b === hi); nextB[a] = b; }
+      if (dp[a] === INF) { const b = Math.min(a + 1, hi); dp[a] = dp[b] + lenCost(ends[b] - ends[a], cellsBetween(a, b), b === hi, MAX_CELLS, MAX_MEAS, target, lenW); nextB[a] = b; }
     }
+  }
+  return { dp, nextB };
+  };
+
+  /** 一段里排了几行（从回溯链上数）。 */
+  const linesPerSeg = (nb: number[]): number[] => {
+    const out = new Array<number>(cuts.length - 1).fill(0);
+    for (let a = 0; a < M; ) {
+      const b = nb[a];
+      if (b <= a) break;
+      const s = cuts.findIndex((c) => c >= b);
+      if (s >= 1) out[s - 1]++;
+      a = b;
+    }
+    return out;
+  };
+
+  let { nextB } = runDP(() => TARGET_MEAS, LEN_WEIGHT);
+  // **出几种方案再评分选优**（`evenWeight > 0` 时）。
+  //
+  // 第一遍只保证「每行都放得下」，于是一段顶着版心、另一段只有半幅——051《赞美我主君王》
+  // 排成 12/14/24 格，378《主耶稣我爱祢》17/15/32：副歌那 9 小节挤成一行，主歌两行却很稀。
+  // 光在**段内**摊匀没用（副歌本来就只有一行），得允许某一段**多排一行**。
+  //
+  // 所以：以第一遍的行数为底，让每段各自试「+0 / +1 / +2 行」，逐个组合跑一遍 DP，
+  // 再按同一把尺子评分选优——行长越匀越好、断点越强越好、行数越少越好。
+  if (EVEN_WEIGHT > 0) {
+    const segs = cuts.length - 1;
+    const base = linesPerSeg(nextB);
+    /** 一套方案的分：越小越好。行长不匀（按格数的方差）+ 断点弱度 + 每多一行的代价。 */
+    const quality = (nb: number[]): number => {
+      const cells: number[] = [];
+      let weak = 0;
+      for (let a = 0; a < M; ) {
+        const b = nb[a];
+        if (b <= a) break;
+        cells.push(cellsBetween(a, b));
+        const hi = cuts.find((c) => c >= b) ?? M;
+        weak += breakCost(b, hi);
+        // 超容量**几乎是硬伤**：排版器会照宽度硬折，甩出个两三格的尾巴（比多排一行难看得多），
+        // 所以罚得比「多一行」重得多，别让「挤一挤能少一行」赢了。
+        const over = cellsIntBetween(a, b) - MAX_CELLS;
+        if (over > 0) weak += 100 + over ** 2 * 8;
+        // 短行同样难看（058《耶和华的心》曾在中间甩出一行只有 5 格）。末行不算——它本来可以短。
+        const short = MIN_CELLS - cellsIntBetween(a, b);
+        if (short > 0 && b < M) weak += short ** 2;
+        a = b;
+      }
+      if (!cells.length) return INF;
+      const mean = cells.reduce((x, y) => x + y, 0) / cells.length;
+      const uneven = cells.reduce((x, c) => x + (c - mean) ** 2, 0) / cells.length;
+      return uneven + weak + ROW_COST * cells.length;
+    };
+    const runWith = (want: number[]): { nb: number[]; lines: number[] } => {
+      const r = runDP((sIdx) => {
+        const span = ends[cuts[sIdx]] - ends[cuts[sIdx - 1]];
+        const k = want[sIdx - 1];
+        return k > 0 ? span / k : TARGET_MEAS;
+      }, EVEN_WEIGHT);
+      return { nb: r.nextB, lines: linesPerSeg(r.nextB) };
+    };
+    // 候选：每段 +0/+1（段多时只给最长的那一段加，免得组合爆炸）
+    const options: number[][] = [];
+    const add = (w: number[]) => { if (!options.some((o) => o.every((v, i) => v === w[i]))) options.push(w); };
+    add(base.slice());
+    if (segs <= 3) {
+      const grid = (i: number, acc: number[]) => {
+        if (i === segs) return add(acc.slice());
+        for (const d of [0, 1, 2]) { acc.push(base[i] + d); grid(i + 1, acc); acc.pop(); }
+      };
+      grid(0, []);
+    } else {
+      for (let i = 0; i < segs; i++) { const w = base.slice(); w[i]++; add(w); }
+    }
+    let best = { score: INF, nb: nextB };
+    for (const want of options) {
+      const got = runWith(want);
+      // 段里排不出想要的行数就不算（DP 会退回它自己觉得合适的行数）
+      if (!got.lines.every((v, i) => v === want[i])) continue;
+      const sc = quality(got.nb);
+      if (sc < best.score) best = { score: sc, nb: got.nb };
+    }
+    // @ts-ignore 临时调试
+    if (typeof window !== "undefined" && (window as any).__evenDebug) (window as any).__evenDebug = { base, tried: options.map((w) => { const g = runWith(w); return { want: w, got: g.lines, q: g.lines.every((v, i) => v === w[i]) ? quality(g.nb) : null }; }), first: quality(nextB) };
+    // 第一遍那套也要参与评分（它可能就是最好的）
+    if (quality(nextB) <= best.score) best = { score: quality(nextB), nb: nextB };
+    nextB = best.nb;
   }
 
   // 回溯：每个选中断点 cand[b-1]，小节末→小节边界换行，否则→行内换行。段界本身也是断点。

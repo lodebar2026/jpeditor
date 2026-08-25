@@ -247,8 +247,15 @@ for (const s of picked) {
             // 短呼语句（「哈利路亚！」）的句末标点减半、重复段按长度加分。
             shortSentenceWords: 5,
             repeatLenBonus: true,
+            // 摊匀行长（跑两遍 DP，见 phrase.ts）：原书每一行都差不多长，
+            // 只按容量排会一行顶格、一行半幅（051 的 12/14/24 格）。
+            evenWeight: st.layout.phraseEvenWeight ?? 0,
+            // 别把一句话的最后一小截甩到下一行开头（419「却成了祝福。」）
+            tailWeight: st.layout.phraseTailWeight ?? 0,
             maxCells: cells,
             maxSentenceCells: cells,
+            // 容量是排版器**数出来的个数**（音符与增时线各算一个），不是折算过的格数
+            cellsAreItems: true,
           });
           B.enforceLineCapacity(score.parts[0], brk, cells, targetMeas, st.layout.phraseMidBreak);
           // 再两两并一次短行：乐句分析按「小节数」定行长，每小节几格随拍号而变，

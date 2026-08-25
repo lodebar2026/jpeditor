@@ -28,6 +28,9 @@ const drawDoc = JSON.parse(await readFile(`${OUTDIR}/rebuild-drawlist.json`, "ut
 // ── 判据的阈值。都是「明显难看」那一档，不是审美偏好。
 const SHORT_RATIO = 0.4;      // 中间行短于版心容量的这个比例 = 过短
 const LAST_PAIR_RATIO = 0.6;  // 末两行的长度比低于此 = 不均匀
+// 同一首里「最短行 ÷ 最长行」低于此 = 行长悬殊（末行除外，末行本来可以短）。
+// 原书每一行都差不多长；只按容量排会一行顶格、一行半幅（051 曾排成 12/14/24 格）。
+const EVEN_RATIO = 0.5;
 const LONG_HEAD_BEATS = 2;    // 行首这么长的音 + 标点 = 上一句的收尾被甩到了行首
 const OVERLAP_TOL = 0.5;      // 歌词墨迹相压超过这么多 pt 才算（pen 位置有舍入）
 
@@ -40,6 +43,7 @@ const kinds = {
   L5: "末两行长短悬殊",
   L6: "段落词挂出版心",
   L7: "相邻歌词墨迹相压",
+  L8: "同一首里行长悬殊",
 };
 const bad = Object.fromEntries(Object.keys(kinds).map((k) => [k, []]));
 let substSkipped = 0; // 因字体回退判不了的相邻歌词对（见 L7）
@@ -83,6 +87,16 @@ for (const song of lineDoc.songs) {
       if (Math.abs(l.head.dur - mode) > 0.01)
         hit("L3", song.id, `第 ${i + 1} 行以半拍休止起头、弱起 ${l.head.dur} 拍，本曲多数是 ${mode} 拍`);
     });
+  }
+
+  // L8 全曲行长悬殊：主歌顶着版心、副歌只有半幅这种（051/052/062/378 都是这一类）。
+  // 末行不算——它本来就可以短。
+  {
+    const cs = ls.slice(0, -1).map((l) => l.cells);
+    if (cs.length > 1) {
+      const lo = Math.min(...cs), hi = Math.max(...cs);
+      if (hi > 0 && lo / hi < EVEN_RATIO) hit("L8", song.id, `最短 ${lo} 格 / 最长 ${hi} 格`);
+    }
   }
 
   // L5 每段末两行（段界把曲子分段；末段就是曲末）
@@ -152,6 +166,10 @@ for (const dp of drawDoc.pages) {
 /** 每条：曲号 → [档, 期望违例数（一律 0）]，另加几条只对这首成立的具体期望。 */
 const SPOT = {
   "020": ["L1"],
+  // 逐首看下来补进来的那一批（行长要匀、中间不许甩短行）
+  "051": ["L8", "L2"], "052": ["L8"], "058": ["L2"], "062": ["L8"],
+  "077": ["L2"], "286": ["L2"], "378": ["L8", "L2"], "405": ["L6"],
+  "374": ["L8", "L2"], "419": ["L8", "L2"],
   "022": ["L2"], "319": ["L2"], "374": ["L2"], "378": ["L2"], "390": ["L2"], "419": ["L2"],
   "024": ["L6"], "371": ["L6"], "381": ["L6"],
   "125": ["L5"], "404": ["L5"],
