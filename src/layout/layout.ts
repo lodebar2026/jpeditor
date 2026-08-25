@@ -366,6 +366,20 @@ export class Lyric extends TextFrame {
   get right(): number {
     return this._widths[1] / 2 + this._widths[2];
   }
+  /** 末字右侧的留白（advance 减墨迹）。相邻两条歌词能挤多近由它和下一条的左留白决定。 */
+  get tailBlank(): number {
+    const t = this.text;
+    if (!t) return 0;
+    const last = [...t].pop() as string;
+    const upto = this.measureText(0, t.length - last.length);
+    return Math.max(0, this.width - (upto + LayoutOptions.charBound(this.font, last).right));
+  }
+  /** 首字左侧的留白（墨迹离落笔点多远）。`“` 这种标点的墨只占方框右半边。 */
+  get headBlank(): number {
+    const t = this.text;
+    if (!t) return 0;
+    return Math.max(0, LayoutOptions.charBound(this.font, [...t][0]).left);
+  }
   override update(): void {
     let sl = "", sc = "", sr = "";
     if (this.text.length === 1) {
@@ -1056,12 +1070,22 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
     g.chords.find((c) => Math.abs(c.y - g.baseY) < g.size && x < c.x1 && c.x0 < x + g.width);
   const first = hit(g.anchorX);
   if (!first) return { x: g.anchorX, lifted: false, shortfall: 0 };
+  // 右移找空档：**只跳过本小节内的和弦**。挡路的和弦已经在小节线右边（属下一小节）时就别再跳了，
+  // 再跳落点就落到下一小节里去了——那个标记看着就成了下一小节的（405《信靠顺服》的「（副歌）」
+  // 曾这样越过小节线、挤到 D7 边上）。那种情形交给 `spreadForSectionWords` 撑：撑开会把小节线
+  // 右边的东西整体右移，段落词留在原处，空档就出来了，而且要撑的只是「差的那一点」。
   let cand = first.x1 + gap;
-  for (let c = hit(cand); c; c = hit(cand)) cand = c.x1 + gap;
-  // 右移**可以越过小节线**（原书就有印在小节线右边的），只要 ① 落点不压字——`hit` 是按
-  // **全行**的和弦判的，越线之后撞上下一小节的第一个和弦会继续往右跳空档 ② 不出版心。
-  // 越线比撑开整条小节省地方：405《信靠顺服》的「（副歌）」原来要把一整个小节撑宽。
-  if (cand + g.width <= g.rightLimit) return { x: cand, lifted: false, shortfall: 0 };
+  let block = hit(cand);
+  while (block && block.x0 < g.barRight) {
+    cand = block.x1 + gap;
+    block = hit(cand);
+  }
+  // 落点**起点必须留在本小节内**；尾巴可以伸过小节线（原书就有印到线右边的），只要不压字、不出版心。
+  if (!block && cand < g.barRight && cand + g.width <= g.rightLimit)
+    return { x: cand, lifted: false, shortfall: 0 };
+  // 只差一点点就能摆下（挡路的是小节线右边那个和弦）——报「还差多少」，让撑开去补
+  if (block && cand < g.barRight && cand + g.width <= g.rightLimit)
+    return { x: cand, lifted: true, shortfall: cand + g.width - block.x0 };
   const left = first.x0 - g.width - gap;
   if (left >= g.hangLeft && !hit(left) && g.anchorX > g.hangLeft) return { x: left, lifted: false, shortfall: 0 };
   // 让不开就挂到锚点音符左边——行首那一条 `hangLeft` 在左边距里，够挂；
@@ -1070,7 +1094,7 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
   if (hang >= g.hangLeft && !hit(hang)) return { x: hang, lifted: false, shortfall: 0 };
   // 抬起来那一层同样不许出版心（行末那一条锚点靠右时会伸出去）
   const lifted = Math.max(g.hangLeft, Math.min(g.anchorX, g.rightLimit - g.width));
-  return { x: lifted, lifted: true, shortfall: cand + g.width - g.barRight };
+  return { x: lifted, lifted: true, shortfall: Math.max(0, cand + g.width - g.barRight) };
 }
 
 export class Line {
@@ -1243,7 +1267,7 @@ export class Line {
     });
     curX = 0;
     let offset = 0;
-    let prevRight = 0; // 上一条歌词尾标点的宽度（见下面的悬挂规则）
+    let prevBlank = 0; // 上一条歌词末字右侧的留白（见下面的「标点挤压」）
     for (const e of this.entries) {
       // **各段歌词一起算**：叠排时一个音符底下摞着好几段，只按第一段留位置的话，
       // 字更多的那几段就会互相压上去（156《百只羊有九十九》第 2 段 `主说那只亦我所有,`
@@ -1257,16 +1281,20 @@ export class Line {
       // 就把这个音符整个往右推，一行的音符间距跟着拉开（190 首那一行）。
       // 引号只要不压到**字**上就行，压在小节线那一带没关系——所以避让只看主体（去掉左标点），
       // 让引号伸进左边的空档里。右标点仍照算，否则下一个字会压上来。
-      // 但**前面那个字自己带尾标点**时不许悬挂：引号会正好压在那个逗号上
-      //（376《将心给我》末行的 `音:“愿`）。悬挂的前提是左边那一带是空档。
-      const hang = prevRight > 0 ? 0 : Math.min(...lrcs.map((l) => l.leadWidth));
+      // 悬挂**多少由墨迹说了算**（标点挤压）：引号的墨只占方框右半边，上一个字的尾标点
+      //（`音:` 的冒号）右边也空着一截，两边的留白加上字距就是能挤进去的量。
+      // 照整个 `leadWidth` 悬挂会把引号压在那个冒号上（376《将心给我》的 `呼召:“将心给我。”`），
+      // 一律不悬挂又把音符间距白白拉开（190 首）——按墨迹算两头都占着。
+      const room = prevBlank + this.lyricGap + Math.min(...lrcs.map((l) => l.headBlank));
+      const hang = Math.max(0, Math.min(Math.min(...lrcs.map((l) => l.leadWidth)), room));
       const leftMost = Math.min(...lrcs.map((l) => l.x)) + hang;
       const rightMost = Math.max(...lrcs.map((l) => l.x + l.width));
       const xx = Math.max(curX - leftMost, e.group.x + offset);
       offset = xx - e.group.x;
       e.group.x = xx;
       curX = xx + rightMost + this.lyricGap;
-      prevRight = Math.max(...lrcs.map((l) => l._widths[2]));
+      // 各段里**留白最少**的那一段说了算（有一段挤不下就是挤不下）
+      prevBlank = Math.min(...lrcs.map((l) => l.tailBlank));
     }
   }
 
