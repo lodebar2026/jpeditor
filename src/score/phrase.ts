@@ -402,6 +402,22 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 那截尾巴属于本行（419《人生崎岖路》第 6 行开头的「却成了祝福。」，
     // 上一行明明还差好几格）。越近罚得越狠；离得够远（一行的三成以上）就不管——
     // 长句本来就要分行。
+    // (e) **行末别只挂着下一句的头一两个字**：断点前一两个字就是句号的话，
+    // 那一两个字是下一句的起唱，跟着下一行走才对（062《神的保护》四行行末各挂着
+    // 「从」「祂」「白」「荣」，下一行从「上主而来」「永不困倦」起唱）。
+    // 与 (d) 对称：(d) 管「别把上一句的尾巴甩到下一行」，(e) 管「别把下一句的头留在本行」。
+    if (TAIL_WEIGHT > 0) {
+      let words = 0;
+      for (let j = idx; j >= 0; j--) {
+        if (punctAfter[j] === 6) { if (words >= 1) s += TAIL_WEIGHT * 8; break; }
+        const c = flat[j].chord;
+        // 断点本身落在长音上不算数（那个长音可能正是被留下的那一个字）；
+        // 再往前遇上长音就停——那是乐句真正的落点。
+        if (j < idx && c.beats >= 2) break;
+        if (!c.rest && mainLyricText(c)) words++;
+        if (words > 2) break;
+      }
+    }
     const tailMax = MAX_CELLS * 0.35;
     if (TAIL_WEIGHT > 0) {
       let run = 0;
