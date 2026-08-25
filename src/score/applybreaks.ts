@@ -38,6 +38,8 @@ function insertAfter(m: Measure, c: Chord, newPage: boolean): void {
   const i = m.entries.indexOf(c);
   const lb = new LineBreak(m);
   lb.newPage = newPage;
+  // 与 Measure.lineBreak 同理：位置要跟着断点和弦走，否则 autoBeamGroup 的排序会把它挪到节首。
+  lb.position = c.duration ? c.position.plus(c.duration) : c.position;
   m.entries.splice(i < 0 ? m.entries.length : i + 1, 0, lb);
 }
 
@@ -98,11 +100,23 @@ function measureCells(m: Measure): number {
  * 所以在写 LineBreak 之前先按容量补几刀，切点取最接近目标行长的小节边界。
  *
  * @param cells 一行放得下几格（由排版器实测，见 browser.ts::measureCellsPerLine）
+ * @param useMidBreaks 调用方是否会采用行内断点（与 applyPhraseBreaks 的同名选项保持一致）。
+ *        不采用时行内断点不切行，这里也不能把它当行边界。
  */
-export function enforceLineCapacity(part: Part, breaks: PhraseBreaks, cells: number, targetMeas = 4): void {
+export function enforceLineCapacity(part: Part, breaks: PhraseBreaks, cells: number, targetMeas = 4, useMidBreaks = true): void {
   const ms = part.measures;
   if (!ms.length || cells <= 0) return;
-  const cut = [...breaks.measureBreaks].sort((a, b) => a - b);
+  // 行边界 = 小节末断点 ∪ **行内断点所在的小节**。行内断点也把行切开了，漏算它们就会在
+  // 已经够短的行上再补一刀：弱起谱（005《荣耀归与天父》每句都收在小节中间的长音上）
+  // 一条小节末断点都没有，只算 measureBreaks 等于把整曲看成一行，机械地每 6 小节切一次。
+  // 行内断点落在小节中间，这里按「该小节归上一行」近似——容量保险本来就只是个兜底。
+  const midMi = new Set<number>();
+  if (useMidBreaks) {
+    for (let i = 0; i < ms.length; i++)
+      for (const c of chordsOf(ms[i]))
+        if (breaks.midBreaks.has(c) || breaks.sectionCutChords.has(c)) midMi.add(i + 1);
+  }
+  const cut = [...new Set([...breaks.measureBreaks, ...midMi])].sort((a, b) => a - b);
   const bounds = [0, ...cut.filter((i) => i > 0 && i < ms.length), ms.length];
   for (let b = 0; b + 1 < bounds.length; b++) {
     let from = bounds[b];
@@ -129,4 +143,85 @@ export function enforceLineCapacity(part: Part, breaks: PhraseBreaks, cells: num
       from = at;
     }
   }
+}
+
+/** 断点把曲子切成的一行：格数 + 这一行末尾那个断点（小节末 `mi`：在第 mi 小节后换行；行内：`chord`）。 */
+interface BreakLine {
+  cells: number;
+  mi: number | null;
+  chord: Chord | null;
+  /** 段界（另起一页）不可合并。 */
+  section: boolean;
+}
+
+/** 按断点把 part 切成行（与 applyPhraseBreaks 的遍历顺序一致）。末行没有断点，`mi`/`chord` 皆 null。 */
+function breakLines(part: Part, breaks: PhraseBreaks, useMidBreaks: boolean): BreakLine[] {
+  const cellsOf = (c: Chord): number => Math.max(1, Math.floor(c.beats) || 1);
+  const out: BreakLine[] = [];
+  let cur = 0;
+  part.measures.forEach((m, i) => {
+    for (const c of chordsOf(m)) {
+      cur += cellsOf(c);
+      if (!useMidBreaks) continue;
+      if (breaks.midBreaks.has(c) || breaks.sectionCutChords.has(c)) {
+        out.push({ cells: cur, mi: null, chord: c, section: breaks.sectionCutChords.has(c) });
+        cur = 0;
+      }
+    }
+    if (breaks.measureBreaks.has(i + 1) || breaks.sectionStarts.has(i + 1)) {
+      out.push({ cells: cur, mi: i + 1, chord: null, section: breaks.sectionStarts.has(i + 1) });
+      cur = 0;
+    }
+  });
+  if (cur > 0) out.push({ cells: cur, mi: null, chord: null, section: false });
+  return out;
+}
+
+/**
+ * **两两并短行**：相邻两行都远短于版心容量、且并起来仍放得下时，删掉中间那个断点。
+ *
+ * 乐句分析的行长目标是「小节数」（`targetMeas`，默认 4），但每小节几格随拍号而变——
+ * 005《荣耀归与天父》每小节才 3.2 格，4 小节只有 13 格，而版心放得下 27 格：一句一行，
+ * 每行只用了半幅版心，还要被 justify 拉开，看着空。原书这首就是**一行两句**。
+ * 反过来 001《圣哉，圣哉，圣哉》一句 16 格、两句 32 格 > 容量 31，就并不动，仍是一句一行。
+ *
+ * 只删断点、不新造断点：行末原本收在标点/长音上，并完之后**行末仍是标点**（保留后一个断点），
+ * 所以「行末收在标点上」的比例不会因此下降。段界（另起一页）与末行不参与。
+ * 只并一轮、成对推进——连锁并下去会把三四句挤成一行，那就走到另一个极端了。
+ *
+ * @param cells 一行放得下几格（`browser.ts::measureCellsPerLine` 实测）
+ * @param shortRatio 「短行」的判据：行格数 < 容量 × 该比例。默认 0.6
+ * @param slack 并出来的行要留几格余量。「格」是近似——同样的格数，歌词字多的行更宽
+ *        （007《荣耀归与我主》量出 32 格，30 格的行就被排版器折了），
+ *        并到贴着容量上限最容易溢出。调用方发现二次折行时先加这个，再考虑整首收紧格数。
+ * @returns 并掉的断点数
+ */
+export function mergeShortLines(
+  part: Part,
+  breaks: PhraseBreaks,
+  cells: number,
+  opt: { useMidBreaks?: boolean; shortRatio?: number; slack?: number } = {},
+): number {
+  const useMidBreaks = opt.useMidBreaks ?? true;
+  const shortRatio = opt.shortRatio ?? 0.6;
+  const slack = opt.slack ?? 0;
+  if (cells <= 0) return 0;
+  const lines = breakLines(part, breaks, useMidBreaks);
+  const short = cells * shortRatio;
+  let merged = 0;
+  for (let i = 0; i + 1 < lines.length; ) {
+    const a = lines[i], b = lines[i + 1];
+    // a 的断点是要删的那个：段界不能删；末行（chord/mi 皆 null）也不该并进来——
+    // 它没有断点可删，且末行本来就允许短。
+    const canDrop = !a.section && (a.mi !== null || a.chord !== null);
+    if (canDrop && a.cells < short && b.cells < short && a.cells + b.cells <= cells - slack) {
+      if (a.mi !== null) breaks.measureBreaks.delete(a.mi);
+      if (a.chord) breaks.midBreaks.delete(a.chord);
+      merged++;
+      i += 2; // 成对推进：并完这一对就跳过，不再拿并出来的长行去并第三句
+    } else {
+      i++;
+    }
+  }
+  return merged;
 }

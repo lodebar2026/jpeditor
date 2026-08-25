@@ -356,6 +356,10 @@ export class Lyric extends TextFrame {
     super();
     this.selectable = true;
   }
+  /** 开头那串标点的宽度（`“凡` 的引号）。避让时可以悬挂出去，见 calcXPos。 */
+  get leadWidth(): number {
+    return this._widths[0];
+  }
   get left(): number {
     return this._widths[0] + this._widths[1] / 2;
   }
@@ -539,7 +543,9 @@ export class TimeSig extends Entry {
     const w2 = tf2.measureText();
     this.width = Math.max(w1, w2);
     const ln = new GraphicLine();
-    ln.strokeWidth = 1.5;
+    // 分数线的粗细：原书量到的才 0.3pt（比小节线 1.0 还细一半多），
+    // 引擎默认的 1.5 是按屏幕上 fontSize≈28 调的，缩到成书字号就成了一道黑杠。
+    ln.strokeWidth = opt.timeSigRuleWidth > 0 ? opt.timeSigRuleWidth : 1.5;
     ln.strokeColor = opt.color;
     const y = cy - ln.strokeWidth / 2;
     ln.p0 = new Point(0, y);
@@ -584,6 +590,7 @@ export class NoteEntry extends Entry {
     const wordFont = opt.numberFont.makeWithSize(opt.chordSize);
     const musicFont = opt.smuflFont.makeWithSize(opt.chordSize);
     const g = layoutHarmonySegs(chordTextSegs(ch.harmony), wordFont, musicFont, opt.color);
+    g.classes.add("chord-group"); // 段落词要按它的位置让路，见 Line.addSectionWords
     g.update();
     g.x = num.x + num.cx - g.width / 2;
     // 挂在这个音符**已有内容的栈顶**之上（八度点已经加过了），不是固定高度——
@@ -593,7 +600,11 @@ export class NoteEntry extends Entry {
     // 带升降号的那些用 Bravura 的 csym 字形，em 框比字母高得多，按墨迹摆会比邻近的
     // 和弦高出十来个点。`g.update()` 之后 `g.y` 正好是「墨迹顶相对基线」的偏移，
     // 所以这里**累加**目标基线，而不是赋值。
-    const top = Math.min(-opt.numberSize, ent.group.childrenBound.top);
+    // 基准是音符的**墨迹顶**，不是 -numberSize（那是字号，Times 的数字墨迹只占 0.66em，
+    // 拿字号当墨迹顶会把和弦白白多抬三四个点）。原书量的 chordToNote 也是
+    // 「音符墨迹顶 − 和弦基线」（stats.ts: noteTop − baselineY），两边口径必须一致。
+    const inkTop = opt.numberBound("1").top;
+    const top = Math.min(inkTop, ent.group.childrenBound.top);
     g.y += top - opt.chordGap;
     ent.group.add(g);
   }
@@ -805,13 +816,25 @@ export class NoteEntry extends Entry {
   }
 }
 
+/** 小节线的样子：粗细组合 + 反复点。与五线谱同一套画法（`‖:` 点在右、`:‖` 点在左）。 */
+export interface BarlineSpec {
+  /** MusicXML 的 bar-style。null = 普通细线。 */
+  style?: S.BarStyle | null;
+  /** `:‖`（反复回到前面）——两点画在左侧。 */
+  repeatBackward?: boolean;
+  /** `‖:`（反复段起点）——两点画在右侧。 */
+  repeatForward?: boolean;
+}
+
 export class Barline extends Entry {
   /** The vertical strokes, kept so `clipBarlinesUnderSlurs` can shorten them. */
   readonly lines: GraphicLine[] = [];
+  /** 是不是「一条普通细线」（没有反复点、没有粗线）——`‖:` 会把紧挨着的这种吃掉。 */
+  isPlain = false;
   readonly defaultTop: number;
   private readonly bot: number;
 
-  constructor(final: boolean, opt: LayoutOptions) {
+  constructor(final: boolean, opt: LayoutOptions, spec: BarlineSpec = {}) {
     super();
     this.group.data = this;
     const top = opt.jpStaffTop;
@@ -819,11 +842,28 @@ export class Barline extends Entry {
     this.defaultTop = top;
     this.bot = bot;
     const heavyWidth = opt.finalBarlineWidth;
+    const light = opt.barlineWidth; // musicpp lineWidths.lightBarline (pptutil.cpp:139)
     const res = this.group;
-    const widths = [opt.barlineWidth]; // musicpp lineWidths.lightBarline (pptutil.cpp:139)
-    if (final) widths.push(heavyWidth);
+    // 粗细组合按 bar-style 来（五线谱怎么画，简谱就怎么画）：
+    // 终止线 `light-heavy` 细+粗、反复起点 `heavy-light` 粗+细、`light-light` 双细线。
+    // repeatForward/Backward 自带隐含样式：谱上没标 bar-style 也要画成粗细组合。
+    const st = spec.style ?? null;
+    let widths: number[];
+    if (st === S.BarStyle.LIGHT_HEAVY || (final && !spec.repeatForward)) widths = [light, heavyWidth];
+    else if (st === S.BarStyle.HEAVY_LIGHT || spec.repeatForward) widths = [heavyWidth, light];
+    else if (st === S.BarStyle.LIGHT_LIGHT) widths = [light, light];
+    else if (st === S.BarStyle.HEAVY || st === S.BarStyle.HEAVY_HEAVY) widths = [heavyWidth];
+    else widths = [light];
+    if (spec.repeatBackward && widths.length === 1) widths = [light, heavyWidth];
     const dist = heavyWidth;
     let xpos = 0;
+    // 反复点在**细线那一侧**（`:‖` 左、`‖:` 右），先占位再画线，x 顺序才对
+    const dotR = opt.repeatDotRadius > 0 ? opt.repeatDotRadius : light * 1.6;
+    const dotGap = dotR * 1.6;
+    if (spec.repeatBackward) {
+      this.addDots(opt, xpos + dotR, dotR, top, bot);
+      xpos += dotR * 2 + dotGap;
+    }
     for (const w of widths) {
       const l = new GraphicLine();
       l.strokeColor = opt.color;
@@ -835,7 +875,32 @@ export class Barline extends Entry {
       res.add(l);
       this.lines.push(l);
     }
+    if (spec.repeatForward) {
+      xpos += dotGap - dist;
+      this.addDots(opt, xpos + dotR, dotR, top, bot);
+    }
+    this.isPlain = widths.length === 1 && !spec.repeatBackward && !spec.repeatForward;
     res.update();
+  }
+
+  /** 反复点：小节线中线上下各一个实心圆（四段三次贝塞尔近似）。 */
+  private addDots(opt: LayoutOptions, cx: number, r: number, top: number, bot: number): void {
+    const mid = (top + bot) / 2;
+    const off = (bot - top) / 6;
+    for (const cy of [mid - off, mid + off]) {
+      const p = new GraphicPath();
+      p.fill = true;
+      p.stroke = false;
+      p.fillColor = opt.color;
+      const k = r * 0.5523;
+      p.moveTo(cx - r, cy);
+      p.cubicTo(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
+      p.cubicTo(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
+      p.cubicTo(cx + r, cy + k, cx + k, cy + r, cx, cy + r);
+      p.cubicTo(cx - k, cy + r, cx - r, cy + k, cx - r, cy);
+      p.close();
+      this.group.add(p);
+    }
   }
 
   /**
@@ -849,6 +914,13 @@ export class Barline extends Entry {
    * in a *second* time by GraphicLine.update(), which both moves and lengthens
    * the stroke.)
    */
+  /** 小节线占多宽 —— **要把整组算进去**（粗细两条线、反复点都在 group 里）。
+   *  基类只看 `entryItem()`（第一条竖线），于是 `‖:` 右边那两个反复点没有占位，
+   *  后面的音符直接压上来（037 第三行的 `‖:5` 里点与 5 叠在一起）。 */
+  override entryWidth(): number {
+    return this.group.width;
+  }
+
   clipTop(top: number): void {
     const y = Math.max(this.defaultTop, Math.min(top, this.bot));
     const dy = y - this.group.y;
@@ -1048,6 +1120,28 @@ export class Line {
     if (space > 0) lastVisible.group.x += Math.min(space, maxDx - dx);
   }
 
+  /** 由 layout(opt) 注入，供 calcXPos 用（Line 自己不持有 LayoutOptions）。 */
+  lyricGap = 0;
+  /** 段落词的字体（撑开那个音符时要量宽度）。null = 不排段落词。 */
+  sectionWordFont: Font | null = null;
+
+  /**
+   * 相邻的两条小节线只留一条。
+   *
+   * `‖:`（反复段起点）画在小节**开头**，而上一小节末尾本来就有一条细线，两条挨在一起
+   * 就成了「细 粗 细」三条竖线（010《愿祢崇高》第一行开头）。原书是「粗 细 + 两点」。
+   * 普通的那条让位；两条都不普通（`:‖‖:` 这种）就都留着。
+   */
+  private dropDoubledBarlines(): void {
+    for (let i = this.entries.length - 1; i > 0; i--) {
+      const cur = this.entries[i];
+      const prev = this.entries[i - 1];
+      if (!(cur instanceof Barline) || !(prev instanceof Barline)) continue;
+      if (prev.isPlain) this.entries.splice(i - 1, 1);
+      else if (cur.isPlain) this.entries.splice(i, 1);
+    }
+  }
+
   private calcXPos(): void {
     for (const e of this.entries) e.group.normalizeX();
     let curX = 0;
@@ -1074,10 +1168,50 @@ export class Line {
         e.group.x += offset;
         continue;
       }
-      const xx = Math.max(curX - lrc.x, e.group.x + offset);
+      // **前置标点悬挂**：`“凡` 这种带前引号的字，整体宽是两个字，按整体去避让上一个字
+      // 就把这个音符整个往右推，一行的音符间距跟着拉开（190 首那一行）。
+      // 引号只要不压到**字**上就行，压在小节线那一带没关系——所以避让只看主体（去掉左标点），
+      // 让引号伸进左边的空档里。右标点仍照算，否则下一个字会压上来。
+      const lead = lrc.leadWidth;
+      const xx = Math.max(curX - (lrc.x + lead), e.group.x + offset);
       offset = xx - e.group.x;
       e.group.x = xx;
-      curX = xx + lrc.x + lrc.width;
+      curX = xx + lrc.x + lrc.width + this.lyricGap;
+    }
+  }
+
+  /**
+   * 为段落词（「（副歌）」）**按小节撑开**。
+   *
+   * 段落词印在和弦那一带、不许跨过小节线，横向地方不够时就得撑。但撑开量**不能全堆在
+   * 锚点那一个音符上**——那一处的间距会突兀地大出一截。这里把需要的量**均摊到锚点所在
+   * 小节里余下的每个音符间距**上，小节之后的内容整体右移同样的量。
+   * 段落词本身仍可横向伸出音符的范围，撑开只为躲开**后面的和弦**。
+   */
+  private spreadForSectionWords(): void {
+    if (!this.sectionWordFont) return;
+    const bars: number[] = [];
+    this.entries.forEach((e, i) => { if (e instanceof Barline) bars.push(i); });
+    for (let i = 0; i < this.entries.length; i++) {
+      const e = this.entries[i];
+      if (!(e instanceof NoteEntry) || !e.chord.sectionWord) continue;
+      const endIdx = bars.find((b) => b > i) ?? this.entries.length;
+      const barX = this.entries[endIdx]?.group.x ?? this.entries[this.entries.length - 1].group.x;
+      // 锚点音符**自己**带和弦时，段落词会被推到那个和弦右边（addSectionWords 的右移），
+      // 所以要留的地方从和弦右缘算起——不算这一截，129 首那种「和弦与段落词挂同一个音符」
+      // 的谱撑不开，只能抬到和弦上方去。
+      let ownChordW = 0;
+      for (const it of e.group.children)
+        if (it instanceof Group && it.classes.has("chord-group")) ownChordW = Math.max(ownChordW, it.width);
+      const gap = this.sectionWordFont.size * 0.3;
+      const startX = e.group.x + (ownChordW > 0 ? ownChordW + gap : 0);
+      const need = startX + this.sectionWordFont.measureText(e.chord.sectionWord) + this.lyricGap - barX;
+      if (need <= 0) continue;
+      const inBar = [];
+      for (let k = i + 1; k < endIdx; k++) inBar.push(k);
+      const steps = inBar.length + 1; // 锚点到小节线之间有这么多段间距
+      inBar.forEach((k, n) => { this.entries[k].group.x += (need * (n + 1)) / steps; });
+      for (let k = endIdx; k < this.entries.length; k++) this.entries[k].group.x += need;
     }
   }
 
@@ -1105,6 +1239,14 @@ export class Line {
       for (let i = idx; i < last; i++) line.addEntry(this.entries[i]);
       res.push(line);
       idx = last;
+    }
+    // 只剩小节线（连一个音符都没有）的行**并回上一行**：谱尾的终止线常被宽度判据挤到
+    // 下一行去，单独占掉一整行——那是永远不该出现的排法（024《贺祂为王》）。
+    // 并回去会让上一行稍稍超出版心，但小节线本来就窄，justify 收得回来。
+    for (let i = res.length - 1; i > 0; i--) {
+      if (res[i].entries.some((e) => e instanceof NoteEntry)) continue;
+      for (const e of res[i].entries) res[i - 1].addEntry(e);
+      res.splice(i, 1);
     }
     return res;
   }
@@ -1285,14 +1427,32 @@ export class Line {
   }
 
   layout(width: number, height: number, opt: LayoutOptions): Group[] {
+    this.lyricGap = opt.lyricGap;
+    this.sectionWordFont = opt.sectionWordSize > 0 ? opt.lrcFont.makeWithSize(opt.sectionWordSize) : null;
+    this.dropDoubledBarlines();
     this.calcXPos();
+    this.spreadForSectionWords();
     const lines = this.doLineBreak(width);
+    // 段落词挂在**行末那个音符**上时，它标的其实是下一行的起句（「（副歌）」印在主歌
+    // 最后一行的行尾没有意义，副歌是从下一行开始唱的）——挪到下一行行首那个音符上。
+    // 锚点是按「第几个音符」记的，重排后的断行与原书不同，落到行末是常事（013 首）。
+    for (let i = 0; i + 1 < lines.length; i++) {
+      const notes = lines[i].entries.filter((e): e is NoteEntry => e instanceof NoteEntry);
+      const last = notes[notes.length - 1];
+      if (!last?.chord.sectionWord) continue;
+      const next = lines[i + 1].entries.find((e): e is NoteEntry => e instanceof NoteEntry);
+      if (!next || next.chord.sectionWord) continue;
+      next.chord.sectionWord = last.chord.sectionWord;
+      last.chord.sectionWord = null;
+    }
     for (const l of lines) {
       this.updateXPos(l, width, opt.maxHorizontalScale);
       l.addBeams(opt);
       l.addTuplet(opt);
       l.addTie(opt);
       l.addSlur(opt);
+      l.addEnding(opt);
+      l.addSectionWords(opt);
       l.clipBarlinesUnderSlurs(opt);
       l.updateLyricY(opt);
       l.group.normalizeY();
@@ -1332,13 +1492,17 @@ export class Line {
       let right = rightItem.pos(this.group).x + rightItem.cx;
       if (end.beginOfSlurTied) right -= opt.numberSize / 14;
       const width = right - left;
-      const ypos = Math.min(start.entryTop(opt), end.entryTop(opt));
-      const y = -numberSize * 0.25;
+      // 括线与音符之间要留一道空（原来紧贴着音符墨迹顶，看着像长在数字上）
+      const ypos = Math.min(start.entryTop(opt), end.entryTop(opt)) - opt.jpStackGap;
+      // 竖脚比房号的短：房号线是整段乐句的括线，三连音只是三个音的括号
+      //（原书量到的 bracketFootLen 5.3pt 主要来自房号；三连音照它画会高出一截）。
+      const y = -(opt.bracketFoot > 0 ? opt.bracketFoot * 0.55 : numberSize * 0.25);
       const tupGrp = new Group();
       tupGrp.x = left;
       tupGrp.y = ypos;
       const path = new GraphicPath();
-      path.strokeWidth = 1;
+      // 线宽与「脚」长与房号括线同源（原书量的 bracket 那一类）
+      path.strokeWidth = opt.bracketWidth > 0 ? opt.bracketWidth : 1;
       path.fill = false;
       path.stroke = true;
       path.strokeColor = opt.color;
@@ -1353,10 +1517,182 @@ export class Line {
       txt.text = GlyphCodes.tuplet3;
       const w = txt.measureText();
       txt.x = width / 2 - w / 2;
-      txt.y = -numberSize * 0.05;
+      // 数字要**按墨迹**与横线垂直居中：SmuflText 的 bound 是紧包围盒（相对基线，top 为负），
+      // 墨迹中心 = (top + bottom) / 2，把它对到横线 y 上。按字号估偏移（0.28em 那种）对不准——
+      // Bravura 的 tuplet 字形墨迹只占 em 的一小截。
+      const bd = txt.bound;
+      txt.y = y - (bd.top + bd.bottom) / 2;
       tupGrp.add(path);
       tupGrp.add(txt);
       this.group.add(tupGrp);
+    }
+  }
+
+  /**
+   * 房号（volta / ending）：`⌐1.` 那条横线 + 左端下垂 + 房号数字，画在音符上方。
+   * 与五线谱同一套画法；行内画不完的房（跨行、或 `discontinue`）右端不封口。
+   * 房的范围来自 `Measure.endingLeft/endingRight`，按**本行内**出现的那一段画。
+   */
+  addEnding(opt: LayoutOptions): void {
+    if (opt.endingSize <= 0) return;
+    // 先把本行按小节切开（房的起止是**小节级**的）
+    const segs: { m: S.Measure; notes: NoteEntry[] }[] = [];
+    for (const e of this.entries) {
+      if (!(e instanceof NoteEntry)) continue;
+      const m = e.chord.measure;
+      const last = segs[segs.length - 1];
+      if (last && last.m === m) last.notes.push(e);
+      else segs.push({ m, notes: [e] });
+    }
+    let num: string | null = null;
+    let notes: NoteEntry[] = [];
+    const flush = (closed: boolean) => {
+      if (num !== null && notes.length) this.drawEnding(opt, num, notes, closed);
+      num = null;
+      notes = [];
+    };
+    for (const seg of segs) {
+      if (seg.m.endingLeft) {
+        flush(false);
+        num = seg.m.endingNum && seg.m.endingNum.size ? [...seg.m.endingNum].sort((a, b) => a - b).join("·") + "." : "";
+      }
+      if (num === null) continue;
+      notes.push(...seg.notes);
+      // 房号线到**第一个** `<ending type=…>` 就收：`stop` 封口、`discontinue` 敞着。
+      // 二房常写成「start + discontinue 在同一小节，逻辑上的 stop 在几小节之后」
+      //（037《我尊崇祢》的二房 m9 就地 discontinue、m11 才 stop），
+      // 线要在 m9 收住——跨过好几个小节的长横线是错的。
+      if (seg.m.endingRight !== null) flush(seg.m.endingRight === S.StartStopDiscontinue.STOP);
+    }
+    flush(false); // 房跨到下一行：本行这一段不封口
+  }
+
+  private drawEnding(opt: LayoutOptions, num: string, notes: NoteEntry[], closed: boolean): void {
+    const leftItem = notes[0].entryItem();
+    const rightItem = notes[notes.length - 1].entryItem();
+    if (!leftItem || !rightItem) return;
+    const x0 = leftItem.pos(this.group).x - opt.numberSize * 0.35;
+    const x1 = rightItem.pos(this.group).x + rightItem.width + opt.numberSize * 0.35;
+    if (x1 <= x0) return;
+    // 房号线一律排在**这一段的最上方**：和弦、三连音括线、圆滑线都在音符上方那一带，
+    // 按音符墨迹顶算会跟它们叠在一起。取这一段里所有音符 group 的实际顶（和弦已经在 group 里）。
+    let above = Infinity;
+    for (const e of notes) above = Math.min(above, e.group.pos(this.group).y);
+    for (const it of this.group.children) {
+      const l = it.pos(this.group).x;
+      if (l + it.width < x0 || l > x1) continue;
+      above = Math.min(above, it.pos(this.group).y);
+    }
+    const drop = opt.bracketFoot > 0 ? opt.bracketFoot : opt.endingSize * 0.9;
+    const top = above - opt.endingSize * 0.5 - drop;
+    const grp = new Group();
+    grp.x = x0;
+    grp.y = top;
+    const lw = opt.bracketWidth > 0 ? opt.bracketWidth : opt.barlineWidth;
+    const path = new GraphicPath();
+    path.stroke = true;
+    path.fill = false;
+    path.strokeColor = opt.color;
+    path.strokeWidth = lw;
+    path.moveTo(0, drop);
+    path.lineTo(0, 0);
+    path.lineTo(x1 - x0, 0);
+    if (closed) path.lineTo(x1 - x0, drop);
+    grp.add(path);
+    if (num) {
+      const tf = new TextFrame();
+      tf.classes.add("ending"); // 见 browser.ts::roleOfItem（归 verseNum 那一档，别当成音符）
+      tf.font = opt.numberFont.makeWithSize(opt.endingSize);
+      tf.color = opt.color;
+      tf.text = num;
+      // 数字摆在竖脚**右侧**、横线**下方**，谁也不压谁（原书就是这么排的）
+      tf.x = lw + opt.endingSize * 0.28;
+      tf.y = lw + opt.endingSize * 0.95;
+      tf.update();
+      grp.add(tf);
+    }
+    this.group.add(grp);
+  }
+
+  /**
+   * 段落词（「（副歌）」「（间奏）」）。原书印在**和弦那一带、与和弦同一条基线**，
+   * 左右并排（`G（副歌）C` 这种）——所以先按锚点音符摆在和弦的基线上，
+   * 撞上和弦再**沿 x 让**：右移到那个和弦右边，右边没地方（出版心、或紧跟着别的和弦）就左移，
+   * **行首只许右移**（左边是行头，挪出去就出界了）。都让不开才退到和弦**上方**一行，
+   * 那样虽然多占一层，至少不叠字。
+   */
+  addSectionWords(opt: LayoutOptions): void {
+    if (opt.sectionWordSize <= 0) return;
+    const size = opt.sectionWordSize;
+    const font = opt.lrcFont.makeWithSize(size);
+    // 本行已经排好的和弦：{x0, x1, y}
+    const chords: { x0: number; x1: number; y: number }[] = [];
+    for (const e of this.entries) {
+      if (!(e instanceof NoteEntry)) continue;
+      for (const it of e.group.children) {
+        if (!(it instanceof Group) || !it.classes.has("chord-group")) continue;
+        const x = it.pos(this.group).x;
+        chords.push({ x0: x, x1: x + it.width, y: it.pos(this.group).y });
+      }
+    }
+    const lineRight = this.group.width || Infinity;
+    // 小节线的 x：段落词让位**不许跨过它们**（跨过去就成了下一小节的标记）
+    const barXs = this.entries
+      .filter((e): e is Barline => e instanceof Barline)
+      .map((b) => b.group.pos(this.group).x)
+      .sort((a, b) => a - b);
+    // 同一个 Chord 可能在一行里出现**好几个 NoteEntry**：长音的增时线各占一个，
+    // 不展开叠排时（有反复房号的谱）整条谱行还会按遍数重复装载。
+    // 段落词是挂在 Chord 上的，每个 Chord 只画一次，否则就叠出两三个「（副歌）」（131 首）。
+    const drawn = new Set<S.Chord>();
+    for (const e of this.entries) {
+      if (!(e instanceof NoteEntry) || !e.chord.sectionWord) continue;
+      if (drawn.has(e.chord)) continue;
+      drawn.add(e.chord);
+      const item = e.entryItem();
+      if (!item) continue;
+      const tf = new TextFrame();
+      tf.classes.add("section-word");
+      tf.font = font;
+      tf.color = opt.color;
+      tf.text = e.chord.sectionWord;
+      tf.update();
+      // 段落词**可以横向伸出锚点音符的范围**（它只是个标记，原书也这么印），
+      // 所以不为它撑开音符间距；能不能放下只看「本小节内有没有不撞和弦的空档」。
+      const x0 = item.pos(this.group).x;
+      // 与和弦**同一条基线**：本行有和弦就直接对到它们那一条（原书就是并排的），
+      // 一个和弦都没有时才按「音符墨迹顶 − chordGap」自己算。
+      const inkTop = Math.min(opt.numberBound("1").top, e.group.childrenBound.top);
+      const ownY = e.group.pos(this.group).y + inkTop - opt.chordGap;
+      const baseY = chords.length ? chords[0].y + size : ownY;
+      const overlaps = (x: number) =>
+        chords.find((c) => Math.abs(c.y - baseY) < size && x < c.x1 && c.x0 < x + tf.width);
+      let x = x0;
+      const first = overlaps(x);
+      if (first) {
+        // 右移：**一路跳过挨着的和弦**找空档（和弦密的行上第一个空档往往在两三个和弦之后），
+        // 直到出了行宽为止；再不行才往左（行首不许左移）；都让不开就抬到和弦上方。
+        // 本小节的右界（下一条小节线）与左界（上一条），让位只能在这中间
+        const barRight = barXs.find((bx) => bx > x0) ?? lineRight;
+        const barLeft = [...barXs].reverse().find((bx) => bx <= x0) ?? 0;
+        let cand = first.x1 + size * 0.3;
+        let hit = overlaps(cand);
+        while (hit && cand + tf.width <= barRight) {
+          cand = hit.x1 + size * 0.3;
+          hit = overlaps(cand);
+        }
+        const canRight = !hit && cand + tf.width <= barRight;
+        const left = first.x0 - tf.width - size * 0.3;
+        const canLeft = left >= barLeft && !overlaps(left) && x0 > barLeft;
+        if (canRight) x = cand;
+        else if (canLeft) x = left;
+        tf.y = canRight || canLeft ? baseY : baseY - size * 1.5;
+      } else {
+        tf.y = baseY;
+      }
+      tf.x = x;
+      this.group.children.push(tf);
+      tf.parent = this.group;
     }
   }
 
@@ -1421,7 +1757,14 @@ export class Line {
   /** 叠排时给每个视觉行的**行首**歌词挂段号（原书的「1.」「2.」…，悬在第一个字左边）。
    *  段号不能直接拼进歌词文本——那会把第一个字挤离它对位的音符。 */
   addVerseNumbers(opt: LayoutOptions): void {
-    if (opt.lyricStack <= 0) return;
+    if (opt.lyricStack <= 0 || opt.verseNumbers === "never") return;
+    if (opt.verseNumbers === "auto") {
+      // 「自动」：段数少的时候不标——两三段的谱一眼就看得清哪行是哪段，
+      // 标了反而在每行行首多出一串 1. 2. 3.。段数多了才需要它带路。
+      let verses = 0;
+      for (const e of this.entries) if (e instanceof NoteEntry) verses = Math.max(verses, e.lrcs.length);
+      if (verses <= opt.verseNumberAutoMin) return;
+    }
     let atLineStart = true;
     for (const e of this.entries) {
       if (e instanceof LineBreak) {
@@ -1487,6 +1830,13 @@ export class Line {
       }
       this.entries.push(key);
     }
+    // 小节**开头**的反复起点 `‖:`（MusicXML 的 `<barline location="left">`）。
+    // 小节线本来只在小节末补，这里要额外插一条——五线谱怎么标，简谱就怎么标。
+    if ((m.repeatForward || m.leftBarline !== null) && skip === 0) {
+      const ent = new Barline(false, options, { style: m.leftBarline, repeatForward: m.repeatForward });
+      ent.update();
+      this.entries.push(ent);
+    }
     let hasBarline = limit >= 0; // 截断的小节尾不补小节线（下一段接着唱同一小节）
     let taken = 0;
     for (const ch of m.entries) {
@@ -1504,14 +1854,14 @@ export class Line {
         NoteEntry.fromChord(this.entries, ch, lrc, options);
         taken++;
       } else if (ch instanceof S.BarlineEntry) {
-        const ent = new Barline(final, options);
+        const ent = new Barline(final, options, { style: m.barline, repeatBackward: m.repeatBackward });
         ent.update();
         this.entries.push(ent);
         hasBarline = true;
       }
     }
     if (!hasBarline) {
-      const ent = new Barline(final, options);
+      const ent = new Barline(final, options, { style: m.barline, repeatBackward: m.repeatBackward });
       ent.update();
       if (this.entries[this.entries.length - 1] instanceof LineBreak) {
         this.entries.splice(this.entries.length - 1, 0, ent);
@@ -1552,11 +1902,33 @@ export class LayoutOptions {
   /** 和弦符号的字号与它到音符墨迹上缘的距离。0 = 不排和弦（默认：编辑器与 OMR 那两条路
    *  的 Score 里本来就没有 harmony，排了也不会变，但留一道闸更明确）。 */
   chordSize = 0;
+  /** 段落词（「（副歌）」）的字号。0 = 不排（编辑器与 OMR 那两条路的 Score 里没有这东西）。 */
+  sectionWordSize = 0;
   chordGap = 0;
   /** 歌词基线到音符基线的距离。0 = 用引擎自算的（贴着音符下方的减时线/低音点）。
    *  成书排版给原书量到的定值，让每一行的歌词都排在同一高度上；
    *  某一行的栈比它还深时仍按栈走（**只放大不缩小**，不会压到减时线上）。 */
   lyricBaselineGap = 0;
+  /** 相邻歌词字之间的**最小间隙**。0 = 字紧挨着字（引擎老行为：只保证不重叠）。
+   *  印刷歌本的歌词字之间是有呼吸的（原书量到的步距 ≈ 字宽 × 1.32），
+   *  不留这道间隙，排版器会以为一行塞得下三十几个字、把整段挤成密不透风的一行
+   *  （001《圣哉，圣哉，圣哉》曾因此排成 2 行、字距 9.1pt 小于 11.8pt 的字宽）。 */
+  lyricGap = 0;
+  /** 反复点的半径。0 = 按小节线宽推算。成书排版给原书量到的值（metrics.repeatDotDiam）。 */
+  repeatDotRadius = 0;
+  /** 房号（1./2.）的字号。0 = 不画房号。 */
+  endingSize = 0;
+  /** 歌词段号（行首的 `1.` `2.`）标不标：
+   *  `always` 一律标（编辑器那条路的老行为）、`never` 一律不标、
+   *  `auto` = 段数多于 `verseNumberAutoMin` 才标。 */
+  verseNumbers: "always" | "never" | "auto" = "always";
+  /** `auto` 的门槛：段数**多于**这个数才标段号。默认 3（三段以内不标）。 */
+  verseNumberAutoMin = 3;
+  /** 转拍号那条分数线的粗细。0 = 用引擎默认的 1.5（编辑器那条路不变）。 */
+  timeSigRuleWidth = 0;
+  /** 房号/三连音括线的线宽与「脚」（下垂那一小段）的长度。0 = 按字号推算。 */
+  bracketWidth = 0;
+  bracketFoot = 0;
   /** 多段歌词的排法：0 = **逐段重复整条谱行**（jpword/musicpp 的老行为，流行敬拜谱常见）；
    *  >0 = **一行谱下叠多行词**（传统圣诗本的排法，原书 500 首就是这样），值为段间行距。
    *  只在「无反复、纯多段」（PlayData.isSimpple）的曲子上生效——有反复房号的谱

@@ -326,7 +326,9 @@ export function buildPageSpec(
   // ── 乐谱记号：不是字，按几何原样记下来。
   //    **必须在 textLines 之前收走**，否则它们会被当成「剩余的文字」收进文本行，
   //    重排时和记号那条路径重复画一遍（核对里表现为凭空多出的对象）。
-  const MARKS = new Set(["divLine", "augmentLine", "barline", "slur", "octaveDot", "augmentDot", "repeatDot", "ornament"]);
+  // bracket / tupletNum 也收：房号（1./2.）与三连音的括线，重排要照着原书的线宽与脚长画
+  // tupletNum 也收（三连音的数字）；bracket 归「线框」那一档，见上面的 frames
+  const MARKS = new Set(["divLine", "augmentLine", "barline", "slur", "octaveDot", "augmentDot", "repeatDot", "ornament", "tupletNum"]);
   const marks: MarkSpec[] = [];
   for (const o of inv.objs) {
     if (o.dup || used.has(o) || !MARKS.has(o.cls)) continue;
