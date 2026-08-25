@@ -139,6 +139,7 @@ const pages = [];
 const perSong = [];
 const failed = [];
 const songBlocks = [];
+const perLines = [];
 const noKeyMeter = [];
 
 /** 本曲各页里的音符（阅读顺序）。段落词按序号锚在它们身上。 */
@@ -219,14 +220,12 @@ for (const s of picked) {
         }
       };
       let cells = B.measureCellsPerLine(B.loadMusicXml(xmlText), st, window.__app.meta);
-      // 并短行的余量。二次折行多半是「并到贴着容量上限」惹的（格数是近似，歌词字多的行更宽），
-      // 先加余量少并一点，比整首收紧格数温和——后者会把没溢出的行也一起切短
-      //（285《主啊我要做祢信徒》收紧到 31 格时从 2 行变成 4 行）。
-      let slack = 0;
       let score = null;
       let pageItems = null;
       let expectLines = 1;
       let iters = 0;
+      let lineInfo = [];
+      let targetUsed = 0;
       for (let iter = 0; iter < 6; iter++) {
         iters = iter + 1;
         score = B.loadMusicXml(xmlText);
@@ -239,6 +238,7 @@ for (const s of picked) {
           const targetMeas = st.layout.phraseTargetMeas > 0
             ? st.layout.phraseTargetMeas
             : B.targetMeasForCells(score.parts[0], cells);
+          targetUsed = targetMeas;
           const brk = B.computePhraseBreaks(score.parts[0], {
             targetMeas,
             lenWeight: st.layout.phraseLenWeight,
@@ -254,7 +254,15 @@ for (const s of picked) {
           // 再两两并一次短行：乐句分析按「小节数」定行长，每小节几格随拍号而变，
           // 小节短的谱（005 每小节 3.2 格）一句一行只用得上半幅版心，原书那首就是一行两句。
           if (st.layout.phraseMergeShort)
-            B.mergeShortLines(score.parts[0], brk, cells, { useMidBreaks: st.layout.phraseMidBreak, slack });
+            B.mergeShortLines(score.parts[0], brk, cells, { useMidBreaks: st.layout.phraseMidBreak });
+          // 容量保险与并短行会造出新的行首（DP 管不到），再兜一次「行首不留半小节休止」
+          B.tidyLineHeads(score.parts[0], brk, { useMidBreaks: st.layout.phraseMidBreak, cells });
+          // 逐行事实（行首残小节 / 行末标点 / 格数…）留给 line-check.mjs 断言；
+          // Chord 是对象，跨不过 page.evaluate 的序列化，只带纯数据出去。
+          lineInfo = B.describeLines(score.parts[0], brk, st.layout.phraseMidBreak).map((l) => ({
+            cells: l.cells, fromMi: l.fromMi, toMi: l.toMi, bars: l.bars, beats: l.beats,
+            head: { ...l.head }, tail: { ...l.tail }, section: l.section, mid: !!l.chord,
+          }));
           const ab = B.applyPhraseBreaks(score.parts[0], brk, {
             linesPerPage: st.layout.linesPerPage,
             useMidBreaks: st.layout.phraseMidBreak,
@@ -265,22 +273,22 @@ for (const s of picked) {
         pageItems = renderPages(score);
         const rows = B.countStaffRows(pageItems);
         if (!st.layout.phrase || rows <= expect || cells <= 8) break;
-        // 先松合并（最多两轮），再收紧格数。收紧**按实测比例一步到位**：排版器折出了
-        // rows 行而计划只有 expect 行，说明这些内容真正要占 rows/expect 倍的宽度
-        //（297《让神儿子的爱围绕你》量出 50 格、实际只放得下 ~30，一次 2 格地减要减十轮）。
-        if (st.layout.phraseMergeShort && slack < 6) slack += 3;
-        else cells = Math.max(8, Math.min(cells - 2, Math.round((cells * expect) / rows)));
+        // 收紧格数：**按折完之后最长的那条行**来定。按 rows/expect 的比例算会一步收过头——
+        // 一条线只要溢出一格也会折成两行，比例就成了 2 倍，022《凡有气息当赞美》因此从
+        // 30 格收到 15 格、排成 10 行（原书 6 行）。折出来的最长行才是这一首真的放得下多少。
+        const fitCells = B.maxStaffRowCells(pageItems);
+        cells = Math.max(8, Math.min(cells - 1, fitCells > 0 ? fitCells : cells - 1));
       }
       const out = pageItems;
       // 排版口径的自检：迭代了几轮、最后还有没有「断点之外又折一刀」（见下面的汇总打印）
-      const fit = { iters, slack, cells, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
+      const fit = { iters, cells, target: targetUsed, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
       // 装饰层（标题/曲号/页眉页脚）在 Node 侧排，但字号得按**浏览器实测的墨迹比例**反算，
       // 否则同一个 size 在不同字体里墨迹大小不一样（见 browser.ts::fontSizeFor）。
       const sizes = {};
       for (const r of ["title", "songNumber", "category", "credit", "keyMeter", "header", "footer", "sectionWord", "story", "toc", "tocHeading", "tocSub", "frontTitle"]) sizes[r] = B.fontSizeFor(st, r);
       // creator 是 Map<type, text>（musicxml 的 <creator type="composer">…）
       const cr = score.creator instanceof Map ? [...score.creator] : Object.entries(score.creator ?? {});
-      return { pages: out, title: score.title, credits: cr.map(([type, text]) => ({ type, text })), sizes, fit };
+      return { pages: out, title: score.title, credits: cr.map(([type, text]) => ({ type, text })), sizes, fit, lines: lineInfo };
     },
       [xml, style, s.id, meta.section.get(s.id) ?? []],
     );
@@ -309,6 +317,7 @@ for (const s of picked) {
     ctx: { sizes: res.sizes, id: s.id, title: res.title, credits: res.credits, category: s.category ?? "", km },
   });
   perSong.push({ id: s.id, title: res.title, pages: res.pages.length, fit: res.fit });
+  perLines.push({ id: s.id, title: res.title, cells: res.fit?.cells ?? 0, target: res.fit?.target ?? 0, lines: res.lines ?? [] });
   if (only || picked.length < 30) console.log(`  ${s.id} ${res.title}：${res.pages.length} 页`);
 }
 
@@ -561,6 +570,8 @@ const name = flags.name ?? (only ? `rebuild-${only.join("-")}.pdf` : "诗歌500�
 const out = `${OUTDIR}/${name}`;
 const r = await writePdf({ style, source: "rebuild", pages }, { out, title: "诗歌500首（重排版）" });
 await writeFile(`${OUTDIR}/rebuild-drawlist.json`, JSON.stringify({ style: style.id, songs: perSong, pages }, null, 0));
+// 逐行事实：line-check.mjs 的底本（版面判据的常驻断言，见那个脚本）
+await writeFile(`${OUTDIR}/rebuild-lines.json`, JSON.stringify({ style: style.id, songs: perLines }, null, 0));
 console.log(`重排版 PDF → ${out}（${r.pages} 页，${(r.bytes / 1048576).toFixed(2)} MB，缺字 ${r.missing.length}）`);
 console.log(`曲目 ${perSong.length}/${picked.length}${failed.length ? `，失败 ${failed.length}：${failed.slice(0, 5).map((f) => f.id).join(" ")}` : ""}`);
 await writeFile(`${OUTDIR}/rebuild.csv`, "\ufeff曲号,曲名,页数\n" + perSong.map((s) => `${s.id},"${(s.title ?? "").replace(/"/g, "\"\"")}",${s.pages}`).join("\n"));

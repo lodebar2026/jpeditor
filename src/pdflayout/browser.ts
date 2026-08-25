@@ -57,6 +57,9 @@ function roleOfItem(it: TextFrame, opt: LayoutOptions): StyleRole {
   // countStaffRows / measureCellsPerLine 数「占一格的音符」时会把 "1." 当成音符，
   // 一个房号就凭空多出一条谱行（010 曾因此每轮都判成折行、迭代六轮都收不住）。
   if (it.classes.has("ending")) return "verseNum";
+  // 段落词（「（副歌）」）：字体与 lyric 同源，但**要认得出来**——line-check.mjs 靠这个角色
+  // 检查它有没有挂出版心，混在 lyric 里就找不着了。
+  if (it.classes.has("section-word")) return "sectionWord";
   if (it instanceof SmuflText) return "smufl";
   if (it instanceof JpNumber || it instanceof JpOctaveDot) return "note";
   if (it instanceof Lyric) return "lyric";
@@ -300,6 +303,24 @@ export function countStaffRows(pages: DrawPage[]): number {
     n += ys.size;
   }
   return n;
+}
+
+/** 一份 DrawList 里**最长的那条谱行**有几格。
+ *  容量（`measureCellsPerLine`）是空排量出来的近似，同样的格数、歌词字多的行就更宽；
+ *  量偏了排版器会在断点之外又折一刀。折完之后**最长的那条行**才是这一首的真容量，
+ *  rebuild 的重排迭代拿它当新的格数上限（按比例收紧会一步收过头：022 曾从 30 收到 15）。 */
+export function maxStaffRowCells(pages: DrawPage[]): number {
+  let mx = 0;
+  for (const p of pages) {
+    const per = new Map<number, number>();
+    for (const it of p.items) {
+      if (it.t !== "text" || it.role !== "note" || !isCellNote(it.text)) continue;
+      const k = Math.round(it.y);
+      per.set(k, (per.get(k) ?? 0) + 1);
+    }
+    for (const v of per.values()) mx = Math.max(mx, v);
+  }
+  return mx;
 }
 
 /**

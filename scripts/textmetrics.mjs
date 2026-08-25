@@ -44,5 +44,21 @@ export async function makeMetrics(style) {
     return w;
   };
 
-  return { advance, hasGlyph: (role, ch) => has(fontFor(role, ch), ch), missingFonts: missing };
+  /** 一个字的**墨迹**左右缘（相对落笔点，pt）。判「压没压到字」要按墨迹算，
+   *  按 advance 算会把标点的两侧留白也算成墨（全角逗号的墨只占右下角一小块）。 */
+  const ink = (role, ch, size) => {
+    const m = metrics.get(fontFor(role, ch));
+    if (!m) return null;
+    try {
+      const g = m.layout(ch).glyphs[0];
+      const b = g?.bbox;
+      if (!b || !Number.isFinite(b.minX)) return null;
+      const upem = m.unitsPerEm || 1000;
+      return { left: (b.minX / upem) * size, right: (b.maxX / upem) * size };
+    } catch {
+      return null;
+    }
+  };
+
+  return { advance, ink, hasGlyph: (role, ch) => has(fontFor(role, ch), ch), missingFonts: missing };
 }
