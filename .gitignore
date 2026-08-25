@@ -29,6 +29,9 @@ testdata/*
 # 只有 2.6KB，入库。pagemap.json / glyphdict.json 都能由它 + 语料重新生成，不入库。
 !testdata/500/
 testdata/500/*
+# 例外：成书重排的版面判据基线（line-check.mjs 的门槛值）。它是**测试的期望值**，
+# 不是语料，几百字节，入库。
+!testdata/500/line-check-baseline.json
 
 # pdf.js 位图解码器 wasm：来自 pdfjs-dist 包，构建时从 node_modules 拷入（见 vite.config.ts），不入库
 public/redist/pdfjs

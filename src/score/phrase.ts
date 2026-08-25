@@ -21,8 +21,20 @@ export interface PhraseBreaks {
 
 // 句末 / 句中标点（读 Note.lyrics 原文，未被 jpscore 剥离）。
 // 分号并列的是两个完整分句（「…忧伤的权利；我要宣告…」），乐句同样在此收尾 → 与句号同级。
-const PUNCT_END = /[。！？…；]$/;
-const PUNCT_MID = /[，、：]$/;
+export const PUNCT_END = /[。！？…；]$/;
+export const PUNCT_MID = /[，、：]$/;
+
+/** 一个和弦上的「主歌词」（第 1 段或副歌那一条）。断句判据与逐行报告共用同一份取法。 */
+export function mainLyricText(c: Chord): string {
+  const nt = c.notes[0];
+  const l = nt?.lyrics.find((x) => x.number === 1 || x.refrain) ?? nt?.lyrics[0];
+  return l?.text ?? "";
+}
+
+/** 歌词末尾标点的分量：句末 6 / 句中 4 / 无 0。 */
+export function punctScore(text: string): number {
+  return PUNCT_END.test(text) ? 6 : PUNCT_MID.test(text) ? 4 : 0;
+}
 
 // 行长以「小节数」计（简谱/圣诗按小节成行，与音符密度无关）。经验初值，可回归调参。
 const DEF_MIN_MEAS = 3;
@@ -92,6 +104,10 @@ export interface PhraseOptions {
   /** 重复段边界是否**按重复长度加分**（越长的重复越该整段成行）。默认 false = 一律 +8，
    *  编辑器那条路行为不变；成书排版打开（015《赞美真神》结尾三句「哈利路亚！」）。 */
   repeatLenBonus?: boolean;
+  /** 「末两行别一长一短」的权重。一段的最后两行长短悬殊最扎眼（125《主名至宝》、
+   *  404《你若不压橄榄成渣》都是倒数第二行短、末行长），而普通的行长代价管不到它——
+   *  末行本来就允许短。默认 1；0 = 关。 */
+  lastPairWeight?: number;
   /** 行长代价的权重。调大 = 更看重「各行一样长」。
    *  默认 1 是编辑器那条路调出来的；成书要工整的行长，调到 2 以上，
    *  16 小节的歌才会选 4+4+4+4 而不是 4+6+6（后者行长代价 8，但少断一次省 8 分，默认权重下打平）。
@@ -135,6 +151,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const SHORT_WORDS = opts.shortSentenceWords ?? 0;
   const REPEAT_LEN_BONUS = opts.repeatLenBonus ?? false;
   const BREAK_WEIGHT = opts.breakWeight ?? 1;
+  const LAST_PAIR_WEIGHT = opts.lastPairWeight ?? 1;
   // 行长下限跟着上限走：版心窄时上限本来就小，14 格的下限会把断点全顶掉
   const MIN_CELLS = Math.min(DEF_MIN_CELLS, Math.round(MAX_CELLS * 0.6));
   const measures = part.measures;
@@ -151,9 +168,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
 
   // 每小节的歌词指纹（第 1 段/副歌词）：**重复的歌词**同样是段落信号（副歌唱词一字不差地再来一遍），
   // 且在旋律略有出入时仍然稳。与旋律指纹各自独立找重复。
-  const lyrPer = chordsPer.map((cs) => cs
-    .map((c) => { const nt = c.notes[0]; const l = nt?.lyrics.find((x) => x.number === 1 || x.refrain) ?? nt?.lyrics[0]; return l?.text ?? ""; })
-    .join(""));
+  const lyrPer = chordsPer.map((cs) => cs.map(mainLyricText).join(""));
 
   // 重复旋律/歌词：按位移 d 扫出**极大**重复连续段（长度 ≥2 小节），其两端加为断点边界。
   // 极大性很重要：逐个长度 L 枚举会把所有子段的边界也塞进来，遍地边界等于没有边界。
@@ -226,32 +241,42 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 并越过紧随的休止（句号音符后常带休止，断点应落在休止之后，如基督更美的 1 0）→ 归到该可断和弦。
   const depthAfter = new Array<number>(K).fill(0);
   const punctAfter = new Array<number>(K).fill(0);
+  // 标点顺延过来的源头（那个带标点的音符）。乐句在那里收尾、断点落在尾随的休止上，
+  // 两者是**同一个收尾**，强度要一起算（见 scoreAt）。
+  const carriedFrom = new Array<number>(K).fill(-1);
   {
     let depth = 0;
     let pending = 0;
+    let pendingFrom = -1;
     let sinceLastPunct = 0; // 上一个标点之后唱了几个字
     for (let idx = 0; idx < K; idx++) {
       const c = flat[idx].chord;
-      const nt = c.notes[0];
       depth += okStart[idx];
-      const lrc = nt?.lyrics.find((l) => l.number === 1 || l.refrain) ?? nt?.lyrics[0];
-      const txt = lrc?.text ?? "";
+      const txt = mainLyricText(c);
       if (txt) sinceLastPunct++;
-      let p = PUNCT_END.test(txt) ? 6 : PUNCT_MID.test(txt) ? 4 : 0;
+      let p = punctScore(txt);
       // **很短的分句减半**：「哈利路亚！」「阿们！」这种呼语句句带感叹号，若与整句同权，
       // 连着三句就断出三个满分断点，行结构反而被它们主导
       //（015《赞美真神》结尾三句「哈利路亚！」，按句末断会把第一句留在上一行、
       //  与第 2 行开头那段更长的重复旋律对不齐）。短句仍是断点，只是让位给更长的乐句信号。
       if (p > 0 && sinceLastPunct <= SHORT_WORDS) p = Math.round(p / 2);
       if (txt && p > 0) sinceLastPunct = 0;
-      if (p > pending) pending = p;
+      if (p > pending) { pending = p; pendingFrom = idx; }
       depth -= okEnd[idx];
       depthAfter[idx] = depth;
       // 顺延规则：仅当「本音符是音符且其后紧跟本小节内的休止」时继续顺延（句号音符尾随的休止就是落点）；
       // 一旦到了休止本身就在此落定，不再卷入随后的八分弱起休止（世上句号后 0 落定、不吞下一句 0_）。
+      // **八分休止也顺延**：句子收尾的长音后面跟半拍休止、再接下一句的弱起（372《跟随耶稣》的
+      // `…呼，| 0_ 今. 已_ |`）时，断点该落在休止之后——否则那半拍休止挂在下一行行首，
+      // 四行的弱起就长短不一。休止之后再跟休止仍在原处落定（上面那条不变）。
       const next = flat[idx + 1];
-      const carryOn = !c.rest && !!next && next.chord.rest && next.chord.beams === 0 && next.mi === flat[idx].mi;
-      if (depth === 0 && !carryOn) { punctAfter[idx] = pending; pending = 0; }
+      const carryOn = !c.rest && !!next && next.chord.rest && next.mi === flat[idx].mi;
+      if (depth === 0 && !carryOn) {
+        punctAfter[idx] = pending;
+        if (pending > 0 && pendingFrom >= 0 && pendingFrom !== idx) carriedFrom[idx] = pendingFrom;
+        pending = 0;
+        pendingFrom = -1;
+      }
     }
   }
 
@@ -310,6 +335,47 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     i = j;
   }
 
+  // 「本曲的弱起有多长」：首小节不完整时就是它的时值，否则没有弱起（0）。
+  // 各行的行首残小节都照这个长度来，四行才齐头（372《跟随耶稣》：弱起 1 拍，
+  // 第 2/4 行却从「八分休止 + 弱起」1.5 拍起头）。
+  const fullMeasure = Math.max(...measureDur);
+  const pickupStd = measureDur[0] < fullMeasure - 1e-6 ? measureDur[0] : 0;
+
+  /**
+   * **断点之后那一行的行首长什么样**——不好看就罚。判据只看断点后紧跟的那点内容，
+   * 所以每个候选断点一次算好。三条（都是拿具体曲子换来的，别随手动）：
+   *   (a) 行首残小节里一个音符都没有（半小节休止 + 小节线）：一行开头是个空拍，
+   *       唱的人不知道要等谁（020）。整小节的休止不在此列——整节归上一行或下一行都行。
+   *   (b) 行首残小节与本曲的弱起不一样长：四行齐头才工整（372/402）。
+   *   (c) 行首是「带句读标点的长音」：那是上一句真正的收尾，该留在上一行（373《跟随我》，
+   *       每行都该收在「跟随我，」的长音上）。
+   * 罚而不是禁：这一行放不下时 DP 会自己改在别处断，不至于整段无解。
+   */
+  const headPenalty = (idx: number): number => {
+    const nx = flat[idx + 1];
+    if (!nx) return 0;
+    let head = 0;   // 行首残小节的**时值**（Chord.beats 是增时线格数，不是时值）
+    let hasNote = false;
+    for (let j = idx + 1; j < K && flat[j].mi === nx.mi; j++) {
+      head += flat[j].chord.duration?.toFloat() ?? 0;
+      if (!flat[j].chord.rest) hasNote = true;
+      if (flat[j].isLast) break;
+    }
+    const partial = !(nx.chord === chordsPer[nx.mi][0]);
+    let s = 0;
+    if (!hasNote && partial) s += 12;
+    // 行首是**半拍及以下的休止**：那是下一句起唱前的留白，本该留在上一行行尾。
+    // 但「半拍休止 + 半拍音符」这种弱起本身没问题——只要它与本曲的弱起一样长就不罚
+    //（用户口径：为了工整，各行都以同样长的不完整小节起头是对的）。
+    // 四分及以上的休止不在此列：那是上一句唱完的收气，本来就该留在上一行（见 retreatPastPickupRest）。
+    const headRest = nx.chord.rest ? (nx.chord.duration?.toFloat() ?? 0) : 0;
+    if (headRest > 0 && headRest <= 0.5 && Math.abs(head - pickupStd) > 0.01) s += 8;
+    // 长音起头本身就不对：乐句是从短音起唱的，行首那个长音多半是上一句的延音收尾
+    //（15 首基线里「一生中最可 / 贵」就是这么把词劈开的）。带标点的更是明摆着的收尾。
+    if (nx.chord.beats >= 2 && punctScore(mainLyricText(nx.chord)) > 0) s += 10;
+    return s;
+  };
+
   // 断点候选的乐句强度分（在该和弦之后换行）。
   const scoreAt = (idx: number): number => {
     const ci = flat[idx];
@@ -317,6 +383,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     let s = punctAfter[idx]; // 句号 6 / 逗号 4（已顺延到 slur/tie/休止 收尾）
     if (c.fermata) s += 5;
     if (c.beats >= 2) s += 4;              // 长音收尾
+    // 标点是从前面那个长音顺延过来的（`5--- 0_` 这种收尾）：乐句在那里收尾、
+    // 断点落在尾随的休止上，长音的分要带过来——否则「断在长音后」比「断在休止后」还便宜，
+    // 那半拍休止就挂到了下一行行首（372《跟随耶稣》第 2/4 行）。
+    if (carriedFrom[idx] >= 0 && flat[carriedFrom[idx]].chord.beats >= 2) s += 4;
     if (c.rest && c.beams === 0) s += 1;   // 四分及以上休止（弱信号）
     // 圆滑线/连音线刚收尾（一字多音唱完）：本身是弱信号，主要为让它**进入候选**——密集副歌里小节末
     // 全被跨小节的弧封锁时，这是唯一能切开长行的地方。但若它收的是一个**长音**（`5---|5)` 这种
@@ -373,6 +443,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 行尾（尤其是页尾）很难看 → 回退到休止之前。四分及以上休止相反，是上一句唱完的收气
   //（「基督更美」的 `1 0`、「世上所有的民族」句号后的 `0`），仍留在上一行。
   const retreatPastPickupRest = (at: number): number => {
+    // 休止本身就收在小节线上时**不回退**：回退过去下一行就成了「半小节休止 + 小节线」，
+    // 一行只有一个空拍（020《向主歌唱》第 4 行就是这么来的）。弱起留白的前提是
+    // 那个休止后面还跟着同一小节里的起唱音。
+    if (flat[at].isLast) return at;
     let idx = at;
     while (idx >= 0 && flat[idx].chord.rest && flat[idx].chord.beams > 0) idx--;
     return idx >= 0 && idx !== at && depthAfter[idx] === 0 ? idx : at; // 回退处在弧中不可断 → 维持原判
@@ -512,8 +586,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         // 强断点可以挣出净收益（封顶 BASE_BREAK，免得一路狂断）；BREAK_WEIGHT=1 时
         // 退化成原来的 max(0, …)，编辑器那条路的行为不变。
         const bc = b === hi ? 0
-          : Math.max(BREAK_WEIGHT > 1 ? -BASE_BREAK : 0, BASE_BREAK - sc * BREAK_WEIGHT) +
-            (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6);
+          : Math.max(0, BASE_BREAK - sc * BREAK_WEIGHT) +
+            (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6) +
+            headPenalty(cand[b - 1]);
         const crossed = crossedEndPunct(a, b);
         const endsAtSentence = punctAfter[idxAt[b]] === 6;
         // 若从本行起点继续到下一个句号仍不超过「完整句」宽度，就不要提前在逗号/弱音乐信号处拆开。
@@ -541,8 +616,15 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         const wholeSentence = endsAtSentence && crossed === 0 && meas <= MAX_SENTENCE_MEAS && cells <= MAX_SENTENCE_CELLS;
         const lineMaxCells = wholeSentence ? MAX_SENTENCE_CELLS : MAX_CELLS;
         const lineMaxMeas = wholeSentence ? MAX_SENTENCE_MEAS : MAX_MEAS;
+        // **末两行别一长一短**：DP 是倒着算的，评估 a→b 时 `nextB[b]` 已经定了，
+        // 所以这里看得到「在 b 断的话末行会有多长」。差得越多罚得越狠（封顶，免得压过乐句信号）。
+        // 是个前瞻启发式（b 的后续选择理论上还会变），但实测就是它把 125/404 的
+        // 「倒数第二行短、末行长」摆平的。
+        const lastPair = b < hi && nextB[b] === hi
+          ? Math.min(40, LAST_PAIR_WEIGHT * (meas - (ends[hi] - ends[b])) ** 2)
+          : 0;
         const cost = lenCost(meas, cells, b === hi, lineMaxCells, lineMaxMeas) + bc + splitSentence +
-          crossed * CROSSED_END_PUNCT_COST + dp[b];
+          lastPair + crossed * CROSSED_END_PUNCT_COST + dp[b];
         if (cost < dp[a]) { dp[a] = cost; nextB[a] = b; }
       }
       // 无解（段内可断点太稀，够不着 MIN 又超不出扫描上界）→ 退到最近的候选断点，宁可短行也别整段一行。

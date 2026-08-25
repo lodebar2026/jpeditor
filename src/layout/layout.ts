@@ -371,7 +371,10 @@ export class Lyric extends TextFrame {
     if (this.text.length === 1) {
       sc = this.text;
     } else {
-      const punct = "1234567890.,;'\"!?。：，；！？“”｡､";
+      // **与 Kotlin 原文的一处刻意背离**：补了半角冒号 `:`。这批语料的歌词用半角冒号
+      // 引出引语（376《将心给我》的 `呼召:“将心给我。”`），漏收它就当成正文的一部分，
+      // 下一个字的前引号照旧悬挂过来，冒号与引号就叠在一起了。
+      const punct = "1234567890.,;:'\"!?。：，；！？“”｡､";
       let pos = 0;
       while (pos < this.text.length) {
         const c = this.text[pos];
@@ -1003,8 +1006,10 @@ export interface SectionWordGeom {
   /** 本小节的左右界（上一条 / 下一条小节线） */
   barLeft: number;
   barRight: number;
-  /** 段落词最左能到哪儿：一般就是 `barLeft`，**行首那一条**可以伸进左边距（见下） */
+  /** 段落词最左能到哪儿：一般就是 `barLeft`，行首那一条是版心左缘（见下） */
   hangLeft: number;
+  /** 行的右缘（版心右缘）。**段落词一个字都不许挂到版心外面**，越过小节线也不行。 */
+  rightLimit: number;
 }
 
 /** 段落词的落点。 */
@@ -1018,11 +1023,13 @@ export interface SectionWordSlot {
 
 /**
  * 段落词能往左挂多远。锚点左边还有小节线（`barLeft` 找得到）就不许越过它——越过去
- * 就成了上一小节的标记；**行首**那一条左边没有小节线，准它伸进左边距（原书在行尾
- * 也让段落词伸出版心）。留一成边距不占，免得贴到装订线上。
+ * 就成了上一小节的标记；**行首**那一条左边没有小节线，最多到**版心左缘**。
+ *
+ * 原来准它伸进左边距九成（原书在行尾也让段落词伸出版心），但那等于挂到离纸边 6pt 的地方
+ * ——024/371/381 三首实测就挂在那儿。口径改成「一个字都不许出版心」。
  */
-function sectionWordHangLeft(barLeft: number | undefined, opt: LayoutOptions): number {
-  return barLeft ?? -opt.marginLeft * 0.9;
+function sectionWordHangLeft(barLeft: number | undefined): number {
+  return barLeft ?? 0;
 }
 
 /**
@@ -1051,14 +1058,19 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
   if (!first) return { x: g.anchorX, lifted: false, shortfall: 0 };
   let cand = first.x1 + gap;
   for (let c = hit(cand); c; c = hit(cand)) cand = c.x1 + gap;
-  if (cand + g.width <= g.barRight) return { x: cand, lifted: false, shortfall: 0 };
+  // 右移**可以越过小节线**（原书就有印在小节线右边的），只要 ① 落点不压字——`hit` 是按
+  // **全行**的和弦判的，越线之后撞上下一小节的第一个和弦会继续往右跳空档 ② 不出版心。
+  // 越线比撑开整条小节省地方：405《信靠顺服》的「（副歌）」原来要把一整个小节撑宽。
+  if (cand + g.width <= g.rightLimit) return { x: cand, lifted: false, shortfall: 0 };
   const left = first.x0 - g.width - gap;
   if (left >= g.hangLeft && !hit(left) && g.anchorX > g.hangLeft) return { x: left, lifted: false, shortfall: 0 };
   // 让不开就挂到锚点音符左边——行首那一条 `hangLeft` 在左边距里，够挂；
   // 行中的 `hangLeft` 就是 `barLeft`，挂不出去，照旧往下走抬升。
   const hang = g.anchorX - g.width - gap;
   if (hang >= g.hangLeft && !hit(hang)) return { x: hang, lifted: false, shortfall: 0 };
-  return { x: g.anchorX, lifted: true, shortfall: cand + g.width - g.barRight };
+  // 抬起来那一层同样不许出版心（行末那一条锚点靠右时会伸出去）
+  const lifted = Math.max(g.hangLeft, Math.min(g.anchorX, g.rightLimit - g.width));
+  return { x: lifted, lifted: true, shortfall: cand + g.width - g.barRight };
 }
 
 export class Line {
@@ -1231,10 +1243,13 @@ export class Line {
     });
     curX = 0;
     let offset = 0;
+    let prevRight = 0; // 上一条歌词尾标点的宽度（见下面的悬挂规则）
     for (const e of this.entries) {
-      let lrc: Lyric | null = null;
-      if (e instanceof NoteEntry) lrc = e.lrc;
-      if (lrc === null) {
+      // **各段歌词一起算**：叠排时一个音符底下摞着好几段，只按第一段留位置的话，
+      // 字更多的那几段就会互相压上去（156《百只羊有九十九》第 2 段 `主说那只亦我所有,`
+      // 比第 1 段长出好几个字）。取各段里最靠左的左缘、最靠右的右缘。
+      const lrcs = e instanceof NoteEntry ? e.lrcs.filter((l) => l.text) : [];
+      if (!lrcs.length) {
         e.group.x += offset;
         continue;
       }
@@ -1242,11 +1257,16 @@ export class Line {
       // 就把这个音符整个往右推，一行的音符间距跟着拉开（190 首那一行）。
       // 引号只要不压到**字**上就行，压在小节线那一带没关系——所以避让只看主体（去掉左标点），
       // 让引号伸进左边的空档里。右标点仍照算，否则下一个字会压上来。
-      const lead = lrc.leadWidth;
-      const xx = Math.max(curX - (lrc.x + lead), e.group.x + offset);
+      // 但**前面那个字自己带尾标点**时不许悬挂：引号会正好压在那个逗号上
+      //（376《将心给我》末行的 `音:“愿`）。悬挂的前提是左边那一带是空档。
+      const hang = prevRight > 0 ? 0 : Math.min(...lrcs.map((l) => l.leadWidth));
+      const leftMost = Math.min(...lrcs.map((l) => l.x)) + hang;
+      const rightMost = Math.max(...lrcs.map((l) => l.x + l.width));
+      const xx = Math.max(curX - leftMost, e.group.x + offset);
       offset = xx - e.group.x;
       e.group.x = xx;
-      curX = xx + lrc.x + lrc.width + this.lyricGap;
+      curX = xx + rightMost + this.lyricGap;
+      prevRight = Math.max(...lrcs.map((l) => l._widths[2]));
     }
   }
 
@@ -1264,7 +1284,7 @@ export class Line {
    * 而且均摊是**整条小节一起拉伸**，末尾那个空档只分到 1/steps，所以要的是「撑多少才够」，
    * 不是「差多少」——这里按落点判据二分求最小的撑开量。
    */
-  spreadForSectionWords(opt: LayoutOptions): void {
+  spreadForSectionWords(opt: LayoutOptions, lineWidth: number): void {
     if (opt.sectionWordSize <= 0) return;
     const size = opt.sectionWordSize;
     const font = opt.lrcFont.makeWithSize(size);
@@ -1306,7 +1326,8 @@ export class Line {
           chords: chordBase.map((c) => ({ x0: c.x0 + spread * c.f, x1: c.x1 + spread * c.f, y: c.y })),
           barLeft,
           barRight: barRight0 + spread,
-          hangLeft: sectionWordHangLeft(barLeftAt, opt),
+          hangLeft: sectionWordHangLeft(barLeftAt),
+          rightLimit: lineWidth || this.group.width || barRight0 + spread,
         });
       const now = at(0);
       if (!now.lifted) continue;
@@ -1383,7 +1404,7 @@ export class Line {
     // 段落词的撑开要在 **justify 之前、分行之后**：分行前撑的是错的锚点（段落词落到行末时
     // 会被挪到下一行行首去，见 layout() 里那段），而 justify 只会往空档里**加**距离、不会收窄，
     // 所以这里放得下，justify 之后也放得下。
-    l.spreadForSectionWords(opt);
+    l.spreadForSectionWords(opt, width);
     l.adjust(width, opt.maxHorizontalScale);
   }
 
@@ -1577,7 +1598,7 @@ export class Line {
       l.addTie(opt);
       l.addSlur(opt);
       l.addEnding(opt);
-      l.addSectionWords(opt);
+      l.addSectionWords(opt, width);
       l.clipBarlinesUnderSlurs(opt);
       l.updateLyricY(opt);
       l.group.normalizeY();
@@ -1753,7 +1774,7 @@ export class Line {
    * 左右并排（`G（副歌）C` 这种）——落点由 `placeSectionWord` 定（与 spreadForSectionWords
    * 同一个判据、同一份代码，见那边的注释）。
    */
-  addSectionWords(opt: LayoutOptions): void {
+  addSectionWords(opt: LayoutOptions, lineWidth: number): void {
     if (opt.sectionWordSize <= 0) return;
     const size = opt.sectionWordSize;
     const font = opt.lrcFont.makeWithSize(size);
@@ -1764,7 +1785,9 @@ export class Line {
       for (const it of this.chordGroups(e))
         chords.push({ x0: e.group.x + it.x, x1: e.group.x + it.x + it.width, y: e.group.y + it.y });
     }
-    const lineRight = this.group.width || Infinity;
+    // 版心右缘：**优先用传进来的行宽**——`group.width` 只有 justify 过的行才有，
+    // 末行常是 0，段落词就没人钳得住它（106 首末行那一条伸到了版心外 25pt）。
+    const lineRight = lineWidth || this.group.width || Infinity;
     // 小节线的 x：段落词让位**不许跨过它们**（跨过去就成了下一小节的标记）
     const barXs = this.entries
       .filter((e): e is Barline => e instanceof Barline)
@@ -1799,7 +1822,8 @@ export class Line {
         chords,
         barLeft: barLeftAt ?? 0,
         barRight: barXs.find((bx) => bx > anchorX) ?? lineRight,
-        hangLeft: sectionWordHangLeft(barLeftAt, opt),
+        hangLeft: sectionWordHangLeft(barLeftAt),
+        rightLimit: lineRight,
       });
       tf.x = slot.x;
       tf.y = slot.lifted ? baseY - size * 1.5 : baseY;
