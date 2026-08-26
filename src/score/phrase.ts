@@ -973,7 +973,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 只是让 DP 排得出指定的行数（行数本身不进 quality 的评分）。
     lenW * (meas - target) ** 2 +
     (!CONTENT_ONLY && meas > maxMeas ? (meas - maxMeas) ** 2 * 40 : 0) +
-    (cellsInt > maxCells ? (cellsInt - maxCells) ** 2 * 8 : 0) +
+    (!CONTENT_ONLY && cellsInt > maxCells ? (cellsInt - maxCells) ** 2 * 8 : 0) +
     // 段末/曲末行是唯一可短于 MIN 的行，但也**不该短到只剩一小节**——软罚让 DP 宁可把前面几行
     // 各让出一点，也别甩出一个孤零零的尾巴（"不要有只有一节的情况"）。
     (!CONTENT_ONLY && segEnd && meas < MIN_MEAS ? (MIN_MEAS - meas) ** 2 * 10 : 0) +
@@ -1131,8 +1131,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         bySeg.get(segNo)!.push(durBetween(a, b));
         const hi = cuts.find((c) => c >= b) ?? M;
         weak += breakCost(b, hi);
-        const over = cellsIntBetween(a, b) - MAX_CELLS;
-        if (over > 0) weak += 100 + over ** 2 * 8;
+        // **容量不许卡断句**（用户口径）：「排不排得下」只在 `chooseLineLayout` 的档里用
+        // ——排不下就整首换档，由 C 档在「每行中间附近」挑个合适地方补刀
+        //（见 applybreaks.ts::splitEvenly 的硬窗口）。
+        if (!CONTENT_ONLY) {
+          const over = cellsIntBetween(a, b) - MAX_CELLS;
+          if (over > 0) weak += 100 + over ** 2 * 8;
+        }
         if (!CONTENT_ONLY) {
           // 短行同样难看（058《耶和华的心》曾在中间甩出一行只有 5 格）。末行不算——它本来可以短。
           const short = MIN_CELLS - cellsIntBetween(a, b);

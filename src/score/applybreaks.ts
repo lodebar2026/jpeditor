@@ -132,9 +132,15 @@ export function enforceLineCapacity(part: Part, breaks: PhraseBreaks, cells: num
  * 末尾甩出一个只有一小节的行（22/319/374/378/390/419 那一批「中间行过短」的来源之一）。
  * 改成按「每行 总量/k」找最接近的小节边界落刀：同样是 9 小节，切成 3+3+3。
  */
-/** 落刀点偏离理想位置一格，要拿多少「乐句凭据」来换（见 `splitEvenly` 的 `cutScore`）。
- *  强度的量程是 0~30 上下，一格换 1 分意味着「为了断在句号上，最多让 3~4 格」。 */
-const CUT_DRIFT_PER_CELL = 3;
+/**
+ * 落刀点能离理想位置多远——按「每行该多长」的比例算的**硬窗口**。
+ *
+ * 不用「强度 × 权重 − 偏移 × 权重」那种线性折算：强度量程 0~30、一行才二十来格，
+ * 线性折算下一个 24 分的强断点能把刀拉走七八格，行长立刻悬殊（实测全书行长悬殊
+ * 7 → 80 首）；权重调大又退回「纯按位置挑」（行首带标点 0 → 71 处）。
+ * 硬窗口把「不许太偏」和「窗内挑最好的」两件事分开，各管各的。
+ */
+const CUT_WINDOW_FRAC = 0.22;
 
 function splitEvenly(from: number, to: number, pre: number[], k: number,
                      cutScore?: Map<number, number>): number[] {
@@ -153,15 +159,22 @@ function splitEvenly(from: number, to: number, pre: number[], k: number,
     //（断句层不再罚容量之后，全书行首带标点 0 → 190 处，全是这里落的刀）。
     // 现在按「乐句凭据 − 偏移代价」挑：`cutScore` 是 computePhraseBreaks 量好的
     // 「在这条小节线上断行有多少凭据」（强度 − 行首罚）。没有强度表就退回按位置挑。
+    const win = (total / n) * CUT_WINDOW_FRAC;
     let best = -1;
     let bestVal = -Infinity;
+    let near = -1;
     for (let i = prev + 1; i <= to - (n - j); i++) {
       const drift = Math.abs(pre[i] - want);
-      const val = cutScore
-        ? (cutScore.get(i) ?? 0) - drift * CUT_DRIFT_PER_CELL
-        : -drift;
-      if (best < 0 || val > bestVal) { best = i; bestVal = val; }
+      if (near < 0 || drift < Math.abs(pre[near] - want)) near = i;
+      if (!cutScore || drift > win) continue;
+      // 窗内按凭据挑，同分取离理想位置近的
+      const sc = cutScore.get(i) ?? 0;
+      if (best < 0 || sc > bestVal || (sc === bestVal && drift < Math.abs(pre[best] - want))) {
+        best = i;
+        bestVal = sc;
+      }
     }
+    if (best < 0) best = near;   // 窗内一条小节线都没有 → 退回离理想位置最近的那条
     if (best < 0) break;
     cuts.push(best);
     prev = best;
