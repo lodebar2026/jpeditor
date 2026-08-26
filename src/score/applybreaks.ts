@@ -121,7 +121,7 @@ export function enforceLineCapacity(part: Part, breaks: PhraseBreaks, cells: num
     // 能落刀的只有**这一行内部**的小节线：行首若是残小节，第一刀最早只能落在下一条小节线上
     const from = l.head.full ? l.fromMi : l.fromMi + 1;
     const to = l.mi !== null || l.chord === null ? l.toMi + 1 : l.toMi; // 行尾收在小节线上才算到 toMi
-    for (const at of splitEvenly(from, to, pre, k)) breaks.measureBreaks.add(at);
+    for (const at of splitEvenly(from, to, pre, k, breaks.cutScore)) breaks.measureBreaks.add(at);
   }
 }
 
@@ -132,7 +132,12 @@ export function enforceLineCapacity(part: Part, breaks: PhraseBreaks, cells: num
  * 末尾甩出一个只有一小节的行（22/319/374/378/390/419 那一批「中间行过短」的来源之一）。
  * 改成按「每行 总量/k」找最接近的小节边界落刀：同样是 9 小节，切成 3+3+3。
  */
-function splitEvenly(from: number, to: number, pre: number[], k: number): number[] {
+/** 落刀点偏离理想位置一格，要拿多少「乐句凭据」来换（见 `splitEvenly` 的 `cutScore`）。
+ *  强度的量程是 0~30 上下，一格换 1 分意味着「为了断在句号上，最多让 3~4 格」。 */
+const CUT_DRIFT_PER_CELL = 3;
+
+function splitEvenly(from: number, to: number, pre: number[], k: number,
+                     cutScore?: Map<number, number>): number[] {
   const meas = to - from;
   const total = pre[to] - pre[from];
   if (meas <= 1 || k <= 1) return [];
@@ -142,9 +147,21 @@ function splitEvenly(from: number, to: number, pre: number[], k: number): number
   for (let j = 1; j < n; j++) {
     const want = pre[from] + (total * j) / n;
     // 落刀范围：至少给前面留一小节，也要给后面剩下的 n-j 行各留一小节
+    //
+    // **落点也要挑**：原来纯按「格数最接近」挑，一个内容判据都不用，
+    // 刀常落在句子中间——下一行行首就带着上一句的尾巴，或者是个带标点的长音
+    //（断句层不再罚容量之后，全书行首带标点 0 → 190 处，全是这里落的刀）。
+    // 现在按「乐句凭据 − 偏移代价」挑：`cutScore` 是 computePhraseBreaks 量好的
+    // 「在这条小节线上断行有多少凭据」（强度 − 行首罚）。没有强度表就退回按位置挑。
     let best = -1;
-    for (let i = prev + 1; i <= to - (n - j); i++)
-      if (best < 0 || Math.abs(pre[i] - want) < Math.abs(pre[best] - want)) best = i;
+    let bestVal = -Infinity;
+    for (let i = prev + 1; i <= to - (n - j); i++) {
+      const drift = Math.abs(pre[i] - want);
+      const val = cutScore
+        ? (cutScore.get(i) ?? 0) - drift * CUT_DRIFT_PER_CELL
+        : -drift;
+      if (best < 0 || val > bestVal) { best = i; bestVal = val; }
+    }
     if (best < 0) break;
     cuts.push(best);
     prev = best;
@@ -393,6 +410,7 @@ function cloneBreaks(b: PhraseBreaks): PhraseBreaks {
     midBreaks: new Set(b.midBreaks),
     sectionStarts: new Set(b.sectionStarts),
     sectionCutChords: new Set(b.sectionCutChords),
+    cutScore: b.cutScore,   // 只读的强度表，拷贝时共享
     refrainCut: b.refrainCut,
     forced: new Set(b.forced),
   };
@@ -441,7 +459,7 @@ function evenLayout(part: Part, breaks: PhraseBreaks, cells: number): PhraseBrea
     const k = Math.ceil(l.cells / cells);
     const from = l.head.full ? l.fromMi : l.fromMi + 1;
     const to = l.mi !== null || l.chord === null ? l.toMi + 1 : l.toMi;
-    for (const at of splitEvenly(from, to, pre, k)) {
+    for (const at of splitEvenly(from, to, pre, k, out.cutScore)) {
       let mi = at;
       while (mi < to && cutsThroughSpan(part, mi)) mi++;
       if (mi < to) out.measureBreaks.add(mi);
