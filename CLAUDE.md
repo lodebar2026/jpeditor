@@ -172,6 +172,10 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   三连音、fermata、减时线、小节线高度共用的一把尺子（唯一常量 `jpStackGap`，墨迹到墨迹等距；
   musicpp 自己在这里并不等距），以及八度点按**墨迹**而非 advance 居中（`1` 在 PingFang 里偏 0.88px）。
   含跨小节 slur 的小节线避让，和两处刻意背离 musicpp 的地方。**动这些常量前必看。**
+  弧高的**上下限**（按原书 1205 条实测定的）、超长跨度**改画扁平长连音线**（参 open-fanqie）、
+  长弧底下**和弦与段落词整排让位**也在那篇里；三条简谱路（编辑器 / 成书重排 / 文本谱）
+  共用 `SlurTieBase` 一套参数，`src/mixed/` 的副本不在此列。**改这几个常量会牵动全书断句**
+  （弧高→行高→每页行数→重排），动完必跑 `rebuild.mjs && line-check.mjs`。
 - **[乐句排版](docs/实现/乐句排版.md)**（`src/score/phrase.ts`）——工具栏「按乐句重排」的 DP 与代价项
   （行长目标、整句独占一行、断点凭据、段落/副歌分页）。回归 `node phrase-lines.mjs [曲名子串]`。
 - **[ABC 记谱导入](docs/实现/ABC-导入.md)**（`src/abc/`）——abc2xml.py 的全量忠实移植（含 pyparsing /
