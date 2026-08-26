@@ -447,6 +447,13 @@ export function defaultBookStyle(): BookStyle {
       phraseBreakWeight: 3,
       phraseMidBreak: true,
       phraseMergeShort: true,
+      // 断句那几个开关的默认值**要写在这儿**：`testdata/500/bookstyle.json` 是 gitignore 掉的
+      // 生成产物，只在里面调参的话，重新跑一次 gen-bookstyle.mjs 就全丢了（丢了之后
+      // `phraseEvenWeight` 会退回 rebuild.mjs 的 `?? 0`，等于把摊匀那一遍整个关掉）。
+      phraseEvenWeight: 1,
+      phraseTailWeight: 1,
+      phraseContentOnly: true,
+      phraseParallelWeight: 6,
       verseNumbers: "auto",
       justify: true,
       songStart: "any",

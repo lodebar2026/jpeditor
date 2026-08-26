@@ -91,8 +91,14 @@ for (const song of lineDoc.songs) {
       hit("L14", song.id, `第 ${i + 1} 行以「${l.head.text}」起头，上一行没收尾`);
     // L15 上一行收在句读标点上、这一行却从休止起头：那口气是上一句唱完的收气，该留在上一行
     //     （077 的「历风霜；」之后那个休止）。
-    if (i > 0 && l.head.rest && ls[i - 1].tail.punct > 0)
-      hit("L15", song.id, `第 ${i + 1} 行从休止起头，上一行收在「${ls[i - 1].tail.text}」`);
+    //     **除非这样起头正好凑成本曲的标准弱起**——那时休止是下一句弱起的一部分，挪下来
+    //     反而齐头（363《倾听我的心》六行都是「半拍休止 + 半拍弱起音」）。标准弱起拿
+    //     **第 1 行**的行首残小节当基准（第 1 行就是曲首那个弱起），与
+    //     phrase.ts::headPenalty 的 pickupStd 同一口径。
+    const pickup = ls[0]?.head.dur ?? 0;
+    if (i > 0 && l.head.rest && ls[i - 1].tail.punct > 0
+        && !(pickup > 0 && Math.abs(l.head.dur - pickup) < 0.01))
+      hit("L15", song.id, `第 ${i + 1} 行从休止起头（${l.head.dur} 拍，本曲弱起 ${pickup} 拍），上一行收在「${ls[i - 1].tail.text}」`);
     // L16 行末落在无词的拖腔上、而拖腔所属的那个字没有标点收尾：句子还没唱完就断了，
     //     词被劈成两半（077 的「殷」＋「勤服事…」）。末行不算。
     if (i < ls.length - 1 && !l.tail.text && l.tail.lastWordPunct === 0 && !l.tail.beats_isRest)
@@ -309,6 +315,7 @@ const SPOT = {
   "158": ["L11"],                   // 两个房号不许连在一起
   "169": ["L10"],                   // 同一行的房号要等高
   "175": ["L2"],                    // 在「能大力，」后断句
+  "363": ["L2", "L8", "L16"],       // 六行、三对平行乐句（另见下面的专属断言）
 };
 const spotFails = [];
 for (const [id, ks] of Object.entries(SPOT)) {
@@ -400,6 +407,27 @@ const bare = (t) => String(t ?? "").replace(/[，。！？…；、：""''）]+$
     for (const l of ls) if (l.headFp) tally.set(l.headFp, (tally.get(l.headFp) ?? 0) + 1);
     if (Math.max(0, ...tally.values()) < 3)
       spotFails.push(`077 应有 ≥3 行开头旋律相同，实际 ${[...tally.values()].join("/")}`);
+  }
+}
+{
+  // 363《倾听我的心》：全曲是**三对平行乐句**，每对的开头旋律一样，该各自成行、对齐着排
+  //（用户逐行给过谱：`0_ 5,_ |3. 3_ 2. …` 六行）。六行都从**小节中间的弱起**起唱，
+  // 所以平行指纹的预扫不能只认「小节起点」，指纹也要先跳掉行首的休止——两处都栽过。
+  const ls = linesOf("363");
+  if (ls) {
+    if (ls.length !== 6) spotFails.push(`363 应排 6 行，实际 ${ls.length} 行`);
+    // 六行都该以**一拍的残小节**起头（凑整拍）：上一行行尾那个半拍休止要挪下来，
+    // 与后面的半拍弱起音凑成一拍，与第 1 行一样（用户口径）。
+    const dur = ls.map((l) => l.head.dur);
+    if (dur.some((d) => Math.abs(d - dur[0]) > 0.01))
+      spotFails.push(`363 六行的行首残小节应一样长（各 ${dur[0]} 拍），实际 ${dur.join(" / ")}`);
+    const tally = new Map();
+    for (const l of ls) if (l.headFp) tally.set(l.headFp, (tally.get(l.headFp) ?? 0) + 1);
+    const pairs = [...tally.values()].filter((v) => v >= 2).length;
+    if (pairs < 3) spotFails.push(`363 应有 3 对开头旋律相同的行，实际 ${pairs} 对（${[...tally.values()].join("/")}）`);
+    // 「道不出」不许劈开：第 2 行不该收在「不」上
+    if (ls.some((l) => bare(l.tail.text) === "不"))
+      spotFails.push(`363 「道不出」被劈开了（有一行收在「不」上）`);
   }
 }
 {

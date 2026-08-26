@@ -36,7 +36,7 @@ export function mainLyricText(c: Chord): string {
 }
 
 /** 一行开头拿几个音做「平行乐句」的指纹。 */
-export const HEAD_FP_LEN = 6;
+export const HEAD_FP_LEN = 10;
 
 /** 一个和弦的旋律键（音级+八度，休止记 R）。与 `measureFp` 同一套写法。 */
 export function noteKeyOf(c: Chord): string {
@@ -50,11 +50,18 @@ export function noteKeyOf(c: Chord): string {
  * 175 的一二行）。重复段检测（`repeatEdges`）管的是「整段重复」，管不到这个：
  * 平行的两句往往只有开头几个音相同，后半句各走各的。
  *
+ * **跳过行首的休止**：那是弱起的留白，不是旋律的一部分。同一段旋律有的行从休止起头、
+ * 有的直接从弱起音起头（363《倾听我的心》第 1 行 `0_ 5,_ |3. 3_ 2.`、第 3 行
+ * `5,_ |3. 3_ 2.`），不跳过就对不上，明明平行的两行认不出来。
+ *
  * 不足 `HEAD_FP_LEN` 个音返回空串（不参与比对）。
  */
 export function headFpOf(chords: Chord[]): string {
-  if (chords.length < HEAD_FP_LEN) return "";
-  return chords.slice(0, HEAD_FP_LEN).map(noteKeyOf).join(",");
+  let i = 0;
+  while (i < chords.length && chords[i].rest) i++;
+  const notes = chords.slice(i, i + HEAD_FP_LEN);
+  if (notes.length < HEAD_FP_LEN) return "";
+  return notes.map(noteKeyOf).join(",");
 }
 
 /** 收尾的引号/括号。判标点前要先剥掉它们——「再相亲，”」是个收了尾的分句，
@@ -502,12 +509,31 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 四分及以上的休止不在此列：那是上一句唱完的收气，本来就该留在上一行（见 retreatPastPickupRest）。
     const headRest = nx.chord.rest ? (nx.chord.duration?.toFloat() ?? 0) : 0;
     if (headRest > 0 && headRest <= 0.5 && Math.abs(head - pickupStd) > 0.01) s += 8;
+    // (b3) **各行的行首残小节要一样长**（凑整拍），不限于行首是休止的那种。
+    // (b) 只认「行首是半拍及以下休止」，行首是**音符**的弱起它管不着：363《倾听我的心》
+    // 的行 1/2/4 从 1 拍起头（`0_ 5,_` / `3_ 4_`），行 3/5/6 却只有半拍（`5,_` / `3__ 4__`）
+    // ——上一行行尾那个 `0_` 该挪到下一行去，与后面的弱起音凑成整拍，六行才齐头。
+    // 用户口径：「都与第一行的开始一样一拍残小节；休止后有音符的残小节是可以接受的」。
+    // 只在成书那条路、且**本曲确实有弱起**时开（`pickupStd > 0`）：从整小节起唱的谱没有
+    // 「标准行首残小节」可言，一律罚就等于禁掉所有行内断点。
+    // 罚得比 (b2) 重（12 vs 8）——两条会打架：(b2) 要把收气休止留在上一行，(b3) 要把它
+    // 挪下去凑整拍。**能凑成标准弱起的就该挪**（363 的 `0_` + `5,_` 正好一拍），
+    // 凑不成的（077《耶稣我主荣耀王》那种）(b3) 本来就不罚，(b2) 照旧管用。
+    // 编辑器基线里这一条曾把「一生中最可 / 贵」劈开（见 (b) 的注释），故只在成书开。
+    // 只罚**比标准弱起短**的：那才是「差一点没凑齐、该把上一行行尾那点挪过来」。
+    // 比标准长的是另一回事（行内断点落在别处），一并罚就太宽了——实测全书末两行悬殊
+    // 7 → 14 首、收气休止被甩到行首 12 → 28 处。
+    if (CONTENT_ONLY && pickupStd > 0 && head > 0 && head < pickupStd - 0.01) s += 12;
     // (b2) **句末标点之后的那个休止是上一句唱完的收气，该留在上一行**：
     // 上一行行末带句读标点、下一行却从休止起头的话，那口气就被甩到了行首
     // （077《耶稣我主荣耀王》的「历风霜；」之后那个休止）。
     // 与 (b) 的分工：(b) 管「半拍休止的弱起长短不一」，管不到四分及以上的收气休止
     // ——那一条的注释早就写着「本来就该留在上一行」，却一直没有对应的罚。
-    if (CONTENT_ONLY && nx.chord.rest && lyricPunctScore(flat[idx].chord) > 0) s += 8;
+    // **除非这样起头正好凑成本曲的标准弱起**——那时休止是下一句弱起的一部分，不是上一句的
+    // 收气，挪下去反而齐头（363《倾听我的心》的 `0_` + `5,_` 正好一拍，与首行一样；
+    // 用户口径：「休止后有音符的残小节是可以接受的」）。凑不成的照罚（077 的「历风霜；」）。
+    if (CONTENT_ONLY && nx.chord.rest && lyricPunctScore(flat[idx].chord) > 0
+        && !(pickupStd > 0 && Math.abs(head - pickupStd) < 0.01)) s += 8;
     // (g) **断点落在「无词的拖腔」上、而拖腔所属的那个字没有标点收尾** → 句子还没唱完，
     // 断在这儿就把词从中间劈开了：077 的「殷｜勤」——「殷」留在行末、「勤服事…」另起一行。
     // 拖腔所属的字**带标点**时相反（乐句真收尾了），不罚，那正是 (b2) 要保住的情形。
@@ -571,15 +597,23 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
 
   // 断点候选的乐句强度分（在该和弦之后换行）。
   // **平行乐句开头**（判据与来由见 `headFpOf`）。
-  // 只把**小节起点**当潜在行首（原书的行几乎都在小节线上起头）；同一指纹出现两次以上才算平行。
+  // 潜在行首 = **上一个音符是个乐句落点**（小节末 / 带标点 / 长音 / 休止）的那些位置。
+  // 原来只认「小节起点」，弱起谱整个漏掉——363《倾听我的心》六行全是从小节中间的弱起
+  // 起唱（`3_ 4_ |5- …`），三对平行开头一个都没进候选池。判据与 `startsParallel` 的
+  // 门槛保持一致：那边要求断点本身先是个乐句收尾，这边就按同样的口径找行首。
+  // 同一指纹出现两次以上才算平行。
   // 指纹的取法与逐行报告共用一份（`headFpOf`），各算各的就会「检查脚本说对齐了、排出来没有」。
+  // 多取几个：`headFpOf` 会先跳掉行首的休止，只取 HEAD_FP_LEN 个就可能不够数
   const headFpAt = (i: number): string =>
-    headFpOf(flat.slice(i, i + HEAD_FP_LEN).map((f) => f.chord));
+    headFpOf(flat.slice(i, i + HEAD_FP_LEN + 4).map((f) => f.chord));
   const parallelHeads = new Set<string>();
   if (PARALLEL_WEIGHT > 0) {
     const tally = new Map<string, number>();
     for (let i = 0; i < K; i++) {
-      if (!flat[i].isFirst) continue;
+      if (i > 0) {
+        const pv = flat[i - 1];
+        if (!(pv.isLast || punctAfter[i - 1] > 0 || pv.chord.beats >= 2 || pv.chord.rest)) continue;
+      }
       const fp = headFpAt(i);
       if (!fp) continue;
       tally.set(fp, (tally.get(fp) ?? 0) + 1);
@@ -650,8 +684,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 跳转记号（Fine / D.C. / D.S. / To Coda）落在哪个小节，那个小节末就**高优先级断开**
     //（+10，比房尾 +6、终止线 +5 都高）：记号是给唱的人看路标的，印在一行的中段读不出来。
     if (ci.isLast && JUMP_MEAS.has(ci.mi)) s += 10;
-    // 平行乐句开头（见上面 parallelHeads 的注释）
-    if (startsParallel(idx)) s += PARALLEL_WEIGHT;
+    // **平行乐句开头只在方案评分里算**（见 quality），不在这里给分：
+    // 在断点强度上加分会让 DP 为了凑一个平行开头而断出短行（实测全书中间行过短
+    // 4 → 18 处、行长悬殊 6 → 12 首）。它该影响的是「几套断法里挑哪套」，
+    // 不是「这一刀值不值得断」。
     return s;
   };
 
