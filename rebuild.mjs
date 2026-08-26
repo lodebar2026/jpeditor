@@ -226,6 +226,8 @@ for (const s of picked) {
       let iters = 0;
       let lineInfo = [];
       let targetUsed = 0;
+      let mode = "phrase";
+      let jumpSeen = [];
       for (let iter = 0; iter < 6; iter++) {
         iters = iter + 1;
         score = B.loadMusicXml(xmlText);
@@ -239,10 +241,23 @@ for (const s of picked) {
             ? st.layout.phraseTargetMeas
             : B.targetMeasForCells(score.parts[0], cells);
           targetUsed = targetMeas;
+          // 跳转记号（Fine / D.C. / D.S. / To Coda）所在的小节：那里要**高优先级断开**
+          //（096 的 Fine 落在主歌多段歌词中间）。它们只存在 playData 里，排版层拿不到。
+          // **只取记号本身**（`jumpTo`：Fine / D.C. / D.S. / To Coda）。
+          // `segno` / `coda` 是跳转的**目标**，不是唱到这儿要换行的地方——把它们也算进来，
+          // 497《这世界非我家》就被强断成 7 行、其中一行只剩 2 格。
+          const jumpMeasures = new Set();
+          for (const [t] of score.playData?.jumpTo ?? []) jumpMeasures.add(t.mid);
+          jumpSeen = [...jumpMeasures]; // 记账：跑完在 fit.jump 里，出了问题好查
           const brk = B.computePhraseBreaks(score.parts[0], {
             targetMeas,
             lenWeight: st.layout.phraseLenWeight,
             breakWeight: st.layout.phraseBreakWeight,
+            // **断句只看内容**：与纸张有关的分（行长目标、行数、稀疏）一律不算，
+            // 「排不排得下」只在下面的模式阶梯里用。见 phrase.ts::PhraseOptions.contentOnly。
+            contentOnly: st.layout.phraseContentOnly !== false,
+            jumpMeasures,
+            parallelWeight: st.layout.phraseParallelWeight ?? 6,
             // 成书专用的两条权重（编辑器那条路默认不开，基线不动）：
             // 短呼语句（「哈利路亚！」）的句末标点减半、重复段按长度加分。
             shortSentenceWords: 5,
@@ -257,18 +272,23 @@ for (const s of picked) {
             // 容量是排版器**数出来的个数**（音符与增时线各算一个），不是折算过的格数
             cellsAreItems: true,
           });
+              // **整首的排版模式阶梯**（B 每 2 句一行 → A 一句一行 → C 均匀排版）：
+          // 「排不排得下」只在这里用，断句本身不看纸张。见 applybreaks.ts::chooseLineLayout。
+          mode = B.chooseLineLayout(score.parts[0], brk, cells, {
+            useMidBreaks: st.layout.phraseMidBreak,
+            allowPairs: st.layout.phraseMergeShort !== false,
+          });
+          // 容量保险：C 档之外的两档也可能有个别行超容量（格数是近似），按小节补刀
           B.enforceLineCapacity(score.parts[0], brk, cells, targetMeas, st.layout.phraseMidBreak);
-          // 再两两并一次短行：乐句分析按「小节数」定行长，每小节几格随拍号而变，
-          // 小节短的谱（005 每小节 3.2 格）一句一行只用得上半幅版心，原书那首就是一行两句。
-          if (st.layout.phraseMergeShort)
-            B.mergeShortLines(score.parts[0], brk, cells, { useMidBreaks: st.layout.phraseMidBreak });
-          // 容量保险与并短行会造出新的行首（DP 管不到），再兜一次「行首不留半小节休止」
+          // 上面几步会造出新的行首（DP 管不到），再兜两次：行首不留半小节休止、
+          // 按容量补刀留下的碎行并回上一行（见 applybreaks.ts 两个函数的注释）。
           B.tidyLineHeads(score.parts[0], brk, { useMidBreaks: st.layout.phraseMidBreak, cells });
+          B.mergeSliverLines(score.parts[0], brk, st.layout.phraseMidBreak, cells);
           // 逐行事实（行首残小节 / 行末标点 / 格数…）留给 line-check.mjs 断言；
           // Chord 是对象，跨不过 page.evaluate 的序列化，只带纯数据出去。
           lineInfo = B.describeLines(score.parts[0], brk, st.layout.phraseMidBreak).map((l) => ({
             cells: l.cells, fromMi: l.fromMi, toMi: l.toMi, bars: l.bars, beats: l.beats,
-            head: { ...l.head }, tail: { ...l.tail }, section: l.section, mid: !!l.chord,
+            head: { ...l.head }, tail: { ...l.tail }, headFp: l.headFp, section: l.section, mid: !!l.chord,
           }));
           const ab = B.applyPhraseBreaks(score.parts[0], brk, {
             linesPerPage: st.layout.linesPerPage,
@@ -288,7 +308,7 @@ for (const s of picked) {
       }
       const out = pageItems;
       // 排版口径的自检：迭代了几轮、最后还有没有「断点之外又折一刀」（见下面的汇总打印）
-      const fit = { iters, cells, target: targetUsed, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
+      const fit = { iters, cells, target: targetUsed, mode, jump: jumpSeen, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
       // 装饰层（标题/曲号/页眉页脚）在 Node 侧排，但字号得按**浏览器实测的墨迹比例**反算，
       // 否则同一个 size 在不同字体里墨迹大小不一样（见 browser.ts::fontSizeFor）。
       const sizes = {};
@@ -324,7 +344,7 @@ for (const s of picked) {
     ctx: { sizes: res.sizes, id: s.id, title: res.title, credits: res.credits, category: s.category ?? "", km },
   });
   perSong.push({ id: s.id, title: res.title, pages: res.pages.length, fit: res.fit });
-  perLines.push({ id: s.id, title: res.title, cells: res.fit?.cells ?? 0, target: res.fit?.target ?? 0, lines: res.lines ?? [] });
+  perLines.push({ id: s.id, title: res.title, cells: res.fit?.cells ?? 0, target: res.fit?.target ?? 0, mode: res.fit?.mode ?? "", lines: res.lines ?? [] });
   if (only || picked.length < 30) console.log(`  ${s.id} ${res.title}：${res.pages.length} 页`);
 }
 
@@ -334,6 +354,9 @@ for (const s of picked) {
   const fits = perSong.map((p) => p.fit).filter(Boolean);
   const retried = fits.filter((f) => f.iters > 1).length;
   const over = perSong.filter((p) => p.fit?.overflow > 0);
+  const byMode = {};
+  for (const f of fits) byMode[f.mode ?? "?"] = (byMode[f.mode ?? "?"] ?? 0) + 1;
+  console.log(`排版模式：${Object.entries(byMode).map(([k, v]) => `${k} ${v}`).join("，")}`);
   console.log(`排版口径：${fits.length} 首中 ${retried} 首要重排（容量量偏了），仍有二次折行 ${over.length} 首` +
     (over.length ? `：${over.slice(0, 8).map((p) => `${p.id}(+${p.fit.overflow})`).join(" ")}` : ""));
 }
@@ -555,6 +578,15 @@ back.forEach((dp, i) => {
   dp.pageNo = front.length + scorePages.length + i + 1;
   dp.label = String(scorePages.length + i + 1);
 });
+
+// **对开页镜像**：排版引擎一律从 margin.inner 起排（它只知道一个版心宽度），
+// 偶数页因此整体偏右 inner − outer，装订侧边距就窄了那么多。页号定下来了才知道奇偶，
+// 所以在这里搬（见 drawlist.ts::shiftDrawPageX——那时路径坐标已经烘进 d 里了）。
+// 装饰层还没加，它本来就是按页号镜像摆的，不受影响。
+{
+  const mirror = style.page.margin.inner - style.page.margin.outer;
+  if (mirror) for (const dp of scorePages) if (dp.pageNo % 2 === 0) cli.shiftDrawPageX(dp, -mirror);
+}
 
 // 注解要等页号定下来再排：版心左右缘按页奇偶换边
 const ann = placeAnnotations();

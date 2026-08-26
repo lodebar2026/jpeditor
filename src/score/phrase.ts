@@ -17,6 +17,10 @@ export interface PhraseBreaks {
   sectionCutChords: Set<Chord>;
   /** 是否已为「副歌起点」安排了段界（含弱起顺延）。jpscore 据此不再自行在副歌首音处断行。 */
   refrainCut: boolean;
+  /** **不许删的断点**（小节下标，语义同 `measureBreaks`）：跳转记号（Fine / D.C. / D.S. /
+   *  To Coda）所在的小节末。`measureBreaks` 的子集。后续的并行/补刀（`chooseLineLayout`）
+   *  一律绕开它们——记号是给唱的人看路标的，印在一行的中段读不出来。 */
+  forced: Set<number>;
 }
 
 // 句末 / 句中标点（读 Note.lyrics 原文，未被 jpscore 剥离）。
@@ -31,9 +35,83 @@ export function mainLyricText(c: Chord): string {
   return l?.text ?? "";
 }
 
+/** 一行开头拿几个音做「平行乐句」的指纹。 */
+export const HEAD_FP_LEN = 6;
+
+/** 一个和弦的旋律键（音级+八度，休止记 R）。与 `measureFp` 同一套写法。 */
+export function noteKeyOf(c: Chord): string {
+  const nt = c.notes[0];
+  return !nt || c.rest ? "R" : nt.number + ":" + nt.jpOctave;
+}
+
+/**
+ * 一行开头的旋律指纹（前 `HEAD_FP_LEN` 个音）。**两行的指纹相同 = 平行乐句开头**，
+ * 排成各自的行首就对得齐——原书的分行大量是这个样子（070 的副歌两行、077 的 `13|5565|`、
+ * 175 的一二行）。重复段检测（`repeatEdges`）管的是「整段重复」，管不到这个：
+ * 平行的两句往往只有开头几个音相同，后半句各走各的。
+ *
+ * 不足 `HEAD_FP_LEN` 个音返回空串（不参与比对）。
+ */
+export function headFpOf(chords: Chord[]): string {
+  if (chords.length < HEAD_FP_LEN) return "";
+  return chords.slice(0, HEAD_FP_LEN).map(noteKeyOf).join(",");
+}
+
+/** 收尾的引号/括号。判标点前要先剥掉它们——「再相亲，”」是个收了尾的分句，
+ *  而不是「没有标点」（068《天使报信》的引文就这么收尾，断句因此认不出乐句的落点）。 */
+const TRAIL_QUOTE = /[”’＂"』」）)〉》〕】]+$/;
+
 /** 歌词末尾标点的分量：句末 6 / 句中 4 / 无 0。 */
 export function punctScore(text: string): number {
-  return PUNCT_END.test(text) ? 6 : PUNCT_MID.test(text) ? 4 : 0;
+  const t = text.replace(TRAIL_QUOTE, "");
+  return PUNCT_END.test(t) ? 6 : PUNCT_MID.test(t) ? 4 : 0;
+}
+
+/**
+ * 一个和弦上**各段歌词**的标点分，取**均值**（只算这个音符上真有词的段）。
+ *
+ * 断句要看的是「这个位置是不是乐句的落点」，那是**旋律**的性质——多段歌词共用同一条旋律，
+ * 各段的收句位置本来就该在同一处。只看第 1 段会漏掉别的段在这里收句的事实。
+ *
+ * **取中位数**。先试过最大值：五段里只有一段点了句号就把这里判成乐句落点，那多半是那一段的
+ * 抄写差异。再试过均值，却把分稀释得太狠——各段标点录得不齐时（原书本来就有漏点的），
+ * 一个真落点的分能掉到零头，断点强度整体塌下来，DP 于是少断、行拉长、词被劈开
+ * （077《耶稣我主荣耀王》实测从 7 行塌成 5 行，「宝座｜亲来」「忍｜饥」都断在词中间）。
+ * 中位数两头都躲开：**多数段认同才算数，而认同了就给足分**。
+ *
+ * 分母只数**有词的段**：一字多音时别的段在这个音符上是空的（词在前一个音符上），
+ * 拿整首的段数当分母会把分稀释掉。
+ *
+ * 与 `mainLyricText` 的分工：那个取的是**要显示的**主歌词（行首/行末报什么字），
+ * 这个只管**标点判定**，两者别混。
+ */
+export function lyricPunctScore(c: Chord): number {
+  const ps: number[] = [];
+  for (const nt of c.notes) for (const l of nt.lyrics) if (l.text) ps.push(punctScore(l.text));
+  if (!ps.length) return 0;
+  ps.sort((a, b) => a - b);
+  return ps[Math.floor(ps.length / 2)];
+}
+
+/** 一个和弦是不是**句末**（口径同 `lyricPunctScore`：多数段在这里收句才算）。 */
+export function lyricIsSentenceEnd(c: Chord): boolean {
+  let end = 0;
+  let n = 0;
+  for (const nt of c.notes) for (const l of nt.lyrics) {
+    if (!l.text) continue;
+    if (isSentenceEnd(l.text)) end++;
+    n++;
+  }
+  return n > 0 && end * 2 > n;
+}
+
+/** 这个字是不是**句末**（句号/问号/叹号/省略号/分号）。
+ *  与 `punctScore` 的分工：分量会被「很短的分句减半」打对折（见 `SHORT_WORDS`），
+ *  拿 `=== 6` 去判句末就会漏掉那些被减半的（077《耶稣我主荣耀王》的「难当；」
+ *  从上一个标点起只唱了「厌弃难当」四个字，分被折成 3，(d) 那条因此判不到它、
+ *  把「当；」甩到了下一行行首）。**要句末就问这个，别拿分数去比。** */
+export function isSentenceEnd(text: string): boolean {
+  return PUNCT_END.test(text.replace(TRAIL_QUOTE, ""));
 }
 
 // 行长以「小节数」计（简谱/圣诗按小节成行，与音符密度无关）。经验初值，可回归调参。
@@ -126,6 +204,21 @@ export interface PhraseOptions {
    *  404《你若不压橄榄成渣》都是倒数第二行短、末行长），而普通的行长代价管不到它——
    *  末行本来就允许短。默认 1；0 = 关。 */
   lastPairWeight?: number;
+  /** **断句只看内容**（成书那条路开着）。开着时 DP 与方案评分里**一切与纸张有关的分都不算**：
+   *  行长目标 `(meas − target)²`（target 由版心容量折算而来）、`maxMeas` 罚、
+   *  `MIN_MEAS` / `MIN_CELLS` 那一路「行太稀」的罚、以及「每多排一行 `rowCost` 分」。
+   *  版心宽度只剩一个作用：**超容量是硬约束**（排不下的方案不能选）。
+   *  抑制「断得太碎」交回 `BASE_BREAK`（每断一次都要付费），抑制「一行太长」交给超容量罚。
+   *  **默认 false**：编辑器那条路的 15 首基线是按旧口径调出来的。 */
+  contentOnly?: boolean;
+  /** 跳转记号（Fine / D.C. / D.S. / To Coda）所在的小节下标。这些地方**要高优先级断开**
+   *  ——`Fine` 落在主歌多段歌词中间时，不断在那儿的话记号就印在了一行的中段（096）。
+   *  Score 里它们只存在 `playData` 里（供 `play()` 展开），排版层拿不到，所以由调用方传进来。 */
+  jumpMeasures?: Set<number>;
+  /** **平行乐句开头**的加分（0 = 关）。一行的头几个音与另一行的头几个音相同时，
+   *  把它们排成各自的行首，两行就对齐得上——简谱排版的惯例，也最贴近原谱分行
+   *  （070 副歌两行同开头、077 的 `13|5565|`、175 的一二行）。默认 0；成书传 6。 */
+  parallelWeight?: number;
   /** 行长代价的权重。调大 = 更看重「各行一样长」。
    *  默认 1 是编辑器那条路调出来的；成书要工整的行长，调到 2 以上，
    *  16 小节的歌才会选 4+4+4+4 而不是 4+6+6（后者行长代价 8，但少断一次省 8 分，默认权重下打平）。
@@ -173,10 +266,15 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const EVEN_WEIGHT = opts.evenWeight ?? 0;
   const TAIL_WEIGHT = opts.tailWeight ?? 0;
   const CELLS_ARE_ITEMS = opts.cellsAreItems ?? false;
+  const CONTENT_ONLY = opts.contentOnly ?? false;
+  const JUMP_MEAS = opts.jumpMeasures ?? new Set<number>();
+  const PARALLEL_WEIGHT = opts.parallelWeight ?? 0;
   // 多排一行的代价（评分用）。定得太低会把每首都摊成一堆短行；太高就退回「能挤则挤」。
   // 20 是拿 051/052/378/374 试出来的：副歌那种「一行顶格、主歌两行很稀」会拆成两行，
   // 而本来就匀的谱不会平白多出一行。
   const ROW_COST = opts.rowCost ?? 20;
+  /** 方案评分里「断点弱度」相对「行长匀度」的权重（contentOnly 用，见 quality）。 */
+  const BREAK_QUALITY_WEIGHT = 8;
   // 行长下限跟着上限走：版心窄时上限本来就小，14 格的下限会把断点全顶掉
   const MIN_CELLS = Math.min(DEF_MIN_CELLS, Math.round(MAX_CELLS * 0.6));
   const measures = part.measures;
@@ -185,8 +283,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const midBreaks = new Set<Chord>();
   const sectionStarts = new Set<number>();
   const sectionCutChords = new Set<Chord>();
+  const forced = new Set<number>();
   let refrainCut = false;
-  if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut };
+  if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced };
 
   const chordsPer = measures.map((m) => chordsOf(m));
   const fpPer = chordsPer.map((cs) => measureFp(cs));
@@ -226,18 +325,18 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const measureDur = chordsPer.map((cs) => cs.reduce((s, c) => s + (c.duration?.toFloat() ?? 0), 0) || 1);
 
   // 把所有和弦拍平成有序序列，逐和弦记：所在小节、是否小节末、以「小节数」为单位的结束位置（可含小数）。
-  interface CInfo { chord: Chord; mi: number; isLast: boolean; pos: number; }
+  interface CInfo { chord: Chord; mi: number; isLast: boolean; isFirst: boolean; pos: number; }
   const flat: CInfo[] = [];
   for (let i = 0; i < n; i++) {
     const cs = chordsPer[i];
     for (let k = 0; k < cs.length; k++) {
       const c = cs[k];
       const within = c.position.plus(c.duration ?? new Fraction(0)).toFloat() / measureDur[i];
-      flat.push({ chord: c, mi: i, isLast: k === cs.length - 1, pos: i + Math.min(1, within) });
+      flat.push({ chord: c, mi: i, isLast: k === cs.length - 1, isFirst: k === 0, pos: i + Math.min(1, within) });
     }
   }
   const K = flat.length;
-  if (K === 0) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut };
+  if (K === 0) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced };
 
   // slur/tie 括号**先做栈式配对**：识别(OMR)或原谱本身都可能给出不成对的弧（漏检一端）。若照单全收，
   // 一个悬空的起始就让此后 depth 永不归零 → 整曲再无候选断点、乐句排版退化成一整行（实测「主祢真伟大」
@@ -266,6 +365,8 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 并越过紧随的休止（句号音符后常带休止，断点应落在休止之后，如基督更美的 1 0）→ 归到该可断和弦。
   const depthAfter = new Array<number>(K).fill(0);
   const punctAfter = new Array<number>(K).fill(0);
+  /** 这一处的标点是不是**句末**（不受「短分句减半」影响，见 isSentenceEnd）。 */
+  const endAfter = new Array<boolean>(K).fill(false);
   // 标点顺延过来的源头（那个带标点的音符）。乐句在那里收尾、断点落在尾随的休止上，
   // 两者是**同一个收尾**，强度要一起算（见 scoreAt）。
   const carriedFrom = new Array<number>(K).fill(-1);
@@ -273,20 +374,24 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     let depth = 0;
     let pending = 0;
     let pendingFrom = -1;
+    let pendingEnd = false;
     let sinceLastPunct = 0; // 上一个标点之后唱了几个字
     for (let idx = 0; idx < K; idx++) {
       const c = flat[idx].chord;
       depth += okStart[idx];
       const txt = mainLyricText(c);
       if (txt) sinceLastPunct++;
-      let p = punctScore(txt);
+      // 多段歌词一起看**只在成书那条路**（见 lyricPunctScore）。编辑器那条路的 15 首基线
+      // 是按「只看第 1 段」调出来的，换了口径就会把「至高的爱尽见于刺 / 穿的手」劈开。
+      let p = CONTENT_ONLY ? lyricPunctScore(c) : punctScore(txt);
+      const pIsEnd = CONTENT_ONLY ? lyricIsSentenceEnd(c) : isSentenceEnd(txt);
       // **很短的分句减半**：「哈利路亚！」「阿们！」这种呼语句句带感叹号，若与整句同权，
       // 连着三句就断出三个满分断点，行结构反而被它们主导
       //（015《赞美真神》结尾三句「哈利路亚！」，按句末断会把第一句留在上一行、
       //  与第 2 行开头那段更长的重复旋律对不齐）。短句仍是断点，只是让位给更长的乐句信号。
       if (p > 0 && sinceLastPunct <= SHORT_WORDS) p = Math.round(p / 2);
       if (txt && p > 0) sinceLastPunct = 0;
-      if (p > pending) { pending = p; pendingFrom = idx; }
+      if (p > pending) { pending = p; pendingFrom = idx; pendingEnd = pIsEnd; }
       depth -= okEnd[idx];
       depthAfter[idx] = depth;
       // 顺延规则：仅当「本音符是音符且其后紧跟本小节内的休止」时继续顺延（句号音符尾随的休止就是落点）；
@@ -298,9 +403,11 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       const carryOn = !c.rest && !!next && next.chord.rest && next.mi === flat[idx].mi;
       if (depth === 0 && !carryOn) {
         punctAfter[idx] = pending;
+        endAfter[idx] = pendingEnd;
         if (pending > 0 && pendingFrom >= 0 && pendingFrom !== idx) carriedFrom[idx] = pendingFrom;
         pending = 0;
         pendingFrom = -1;
+        pendingEnd = false;
       }
     }
   }
@@ -395,9 +502,35 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 四分及以上的休止不在此列：那是上一句唱完的收气，本来就该留在上一行（见 retreatPastPickupRest）。
     const headRest = nx.chord.rest ? (nx.chord.duration?.toFloat() ?? 0) : 0;
     if (headRest > 0 && headRest <= 0.5 && Math.abs(head - pickupStd) > 0.01) s += 8;
-    // 长音起头本身就不对：乐句是从短音起唱的，行首那个长音多半是上一句的延音收尾
-    //（15 首基线里「一生中最可 / 贵」就是这么把词劈开的）。带标点的更是明摆着的收尾。
-    if (nx.chord.beats >= 2 && punctScore(mainLyricText(nx.chord)) > 0) s += 10;
+    // (b2) **句末标点之后的那个休止是上一句唱完的收气，该留在上一行**：
+    // 上一行行末带句读标点、下一行却从休止起头的话，那口气就被甩到了行首
+    // （077《耶稣我主荣耀王》的「历风霜；」之后那个休止）。
+    // 与 (b) 的分工：(b) 管「半拍休止的弱起长短不一」，管不到四分及以上的收气休止
+    // ——那一条的注释早就写着「本来就该留在上一行」，却一直没有对应的罚。
+    if (CONTENT_ONLY && nx.chord.rest && lyricPunctScore(flat[idx].chord) > 0) s += 8;
+    // (g) **断点落在「无词的拖腔」上、而拖腔所属的那个字没有标点收尾** → 句子还没唱完，
+    // 断在这儿就把词从中间劈开了：077 的「殷｜勤」——「殷」留在行末、「勤服事…」另起一行。
+    // 拖腔所属的字**带标点**时相反（乐句真收尾了），不罚，那正是 (b2) 要保住的情形。
+    if (CONTENT_ONLY && !nx.chord.rest && !mainLyricText(flat[idx].chord) && !flat[idx].chord.rest) {
+      let j = idx;
+      while (j >= 0 && !mainLyricText(flat[j].chord)) j--;
+      if (j >= 0 && lyricPunctScore(flat[j].chord) === 0) s += 8;
+    }
+    // (c) **行首那个字带着句读标点**：一句话的最后一个字落到了行首，上一句的尾巴被甩过来了
+    //（077《耶稣我主荣耀王》的「厌弃难当；」被劈成「…难」＋「当；…」）。
+    // 长音起头更是明摆着的延音收尾，再加重（15 首基线里「一生中最可 / 贵」就是这么把词劈开的）。
+    // **这一条只看行首那个字自己**，与 (d)「别把一句的最后一小截甩到下一行」不同——
+    // (d) 是往后数几个字才到句号，判据宽、牵动面大，改它会连累别处的断点（实测把
+    // 077 的「役｜于」「四｜方」劈开了）。
+    // **要上一行自己没收尾才算**：断点处已经带标点的话，行首那个「啊，」「哦！」是新一句
+    // 自己的开头（020《向主歌唱》每段都从「啊，」起唱），不是上一句的尾巴。
+    // 断点落在无词的拖腔上时要**往前追到真正的字**——拖腔自己当然没有标点。
+    if (CONTENT_ONLY && lyricPunctScore(nx.chord) > 0) {
+      let j = idx;
+      while (j >= 0 && !mainLyricText(flat[j].chord)) j--;
+      if (j < 0 || lyricPunctScore(flat[j].chord) === 0) s += 8;
+    }
+    if (nx.chord.beats >= 2 && lyricPunctScore(nx.chord) > 0) s += 10;
     // (d) **别把一句话的最后一小截甩到下一行开头**：断点之后没几个字就到句号了的话，
     // 那截尾巴属于本行（419《人生崎岖路》第 6 行开头的「却成了祝福。」，
     // 上一行明明还差好几格）。越近罚得越狠；离得够远（一行的三成以上）就不管——
@@ -419,7 +552,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       }
     }
     const tailMax = MAX_CELLS * 0.35;
-    if (TAIL_WEIGHT > 0) {
+    // (d) 在**断点落在「带标点的长音」上**时不成立——那是乐句真正的收尾（用户口径就是
+    // 「长音 + 标点」），下一行开头那一小截是新的一句，不是被甩出去的尾巴：068《天使报信》
+    // 的「兴起！」跟在「再相亲，”」（4 拍长音 + 逗号）之后，是独立的一句呼召，(d) 却按
+    // 「上一句的尾巴」罚了 7.7 分，把断点顶到「兴起」之后、让行末挂着「兴起！」。
+    // 419《人生崎岖路》那种「却成了祝福。」的上一行收在一个普通音符上，不受影响。
+    const strongEnd = punctAfter[idx] > 0 && flat[idx].chord.beats >= 2;
+    if (TAIL_WEIGHT > 0 && !strongEnd) {
       let run = 0;
       for (let j = idx + 1; j < K; j++) {
         run += cellsOf(flat[j].chord);
@@ -431,6 +570,37 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   };
 
   // 断点候选的乐句强度分（在该和弦之后换行）。
+  // **平行乐句开头**（判据与来由见 `headFpOf`）。
+  // 只把**小节起点**当潜在行首（原书的行几乎都在小节线上起头）；同一指纹出现两次以上才算平行。
+  // 指纹的取法与逐行报告共用一份（`headFpOf`），各算各的就会「检查脚本说对齐了、排出来没有」。
+  const headFpAt = (i: number): string =>
+    headFpOf(flat.slice(i, i + HEAD_FP_LEN).map((f) => f.chord));
+  const parallelHeads = new Set<string>();
+  if (PARALLEL_WEIGHT > 0) {
+    const tally = new Map<string, number>();
+    for (let i = 0; i < K; i++) {
+      if (!flat[i].isFirst) continue;
+      const fp = headFpAt(i);
+      if (!fp) continue;
+      tally.set(fp, (tally.get(fp) ?? 0) + 1);
+    }
+    for (const [fp, cnt] of tally) if (cnt >= 2) parallelHeads.add(fp);
+  }
+  /**
+   * 在 idx 之后断行的话，下一行是不是「平行开头」。
+   *
+   * **要求断点本身先是个像样的乐句收尾**（句读标点 / 长音 / 休止 / 延长号）。
+   * 只看旋律指纹会把词拦腰切开：096《哈利路亚！感谢主》的「哈利路亚」唱好几遍，
+   * 「路亚」的开头旋律自然与别处相同，于是「哈利｜路亚」之间被判成平行乐句、拿到 14 分，
+   * 一并行就把「哈利」留在了行末。旋律重复只是**佐证**，断不断得看乐句本身收没收尾。
+   */
+  const startsParallel = (idx: number): boolean => {
+    if (!(PARALLEL_WEIGHT > 0) || idx + 1 >= K) return false;
+    const c = flat[idx].chord;
+    if (!(punctAfter[idx] > 0 || c.beats >= 2 || c.rest || c.fermata)) return false;
+    return parallelHeads.has(headFpAt(idx + 1));
+  };
+
   const scoreAt = (idx: number): number => {
     const ci = flat[idx];
     const c = ci.chord;
@@ -441,7 +611,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 断点落在尾随的休止上，长音的分要带过来——否则「断在长音后」比「断在休止后」还便宜，
     // 那半拍休止就挂到了下一行行首（372《跟随耶稣》第 2/4 行）。
     if (carriedFrom[idx] >= 0 && flat[carriedFrom[idx]].chord.beats >= 2) s += 4;
-    if (c.rest && c.beams === 0) s += 1;   // 四分及以上休止（弱信号）
+    // **休止本身就是乐句的气口**：唱的人在这儿换气，断在这里天然合适。
+    // 原来只给四分及以上 +1，弱得几乎不起作用；成书那条路按长短给分、八分休止也算。
+    // 编辑器那条路维持 +1（基线是按它调出来的）。
+    if (c.rest) s += CONTENT_ONLY ? (c.beams === 0 ? 4 : 2) : (c.beams === 0 ? 1 : 0);
     // 圆滑线/连音线刚收尾（一字多音唱完）：本身是弱信号，主要为让它**进入候选**——密集副歌里小节末
     // 全被跨小节的弧封锁时，这是唯一能切开长行的地方。但若它收的是一个**长音**（`5---|5)` 这种
     // tie 延续），乐句实际就在这里收尾，把长音的分带过来：长音落在小节内，断点自然也在小节内。
@@ -474,6 +647,11 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 封顶 10：再往上就会盖过「句末长音」（`6 + 4`）那种最硬的乐句收尾，
     // 把下一句的弱起拽到上一行行尾（15 首基线里「爱是不保留」的「惟求」就是这么被拽走的）。
     if (rep !== undefined) s += REPEAT_LEN_BONUS ? Math.min(10, 6 + rep) : 8;
+    // 跳转记号（Fine / D.C. / D.S. / To Coda）落在哪个小节，那个小节末就**高优先级断开**
+    //（+10，比房尾 +6、终止线 +5 都高）：记号是给唱的人看路标的，印在一行的中段读不出来。
+    if (ci.isLast && JUMP_MEAS.has(ci.mi)) s += 10;
+    // 平行乐句开头（见上面 parallelHeads 的注释）
+    if (startsParallel(idx)) s += PARALLEL_WEIGHT;
     return s;
   };
 
@@ -585,6 +763,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     else sectionCutChords.add(flat[idx].chord);
   }
 
+  // **跳转记号处强制断行**（Fine / D.C. / D.S. / To Coda）。只加进 DP 的分段边界 `cuts`，
+  // **不写 sectionStarts**——那些是「另起一页」，这里只要换行。
+  // 光靠 `scoreAt` 的 +10 压不住：断点代价的量程只有 0~8，而「各行一样长」那一项能到几十分，
+  // 096《哈利路亚！感谢主》实测就是被行长匀度盖过去、Fine 印在了第二行的中段。
   // 全局 DP（类 Knuth-Plass）：行长以「小节数」计（含小数，跨弱起/切分仍准），
   // 最小化 Σ(行长偏差² + 断点弱罚)。断点可落在小节中间（如句号在小节内的 slur/tie 收尾）。
   const ends = [0, ...cand.map((i) => flat[i].pos)]; // ends[0]=曲首；断点 b∈1..M 对应 cand[b-1]
@@ -609,6 +791,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     endPunctUpto[idxAt[b]] - endPunctUpto[idxAt[a] + 1];
   const INF = Number.POSITIVE_INFINITY;
   const BASE_BREAK = 8;
+  /** contentOnly 下把断点强度归一化到 `[0, BASE_BREAK]` 的分母：要盖得住最强的断点
+   *  （实测 24 分上下），强度才分得出高下，而总量程不变。 */
+  const CONTENT_BASE_BREAK = 24;
   /** 在 b 处断行要付的代价（不含行长）：乐句信号越强越便宜。段末（b === hi）不付。
    *  **强断点可以挣出净收益**（封顶 BASE_BREAK，免得一路狂断）；BREAK_WEIGHT=1 时
    *  退化成原来的 max(0, …)，编辑器那条路的行为不变。
@@ -617,7 +802,26 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const breakCost = (b: number, hi: number): number => {
     if (b === hi) return 0;
     const sc = scoreAt(cand[b - 1]);
-    return Math.max(0, BASE_BREAK - sc * BREAK_WEIGHT) +
+    // **contentOnly 下强度要真的分得出高下**：旧式 `max(0, BASE_BREAK − sc × 3)` 在
+    // `sc ≥ 3` 之后一律钳成 0，于是「断在长音+标点上（13 分）」与「断在一个普通小节线上
+    // （9 分）」代价一模一样，断在哪儿全由别的项说了算（175《人惟以信得称义》的
+    // 「能大力，」就是这么被让掉的）。
+    //
+    // 改法是**把强度的量程铺满 `[0, BASE_BREAK]`**：分母取盖得住最强断点的那个数
+    // （实测最强的在 24 分上下），于是 9 分与 13 分不再打平，而**总量程仍是原来的 0~8**
+    // ——`headPenalty`（行首判据）、`lastPair`（末两行）、`crossedEndPunct` 那几项
+    // 都是按 0~8 这个尺度调出来的，量程一放大它们就被稀释（实测全书 L1~L5 六档一起变差）。
+    //
+    // 不允许负收益：代价在 DP 里是累加的，负收益会让它一路狂断（068《天使报信》试出来
+    // 排了 10 行，其中四行只有一小节）。非负且单调，强断点便宜但仍要付费，
+    // 于是「断得少」与「断在强点上」自己去权衡，上界由超容量罚兜住。
+    // 代价一律**非负**。试过把零点摆到量程中间让强断点挣净收益，全书立刻碎化
+    //（中间行过短 5 → 61 处）——DP 里代价是累加的，一给负收益就一路狂断。
+    // 「少断更便宜」的偏向改在**方案评分**那一层纠正（见 quality 的 BREAK_QUALITY_WEIGHT）。
+    const base = CONTENT_ONLY
+      ? Math.max(0, BASE_BREAK * (1 - sc / CONTENT_BASE_BREAK))
+      : Math.max(0, BASE_BREAK - sc * BREAK_WEIGHT);
+    return base +
       (flat[cand[b - 1]].isLast || sc >= 4 ? 0 : 6) +
       headPenalty(cand[b - 1]);
   };
@@ -627,19 +831,39 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 每小节末都在 slur 内）硬禁会让整段找不到任何合法切法、退化成一整行。软罚则总能挑出最不坏的一种。
   const lenCost = (meas: number, cells: number, segEnd: boolean, maxCells = MAX_CELLS, maxMeas = MAX_MEAS,
                    target = TARGET_MEAS, lenW = LEN_WEIGHT, cellsInt = cells): number =>
+    // **contentOnly 下只剩「排不排得下」这一条**：小节数上限、行太稀那几项都是绝对量、
+    // 直接挂在版心容量上，不该由它们决定乐句断在哪儿（见 PhraseOptions.contentOnly）。
+    // 行长目标这一项留着，但**由调用方决定用不用**：第一遍 DP 传 lenW = 0（纯内容断句），
+    // 方案选优那几遍传的 target 是「本段小节数 ÷ 行数」——那是个**相对**量，不含纸张，
+    // 只是让 DP 排得出指定的行数（行数本身不进 quality 的评分）。
     lenW * (meas - target) ** 2 +
-    (meas > maxMeas ? (meas - maxMeas) ** 2 * 40 : 0) +
+    (!CONTENT_ONLY && meas > maxMeas ? (meas - maxMeas) ** 2 * 40 : 0) +
     (cellsInt > maxCells ? (cellsInt - maxCells) ** 2 * 8 : 0) +
     // 段末/曲末行是唯一可短于 MIN 的行，但也**不该短到只剩一小节**——软罚让 DP 宁可把前面几行
     // 各让出一点，也别甩出一个孤零零的尾巴（"不要有只有一节的情况"）。
-    (segEnd && meas < MIN_MEAS ? (MIN_MEAS - meas) ** 2 * 10 : 0) +
+    (!CONTENT_ONLY && segEnd && meas < MIN_MEAS ? (MIN_MEAS - meas) ** 2 * 10 : 0) +
     // 「尾巴太短」在小节短促的谱上按小节数量不出来：「基督更美」每小节才 4 格，末行 3 小节
     // 合规、实则只有 7.7 格（同曲其余行 15.7）。故段末行的下限也认格数，与非段末行的 MIN_CELLS
     // 同一口径——非段末行是硬约束，段末行仍只软罚（末行本来就可以短一些）。
-    (segEnd && cells < MIN_CELLS ? (MIN_CELLS - cells) ** 2 : 0);
+    (!CONTENT_ONLY && segEnd && cells < MIN_CELLS ? (MIN_CELLS - cells) ** 2 : 0);
+
+  // **后面剩不下半行内容的不强制**：Fine 常写在临近曲末处（`D.C. al Fine` 唱两遍的谱），
+  // 在那里硬断一刀就甩出个两三格的尾巴（018 实测末两行 21 / 2 格、497 甩出一行 2 格）。
+  // 按**格数**判而不是小节数——小节的长短随拍号差得远。
+  const FORCED_CUT_TAIL_CELLS = 8;
+  const forcedCuts: number[] = [];
+  if (JUMP_MEAS.size) {
+    for (let i = 0; i < M; i++) {
+      const idx = cand[i];
+      if (idx === K - 1 || !flat[idx].isLast || !JUMP_MEAS.has(flat[idx].mi)) continue;
+      if (cellsUpto[K] - cellsUpto[idx + 1] < FORCED_CUT_TAIL_CELLS) continue;
+      forcedCuts.push(i + 1);
+      forced.add(flat[idx].mi + 1); // 后续的并行/补刀不许删（见 PhraseBreaks.forced）
+    }
+  }
 
   // 按段界把 [0,M] 切成若干闭区间，逐段跑同一套 DP：段末等同曲末（末行可短、无断点罚）。
-  const cuts = [0, ...new Set(sectionCuts)].sort((p, q) => p - q);
+  const cuts = [0, ...new Set([...sectionCuts, ...forcedCuts])].sort((p, q) => p - q);
   if (cuts[cuts.length - 1] !== M) cuts.push(M);
   /** 跑一遍 DP。`targetFor(s)` 给第 s 段的行长目标（小节数），`lenW` 是行长代价的权重。 */
   const runDP = (targetFor: (s: number) => number, lenW: number): { dp: number[]; nextB: number[] } => {
@@ -655,7 +879,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         const meas = ends[b] - ends[a], cells = cellsBetween(a, b);
         // 扫描上界（两者随 b 单调增）：放到软限的两倍，超出必然亏本，不必再算。
         if (b > a + 1 && (meas > MAX_MEAS * 2 || cells > MAX_CELLS * 2)) break;
-        if (b < hi && meas < MIN_MEAS && cells < MIN_CELLS) continue; // 只有段末/曲末行可短
+        // 只有段末/曲末行可短。contentOnly 下放宽——一个短乐句就该占一短行，「行太稀」
+        // 是纸张的事——但仍不许**只剩一小节**的碎行（那不是乐句，是被切剩的）。
+        if (b < hi && (CONTENT_ONLY ? meas < 2 : meas < MIN_MEAS && cells < MIN_CELLS)) continue;
         // 断点罚：乐句信号越强越便宜；**行内断点（非小节末）另加重罚** —— 简谱通常在小节线处换行，
         // 行内断只该用在乐句尾恰落小节内（句号/长音，那时 scoreAt 高足以抵消）或实在别无选择时。
         // 行内罚只压**弱信号**的行内断点：句号/长音/延长号/重复边界（score≥4）落在小节内时，
@@ -719,7 +945,8 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     return out;
   };
 
-  let { nextB } = runDP(() => TARGET_MEAS, LEN_WEIGHT);
+  // 第一遍：contentOnly 下 `lenW = 0`，纯按内容断，行数自然涌现（作为下面候选方案的底）。
+  let { nextB } = runDP(() => TARGET_MEAS, CONTENT_ONLY ? 0 : LEN_WEIGHT);
   // **出几种方案再评分选优**（`evenWeight > 0` 时）。
   //
   // 第一遍只保证「每行都放得下」，于是一段顶着版心、另一段只有半幅——051《赞美我主君王》
@@ -731,29 +958,56 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   if (EVEN_WEIGHT > 0) {
     const segs = cuts.length - 1;
     const base = linesPerSeg(nextB);
-    /** 一套方案的分：越小越好。行长不匀（按格数的方差）+ 断点弱度 + 每多一行的代价。 */
+    /**
+     * 一套方案的分：越小越好。
+     *
+     * **contentOnly 下这把尺子是无量纲的、与行数无关的**（见 PhraseOptions.contentOnly）：
+     *   - 行长不匀按**变异系数**（标准差 ÷ 均值）算，不用方差——方差随格数量纲变化，
+     *     等于又把版心宽度请了回来。
+     *   - 断点弱度取**均值**而不是总和。这一条是要害：去掉「每多一行 rowCost 分」之后，
+     *     总和会让「多断几刀」平白变好（每一刀都挑最强的断点，总弱度反而降），
+     *     于是每首都摊成一堆短行。
+     *   - **平行乐句开头**按行数占比给负分（越多行对得齐越好）。
+     *   - 行数、短行（稀疏）都不算分；超容量仍是硬伤（排版器会照宽度硬折，甩出个两三格的尾巴）。
+     */
     const quality = (nb: number[]): number => {
       const cells: number[] = [];
       let weak = 0;
+      let parallel = 0;
       for (let a = 0; a < M; ) {
         const b = nb[a];
         if (b <= a) break;
         cells.push(cellsBetween(a, b));
         const hi = cuts.find((c) => c >= b) ?? M;
         weak += breakCost(b, hi);
-        // 超容量**几乎是硬伤**：排版器会照宽度硬折，甩出个两三格的尾巴（比多排一行难看得多），
-        // 所以罚得比「多一行」重得多，别让「挤一挤能少一行」赢了。
         const over = cellsIntBetween(a, b) - MAX_CELLS;
         if (over > 0) weak += 100 + over ** 2 * 8;
-        // 短行同样难看（058《耶和华的心》曾在中间甩出一行只有 5 格）。末行不算——它本来可以短。
-        const short = MIN_CELLS - cellsIntBetween(a, b);
-        if (short > 0 && b < M) weak += short ** 2;
+        if (!CONTENT_ONLY) {
+          // 短行同样难看（058《耶和华的心》曾在中间甩出一行只有 5 格）。末行不算——它本来可以短。
+          const short = MIN_CELLS - cellsIntBetween(a, b);
+          if (short > 0 && b < M) weak += short ** 2;
+        }
+        // 这一行的**下一行**是不是平行开头（断点 b 之后那个和弦起头）
+        if (b < M && startsParallel(cand[b - 1])) parallel++;
         a = b;
       }
       if (!cells.length) return INF;
       const mean = cells.reduce((x, y) => x + y, 0) / cells.length;
-      const uneven = cells.reduce((x, c) => x + (c - mean) ** 2, 0) / cells.length;
-      return uneven + weak + ROW_COST * cells.length;
+      const variance = cells.reduce((x, c) => x + (c - mean) ** 2, 0) / cells.length;
+      if (!CONTENT_ONLY) return variance + weak + ROW_COST * cells.length;
+      // **行长不匀按「变异系数」算**（标准差 ÷ 均值）：无量纲，不随格数的绝对值变化。
+      // 用方差不行——那是「格²」，容量大的谱天生分高，等于又把纸张请了回来。
+      // 试过在 contentOnly 下干脆不算这一项，全书立刻崩（中间行过短 5 → 70 处、
+      // 行长悬殊 6 → 51 首）：行与行的长短差异确实要算权重。
+      //
+      // 另一项是断点弱度，取**均值**（不是总和）——总和会让「多断几刀」平白变好，
+      // 每一刀都挑最强的断点，总弱度反而降。均值让行数保持中性。
+      // contentOnly 下再乘 BREAK_QUALITY_WEIGHT：DP 第一遍（代价非负、累加）总是交出
+      // 「行数最少、每行顶着容量」的那一套，而它的行长天然最匀，不加权就永远赢。
+      const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+      const breakW = CONTENT_ONLY ? BREAK_QUALITY_WEIGHT : 1;
+      return EVEN_WEIGHT * 100 * cv + breakW * (weak / cells.length)
+        - PARALLEL_WEIGHT * (parallel / cells.length) * 10;
     };
     const runWith = (want: number[]): { nb: number[]; lines: number[] } => {
       const r = runDP((sIdx) => {
@@ -763,18 +1017,27 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       }, EVEN_WEIGHT);
       return { nb: r.nextB, lines: linesPerSeg(r.nextB) };
     };
-    // 候选：每段 +0/+1（段多时只给最长的那一段加，免得组合爆炸）
+    // 候选：每段在第一遍的行数上下各试几档。
+    // **contentOnly 下要双向**（−2…+2）：第一遍已经不受行长目标约束，行数是「照内容断」
+    // 自然涌现的，既可能偏多也可能偏少——117《祂名称为奇妙》头三句各有一个 24 分的强断点，
+    // 第一遍照着断出 7/7/13/27/24/25 格六行，而更匀的四行方案压根没被生成过。
+    // 旧口径下第一遍是按行长目标排的，行数只会偏少，所以单向就够（编辑器那条路不变）。
+    const deltas = CONTENT_ONLY ? [-2, -1, 0, 1, 2] : [0, 1, 2];
     const options: number[][] = [];
-    const add = (w: number[]) => { if (!options.some((o) => o.every((v, i) => v === w[i]))) options.push(w); };
+    const add = (w: number[]) => {
+      if (w.some((v) => v < 1)) return;
+      if (!options.some((o) => o.every((v, i) => v === w[i]))) options.push(w);
+    };
     add(base.slice());
     if (segs <= 3) {
       const grid = (i: number, acc: number[]) => {
         if (i === segs) return add(acc.slice());
-        for (const d of [0, 1, 2]) { acc.push(base[i] + d); grid(i + 1, acc); acc.pop(); }
+        for (const d of deltas) { acc.push(base[i] + d); grid(i + 1, acc); acc.pop(); }
       };
       grid(0, []);
     } else {
-      for (let i = 0; i < segs; i++) { const w = base.slice(); w[i]++; add(w); }
+      for (let i = 0; i < segs; i++)
+        for (const d of deltas) { if (d === 0) continue; const w = base.slice(); w[i] += d; add(w); }
     }
     let best = { score: INF, nb: nextB };
     for (const want of options) {
@@ -786,6 +1049,18 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     }
     // @ts-ignore 临时调试
     if (typeof window !== "undefined" && (window as any).__evenDebug) (window as any).__evenDebug = { base, tried: options.map((w) => { const g = runWith(w); return { want: w, got: g.lines, q: g.lines.every((v, i) => v === w[i]) ? quality(g.nb) : null }; }), first: quality(nextB) };
+    // @ts-ignore 调试钩子：每个候选断点的位置、歌词、强度分与行首罚。
+    // 页面里先 `window.__phraseDebug = null`，排完读它——「为什么断在这儿不断在那儿」
+    // 只看结果是猜不出来的（175 的「能大力，」是靠它看出两个断点代价被钳成了同一个 0）。
+    if (typeof window !== "undefined" && (window as any).__phraseDebug !== undefined) {
+      (window as any).__phraseDebug = cand.map((idx, i) => ({
+        i, mi: flat[idx].mi, isLast: flat[idx].isLast,
+        text: mainLyricText(flat[idx].chord),
+        next: idx + 1 < K ? mainLyricText(flat[idx + 1].chord) : "",
+        score: scoreAt(idx), head: headPenalty(idx),
+        parallel: startsParallel(idx),
+      }));
+    }
     // 第一遍那套也要参与评分（它可能就是最好的）
     if (quality(nextB) <= best.score) best = { score: quality(nextB), nb: nextB };
     nextB = best.nb;
@@ -821,5 +1096,5 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     if (mi + 1 < n) measureBreaks.add(mi + 1);
   }
 
-  return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut };
+  return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced };
 }
