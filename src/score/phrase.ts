@@ -17,6 +17,15 @@ export interface PhraseBreaks {
   sectionCutChords: Set<Chord>;
   /** 是否已为「副歌起点」安排了段界（含弱起顺延）。jpscore 据此不再自行在副歌首音处断行。 */
   refrainCut: boolean;
+  /**
+   * **在这条小节线上断行有多少乐句凭据**（小节下标，语义同 `measureBreaks`：
+   * `mi + 1` = 在第 mi 小节之后断）。值 = 断点强度 − 行首罚，可以是负的。
+   *
+   * 给**容量补刀**用（`applybreaks.ts::splitEvenly`）：断句本身不看纸张，
+   * 排不下就整首换档，而换的那个档也得挑个像样的落点——原来它只按格数找最接近的
+   * 小节线，不看标点、不看长音、不看行首罚，刀常落在句子中间（全书行首带标点 190 处）。
+   */
+  cutScore: Map<number, number>;
   /** **不许删的断点**（小节下标，语义同 `measureBreaks`）：跳转记号（Fine / D.C. / D.S. /
    *  To Coda）所在的小节末。`measureBreaks` 的子集。后续的并行/补刀（`chooseLineLayout`）
    *  一律绕开它们——记号是给唱的人看路标的，印在一行的中段读不出来。 */
@@ -312,10 +321,11 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const measureBreaks = new Set<number>();
   const midBreaks = new Set<Chord>();
   const sectionStarts = new Set<number>();
+  const cutScore = new Map<number, number>();
   const sectionCutChords = new Set<Chord>();
   const forced = new Set<number>();
   let refrainCut = false;
-  if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced };
+  if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cutScore };
 
   const chordsPer = measures.map((m) => chordsOf(m));
   const fpPer = chordsPer.map((cs) => measureFp(cs));
@@ -366,7 +376,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     }
   }
   const K = flat.length;
-  if (K === 0) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced };
+  if (K === 0) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cutScore };
 
   // slur/tie 括号**先做栈式配对**：识别(OMR)或原谱本身都可能给出不成对的弧（漏检一端）。若照单全收，
   // 一个悬空的起始就让此后 depth 永不归零 → 整曲再无候选断点、乐句排版退化成一整行（实测「主祢真伟大」
@@ -1277,6 +1287,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     nextB = best.nb;
   }
 
+  // 每条小节线上「断行有多少凭据」（见 PhraseBreaks.cutScore）。候选之外的小节线不填——
+  // 那些地方连乐句信号都没有，补刀落在那儿本来就该按位置挑。
+  for (const idx of cand) {
+    if (!flat[idx].isLast) continue;
+    cutScore.set(flat[idx].mi + 1, scoreAt(idx) - headPenalty(idx));
+  }
+
   // 回溯：每个选中断点 cand[b-1]，小节末→小节边界换行，否则→行内换行。段界本身也是断点。
   const brk = (b: number) => {
     const ci = flat[cand[b - 1]];
@@ -1307,5 +1324,5 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     if (mi + 1 < n) measureBreaks.add(mi + 1);
   }
 
-  return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced };
+  return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cutScore };
 }
