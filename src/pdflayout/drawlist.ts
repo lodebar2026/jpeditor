@@ -37,6 +37,10 @@ export interface DrawText {
   box?: { x: number; w: number };
   color?: number;
   songId?: string | null;
+  /** 语义标记（`ending` / `section-word` / `key-change` / `chord`），**只给检查脚本用**，
+   *  不参与任何度量或绘制。房号与段号同归 `verseNum` 角色、转调标记混在 lyric 里，
+   *  光看 `role` 分不开，line-check.mjs 的 L9~L12 靠这个认。 */
+  cls?: string;
 }
 
 export interface DrawPath {
@@ -46,6 +50,8 @@ export interface DrawPath {
   stroke?: number | null;
   sw?: number;
   dash?: number[] | null;
+  /** 语义标记，同 `DrawText.cls`——**只给检查脚本用**，不参与绘制。 */
+  cls?: string;
 }
 
 export interface DrawRect {
@@ -270,6 +276,36 @@ export function specToDrawPage(spec: PageSpec, style: BookStyle, opt: SpecToDraw
 }
 
 /** 每个角色各画了多少字（报告与回归用）。 */
+/**
+ * 整页横向平移（**对开页镜像**用）。
+ *
+ * 排版引擎只知道一个版心宽度，不知道奇偶页要镜像：它一律从 `margin.inner` 起排，
+ * 于是偶数页的谱面整体偏右 `inner − outer`（本书 12.24pt），装订侧的边距就窄了那么多
+ * （120《耶稣是我亲爱救主》实测越出切口侧 12.2pt）。装饰层（曲号/页眉）是 Node 侧按页号
+ * 摆的、本来就镜像，只有谱面没有。
+ *
+ * 平移只能在**页号定下来之后**做（装订前不知道一页是奇是偶），而那时路径坐标已经烘进
+ * `d` 里了，所以这里连 `d` 一起搬：`d` 的数字是 x/y 交替的（`M`/`L` 两个、`C` 六个），
+ * 逐个数按下标奇偶决定加不加。
+ */
+export function shiftDrawPageX(page: DrawPage, dx: number): void {
+  if (!dx) return;
+  for (const it of page.items) {
+    if (it.t === "text") {
+      it.xs = it.xs.map((x) => x + dx);
+      if (it.box) it.box = { ...it.box, x: it.box.x + dx };
+    } else if (it.t === "rect") {
+      it.x += dx;
+    } else if (it.t === "line") {
+      it.x1 += dx;
+      it.x2 += dx;
+    } else if (it.t === "path") {
+      let i = 0;
+      it.d = it.d.replace(/-?\d*\.?\d+/g, (m) => (i++ % 2 === 0 ? String(Math.round((Number(m) + dx) * 100) / 100) : m));
+    }
+  }
+}
+
 export function drawPageStats(p: DrawPage): Record<string, number> {
   const out: Record<string, number> = {};
   for (const it of p.items) {

@@ -500,17 +500,24 @@ export abstract class Entry {
 }
 
 export class KeySig extends Entry {
+  /** 转调标记那个文本框。`liftOverChords` 要按它的墨迹框判避让，故留住引用。 */
+  readonly label: TextFrame;
   constructor(key: S.Key, opt: LayoutOptions) {
     super();
     const names = ["Cb", "Gb", "Db", "Ab", "Eb", "Bb", "F", "C", "G", "D", "A", "E", "B", "F#", "C#"];
     const name = names[key.fifths + 7];
     const tf = new TextFrame();
+    tf.classes.add("key-change"); // 见 browser.ts::roleOfItem —— line-check 的 L12 靠它认
     tf.color = opt.color;
     tf.y = -opt.numberSize;
     tf.text = `转1=${name}`;
     tf.font = opt.lrcFont.scaled(0.6);
     const w = tf.measureText();
     tf.x = -w / 2;
+    // `liftKeySigOverChords` 要按 width/bound 判避让，这里就把尺寸算出来
+    //（`Line.load` 之后到 `group.update()` 之间还隔着好几步）。
+    tf.update();
+    this.label = tf;
     this.group.add(tf);
     this.group.data = this;
   }
@@ -900,6 +907,20 @@ export class Barline extends Entry {
     res.update();
   }
 
+  /** 小节线**墨迹**的左右缘（相对本 entry 的组原点）。
+   *
+   *  `group.x` 不是线的位置：`:‖` 会先画反复点再画线，两者差着 `dotR × 2 + dotGap`
+   *  （实测 4.8pt）。房号横线要贴着小节线画，拿 `group.x` 当线位就会短一截
+   *  （158《一件礼物》的一房终点差了 4.3pt，看着没对齐）。 */
+  get inkLeft(): number {
+    const f = this.lines[0];
+    return f ? f.x - f.strokeWidth / 2 : 0;
+  }
+  get inkRight(): number {
+    const l = this.lines[this.lines.length - 1];
+    return l ? l.x + l.strokeWidth / 2 : 0;
+  }
+
   /** 反复点：小节线中线上下各一个实心圆（四段三次贝塞尔近似）。 */
   private addDots(opt: LayoutOptions, cx: number, r: number, top: number, bot: number): void {
     const mid = (top + bot) / 2;
@@ -1092,8 +1113,14 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
   // 行中的 `hangLeft` 就是 `barLeft`，挂不出去，照旧往下走抬升。
   const hang = g.anchorX - g.width - gap;
   if (hang >= g.hangLeft && !hit(hang)) return { x: hang, lifted: false, shortfall: 0 };
-  // 抬起来那一层同样不许出版心（行末那一条锚点靠右时会伸出去）
-  const lifted = Math.max(g.hangLeft, Math.min(g.anchorX, g.rightLimit - g.width));
+  // 抬起来那一层同样**一个字都不许出版心**（行末那一条锚点靠右时会伸出去）。
+  // 先按右缘钳，再按 hangLeft 钳，**冲突时以不出版心为准**——原来外面套的那个
+  // `Math.max(hangLeft, …)` 会在「词比 hangLeft 到版心右缘还宽」时把落点顶回去，
+  // 于是仍旧挂出版心（120 首的「（副歌）」）。
+  // 左界这里取的是**版心左缘（0）而不是 hangLeft**：hangLeft 是「不许越过上一条小节线」，
+  // 那是就地摆放时的口径；抬起来这一层已经离开了和弦带，越过小节线也不会被读成
+  // 上一小节的标记，而「出版心」是硬伤。
+  const lifted = Math.max(0, Math.min(g.anchorX, g.rightLimit - g.width));
   return { x: lifted, lifted: true, shortfall: Math.max(0, cand + g.width - g.barRight) };
 }
 
@@ -1370,6 +1397,16 @@ export class Line {
         else hi = mid;
       }
       const need = hi;
+      // **撑开会把整行拉长**（小节线右边的东西整体右移 `need`），撑过头整条谱行就伸出版心去了
+      //（120《耶稣是我亲爱救主》实测越出右缘 57pt——正好是这里的撑开量；段落词本身还在
+      // 版心内，所以 line-check 的 L6 一直报 0，看 PDF 才发现是**整行**出去了）。
+      // 撑不下就别撑：维持 `placeSectionWord` 给的抬起落点，把段落词摆到和弦上方一层
+      //（用户口径：「排不下的时候就把文本放到和弦上方」）。
+      const lineRight = lineWidth || this.group.width || 0;
+      if (lineRight > 0) {
+        const last = this.entries[this.entries.length - 1];
+        if (last.group.x + last.group.width + need > lineRight) continue;
+      }
       inBar.forEach((k, n) => { this.entries[k].group.x += (need * (n + 1)) / steps; });
       for (let k = endIdx; k < this.entries.length; k++) this.entries[k].group.x += need;
     }
@@ -1385,6 +1422,106 @@ export class Line {
   /** 一个音符条目上挂的和弦组（`addHarmony` 打的 `chord-group` 标记）。 */
   private chordGroups(e: NoteEntry): Group[] {
     return e.group.children.filter((it): it is Group => it instanceof Group && it.classes.has("chord-group"));
+  }
+
+  /**
+   * **长 slur/tie 底下的和弦与段落词让位**。
+   *
+   * 和弦（`NoteEntry.addHarmony`）与弧（`NoteEntry.slurRung`）都从「音符墨迹栈顶」起算、
+   * 互不知情，跨度一长弧就顶进和弦那一带，把 `Gm`/`C` 从字脚上划过去（070 首副歌）。
+   * 原书的排法是**和弦在弧之上**，所以让位的是和弦不是弧。
+   *
+   * 口径（用户定的）：弧**中间**的和弦必须抬，两端的可以不抬——两端弧低，和弦本来
+   * 就够不着，这一条靠「墨迹真的相交才触发」自然满足；而一旦触发，同一条弧底下的
+   * 和弦就**整排一起抬**（含头尾），不然一高一低比压着还难看。
+   *
+   * 段落词（`（副歌）`）不在这里动：它的基线跟着第一个和弦走（`sectionWordBaseY`），
+   * 和弦抬起来它自然跟着抬；本行没有和弦时另在 `addSectionWords` 之后收尾。
+   */
+  liftChordsUnderSlurs(opt: LayoutOptions): void {
+    if (!this.slurTies.length) return;
+    const chords: { g: Group; x0: number; x1: number; y0: number; y1: number }[] = [];
+    for (const e of this.entries) {
+      if (!(e instanceof NoteEntry)) continue;
+      for (const it of this.chordGroups(e))
+        chords.push({
+          g: it,
+          x0: e.group.x + it.x, x1: e.group.x + it.x + it.width,
+          y0: e.group.y + it.y, y1: e.group.y + it.y + it.height,
+        });
+    }
+    if (!chords.length) return;
+    const dyOf = new Map<Group, number>();
+    for (const s of this.slurTies) {
+      const sx0 = s.x, sx1 = s.x + s.width, sTop = s.y, sBottom = s.y + s.height;
+      const under = chords.filter((c) => c.x1 > sx0 && c.x0 < sx1);
+      if (!under.length) continue;
+      if (!under.some((c) => c.y1 > sTop && c.y0 < sBottom)) continue; // 没真压上就不动
+      let dy = 0;
+      for (const c of under) dy = Math.min(dy, sTop - opt.jpStackGap - c.y1);
+      for (const c of under) dyOf.set(c.g, Math.min(dyOf.get(c.g) ?? 0, dy));
+    }
+    for (const [g, dy] of dyOf) g.y += dy;
+  }
+
+  /** 本行没有和弦、段落词又被弧压住时的收尾（有和弦时它跟着和弦走，见上）。 */
+  liftSectionWordsUnderSlurs(opt: LayoutOptions): void {
+    if (!this.slurTies.length) return;
+    for (const tf of this.group.children) {
+      if (!(tf instanceof TextFrame) || !tf.classes.has("section-word")) continue;
+      const x0 = tf.x, x1 = tf.x + tf.width;
+      const y0 = tf.y + tf.bound.top, y1 = tf.y + tf.bound.bottom;
+      let dy = 0;
+      for (const s of this.slurTies) {
+        if (s.x + s.width <= x0 || s.x >= x1) continue;
+        if (s.y >= y1 || s.y + s.height <= y0) continue;
+        dy = Math.min(dy, s.y - opt.jpStackGap - y1);
+      }
+      tf.y += dy;
+    }
+  }
+
+  /**
+   * **转调标记避开和弦**（144 首）。
+   *
+   * `KeySig` 的文本固定摆在音符基线上方一个字号处，正是和弦那一带（`chordGap`），
+   * 而它的 `entryWidth()` 是 0、左右各伸出半个词宽，撞上就直接压字。
+   * 排版口径是「转调在上方」：撞了就把标记整体抬到那些和弦的墨迹顶之上一个 `jpStackGap`
+   *（与八度点/圆滑线共用的那把尺子，见 docs/实现/简谱纵向栅格.md）。
+   *
+   * 要排在 `addEnding` **之前**：房号的高度是扫全行已画对象算的，抬起来的转调也得算进去。
+   */
+  liftKeySigOverChords(opt: LayoutOptions): void {
+    const keys = this.entries.filter((e): e is KeySig => e instanceof KeySig);
+    if (!keys.length) return;
+    // 本行所有和弦组的绝对包围盒
+    const chords: { x0: number; x1: number; y0: number; y1: number }[] = [];
+    for (const e of this.entries) {
+      if (!(e instanceof NoteEntry)) continue;
+      for (const it of this.chordGroups(e))
+        chords.push({
+          x0: e.group.x + it.x, x1: e.group.x + it.x + it.width,
+          y0: e.group.y + it.y, y1: e.group.y + it.y + it.height,
+        });
+    }
+    if (!chords.length) return;
+    for (const k of keys) {
+      const tf = k.label;
+      const x0 = k.group.x + tf.x;
+      const x1 = x0 + tf.width;
+      // TextFrame 的 y 是**基线**，纵向范围要走 `bound`（top = ascent 为负、bottom = descent）
+      const y0 = k.group.y + tf.y + tf.bound.top;
+      const y1 = k.group.y + tf.y + tf.bound.bottom;
+      let top = Infinity;
+      for (const c of chords) {
+        if (c.x1 <= x0 || c.x0 >= x1) continue; // 横向不重叠
+        if (c.y0 >= y1 || c.y1 <= y0) continue; // 纵向不重叠
+        top = Math.min(top, c.y0);
+      }
+      if (!Number.isFinite(top)) continue;
+      // 把标记的**墨迹底**抬到那些和弦的墨迹顶之上一个 jpStackGap
+      k.group.y += top - opt.jpStackGap - y1;
+    }
   }
 
   private doLineBreak(width: number): Line[] {
@@ -1625,8 +1762,13 @@ export class Line {
       l.addTuplet(opt);
       l.addTie(opt);
       l.addSlur(opt);
+      // 和弦让位要排在 addSlur 之后（要弧的实际位置）、liftKeySigOverChords 与
+      // addEnding 之前（转调标记按和弦位置避让、房号高度扫全行已画对象）。
+      l.liftChordsUnderSlurs(opt);
+      l.liftKeySigOverChords(opt);
       l.addEnding(opt);
       l.addSectionWords(opt, width);
+      l.liftSectionWordsUnderSlurs(opt);
       l.clipBarlinesUnderSlurs(opt);
       l.updateLyricY(opt);
       l.group.normalizeY();
@@ -1715,6 +1857,13 @@ export class Line {
    * 房号（volta / ending）：`⌐1.` 那条横线 + 左端下垂 + 房号数字，画在音符上方。
    * 与五线谱同一套画法；行内画不完的房（跨行、或 `discontinue`）右端不封口。
    * 房的范围来自 `Measure.endingLeft/endingRight`，按**本行内**出现的那一段画。
+   *
+   * 高度与端点都照**文本谱那一路**的口径（`src/pu/layout.ts`，那边是按印刷原版做的）：
+   *   - 横线走一条**全行统一的车道**，不按各房各自区间的墨迹顶算。原版里一房二房的横线
+   *     是同一条高度（169 首曾因一房上方有和弦、二房没有而错开）；要让开下方内容时
+   *     也是整行一起抬。
+   *   - 端点**贴着两侧的小节线**，不贴房内首末音符。相邻两房之间隔着一条小节线的宽度，
+   *     天然分得开（158 首的一房二房曾按音符各向外扩 0.35em、顶在一起）。
    */
   addEnding(opt: LayoutOptions): void {
     if (opt.endingSize <= 0) return;
@@ -1727,17 +1876,26 @@ export class Line {
       if (last && last.m === m) last.notes.push(e);
       else segs.push({ m, notes: [e] });
     }
+    // 本行的小节线**墨迹**左右缘（端点要贴着它们，见 Barline.inkLeft/inkRight）
+    const barInk = this.entries
+      .filter((e): e is Barline => e instanceof Barline)
+      .map((b) => ({ left: b.group.x + b.inkLeft, right: b.group.x + b.inkRight }))
+      .sort((a, b) => a.left - b.left);
+    const spans: { num: string; notes: NoteEntry[]; closed: boolean; x0: number; x1: number }[] = [];
     let num: string | null = null;
     let notes: NoteEntry[] = [];
     const flush = (closed: boolean) => {
-      if (num !== null && notes.length) this.drawEnding(opt, num, notes, closed);
+      if (num !== null && notes.length) {
+        const sp = this.endingSpan(opt, num, notes, closed, barInk);
+        if (sp) spans.push(sp);
+      }
       num = null;
       notes = [];
     };
     for (const seg of segs) {
       if (seg.m.endingLeft) {
         flush(false);
-        num = seg.m.endingNum && seg.m.endingNum.size ? [...seg.m.endingNum].sort((a, b) => a - b).join("·") + "." : "";
+        num = seg.m.endingNum && seg.m.endingNum.size ? [...seg.m.endingNum].sort((a, b) => a - b).join(".") + "." : "";
       }
       if (num === null) continue;
       notes.push(...seg.notes);
@@ -1748,46 +1906,74 @@ export class Line {
       if (seg.m.endingRight !== null) flush(seg.m.endingRight === S.StartStopDiscontinue.STOP);
     }
     flush(false); // 房跨到下一行：本行这一段不封口
-  }
-
-  private drawEnding(opt: LayoutOptions, num: string, notes: NoteEntry[], closed: boolean): void {
-    const leftItem = notes[0].entryItem();
-    const rightItem = notes[notes.length - 1].entryItem();
-    if (!leftItem || !rightItem) return;
-    const x0 = leftItem.pos(this.group).x - opt.numberSize * 0.35;
-    const x1 = rightItem.pos(this.group).x + rightItem.width + opt.numberSize * 0.35;
-    if (x1 <= x0) return;
-    // 房号线一律排在**这一段的最上方**：和弦、三连音括线、圆滑线都在音符上方那一带，
-    // 按音符墨迹顶算会跟它们叠在一起。取这一段里所有音符 group 的实际顶（和弦已经在 group 里）。
+    if (!spans.length) return;
+    // **全行共用一个高度**：各房区间内所有已画对象的最高墨迹，取所有房里最高的那个。
+    // 逐房各算就会错开（一房上方有和弦、二房没有）。
     let above = Infinity;
-    for (const e of notes) above = Math.min(above, e.group.pos(this.group).y);
-    for (const it of this.group.children) {
-      const l = it.pos(this.group).x;
-      if (l + it.width < x0 || l > x1) continue;
-      above = Math.min(above, it.pos(this.group).y);
+    for (const sp of spans) {
+      for (const e of sp.notes) above = Math.min(above, e.group.pos(this.group).y);
+      for (const it of this.group.children) {
+        const l = it.pos(this.group).x;
+        if (l + it.width < sp.x0 || l > sp.x1) continue;
+        above = Math.min(above, it.pos(this.group).y);
+      }
     }
+    if (!Number.isFinite(above)) return;
     const drop = opt.bracketFoot > 0 ? opt.bracketFoot : opt.endingSize * 0.9;
     const top = above - opt.endingSize * 0.5 - drop;
+    for (const sp of spans) this.drawEnding(opt, sp, top, drop);
+  }
+
+  /** 一段房的横向范围。端点贴**小节线**（找不到才退回按首末音符外扩）。 */
+  private endingSpan(
+    opt: LayoutOptions, num: string, notes: NoteEntry[], closed: boolean,
+    barInk: { left: number; right: number }[],
+  ): { num: string; notes: NoteEntry[]; closed: boolean; x0: number; x1: number } | null {
+    const leftItem = notes[0].entryItem();
+    const rightItem = notes[notes.length - 1].entryItem();
+    if (!leftItem || !rightItem) return null;
+    const noteL = leftItem.pos(this.group).x;
+    const noteR = rightItem.pos(this.group).x + rightItem.width;
+    // 贴小节线：起点取房内首音**之前**最近的那条，终点取末音**之后**最近的那条，各让一点气。
+    // 相邻两房之间因此隔着一条小节线的宽度，不会再顶在一起（158）。
+    // 起点贴前一条小节线的**右缘**、终点贴后一条的**左缘**，各让一点气。
+    // 相邻两房之间因此隔着一条小节线的宽度，不会再顶在一起（158）。
+    const gap = opt.endingSize * 0.12;
+    const barBefore = [...barInk].reverse().find((b) => b.right <= noteL);
+    const barAfter = barInk.find((b) => b.left >= noteR);
+    const x0 = barBefore !== undefined ? barBefore.right + gap : noteL - opt.numberSize * 0.35;
+    const x1 = barAfter !== undefined ? barAfter.left - gap : noteR + opt.numberSize * 0.35;
+    if (x1 <= x0) return null;
+    return { num, notes, closed, x0, x1 };
+  }
+
+  private drawEnding(
+    opt: LayoutOptions,
+    sp: { num: string; closed: boolean; x0: number; x1: number },
+    top: number,
+    drop: number,
+  ): void {
     const grp = new Group();
-    grp.x = x0;
+    grp.x = sp.x0;
     grp.y = top;
     const lw = opt.bracketWidth > 0 ? opt.bracketWidth : opt.barlineWidth;
     const path = new GraphicPath();
+    path.classes.add("ending-line"); // line-check 的 L10/L11 靠它认（见 browser.ts::CLS_TAGS）
     path.stroke = true;
     path.fill = false;
     path.strokeColor = opt.color;
     path.strokeWidth = lw;
     path.moveTo(0, drop);
     path.lineTo(0, 0);
-    path.lineTo(x1 - x0, 0);
-    if (closed) path.lineTo(x1 - x0, drop);
+    path.lineTo(sp.x1 - sp.x0, 0);
+    if (sp.closed) path.lineTo(sp.x1 - sp.x0, drop);
     grp.add(path);
-    if (num) {
+    if (sp.num) {
       const tf = new TextFrame();
       tf.classes.add("ending"); // 见 browser.ts::roleOfItem（归 verseNum 那一档，别当成音符）
       tf.font = opt.numberFont.makeWithSize(opt.endingSize);
       tf.color = opt.color;
-      tf.text = num;
+      tf.text = sp.num;
       // 数字摆在竖脚**右侧**、横线**下方**，谁也不压谁（原书就是这么排的）
       tf.x = lw + opt.endingSize * 0.28;
       tf.y = lw + opt.endingSize * 0.95;

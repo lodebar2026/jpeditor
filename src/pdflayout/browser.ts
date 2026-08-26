@@ -49,6 +49,9 @@ function dashInkShift(opt: LayoutOptions): number {
   return (nb.top + nb.bottom) / 2 - (db.top + db.bottom) / 2;
 }
 
+/** 透到 `DrawText.cls` 的那几个 class（顺序即优先级）。 */
+const CLS_TAGS = ["ending", "ending-line", "section-word", "key-change", "chord"];
+
 function roleOfItem(it: TextFrame, opt: LayoutOptions): StyleRole {
   // 和弦是 layout/harmony.ts 造的普通 TextFrame，只有 classes 认得出来（见那边的注释）
   if (it.classes.has("chord-music")) return "smufl";
@@ -97,7 +100,10 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
   const emit = (it: PageItem, m: Mat6): void => {
     if (it instanceof GraphicPath) {
       const d = pathData(it, m);
-      if (d) items.push({ t: "path", d, fill: it.fill ? argbToRgb(it.fillColor) : null, stroke: it.stroke ? argbToRgb(it.strokeColor) : null, sw: it.stroke ? it.strokeWidth * scaleOf(m) : 0 });
+      if (d) {
+        const pcls = CLS_TAGS.find((c) => it.classes.has(c));
+        items.push({ t: "path", d, fill: it.fill ? argbToRgb(it.fillColor) : null, stroke: it.stroke ? argbToRgb(it.strokeColor) : null, sw: it.stroke ? it.strokeWidth * scaleOf(m) : 0, ...(pcls ? { cls: pcls } : {}) });
+      }
       return;
     }
     if (it instanceof GraphicLine) {
@@ -123,6 +129,9 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
       // 只在**画的时候**补这一下——排版度量（entry 高度、纵向栅格、行容量）不能动，
       // 那是「简谱纵向栅格」那把统一的尺子。
       const role0 = roleOfItem(it, o.options);
+      // 语义标记：**只给 line-check.mjs 用**，不参与度量。房号与段号同归 verseNum、
+      // 转调标记混在 lyric 里，光看 role 分不开（见 DrawText.cls）。
+      const cls = CLS_TAGS.find((c) => it.classes.has(c));
       const dy = role0 === "note" && (it.text === "-" || it.text === "\u2013") ? dashInkShift(o.options) : 0;
       const y = applyY(m, 0, 0);
       const t: DrawText = {
@@ -135,6 +144,7 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
         align: "pen",
         xs,
         color: argbToRgb(it.color),
+        ...(cls ? { cls } : {}),
       };
       items.push(t);
     }
