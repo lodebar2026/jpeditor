@@ -161,6 +161,9 @@ export interface LineHead {
   full: boolean;
   /** 残小节里有没有音符（false = 只有休止） */
   hasNote: boolean;
+  /** 残小节占多少**格**（`tidyLineHeads` 判「并到上一行放不放得下」要用它，
+   *  不能拿整行的格数——那会把「并两拍休止」误判成「并一整行」）。 */
+  cells: number;
   /** 行首第一个和弦：是不是休止、几条符杠、几拍 */
   rest: boolean;
   beams: number;
@@ -242,6 +245,7 @@ export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: bo
         dur: head.reduce((n, f) => n + (f.chord.duration?.toFloat() ?? 0), 0),
         full: seg[0].k === 0,
         hasNote: head.some((f) => !f.chord.rest),
+        cells: head.reduce((n, f) => n + cellsOfChord(f.chord), 0),
         rest: seg[0].chord.rest,
         beams: seg[0].chord.beams,
         firstBeats: seg[0].chord.beats,
@@ -296,8 +300,11 @@ export function tidyLineHeads(part: Part, breaks: PhraseBreaks, opt: { useMidBre
     if (cur.head.hasNote) continue;
     if (prev.section) continue;          // 段界（另起一页）不能挪
     if (cur.fromMi === cur.toMi && cur.bars === 0) continue; // 整行都在一个小节里：没有小节线可挪到
-    // 并过去的是行首那个残小节，格数按整格算（与容量口径一致）
-    const headCells = Math.max(1, cur.cells);
+    // 并过去的**只是行首那个残小节**，不是整行——原来这里拿的是 `cur.cells`（整行格数），
+    // 于是「并两拍休止」被算成「并一整行」，放不下就不并了
+    //（282《我的灯需要油》第 3 行：上一行 32 格 + 本行 22 格 = 54 > 容量 33，
+    //   实际要并过去的只有 2 格）。
+    const headCells = Math.max(1, cur.head.cells);
     if (cells > 0 && prev.cells + headCells > cells) continue;
     if (prev.mi !== null) breaks.measureBreaks.delete(prev.mi);
     if (prev.chord) breaks.midBreaks.delete(prev.chord);
