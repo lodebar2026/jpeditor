@@ -114,16 +114,28 @@ for (const song of lineDoc.songs) {
   // 但「半拍休止 + 半拍音符」这种弱起本身没问题——只要与本曲多数行一样长就行
   //（用户口径：为了工整，各行都以同样长的不完整小节起头是对的）。判据与
   // phrase.ts::headPenalty 的那一条一一对应，这里只是把它验出来。
-  const heads = ls.map((l) => Number(l.head.dur.toFixed(3)));
-  if (heads.length > 1) {
-    const tally = new Map();
-    for (const b of heads) tally.set(b, (tally.get(b) ?? 0) + 1);
-    const mode = [...tally].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
+  // **基准按段各算各的**：主歌与副歌本来就可以是两种弱起（087《父意成全》主歌两行
+  // 从 2 拍起头、副歌两行从 1 拍起头），全曲一个众数会把其中一半判成毛病。
+  // 与 phrase.ts::pickupStdAt 同一口径。
+  {
+    const segOf = [];
+    let seg = 0;
+    ls.forEach((l, i) => { if (i > 0 && l.section) seg++; segOf.push(seg); });
+    const tallies = new Map();
     ls.forEach((l, i) => {
-      if (i === 0) return; // 第一行的弱起就是本曲的弱起，断句挪不动它
+      const t = tallies.get(segOf[i]) ?? new Map();
+      const b = Number(l.head.dur.toFixed(3));
+      t.set(b, (t.get(b) ?? 0) + 1);
+      tallies.set(segOf[i], t);
+    });
+    ls.forEach((l, i) => {
+      if (i === 0 || l.section) return; // 每段第一行的弱起就是那一段的基准，断句挪不动它
+      const t = tallies.get(segOf[i]);
+      if (!t || t.size < 2) return;
+      const mode = [...t].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
       if (!(l.head.rest && l.head.firstDur > 0 && l.head.firstDur <= 0.5)) return;
       if (Math.abs(l.head.dur - mode) > 0.01)
-        hit("L3", song.id, `第 ${i + 1} 行以半拍休止起头、弱起 ${l.head.dur} 拍，本曲多数是 ${mode} 拍`);
+        hit("L3", song.id, `第 ${i + 1} 行以半拍休止起头、弱起 ${l.head.dur} 拍，本段多数是 ${mode} 拍`);
     });
   }
 

@@ -972,8 +972,12 @@ export class Barline extends Entry {
   readonly defaultTop: number;
   private readonly bot: number;
 
+  /** 建这条线时用的 spec（`dropDoubledBarlines` 要拿它判断能不能把两条并成一条）。 */
+  readonly spec: BarlineSpec;
+
   constructor(final: boolean, opt: LayoutOptions, spec: BarlineSpec = {}) {
     super();
+    this.spec = spec;
     this.group.data = this;
     const top = opt.jpStaffTop;
     const bot = opt.jpStaffBottom;
@@ -987,7 +991,11 @@ export class Barline extends Entry {
     // repeatForward/Backward 自带隐含样式：谱上没标 bar-style 也要画成粗细组合。
     const st = spec.style ?? null;
     let widths: number[];
-    if (st === S.BarStyle.LIGHT_HEAVY || (final && !spec.repeatForward)) widths = [light, heavyWidth];
+    // **前后反复背靠背**（`:‖:`）：上一小节收尾的 `:‖` 与本小节起头的 `‖:` 合成一条，
+    // 五线谱的画法是「细 粗 细」+ 两侧各两点，而不是两根粗线并排
+    // （`dropDoubledBarlines` 把它们并起来后才会走到这里）。
+    if (spec.repeatBackward && spec.repeatForward) widths = [light, heavyWidth, light];
+    else if (st === S.BarStyle.LIGHT_HEAVY || (final && !spec.repeatForward)) widths = [light, heavyWidth];
     else if (st === S.BarStyle.HEAVY_LIGHT || spec.repeatForward) widths = [heavyWidth, light];
     else if (st === S.BarStyle.LIGHT_LIGHT) widths = [light, light];
     else if (st === S.BarStyle.HEAVY || st === S.BarStyle.HEAVY_HEAVY) widths = [heavyWidth];
@@ -1376,15 +1384,23 @@ export class Line {
    *
    * `‖:`（反复段起点）画在小节**开头**，而上一小节末尾本来就有一条细线，两条挨在一起
    * 就成了「细 粗 细」三条竖线（010《愿祢崇高》第一行开头）。原书是「粗 细 + 两点」。
-   * 普通的那条让位；两条都不普通（`:‖‖:` 这种）就都留着。
+   * 普通的那条让位；两条都不普通就看是不是**前后反复背靠背**（`:‖` 紧接 `‖:`）：
+   * 那两条要合成一条「细 粗 细」+ 两侧各两点，五线谱就是这么画的
+   * （J14 原来画成两根粗线并排）。其余组合仍旧都留着。
    */
-  private dropDoubledBarlines(): void {
+  private dropDoubledBarlines(opt: LayoutOptions): void {
     for (let i = this.entries.length - 1; i > 0; i--) {
       const cur = this.entries[i];
       const prev = this.entries[i - 1];
       if (!(cur instanceof Barline) || !(prev instanceof Barline)) continue;
       if (prev.isPlain) this.entries.splice(i - 1, 1);
       else if (cur.isPlain) this.entries.splice(i, 1);
+      else if (prev.spec.repeatBackward && cur.spec.repeatForward
+               && !prev.spec.repeatForward && !cur.spec.repeatBackward) {
+        const merged = new Barline(false, opt, { repeatBackward: true, repeatForward: true });
+        merged.update();
+        this.entries.splice(i - 1, 2, merged);
+      }
     }
   }
 
@@ -1850,7 +1866,7 @@ export class Line {
 
   layout(width: number, height: number, opt: LayoutOptions): Group[] {
     this.lyricGap = opt.lyricGap;
-    this.dropDoubledBarlines();
+    this.dropDoubledBarlines(opt);
     this.calcXPos();
     const lines = this.doLineBreak(width);
     // 段落词挂在**行末那个音符**上时，它标的其实是下一行的起句（「（副歌）」印在主歌

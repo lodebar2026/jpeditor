@@ -282,6 +282,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const ROW_COST = opts.rowCost ?? 20;
   /** 方案评分里「断点弱度」相对「行长匀度」的权重（contentOnly 用，见 quality）。 */
   const BREAK_QUALITY_WEIGHT = 8;
+  /** 末两行「短的 ÷ 长的」低于此就开始罚（contentOnly 用，见 quality 的 lastPair）。
+   *  与 line-check 的 L5 同一口径、同一个 0.6。 */
+  const LAST_PAIR_QUALITY_RATIO = 0.6;
+  const LAST_PAIR_QUALITY_WEIGHT = 60;
+  /** 「有一行明显比同曲其它行短」的门槛（contentOnly 用，见 quality 的 shortOutlier）：
+   *  最短的那一行（末行除外）不到中位数的这个比例就开始罚。 */
+  const SHORT_OUTLIER_RATIO = 0.6;
   /** 「有一行明显比同曲其它行长」的权重（contentOnly 用，见 quality 的 outlier）。 */
   const OUTLIER_WEIGHT = 60;
   /**
@@ -292,8 +299,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
    * 374《跟随救主》段 2 要排 4 行每行 2 小节，DP 算下来
    * 「4 行 = 行长代价 0 + 断三刀 24」比「3 行 = 行长代价 4 + 断两刀 16」还贵，于是交出 3 行
    * （`want [4,4] → got [4,3]`），那套方案就被「行数对不上」丢弃了，候选池里根本没有它。
-   * 调到 2 之后 DP 排得出来：374 直接出 8 行各 2 小节（不必再靠 `splitLongest` 事后补刀），
-   * 070《天使歌唱》也终于排出了主歌 16/16 + 副歌 30/34 那 4 行。
+   * 调到 2 之后 DP 排得出来：070《天使歌唱》终于排出了主歌 16/16 + 副歌 30/34 那 4 行。
+   * （374 还另有一处：`splitSentence` 拿 `punctAfter === 6` 判句末，把「跟随！」这种
+   * 被 SHORT_WORDS 折半的呼语句一律当成非句末，见 `isSentenceEndAt`。）
    * 再往上调反而过头——行长压过断点强度，374 又散成 7 行 13/13/14/12/17/17/12（权重 3）。
    */
   const RUN_WITH_LEN_WEIGHT = 2;
@@ -505,13 +513,24 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
    *       每行都该收在「跟随我，」的长音上）。
    * 罚而不是禁：这一行放不下时 DP 会自己改在别处断，不至于整段无解。
    */
+  /** 在 idx 之后换行的话，下一行的**行首残小节**有多长（时值；`Chord.beats` 是增时线格数、不是时值）。
+   *  `headPenalty` 的 (b)/(b3) 与段界的 `retreatPastPickupRest` 共用这一把尺子。 */
+  const headDurAfter = (idx: number): number => {
+    const nx = flat[idx + 1];
+    if (!nx) return 0;
+    let head = 0;
+    for (let j = idx + 1; j < K && flat[j].mi === nx.mi; j++) {
+      head += flat[j].chord.duration?.toFloat() ?? 0;
+      if (flat[j].isLast) break;
+    }
+    return head;
+  };
   const headPenalty = (idx: number): number => {
     const nx = flat[idx + 1];
     if (!nx) return 0;
-    let head = 0;   // 行首残小节的**时值**（Chord.beats 是增时线格数，不是时值）
+    const head = headDurAfter(idx);   // 行首残小节的时值
     let hasNote = false;
     for (let j = idx + 1; j < K && flat[j].mi === nx.mi; j++) {
-      head += flat[j].chord.duration?.toFloat() ?? 0;
       if (!flat[j].chord.rest) hasNote = true;
       if (flat[j].isLast) break;
     }
@@ -762,7 +781,16 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     if (flat[at].isLast) return at;
     let idx = at;
     while (idx >= 0 && flat[idx].chord.rest && flat[idx].chord.beams > 0) idx--;
-    return idx >= 0 && idx !== at && depthAfter[idx] === 0 ? idx : at; // 回退处在弧中不可断 → 维持原判
+    if (!(idx >= 0 && idx !== at && depthAfter[idx] === 0)) return at; // 回退处在弧中不可断 → 维持原判
+    // **回退之后的行首残小节要与本曲的弱起一样长**，否则不退：337《活着为耶稣》的弱起是
+    // 1.5 拍（行 1/2/4 都是），副歌那个段界一路退到半拍休止之前，第 3 行就成了 2 拍
+    // （0.5 休止 + 1.5）。`headPenalty` 的 (b2)/(b3) 早有这个口径——「能凑成标准弱起的
+    // 就挪下去，凑不成的留在上一行」——只是段界这条路一直没走那套判断。
+    // 只在**退了不齐、不退正好齐**时拦下来，别的情形维持原判（363《倾听我的心》那种
+    // `0_` + `5,_` 正好凑成一拍的仍照退）。编辑器那条路不变（15 首基线按旧口径调过）。
+    if (CONTENT_ONLY && pickupStd > 0 && Math.abs(headDurAfter(idx) - pickupStd) > 0.01
+        && Math.abs(headDurAfter(at) - pickupStd) < 0.01) return at;
+    return idx;
   };
   const aroundSectionPickup = (at0: number): number => {
     const at = retreatPastPickupRest(at0);
@@ -874,6 +902,14 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 完整句末的前缀计数。仅提高「跨过句末、把下一句弱起塞到本行」的代价；若断点本身就在
   // 句末则不罚。这样 `…便要走！ 而…`、`…长存不朽！ 谁人…` 会优先在 `！` 后换行，
   // 同时很短的句子仍可在行长收益足够大时合排，不把句末标点做成绝对硬断点。
+  //
+  // **「是不是句末」要问 `endAfter`，别拿 `punctAfter` 的分数去比 6**（见 isSentenceEnd 的注释）：
+  // 「很短的分句减半」会把「跟随！」「主！」这种呼语句的 6 折成 3，于是它们在下面几处
+  // 一律不算句末——374《跟随救主》段 2 整段都是这种短句，`splitSentence` 因此认定
+  // 「后面还有个句号、整句放得下」，给每一处 2 小节的断法压上 24 分的重罚，
+  // DP 于是**排不出**「每行 2 小节」那 4 行（`want [4,4] → got [4,3]`）。
+  // 编辑器那条路的 15 首基线是按旧口径调出来的，仍走 `punctAfter === 6`。
+  const isSentenceEndAt = (i: number): boolean => (CONTENT_ONLY ? endAfter[i] : punctAfter[i] === 6);
   const endPunctUpto = new Array<number>(K + 1).fill(0);
   for (let i = 0; i < K; i++) endPunctUpto[i + 1] = endPunctUpto[i] + (punctAfter[i] === 6 ? 1 : 0);
   const crossedEndPunct = (a: number, b: number): number =>
@@ -970,14 +1006,14 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         if (b > a + 1 && (meas > MAX_MEAS * 2 || cells > MAX_CELLS * 2)) break;
         // 只有段末/曲末行可短。contentOnly 下放宽——一个短乐句就该占一短行，「行太稀」
         // 是纸张的事——但仍不许**只剩一小节**的碎行（那不是乐句，是被切剩的）。
-        if (b < hi && (CONTENT_ONLY ? meas < 2 : meas < MIN_MEAS && cells < MIN_CELLS)) continue;
+        if (b < hi && (CONTENT_ONLY ? (meas < 2 && scoreAt(cand[b - 1]) < 4) : meas < MIN_MEAS && cells < MIN_CELLS)) continue;
         // 断点罚：乐句信号越强越便宜；**行内断点（非小节末）另加重罚** —— 简谱通常在小节线处换行，
         // 行内断只该用在乐句尾恰落小节内（句号/长音，那时 scoreAt 高足以抵消）或实在别无选择时。
         // 行内罚只压**弱信号**的行内断点：句号/长音/延长号/重复边界（score≥4）落在小节内时，
         // 那本就是乐句真正的收尾处，不该因为「没赶上小节线」被罚。
         const bc = breakCost(b, hi);
         const crossed = crossedEndPunct(a, b);
-        const endsAtSentence = punctAfter[idxAt[b]] === 6;
+        const endsAtSentence = isSentenceEndAt(idxAt[b]);
         // 若从本行起点继续到下一个句号仍不超过「完整句」宽度，就不要提前在逗号/弱音乐信号处拆开。
         // 超过该宽度则不罚，长句仍可正常分行。
         let splitSentence = 0;
@@ -990,7 +1026,15 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
           const softCut = flat[bi].chord.beats < LONG_NOTE_BEATS && !flat[bi].chord.fermata && !flat[bi].chord.rest;
           for (let p = idxAt[b] + 1; p <= idxAt[hi]; p++) {
             if (punctAfter[p] !== 6) continue;
-            const sentenceCells = cellsUpto[p + 1] - cellsUpto[idxAt[a] + 1];
+            // **「这句放得下」要与容量判据用同一把尺子**：`cellsAreItems`（成书那条路）下
+            // 容量数的是格子个数（`cellsIntUpto`），而这里原来拿的是折算过的小数格。
+            // 215《同心合意》第 2 段整段是一句「…主爱无尽。」，小数格 32.8 ≤ 33 判成「放得下」，
+            // 于是从任何位置断开都被罚 24 分、DP 排不出 2 行（`want [x,2] → got [x,1]`）；
+            // 而它按格子数其实是 34 格、根本放不下，那一行只好交给容量保险按宽度硬折，
+            // 折点落在「人，」的头上。
+            const sentenceCells = CELLS_ARE_ITEMS
+              ? cellsIntUpto[p + 1] - cellsIntUpto[idxAt[a] + 1]
+              : cellsUpto[p + 1] - cellsUpto[idxAt[a] + 1];
             const sentenceMeas = flat[p].pos - ends[a];
             // 一句话只要放得下（MAX_SENTENCE_MEAS 小节 / MAX_SENTENCE_CELLS 格）就整句成行。
             if (softCut && sentenceCells <= MAX_SENTENCE_CELLS && sentenceMeas <= MAX_SENTENCE_MEAS) {
@@ -1139,8 +1183,38 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       // 段 2 的两行各 23 格彼此很匀，可段 1 每行才 13 格，那两行该各拆成两行才对
       //（用户口径：「374 应该是每行 2 小节」）。
       const outlier = segOutlier(durs);
+      // **镜像的另一半：别有哪一行短到只剩别人一半**。cv 管「同段各行相近」、`outlier` 管
+      // 「别有哪一行长到顶别人两个」，短的那头原来没人管——本来是靠「DP 排不出那么多行」
+      // 挡着的，判据修好之后要在评分这一层补上。**末行不算**（它本来就可以短）。
+      const segShortOutlier = (xs: number[]): number => {
+        if (xs.length < 3) return 0;
+        const m = [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)] || 1;
+        return Math.max(0, SHORT_OUTLIER_RATIO - Math.min(...xs.slice(0, -1)) / m);
+      };
+      const shortOutlier = CONTENT_ONLY ? segShortOutlier(durs) : 0;
+      // **末两行别一长一短**。DP 里的 `lastPair` 是一遍之内的前瞻，只管得住那一遍自己的选择，
+      // 方案与方案之间比不了；断句判据修好之后（见 `isSentenceEndAt` / `sentenceCells`）
+      // 可选的行数变多，这一条就得在评分这一层也说一次。按时值比，无量纲。
+      const lastPair = durs.length >= 2
+        ? Math.max(0, LAST_PAIR_QUALITY_RATIO
+            - Math.min(durs[durs.length - 1], durs[durs.length - 2])
+              / Math.max(durs[durs.length - 1], durs[durs.length - 2], 1e-9))
+        : 0;
       const breakW = CONTENT_ONLY ? BREAK_QUALITY_WEIGHT : 1;
-      return EVEN_WEIGHT * 100 * cv + OUTLIER_WEIGHT * outlier + breakW * (weak / cells.length)
+      // @ts-ignore 调试钩子：一套方案的分是怎么摊出来的。页面里先 `window.__qDebug = []`，
+      // 排完读它——`__evenDebug` 只给总分，看不出「这一版明明更匀却输了」输在哪一项
+      //（133《以马内利，恳求降临》的 3 行版 cv 只有 7.4、4 行版 22.9，却因为 4 行版
+      //  多出一个平行乐句开头、拿了 −27.5 的奖励而落败）。
+      if (typeof window !== "undefined" && (window as any).__qDebug) (window as any).__qDebug.push({
+        lines: cells.length, durs: durs.map((d) => Math.round(d * 10) / 10),
+        cv: +(EVEN_WEIGHT * 100 * cv).toFixed(2), outlier: +(OUTLIER_WEIGHT * outlier).toFixed(2),
+        shortOut: +(OUTLIER_WEIGHT * shortOutlier).toFixed(2),
+        lastPair: +((CONTENT_ONLY ? LAST_PAIR_QUALITY_WEIGHT * lastPair : 0)).toFixed(2),
+        weak: +(breakW * (weak / cells.length)).toFixed(2),
+        parallel: +(-PARALLEL_WEIGHT * (parallel / cells.length) * 10).toFixed(2) });
+      return EVEN_WEIGHT * 100 * cv + OUTLIER_WEIGHT * (outlier + shortOutlier)
+        + (CONTENT_ONLY ? LAST_PAIR_QUALITY_WEIGHT * lastPair : 0)
+        + breakW * (weak / cells.length)
         - PARALLEL_WEIGHT * (parallel / cells.length) * 10;
     };
     const runWith = (want: number[]): { nb: number[]; lines: number[] } => {
@@ -1195,69 +1269,11 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         parallel: startsParallel(idx),
       }));
     }
-    /**
-     * **局部改良：把明显过长的那一行对半拆开**。
-     *
-     * 「每段试 ±k 行」那套候选是靠 DP 在给定行数下重排出来的，而 DP 常常**排不出**指定的
-     * 行数（374《跟随救主》的 `want [4,4] → got [4,3]`），那套方案就被丢弃了，
-     * 候选池里于是压根没有「把那一行拆开」的选项——分数再怎么调也选不到。
-     * 这里直接在最优方案上动手：找出比中位数长 1.4 倍以上的那一行，
-     * 在它内部挑最强的断点切一刀，两半都不许短于 2 小节，再交给 `quality` 评分。
-     * 374 每行 2 小节、020《向主歌唱》倒数第二行拆成两行，都是这么来的。
-     */
-    const splitLongest = (nb: number[]): number[] | null => {
-      const segs: [number, number][] = [];
-      for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; segs.push([a, b]); a = b; }
-      if (segs.length < 2) return null;
-      const lenOf = (sg: [number, number]) => durBetween(sg[0], sg[1]);
-      const sorted = segs.map(lenOf).sort((x, y) => x - y);
-      const med = sorted[Math.floor(sorted.length / 2)] || 1;
-      // **过长的行一次全拆**，不是只拆最长那一条。一条一条来会把同一段拆得参差
-      //（374《跟随救主》段 2 两行各 16 拍、都是段 1 的两倍，只拆一条就成了 16/8/8，
-      //  段内反而更不齐、分数更差，于是一条也拆不动）。
-      const out = nb.slice();
-      let changed = false;
-      for (const [a, b] of segs) {
-        const len = lenOf([a, b]);
-        if (len / med <= 1.4) continue;
-        let pick = -1;
-        let bestSc = -Infinity;
-        for (let c = a + 1; c < b; c++) {
-          // 两半都不许太短：各占原来那一行三成以上的时值，**而且都放得下半幅版心**
-          //（后一条与 L2「中间行不足容量四成」同口径——拆完甩出个短行反而更难看，
-          //  实测不设这道闸全书中间行过短 2 → 13 处）。
-          if (durBetween(a, c) < len * 0.3 || durBetween(c, b) < len * 0.3) continue;
-          if (cellsBetween(a, c) < MAX_CELLS * 0.4 || cellsBetween(c, b) < MAX_CELLS * 0.4) continue;
-          const sc = scoreAt(cand[c - 1]) - headPenalty(cand[c - 1]);
-          if (sc > bestSc) { bestSc = sc; pick = c; }
-        }
-        if (pick < 0) continue;
-        out[a] = pick;
-        out[pick] = b;
-        changed = true;
-      }
-      return changed ? out : null;
-    };
     // 第一遍那套也要参与评分（它可能就是最好的）
     if (quality(nextB) <= best.score) best = { score: quality(nextB), nb: nextB };
-    // **只拆一轮**：拆完行数变了，中位数跟着变，下一轮很容易把本来正常的行又判成「过长」
-    //（142《圣灵请来》原本 4 行各 8 小节、格数 25/24/25/26 相当匀，却被连拆四轮成了 8 行、
-    //  每行只剩 12~13 格 / 容量 33）。真有两条过长的行，交给下一次迭代（rebuild 会重排）。
-    for (let round = 0; round < 1; round++) {
-      const alt = splitLongest(best.nb);
-      // @ts-ignore 调试钩子：段界
+    // @ts-ignore 调试钩子：段界
     if (typeof window !== "undefined" && (window as any).__cutsDebug !== undefined)
       (window as any).__cutsDebug = { cuts: cuts.map((c) => (c === 0 ? 0 : flat[cand[c - 1]].mi + 1)), M, segs: cuts.length - 1 };
-    // @ts-ignore 调试钩子：拆之前/之后的行长与分数
-      if (typeof window !== "undefined" && (window as any).__splitDebug !== undefined) {
-        const lens = (nb: number[]) => { const o: number[] = []; for (let a = 0; a < M;) { const b = nb[a]; if (b <= a) break; o.push(Math.round(durBetween(a, b) * 10) / 10); a = b; } return o; };
-        (window as any).__splitDebug = { before: lens(best.nb), q0: best.score, after: alt ? lens(alt) : null, q1: alt ? quality(alt) : null };
-      }
-      if (!alt) break;
-      const q = quality(alt);
-      if (q >= best.score) break;
-      best = { score: q, nb: alt };
-    }
     nextB = best.nb;
   }
 
