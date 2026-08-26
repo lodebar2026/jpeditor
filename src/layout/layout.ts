@@ -412,8 +412,46 @@ export class Lyric extends TextFrame {
   }
 }
 
+/** 弧线（圆滑线 / 连音线）的样式参数。位置参数太多不可读，统一走这个对象。 */
+export interface SlurStyle {
+  /** 月牙形的最大厚度（musicpp 的 `lw0`），也是扁平式线宽的折算基准。 */
+  thickness: number;
+  color: number;
+  /** 整条弧随字号缩放（成书排版用小字号，绝对像素会显得过高）。默认 1。 */
+  heightScale?: number;
+  /** 细描边的线宽。默认 0.7。 */
+  outlineWidth?: number;
+  /** 弧高上限，**未乘 `heightScale` 的原始像素口径**。<=0 或省略 = 不封顶。 */
+  maxHeight?: number;
+  /** 弧高下限，同样是未乘 `heightScale` 的原始像素口径。<=0 或省略 = 只用公式自带的 1.2。 */
+  minHeight?: number;
+  /** 跨度超过它就改画扁平长连音线。<=0 或省略 = 一律画弧。 */
+  flatSpan?: number;
+  /** 扁平式**中段**的墨迹厚度（两端一样收尖）。省略 = `thickness * 0.45`。 */
+  flatLineWidth?: number;
+}
+
 export abstract class SlurTieBase extends Group {
-  static calcSlurPoints(pl: Point, pr: Point, heightScale = 1): [Point, Point, number] {
+  /**
+   * 弧高（正数，实际画的时候取负——简谱的弧一律在音符上方、开口朝下）。
+   * **这是弧高的唯一算法**：谱面排版、成书重排、文本谱的绘制与纵向预留全走它。
+   *
+   * musicpp 的公式（按 jianpuFont≈28 调的绝对像素）在**短弧**上会算出负值
+   * ——dist < 10^(16/17) ≈ 8.7pt 时 h 变正，弧就翻过来开口朝上了，所以钳住下限。
+   *
+   * 上限是本项目加的（musicpp / 原 Kotlin 都没有）：对数虽然涨得慢却**没有上限**，
+   * 28px 字号下典型跨度（3 个音符步距，dist≈90）弧高 17px，整行的长弧（dist≈600）
+   * 冲到 31px，将近两倍——顶到上方的和弦符号上。参考 open-fanqie
+   * （renderer.ts:703，弧高恒定 10px 与跨度无关）封顶，短弧的手感一点不变。
+   */
+  static arcHeight(dist: number, o: Pick<SlurStyle, "heightScale" | "maxHeight" | "minHeight"> = {}): number {
+    const floor = o.minHeight !== undefined && o.minHeight > 0 ? o.minHeight : 1.2;
+    const raw = Math.max(Math.log10(Math.max(dist, 1e-6)) * 17 - 16, floor);
+    const cap = o.maxHeight !== undefined && o.maxHeight > 0 ? Math.max(o.maxHeight, floor) : Infinity;
+    return Math.min(raw, cap) * (o.heightScale ?? 1);
+  }
+
+  static calcSlurPoints(pl: Point, pr: Point, o: Pick<SlurStyle, "heightScale" | "maxHeight" | "minHeight"> = {}): [Point, Point, number] {
     const xr = pr.x, xl = pl.x, yr = pr.y, yl = pl.y;
     const dx = xr - xl, dy = yr - yl;
     const square = dx * dx + dy * dy;
@@ -422,12 +460,7 @@ export abstract class SlurTieBase extends Group {
     const cos = Math.cos(-theta);
     const sin = Math.sin(-theta);
     const xlen = Math.min(dist * 0.04 + 10, dist * 0.25);
-    // 弧高。musicpp 的公式（按 jianpuFont≈28 调的绝对像素）在**短弧**上会算出负值
-    // ——dist < 10^(16/17) ≈ 8.7pt 时 h 变正，弧就翻过来开口朝上了。
-    // 简谱的圆滑线/连音线**方向固定**（弧在音符上方、开口朝下），所以先钳住下限再取负；
-    // `heightScale` 让整条弧随字号缩放（成书排版用小字号，绝对像素会显得过高）。
-    let h = Math.max(Math.log10(dist) * 17 - 16, 1.2) * heightScale;
-    h *= -1;
+    const h = -SlurTieBase.arcHeight(dist, o);
     let p1 = new Point(xlen, h).rotate(cos, sin);
     let p2 = new Point(dist - xlen, h).rotate(cos, sin);
     p1 = p1.offset(xl, yl);
@@ -435,9 +468,20 @@ export abstract class SlurTieBase extends Group {
     return [p1, p2, cos];
   }
 
-  init(pl: Point, pr: Point, thickness: number, clr: number, heightScale = 1, outlineWidth = 0.7): void {
-    const [pt0, pt1, cos] = SlurTieBase.calcSlurPoints(pl, pr, heightScale);
-    const lw0 = thickness / cos;
+  init(pl: Point, pr: Point, style: SlurStyle): void {
+    const dx = pr.x - pl.x, dy = pr.y - pl.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (style.flatSpan !== undefined && style.flatSpan > 0 && dist > style.flatSpan) {
+      this.initFlat(pl, pr, dist, style);
+      return;
+    }
+    this.initArc(pl, pr, style);
+  }
+
+  private initArc(pl: Point, pr: Point, style: SlurStyle): void {
+    const [pt0, pt1, cos] = SlurTieBase.calcSlurPoints(pl, pr, style);
+    const clr = style.color;
+    const lw0 = style.thickness / cos;
 
     // musicpp drawSlurTied (render.cpp:1078-1104): a filled crescent — out
     // along the curve, back with both control points pushed *down* by lw0/2 so
@@ -457,13 +501,70 @@ export abstract class SlurTieBase extends Group {
     const outline = new GraphicPath();
     outline.fill = false;
     outline.stroke = true;
-    outline.strokeWidth = outlineWidth;
+    outline.strokeWidth = style.outlineWidth ?? 0.7;
     outline.strokeColor = clr;
     outline.moveTo(pl);
     outline.cubicTo(pt0.offset(0, lw0 / 4), pt1.offset(0, lw0 / 4), pr);
 
-    const box = obj.computeTightBounds().union(outline.computeTightBounds());
-    for (const p of [obj, outline]) {
+    this.finish([obj, outline]);
+  }
+
+  /**
+   * 超长跨度的扁平长连音线：两端各一小段钩弧，中间一条水平细线。
+   *
+   * 照 open-fanqie（renderer.ts:690-700，`slurStyle: auto` 下跨度 > 100px 就改这个
+   * 画法，用 `lianyinxian_zuo`/`lianyinxian_you` 两个钩字形 + `stroke-width 1.2` 的直线）。
+   * 本项目没有那两个字形，钩自己用贝塞尔画。
+   *
+   * 高度取**阈值处那条弧的弧顶**（`arcHeight(flatSpan) * 0.75`——贝塞尔的弧顶约为控制点
+   * 高的 0.75），所以跨度跨过阈值的一刻高度连续，同一页里弧形与扁平并存也不会一高一低。
+   */
+  private initFlat(pl: Point, pr: Point, dist: number, style: SlurStyle): void {
+    const h = SlurTieBase.arcHeight(style.flatSpan!, style) * 0.75;
+    // 钩的水平长度：短了会显得两端急折，长了中段的直线就没了。h 的 2.5 倍最耐看。
+    const hx = Math.min(dist * 0.12, h * 2.5);
+    const t = style.flatLineWidth !== undefined && style.flatLineWidth > 0
+      ? style.flatLineWidth
+      : style.thickness * 0.45;
+    const clr = style.color;
+
+    // 与弧形同一套形状语言：**填充的月牙**，中段厚 t、两端收到端点上成尖角
+    // （去程画上缘、回程沿同一条形状下压 t 画回来，两端共用 pl/pr 所以天然是尖的）。
+    // 早先这里是一条等宽描边线，两端齐头齐脑，跟满页的月牙弧摆在一起很扎眼。
+    const obj = new GraphicPath();
+    obj.fill = true;
+    obj.stroke = false;
+    obj.fillColor = clr;
+    this.flatEdge(obj, pl, pr, hx, h, 0, false);
+    this.flatEdge(obj, pl, pr, hx, h, t, true);
+    obj.close();
+
+    this.finish([obj]);
+  }
+
+  /**
+   * 扁平连音线的一条边：`down` = 回程（从右往左、整体下压 `dy`）。
+   * 钩子在端点处陡、接上平线处水平：控制点一个贴端点抬起、一个落在平线上。
+   */
+  private flatEdge(p: GraphicPath, pl: Point, pr: Point, hx: number, h: number, dy: number, down: boolean): void {
+    const topL = pl.y - h + dy, topR = pr.y - h + dy;
+    if (!down) {
+      p.moveTo(pl);
+      p.cubicTo(new Point(pl.x + hx * 0.15, pl.y - h * 0.55), new Point(pl.x + hx * 0.45, topL), new Point(pl.x + hx, topL));
+      p.lineTo(new Point(pr.x - hx, topR));
+      p.cubicTo(new Point(pr.x - hx * 0.45, topR), new Point(pr.x - hx * 0.15, pr.y - h * 0.55), pr);
+    } else {
+      p.cubicTo(new Point(pr.x - hx * 0.15, pr.y - h * 0.55 + dy), new Point(pr.x - hx * 0.45, topR), new Point(pr.x - hx, topR));
+      p.lineTo(new Point(pl.x + hx, topL));
+      p.cubicTo(new Point(pl.x + hx * 0.45, topL), new Point(pl.x + hx * 0.15, pl.y - h * 0.55 + dy), pl);
+    }
+  }
+
+  /** 把画好的路径挪到自身坐标系原点，并把包围盒记到 x/y/width/height 上。 */
+  private finish(paths: GraphicPath[]): void {
+    let box = paths[0].computeTightBounds();
+    for (const p of paths.slice(1)) box = box.union(p.computeTightBounds());
+    for (const p of paths) {
       p.offset(-box.left, -box.top);
       p.x = 0;
       p.y = 0;
@@ -471,7 +572,6 @@ export abstract class SlurTieBase extends Group {
       p.height = box.height;
       this.add(p);
     }
-
     this.x = box.left;
     this.y = box.top;
     this.width = box.width;
@@ -480,6 +580,20 @@ export abstract class SlurTieBase extends Group {
 }
 export class Tie extends SlurTieBase {}
 export class Slur extends SlurTieBase {}
+
+/** LayoutOptions → SlurStyle。谱面这一路的弧全由它配参数，别在调用点各配各的。 */
+export function slurStyleOf(opt: LayoutOptions): SlurStyle {
+  return {
+    thickness: opt.slurTieThickness,
+    color: opt.color,
+    heightScale: opt.slurHeightScale,
+    outlineWidth: opt.slurOutlineWidth,
+    maxHeight: opt.slurMaxHeight,
+    minHeight: opt.slurMinHeight,
+    flatSpan: opt.slurFlatSpan < 0 ? 0 : opt.slurFlatSpan || opt.numberSize * 5,
+    flatLineWidth: opt.slurFlatWidth,
+  };
+}
 
 // ---------------- Entry hierarchy ----------------
 
@@ -1132,9 +1246,8 @@ export class Line {
   chordEntry = new Map<S.Chord, NoteEntry>();
   /** Arcs drawn on this line, in line coordinates (see clipBarlinesUnderSlurs). */
   slurTies: SlurTieBase[] = [];
-  /** 弧的缩放与描边宽，由 addTie/addSlur 从 LayoutOptions 暂存下来（addSlurTie 拿不到 opt）。 */
-  private slurHeightScale = 1;
-  private slurOutlineWidth = 0.7;
+  /** 弧的样式，由 addTie/addSlur 从 LayoutOptions 暂存下来（addSlurTie 拿不到 opt）。 */
+  private slurStyle: SlurStyle = { thickness: 6, color: 0 };
 
   private addEntry(e: Entry): void {
     if (e instanceof NoteEntry) {
@@ -1631,7 +1744,7 @@ export class Line {
     return grps;
   }
 
-  private addSlurTie(a: S.Note, b: S.Note, ypos: number, thickness: number, clr: number): void {
+  private addSlurTie(a: S.Note, b: S.Note, ypos: number): void {
     const ena = this.chordEntry.get(a.chord);
     const enb = this.chordEntry.get(b.chord);
     const grp = new Tie();
@@ -1641,7 +1754,7 @@ export class Line {
     if (a.tiePrev !== null || a.tupletEnd) pl = pl.offset(dx, 0);
     if (b.tieNext !== null) pr = pr.offset(-dx, 0);
     pr = pr.offset(enb!.group.x - ena!.group.x, 0);
-    grp.init(pl, pr, thickness, clr, this.slurHeightScale, this.slurOutlineWidth);
+    grp.init(pl, pr, this.slurStyle);
     grp.x += ena!.group.x;
     grp.normalizeX();
     grp.normalizeY();
@@ -1680,9 +1793,7 @@ export class Line {
   }
 
   private addTie(opt: LayoutOptions): void {
-    this.slurHeightScale = opt.slurHeightScale;
-    this.slurOutlineWidth = opt.slurOutlineWidth;
-    const thickness = opt.slurTieThickness;
+    this.slurStyle = slurStyleOf(opt);
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
       const nt = e.chord.notes[0];
@@ -1696,7 +1807,7 @@ export class Line {
       const endEntry = endCh ? this.chordEntry.get(endCh) : undefined;
       if (!endEntry) continue;
       const ypos = Math.min(this.tiedTop(e, opt, true), this.tiedTop(endEntry, opt, false));
-      this.addSlurTie(nt, nt.tieNext!, ypos, thickness, opt.color);
+      this.addSlurTie(nt, nt.tieNext!, ypos);
     }
   }
   // tiedTop/slurTop sit on the octave-dot ladder (NoteEntry.slurRung), plus one
@@ -1723,9 +1834,7 @@ export class Line {
     return res;
   }
   private addSlur(opt: LayoutOptions): void {
-    this.slurHeightScale = opt.slurHeightScale;
-    this.slurOutlineWidth = opt.slurOutlineWidth;
-    const thickness = opt.slurTieThickness;
+    this.slurStyle = slurStyleOf(opt);
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
       const nt = e.chord.notes[0];
@@ -1735,7 +1844,7 @@ export class Line {
       if (!endEntry) continue;
       const ypos = Math.min(this.slurTop(e, opt, true), this.slurTop(endEntry, opt, false));
       const nb = endCh!.notes[0];
-      this.addSlurTie(nt, nb, ypos, thickness, opt.color);
+      this.addSlurTie(nt, nb, ypos);
     }
   }
 
@@ -2290,6 +2399,22 @@ export class LayoutOptions {
   /** 弧高与弧描边宽。同样是按 fontSize≈28 调出来的绝对值，换字号排版要跟着缩。 */
   slurHeightScale = 1;
   slurOutlineWidth = 0.7;
+  /** 弧高的**上限**（未乘 slurHeightScale 的原始像素口径；贝塞尔的弧顶约为它的 0.75）。
+   *  对数公式没有上限，长跨度的弧会一路长到顶掉上方的和弦符号：28px 字号下实测
+   *  跨度 30px 的弧顶 6.6px、跨度 218px 的弧顶 17.8px，差 2.7 倍。
+   *  18 = 典型跨度（3 个音符步距、dist≈100）的弧高，也就是「长弧最多长到典型那么高」，
+   *  短弧（跨度 < 100px，两三个音符）一点不受影响。<=0 = 不封顶（老行为）。 */
+  slurMaxHeight = 18;
+  /** 弧高的**下限**（同一口径）。公式在短跨度上塌得很快（dist=20px 时弧顶只剩 4.6px），
+   *  短弧几乎成了一条直线。open-fanqie 没有短弧特例——它的弧高**恒定** 10px，短弧自然不塌；
+   *  这里取 10（弧顶 7.5px，与它同量级），影响的只有跨度 < 35px 的那批。<=0 = 只用公式自带的 1.2。 */
+  slurMinHeight = 10;
+  /** 跨度超过它就改画**扁平长连音线**（两端小钩 + 水平细线，见 SlurTieBase.initFlat）。
+   *  0 = 按字号自动取 `numberSize * 5`（28px → 140px，约 4 个音符，
+   *  与 open-fanqie 的 100px 阈值同一量级）。<0 = 一律画弧。 */
+  slurFlatSpan = 0;
+  /** 扁平长连音线**中段**的墨迹厚度（两端收尖）。0 = `slurTieThickness * 0.45`。 */
+  slurFlatWidth = 0;
   /** 小节线粗细。musicpp lineWidths.lightBarline / heavyBarline（pptutil.cpp:139），
    *  同样是按 fontSize≈28 调出来的绝对值——换字号排版时要等比缩，否则小节线相对字会变粗。 */
   barlineWidth = 2;

@@ -19,7 +19,7 @@ import type {
   SustainElement,
   VoiceGroup,
 } from "./ast";
-import { contentWidth, type PuMetrics } from "./metrics";
+import { contentWidth, puSlurRise, type PuMetrics } from "./metrics";
 import { elementQuarters, takesLyric, tupletRatios } from "./ast";
 
 /** 一个占位的谱面符号（音符 / 增时线 / 小节线）。 */
@@ -321,7 +321,7 @@ function groupHeadroom(group: VoiceGroup, m: PuMetrics): number {
       else if (mark.type === "crescendo" || mark.type === "decrescendo") {
         consider(m.laneWedge - (level - 1) * m.laneLevelStep - m.wedgeMouth / 2);
       } else {
-        consider(-m.digitInkHeight / 2 - m.slurStackGap - (level - 1) * m.laneSlurStep - m.slurHeight);
+        consider(-m.digitInkHeight / 2 - m.slurStackGap - (level - 1) * m.laneSlurStep - puSlurRise(m));
       }
     }
     for (const el of voice.elements) {
@@ -356,7 +356,8 @@ function voiceHeadroom(voice: ScoreLine, m: PuMetrics): number {
       consider(m.laneWedge - (level - 1) * m.laneLevelStep - m.wedgeMouth / 2);
     } else {
       // 弧线现在贴着音符堆叠顶（见 placeMarks），头顶只需留这么高
-      consider(-m.digitInkHeight / 2 - m.slurStackGap - (level - 1) * m.laneSlurStep - m.slurHeight);
+      // （puSlurRise 与 painter 实际画的弧同源，见 metrics.ts::puSlurStyle）
+      consider(-m.digitInkHeight / 2 - m.slurStackGap - (level - 1) * m.laneSlurStep - puSlurRise(m));
     }
   }
   for (const el of voice.elements) {

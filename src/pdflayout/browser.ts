@@ -225,6 +225,22 @@ export function applyBookStyle(opt: LayoutOptions, s: BookStyle): void {
     const typicalDist = m.noteStepEm * noteSize * 3;
     const rawH = Math.max(Math.log10(Math.max(typicalDist, 2)) * 17 - 16, 1.2);
     opt.slurHeightScale = (m.slurArcEm * noteSize) / (rawH * 0.75);
+    // 弧高的上下限按**原书实测**给（× 音符字高），再换算回引擎那个「控制点高」的口径：
+    // 弧顶 ≈ 0.75 × 控制点高 × heightScale。实测 1205 条（页 40-240）：
+    // 跨度 0-25pt 的弧高恒为 0.41 × 音符高（最短两桶完全相同 → 原书短弧是**定高**的），
+    // 25-40 是 0.53、40-60 是 0.59、60-90 才 0.66。对数公式两头都失控：
+    // 长跨度一路长高去顶和弦，短跨度塌成一条直线。
+    // ⚠️ 这几个是**手调常量**，而 bookstyle.json 是 stats 实测出来的产物——旧的 JSON 里
+    // 没有这些字段，不兜底的话 `rawH * undefined` = NaN（等于不封顶）、
+    // `undefined > 0` = false（等于关掉扁平），整条改动会静悄悄地不生效。
+    const toRaw = (pt: number): number => pt / (0.75 * opt.slurHeightScale);
+    opt.slurMaxHeight = toRaw((m.slurMaxArcEm ?? 0.66) * noteSize);
+    opt.slurMinHeight = toRaw((m.slurMinArcEm ?? 0.41) * noteSize);
+    const flatSteps = m.slurFlatSpanSteps ?? 4;
+    opt.slurFlatSpan = flatSteps > 0 ? m.noteStepEm * noteSize * flatSteps : -1;
+    // 扁平长连音线的中段厚度取**小节线宽**：按弧厚折算（× 0.45）在成书的小字号下
+    // 显得太肥，长长一条粗线很扎眼。
+    opt.slurFlatWidth = m.barlineWidthEm * lyric;
   }
   opt.slurOutlineWidth = 0.7 * (lyric / 28);
   opt.barlineWidth = m.barlineWidthEm * lyric;

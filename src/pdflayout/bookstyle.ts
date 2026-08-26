@@ -159,6 +159,17 @@ export interface BookMetrics {
    *  换成成书的小字号后按比例缩会扁成一条线，所以这里给一个明确的物理目标，
    *  由 applyBookStyle 反算缩放系数。 */
   slurArcEm: number;
+  /** 弧顶的**上限**与**下限**，× 音符字高（与 `slurArcEm` 同口径）。
+   *  对数公式两头都失控：长跨度一路长高去顶和弦，短跨度塌成一条直线。
+   *  原书实测（1205 条，页 40-240）：跨度 0-25pt 的弧高恒为 0.41 × 音符高
+   *  （最短两桶完全相同，说明原书短弧是**定高**的），60-90pt 也才 0.66。
+   *  上限另有一道「压在和弦带下面」的钳制，见 browser.ts。 */
+  slurMaxArcEm?: number;
+  slurMinArcEm?: number;
+  /** 跨度超过「这么多个音符步距」就改画扁平长连音线（两端小钩 + 水平细线，
+   *  open-fanqie 的 `slurStyle: auto` 就是这么干的，只是它的阈值约 4 个音符）。
+   *  0 = 一律画弧。**手调常量，不从原书量。** */
+  slurFlatSpanSteps?: number;
   /** 引擎绘制厚度，× 字号。默认取引擎在 fontSize 28 下的比例，保持它调好的观感。 */
   slurThicknessEm: number;
   beamWidthEm: number;
@@ -417,6 +428,9 @@ export function defaultBookStyle(): BookStyle {
       inkSlurWidth: 0.19,
       slurHeightEm: 0.5,
       slurArcEm: 0.9,
+      slurMaxArcEm: 0.66,
+      slurMinArcEm: 0.41,
+      slurFlatSpanSteps: 4,
       slurThicknessEm: 6 / 28,
       beamWidthEm: 1.5 / 28,
       barlineWidthEm: 2 / 28,

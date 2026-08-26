@@ -29,7 +29,7 @@ import {
   type PlacedVoice,
 } from "./layout";
 import { BRACE_GLYPHS } from "./brace";
-import { applyDocOptions, contentWidth, metricsFor, type PageProfileName, type PuMetrics } from "./metrics";
+import { applyDocOptions, contentWidth, metricsFor, puSlurStyle, type PageProfileName, type PuMetrics } from "./metrics";
 import { ACCOMP_BRACKET, ACCIDENTAL_GLYPH, BARLINE_MARKS, BRACKET, DYNAMICS, ORNAMENTS, TERMS } from "./glyph";
 
 const BLACK = 0xff1b1b1b;
@@ -699,12 +699,11 @@ export class PuPainter {
     for (const layer of voice.layers) this.paintLayer(root, layer, left, baseline, pageIndex);
   }
 
-  /** 弧线：直接用简谱谱面那套 SlurTieBase（月牙形，中间厚两端尖），两处观感一致。 */
-  private paintArc(root: Group, x0: number, x1: number, y: number, height: number): void {
-    const m = this.metrics;
+  /** 弧线：直接用简谱谱面那套 SlurTieBase（月牙形，中间厚两端尖），两处观感一致。
+   *  弧高（含超长跨度改扁平的阈值）由 puSlurStyle 定，与 layout 的纵向预留同源。 */
+  private paintArc(root: Group, x0: number, x1: number, y: number): void {
     const arc = new Slur();
-    void height;
-    arc.init(new Point(x0, y), new Point(x1, y), m.slurThickness, BLACK);
+    arc.init(new Point(x0, y), new Point(x1, y), puSlurStyle(this.metrics, BLACK));
     arc.update();
     root.add(arc);
   }
@@ -725,7 +724,7 @@ export class PuPainter {
     switch (mk.mark.type) {
       case "slur": {
         const y = baseline + (mk.y ?? m.laneSlur - (mk.level - 1) * m.laneSlurStep);
-        this.paintArc(root, x0, x1, y, m.slurHeight);
+        this.paintArc(root, x0, x1, y);
         break;
       }
       case "tuplet": {

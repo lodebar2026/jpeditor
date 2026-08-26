@@ -12,6 +12,7 @@
 // 行内算完自然宽度后再整体拉伸/压缩到版心宽度（两端对齐）。
 
 import type { Dialect } from "./dialect";
+import { SlurTieBase, type SlurStyle } from "../layout/layout";
 
 /** 版面预设：print 忠实原版 A4；slide 是投影用的 16:9。 */
 export type PageProfileName = "print" | "slide";
@@ -133,8 +134,12 @@ export interface PuMetrics {
   laneVolta: number;
   /** 同一槽内每级 `+` 上移多少 */
   laneLevelStep: number;
-  /** 弧线弧高 */
+  /** 弧线弧高（**弧顶**离端点多高）。既是纵向预留的高度，也反算成绘制时的弧高上限
+   *  ——见 puSlurStyle / puSlurRise，两处同一个数。 */
   slurHeight: number;
+  /** 跨度超过它改画扁平长连音线（见 layout.ts 的 SlurTieBase.initFlat）。
+   *  取 12 × 数字墨迹高，与 .jpwabc 谱面那边的 `numberSize * 8` 同一量级。 */
+  slurFlatSpan: number;
   /** 弧线厚度。与 .jpwabc 谱面同值（layout.ts 的 slurTieThickness = 6） */
   slurThickness: number;
   /** 渐强渐弱楔形的开口高度与线宽 */
@@ -223,6 +228,7 @@ const PRINT: PuMetrics = {
   laneVolta: -53,
   laneLevelStep: 6,
   slurHeight: 7,
+  slurFlatSpan: 215, // 17.9 × 12
   slurThickness: 6,
   wedgeMouth: 7,
   wedgeWidth: 1.3,
@@ -304,6 +310,7 @@ const SLIDE: PuMetrics = {
   laneVolta: -86,
   laneLevelStep: 9,
   slurHeight: 11,
+  slurFlatSpan: 330, // 27.5 × 12
   slurThickness: 9.2,
   wedgeMouth: 11,
   wedgeWidth: 2,
@@ -433,7 +440,7 @@ export function applyDocOptions(
       "digitInkHeight", "octaveUpY", "octaveDownY", "octaveDotGap", "octaveDotRadius",
       "dotOffsetX", "dotRadius", "underlineY", "underlineGap", "underlineWidth",
       "underlineHalfSpan", "barlineHeight", "sustainWidth", "sustainHalfLength",
-      "stepPlain", "stepBeamed", "stepBarline", "stepPerDot", "slurStackGap",
+      "stepPlain", "stepBeamed", "stepBarline", "stepPerDot", "slurStackGap", "slurFlatSpan",
     ] as const) {
       m[key] = base[key] * noteK;
     }
@@ -444,4 +451,27 @@ export function applyDocOptions(
   if (mg.top !== undefined) m.marginTop = mg.top;
   if (mg.bottom !== undefined) m.marginBottom = mg.bottom;
   return m;
+}
+
+/**
+ * 文本谱的弧线样式。绘制与纵向预留**共用这一个来源**：
+ * `slurHeight` 是想要的弧顶高度，贝塞尔的弧顶约为控制点高的 0.75，所以上限按 /0.75 反算。
+ * 在此之前 painter 把 `slurHeight` 直接丢掉、按 musicpp 的对数公式画（跨度大时高出一倍多），
+ * 而 layout 又按 `slurHeight` 预留——两套数对不上。
+ */
+export function puSlurStyle(m: PuMetrics, color: number): SlurStyle {
+  return {
+    thickness: m.slurThickness,
+    color,
+    maxHeight: m.slurHeight / 0.75,
+    // 文本谱的参考实现（番茄原版渲染）弧高是**恒定**的（控制点固定在 top-10，与跨度无关），
+    // 所以这里上下限同值：长弧不长高、短弧也不塌成直线。
+    minHeight: m.slurHeight / 0.75,
+    flatSpan: m.slurFlatSpan,
+  };
+}
+
+/** 弧线实际占的头顶高度（纵向预留用），与 puSlurStyle 同源。 */
+export function puSlurRise(m: PuMetrics): number {
+  return SlurTieBase.arcHeight(Infinity, puSlurStyle(m, 0)) * 0.75;
 }
