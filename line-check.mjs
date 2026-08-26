@@ -56,6 +56,7 @@ const kinds = {
   L14: "行首那个字带着句读标点（上一句的尾巴被甩到了行首）",
   L15: "句末标点之后的收气休止被甩到了行首",
   L16: "行末断在无词的拖腔上、而那个字还没收尾（词被劈开）",
+  L17: "两句并一句没有整首并（一半并一半没并）",
 };
 const bad = Object.fromEntries(Object.keys(kinds).map((k) => [k, []]));
 let substSkipped = 0; // 因字体回退判不了的相邻歌词对（见 L7）
@@ -80,8 +81,12 @@ for (const song of lineDoc.songs) {
         hit("L2", song.id, `第 ${i + 1} 行 ${l.cells} 格 / 容量 ${cap}`);
     }
     // L4 行首带标点的长音
-    if (i > 0 && l.head.firstBeats >= LONG_HEAD_BEATS && l.head.firstPunct > 0)
-      hit("L4", song.id, `第 ${i + 1} 行以 ${l.head.firstBeats} 拍「${l.tail.text ? "" : ""}」长音 + 标点起头`);
+    //     行首那个字**自成一句**时不算（上一行行末就带着标点）：131《无他，只有耶稣宝血》
+    //     的「血！」是感叹词长音、142《圣灵请来》的「来，」是命令语气，两个标点之间只有
+    //     一个字，这种起头是可以接受的（用户口径）。与 L14 同一条豁免。
+    if (i > 0 && l.head.firstBeats >= LONG_HEAD_BEATS && l.head.firstPunct > 0
+        && ls[i - 1].tail.punct === 0 && ls[i - 1].tail.lastWordPunct === 0)
+      hit("L4", song.id, `第 ${i + 1} 行以 ${l.head.firstBeats} 拍长音 + 标点起头`);
     // ── 这一轮补的三档，与 phrase.ts::headPenalty 的 (c)/(b2)/(g) 一一对应。
     // L14 行首那个字带着句读标点、而**上一行自己没收尾**：一句话的最后一个字落到了行首
     //     （077 的「当；」）。上一行收在标点上时不算——那时行首的「啊，」「哦！」是新一句
@@ -122,13 +127,31 @@ for (const song of lineDoc.songs) {
     });
   }
 
-  // L8 全曲行长悬殊：主歌顶着版心、副歌只有半幅这种（051/052/062/378 都是这一类）。
+  // L17 **两句并一句要么全并、要么不并**（用户口径）。一半并一半不并的话行长反而更不齐
+  //     ——020《向主歌唱》曾前四行各 4~5 小节没并、末两行并成 8 小节，那一行顶别人两个。
+  //     `pairsFrom` 是并之前的行数（rebuild 记的），全并的结果必然是它的一半（向上取整）。
+  if (song.mode === "pairs" && song.pairsFrom > 0) {
+    const want = Math.ceil(song.pairsFrom / 2);
+    if (ls.length !== want)
+      hit("L17", song.id, `并前 ${song.pairsFrom} 行，全并该剩 ${want} 行，实际 ${ls.length} 行`);
+  }
+
+  // L8 行长悬殊：主歌顶着版心、副歌只有半幅这种（051/052/062/378 都是这一类）。
   // 末行不算——它本来就可以短。
+  //
+  // **按段各算各的**（段界 = `l.section`）：用户口径「副歌可以接受比主歌长比较多，
+  // 主歌内/副歌内每行尽量相近的长度」。全曲一把尺子会把「主歌每行 13 格、副歌每行 23 格」
+  // 这种正常的谱也报出来。整段偏长归 `phrase.ts::quality` 的 outlier 管（那一项看全曲）。
   {
-    const cs = ls.slice(0, -1).map((l) => l.cells);
-    if (cs.length > 1) {
+    const segs = [[]];
+    ls.slice(0, -1).forEach((l) => {
+      segs[segs.length - 1].push(l.cells);
+      if (l.section) segs.push([]);
+    });
+    for (const cs of segs) {
+      if (cs.length < 2) continue;
       const lo = Math.min(...cs), hi = Math.max(...cs);
-      if (hi > 0 && lo / hi < EVEN_RATIO) hit("L8", song.id, `最短 ${lo} 格 / 最长 ${hi} 格`);
+      if (hi > 0 && lo / hi < EVEN_RATIO) hit("L8", song.id, `同段内最短 ${lo} 格 / 最长 ${hi} 格`);
     }
   }
 
@@ -316,6 +339,10 @@ const SPOT = {
   "169": ["L10"],                   // 同一行的房号要等高
   "175": ["L2"],                    // 在「能大力，」后断句
   "363": ["L2", "L8", "L16"],       // 六行、三对平行乐句（另见下面的专属断言）
+  "020": ["L5"],                    // 倒数第二行拆开后不再一行顶俩（另见专属断言）
+  "374": ["L8"],                    // 每行 2 小节（另见专属断言）
+  "131": ["L4", "L14"],             // 「血！」是感叹词长音，这样起头可以接受
+  "142": ["L4", "L14"],             // 「来，」是命令语气，同上
 };
 const spotFails = [];
 for (const [id, ks] of Object.entries(SPOT)) {
@@ -431,12 +458,105 @@ const bare = (t) => String(t ?? "").replace(/[，。！？…；、：""''）]+$
   }
 }
 {
+  // 020《向主歌唱》：倒数第二行原来一行顶俩（28 格，其余各 17），该拆成两行。
+  // 判据是「一行相当于其它行的两倍长」——按**时值**比，见 phrase.ts::quality 的 outlier。
+  const ls = linesOf("020");
+  if (ls) {
+    if (ls.length !== 7) spotFails.push(`020 应排 7 行（倒数第二行要拆开），实际 ${ls.length} 行`);
+  }
+}
+{
+  // 374《跟随救主》：每行 2 小节（用户口径）。原来第 5 行 4 小节、其余各 2。
+  const ls = linesOf("374");
+  if (ls) {
+    const bars = ls.map((l) => l.bars);
+    if (bars.some((b) => b !== bars[0]))
+      spotFails.push(`374 应每行 2 小节，实际 ${bars.join(" / ")}`);
+  }
+}
+{
+  // 一行不该长到顶别人两个：全书通例，这里对点名的几首写死
+  //（用户口径：「拆开的依据是现在一行相当于其它行的 2 倍长度了」）。
+  for (const id of ["020", "374", "363", "077"]) {
+    const ls = linesOf(id);
+    if (!ls || ls.length < 3) continue;
+    const cs = [...ls.map((l) => l.cells)].sort((a, b) => a - b);
+    const med = cs[Math.floor(cs.length / 2)] || 1;
+    const longest = cs[cs.length - 1];
+    if (longest / med > 1.6)
+      spotFails.push(`${id} 有一行长到别人的 ${(longest / med).toFixed(2)} 倍（${ls.map((l) => l.cells).join("/")}）`);
+  }
+}
+{
   // 096《哈利路亚！感谢主》：Fine 落在主歌多段歌词中间，那一处要断开。
   // Fine 的小节由 rebuild 从 playData 收集后传给断句（jumpMeasures），这里只验「断开了」：
   // 行末收在句号上、且不是曲末。
   const ls = linesOf("096");
   if (ls && ls.length > 1 && !ls.slice(0, -1).some((l) => l.tail.punct === 6))
     spotFails.push(`096 Fine 处应断开（行末收在句号上），实际各行行末：${ls.map((l) => l.tail.text).join(" / ")}`);
+}
+
+// ── **断句方案快照**：改对了的那几首，以后要一字不差地排成同样的样子。
+//
+// 档位断言（L1~L17）判的是通例、定点断言判的是「这一首该长什么样」的几条要点，
+// 两者都留了余地；快照则把**整套断句**钉死：每一行的格数、小节数、行首残小节时值、
+// 行首/行末的字、开头旋律指纹，一处对不上就报。改断句算法时这是最硬的那道门槛。
+//
+//   node line-check.mjs --write-snapshots   # 认可当前断句，重写快照
+const SNAPSHOT_FILE = flags.snapshots ?? "testdata/500/line-snapshots.json";
+/** 收进快照的曲目：用户逐首核对过、认可了的那些。 */
+const SNAPSHOT_IDS = [
+  "020", "064", "068", "070", "077", "095", "096", "118",
+  "120", "144", "158", "169", "175", "363", "374", "378",
+];
+/**
+ * 一行里要比对的事实：**这一句收在哪个字上**，以及**这一行有多少拍**。
+ *
+ * 断句方案说到底就是这两件事——断点落在哪儿（尾词认得出来），每行多长（时值）。
+ * 格数、小节数、坐标那些是它们的派生物，记了反而让快照因为无关的改动而失效
+ * （比如换个字体、调个字距，格数就变了，可断句一点没动）。
+ */
+//
+// 尾词取 `lastWord`：行末落在延音（tie）或休止上时 `tail.text` 是空的，
+// 可这一句唱到哪儿是明摆着的，往前找到那个字才知道「这一行收在哪里」。
+const snapLine = (l) => ({ tail: l.tail.lastWord || l.tail.text, dur: Number((l.dur ?? 0).toFixed(3)) });
+const snapshotOf = (song) => ({ lines: song.lines.map(snapLine) });
+
+if ("write-snapshots" in flags) {
+  const out = {};
+  for (const id of SNAPSHOT_IDS) {
+    const song = lineDoc.songs.find((s) => s.id === id);
+    if (song) out[id] = snapshotOf(song);
+  }
+  await writeFile(SNAPSHOT_FILE, JSON.stringify(out, null, 1) + "\n");
+  console.log(`→ 断句方案快照已写入 ${SNAPSHOT_FILE}（${Object.keys(out).length} 首）`);
+  process.exit(0);
+}
+
+{
+  let snaps = null;
+  try { snaps = JSON.parse(await readFile(SNAPSHOT_FILE, "utf8")); } catch { /* 还没有快照 */ }
+  if (!snaps) {
+    console.log("（还没有断句方案快照，跑 --write-snapshots 立一份）");
+  } else {
+    for (const [id, want] of Object.entries(snaps)) {
+      if (only && !only.includes(id)) continue;
+      const song = lineDoc.songs.find((s) => s.id === id);
+      if (!song) continue;                       // 没排这首就不判
+      const got = snapshotOf(song);
+      if (got.lines.length !== want.lines.length) {
+        spotFails.push(`${id} 断句方案变了：${want.lines.length} 行 → ${got.lines.length} 行`);
+        continue;
+      }
+      const diffs = [];
+      got.lines.forEach((g, i) => {
+        const w = want.lines[i];
+        if (g.tail !== w.tail) diffs.push(`第 ${i + 1} 行收在「${w.tail}」→「${g.tail}」`);
+        if (Math.abs(g.dur - w.dur) > 0.01) diffs.push(`第 ${i + 1} 行 ${w.dur} 拍 → ${g.dur} 拍`);
+      });
+      if (diffs.length) spotFails.push(`${id} 断句方案变了：${diffs.slice(0, 4).join("；")}${diffs.length > 4 ? `（共 ${diffs.length} 处）` : ""}`);
+    }
+  }
 }
 
 // ────────────────────────────────────────────── 汇总

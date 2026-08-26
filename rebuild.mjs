@@ -227,6 +227,7 @@ for (const s of picked) {
       let lineInfo = [];
       let targetUsed = 0;
       let mode = "phrase";
+      let pairsFrom = 0;
       let jumpSeen = [];
       for (let iter = 0; iter < 6; iter++) {
         iters = iter + 1;
@@ -274,10 +275,14 @@ for (const s of picked) {
           });
               // **整首的排版模式阶梯**（B 每 2 句一行 → A 一句一行 → C 均匀排版）：
           // 「排不排得下」只在这里用，断句本身不看纸张。见 applybreaks.ts::chooseLineLayout。
+          // 记账：并之前有几行。「两句并一句要求整首并，要么全并要么不并」（用户口径），
+          // line-check 的 L17 靠这两个数验——pairs 档的行数必须正好是并之前的一半。
+          const linesBefore = B.describeLines(score.parts[0], brk, st.layout.phraseMidBreak).length;
           mode = B.chooseLineLayout(score.parts[0], brk, cells, {
             useMidBreaks: st.layout.phraseMidBreak,
             allowPairs: st.layout.phraseMergeShort !== false,
           });
+          pairsFrom = mode === "pairs" ? linesBefore : 0;
           // 容量保险：C 档之外的两档也可能有个别行超容量（格数是近似），按小节补刀
           B.enforceLineCapacity(score.parts[0], brk, cells, targetMeas, st.layout.phraseMidBreak);
           // 上面几步会造出新的行首（DP 管不到），再兜两次：行首不留半小节休止、
@@ -287,7 +292,7 @@ for (const s of picked) {
           // 逐行事实（行首残小节 / 行末标点 / 格数…）留给 line-check.mjs 断言；
           // Chord 是对象，跨不过 page.evaluate 的序列化，只带纯数据出去。
           lineInfo = B.describeLines(score.parts[0], brk, st.layout.phraseMidBreak).map((l) => ({
-            cells: l.cells, fromMi: l.fromMi, toMi: l.toMi, bars: l.bars, beats: l.beats,
+            cells: l.cells, dur: l.dur, fromMi: l.fromMi, toMi: l.toMi, bars: l.bars, beats: l.beats,
             head: { ...l.head }, tail: { ...l.tail }, headFp: l.headFp, section: l.section, mid: !!l.chord,
           }));
           const ab = B.applyPhraseBreaks(score.parts[0], brk, {
@@ -308,7 +313,7 @@ for (const s of picked) {
       }
       const out = pageItems;
       // 排版口径的自检：迭代了几轮、最后还有没有「断点之外又折一刀」（见下面的汇总打印）
-      const fit = { iters, cells, target: targetUsed, mode, jump: jumpSeen, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
+      const fit = { iters, cells, target: targetUsed, mode, pairsFrom, jump: jumpSeen, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
       // 装饰层（标题/曲号/页眉页脚）在 Node 侧排，但字号得按**浏览器实测的墨迹比例**反算，
       // 否则同一个 size 在不同字体里墨迹大小不一样（见 browser.ts::fontSizeFor）。
       const sizes = {};
@@ -344,7 +349,7 @@ for (const s of picked) {
     ctx: { sizes: res.sizes, id: s.id, title: res.title, credits: res.credits, category: s.category ?? "", km },
   });
   perSong.push({ id: s.id, title: res.title, pages: res.pages.length, fit: res.fit });
-  perLines.push({ id: s.id, title: res.title, cells: res.fit?.cells ?? 0, target: res.fit?.target ?? 0, mode: res.fit?.mode ?? "", lines: res.lines ?? [] });
+  perLines.push({ id: s.id, title: res.title, cells: res.fit?.cells ?? 0, target: res.fit?.target ?? 0, mode: res.fit?.mode ?? "", pairsFrom: res.fit?.pairsFrom ?? 0, lines: res.lines ?? [] });
   if (only || picked.length < 30) console.log(`  ${s.id} ${res.title}：${res.pages.length} 页`);
 }
 

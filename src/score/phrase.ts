@@ -36,7 +36,7 @@ export function mainLyricText(c: Chord): string {
 }
 
 /** 一行开头拿几个音做「平行乐句」的指纹。 */
-export const HEAD_FP_LEN = 10;
+export const HEAD_FP_LEN = 8;
 
 /** 一个和弦的旋律键（音级+八度，休止记 R）。与 `measureFp` 同一套写法。 */
 export function noteKeyOf(c: Chord): string {
@@ -282,6 +282,21 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const ROW_COST = opts.rowCost ?? 20;
   /** 方案评分里「断点弱度」相对「行长匀度」的权重（contentOnly 用，见 quality）。 */
   const BREAK_QUALITY_WEIGHT = 8;
+  /** 「有一行明显比同曲其它行长」的权重（contentOnly 用，见 quality 的 outlier）。 */
+  const OUTLIER_WEIGHT = 60;
+  /**
+   * 候选方案那几遍 DP 的行长权重（`runWith`）。
+   *
+   * 它**不是评分**，只是「让 DP 真能排出指定的行数」的手段——评分用的是 `quality`，
+   * 那边的行长项走 `EVEN_WEIGHT`。原来这里也用 `EVEN_WEIGHT`（1），太轻，压不住断点代价：
+   * 374《跟随救主》段 2 要排 4 行每行 2 小节，DP 算下来
+   * 「4 行 = 行长代价 0 + 断三刀 24」比「3 行 = 行长代价 4 + 断两刀 16」还贵，于是交出 3 行
+   * （`want [4,4] → got [4,3]`），那套方案就被「行数对不上」丢弃了，候选池里根本没有它。
+   * 调到 2 之后 DP 排得出来：374 直接出 8 行各 2 小节（不必再靠 `splitLongest` 事后补刀），
+   * 070《天使歌唱》也终于排出了主歌 16/16 + 副歌 30/34 那 4 行。
+   * 再往上调反而过头——行长压过断点强度，374 又散成 7 行 13/13/14/12/17/17/12（权重 3）。
+   */
+  const RUN_WITH_LEN_WEIGHT = 2;
   // 行长下限跟着上限走：版心窄时上限本来就小，14 格的下限会把断点全顶掉
   const MIN_CELLS = Math.min(DEF_MIN_CELLS, Math.round(MAX_CELLS * 0.6));
   const measures = part.measures;
@@ -551,12 +566,16 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // **要上一行自己没收尾才算**：断点处已经带标点的话，行首那个「啊，」「哦！」是新一句
     // 自己的开头（020《向主歌唱》每段都从「啊，」起唱），不是上一句的尾巴。
     // 断点落在无词的拖腔上时要**往前追到真正的字**——拖腔自己当然没有标点。
-    if (CONTENT_ONLY && lyricPunctScore(nx.chord) > 0) {
+    // 行首那个字**自成一句**时两条都不罚：它前面那个字就带着标点，说明这一句从它起唱、
+    // 不是上一句的尾巴（131《无他，只有耶稣宝血》的「血！」是感叹词长音，
+    // 142《圣灵请来》的「来，」是命令语气——两个标点之间只有一个字）。
+    const prevWordPunct = (() => {
       let j = idx;
       while (j >= 0 && !mainLyricText(flat[j].chord)) j--;
-      if (j < 0 || lyricPunctScore(flat[j].chord) === 0) s += 8;
-    }
-    if (nx.chord.beats >= 2 && lyricPunctScore(nx.chord) > 0) s += 10;
+      return j < 0 ? 0 : lyricPunctScore(flat[j].chord);
+    })();
+    if (CONTENT_ONLY && lyricPunctScore(nx.chord) > 0 && prevWordPunct === 0) s += 8;
+    if (nx.chord.beats >= 2 && lyricPunctScore(nx.chord) > 0 && prevWordPunct === 0) s += 10;
     // (d) **别把一句话的最后一小截甩到下一行开头**：断点之后没几个字就到句号了的话，
     // 那截尾巴属于本行（419《人生崎岖路》第 6 行开头的「却成了祝福。」，
     // 上一行明明还差好几格）。越近罚得越狠；离得够远（一行的三成以上）就不管——
@@ -602,38 +621,62 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 起唱（`3_ 4_ |5- …`），三对平行开头一个都没进候选池。判据与 `startsParallel` 的
   // 门槛保持一致：那边要求断点本身先是个乐句收尾，这边就按同样的口径找行首。
   // 同一指纹出现两次以上才算平行。
-  // 指纹的取法与逐行报告共用一份（`headFpOf`），各算各的就会「检查脚本说对齐了、排出来没有」。
-  // 多取几个：`headFpOf` 会先跳掉行首的休止，只取 HEAD_FP_LEN 个就可能不够数
-  const headFpAt = (i: number): string =>
-    headFpOf(flat.slice(i, i + HEAD_FP_LEN + 4).map((f) => f.chord));
-  const parallelHeads = new Set<string>();
+  /** 比到第几个音为止（够长了就不必再比，也免得两两比较太贵）。 */
+  const PARALLEL_MAX = 16;
+  /** 至少这么多个音一样才算平行——三两个音相同到处都是，不算数。 */
+  const PARALLEL_MIN = 4;
+  /**
+   * 潜在行首 → 它与**别的**潜在行首的**最长公共前缀**（音符数，0 = 不平行）。
+   *
+   * 原来是按固定长度（6 / 10 个音）取指纹、比是否全等，长度定多少都不对：
+   * 定短了噪声大（随便两处开头几个音相同就算平行），定长了又漏——072《信徒欢唱》
+   * 的两处平行开头是 `5 6 5 4 | 3 2 1`，第 8 个音就分岔了，10 音指纹认不出来。
+   * 改成动态算公共前缀，**重复得越长得分越高**，不必再拍一个长度出来。
+   *
+   * 行首的休止先跳掉（弱起的留白，不是旋律的一部分）：同一段旋律有的行从休止起头、
+   * 有的直接从弱起音起头（363《倾听我的心》第 1 行 `0_ 5,_`、第 3 行 `5,_`）。
+   */
+  const parallelLen = new Map<number, number>();
   if (PARALLEL_WEIGHT > 0) {
-    const tally = new Map<string, number>();
+    const heads: { at: number; keys: string[] }[] = [];
     for (let i = 0; i < K; i++) {
       if (i > 0) {
         const pv = flat[i - 1];
         if (!(pv.isLast || punctAfter[i - 1] > 0 || pv.chord.beats >= 2 || pv.chord.rest)) continue;
       }
-      const fp = headFpAt(i);
-      if (!fp) continue;
-      tally.set(fp, (tally.get(fp) ?? 0) + 1);
+      let j = i;
+      while (j < K && flat[j].chord.rest) j++;
+      const keys: string[] = [];
+      for (let t = j; t < K && keys.length < PARALLEL_MAX; t++) keys.push(noteKeyOf(flat[t].chord));
+      if (keys.length >= PARALLEL_MIN) heads.push({ at: i, keys });
     }
-    for (const [fp, cnt] of tally) if (cnt >= 2) parallelHeads.add(fp);
+    for (let a = 0; a < heads.length; a++) {
+      for (let b = a + 1; b < heads.length; b++) {
+        const ka = heads[a].keys;
+        const kb = heads[b].keys;
+        let n = 0;
+        while (n < ka.length && n < kb.length && ka[n] === kb[n]) n++;
+        if (n < PARALLEL_MIN) continue;
+        parallelLen.set(heads[a].at, Math.max(parallelLen.get(heads[a].at) ?? 0, n));
+        parallelLen.set(heads[b].at, Math.max(parallelLen.get(heads[b].at) ?? 0, n));
+      }
+    }
   }
   /**
-   * 在 idx 之后断行的话，下一行是不是「平行开头」。
+   * 在 idx 之后断行的话，下一行的开头与别处重合了几个音（0 = 不平行）。
    *
    * **要求断点本身先是个像样的乐句收尾**（句读标点 / 长音 / 休止 / 延长号）。
-   * 只看旋律指纹会把词拦腰切开：096《哈利路亚！感谢主》的「哈利路亚」唱好几遍，
+   * 只看旋律重复会把词拦腰切开：096《哈利路亚！感谢主》的「哈利路亚」唱好几遍，
    * 「路亚」的开头旋律自然与别处相同，于是「哈利｜路亚」之间被判成平行乐句、拿到 14 分，
    * 一并行就把「哈利」留在了行末。旋律重复只是**佐证**，断不断得看乐句本身收没收尾。
    */
-  const startsParallel = (idx: number): boolean => {
-    if (!(PARALLEL_WEIGHT > 0) || idx + 1 >= K) return false;
+  const parallelAt = (idx: number): number => {
+    if (!(PARALLEL_WEIGHT > 0) || idx + 1 >= K) return 0;
     const c = flat[idx].chord;
-    if (!(punctAfter[idx] > 0 || c.beats >= 2 || c.rest || c.fermata)) return false;
-    return parallelHeads.has(headFpAt(idx + 1));
+    if (!(punctAfter[idx] > 0 || c.beats >= 2 || c.rest || c.fermata)) return 0;
+    return parallelLen.get(idx + 1) ?? 0;
   };
+  const startsParallel = (idx: number): boolean => parallelAt(idx) >= PARALLEL_MIN;
 
   const scoreAt = (idx: number): number => {
     const ci = flat[idx];
@@ -684,10 +727,12 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 跳转记号（Fine / D.C. / D.S. / To Coda）落在哪个小节，那个小节末就**高优先级断开**
     //（+10，比房尾 +6、终止线 +5 都高）：记号是给唱的人看路标的，印在一行的中段读不出来。
     if (ci.isLast && JUMP_MEAS.has(ci.mi)) s += 10;
-    // **平行乐句开头只在方案评分里算**（见 quality），不在这里给分：
-    // 在断点强度上加分会让 DP 为了凑一个平行开头而断出短行（实测全书中间行过短
-    // 4 → 18 处、行长悬殊 6 → 12 首）。它该影响的是「几套断法里挑哪套」，
-    // 不是「这一刀值不值得断」。
+    // **平行乐句开头在这里只给一点分，用来打平局**（主力在 quality，见那边）。
+    // 给足分会让 DP 为了凑一个平行开头就断出短行（实测全书中间行过短 4 → 18 处、
+    // 行长悬殊 6 → 12 首）；但一分不给也不行——070《天使歌唱》的
+    // `m12|「最」→「高」` 与 `m13|「神，」→「荣」` 强度都是 8 分，DP 任选其一，
+    // 挑中前者就把「最高神」劈开了。后者是平行开头，该赢下这个平局。
+    if (startsParallel(idx)) s += 2;
     return s;
   };
 
@@ -818,6 +863,14 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   for (let i = 0; i < K; i++) cellsIntUpto[i + 1] = cellsIntUpto[i] + Math.max(1, Math.floor(flat[i].chord.beats) || 1);
   const cellsIntBetween = (a: number, b: number) =>
     CELLS_ARE_ITEMS ? cellsIntUpto[idxAt[b] + 1] - cellsIntUpto[idxAt[a] + 1] : cellsBetween(a, b);
+  // 一行有多长，**按时值算**（Σ `Chord.duration`）。
+  // 不用小节数——太粗，同样两小节可以差一倍的音；也不用格数——那是视觉宽度，
+  // 掺着增时线与歌词字数（`Chord.beats` 本身就是增时线格数、不是时值）。
+  // 时值才是这一行在音乐上到底有多长，「一行相当于其它行的两倍长度」说的就是它。
+  const durUpto = new Array<number>(K + 1).fill(0);
+  for (let i = 0; i < K; i++) durUpto[i + 1] = durUpto[i] + (flat[i].chord.duration?.toFloat() ?? 0);
+  const durBetween = (a: number, b: number) => durUpto[idxAt[b] + 1] - durUpto[idxAt[a] + 1];
+
   // 完整句末的前缀计数。仅提高「跨过句末、把下一句弱起塞到本行」的代价；若断点本身就在
   // 句末则不罚。这样 `…便要走！ 而…`、`…长存不朽！ 谁人…` 会优先在 `！` 后换行，
   // 同时很短的句子仍可在行长收益足够大时合排，不把句末标点做成绝对硬断点。
@@ -1008,12 +1061,20 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
      */
     const quality = (nb: number[]): number => {
       const cells: number[] = [];
+      const durs: number[] = [];
+      /** 按段分组的行时值：主歌一组、副歌一组。 */
+      const bySeg = new Map<number, number[]>();
       let weak = 0;
       let parallel = 0;
       for (let a = 0; a < M; ) {
         const b = nb[a];
         if (b <= a) break;
         cells.push(cellsBetween(a, b));
+        durs.push(durBetween(a, b));
+        // 按**段**归组（主歌一组、副歌一组），见下面 cv 的注释
+        const segNo = cuts.findIndex((c) => c >= b);
+        if (!bySeg.has(segNo)) bySeg.set(segNo, []);
+        bySeg.get(segNo)!.push(durBetween(a, b));
         const hi = cuts.find((c) => c >= b) ?? M;
         weak += breakCost(b, hi);
         const over = cellsIntBetween(a, b) - MAX_CELLS;
@@ -1024,7 +1085,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
           if (short > 0 && b < M) weak += short ** 2;
         }
         // 这一行的**下一行**是不是平行开头（断点 b 之后那个和弦起头）
-        if (b < M && startsParallel(cand[b - 1])) parallel++;
+        // **按公共前缀的长度给分**：重复得越长，把它们排成各自的行首就越值
+        // （比到 12 个音封顶，再长也不多给了）。
+        if (b < M) parallel += Math.min(parallelAt(cand[b - 1]), 12) / 12;
         a = b;
       }
       if (!cells.length) return INF;
@@ -1040,9 +1103,44 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       // 每一刀都挑最强的断点，总弱度反而降。均值让行数保持中性。
       // contentOnly 下再乘 BREAK_QUALITY_WEIGHT：DP 第一遍（代价非负、累加）总是交出
       // 「行数最少、每行顶着容量」的那一套，而它的行长天然最匀，不加权就永远赢。
-      const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+      // 行长匀度**按段各算各的**，再按行数加权平均。用户口径：「副歌可以接受比主歌长
+      // 比较多，主歌内/副歌内每行尽量相近的长度」——全曲一把尺子会把副歌那几行压到与
+      // 主歌一样长（070《天使歌唱》主歌两行 16 拍、副歌两行 24/28 拍，全曲看差 1.75 倍，
+      // 按段看两边各自都很齐）。
+      // 「可以更长」不等于「一定要更长」：整段偏长的情形交给下面的 `outlier`（那一项看全曲），
+      // 374《跟随救主》段 2 的两行各 23 格彼此很匀、却是段 1 的近两倍，照样要拆。
+      const segCv = (xs: number[]): number => {
+        if (xs.length < 2) return 0;
+        const mu = xs.reduce((x, y) => x + y, 0) / xs.length;
+        if (!(mu > 0)) return 0;
+        return Math.sqrt(xs.reduce((x, c) => x + (c - mu) ** 2, 0) / xs.length) / mu;
+      };
+      let cv: number;
+      if (CONTENT_ONLY) {
+        let acc = 0;
+        let cnt = 0;
+        for (const xs of bySeg.values()) { acc += segCv(xs) * xs.length; cnt += xs.length; }
+        cv = cnt ? acc / cnt : 0;
+      } else {
+        cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+      }
+      // **有一行明显比同曲其它行长就罚**（用户口径：「拆开的依据是现在一行相当于其它行的
+      // 2 倍长度了」）。变异系数对「只有一行特别长」不敏感——它被其余齐整的行摊平了
+      //（374《跟随救主》13/13/14/12/**23**/11/12 的 cv 只有 0.28）。
+      // 拿中位数作基准（均值会被那一行自己抬高），超过 1.4 倍才算。
+      // 按**时值**判（小节数太粗、格数掺着增时线与歌词字数），同样**按段**各算各的。
+      const segOutlier = (xs: number[]): number => {
+        if (xs.length < 2) return 0;
+        const m = [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)] || 1;
+        return Math.max(0, Math.max(...xs) / m - 1.4);
+      };
+      // **这一项看全曲**（cv 才按段）：两把尺子分工——cv 管「同一段里各行长短相近」，
+      // 它管「别有哪一行长到顶别人两个」。按段算会漏掉整段偏长的情形：374《跟随救主》
+      // 段 2 的两行各 23 格彼此很匀，可段 1 每行才 13 格，那两行该各拆成两行才对
+      //（用户口径：「374 应该是每行 2 小节」）。
+      const outlier = segOutlier(durs);
       const breakW = CONTENT_ONLY ? BREAK_QUALITY_WEIGHT : 1;
-      return EVEN_WEIGHT * 100 * cv + breakW * (weak / cells.length)
+      return EVEN_WEIGHT * 100 * cv + OUTLIER_WEIGHT * outlier + breakW * (weak / cells.length)
         - PARALLEL_WEIGHT * (parallel / cells.length) * 10;
     };
     const runWith = (want: number[]): { nb: number[]; lines: number[] } => {
@@ -1050,7 +1148,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         const span = ends[cuts[sIdx]] - ends[cuts[sIdx - 1]];
         const k = want[sIdx - 1];
         return k > 0 ? span / k : TARGET_MEAS;
-      }, EVEN_WEIGHT);
+      }, RUN_WITH_LEN_WEIGHT);
       return { nb: r.nextB, lines: linesPerSeg(r.nextB) };
     };
     // 候选：每段在第一遍的行数上下各试几档。
@@ -1097,8 +1195,69 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         parallel: startsParallel(idx),
       }));
     }
+    /**
+     * **局部改良：把明显过长的那一行对半拆开**。
+     *
+     * 「每段试 ±k 行」那套候选是靠 DP 在给定行数下重排出来的，而 DP 常常**排不出**指定的
+     * 行数（374《跟随救主》的 `want [4,4] → got [4,3]`），那套方案就被丢弃了，
+     * 候选池里于是压根没有「把那一行拆开」的选项——分数再怎么调也选不到。
+     * 这里直接在最优方案上动手：找出比中位数长 1.4 倍以上的那一行，
+     * 在它内部挑最强的断点切一刀，两半都不许短于 2 小节，再交给 `quality` 评分。
+     * 374 每行 2 小节、020《向主歌唱》倒数第二行拆成两行，都是这么来的。
+     */
+    const splitLongest = (nb: number[]): number[] | null => {
+      const segs: [number, number][] = [];
+      for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; segs.push([a, b]); a = b; }
+      if (segs.length < 2) return null;
+      const lenOf = (sg: [number, number]) => durBetween(sg[0], sg[1]);
+      const sorted = segs.map(lenOf).sort((x, y) => x - y);
+      const med = sorted[Math.floor(sorted.length / 2)] || 1;
+      // **过长的行一次全拆**，不是只拆最长那一条。一条一条来会把同一段拆得参差
+      //（374《跟随救主》段 2 两行各 16 拍、都是段 1 的两倍，只拆一条就成了 16/8/8，
+      //  段内反而更不齐、分数更差，于是一条也拆不动）。
+      const out = nb.slice();
+      let changed = false;
+      for (const [a, b] of segs) {
+        const len = lenOf([a, b]);
+        if (len / med <= 1.4) continue;
+        let pick = -1;
+        let bestSc = -Infinity;
+        for (let c = a + 1; c < b; c++) {
+          // 两半都不许太短：各占原来那一行三成以上的时值，**而且都放得下半幅版心**
+          //（后一条与 L2「中间行不足容量四成」同口径——拆完甩出个短行反而更难看，
+          //  实测不设这道闸全书中间行过短 2 → 13 处）。
+          if (durBetween(a, c) < len * 0.3 || durBetween(c, b) < len * 0.3) continue;
+          if (cellsBetween(a, c) < MAX_CELLS * 0.4 || cellsBetween(c, b) < MAX_CELLS * 0.4) continue;
+          const sc = scoreAt(cand[c - 1]) - headPenalty(cand[c - 1]);
+          if (sc > bestSc) { bestSc = sc; pick = c; }
+        }
+        if (pick < 0) continue;
+        out[a] = pick;
+        out[pick] = b;
+        changed = true;
+      }
+      return changed ? out : null;
+    };
     // 第一遍那套也要参与评分（它可能就是最好的）
     if (quality(nextB) <= best.score) best = { score: quality(nextB), nb: nextB };
+    // **只拆一轮**：拆完行数变了，中位数跟着变，下一轮很容易把本来正常的行又判成「过长」
+    //（142《圣灵请来》原本 4 行各 8 小节、格数 25/24/25/26 相当匀，却被连拆四轮成了 8 行、
+    //  每行只剩 12~13 格 / 容量 33）。真有两条过长的行，交给下一次迭代（rebuild 会重排）。
+    for (let round = 0; round < 1; round++) {
+      const alt = splitLongest(best.nb);
+      // @ts-ignore 调试钩子：段界
+    if (typeof window !== "undefined" && (window as any).__cutsDebug !== undefined)
+      (window as any).__cutsDebug = { cuts: cuts.map((c) => (c === 0 ? 0 : flat[cand[c - 1]].mi + 1)), M, segs: cuts.length - 1 };
+    // @ts-ignore 调试钩子：拆之前/之后的行长与分数
+      if (typeof window !== "undefined" && (window as any).__splitDebug !== undefined) {
+        const lens = (nb: number[]) => { const o: number[] = []; for (let a = 0; a < M;) { const b = nb[a]; if (b <= a) break; o.push(Math.round(durBetween(a, b) * 10) / 10); a = b; } return o; };
+        (window as any).__splitDebug = { before: lens(best.nb), q0: best.score, after: alt ? lens(alt) : null, q1: alt ? quality(alt) : null };
+      }
+      if (!alt) break;
+      const q = quality(alt);
+      if (q >= best.score) break;
+      best = { score: q, nb: alt };
+    }
     nextB = best.nb;
   }
 
