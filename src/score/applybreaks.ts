@@ -181,8 +181,12 @@ export interface LineTail {
   text: string;
   punct: number;
   beats: number;
-  /** 行末往前**最近的那个有词的字**的标点分。行末落在无词的拖腔上时 `text` 是空的，
-   *  光看它分不出「乐句唱完了、行末是收尾的长音」与「句子没唱完、断在了拖腔中间」
+  /** 行末往前**最近的那个有词的字**。行末落在延音（tie）或休止上时 `text` 是空的，
+   *  可这一句唱到哪儿是明摆着的——往前找到那个字才知道「这一行收在哪里」。
+   *  断句方案快照记的就是它。 */
+  lastWord: string;
+  /** 同上，那个字的标点分。行末落在无词的拖腔上时 `text` 是空的，光看它分不出
+   *  「乐句唱完了、行末是收尾的长音」与「句子没唱完、断在了拖腔中间」
    *  ——后者会把词从中间劈开（077《耶稣我主荣耀王》的「殷｜勤」）。 */
   lastWordPunct: number;
 }
@@ -191,6 +195,9 @@ export interface LineTail {
  *  行内：`chord`）；末行没有断点，两者皆 null。 */
 export interface LineInfo {
   cells: number;
+  /** 这一行的**时值**（Σ `Chord.duration`，即多少拍）。
+   *  `beats` 是增时线格数、`cells` 是视觉宽度，都不是时长；断句方案快照记的是这个。 */
+  dur: number;
   /** 这一行覆盖的小节下标区间（含端点；从小节中间起头/收尾时与相邻行共享一个小节） */
   fromMi: number;
   toMi: number;
@@ -237,6 +244,7 @@ export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: bo
     const text = mainLyricText(last.chord);
     out.push({
       cells: seg.reduce((n, f) => n + cellsOfChord(f.chord), 0),
+      dur: seg.reduce((n, f) => n + (f.chord.duration?.toFloat() ?? 0), 0),
       fromMi: seg[0].mi,
       toMi: last.mi,
       bars: seg.filter((f) => f.isLast).length,
@@ -253,15 +261,19 @@ export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: bo
         firstPunct: lyricPunctScore(seg[0].chord),
         text: mainLyricText(seg[0].chord),
       },
-      tail: {
-        text, punct: lyricPunctScore(last.chord), beats: last.chord.beats,
-        lastWordPunct: (() => {
-          for (let j = seg.length - 1; j >= 0; j--) {
-            if (mainLyricText(seg[j].chord)) return lyricPunctScore(seg[j].chord);
-          }
-          return 0;
-        })(),
-      },
+      tail: (() => {
+        // 行末落在延音／休止上时 `text` 是空的，往前找到最后一个有词的字
+        let lastWord = "";
+        let lastWordPunct = 0;
+        for (let j = seg.length - 1; j >= 0; j--) {
+          const t = mainLyricText(seg[j].chord);
+          if (!t) continue;
+          lastWord = t;
+          lastWordPunct = lyricPunctScore(seg[j].chord);
+          break;
+        }
+        return { text, punct: lyricPunctScore(last.chord), beats: last.chord.beats, lastWord, lastWordPunct };
+      })(),
       headFp: headFpOf(seg.map((f) => f.chord)),
       mi,
       chord,
@@ -336,23 +348,27 @@ export function tidyLineHeads(part: Part, breaks: PhraseBreaks, opt: { useMidBre
  */
 export function mergePairsUniform(part: Part, breaks: PhraseBreaks, useMidBreaks: boolean): number {
   const lines = describeLines(part, breaks, useMidBreaks);
-  let merged = 0;
-  let k = 0; // 段内第几行
-  for (let i = 0; i + 1 < lines.length; i++) {
+  // **先看能不能全首一致地并**：一半并一半不并，行长反而更不齐——020《向主歌唱》
+  // 前四行各 4~5 小节没并、末两行并成 8 小节，那一行就明显比谁都长。
+  // 并不齐就整档放弃（`chooseLineLayout` 会退到一句一行）。
+  const canPairAt = (i: number): boolean => {
     const a = lines[i];
     const b = lines[i + 1];
-    if (a.section) { k = 0; continue; }   // 段界（另起一页）不能删
-    if (a.mi !== null && breaks.forced?.has(a.mi)) { k = 0; continue; } // 跳转记号处不能删
-    if (a.mi === null && a.chord === null) continue; // 末行没有断点可删
-    if (k % 2 === 0) {
-      // b 是并出来那一行的行末：它没收在乐句落点上就别并（末行除外，末行本来就是曲末）
-      const bIsLast = i + 1 === lines.length - 1;
-      if (!bIsLast && b.tail.punct === 0 && b.tail.beats < 2) { k = 0; continue; }
-      if (a.mi !== null) breaks.measureBreaks.delete(a.mi);
-      if (a.chord) breaks.midBreaks.delete(a.chord);
-      merged++;
-    }
-    k++;
+    if (!b) return false;
+    if (a.section) return false;
+    if (a.mi !== null && breaks.forced?.has(a.mi)) return false;
+    if (a.mi === null && a.chord === null) return false;
+    // b 是并出来那一行的行末：它没收在乐句落点上就别并（末行除外，末行本来就是曲末）
+    const bIsLast = i + 1 === lines.length - 1;
+    return bIsLast || b.tail.punct > 0 || b.tail.beats >= 2;
+  };
+  for (let i = 0; i + 1 < lines.length; i += 2) if (!canPairAt(i)) return 0;
+  let merged = 0;
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    const a = lines[i];
+    if (a.mi !== null) breaks.measureBreaks.delete(a.mi);
+    if (a.chord) breaks.midBreaks.delete(a.chord);
+    merged++;
   }
   return merged;
 }
@@ -498,15 +514,27 @@ export function chooseLineLayout(
     for (const v of from.midBreaks) breaks.midBreaks.add(v);
   };
   const phrase = cloneBreaks(breaks);
-  if (allowPairs) {
+  const phraseLines = describeLines(part, phrase, useMidBreaks);
+  // **只在一句一行明显太稀时才考虑两句一行**。用户口径：「排不排得下只用于……是否采用
+  // 每 2 句放在一行的按乐句排版」。不设这道闸的话，凡是并得下的都会去并——实测全书
+  // 184 首改走 pairs、行数直接减半，那不是「原书一行两句」，那是把谱压扁。
+  // 判据取中位行长：多数行还不到版心六成，才说明一句一行确实空。
+  const medCells = (() => {
+    const cs = phraseLines.map((l) => l.cells).sort((x, y) => x - y);
+    return cs.length ? cs[Math.floor(cs.length / 2)] : 0;
+  })();
+  const sparse = cells > 0 && medCells > 0 && medCells < cells * 0.6;
+  if (allowPairs && sparse) {
     const pairs = cloneBreaks(breaks);
-    mergePairsUniform(part, pairs, useMidBreaks);
-    if (linesAreOk(describeLines(part, pairs, useMidBreaks), cells)) {
+    // 返回 0 = 并不成（不能全首一致地并），那就不是 pairs 档——原来这里不看返回值，
+    // 于是「没并」也被标成 pairs，行数一行没少（全书 40 首都这样）。
+    const merged = mergePairsUniform(part, pairs, useMidBreaks);
+    if (merged > 0 && linesAreOk(describeLines(part, pairs, useMidBreaks), cells)) {
       write(pairs);
       return "pairs";
     }
   }
-  if (linesAreOk(describeLines(part, phrase, useMidBreaks), cells)) return "phrase";
+  if (linesAreOk(phraseLines, cells)) return "phrase";
   write(evenLayout(part, phrase, cells));
   return "even";
 }
