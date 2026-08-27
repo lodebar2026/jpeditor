@@ -352,6 +352,8 @@ export function applyCapacityCuts(part: Part, breaks: PhraseBreaks, cells: numbe
   };
 
   const done = new Set<LineInfo>();
+  /** 段内统一那一步真切下去的「行时值 → 用的 k」，给下面「别的段也跟着切」用。 */
+  const cutAs: { dur: number; k: number }[] = [];
   for (const seg of segs) {
     if (seg.length < 2) continue;
     if (!seg.some((l) => kOf(l) > 1)) continue;            // 这一段没有排不下的行
@@ -379,6 +381,26 @@ export function applyCapacityCuts(part: Part, breaks: PhraseBreaks, cells: numbe
     if (!picks) continue;                                  // 有一行断不出来 → 整段放弃统一
     picks.forEach((p) => p.forEach(write));
     seg.forEach((l) => done.add(l));
+    cutAs.push({ dur: Math.max(...ds), k: used });
+  }
+  // **别的段切了，本来就一样长的这一行也得跟着切**：段内统一只管一个段，段与段之间
+  // 同样要齐——446《迦勒看见主》断句给的是三行各 32 拍（314 / 310 / 311 宽），
+  // 主歌那两行在上一步按 k=2 切成四行各 16 拍，副歌那一行 311 宽、卡着版心刚好放得下，
+  // 于是原样留着：一页上主歌四行各 155 宽、副歌一行 311 宽，长了整整一倍。
+  // 段内统一那一步对**只有一行的段**（`seg.length < 2`）本来就直接跳过，够不着它。
+  // 门槛比段内那把尺子**严得多**（`SAME_LEN_RATIO` 0.95 vs `UNIFORM_RATIO` 0.8）：
+  // 段内是「长短相近就统一」，这里是「本来就一样长的才跟着切」——357《祈祷》主歌四行
+  // 16 拍、副歌两行 16 / 20 拍，副歌因为那 20 拍的一行超版心被统一切了，
+  // 按 0.8 的尺子主歌四行（16 / 20 = 0.8）也会被拖下水，可它们只有 288 宽、放得下。
+  // 副歌本来就可以比主歌长（用户口径），这里只管「一样长的要一样切」。
+  if (cutAs.length) for (const l of lines) {
+    if (done.has(l)) continue;
+    const m = cutAs.find((c) => Math.min(c.dur, l.dur) / Math.max(c.dur, l.dur) >= SAME_LEN_RATIO);
+    if (!m) continue;
+    const p = cutsFor(l, m.k, false);
+    if (p.length !== m.k - 1) continue;
+    p.forEach(write);
+    done.add(l);
   }
   for (const l of lines) {
     if (done.has(l)) continue;
@@ -398,6 +420,8 @@ const CUT_TOL = 0;
 
 /** 「工整段」的门槛：段内最短行 ÷ 最长行（按时值）到这个比例才算工整，才要求整段一起断。 */
 const UNIFORM_RATIO = 0.8;
+/** 「本来就一样长」——跨段跟着切那一步的门槛（见 `applyCapacityCuts` 里那段注释）。 */
+const SAME_LEN_RATIO = 0.95;
 
 /**
  * 「放不放得下」的两把尺子：有真实坐标就用它，没有就退回按格数估（编辑器那条路、
