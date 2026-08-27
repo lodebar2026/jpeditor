@@ -759,8 +759,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // **要那个字自己带标点才算「挪不动」**：`punctAfter` 会顺延到后面的休止/拖腔上，
     // 而那些是挪得动的——363《倾听我的心》要挪的正是上一行行尾那个 `0_`（它拿的是
     // 顺延过来的标点）。所以只认「断点落在一个**自己带句读标点的字**上」。
+    // **「挪不动」包括那个字的拖腔**：J29《神必照各人的行为》的落点落在「…行善的人，」
+    // 后面那个无词的拖腔上（标点顺延过来），挪到下一行就把「人，」和它自己的拖腔拆开了
+    // ——同样挪不动。**休止不在此列**：那是挪得动的（363 要挪的就是那个 `0_`）。
+    const tailStuck = lyricPunctScore(flat[idx].chord) > 0
+      || (punctAfter[idx] > 0 && !flat[idx].chord.rest && !mainLyricText(flat[idx].chord));
     if (CONTENT_ONLY && pickupStd > 0 && head > 0 && head < pickupStd - 0.01
-        && lyricPunctScore(flat[idx].chord) === 0) s += 12;
+        && !tailStuck) s += 12;
     // (b2) **句末标点之后的那个休止是上一句唱完的收气，该留在上一行**：
     // 上一行行末带句读标点、下一行却从休止起头的话，那口气就被甩到了行首
     // （077《耶稣我主荣耀王》的「历风霜；」之后那个休止）。
