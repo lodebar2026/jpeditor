@@ -225,6 +225,8 @@ for (const s of picked) {
       let expectLines = 1;
       let iters = 0;
       let lineInfo = [];
+      let phraseLines = [];
+      let contentWidth = 0;
       let targetUsed = 0;
       let mode = "phrase";
       let pairsFrom = 0;
@@ -250,7 +252,12 @@ for (const s of picked) {
           const jumpMeasures = new Set();
           for (const [t] of score.playData?.jumpTo ?? []) jumpMeasures.add(t.mid);
           jumpSeen = [...jumpMeasures]; // 记账：跑完在 fit.jump 里，出了问题好查
+          // **「放不放得下」一律拿真实坐标判**（用户口径：「不要算格数，真实坐标排一遍，
+          // 放不下再补刀」）。量的是排版器折行时用的那套自然坐标，且与断点无关，
+          // 所以整首量一次，断句/选档/补刀/合并都用它。见 applybreaks.ts::FitMetric。
+          const fitMetric = B.measureChordSpans(score, st, window.__app.meta);
           const brk = B.computePhraseBreaks(score.parts[0], {
+            fit: fitMetric,
             targetMeas,
             lenWeight: st.layout.phraseLenWeight,
             breakWeight: st.layout.phraseBreakWeight,
@@ -259,6 +266,8 @@ for (const s of picked) {
             contentOnly: st.layout.phraseContentOnly !== false,
             jumpMeasures,
             parallelWeight: st.layout.phraseParallelWeight ?? 6,
+            // 平行乐句开头的**断点强度**（用户口径：要明显高于逗号）
+            parallelScore: st.layout.phraseParallelScore ?? 8,
             // 成书专用的两条权重（编辑器那条路默认不开，基线不动）：
             // 短呼语句（「哈利路亚！」）的句末标点减半、重复段按长度加分。
             shortSentenceWords: 5,
@@ -268,6 +277,11 @@ for (const s of picked) {
             evenWeight: st.layout.phraseEvenWeight ?? 0,
             // 别把一句话的最后一小截甩到下一行开头（419「却成了祝福。」）
             tailWeight: st.layout.phraseTailWeight ?? 0,
+            // 纸张在断句层**只当平局裁判**：放得下的那套方案与最优方案差这么多以内就用它
+            //（见 PhraseOptions.fitSlack）。
+            fitSlack: st.layout.phraseFitSlack ?? 0,
+            // 行数多的方案优先（内容层，与版心无关）
+            moreRowsSlack: st.layout.phraseMoreRowsSlack ?? 0,
             maxCells: cells,
             maxSentenceCells: cells,
             // 容量是排版器**数出来的个数**（音符与增时线各算一个），不是折算过的格数
@@ -276,24 +290,41 @@ for (const s of picked) {
               // **整首的排版模式阶梯**（B 每 2 句一行 → A 一句一行 → C 均匀排版）：
           // 「排不排得下」只在这里用，断句本身不看纸张。见 applybreaks.ts::chooseLineLayout。
           // 记账：并之前有几行。「两句并一句要求整首并，要么全并要么不并」（用户口径），
-          // line-check 的 L17 靠这两个数验——pairs 档的行数必须正好是并之前的一半。
-          const linesBefore = B.describeLines(score.parts[0], brk, st.layout.phraseMidBreak).length;
+          // line-check 的 D9 靠这两个数验——pairs 档的行数必须正好是并之前的一半。
+          // **断句本身的结果**（补刀之前）：快照分两份存，一份记断句、一份记最终排版
+          // ——「断句变了」与「补刀变了」是两码事，混在一份里查不出是哪一层动了。
+          const preLines = B.describeLines(score.parts[0], brk, st.layout.phraseMidBreak);
+          phraseLines = preLines.map((l) => ({ tail: l.tail.lastWord || l.tail.text, dur: Number(l.dur.toFixed(3)) }));
+          const linesBefore = preLines.length;
+          // **「放不放得下」一律拿真实坐标判**（用户口径：「不要算格数，真实坐标排一遍，
+          // 放不下再补刀」）。量的是排版器折行时用的那套自然坐标，且与断点无关，
+          // 所以整首量一次，下面的选档/补刀/合并都用它。见 applybreaks.ts::FitMetric。
           mode = B.chooseLineLayout(score.parts[0], brk, cells, {
             useMidBreaks: st.layout.phraseMidBreak,
             allowPairs: st.layout.phraseMergeShort !== false,
+            fit: fitMetric,
           });
           pairsFrom = mode === "pairs" ? linesBefore : 0;
-          // 容量保险：C 档之外的两档也可能有个别行超容量（格数是近似），按小节补刀
-          B.enforceLineCapacity(score.parts[0], brk, cells, targetMeas, st.layout.phraseMidBreak);
+          // 容量保险：C 档之外的两档也可能有个别行放不下，按乐句凭据在行内部补刀
+          B.enforceLineCapacity(score.parts[0], brk, cells, targetMeas, st.layout.phraseMidBreak, fitMetric);
           // 上面几步会造出新的行首（DP 管不到），再兜两次：行首不留半小节休止、
-          // 按容量补刀留下的碎行并回上一行（见 applybreaks.ts 两个函数的注释）。
-          B.tidyLineHeads(score.parts[0], brk, { useMidBreaks: st.layout.phraseMidBreak, cells });
-          B.mergeSliverLines(score.parts[0], brk, st.layout.phraseMidBreak, cells);
+          // 补刀留下的碎行并回上一行（见 applybreaks.ts 两个函数的注释）。
+          B.tidyLineHeads(score.parts[0], brk, { useMidBreaks: st.layout.phraseMidBreak, cells, fit: fitMetric });
+          B.mergeSliverLines(score.parts[0], brk, st.layout.phraseMidBreak, cells, fitMetric);
           // 逐行事实（行首残小节 / 行末标点 / 格数…）留给 line-check.mjs 断言；
           // Chord 是对象，跨不过 page.evaluate 的序列化，只带纯数据出去。
-          lineInfo = B.describeLines(score.parts[0], brk, st.layout.phraseMidBreak).map((l) => ({
+          const rawLines = B.describeLines(score.parts[0], brk, st.layout.phraseMidBreak);
+          const measured = B.measureLines(score.parts[0], rawLines, fitMetric);
+          contentWidth = measured.width;
+          lineInfo = rawLines.map((l, li) => ({
             cells: l.cells, dur: l.dur, fromMi: l.fromMi, toMi: l.toMi, bars: l.bars, beats: l.beats,
             head: { ...l.head }, tail: { ...l.tail }, headFp: l.headFp, section: l.section, mid: !!l.chord,
+            // 这一行的**真实宽度**（自然坐标，未 justify）。「放不放得下 / 是不是太短」
+            // 一律按它判，别按格数（见 applybreaks.ts::FitMetric）。
+            width: Math.round(measured.widths[li] * 100) / 100,
+            // 行首那个断点是**容量补刀**落的（见 applybreaks.ts::LineInfo.fromCut）：
+            // line-check 的 D2 据此豁免（拆分导致的弱起不一致不算错误）。
+            fromCut: l.fromCut,
           }));
           const ab = B.applyPhraseBreaks(score.parts[0], brk, {
             linesPerPage: st.layout.linesPerPage,
@@ -313,14 +344,14 @@ for (const s of picked) {
       }
       const out = pageItems;
       // 排版口径的自检：迭代了几轮、最后还有没有「断点之外又折一刀」（见下面的汇总打印）
-      const fit = { iters, cells, target: targetUsed, mode, pairsFrom, jump: jumpSeen, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
+      const fit = { iters, cells, width: Math.round(contentWidth * 100) / 100, target: targetUsed, mode, pairsFrom, jump: jumpSeen, overflow: st.layout.phrase ? Math.max(0, B.countStaffRows(pageItems) - expectLines) : 0 };
       // 装饰层（标题/曲号/页眉页脚）在 Node 侧排，但字号得按**浏览器实测的墨迹比例**反算，
       // 否则同一个 size 在不同字体里墨迹大小不一样（见 browser.ts::fontSizeFor）。
       const sizes = {};
       for (const r of ["title", "songNumber", "category", "credit", "keyMeter", "header", "footer", "sectionWord", "story", "toc", "tocHeading", "tocSub", "frontTitle"]) sizes[r] = B.fontSizeFor(st, r);
       // creator 是 Map<type, text>（musicxml 的 <creator type="composer">…）
       const cr = score.creator instanceof Map ? [...score.creator] : Object.entries(score.creator ?? {});
-      return { pages: out, title: score.title, credits: cr.map(([type, text]) => ({ type, text })), sizes, fit, lines: lineInfo };
+      return { phraseLines, pages: out, title: score.title, credits: cr.map(([type, text]) => ({ type, text })), sizes, fit, lines: lineInfo };
     },
       [xml, style, s.id, meta.section.get(s.id) ?? []],
     );
@@ -349,7 +380,7 @@ for (const s of picked) {
     ctx: { sizes: res.sizes, id: s.id, title: res.title, credits: res.credits, category: s.category ?? "", km },
   });
   perSong.push({ id: s.id, title: res.title, pages: res.pages.length, fit: res.fit });
-  perLines.push({ id: s.id, title: res.title, cells: res.fit?.cells ?? 0, target: res.fit?.target ?? 0, mode: res.fit?.mode ?? "", pairsFrom: res.fit?.pairsFrom ?? 0, lines: res.lines ?? [] });
+  perLines.push({ id: s.id, title: res.title, phraseLines: res.phraseLines ?? [], cells: res.fit?.cells ?? 0, width: res.fit?.width ?? 0, target: res.fit?.target ?? 0, mode: res.fit?.mode ?? "", pairsFrom: res.fit?.pairsFrom ?? 0, lines: res.lines ?? [] });
   if (only || picked.length < 30) console.log(`  ${s.id} ${res.title}：${res.pages.length} 页`);
 }
 

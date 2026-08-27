@@ -13,6 +13,7 @@ import type { LayoutOptions } from "../layout/layout";
 import type { DrawItem, DrawPage, DrawText } from "./drawlist";
 import type { BookStyle, StyleRole } from "./bookstyle";
 import { JinpuPainter } from "../layout/painter";
+import type { FitMetric } from "../score/applybreaks";
 import type { Score } from "../score/score";
 import type { MetaData } from "../smufl/smufl";
 
@@ -347,6 +348,29 @@ export function maxStaffRowCells(pages: DrawPage[]): number {
     for (const v of per.values()) mx = Math.max(mx, v);
   }
   return mx;
+}
+
+/**
+ * **真实坐标量一遍**：每个和弦占的横向区间 + 版心宽度。
+ *
+ * 「一行放不放得下」的唯一可靠判据（用户口径：「不要算格数，真实坐标排一遍，放不下再补刀」）。
+ * 量到的坐标与排版器折行时用的是同一把尺子（`layout.ts::Line.naturalSpans`），
+ * 所以断句/补刀/合并按它判，排版器就不会在断点之外再折一刀。
+ *
+ * 与 `measureCellsPerLine` 的分工：那个给出的是「一行大概几格」的**近似**，
+ * 只在拿不到真实坐标时兜底（以及给 `phrase.ts` 的行长目标当量纲）。
+ *
+ * **断点不影响这些坐标**（自然位置在分行之前就算完了），所以整首量一次就够，
+ * 补刀/合并反复试的时候不必重排。
+ */
+export function measureChordSpans(score: Score, style: BookStyle, smuflMeta?: MetaData): FitMetric {
+  const p = new JinpuPainter(fontSizeFor(style, "lyric"));
+  applyBookStyle(p.layout.options, style);
+  if (smuflMeta) p.layout.options.smuflMeta = smuflMeta;
+  // 与 measureCellsPerLine 同理：先清掉原谱的换行，量的是「自然排下来有多宽」。
+  score.clearSystemBreak();
+  const { width, spans } = p.layout.measureNatural(score, style.page.w);
+  return { width, spans };
 }
 
 /**

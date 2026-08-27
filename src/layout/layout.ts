@@ -1404,6 +1404,30 @@ export class Line {
     }
   }
 
+  /**
+   * **每个和弦的自然横向区间**（`[x0, x1]`，未分行、未 justify）。
+   *
+   * 「这一行放不放得下」要拿**真实坐标**判，不能按格数估（用户口径：「不要算格数，
+   * 真实坐标排一遍，放不下再补刀」）。格数是近似——同样 30 格，歌词字多的行、带八度点
+   * 与附点的行都更宽；估宽了排版器就会在断点之外**又折一刀**，估窄了整首白白排稀。
+   *
+   * 返回的坐标与 `doLineBreak` 判折行用的是**同一把尺子**（`group.x + maxX`），
+   * 所以「Σ 宽度 ≤ 版心宽」与排版器的判断一致。断点不影响这些坐标（`calcXPos` 在
+   * `doLineBreak` 之前跑），所以整首量一次就够。
+   */
+  naturalSpans(opt: LayoutOptions): Map<S.Chord, { x0: number; x1: number }> {
+    this.lyricGap = opt.lyricGap;
+    this.dropDoubledBarlines(opt);
+    this.calcXPos();
+    const out = new Map<S.Chord, { x0: number; x1: number }>();
+    for (const e of this.entries) {
+      if (!(e instanceof NoteEntry)) continue;
+      const g = e.group;
+      out.set(e.chord, { x0: g.x, x1: g.x + (g.maxX ?? 0) });
+    }
+    return out;
+  }
+
   private calcXPos(): void {
     for (const e of this.entries) e.group.normalizeX();
     let curX = 0;
@@ -2645,10 +2669,21 @@ export class Layout {
     l.entries = newEnt;
   }
 
-  fromScore(scr: S.Score, dur: string | null, width: number, height: number): void {
-    this.pages = [];
+  /**
+   * **只量不排**：把整首装成一条 Line，返回每个和弦的自然横向区间与版心宽度。
+   *
+   * 给「一行放不放得下」用（`applybreaks.ts::FitMetric`）。与 `fromScore` 共用同一套
+   * 装载逻辑（`buildLine`），量到的坐标就是排版器折行时用的那一套。
+   */
+  measureNatural(scr: S.Score, width: number): { width: number; spans: Map<S.Chord, { x0: number; x1: number }> } {
     const cw = width - this.options.marginLeft - this.options.marginRight;
-    const ch = height - this.options.marginTop - this.options.marginBottom;
+    const l = this.buildLine(scr, null);
+    l.connectTextFrames();
+    return { width: cw, spans: l.naturalSpans(this.options) };
+  }
+
+  /** 把整首装成一条 Line（分行之前的那一条）。`fromScore` 与 `measureNatural` 共用。 */
+  private buildLine(scr: S.Score, dur: string | null): Line {
     const p = scr.parts[0];
     if (dur !== null) scr.clearSystemBreak();
     const l = new Line();
@@ -2696,6 +2731,14 @@ export class Layout {
       if (scr.playData.isSimpple) pass = scr.playData.measures.length;
       this.breakByDur(l, dur, total, pass);
     }
+    return l;
+  }
+
+  fromScore(scr: S.Score, dur: string | null, width: number, height: number): void {
+    this.pages = [];
+    const cw = width - this.options.marginLeft - this.options.marginRight;
+    const ch = height - this.options.marginTop - this.options.marginBottom;
+    const l = this.buildLine(scr, dur);
     l.connectTextFrames();
     for (const g of l.layout(cw, ch, this.options)) this.pages.push(g);
     this.titleAndPageNumber(scr.title, width, height, cw);
