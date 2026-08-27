@@ -268,6 +268,8 @@ for (const s of picked) {
             parallelWeight: st.layout.phraseParallelWeight ?? 6,
             // 平行乐句开头的**断点强度**（用户口径：要明显高于逗号）
             parallelScore: st.layout.phraseParallelScore ?? 8,
+            // 行末收在长音上（与平行开头是一对，见 PhraseOptions.tailLongWeight）
+            tailLongWeight: st.layout.phraseTailLongWeight ?? 0,
             // 成书专用的两条权重（编辑器那条路默认不开，基线不动）：
             // 短呼语句（「哈利路亚！」）的句末标点减半、重复段按长度加分。
             shortSentenceWords: 5,

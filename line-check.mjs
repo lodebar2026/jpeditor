@@ -120,7 +120,10 @@ for (const song of lineDoc.songs) {
     //     行首那个字**自成一句**时不算（上一行行末就带着标点）：131《无他，只有耶稣宝血》
     //     的「血！」是感叹词长音、142《圣灵请来》的「来，」是命令语气，两个标点之间只有
     //     一个字，这种起头是可以接受的（用户口径）。与 D4 同一条豁免。
-    if (i > 0 && l.head.firstBeats >= LONG_HEAD_BEATS && l.head.firstPunct > 0
+    //     **补刀造出来的行首也不算**（用户口径，与 D2 同一条豁免）：补刀是在一行*内部*
+    //     落刀救容量，那一行本来就放不下，后半截从哪儿起头由剩下的落点定，
+    //     不是断句挑错了地方（030《主赐福如春雨》的「手，」）。
+    if (i > 0 && !l.fromCut && l.head.firstBeats >= LONG_HEAD_BEATS && l.head.firstPunct > 0
         && ls[i - 1].tail.punct === 0 && ls[i - 1].tail.lastWordPunct === 0)
       hit("D3", song.id, `第 ${i + 1} 行以 ${l.head.firstBeats} 拍长音 + 标点起头`);
     // ── 这一轮补的三档，与 phrase.ts::headPenalty 的 (c)/(b2)/(g) 一一对应。
@@ -128,7 +131,8 @@ for (const song of lineDoc.songs) {
     //     （077 的「当；」）。上一行收在标点上时不算——那时行首的「啊，」「哦！」是新一句
     //     自己的开头（020 每段都从「啊，」起唱）。D3 是它的子集（那一档另要求是长音）。
     //     上一行行末落在无词的拖腔上时，要往前追到真正的字（`lastWordPunct`）。
-    if (i > 0 && l.head.firstPunct > 0 && ls[i - 1].tail.punct === 0 && ls[i - 1].tail.lastWordPunct === 0)
+    //     **补刀造出来的行首不算**（用户口径，与 D2/D3 同一条豁免）。
+    if (i > 0 && !l.fromCut && l.head.firstPunct > 0 && ls[i - 1].tail.punct === 0 && ls[i - 1].tail.lastWordPunct === 0)
       hit("D4", song.id, `第 ${i + 1} 行以「${l.head.text}」起头，上一行没收尾`);
     // D5 上一行收在句读标点上、这一行却从休止起头：那口气是上一句唱完的收气，该留在上一行
     //     （077 的「历风霜；」之后那个休止）。
