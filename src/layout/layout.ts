@@ -1419,11 +1419,20 @@ export class Line {
     this.lyricGap = opt.lyricGap;
     this.dropDoubledBarlines(opt);
     this.calcXPos();
+    // **一个和弦可能摊成好几个 entry**（`5---` 是音符 + 三根增时线各一个 NoteEntry，
+    // 共用同一个 `Chord`）：照直 `set` 会被最后那根增时线覆盖掉，而**歌词挂在头一个
+    // entry 上**——「详；」两个字比一根 `-` 宽得多，右缘就这么丢了。065《马槽圣婴》
+    // 因此把 24 拍的一行量成 309 宽（版心 312、看着放得下），排版器照真实坐标一量
+    // 却放不下，把行末那个 `7-` 连同三段歌词折成了单独一行（中间行只有一个音）。
+    // 取各 entry 的**最左左缘、最右右缘**。
     const out = new Map<S.Chord, { x0: number; x1: number }>();
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
       const g = e.group;
-      out.set(e.chord, { x0: g.x, x1: g.x + (g.maxX ?? 0) });
+      const x0 = g.x;
+      const x1 = g.x + (g.maxX ?? 0);
+      const prev = out.get(e.chord);
+      out.set(e.chord, prev ? { x0: Math.min(prev.x0, x0), x1: Math.max(prev.x1, x1) } : { x0, x1 });
     }
     return out;
   }
