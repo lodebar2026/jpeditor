@@ -383,7 +383,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const MORE_ROWS_SLACK = opts.moreRowsSlack ?? 0;
   const FIT = opts.fit;
   /** 最长的一行超过版心这么多倍 = 断句层撂挑子了，「放得下」那一票不再受容差限制。 */
-  const ABDICATE_RATIO = 1.8;
+  const ABDICATE_RATIO = 1.5;
   /** 方案评分里「断点弱度」相对「行长匀度」的权重（contentOnly 用，见 quality）。 */
   const BREAK_QUALITY_WEIGHT = 8;
   /** 末两行「短的 ÷ 长的」低于此就开始罚（contentOnly 用，见 quality 的 lastPair）。
@@ -727,7 +727,15 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 四分及以上的休止不在此列：那是上一句唱完的收气，本来就该留在上一行（见 retreatPastPickupRest）。
     const headRest = nx.chord.rest ? (nx.chord.duration?.toFloat() ?? 0) : 0;
     const songOpen = startsLikeSong(idx);   // 照本曲的起唱样式起头（见 `openingRest`）
-    if (headRest > 0 && headRest <= 0.5 && Math.abs(head - pickupStd) > 0.01 && !songOpen) s += 8;
+    // **凑成整拍的也不罚**（用户口径，403《救主子民还在世间》：「D5 是为了凑整拍，
+    // 这种情况可以接受」）：`|1-悉。0 2一 2生 2一|` 那半拍休止跟着后面三个八分音符
+    // 凑成整整 2 拍，断在休止**之前**才齐——挪下去反而剩 1.5 拍。
+    // 只认「半拍及以下的休止 + 凑成整拍」这一种：372《跟随耶稣》那种 1.5 拍的行首
+    // 不是整拍，照罚；169《全新的你》行首那个整小节休止的首音就有 1 拍，也不在此列。
+    // 只在成书那条路：编辑器那 15 首的基线是按没有这条豁免调出来的（「主祢真伟大」会变样）。
+    const headWhole = CONTENT_ONLY && headRest > 0 && headRest <= 0.5
+      && Math.abs(head - Math.round(head)) < 0.01;
+    if (headRest > 0 && headRest <= 0.5 && Math.abs(head - pickupStd) > 0.01 && !songOpen && !headWhole) s += 8;
     // (b3) **各行的行首残小节要一样长**（凑整拍），不限于行首是休止的那种。
     // (b) 只认「行首是半拍及以下休止」，行首是**音符**的弱起它管不着：363《倾听我的心》
     // 的行 1/2/4 从 1 拍起头（`0_ 5,_` / `3_ 4_`），行 3/5/6 却只有半拍（`5,_` / `3__ 4__`）
@@ -752,7 +760,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 收气，挪下去反而齐头（363《倾听我的心》的 `0_` + `5,_` 正好一拍，与首行一样；
     // 用户口径：「休止后有音符的残小节是可以接受的」）。凑不成的照罚（077 的「历风霜；」）。
     if (CONTENT_ONLY && nx.chord.rest && lyricPunctScore(flat[idx].chord) > 0
-        && !(pickupStd > 0 && Math.abs(head - pickupStd) < 0.01) && !songOpen) s += 8;
+        && !(pickupStd > 0 && Math.abs(head - pickupStd) < 0.01) && !songOpen && !headWhole) s += 8;
     // (g) **断点落在「无词的拖腔」上、而拖腔所属的那个字没有标点收尾** → 句子还没唱完，
     // 断在这儿就把词从中间劈开了：077 的「殷｜勤」——「殷」留在行末、「勤服事…」另起一行。
     // 拖腔所属的字**带标点**时相反（乐句真收尾了），不罚，那正是 (b2) 要保住的情形。
@@ -1627,8 +1635,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 交出两三行（139《主爱有多少》34 小节交出 2 行），±3 与两倍档一起才摸到 5 行，
     // 而它该是 8 行（每行两句「主爱有多少？主恩有多深？」）。再往上加两档，
     // 每档只多一次 DP；排不排得下、碎不碎由 `notTooThin` 与 `quality` 把关。
-    add(base.map((v) => v * 3));
-    add(base.map((v) => v * 4));
+    if (CONTENT_ONLY) { add(base.map((v) => v * 3)); add(base.map((v) => v * 4)); }
     if (segs <= 3) {
       const grid = (i: number, acc: number[]) => {
         if (i === segs) return add(acc.slice());
@@ -1797,7 +1804,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 297《让神儿子的爱围绕你》整个主歌 17 小节排成一行（765 / 312），
     // 四行的方案（每行 4 小节、一三行与二四行各自开头相同）q 差了 5.2 分选不上，
     // 主歌于是全交给补刀，按匀度切成 18 / 24 / 25 拍，平行乐句的开头一个也没对齐。
-    const abdicated = overRatio(best.nb) >= ABDICATE_RATIO;
+    // **只在成书那条路**：编辑器那 15 首的基线是按「这一层整个关着」调出来的
+    //（`FIT_SLACK` 默认 0），放开就变样了。
+    const abdicated = CONTENT_ONLY && overRatio(best.nb) >= ABDICATE_RATIO;
     if (FIT_SLACK > 0 || abdicated) {
       // **DP 交出一行长到两倍版心时，容差不设上限**：那不是「差一点放不下」，那是断句层
       // 撂挑子了——066《普世欢腾》十九个小节一个断点都没有（`weak` 取行均值，一行到底
@@ -1807,6 +1816,17 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       const ok = fits.filter((f) => f.score <= best.score + slack);
       ok.sort((a, b) => b.rows - a.rows || a.score - b.score);
       if (ok.length) best = { score: ok[0].score, nb: ok[0].nb };
+      // **一套放得下的都没有 → 至少交出最接近放得下的那一套**：034《用我一生》
+      // 每一套方案都有超版心的行（最好的那套也有一行 335 / 312），`fits` 于是是空的，
+      // 上面那一段整个空转，断句层照旧把 3 行 603 / 666 / 580 宽扔给补刀，
+      // 补刀在一行内部连切两刀，切出 8.5 / 16 / 7.5 拍这样的碎行。
+      // 撂挑子的时候至少别撂到底：在**不碎**的方案里挑超得最少的那一套
+      //（`notTooThin` 挡住 79 / 312 那种细行），补刀只要补最后一点。
+      else if (abdicated) {
+        const near = all.filter((f) => notTooThin(f.nb, 0.35));
+        near.sort((a, b) => overRatio(a.nb) - overRatio(b.nb) || a.score - b.score);
+        if (near.length && overRatio(near[0].nb) < overRatio(best.nb)) best = { score: near[0].score, nb: near[0].nb };
+      }
     }
     // @ts-ignore 调试钩子：段界
     if (typeof window !== "undefined" && (window as any).__cutsDebug !== undefined)

@@ -140,8 +140,15 @@ for (const song of lineDoc.songs) {
     //     反而齐头（363《倾听我的心》六行都是「半拍休止 + 半拍弱起音」）。标准弱起拿
     //     **第 1 行**的行首残小节当基准（第 1 行就是曲首那个弱起），与
     //     phrase.ts::headPenalty 的 pickupStd 同一口径。
+    //     **凑成整拍的也不算**（用户口径，403《救主子民还在世间》：「D5 是为了凑整拍，
+    //     这种情况可以接受」）：`|1-悉。0 2一 2生 2一|` 那半拍休止跟着后面三个八分音符
+    //     凑成整整 2 拍，断在休止之前才齐，挪下去反而剩 1.5 拍。只认「半拍及以下的休止 +
+    //     凑成整拍」，169 行首那个整小节休止的首音有 1 拍，不在此列。
+    //     与 phrase.ts::headPenalty 的 `headWhole` 同一口径。
     const pickup = ls[0]?.head.dur ?? 0;
-    if (i > 0 && l.head.rest && ls[i - 1].tail.punct > 0
+    const headWhole = l.head.firstDur > 0 && l.head.firstDur <= 0.5
+      && Math.abs(l.head.dur - Math.round(l.head.dur)) < 0.01;
+    if (i > 0 && l.head.rest && ls[i - 1].tail.punct > 0 && !headWhole
         && !(pickup > 0 && Math.abs(l.head.dur - pickup) < 0.01))
       hit("D5", song.id, `第 ${i + 1} 行从休止起头（${l.head.dur} 拍，本曲弱起 ${pickup} 拍），上一行收在「${ls[i - 1].tail.text}」`);
     // D6 行末落在无词的拖腔上、而拖腔所属的那个字没有标点收尾：句子还没唱完就断了，
@@ -189,6 +196,10 @@ for (const song of lineDoc.songs) {
       if (!t || t.size < 2) return;
       const mode = [...t].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
       if (!(l.head.rest && l.head.firstDur > 0 && l.head.firstDur <= 0.5)) return;
+      // **凑成整拍的不算**（用户口径，403：「为了凑整拍，这种情况可以接受」）：
+      // 那半拍休止跟着后面几个八分音符凑成整整 2 拍，断在休止之前才齐。
+      // 与 phrase.ts::headPenalty 的 `headWhole` 同一口径。
+      if (Math.abs(l.head.dur - Math.round(l.head.dur)) < 0.01) return;
       if (Math.abs(l.head.dur - mode) > 0.01)
         hit("D2", song.id, `第 ${i + 1} 行以半拍休止起头、弱起 ${l.head.dur} 拍，本段多数是 ${mode} 拍`);
     });
