@@ -7,6 +7,58 @@ import { Chord, Part } from "./score";
 import { BarStyle } from "./enums";
 import { Fraction } from "../common/fraction";
 
+/**
+ * **「一行放不放得下」的真实判据**（`pdflayout/browser.ts::measureChordSpans` 量出来的）。
+ *
+ * 用户口径：**「不要算格数，真实坐标排一遍，放不下再补刀」**。格数（`LineInfo.cells`）
+ * 是近似——同样 30 格，歌词字多的行、带八度点与附点的行都更宽；照它判，排版器会在我们的
+ * 断点之外**又折一刀**，而 `rebuild.mjs` 的容量收敛循环随后把容量越收越小
+ * （064《啊！圣善夜》本来 7 行的方案被一路收成 9 行 13 格）。
+ *
+ * `spans` 与排版器折行用的是同一把尺子（`layout.ts::Line.naturalSpans`），
+ * 且**与断点无关**（自然位置在分行之前就算完），所以整首量一次，补刀/合并反复试都能用。
+ */
+export interface FitMetric {
+  /** 版心宽度。 */
+  width: number;
+  /** 每个和弦的自然横向区间。 */
+  spans: Map<Chord, { x0: number; x1: number }>;
+}
+
+/**
+ * 一个**可落刀的乐句子句断点**（`PhraseBreaks.cuts` 的元素）。断句本身选哪些断点由 DP
+ * 做完了，这张表是给**补刀层**看的：「一行排不下、非得在它内部再切一刀」时，
+ * 哪些位置有乐句凭据、各值多少分。
+ */
+export interface CutCandidate {
+  /** 在该和弦**之后**断行。 */
+  chord: Chord;
+  mi: number;
+  /** 收在小节线上（写 `measureBreaks`）；否则是行内断点（写 `midBreaks`）。 */
+  isLast: boolean;
+  /** 断点强度 − 行首罚（`scoreAt` − `headPenalty`），**可以是负的**。 */
+  score: number;
+  /**
+   * 在这里断，**下一行的开头与前面某一行的开头是同一段旋律**吗——是的话公共前缀有多长
+   * （`parallelAt`，比到 12 个音封顶）。0 = 不是平行乐句开头。
+   *
+   * 补刀要看它：原书的分行大量是「平行乐句各自成行、对齐着排」，而强度分里
+   * 平行只值 2 分（`scoreAt` 拿它打平局用）。144《求圣灵吹我》两句「求主圣灵向我吹气」
+   * 该各自成行、168《爱喜乐生命》后三行该按两句「让主爱…」并成两行，都是这一条。
+   */
+  parallel: number;
+  /**
+   * 这里是不是**句末**（`isSentenceEnd` 的口径，不受「短分句减半」影响）。
+   *
+   * 单独带出来是因为强度分**分不出句号与逗号**：`punctScore` 里两者只差 2 分
+   * （6 vs 4），而「很短的分句减半」还会把句号折成 3——168《爱喜乐生命》的
+   * 「忧愁不再。」只跟在「心底，」后面四个字，句号被折成 3，输给了「心底，」的 10 分
+   * （逗号 4 + 长音 4 + 小节线加分），一整句就被劈到了下一行开头。
+   * 补刀这一层要的正是「落在句号上」，所以它在 `pickCuts` 里另有加分。
+   */
+  end: boolean;
+}
+
 export interface PhraseBreaks {
   measureBreaks: Set<number>; // 小节边界换行：在该下标小节前起新行
   midBreaks: Set<Chord>;      // 行内换行：在该和弦（乐句尾休止/长音）之后换行，不加小节线
@@ -18,14 +70,22 @@ export interface PhraseBreaks {
   /** 是否已为「副歌起点」安排了段界（含弱起顺延）。jpscore 据此不再自行在副歌首音处断行。 */
   refrainCut: boolean;
   /**
-   * **在这条小节线上断行有多少乐句凭据**（小节下标，语义同 `measureBreaks`：
-   * `mi + 1` = 在第 mi 小节之后断）。值 = 断点强度 − 行首罚，可以是负的。
+   * **全部候选断点**（按位置升序，含落在小节中间的那些）。
    *
-   * 给**容量补刀**用（`applybreaks.ts::splitEvenly`）：断句本身不看纸张，
-   * 排不下就整首换档，而换的那个档也得挑个像样的落点——原来它只按格数找最接近的
-   * 小节线，不看标点、不看长音、不看行首罚，刀常落在句子中间（全书行首带标点 190 处）。
+   * 给**容量补刀**用（`applybreaks.ts::pickCuts`）：断句本身不看纸张，排不下就整首换档，
+   * 而换的那个档也得挑个像样的落点——原来它只按格数找最接近的小节线，不看标点、
+   * 不看长音、不看行首罚，刀常落在句子中间（全书行首带标点 190 处）。
+   *
+   * **行内候选一并带出**：乐句的自然子句断点常落在小节中间（弱起谱尤其如此），
+   * 原来这里 `if (!isLast) continue` 把它们全丢了，补刀只能在小节线里挑。
+   * 落不落在小节线上改由补刀层按权重定（`BAR_END_BONUS`），不再是硬约束。
    */
-  cutScore: Map<number, number>;
+  cuts: CutCandidate[];
+  /** **容量补刀落下的断点**（`applybreaks.ts::applyCapacityCuts` 写，两种键与
+   *  `measureBreaks` / `midBreaks` 同义）。断句本身不产生它们——它们是「这一行放不下」
+   *  才切出来的。`describeLines` 据此给 `LineInfo.fromCut` 打记号，`line-check.mjs`
+   *  的 D2 据此豁免（拆分导致的弱起不一致不算错误）。 */
+  capacityCuts: Set<Chord | number>;
   /** **不许删的断点**（小节下标，语义同 `measureBreaks`）：跳转记号（Fine / D.C. / D.S. /
    *  To Coda）所在的小节末。`measureBreaks` 的子集。后续的并行/补刀（`chooseLineLayout`）
    *  一律绕开它们——记号是给唱的人看路标的，印在一行的中段读不出来。 */
@@ -216,6 +276,26 @@ export interface PhraseOptions {
   evenWeight?: number;
   /** 多排一行的代价（`evenWeight > 0` 时的方案评分用）。默认 20。 */
   rowCost?: number;
+  /**
+   * **「放得下」当平局裁判的容差**（方案评分用，`contentOnly` 那一路才有意义）。默认 0 = 关。
+   *
+   * 断句层照旧不把容量算进代价（见 `contentOnly`）；这一项只让纸张当**平局的裁判**：
+   * 「每行都放得下」的那套方案与最优方案差距在这个数以内，就用前者。
+   * 详见 `computePhraseBreaks` 里用到它的那段注释（070《天使歌唱》的 0.85 分之差）。
+   */
+  fitSlack?: number;
+  /** **行数多的方案优先**：与最优方案差在这个数以内就选行数最多的那套（0 = 关）。
+   *  内容层的规则，与版心无关——原委见 `computePhraseBreaks` 里用到它的那段注释。 */
+  moreRowsSlack?: number;
+  /** **平行乐句开头**在断点强度里值多少分（按公共前缀长度折算）。
+   *  用户口径：不管成书还是其它歌谱排版，平行句都更优先于标点（逗号 4、句号 6）。默认 8。 */
+  parallelScore?: number;
+  /**
+   * **真实坐标**（`pdflayout/browser.ts::measureChordSpans`）。给了它，「这一套方案放不放得下」
+   * 就按真实宽度判（与排版器折行同一把尺子）；没给就退回按格数（`maxCells`）估。
+   * 用户口径：不要算格数，真实坐标排一遍。
+   */
+  fit?: FitMetric;
   /** 「末两行别一长一短」的权重。一段的最后两行长短悬殊最扎眼（125《主名至宝》、
    *  404《你若不压橄榄成渣》都是倒数第二行短、末行长），而普通的行长代价管不到它——
    *  末行本来就允许短。默认 1；0 = 关。 */
@@ -289,10 +369,19 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 20 是拿 051/052/378/374 试出来的：副歌那种「一行顶格、主歌两行很稀」会拆成两行，
   // 而本来就匀的谱不会平白多出一行。
   const ROW_COST = opts.rowCost ?? 20;
+  /** 平行乐句开头在 `scoreAt` 里值多少分。用户口径：**不管成书还是其它歌谱排版，
+   *  平行句都更优先于标点**（逗号 4、句号 6），所以默认 8。 */
+  const PARALLEL_SCORE = opts.parallelScore ?? 8;
+  const FIT_SLACK = opts.fitSlack ?? 0;
+  /** 「行数多的优先」的容差（内容层，见用到它的那段注释）。 */
+  const MORE_ROWS_SLACK = opts.moreRowsSlack ?? 0;
+  const FIT = opts.fit;
+  /** 最长的一行超过版心这么多倍 = 断句层撂挑子了，「放得下」那一票不再受容差限制。 */
+  const ABDICATE_RATIO = 1.8;
   /** 方案评分里「断点弱度」相对「行长匀度」的权重（contentOnly 用，见 quality）。 */
   const BREAK_QUALITY_WEIGHT = 8;
   /** 末两行「短的 ÷ 长的」低于此就开始罚（contentOnly 用，见 quality 的 lastPair）。
-   *  与 line-check 的 L5 同一口径、同一个 0.6。 */
+   *  与 line-check 的 D8 同一口径、同一个 0.6。 */
   const LAST_PAIR_QUALITY_RATIO = 0.6;
   const LAST_PAIR_QUALITY_WEIGHT = 60;
   /** 「有一行明显比同曲其它行短」的门槛（contentOnly 用，见 quality 的 shortOutlier）：
@@ -321,11 +410,12 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const measureBreaks = new Set<number>();
   const midBreaks = new Set<Chord>();
   const sectionStarts = new Set<number>();
-  const cutScore = new Map<number, number>();
+  const cutList: CutCandidate[] = [];
+  const capacityCuts = new Set<Chord | number>();
   const sectionCutChords = new Set<Chord>();
   const forced = new Set<number>();
   let refrainCut = false;
-  if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cutScore };
+  if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cuts: cutList, capacityCuts };
 
   const chordsPer = measures.map((m) => chordsOf(m));
   const fpPer = chordsPer.map((cs) => measureFp(cs));
@@ -376,7 +466,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     }
   }
   const K = flat.length;
-  if (K === 0) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cutScore };
+  if (K === 0) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cuts: cutList, capacityCuts };
 
   // slur/tie 括号**先做栈式配对**：识别(OMR)或原谱本身都可能给出不成对的弧（漏检一端）。若照单全收，
   // 一个悬空的起始就让此后 depth 永不归零 → 整曲再无候选断点、乐句排版退化成一整行（实测「主祢真伟大」
@@ -707,7 +797,8 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   };
   const startsParallel = (idx: number): boolean => parallelAt(idx) >= PARALLEL_MIN;
 
-  const scoreAt = (idx: number): number => {
+  /** **这里像不像一个乐句落点**（不含平行奖励）。候选池按它收人，见 `scoreAt`。 */
+  const scoreBase = (idx: number): number => {
     const ci = flat[idx];
     const c = ci.chord;
     let s = punctAfter[idx]; // 句号 6 / 逗号 4（已顺延到 slur/tie/休止 收尾）
@@ -738,6 +829,16 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       const st = tieFrom[idx];
       if (st >= 0 && flat[st].chord.beats >= 2) s += 4;
     }
+    // **转调之前断开**（用户口径：144《求圣灵吹我》「在转调的地方应该断开」）。
+    // 调号一换就是新的一段，原书几乎都在那里换行；而这里往往并没有别的信号
+    // ——144 的 `m9|`「气。」本身是句末长音，却被行首罚压成了 −9 分。
+    // 与跳转记号（+10）同量级：那也是「读谱的人要在这里换口气」的路标。
+    if (ci.isLast && ci.mi + 1 < n && measures[ci.mi + 1].keyChange) s += 10;
+    // **反复段的开头也尽量断开**（用户口径：009《荣耀归与至高神》「反复的开始也应该
+    // 尽量断开」）。`‖:` 画在小节开头，唱的人要在这里回头——它与 `:‖`（下面那条 +5）
+    // 是一对，原来只认收尾那一半。这里给的是**加分**不是强制：反复段的开头常常正是
+    // 乐句的开头，多数时候别的信号也会指向同一处。
+    if (ci.isLast && ci.mi + 1 < n && measures[ci.mi + 1].repeatForward) s += 8;
     if (ci.isLast) {
       const m = measures[ci.mi];
       if (m.repeatBackward || m.barline === BarStyle.LIGHT_HEAVY || m.barline === BarStyle.LIGHT_LIGHT) s += 5;
@@ -752,18 +853,51 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     const rep = repeatBreakIdx.get(idx);
     // 封顶 10：再往上就会盖过「句末长音」（`6 + 4`）那种最硬的乐句收尾，
     // 把下一句的弱起拽到上一行行尾（15 首基线里「爱是不保留」的「惟求」就是这么被拽走的）。
-    if (rep !== undefined) s += REPEAT_LEN_BONUS ? Math.min(10, 6 + rep) : 8;
+    //
+    // **重复段边界得先是个真正的乐句收尾**（标点／休止／延长号／弧收尾），否则只给 2 分
+    // 打平局——`parallelAt` 的头注释早写着这条道理（096「哈利｜路亚」那个坑），
+    // 重复加分一直没这道门：299《我一生一世要赞美主》的 m8|「着」是个**没有标点的长音**，
+    // 却因为重复边界拿到 16 分，压过了 m6|「华，」的 10 分，「我还活着 / 的时候」
+    // 就被从词中间劈开了。只在成书那条路收紧（编辑器 15 首基线按旧口径调过）。
+    const repIsEnd = punctAfter[idx] > 0 || c.rest || c.fermata || okEnd[idx] > 0;
+    if (rep !== undefined) {
+      const full = REPEAT_LEN_BONUS ? Math.min(10, 6 + rep) : 8;
+      s += CONTENT_ONLY && !repIsEnd ? 2 : full;
+    }
     // 跳转记号（Fine / D.C. / D.S. / To Coda）落在哪个小节，那个小节末就**高优先级断开**
     //（+10，比房尾 +6、终止线 +5 都高）：记号是给唱的人看路标的，印在一行的中段读不出来。
     if (ci.isLast && JUMP_MEAS.has(ci.mi)) s += 10;
     // **平行乐句开头在这里只给一点分，用来打平局**（主力在 quality，见那边）。
-    // 给足分会让 DP 为了凑一个平行开头就断出短行（实测全书中间行过短 4 → 18 处、
-    // 行长悬殊 6 → 12 首）；但一分不给也不行——070《天使歌唱》的
-    // `m12|「最」→「高」` 与 `m13|「神，」→「荣」` 强度都是 8 分，DP 任选其一，
-    // 挑中前者就把「最高神」劈开了。后者是平行开头，该赢下这个平局。
-    if (startsParallel(idx)) s += 2;
+    // **平行乐句开头要明显高于标点**（用户口径：不管成书还是其它歌谱排版，平行句都更优先
+    // 于标点）。原来只给 2 分、注释写着「只用来打平局」——逗号 4、句号 6，等于把最像
+    // 「原书分行依据」的信号排在标点之后。066《普世欢腾》中间一个句号都没有，全靠逗号 4 分
+    // + 平行 2 分，断两刀要付约 50 分，DP 于是十九个小节排成一行到底。
+    //
+    // **按公共前缀的长度给分**：重复得越长，把它们排成各自的行首就越值
+    //（`parallelAt`，比到 12 个音封顶）。**两条路都用同一口径**。
+    // **只用来打平局**：`scoreAt` 不止喂断点代价，它还决定「哪些位置进候选池」
+    // （`scoreAt > 0` 才是候选）与强制断点的判定，抬高它会全盘搅动——实测把它按平行长度
+    // 抬到 8 分，定点断言 12 → 18 条不过，363《倾听我的心》的「三对平行行」反而只剩一对。
+    // **「平行优先于标点」那条口径落在方案级**（`quality` 的 `parallel` 项 / `PARALLEL_WEIGHT`），
+    // 那一层只管「哪套方案的行首平行得多」，不动候选池。
     return s;
   };
+
+  /**
+   * **断在这里有多好**（= 乐句凭据 + 平行奖励）。
+   *
+   * 与 `scoreBase` 分开是因为这两件事本来就不是一回事（用户指出的）：
+   *   `scoreBase`  **这里像不像一个落点**——有没有标点、长音、休止、延长号、弧收尾、
+   *                终止线/反复/房尾、跳转记号、转调、前奏交界。**候选池按它收人**。
+   *   `scoreAt`    断在这里有多好——在凭据之上再加「下一行是平行乐句开头」的奖励。
+   *
+   * 原来两者是同一个函数，于是「平行分」既是奖励又是**入池门槛**：把它抬高一点，
+   * 大量没有任何气口的位置就涌进候选池，DP 的结构整个变样（实测平行分 2 → 8：
+   * 定点断言 12 → 18 条不过，363《倾听我的心》的「三对平行行」反而只剩一对）。
+   * 拆开之后，平行分只影响「在几个候选之间挑谁」，不再影响「有哪些候选」。
+   */
+  const scoreAt = (idx: number): number =>
+    scoreBase(idx) + (startsParallel(idx) ? PARALLEL_SCORE : 0);
 
   // 候选断点：括号闭合（depth 0）且「小节末」或「带乐句信号」的和弦；末音强制入选（曲末）。
   const cand: number[] = [];
@@ -771,7 +905,8 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     if (depthAfter[idx] !== 0) continue;
     const mi = flat[idx].mi;
     if (inEnding[mi] && !(flat[idx].isLast && endingLast[mi])) continue;
-    if (flat[idx].isLast || scoreAt(idx) > 0) cand.push(idx);
+    // **候选池按「有没有乐句凭据」收人**，不看平行奖励（见 scoreAt 的注释）
+    if (flat[idx].isLast || scoreBase(idx) > 0) cand.push(idx);
   }
   if (cand[cand.length - 1] !== K - 1) cand.push(K - 1);
 
@@ -945,7 +1080,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 改法是**把强度的量程铺满 `[0, BASE_BREAK]`**：分母取盖得住最强断点的那个数
     // （实测最强的在 24 分上下），于是 9 分与 13 分不再打平，而**总量程仍是原来的 0~8**
     // ——`headPenalty`（行首判据）、`lastPair`（末两行）、`crossedEndPunct` 那几项
-    // 都是按 0~8 这个尺度调出来的，量程一放大它们就被稀释（实测全书 L1~L5 六档一起变差）。
+    // 都是按 0~8 这个尺度调出来的，量程一放大它们就被稀释（实测全书 D1~D8 六档一起变差）。
     //
     // 不允许负收益：代价在 DP 里是累加的，负收益会让它一路狂断（068《天使报信》试出来
     // 排了 10 行，其中四行只有一小节）。非负且单调，强断点便宜但仍要付费，
@@ -987,13 +1122,42 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 按**格数**判而不是小节数——小节的长短随拍号差得远。
   const FORCED_CUT_TAIL_CELLS = 8;
   const forcedCuts: number[] = [];
-  if (JUMP_MEAS.size) {
+  {
+    // **转调之前也强制断开**（用户口径：144《求圣灵吹我》「在转调的地方应该断开」）。
+    // 调号一换就是新的一段，原书都在那里换行。光加分压不住：144 的 `m9|`「气。」
+    // 强度 25（句末 + 长音 + 转调），可行首罚也是 24——下一句的弱起休止叠着句末收气，
+    // 两条罚项一起压上来，净值只剩 1 分，DP 于是从中间跨了过去。
+    const keyChangeMeas = new Set<number>();
+    if (CONTENT_ONLY) for (let mi = 1; mi < n; mi++) if (measures[mi].keyChange) keyChangeMeas.add(mi - 1);
+    // **前奏之后也强制断开**（用户口径：028《全然向祢》「前奏刚好单独一句」）。
+    // 前奏是整段没有词的小节，唱的人一眼要看出「从这里起唱」；原书都让它独占一行。
+    // `scoreAt` 里那 +6 压不住行长代价——028 的前奏只有 4 小节 12 拍，DP 宁可把它
+    // 与第一句并成 26 拍的一行（行末还落在「的」上）。
+    if (CONTENT_ONLY) {
+      for (let mi = INTRO_MIN_MEAS - 1; mi + 1 < n; mi++) {
+        if (lyrPer[mi] !== "" || lyrPer[mi + 1] === "") continue;
+        let run = 0;
+        for (let j = mi; j >= 0 && lyrPer[j] === "" && run < INTRO_MIN_MEAS; j--) run++;
+        if (run >= INTRO_MIN_MEAS) keyChangeMeas.add(mi);
+      }
+    }
     for (let i = 0; i < M; i++) {
       const idx = cand[i];
-      if (idx === K - 1 || !flat[idx].isLast || !JUMP_MEAS.has(flat[idx].mi)) continue;
+      if (idx === K - 1 || !flat[idx].isLast) continue;
+      if (!JUMP_MEAS.has(flat[idx].mi) && !keyChangeMeas.has(flat[idx].mi)) continue;
       if (cellsUpto[K] - cellsUpto[idx + 1] < FORCED_CUT_TAIL_CELLS) continue;
-      forcedCuts.push(i + 1);
-      forced.add(flat[idx].mi + 1); // 后续的并行/补刀不许删（见 PhraseBreaks.forced）
+      // **前奏的收尾长音留在前奏那一行**：028《全然向祢》的前奏收在 `1-- 0` 上，而它写在
+      // 起唱那一小节的开头（`|1-- 0 5当…`）。照小节线断，那个 `1-- 0` 就成了下一行的行首。
+      // 往后挪到「第一个有词的音」之前——与段界的 `aroundSectionPickup` 同一条道理。
+      let at = i;
+      if (!JUMP_MEAS.has(flat[idx].mi)) {
+        let sung = idx + 1;
+        while (sung < K && !mainLyricText(flat[sung].chord)) sung++;
+        for (let j = i + 1; j < M && cand[j] < sung; j++) at = j;
+      }
+      forcedCuts.push(at + 1);
+      const fi = flat[cand[at]];
+      if (fi.isLast) forced.add(fi.mi + 1); // 后续的并行/补刀不许删（见 PhraseBreaks.forced）
     }
   }
 
@@ -1113,6 +1277,14 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
      *   - **平行乐句开头**按行数占比给负分（越多行对得齐越好）。
      *   - 行数、短行（稀疏）都不算分；超容量仍是硬伤（排版器会照宽度硬折，甩出个两三格的尾巴）。
      */
+    /** 这一行（断点 a→b）按**真实坐标**放得下吗（没有真实坐标时一律当放得下）。 */
+    const lineFits = (a: number, b: number): boolean => {
+      if (!FIT) return true;
+      const p0 = FIT.spans.get(flat[idxAt[a] + 1]?.chord);
+      const p1 = FIT.spans.get(flat[idxAt[b]]?.chord);
+      return !(p0 && p1) || p1.x1 - p0.x0 < FIT.width;
+    };
+
     const quality = (nb: number[]): number => {
       const cells: number[] = [];
       const durs: number[] = [];
@@ -1131,9 +1303,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         bySeg.get(segNo)!.push(durBetween(a, b));
         const hi = cuts.find((c) => c >= b) ?? M;
         weak += breakCost(b, hi);
-        // **容量不许卡断句**（用户口径）：「排不排得下」只在 `chooseLineLayout` 的档里用
-        // ——排不下就整首换档，由 C 档在「每行中间附近」挑个合适地方补刀
-        //（见 applybreaks.ts::splitEvenly 的硬窗口）。
+        // **容量不卡断句**（用户口径）：「排不排得下」交给 `chooseLineLayout` 的档
+        // ——排不下就整首换档，由 C 档在行内部按乐句凭据补刀（applybreaks.ts::pickCuts）。
+        // 这里只留两样：非 contentOnly 那条路的老硬伤（编辑器基线按它调过，不动），
+        // contentOnly 那一路一分不罚——纸张只在**方案选优**那一步当平局裁判（见 FIT_SLACK）。
         if (!CONTENT_ONLY) {
           const over = cellsIntBetween(a, b) - MAX_CELLS;
           if (over > 0) weak += 100 + over ** 2 * 8;
@@ -1145,8 +1318,18 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         }
         // 这一行的**下一行**是不是平行开头（断点 b 之后那个和弦起头）
         // **按公共前缀的长度给分**：重复得越长，把它们排成各自的行首就越值
-        // （比到 12 个音封顶，再长也不多给了）。
-        if (b < M) parallel += Math.min(parallelAt(cand[b - 1]), 12) / 12;
+        //（比到 12 个音封顶，再长也不多给了）。
+        //
+        // 试过改成「按**行首配对**算」（这一套方案里有几行的开头与另一行相同）——
+        // 那更贴近「平行乐句各自成行」的本意，但奖励是**按行数归一**的，
+        // 「所有行都平行」在 3 行和 6 行下都是 1.0、分不出高下，而行数少的断点也少、
+        // 反而更便宜：363《倾听我的心》因此从 5 行变成 3 行（每行两个乐句）。
+        // 全书 29 → 32 处、定点 15 → 23 条不过。**别再试**，除非先给内容层
+        // 补上「一行该装几个乐句」的锚点。
+        // **放不下的行不给平行奖励**：这条奖励的前提是「平行乐句各自成行、对齐着排」，
+        // 而一行放不下就一定会被补刀切开，切完那份对齐也就没了。009《荣耀归与至高神》
+        // 的「天上众军」正是靠这道闸才断在了该断的地方（全书 36 → 29 处、定点 19 → 15）。
+        if (b < M && (!FIT || lineFits(a, b))) parallel += Math.min(parallelAt(cand[b - 1]), 12) / 12;
         a = b;
       }
       if (!cells.length) return INF;
@@ -1222,6 +1405,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       //  多出一个平行乐句开头、拿了 −27.5 的奖励而落败）。
       if (typeof window !== "undefined" && (window as any).__qDebug) (window as any).__qDebug.push({
         lines: cells.length, durs: durs.map((d) => Math.round(d * 10) / 10),
+        widths: (() => { const o: number[] = []; for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; o.push(Math.round(lineSpan(a, b))); a = b; } return o; })(),
         cv: +(EVEN_WEIGHT * 100 * cv).toFixed(2), outlier: +(OUTLIER_WEIGHT * outlier).toFixed(2),
         shortOut: +(OUTLIER_WEIGHT * shortOutlier).toFixed(2),
         lastPair: +((CONTENT_ONLY ? LAST_PAIR_QUALITY_WEIGHT * lastPair : 0)).toFixed(2),
@@ -1245,7 +1429,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 自然涌现的，既可能偏多也可能偏少——117《祂名称为奇妙》头三句各有一个 24 分的强断点，
     // 第一遍照着断出 7/7/13/27/24/25 格六行，而更匀的四行方案压根没被生成过。
     // 旧口径下第一遍是按行长目标排的，行数只会偏少，所以单向就够（编辑器那条路不变）。
-    const deltas = CONTENT_ONLY ? [-2, -1, 0, 1, 2] : [0, 1, 2];
+    // **±3 而不是 ±2**：363《倾听我的心》第一遍断出 3 行，而它该是 6 行（三对平行乐句
+    // 各自成行）——6 = 3 + 3，在 ±2 的窗口外，那套方案**压根没被生成过**，
+    // 平行奖励再高也选不到它。搜多宽是**内容层**的事，与纸张无关。
+    const deltas = CONTENT_ONLY ? [-3, -2, -1, 0, 1, 2, 3] : [0, 1, 2];
     const options: number[][] = [];
     const add = (w: number[]) => {
       if (w.some((v) => v < 1)) return;
@@ -1262,13 +1449,67 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       for (let i = 0; i < segs; i++)
         for (const d of deltas) { if (d === 0) continue; const w = base.slice(); w[i] += d; add(w); }
     }
+    /**
+     * 这一套方案**排得下吗**（`FIT_SLACK` 用，见下）：既没有超出版心的行，
+     * 也没有短到不足版心四成的中间行（与 line-check 的 D7 同口径——「行数多的优先」
+     * 若不设这道下限，全书立刻甩出一堆短行，实测 D7 0 → 53 处）。末行不算，它本来可以短。
+     */
+    /** 这一套方案里**最长的一行**超出版心多少倍（1 = 正好放得下）。 */
+    const overRatio = (nb: number[]): number => {
+      if (!(paperCap > 0)) return 1;
+      let mx = 0;
+      for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; mx = Math.max(mx, lineSpan(a, b)); a = b; }
+      return mx / paperCap;
+    };
+    /** 一行有多宽 / 版心有多宽：有真实坐标就用真实坐标，没有就退回格数（见 PhraseOptions.fit）。 */
+    const paperCap = FIT ? FIT.width : MAX_CELLS;
+    const lineSpan = (a: number, b: number): number => {
+      if (!FIT) return cellsIntBetween(a, b);
+      const p0 = FIT.spans.get(flat[idxAt[a] + 1]?.chord);
+      const p1 = FIT.spans.get(flat[idxAt[b]]?.chord);
+      return p0 && p1 ? p1.x1 - p0.x0 : cellsIntBetween(a, b);
+    };
+    const fitsPaper = (nb: number[]): boolean => {
+      if (!(paperCap > 0)) return true;
+      const floor = paperCap * 0.4;
+      const segsOf: number[] = [];
+      for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; segsOf.push(lineSpan(a, b)); a = b; }
+      return segsOf.every((c, i) => c < paperCap && (i === segsOf.length - 1 || c >= floor));
+    };
     let best = { score: INF, nb: nextB };
-    for (const want of options) {
+    /** 每行都放得下的方案，连同它的行数（见 FIT_SLACK）。 */
+    const fits: { score: number; nb: number[]; rows: number }[] = [];
+    const rowsOf = (nb: number[]): number => {
+      let n = 0;
+      for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; n++; a = b; }
+      return n;
+    };
+    /** 所有评过分的方案（`MORE_ROWS_SLACK` 用）。 */
+    const all: { score: number; nb: number[]; rows: number }[] = [];
+    const consider = (sc: number, nb: number[]): void => {
+      if (sc < best.score) best = { score: sc, nb };
+      all.push({ score: sc, nb, rows: rowsOf(nb) });
+      if (fitsPaper(nb)) fits.push({ score: sc, nb, rows: rowsOf(nb) });
+    };
+    const tryWant = (want: number[]): void => {
       const got = runWith(want);
       // 段里排不出想要的行数就不算（DP 会退回它自己觉得合适的行数）
-      if (!got.lines.every((v, i) => v === want[i])) continue;
-      const sc = quality(got.nb);
-      if (sc < best.score) best = { score: sc, nb: got.nb };
+      if (!got.lines.every((v, i) => v === want[i])) return;
+      consider(quality(got.nb), got.nb);
+    };
+    for (const want of options) tryWant(want);
+    // **一套放得下的都没有 → 往行数多的方向再找**（`FIT_SLACK` 开着时）。
+    // 候选行数只在第一遍的基础上 ±2 里挑，而第一遍是「照内容断」出来的，可能整整差一倍：
+    // 139《主爱有多少》容量 31，候选只有 2/3/4 行（每行 28~37 格），没有一套放得下，
+    // 补刀于是逐行开刀，排出 4/5/5/4/4/4/8 小节这样参差的七行。按容量估出「这一段至少要
+    // 几行」再往上试两档，DP 自己就能排出每行 4 小节。
+    if (FIT_SLACK > 0 && !fits.length && MAX_CELLS > 0) {
+      const need = base.map((_, i) => {
+        const lo = cuts[i];
+        const hi = cuts[i + 1] ?? M;
+        return Math.max(1, Math.ceil(lineSpan(lo, hi) / paperCap));
+      });
+      for (let d = 0; d <= 2; d++) tryWant(need.map((v, i) => Math.max(base[i], v) + d));
     }
     // @ts-ignore 临时调试
     if (typeof window !== "undefined" && (window as any).__evenDebug) (window as any).__evenDebug = { base, tried: options.map((w) => { const g = runWith(w); return { want: w, got: g.lines, q: g.lines.every((v, i) => v === w[i]) ? quality(g.nb) : null }; }), first: quality(nextB) };
@@ -1286,17 +1527,59 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     }
     // 第一遍那套也要参与评分（它可能就是最好的）
     if (quality(nextB) <= best.score) best = { score: quality(nextB), nb: nextB };
+    consider(quality(nextB), nextB);
+    /**
+     * **纸张只当平局的裁判**（用户口径：「断句结果只有 2 行超长行的，应该选 4 行更短的」）。
+     *
+     * 断句层照旧不把容量算进代价——试过给 `quality` 加一项软的超容量代价，全书七档一起变差
+     * （D7 0→2、D3 3→4、D8 11→13、D6 4→5，定点 9→12），**别再试**。真正的毛病不是
+     * 「DP 不知道纸有多宽」，而是**它把一套明明放得下、分数只差一点的方案丢掉了**：
+     * 070《天使歌唱》容量 36 时最优的 `[1,1]` 是 2 行、其中一行 64 格（q=−30），
+     * 而 4 行的 `[2,2]`（16/16/30/34 格，全放得下）只差 0.85 分。选了前者，
+     * 补刀就得替 DP 做分行的活，排版器照样折行，容量收敛循环再把 36 一路收到 26。
+     *
+     * 所以只做一件事：**在「每行都放得下」的方案里挑最好的那套，只要它与最优方案的差距
+     * 在 `FIT_SLACK` 之内就用它**。代价函数一分没动，纸张只在两套方案难分高下时开口。
+     */
+    /**
+     * **行数多的方案优先**（用户口径：「优先选择行数更多的结果，最后再看是否要两行两行
+     * 合并」）——并回去是 B 档 `mergePairsUniform` 的活，而把一行劈开谁也补不回来。
+     *
+     * 这是**内容层**的规则，与版心无关。它要顶掉的是评分里的一处结构性偏袒：
+     * `breakCost` 在 contentOnly 下是 `8 × (1 − 强度/24)`，**永远 ≥ 0**——强断点只是便宜、
+     * 从不赚钱，于是「每断一刀都付钱、不断一刀不付钱」；而 cv 与 outlier 都是**相对**量
+     * （一行到底天然最匀、max/median 就是 1）。凭据弱的谱子因此必然排成一行：
+     * 066《普世欢腾》十九个小节一个断点都没有（它的乐句落点只有逗号 4 分 + 平行 2 分，
+     * 中间**一个句号都没有**）。
+     */
+    if (MORE_ROWS_SLACK > 0) {
+      const ok = all.filter((f) => f.score <= best.score + MORE_ROWS_SLACK);
+      ok.sort((a, b) => b.rows - a.rows || a.score - b.score);
+      if (ok.length) best = { score: ok[0].score, nb: ok[0].nb };
+    }
+    // 容差之内**优先行数多的那套**（纸张那一层；`phraseFitSlack = 0` 时整层关掉）
+    if (FIT_SLACK > 0) {
+      // **DP 交出一行长到两倍版心时，容差不设上限**：那不是「差一点放不下」，那是断句层
+      // 撂挑子了——066《普世欢腾》十九个小节一个断点都没有（`weak` 取行均值，一行到底
+      // 连断点都没有、均值天然是 0，永远赢；cv 也是 0）。这种退化解不能靠补刀去救：
+      // 补刀只在那一行内部挑落点，挑出来的三行 13.5/8/16.5 拍照样不齐。
+      const slack = overRatio(best.nb) >= ABDICATE_RATIO ? Infinity : FIT_SLACK;
+      const ok = fits.filter((f) => f.score <= best.score + slack);
+      ok.sort((a, b) => b.rows - a.rows || a.score - b.score);
+      if (ok.length) best = { score: ok[0].score, nb: ok[0].nb };
+    }
     // @ts-ignore 调试钩子：段界
     if (typeof window !== "undefined" && (window as any).__cutsDebug !== undefined)
       (window as any).__cutsDebug = { cuts: cuts.map((c) => (c === 0 ? 0 : flat[cand[c - 1]].mi + 1)), M, segs: cuts.length - 1 };
     nextB = best.nb;
   }
 
-  // 每条小节线上「断行有多少凭据」（见 PhraseBreaks.cutScore）。候选之外的小节线不填——
-  // 那些地方连乐句信号都没有，补刀落在那儿本来就该按位置挑。
+  // 全部候选断点连同凭据分带出去（见 PhraseBreaks.cuts）。候选之外的位置不带——
+  // 那些地方连乐句信号都没有（`cand` 收的是「小节末」或「有乐句信号」的可断处），
+  // 补刀落在那儿本来就该按位置挑。**行内候选也带**：落不落在小节线上由补刀层按权重定。
   for (const idx of cand) {
-    if (!flat[idx].isLast) continue;
-    cutScore.set(flat[idx].mi + 1, scoreAt(idx) - headPenalty(idx));
+    cutList.push({ chord: flat[idx].chord, mi: flat[idx].mi, isLast: flat[idx].isLast,
+      score: scoreAt(idx) - headPenalty(idx), end: endAfter[idx], parallel: Math.min(parallelAt(idx), 12) });
   }
 
   // 回溯：每个选中断点 cand[b-1]，小节末→小节边界换行，否则→行内换行。段界本身也是断点。
@@ -1329,5 +1612,5 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     if (mi + 1 < n) measureBreaks.add(mi + 1);
   }
 
-  return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cutScore };
+  return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cuts: cutList, capacityCuts };
 }
