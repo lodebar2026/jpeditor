@@ -750,7 +750,17 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 只罚**比标准弱起短**的：那才是「差一点没凑齐、该把上一行行尾那点挪过来」。
     // 比标准长的是另一回事（行内断点落在别处），一并罚就太宽了——实测全书末两行悬殊
     // 7 → 14 首、收气休止被甩到行首 12 → 28 处。
-    if (CONTENT_ONLY && pickupStd > 0 && head > 0 && head < pickupStd - 0.01) s += 12;
+    // **断点本身就是句读落点时不罚**：(b3) 的道理是「差一点没凑齐、该把上一行行尾
+    // 那点挪过来」，可上一行行尾那点是个**带标点的字**，挪过来就把它从句子上劈下来了
+    // ——根本挪不动，罚了也只是把断点顶到别处去。459《让我们在主里常喜乐》每一句都从
+    // 小节末那半拍起唱（`…常喜乐，5虽|6然遭遇了…`），而本曲弱起是 1 拍，
+    // 「乐，」之后那个正确的落点被罚 12 分，DP 只好改断在小节线上，
+    // 「虽|然」「冲|击」「胜|死」四处词全被劈开。
+    // **要那个字自己带标点才算「挪不动」**：`punctAfter` 会顺延到后面的休止/拖腔上，
+    // 而那些是挪得动的——363《倾听我的心》要挪的正是上一行行尾那个 `0_`（它拿的是
+    // 顺延过来的标点）。所以只认「断点落在一个**自己带句读标点的字**上」。
+    if (CONTENT_ONLY && pickupStd > 0 && head > 0 && head < pickupStd - 0.01
+        && lyricPunctScore(flat[idx].chord) === 0) s += 12;
     // (b2) **句末标点之后的那个休止是上一句唱完的收气，该留在上一行**：
     // 上一行行末带句读标点、下一行却从休止起头的话，那口气就被甩到了行首
     // （077《耶稣我主荣耀王》的「历风霜；」之后那个休止）。
@@ -1814,7 +1824,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       // 补刀只在那一行内部挑落点，挑出来的三行 13.5/8/16.5 拍照样不齐。
       const slack = abdicated ? Infinity : FIT_SLACK;
       const ok = fits.filter((f) => f.score <= best.score + slack);
-      ok.sort((a, b) => b.rows - a.rows || a.score - b.score);
+      // **撂挑子那一档按分数挑，不按行数**：容差是无上限的（见上），再按「行数多优先」
+      // 排序就等于「在放得下的方案里挑行数最多的那一套」，好坏一概不论——
+      // 459《让我们在主里常喜乐》放得下的方案里 4 行 16/16/16/16（cv 0，q=7.9）
+      // 与 6 行 8.5/12.5/11/13/11.5/7.5（q=54.9）都在，按行数就挑了后者，
+      // 「冲|击」「胜|叹」两处词被劈开。有容差的那一档（`FIT_SLACK`）照旧按行数优先。
+      if (abdicated) ok.sort((a, b) => a.score - b.score || b.rows - a.rows);
+      else ok.sort((a, b) => b.rows - a.rows || a.score - b.score);
       if (ok.length) best = { score: ok[0].score, nb: ok[0].nb };
       // **一套放得下的都没有 → 至少交出最接近放得下的那一套**：034《用我一生》
       // 每一套方案都有超版心的行（最好的那套也有一行 335 / 312），`fits` 于是是空的，
