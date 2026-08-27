@@ -671,7 +671,13 @@ export function mergePairsUniform(part: Part, breaks: PhraseBreaks, useMidBreaks
     if (a.mi === null && a.chord === null) return false;
     // b 是并出来那一行的行末：它没收在乐句落点上就别并（末行除外，末行本来就是曲末）
     const bIsLast = i + 1 === lines.length - 1;
-    return bIsLast || b.tail.punct > 0 || b.tail.beats >= 2;
+    // **标点要往前找到那个字**：行末那个音常常是没有词的收尾（拖腔、句末的收气休止），
+    // 它自己既没标点也不是长音，可乐句明明收得好好的——312《我真快乐》第 6 行收在
+    // 「…平安；」后面那个八分休止上（`tail.punct` 0、`tail.beats` 1），
+    // 一条 `canPairAt` 判否，整首八行 2 小节（134 / 312）就全并不成了。
+    // 与 096《哈利路亚！感谢主》那个坑不冲突：那里行末的「利」自己带词却没有标点，
+    // `lastWordPunct` 照样是 0，仍旧挡得住。
+    return bIsLast || b.tail.punct > 0 || b.tail.beats >= 2 || b.tail.lastWordPunct > 0;
   };
   for (let i = 0; i + 1 < lines.length; i += 2) if (!canPairAt(i)) return 0;
   let merged = 0;
