@@ -597,6 +597,60 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     i = j;
   }
 
+  /**
+   * **行长要认识反复房**：一行里的几个房是**二选一**唱的（1 房 / 2 房），谱面上它们并排，
+   * 时值上却不能相加——158《一件礼物》末行含两个房，累加成 28.5 拍、成了全曲最长的一行，
+   * 于是「把『机会难留。』并到上一行」（凭据更好、断点代价也更低的那个落点）
+   * 因为「第 3 行只剩 17.5 拍、太不匀」被行长项否掉了。
+   *
+   * 折算按**行**记账：一行**完整包含**一组房时，把第一房之后那几房的量减掉；只含半组
+   * （行首落在房中间）就不减。试过更省事的办法——直接把后几房的小节权重记 0，让前缀和
+   * 自动带上——**不行**：含后一房的那一行看着 0 拍，DP 会拼命往里并
+   * （编辑器那 15 首里「爱是不保留」的第 2 行并成了 8 小节 42 拍）。
+   *
+   * **展开过反复的谱用不着这套**（PPT 那条路把反复摊平了，谱面上没有房）：
+   * `inEnding` 找不到闭合的房，`endingGroups` 就是空的，这里整段是空转。
+   */
+  interface EndingGroup { startMi: number; endMi: number; dur: number; cells: number; cellsInt: number }
+  const endingGroups: EndingGroup[] = [];
+  {
+    let i = 0;
+    while (i < n) {
+      if (!inEnding[i]) { i++; continue; }
+      const startMi = i;
+      let first = true;
+      let dur = 0;
+      let cells = 0;
+      let cellsInt = 0;
+      let endMi = i;
+      while (i < n && inEnding[i]) {
+        const from = i;
+        while (i < n && inEnding[i] && !endingLast[i]) i++;
+        const to = Math.min(i, n - 1);
+        i = to + 1;
+        endMi = to;
+        if (!first) {
+          for (let k = from; k <= to; k++) for (const c of chordsPer[k]) {
+            dur += c.duration?.toFloat() ?? 0;
+            cells += cellsOf(c);
+            cellsInt += Math.max(1, Math.floor(c.beats) || 1);
+          }
+        }
+        first = false;
+      }
+      if (dur > 0) endingGroups.push({ startMi, endMi, dur, cells, cellsInt });
+    }
+  }
+  /** 一行（flat 下标区间 `[i0, i1]`）里要减掉的「后几房」的量。 */
+  const endingCut = (i0: number, i1: number, key: "dur" | "cells" | "cellsInt"): number => {
+    if (!endingGroups.length || i0 > i1) return 0;
+    const a = flat[i0].mi;
+    const b = flat[i1].mi;
+    let v = 0;
+    for (const g of endingGroups) if (a <= g.startMi && b >= g.endMi) v += g[key];
+    return v;
+  };
+
   // 「本曲的弱起有多长」：首小节不完整时就是它的时值，否则没有弱起（0）。
   // 各行的行首残小节都照这个长度来，四行才齐头（372《跟随耶稣》：弱起 1 拍，
   // 第 2/4 行却从「八分休止 + 弱起」1.5 拍起头）。
@@ -839,6 +893,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 是一对，原来只认收尾那一半。这里给的是**加分**不是强制：反复段的开头常常正是
     // 乐句的开头，多数时候别的信号也会指向同一处。
     if (ci.isLast && ci.mi + 1 < n && measures[ci.mi + 1].repeatForward) s += 8;
+    // **试过并否掉**：把这 +5 按 `retreatToPunct` 往前退（弱起音写在反复线之前时，
+    // 那个音是下一句的起句——「…便要走！ 而 :‖」「…万世不休！ 惟求 :‖」，
+    // 断在小节线上就把它留在了上一行行尾）。那两处没被修好，全书反而变差
+    // （断句族 24 → 25、定点 6 → 8 条不过）。要修得另找落点。
     if (ci.isLast) {
       const m = measures[ci.mi];
       if (m.repeatBackward || m.barline === BarStyle.LIGHT_HEAVY || m.barline === BarStyle.LIGHT_LIGHT) s += 5;
@@ -1027,7 +1085,8 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const idxAt = [-1, ...cand];                       // idxAt[b]=断点在 flat 中的下标（0=曲首之前）
   const cellsUpto = new Array<number>(K + 1).fill(0); // 前缀格数：cellsUpto[i]=前 i 个和弦占的格数
   for (let i = 0; i < K; i++) cellsUpto[i + 1] = cellsUpto[i] + cellsOf(flat[i].chord);
-  const cellsBetween = (a: number, b: number) => cellsUpto[idxAt[b] + 1] - cellsUpto[idxAt[a] + 1];
+  const cellsBetween = (a: number, b: number) =>
+    cellsUpto[idxAt[b] + 1] - cellsUpto[idxAt[a] + 1] - endingCut(idxAt[a] + 1, idxAt[b], "cells");
   // **容量那一档要按「整格」数**：`cellsOf` 把增时线折算成 0.7 格（它们画得比数字窄，
   // 用于行长目标很合适），但**容量是排版器数出来的**（`measureCellsPerLine` 数的是音符与增时线的
   // 个数，一根算一个）。两把尺子混用，长音多的谱就会被判成「放得下」而实际折行——
@@ -1035,14 +1094,17 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const cellsIntUpto = new Array<number>(K + 1).fill(0);
   for (let i = 0; i < K; i++) cellsIntUpto[i + 1] = cellsIntUpto[i] + Math.max(1, Math.floor(flat[i].chord.beats) || 1);
   const cellsIntBetween = (a: number, b: number) =>
-    CELLS_ARE_ITEMS ? cellsIntUpto[idxAt[b] + 1] - cellsIntUpto[idxAt[a] + 1] : cellsBetween(a, b);
+    CELLS_ARE_ITEMS
+      ? cellsIntUpto[idxAt[b] + 1] - cellsIntUpto[idxAt[a] + 1] - endingCut(idxAt[a] + 1, idxAt[b], "cellsInt")
+      : cellsBetween(a, b);
   // 一行有多长，**按时值算**（Σ `Chord.duration`）。
   // 不用小节数——太粗，同样两小节可以差一倍的音；也不用格数——那是视觉宽度，
   // 掺着增时线与歌词字数（`Chord.beats` 本身就是增时线格数、不是时值）。
   // 时值才是这一行在音乐上到底有多长，「一行相当于其它行的两倍长度」说的就是它。
   const durUpto = new Array<number>(K + 1).fill(0);
   for (let i = 0; i < K; i++) durUpto[i + 1] = durUpto[i] + (flat[i].chord.duration?.toFloat() ?? 0);
-  const durBetween = (a: number, b: number) => durUpto[idxAt[b] + 1] - durUpto[idxAt[a] + 1];
+  const durBetween = (a: number, b: number) =>
+    durUpto[idxAt[b] + 1] - durUpto[idxAt[a] + 1] - endingCut(idxAt[a] + 1, idxAt[b], "dur");
 
   // 完整句末的前缀计数。仅提高「跨过句末、把下一句弱起塞到本行」的代价；若断点本身就在
   // 句末则不罚。这样 `…便要走！ 而…`、`…长存不朽！ 谁人…` 会优先在 `！` 后换行，
@@ -1439,6 +1501,11 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       if (!options.some((o) => o.every((v, i) => v === w[i]))) options.push(w);
     };
     add(base.slice());
+    // **另加两档倍数**：「一行一句」与「一行两句」正是原书的两种排法，两者常常差着一倍，
+    // 而 ±3 的窗口够不着——169《全新的你》第一遍断出 8 行（每行两句「耶稣能够…」），
+    // 它该是 12 行，12 = 8 + 4 在窗外，那套方案压根没被生成过。倍数档只多两次 DP。
+    add(base.map((v) => Math.ceil(v * 1.5)));
+    add(base.map((v) => v * 2));
     if (segs <= 3) {
       const grid = (i: number, acc: number[]) => {
         if (i === segs) return add(acc.slice());
@@ -1493,8 +1560,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     };
     const tryWant = (want: number[]): void => {
       const got = runWith(want);
-      // 段里排不出想要的行数就不算（DP 会退回它自己觉得合适的行数）
-      if (!got.lines.every((v, i) => v === want[i])) return;
+      // **排不出想要的行数也照样评分**：DP 会退回它自己觉得合适的行数，而那套方案本身
+      // 是完全合法的——原来一句 `if (行数对不上) return` 把它当废票丢掉，于是
+      // 169《全新的你》要 14 行、DP 交出 12 行（正是该要的那套），却从没进过候选池。
+      // 重复的方案再评一次分无害（同一套 nb，分数一样）。
       consider(quality(got.nb), got.nb);
     };
     for (const want of options) tryWant(want);
