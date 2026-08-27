@@ -315,6 +315,11 @@ export interface PhraseOptions {
    *  把它们排成各自的行首，两行就对齐得上——简谱排版的惯例，也最贴近原谱分行
    *  （070 副歌两行同开头、077 的 `13|5565|`、175 的一二行）。默认 0；成书传 6。 */
   parallelWeight?: number;
+  /** **行末收在长音上**的加分（0 = 关；成书传 4，编辑器不开）。一行收在一个长音上，
+   *  唱的人有地方换气、看的人一眼看得出乐句到头了——原书的分行大量是这个样子。
+   *  与 `parallelWeight` 是一对：那条管「下一行从哪儿起」，这条管「这一行在哪儿收」。
+   *  用户口径：「应该通过平行句 + 长音结尾让 4 行赢过 3 行」（061《坚固保障》）。 */
+  tailLongWeight?: number;
   /** 行长代价的权重。调大 = 更看重「各行一样长」。
    *  默认 1 是编辑器那条路调出来的；成书要工整的行长，调到 2 以上，
    *  16 小节的歌才会选 4+4+4+4 而不是 4+6+6（后者行长代价 8，但少断一次省 8 分，默认权重下打平）。
@@ -365,6 +370,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const CONTENT_ONLY = opts.contentOnly ?? false;
   const JUMP_MEAS = opts.jumpMeasures ?? new Set<number>();
   const PARALLEL_WEIGHT = opts.parallelWeight ?? 0;
+  const TAIL_LONG_WEIGHT = opts.tailLongWeight ?? 0;
   // 多排一行的代价（评分用）。定得太低会把每首都摊成一堆短行；太高就退回「能挤则挤」。
   // 20 是拿 051/052/378/374 试出来的：副歌那种「一行顶格、主歌两行很稀」会拆成两行，
   // 而本来就匀的谱不会平白多出一行。
@@ -500,6 +506,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   // 标点顺延过来的源头（那个带标点的音符）。乐句在那里收尾、断点落在尾随的休止上，
   // 两者是**同一个收尾**，强度要一起算（见 scoreAt）。
   const carriedFrom = new Array<number>(K).fill(-1);
+  /** 标点被**顺延走了**的那些位置（`carriedFrom` 的反向）：乐句真正的收尾在后面
+   *  那个休止/拖腔上，不在这个音上。见 `tailLong`。 */
+  const carriedAway = new Set<number>();
   {
     let depth = 0;
     let pending = 0;
@@ -534,7 +543,10 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       if (depth === 0 && !carryOn) {
         punctAfter[idx] = pending;
         endAfter[idx] = pendingEnd;
-        if (pending > 0 && pendingFrom >= 0 && pendingFrom !== idx) carriedFrom[idx] = pendingFrom;
+        if (pending > 0 && pendingFrom >= 0 && pendingFrom !== idx) {
+          carriedFrom[idx] = pendingFrom;
+          carriedAway.add(pendingFrom);
+        }
         pending = 0;
         pendingFrom = -1;
         pendingEnd = false;
@@ -1436,6 +1448,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       const bySeg = new Map<number, number[]>();
       let weak = 0;
       let parallel = 0;
+      let tailLong = 0;
       for (let a = 0; a < M; ) {
         const b = nb[a];
         if (b <= a) break;
@@ -1474,6 +1487,26 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         // 而一行放不下就一定会被补刀切开，切完那份对齐也就没了。009《荣耀归与至高神》
         // 的「天上众军」正是靠这道闸才断在了该断的地方（全书 36 → 29 处、定点 19 → 15）。
         if (b < M && (!FIT || lineFits(a, b))) parallel += Math.min(parallelAt(cand[b - 1]), 12) / 12;
+        // **这一行收在长音上吗**（`parallel` 的镜像：那条看下一行从哪儿起，这条看本行在哪儿收）。
+        // 判据与 `scoreBase` 的「长音收尾」同一把尺子——标点顺延到休止/拖腔上时要往前追
+        //（`carriedFrom`），行末那个音自己是不是长音不算数。
+        // 「放不下的行不给奖励」也照 `parallel` 的口径：那一行终归要被补刀切开。
+        if (b < M && (!FIT || lineFits(a, b))) {
+          const ti = cand[b - 1];
+          const tc = flat[ti].chord;
+          const carried = carriedFrom[ti] >= 0 ? flat[carriedFrom[ti]].chord : null;
+          // **标点被顺延走了的长音不给分**：那一句真正的收尾在后面那个收气休止上
+          //（`5--- 0_` 这种），断在长音后面就把那口气甩到了下一行行首（D5）。
+          // 139《主爱有多少》三行都是这么被拽过去的。
+          // **后面就是收气休止的也不给分**：那口气是这一句唱完的，该留在本行行尾
+          //（`headPenalty` 的 (b2) 是同一条道理）。`carriedAway` 只管本小节内的顺延，
+          // 休止落在下一小节头上时它看不见——139《主爱有多少》每句都是
+          // `|5-多 5-深？|0 3主 1恩 3有|`，四行因此全被拽到长音后面断开，
+          // 那个 `0` 全挂到了下一行行首。
+          const breath = punctAfter[ti] > 0 && !!flat[ti + 1] && flat[ti + 1].chord.rest;
+          const long = carriedAway.has(ti) || breath ? false : (tc.beats >= 2 || tc.fermata);
+          if (long || (carried && carried.beats >= 2)) tailLong += 1;
+        }
         a = b;
       }
       if (!cells.length) return INF;
@@ -1554,11 +1587,13 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         shortOut: +(OUTLIER_WEIGHT * shortOutlier).toFixed(2),
         lastPair: +((CONTENT_ONLY ? LAST_PAIR_QUALITY_WEIGHT * lastPair : 0)).toFixed(2),
         weak: +(breakW * (weak / cells.length)).toFixed(2),
-        parallel: +(-PARALLEL_WEIGHT * (parallel / cells.length) * 10).toFixed(2) });
+        parallel: +(-PARALLEL_WEIGHT * (parallel / cells.length) * 10).toFixed(2),
+        tailLong: +(-TAIL_LONG_WEIGHT * (tailLong / cells.length) * 10).toFixed(2) });
       return EVEN_WEIGHT * 100 * cv + OUTLIER_WEIGHT * (outlier + shortOutlier)
         + (CONTENT_ONLY ? LAST_PAIR_QUALITY_WEIGHT * lastPair : 0)
         + breakW * (weak / cells.length)
-        - PARALLEL_WEIGHT * (parallel / cells.length) * 10;
+        - PARALLEL_WEIGHT * (parallel / cells.length) * 10
+        - TAIL_LONG_WEIGHT * (tailLong / cells.length) * 10;
     };
     const runWith = (want: number[], lenW = RUN_WITH_LEN_WEIGHT): { nb: number[]; lines: number[] } => {
       const r = runDP((sIdx) => {
@@ -1588,6 +1623,12 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 它该是 12 行，12 = 8 + 4 在窗外，那套方案压根没被生成过。倍数档只多两次 DP。
     add(base.map((v) => Math.ceil(v * 1.5)));
     add(base.map((v) => v * 2));
+    // **base 很小时两倍也够不着**：第一遍是「照内容断」，遇上乐句短、断点弱的谱它会
+    // 交出两三行（139《主爱有多少》34 小节交出 2 行），±3 与两倍档一起才摸到 5 行，
+    // 而它该是 8 行（每行两句「主爱有多少？主恩有多深？」）。再往上加两档，
+    // 每档只多一次 DP；排不排得下、碎不碎由 `notTooThin` 与 `quality` 把关。
+    add(base.map((v) => v * 3));
+    add(base.map((v) => v * 4));
     if (segs <= 3) {
       const grid = (i: number, acc: number[]) => {
         if (i === segs) return add(acc.slice());
@@ -1748,13 +1789,21 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       ok.sort((a, b) => b.rows - a.rows || a.score - b.score);
       if (ok.length) best = { score: ok[0].score, nb: ok[0].nb };
     }
-    // 容差之内**优先行数多的那套**（纸张那一层；`phraseFitSlack = 0` 时整层关掉）
-    if (FIT_SLACK > 0) {
+    // 容差之内**优先行数多的那套**（纸张那一层；`phraseFitSlack = 0` 时整层关掉）。
+    // **但「撂挑子」那一档与 `FIT_SLACK` 无关**：DP 交出一行长到版心的 1.8 倍，
+    // 那不是「差一点放不下」、也不是「纸张来影响断句」，那是断句层根本没干活
+    // ——`weak` 取行均值，一行到底连一个可选断点都没有、均值天然是 0，
+    // `cv` 也是 0（每段只有一行，`segCv` 直接返回 0），这种退化解在评分上永远赢。
+    // 297《让神儿子的爱围绕你》整个主歌 17 小节排成一行（765 / 312），
+    // 四行的方案（每行 4 小节、一三行与二四行各自开头相同）q 差了 5.2 分选不上，
+    // 主歌于是全交给补刀，按匀度切成 18 / 24 / 25 拍，平行乐句的开头一个也没对齐。
+    const abdicated = overRatio(best.nb) >= ABDICATE_RATIO;
+    if (FIT_SLACK > 0 || abdicated) {
       // **DP 交出一行长到两倍版心时，容差不设上限**：那不是「差一点放不下」，那是断句层
       // 撂挑子了——066《普世欢腾》十九个小节一个断点都没有（`weak` 取行均值，一行到底
       // 连断点都没有、均值天然是 0，永远赢；cv 也是 0）。这种退化解不能靠补刀去救：
       // 补刀只在那一行内部挑落点，挑出来的三行 13.5/8/16.5 拍照样不齐。
-      const slack = overRatio(best.nb) >= ABDICATE_RATIO ? Infinity : FIT_SLACK;
+      const slack = abdicated ? Infinity : FIT_SLACK;
       const ok = fits.filter((f) => f.score <= best.score + slack);
       ok.sort((a, b) => b.rows - a.rows || a.score - b.score);
       if (ok.length) best = { score: ok[0].score, nb: ok[0].nb };
