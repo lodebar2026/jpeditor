@@ -124,7 +124,12 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
       const chars = [...it.text];
       // 逐字笔位用**浏览器实测的 advance 前缀和**：落位就是排版器排的那一版，
       // Node 侧字体度量的微差不再影响布局。
-      const xs = chars.map((_, i) => applyX(m, it.measureText(0, i), 0));
+      // 歌词带**标点挤压**（`TextFrame.charXs`）时用排版期量好的那串坐标——
+      // 挤压是排版的账，PDF 那头只管照着落笔，不必自己再 shaping 一遍。
+      const xs =
+        it.charXs && it.charXs.length === chars.length
+          ? it.charXs.map((cx) => applyX(m, cx, 0))
+          : chars.map((_, i) => applyX(m, it.measureText(0, i), 0));
       // 增时线**按墨迹与数字（以及小节线中点）对齐**：Times 的连字符墨迹挂得比数字中线低
       //（实测差 1.37pt），照字体基线摆就一排音符里高一道低一道。
       // 只在**画的时候**补这一下——排版度量（entry 高度、纵向栅格、行容量）不能动，

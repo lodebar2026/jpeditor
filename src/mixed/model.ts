@@ -5,6 +5,7 @@
 
 import { Fraction } from "../common/fraction";
 import { Font } from "../layout/font";
+import { MIXED_PUNCT } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 
 // ---------------- Fraction helpers (boost::rational 比较语义) ----------------
@@ -946,20 +947,16 @@ export class MLyric {
   widthInfo(): [number, number, number] {
     const chars = [...this.text];
     if (chars.length === 0) return [0, 0, 0];
-    const widths = chars.map((c) => this.font.measureText(c));
-    const punct = "「」（），。！；：、“”？｡";
-    const isCjk = (ch: string) => ch.charCodeAt(0) > 0x80 && !punct.includes(ch);
+    const isCjk = (ch: string) => ch.charCodeAt(0) > 0x80 && !MIXED_PUNCT.includes(ch);
     let first = 0;
     let last = chars.length - 1;
     for (let i = 0; i < chars.length; i++) if (isCjk(chars[i])) { first = i; break; }
     for (let i = chars.length - 1; i >= 0; i--) if (isCjk(chars[i])) { last = i; break; }
-    let prev = 0, cjk = 0, extra = 0;
-    for (let i = 0; i < widths.length; i++) {
-      if (i < first) prev += widths[i];
-      else if (i <= last) cjk += widths[i];
-      else extra += widths[i];
-    }
-    return [prev, cjk, extra];
+    // 宽度取**标点挤压后**的笔位（CLREQ，见 common/cjkpunct.ts）：`「你` 的前引号左半格、
+    // `我。` 的句号右半格该压就压，居中的锚点跟着挪，绘制端拿的是同一串坐标。
+    const { xs, width } = this.font.run(this.text);
+    const at = (i: number): number => (i <= 0 ? 0 : i >= xs.length ? width : xs[i]);
+    return [at(first), at(last + 1) - at(first), width - at(last + 1)];
   }
 
   /** 解析后计算 xOffset/width（parser.cpp processLrc 尾部）。 */

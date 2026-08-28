@@ -363,6 +363,9 @@ function renderItem(item: PageItem): SVGElement | null {
     el.setAttribute("font-size", String(item.font.size));
     if (item.font.bold) el.setAttribute("font-weight", "bold");
     el.setAttribute("fill", "black");
+    // 逐字笔位（标点挤压后的坐标，排版期量的那一串）——同 layout/painter.ts 的那一处。
+    if (item.charXs && item.charXs.length > 1)
+      el.setAttribute("x", item.charXs.map((v) => v.toFixed(2)).join(" "));
     el.textContent = item.text;
     el.setAttribute("transform", item.matrix.toSvg()); // matrix contains x,y translation
     return el;

@@ -302,6 +302,10 @@ function renderSelf(item: PageItem): SVGElement | null {
     t.setAttribute("font-size", String(item.font.size));
     if (item.font.bold) t.setAttribute("font-weight", "bold");
     t.setAttribute("fill", colorToCss(item.color));
+    // 逐字笔位（标点挤压后的坐标，排版期量的那一串）。给了 `x` 列表就由它定位，
+    // **不再叠 font-feature-settings**——测量已经把挤压算进去了，再叠一层会挤两遍。
+    if (item.charXs && item.charXs.length > 1)
+      t.setAttribute("x", item.charXs.map((v) => v.toFixed(2)).join(" "));
     t.textContent = item.text;
     return t;
   }
