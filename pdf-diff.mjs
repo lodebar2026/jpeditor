@@ -628,7 +628,14 @@ for (const [id, entries] of byId) {
   const gtOctAll = gt.musicxml ? xmlNoteOctaves(gt.musicxml).split("|") : [];
   // 顺着音符的对齐脚本走一遍，取出**音符本身就对上**的那些位置对。
   // 增删改的位置没得比：那里的八度点属于另一个音，硬比会报出一串成对的假差异。
-  const octDiffs = [];
+  //
+  // **本位档允许整体 ±1 档对齐**。「中音区的 1 是哪个八度」是**刻谱人的记谱约定**，
+  // musicxml 里根本没有这个信息——`xmlNoteOctaves` 按调给的只是先验（A3~G4 那个窗口，
+  // 拿识别侧反推 561 首，逐调命中 94.3%）。剩下那 5.7% 是刻谱人自己挪了一档：
+  // 090 是 G 调却取 G3 作中音 do，100 是 bA 调却取 A4——两边方向还相反，没有规则能覆盖。
+  // 不许平移的话这些曲子会整首报错（443 首 113/113 全错），可那根本不是识别读错点，
+  // 而是我们不知道原书选了哪一档。平移之后剩下的才是**真正的逐点差异**。
+  const octPairs = [];
   {
     const ops = dNote.ops;
     let gi = 0;
@@ -656,13 +663,27 @@ for (const [id, entries] of byId) {
       if (gtNotesEff[gi] !== "0") {
         const g = gtOctAll.length ? gtOctAll[gi % gtOctAll.length] : undefined;
         const r = recOct[ri];
-        if (g !== undefined && r !== undefined && g !== r) octDiffs.push({ at: gi, gt: g, rec: r, o: noteSeq[ri]?.o });
+        if (g !== undefined && r !== undefined) octPairs.push({ at: gi, gt: Number(g), rec: Number(r), o: noteSeq[ri]?.o });
       }
       gi++;
       ri++;
     }
   }
-  const octTotal = Math.min(gtOctAll.length * noteRepeat, recOct.length);
+  let octShift = 0;
+  {
+    let best = Infinity;
+    for (const sh of [0, 1, -1]) {
+      const n = octPairs.filter((p) => p.gt + sh !== p.rec).length;
+      if (n < best) {
+        best = n;
+        octShift = sh;
+      }
+    }
+  }
+  const octDiffs = octPairs
+    .filter((p) => p.gt + octShift !== p.rec)
+    .map((p) => ({ at: p.at, gt: String(p.gt + octShift), rec: String(p.rec), o: p.o }));
+  const octTotal = octPairs.length;
   const octAcc = octTotal ? 1 - octDiffs.length / octTotal : 1;
   // 标题同样只比汉字：它的标点也是随排版走的（「圣哉，圣哉，圣哉」的顿号常识别不全）
   const gtTitleN = lyricNorm(xmlTitle(gt.musicxml) || song.title);
@@ -844,6 +865,7 @@ for (const [id, entries] of byId) {
     extraVerses.length +
     vm.gtOnly.length +
     folds +
+    (octShift ? 1 : 0) +
     verseDiffs.reduce((a, d) => a + d.punctOps.length, 0);
 
   const r = {
@@ -860,6 +882,7 @@ for (const [id, entries] of byId) {
     octAcc,
     octDiffs,
     octGt: gtOctAll.length * noteRepeat,
+    octShift,
     octRec: recOct.length,
     noteGt: gtNotes.length,
     noteRec: recNotes.length,
@@ -1053,7 +1076,7 @@ for (const r of rows) {
   if (r.octDiffs.length) {
     // 八度点：0 = 本位、正数 = 高音点、负数 = 低音点
     const dot = (v) => (v === "0" ? "无点" : Number(v) > 0 ? `高${v}` : `低${-Number(v)}`);
-    L.push(`  八度点 ${r.octDiffs.length} 项（按音符位置逐位比，GT ${r.octGt} / PDF ${r.octRec}）`);
+    L.push(`  逐音的高低音点 ${r.octDiffs.length} 项（GT ${r.octGt} / PDF ${r.octRec}${r.octShift ? "；已按整首本位档对齐后再比" : ""}）`);
     L.push(...r.octDiffs.slice(0, 12).map((d) => `    第 ${d.at + 1} 个音  GT=${dot(d.gt)}  PDF=${dot(d.rec)}`));
     if (r.octDiffs.length > 12) L.push(`    …另有 ${r.octDiffs.length - 12} 处`);
   }
@@ -1138,6 +1161,14 @@ for (const r of rows) {
       mis.push(...d.punctLines.map((t) => "  " + t));
     }
   }
+  if (r.octShift) {
+    // 「中音区的 1 是哪个八度」是刻谱人的记谱约定，musicxml 里没有这个信息，
+    // 所以整首差一档不是识别错误，与「调号 GT 按主音和弦订正过」同性质，归这一类。
+    ms(
+      `  整首本位八度档不同：原书把中音区选在按调推定（A3~G4）的${r.octShift > 0 ? "下" : "上"}方一档，` +
+        `全曲高低音点因此整体差一档——已按此对齐后再逐音比`,
+    );
+  }
   if (r.extraVerses?.length) {
     ms(`  PDF 多出 ${r.extraVerses.length} 行歌词（GT 里没有对应段，多为副歌另起行）：`);
     for (const v of r.extraVerses) ms(`    「${v.slice(0, 40)}${v.length > 40 ? "…" : ""}」（${v.length} 字）`);
@@ -1184,7 +1215,7 @@ for (const r of rows) {
 console.log(`${rows.length} 首`);
 console.log(
   `音符平均 ${(avg((r) => r.noteAcc) * 100).toFixed(2)}%（**只比 1-7 的音级**）` +
-    `  八度平均 ${(avg((r) => r.octAcc) * 100).toFixed(2)}%（高低音点，${sum((r) => r.octDiffs.length)} 处不同）` +
+    `  八度平均 ${(avg((r) => r.octAcc) * 100).toFixed(2)}%（逐音的高低音点，${sum((r) => r.octDiffs.length)} 处不同）` +
     `  歌词平均 ${(avg((r) => r.lyricAcc) * 100).toFixed(2)}%  标题平均 ${(avg((r) => r.titleAcc) * 100).toFixed(2)}%`,
 );
 console.log(
@@ -1236,7 +1267,7 @@ console.log(
   if (withC.length) console.log(`和弦平均准确率 ${((withC.reduce((a, r) => a + r.chordAcc, 0) / withC.length) * 100).toFixed(2)}%（${withC.length} 首有 <harmony>）`);
 }
 console.log(
-  `表述或结构不一致合计 ${sum((r) => r.structDiffs)}（休止记法 ${sum((r) => r.restDiffs ?? 0)} 处 / 共用副歌 ${sum((r) => r.sharedRefrain)} 字 / 折行 ${sum((r) => r.folds)} 字 / 标点 ${sum((r) => r.punctDiffs)} / 段号印错 ${sum((r) => r.badVerseNos?.length ?? 0)} 处 / 调号拍号记法 ${sum((r) => (r.keyState === "differs" ? 1 : 0) + (r.meterState === "differs" ? 1 : 0))} / 旋律或和弦印两遍 ${sum((r) => (r.noteRepeat > 1 ? 1 : 0) + (r.chordRepeat > 1 ? 1 : 0))} / PDF 多出 ${sum((r) => r.extraVerses.length)} 段 / GT 多出 ${sum((r) => r.gtOnlyVerses.length)} 段）\n` +
+  `表述或结构不一致合计 ${sum((r) => r.structDiffs)}（休止记法 ${sum((r) => r.restDiffs ?? 0)} 处 / 共用副歌 ${sum((r) => r.sharedRefrain)} 字 / 折行 ${sum((r) => r.folds)} 字 / 标点 ${sum((r) => r.punctDiffs)} / 段号印错 ${sum((r) => r.badVerseNos?.length ?? 0)} 处 / 调号拍号记法 ${sum((r) => (r.keyState === "differs" ? 1 : 0) + (r.meterState === "differs" ? 1 : 0))} / 旋律或和弦印两遍 ${sum((r) => (r.noteRepeat > 1 ? 1 : 0) + (r.chordRepeat > 1 ? 1 : 0))} / 整首本位八度档不同 ${rows.filter((r) => r.octShift).length} / PDF 多出 ${sum((r) => r.extraVerses.length)} 段 / GT 多出 ${sum((r) => r.gtOnlyVerses.length)} 段）\n` +
   `未识别合计 ${sum((r) => r.unreadDiffs)}（其中词曲署名 ${sum((r) => r.sCredit?.unread.length ?? 0)}），` +
     `歌词带里剔掉的非歌词对象 ${sum((r) => r.strayLines)} 个，非歌词行 ${sum((r) => r.misLyric?.length ?? 0)}，未归类对象 ${sum((r) => r.unclassified)}`,
 );

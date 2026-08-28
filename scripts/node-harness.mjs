@@ -514,13 +514,22 @@ export function xmlNoteDigits(musicxml) {
  * 简谱记的是「相对主音的音级 + 上下点」，musicxml 记的是绝对音高（`<step>` + `<octave>`）。
  * 换算要两步：
  *   1. 全音阶序号 `D = octave*7 + STEP_IDX[step]`（科学音高记法在 C 处进位，所以能直接线性化）。
- *   2. 主音落在哪个八度（`D0`）：**取让「不带点的音」最多的那一档**。
- *      简谱的约定就是「本位八度不加点」，所以这个统计口径与刻谱人的选择一致；
- *      不能想当然取第一个音的八度（很多曲子从属音起唱、从低音区起唱）。
+ *   2. 主音落在哪个八度（`D0`）：**只看调，不看音符分布**——本位主音固定落在
+ *      **A3~G4**（全音阶序号 26~32）这个窗口里，每个调因此有唯一解。
  * 点数 = `floor((D - D0) / 7)`，正数是高音点、负数是低音点。
  *
- * 曲中转调（021/137/144 首）时主音会换，`D0` 按每个调段各自统计。
+ * **别改回「让不带点的音最多」那套。** 看着合理，实测全书 17 首整首恒偏一档
+ * （443/090/100/J11/473 那些 GT 数 = PDF 数 = 差异数的）——刻谱人并不追求少加点：
+ * 090 是 G 调，本位取 G4 能让 57 个音不加点、取 G3 只有 35 个，**原书取的是 G3**，
+ * 宁可多印 57 个高音点。拿识别侧反推 561 首实际用的本位档，结果与上面那个窗口逐调吻合
+ * （C 65:0、D 124:0、F 187:1、G 48:9、A 38:19、bB 27:3）。
+ *
+ * 曲中转调（021/137/144 首）时主音会换，`D0` 跟着调走。
  */
+/** 本位主音的全音阶序号：让它落在 A3~G4（26~32）。C/D/E/F/G 用第 4 八度，A/B 用第 3。 */
+function tonicBase(tn) {
+  return (tn <= 4 ? 4 : 3) * 7 + tn;
+}
 export function xmlNoteOctaves(musicxml) {
   const seg = [];
   let tonic = 0;
@@ -541,29 +550,7 @@ export function xmlNoteOctaves(musicxml) {
     if (!step || oct === undefined) continue;
     seg.push({ d: Number(oct) * 7 + (STEP_IDX[step] ?? 0), tonic });
   }
-  // 每个调段各自定「本位八度」：让点数为 0 的音最多的那一档
-  const byTonic = new Map();
-  for (const n of seg) {
-    if (n.rest) continue;
-    const a = byTonic.get(n.tonic) ?? [];
-    a.push(n.d);
-    byTonic.set(n.tonic, a);
-  }
-  const base = new Map();
-  for (const [tn, ds] of byTonic) {
-    let best = 0;
-    let bestN = -1;
-    for (let o = 0; o <= 9; o++) {
-      const d0 = o * 7 + tn;
-      const n = ds.filter((d) => Math.floor((d - d0) / 7) === 0).length;
-      if (n > bestN) {
-        bestN = n;
-        best = d0;
-      }
-    }
-    base.set(tn, best);
-  }
-  return seg.map((n) => (n.rest ? "0" : String(Math.floor((n.d - base.get(n.tonic)) / 7)))).join("|");
+  return seg.map((n) => (n.rest ? "0" : String(Math.floor((n.d - tonicBase(n.tonic)) / 7)))).join("|");
 }
 
 /**
