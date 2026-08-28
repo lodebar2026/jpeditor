@@ -501,6 +501,17 @@ export interface LineTail {
    *  「乐句唱完了、行末是收尾的长音」与「句子没唱完、断在了拖腔中间」
    *  ——后者会把词从中间劈开（077《耶稣我主荣耀王》的「殷｜勤」）。 */
   lastWordPunct: number;
+  /**
+   * **行末的残小节里只有休止**（行末那条小节线之后到行尾，一个音符都没有）。
+   *
+   * 用户口径（2026-08-28）：「避免残小节全是休止，不管是在行首还是行尾」。行首那半边
+   * 由 `LineHead.hasNote` / `tidyLineHeads` 管着，这是对称的另一半：下一句的弱起休止
+   * 被留在了上一行行尾，行末于是挂着个空拍（J09《祢的话》的 `|]0` 那两处）。
+   */
+  restOnlyBar: boolean;
+  /** 行末残小节的时值（`restOnlyBar` 那一截有多少拍；不是残小节收尾的行为 0）。
+   *  `line-check` 的 D10 要拿它算「推到下一行之后，那一行的弱起有多长」。 */
+  restBarDur: number;
 }
 
 /** 断点把曲子切成的一行。`mi`/`chord` 是**这一行末尾**那个断点（小节末 `mi`：在第 mi 小节后换行；
@@ -593,7 +604,15 @@ export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: bo
           lastWordPunct = lyricPunctScore(seg[j].chord);
           break;
         }
-        return { text, punct: lyricPunctScore(last.chord), beats: last.chord.beats, lastWord, lastWordPunct };
+        // 行末残小节（本行内最后一条小节线之后的那一截）里有没有音符。
+        // 收在小节末的行没有这一截，自然不算。
+        let p = seg.length - 1;
+        while (p >= 0 && !seg[p].isLast) p--;
+        const tailBar = seg.slice(p + 1);
+        const restOnlyBar = tailBar.length > 0 && tailBar.every((f) => f.chord.rest);
+        const restBarDur = restOnlyBar ? tailBar.reduce((n, f) => n + (f.chord.duration?.toFloat() ?? 0), 0) : 0;
+        return { text, punct: lyricPunctScore(last.chord), beats: last.chord.beats, lastWord, lastWordPunct,
+                 restOnlyBar, restBarDur };
       })(),
       headFp: headFpOf(seg.map((f) => f.chord)),
       mi,
@@ -661,6 +680,62 @@ export function tidyLineHeads(part: Part, breaks: PhraseBreaks,
     if (prev.mi !== null) breaks.measureBreaks.delete(prev.mi);
     if (prev.chord) breaks.midBreaks.delete(prev.chord);
     breaks.measureBreaks.add(cur.fromMi + 1);
+    moved++;
+  }
+  return moved;
+}
+
+/**
+ * **行末不留半个小节的休止**：一行收在「小节线 + 只有休止」的残小节上时，把那点休止推到
+ * 下一行去——那是下一句的弱起，留在上一行行尾就成了一个没人唱的空拍
+ * （J09《祢的话》第 4 行末尾的 `|]0`）。
+ *
+ * 与 `tidyLineHeads` 是**对称的一对**（用户口径 2026-08-28：「避免残小节全是休止，
+ * 不管是在行首还是行尾」）：那条把行首的空拍并到上一行，这条把行末的空拍推到下一行。
+ * 推过去之后下一行的行首残小节里有音符（`0 1' 7. 6_`），并不违反行首那一条。
+ *
+ * 同样是**兜底**：`enforceLineCapacity` / 并行会在 DP 之后造出新的行末，那些 DP 管不到。
+ * 推过去要是把下一行撑得放不下，就不推。
+ *
+ * @returns 推走的休止行数
+ */
+export function tidyLineTails(part: Part, breaks: PhraseBreaks,
+                              opt: { useMidBreaks?: boolean; cells?: number; fit?: FitMetric } = {}): number {
+  const useMidBreaks = opt.useMidBreaks ?? true;
+  const f = new Fit(opt.fit, opt.cells ?? 0).bind(flattenBook(part));
+  const lines = describeLines(part, breaks, useMidBreaks);
+  let moved = 0;
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const cur = lines[i];
+    const next = lines[i + 1];
+    if (!cur.tail.restOnlyBar) continue;
+    if (cur.section || next.section) continue;   // 段界（另起一页）不能挪
+    // 残小节从哪儿起：本行内最后一条小节线之后。整行都在这一截里就没得推
+    //（推走等于把这一行整个删掉）。
+    let barStart = cur.to;
+    while (barStart > cur.from && !f.book.isLast[barStart - 1]) barStart--;
+    if (barStart <= cur.from) continue;
+    // 推过去之后下一行有多宽：**真实坐标**（残小节的头一个和弦到 next 的行末）
+    if (f.on && f.spanOf(barStart, next.to) >= f.capacity) continue;
+    // **别把上一句的收气推到下一行行首**（D5 的口径，与 `headPenalty` 同一把尺子）：
+    // 上一行收在句读标点上、推过去之后下一行以一段与本曲弱起对不上的休止起头时，那口气
+    // 是上一句唱完的，留在行末才对——139《主爱有多少》每句都是 `|5-多 5-深？|0 3主 …|`，
+    // 不看这一条会把四行的 `0` 全推到下一行行首（D5 1 → 7 处）。
+    // J09《祢的话》推过去后行首正是本曲的 4 拍弱起，不在此列。
+    let barEnd = barStart;
+    while (barEnd + 1 < f.book.chords.length && !f.book.isLast[barEnd]) barEnd++;
+    const headDur = f.book.durUpto[barEnd + 1] - f.book.durUpto[barStart];
+    const firstDur = f.book.chords[barStart].duration?.toFloat() ?? 0;
+    // 半拍及以下的休止凑成整拍的照旧可以推（403《救主子民还在世间》那种「为了凑整拍」）
+    const headWhole = firstDur > 0 && firstDur <= 0.5 && Math.abs(headDur - Math.round(headDur)) < 0.01;
+    const pickup = lines[0]?.head.dur ?? 0;
+    // 问的是 `lastWordPunct` 不是 `punct`：现在的行末就是那个休止（没有词、`punct` 恒为 0），
+    // 推走之后行末才落回前面那个字上——要看的正是那个字有没有收句。
+    if (cur.tail.lastWordPunct > 0 && !headWhole && !(pickup > 0 && Math.abs(headDur - pickup) < 0.01)) continue;
+    if (cur.mi !== null) breaks.measureBreaks.delete(cur.mi);
+    if (cur.chord) breaks.midBreaks.delete(cur.chord);
+    // 新断点落在那个残小节**之前**（`measureBreaks` 的语义是「在这个下标的小节前起新行」）
+    breaks.measureBreaks.add(cur.toMi);
     moved++;
   }
   return moved;
