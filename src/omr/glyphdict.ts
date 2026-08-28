@@ -201,8 +201,10 @@ export interface GlyphClass {
   key: string;
   /** 指派的字符（未定为 null）。 */
   char: string | null;
-  /** 标注来源，可信度依次递减。 */
-  source: "font" | "gt" | "ocr" | "manual" | null;
+  /** 标注来源，可信度依次递减。
+   *  `ocr-line` 是 gen-storyocr 整行送识别学到的，`merge` 是 gen-glyphmerge 按签名归并
+   *  时从同组别的类取齐的——两者都是 .mjs 脚本写进字典的，字典里实测都有。 */
+  source: "font" | "gt" | "ocr" | "ocr-line" | "merge" | "manual" | null;
   /** 实例数。 */
   count: number;
   /** 轮廓高度中位数（用来分族）。 */

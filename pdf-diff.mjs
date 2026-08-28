@@ -9,6 +9,7 @@
 // 段落与副歌的写法（`W1-3` 之类）还得另做口径对齐，两套 GT 并存只会各错一半。
 // **纯 Node，不起浏览器。**
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { openDb, loadGlyphFixes } from "./scripts/checkdb.mjs";
 import { loadCli, openPdf, loadCorpus, readSongGt, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, xmlNoteDigits, xmlLyricVerses, xmlTitle, xmlCredit, collectSongGlyphs, mergePagemapEntries, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
 
@@ -24,6 +25,20 @@ const pm = JSON.parse(await readFile("testdata/500/pagemap.json", "utf8"));
 const dict = JSON.parse(await readFile("testdata/500/glyphdict.json", "utf8"));
 const charOf = new Map();
 for (const c of Object.values(dict.classes)) if (c.char) charOf.set(c.key, c.char);
+// **人工定案盖过字典**。少了这一层，人在 glyph_fix 里把某个形状类改对了，重排的 PDF 会跟着对，
+// 但 pdf-diff 照旧读字典里那个错的——原书的错字于是永远报不出来。
+// 典型就是第 5 首：页面上真印的是「衪」，GT 写「祂」才对，可字典里那一类被 GT 投票标成了「祂」，
+// 两边一样，diff 恒为 0（详见 gen-glyphaudit.mjs 的头注）。
+const fixDb = openDb();
+const glyphFixes = loadGlyphFixes(fixDb);
+fixDb.close();
+for (const [k, ch] of Object.entries(glyphFixes)) charOf.set(k, ch);
+/** 人工把这个形状类判成了跟字典不同的字——那是**原书印错了**，不算识别错误。 */
+const TYPO_KEYS = new Map();
+for (const [k, ch] of Object.entries(glyphFixes)) {
+  const was = dict.classes[k]?.char;
+  if (was && was !== ch) TYPO_KEYS.set(k, { was, now: ch });
+}
 
 const sample = [];
 for (let p = 40; p <= 200; p += 4) {
@@ -135,11 +150,20 @@ function splitSharedRefrain(ops, others) {
   return { content, shared };
 }
 
+/** 人工定案与字典判得不同的那几对（GT 侧的字 → 页面真印的字）。
+ *  这种差异是**原书印错**，不是识别错误，单列一类、不进准确率的分母。 */
+const TYPO_PAIRS = new Set([...TYPO_KEYS.values()].map((t) => `${t.was}\u0000${t.now}`));
+
 function splitOps(ops) {
   const content = [];
   const unread = [];
-  for (const op of ops) (op[4] === "\ufffd" ? unread : content).push(op);
-  return { content, unread };
+  const typo = [];
+  for (const op of ops) {
+    if (op[4] === "\ufffd") unread.push(op);
+    else if (op[0] === "sub" && TYPO_PAIRS.has(`${op[3]}\u0000${op[4]}`)) typo.push(op);
+    else content.push(op);
+  }
+  return { content, unread, typo };
 }
 
 const byId = new Map();
@@ -660,7 +684,8 @@ for (const [id, entries] of byId) {
       content: sr.content,
       shared: sr.shared,
     });
-    lyricDist += d.dist;
+    // 原书错字不算识别错误：从距离里扣掉（详见 splitOps 的 TYPO_PAIRS）
+    lyricDist += d.dist - sp.typo.length;
     lyricLen += Math.max(a.length, b.length);
   }
   // 配不上的两边各自记账：GT 有而 PDF 没找到的算内容差异（可能真的漏印/漏识别），
@@ -798,7 +823,7 @@ for (const [id, entries] of byId) {
     misLyric,
     lyricDiffs: verseDiffs.reduce((a, d) => a + d.ops.length, 0),
     verses: `${gtVerses.length}/${recVerses.length}`,
-    titleAcc: acc(gtTitleN, recTitleN, dTitle.dist),
+    titleAcc: acc(gtTitleN, recTitleN, dTitle.dist - sTitle.typo.length),
     gtTitleN,
     recTitle,
     chords: recChordRaw.length,
@@ -1089,6 +1114,21 @@ console.log(
     ` / 弧线 ${sum((r) => r.arcDiffs ?? 0)}` +
     ` / 调号拍号没读到 ${sum((r) => (r.keyState === "missing" ? 1 : 0) + (r.meterState === "missing" ? 1 : 0))}）`,
 );
+{
+  // **原书疑似错字**：人工在 glyph_fix 里判得与字典不同的那几个形状类。
+  // 页面上真印的就是那个字，GT 写的才对——这是给校对看的，不是识别错误，故不入准确率分母。
+  // 只报**真的对不上 GT** 的那些。glyph_fix 里绝大多数是识别纠正（字典把「。」读成 O、
+  // 「，」读成 9），纠正之后跟 GT 一致，压根产生不了 sub op，不该跟错字混为一谈。
+  const hits = new Map();
+  for (const r of rows)
+    for (const op of [...r.sTitle.typo, ...r.verseDiffs.flatMap((d) => d.typo)]) hits.set(`${op[3]}→${op[4]}`, (hits.get(`${op[3]}→${op[4]}`) ?? 0) + 1);
+  const typo = [...hits.values()].reduce((a, b) => a + b, 0);
+  if (typo) {
+    console.log(`原书疑似错字 ${typo} 处（${[...hits].map(([k, n]) => `${k}×${n}`).join(" ")}）——页面上印的就是后一个字，GT 才是对的，不计入准确率`);
+    const who = rows.filter((r) => r.sTitle.typo.length || r.verseDiffs.some((d) => d.typo.length));
+    console.log(`  涉及：${who.map((r) => `${r.id}(${r.title})`).join(" ")}`);
+  }
+}
 {
   const k = rows.filter((r) => r.keyOk != null);
   const m = rows.filter((r) => r.meterOk != null);

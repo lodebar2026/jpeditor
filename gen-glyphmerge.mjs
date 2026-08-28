@@ -19,7 +19,7 @@
 //
 // 纯 Node，不起浏览器。
 import { readFile, writeFile } from "node:fs/promises";
-import { loadCli, openPdf, loadCorpus, readSongGt, xmlLyricVerses, mergePagemapEntries } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, loadCorpus, readSongGt, xmlLyricVerses } from "./scripts/node-harness.mjs";
 
 const DICT = "testdata/500/glyphdict.json";
 const dry = process.argv.includes("--dry");
@@ -53,6 +53,40 @@ if (hasG) {
     }
   }
 }
+
+/**
+ * 票数打平时回到 GT 语料再投一次：候选字里在全书歌词/标题中出现得多的那个胜。
+ *
+ * 只在**实例数打平**（4:4 这种，同一个字画两遍）时才走到这里，所以判据可以简单，
+ * 但必须保守：赢家要**至少两倍**于第二名才算数，否则返回 null 让调用方保留原判。
+ * 归并一改就是全书几十处一起改，宁可留着一处不一致，也别整批改错。
+ *
+ * **别把这条路放宽**：按字频投票会一律选中常用字，异体字/生僻字永远输——「祂 vs 衪」
+ * 它就会投出「祂」。之所以还安全，是因为两者签名本就不同、根本进不了同一组
+ * （实测全书 3 组签名冲突全被 ±12% 尺寸闸挡住）。真要放宽同组判据，这里得跟着重想。
+ *
+ * `ks` 这几个类出现在哪几页本可以拿来缩小语料范围，但常走的那条路（字典带 `g` 字段）
+ * 根本不扫页面、没有页信息，所以一律按全书字频算。
+ */
+function gtVote(ks, cands) {
+  if (cands.length < 2) return cands[0] ?? null;
+  const n = cands.map((ch) => [ch, (gtText.match(new RegExp(ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) ?? []).length]);
+  n.sort((a, b) => b[1] - a[1]);
+  if (!n[0][1]) return null;
+  return n[0][1] >= Math.max(1, n[1][1]) * 2 ? n[0][0] : null;
+}
+
+/** GT 语料的全部歌词与标题，连成一串供 `gtVote` 数字频。 */
+const gtText = await (async () => {
+  const { songs } = await loadCorpus();
+  const parts = [];
+  for (const song of songs.values()) {
+    parts.push(song.title ?? "");
+    const gt = await readSongGt(song);
+    if (gt.musicxml) parts.push([...xmlLyricVerses(gt.musicxml).values()].join(""));
+  }
+  return parts.join("\n");
+})();
 
 const groups = new Map();
 for (const [k, s] of sigOf) (groups.get(s) ?? groups.set(s, []).get(s)).push(k);
