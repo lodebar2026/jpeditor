@@ -197,12 +197,20 @@ for (let i = 0; i < lines.length; i++) {
   //（037「《坚固保障》(61首)」的右括号、「Martin Luther 1483-1546」的连字符都是半角，
   //  只认全角的话它们永远补不回来）。
   const PUNCT_OK = /^[\u3000-\u303f\uff01-\uff20\uff3b-\uff40\uff5b-\uff65·～()\-:;,.[\]]+$/;
+  /** 只占字身下部的句读点——它们的墨迹必然矮。括号、引号、书名号不在此列（那些是高的）。 */
+  const LOW_PUNCT = /^[。，、．·,.]+$/;
   const takeable = (j, text) => {
     const e = elems[j];
     const n = [...text].length;
     // 孤零零一个拉丁字母不收：署名里的中点「·」被 OCR 读成 M、I 读成 l 这类
     // 一旦定案就是全书的中点都变字母。这种留给人工确认表。
     if (n === 1 && /[A-Za-z]/.test(text)) return false;
+    // **句读点只能落在矮元素上**。这一条是反向的保险：原先只管「矮元素只收标点」，
+    // 却没管「句读点不许收在高元素上」——括号又窄又高（h/body≈0.9），宽度只有三分之一格，
+    // `want` 因此算成 1，OCR 把它读成「。」时一路畅通。全书 11 个类这么被标成了句号，
+    // 其中 2.5×10.5 / 3.0×9.1 明显是括号，9.5×9.9 / 10×9.9 那几个干脆是整个汉字
+    //（真正的「。」只有 3.1×3.1）。这些错标后来又成了模糊匹配的参照，会把错扩散出去。
+    if (LOW_PUNCT.test(text) && e.h / body > 0.45) return false;
     if (e.h / body <= 0.45) return n === 1 && PUNCT_OK.test(text);
     const want = Math.max(1, Math.round(e.w / cellW));
     return n >= want * 0.5 && n <= want * 2 + 1;

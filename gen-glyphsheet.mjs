@@ -2,6 +2,7 @@
 // 每格标出「所在页 / 角色 / 实例数 / 机器猜测」，另出一份 TSV 供人工填字。
 //
 //   node gen-glyphsheet.mjs                 # → pdf-out/glyphsheet-*.svg + pdf-out/glyphsheet.tsv
+//   node gen-glyphsheet.mjs --from=layout   # 待确认的直接从 pdf-layout.json 取（含花边框正文）
 //   node gen-glyphsheet.mjs --apply=x.tsv   # 把填好的 TSV 写进 校对.db 的 glyph_fix（confirmed_by=human）
 //
 // 为什么值得一做：这些字形在矢量层是干净的，渲染出来一眼就认得——
@@ -50,12 +51,40 @@ const dictChar = new Map();
 for (const c of Object.values(dict.classes)) if (c.char) dictChar.set(c.key, c.char);
 const charOf = (k) => fixes[k] ?? fixes[repOf(k)] ?? dictChar.get(k) ?? null;
 
-// 未读字形表由 relayout --db 落库（形状键 + 实例数 + 首现页 + 角色）。
-// 补过字的这一轮就不必再看了。
-const rows = db
-  .prepare(`SELECT shape_key, instances, first_page, role, guess_char FROM unread_glyph WHERE status='pending' ORDER BY instances DESC`)
-  .all()
-  .filter((r) => !charOf(r.shape_key) && dict.classes[r.shape_key]?.d);
+// 取哪一批待确认的字形，两条路：
+//  - 默认：`unread_glyph` 表（relayout --db 落库，形状键 + 实例数 + 首现页 + 角色）。
+//  - `--from=layout`：直接扫 pdf-layout.json 里**所有**文本的未定类。花边框正文的缺字
+//    多半进不了 `unread_glyph`（那张表是重排那条路落的），可它们正是最该人工看一眼的
+//    ——剩下的高频缺字里，单个弯引号「“」「”」字典里只有成对的那一版（7.9×5.4），
+//    形状对不上，模糊匹配（gen-glyphfuzzy）救不了，只能人眼定案。
+let rows;
+if (flags.from === "layout") {
+  const { pages } = JSON.parse(await readFile(flags.layout ?? "pdf-layout.json", "utf8"));
+  const acc = new Map();
+  const scan = (chars, page, role) => {
+    for (const c of chars ?? []) {
+      if (charOf(c.key) || !dict.classes[c.key]?.d) continue;
+      const e = acc.get(c.key) ?? { shape_key: c.key, instances: 0, first_page: page, role, guess_char: null };
+      e.instances++;
+      acc.set(c.key, e);
+    }
+  };
+  for (const p2 of pages) {
+    for (const b of p2.storyBoxes ?? []) for (const l of b.lines ?? []) scan(l.chars, p2.page, "story");
+    for (const l of p2.textLines ?? []) scan(l.chars, p2.page, "text");
+    if (p2.header) scan(p2.header.chars, p2.page, "header");
+    for (const sg of p2.songs ?? []) {
+      for (const l of [sg.numberRun, sg.titleRun, sg.keyMeterRun, ...(sg.creditRuns ?? [])]) if (l) scan(l.chars, p2.page, "credit");
+      for (const y of sg.systems ?? []) for (const l of [...(y.chordLines ?? []), ...(y.lyricLines ?? [])]) scan(l.chars, p2.page, "lyric");
+    }
+  }
+  rows = [...acc.values()].sort((a, b) => b.instances - a.instances);
+} else {
+  rows = db
+    .prepare(`SELECT shape_key, instances, first_page, role, guess_char FROM unread_glyph WHERE status='pending' ORDER BY instances DESC`)
+    .all()
+    .filter((r) => !charOf(r.shape_key) && dict.classes[r.shape_key]?.d);
+}
 db.close();
 console.log(`仍未定的形状类 ${rows.length}，实例 ${rows.reduce((a, r) => a + r.instances, 0)}`);
 if (!rows.length) process.exit(0);
