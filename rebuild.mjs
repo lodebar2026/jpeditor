@@ -26,7 +26,7 @@ const measure = metrics.advance;
 
 // ── 书级元数据（gen-bookmeta.mjs 从原书版面规格提取，见 src/pdflayout/bookmeta.ts）。
 //    没有库也能跑，只是排不出调号拍号原文、段落词、注解、目录与索引。
-const meta = { song: new Map(), section: new Map(), annotation: new Map(), toc: [], index: [], front: [], tiles: [] };
+const meta = { song: new Map(), section: new Map(), annotation: new Map(), toc: [], index: [], front: [], tiles: [], tilesByStyle: new Map() };
 if (!("nometa" in flags)) {
   try {
     const db = openDb();
@@ -43,6 +43,11 @@ if (!("nometa" in flags)) {
     meta.index = readTable(db, "index_row", "seq");
     meta.front = readTable(db, "front_page", "source_page");
     meta.tiles = readTable(db, "ornament_tile");
+    for (const t of meta.tiles) {
+      const a = meta.tilesByStyle.get(t.style_id) ?? [];
+      a.push({ slot: t.slot, w: t.w, h: t.h, pitch: t.pitch, ox: t.ox ?? 0, oy: t.oy ?? 0, path: t.path });
+      meta.tilesByStyle.set(t.style_id, a);
+    }
     db.close();
     console.log(`书级元数据：调号拍号 ${meta.song.size}，段落词 ${[...meta.section.values()].flat().length}，注解 ${[...meta.annotation.values()].flat().length}，目录 ${meta.toc.length} 行，索引 ${meta.index.length} 行`);
   } catch (e) {
@@ -423,6 +428,11 @@ const footerTop = style.titleBlock.footerBaseline - style.roles.footer.size * 1.
 
 /** 一页上内容的最低处（注解要摆在它下面）。路径类算不出包围盒，
  *  按文字与矩形算——最低的本来就是末条歌词。 */
+/** 某一框的八片母题。样式 id 认不出来时退回任意一套——总比不画强（框宽都一样）。 */
+function tilesOf(styleId) {
+  return meta.tilesByStyle.get(styleId) ?? meta.tilesByStyle.values().next().value ?? [];
+}
+
 function contentBottom(dp) {
   let y = 0;
   for (const it of dp.items) {
@@ -470,7 +480,10 @@ function placeAnnotations() {
           right: m.right,
           top,
           lineGap: sz * annGapRatio,
-          tiles: meta.tiles,
+          // 花边母题**逐框各不相同**（全书 106 套），按 frame_style 取这一框的八片；
+          // 老库只有全书通用的横竖两片，那时 109 个框的花边都画错了。
+          tiles: tilesOf(a.frame_style),
+          frameEdges: a.frame_edges || undefined,
           measure,
           size: sz,
         });

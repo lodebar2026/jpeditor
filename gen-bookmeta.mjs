@@ -18,7 +18,8 @@ const flags = Object.fromEntries(
 );
 const CHECK = "check" in flags;
 const cli = await loadCli();
-const { pages: specs } = JSON.parse(await readFile(flags.layout ?? "pdf-layout.json", "utf8"));
+const layout = JSON.parse(await readFile(flags.layout ?? "pdf-layout.json", "utf8"));
+const specs = layout.pages;
 const dict = JSON.parse(await readFile(flags.dict ?? "testdata/500/glyphdict.json", "utf8"));
 const pm = JSON.parse(await readFile("testdata/500/pagemap.json", "utf8"));
 const { songs } = await loadCorpus();
@@ -36,7 +37,7 @@ for (const m of pm.map) {
   entriesByPage.set(m.page, a);
 }
 
-const meta = cli.buildBookMeta(specs, { override, entriesByPage });
+const meta = cli.buildBookMeta(specs, { override, entriesByPage, noteH: cli.noteHeightOf(layout.profile) });
 
 // 分类：album.txt 已经有一级分类（rebuild 的页眉就是按它排的），
 // 顺手并进 song_meta，重排时不必再各查各的。
@@ -68,6 +69,8 @@ const annotations = meta.annotations.map((a, i) => ({
   frame_outer: a.frameOuterWidth ?? 0,
   frame_inner: a.frameInnerWidth ?? 0,
   frame_gap: a.frameGap ?? 0,
+  frame_style: a.frameStyle ?? null,
+  frame_edges: a.frameEdges ?? null,
   seq: i,
   text: a.text,
   size: a.size,
@@ -85,7 +88,7 @@ const indexRows = meta.index.map((r) => ({
 }));
 const frontRows = meta.front.map((f) => ({ source_page: f.page, kind: f.kind, title: f.title, body: f.body, note: f.note }));
 const labelRows = meta.pageLabels.map((p) => ({ page: p.page, printed_label: p.label, printed_no: p.no, kind: p.kind }));
-const tileRows = meta.ornaments.map((o) => ({ orient: o.orient, w: o.w, h: o.h, pitch: o.pitch, path: o.path }));
+const tileRows = meta.ornaments.map((o) => ({ style_id: o.style, slot: o.slot, w: o.w, h: o.h, pitch: o.pitch, ox: o.ox, oy: o.oy, path: o.path }));
 
 const withXml = [...songs.values()].filter((s) => s.musicxml).length;
 const kmMiss = [...songs.values()].filter((s) => s.musicxml && !songMeta.some((m) => m.song_no === s.id));
@@ -95,7 +98,7 @@ console.log(`段落词 ${sectionWords.length}（${[...new Set(sectionWords.map((
 console.log(`注解 ${annotations.length}（花边框 ${annotations.filter((a) => a.frame_kind === "tile").length}，线框 ${annotations.filter((a) => a.frame_kind === "line").length}，不装框 ${annotations.filter((a) => a.frame_kind === "none").length}，归不到曲目的 ${annotations.filter((a) => !a.song_no).length}）`);
 console.log(`目录 ${tocRows.length} 行（条目 ${tocRows.filter((t) => t.kind === "entry").length}，一级 ${tocRows.filter((t) => t.kind === "category").length}，二级 ${tocRows.filter((t) => t.kind === "subcategory").length}）`);
 console.log(`索引 ${indexRows.length} 行（诗题笔划 ${indexRows.filter((r) => r.index_name === "title").length}，歌词首句 ${indexRows.filter((r) => r.index_name === "firstline").length}，分节标题 ${indexRows.filter((r) => r.kind === "heading").length}，认到曲号 ${indexRows.filter((r) => r.song_no).length}）`);
-console.log(`扉页前言 ${frontRows.length} 页，印刷页码 ${labelRows.filter((p) => p.printed_no !== null).length}/${labelRows.length}，花边纹样母题 ${tileRows.length}`);
+console.log(`扉页前言 ${frontRows.length} 页，印刷页码 ${labelRows.filter((p) => p.printed_no !== null).length}/${labelRows.length}，花边样式 ${new Set(tileRows.map((t) => t.style_id)).size} 套 / 母题 ${tileRows.length} 片`);
 
 // 与 musicxml 对拍：调号/拍号不一致的记进 diff 表交人工看
 const { gtKeyTime } = await import("./scripts/node-harness.mjs");
@@ -147,12 +150,12 @@ if (CHECK) {
 }
 replaceTable(db, "song_meta", ["song_no", "tonic", "beats", "beat_type", "alt_tonic", "key_raw", "category", "source_page"], songMeta);
 replaceTable(db, "section_word", ["song_no", "text", "note_ordinal", "measure_index", "system_index", "source_page"], sectionWords);
-replaceTable(db, "annotation", ["song_no", "framed", "frame_kind", "frame_outer", "frame_inner", "frame_gap", "seq", "text", "size", "box_x", "box_y", "box_w", "box_h", "source_page"], annotations);
+replaceTable(db, "annotation", ["song_no", "framed", "frame_kind", "frame_outer", "frame_inner", "frame_gap", "frame_style", "frame_edges", "seq", "text", "size", "box_x", "box_y", "box_w", "box_h", "source_page"], annotations);
 replaceTable(db, "toc_row", ["seq", "kind", "text", "song_no", "printed_page", "source_page"], tocRows);
 replaceTable(db, "index_row", ["seq", "kind", "index_name", "text", "song_no", "source_page"], indexRows);
 replaceTable(db, "front_page", ["source_page", "kind", "title", "body", "note"], frontRows);
 replaceTable(db, "page_label", ["page", "printed_label", "printed_no", "kind"], labelRows);
-replaceTable(db, "ornament_tile", ["orient", "w", "h", "pitch", "path"], tileRows);
+replaceTable(db, "ornament_tile", ["style_id", "slot", "w", "h", "pitch", "ox", "oy", "path"], tileRows);
 // 调号/拍号与 musicxml 对不上的记进 diff 表交人工看——多半是 GT 按主音和弦订正过
 // （文档「已知差异」记过），但不能因为「多半」就吞掉。
 const runId = newRunId("bookmeta");

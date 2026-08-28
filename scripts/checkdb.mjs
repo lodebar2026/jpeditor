@@ -49,17 +49,38 @@ CREATE TABLE IF NOT EXISTS front_page (
   id INTEGER PRIMARY KEY, source_page INT, kind TEXT, title TEXT, body TEXT, note TEXT);
 CREATE TABLE IF NOT EXISTS page_label (
   page INTEGER PRIMARY KEY, printed_label TEXT, printed_no INT, kind TEXT);
+-- 花边纹样母题：**逐框逐槽**。style_id 是同款花边的 id，slot 是 top/bottom/left/right
+-- 与四角 tl/tr/bl/br。老库的主键是 orient（全书只存横竖两片），见 migrate()。
 CREATE TABLE IF NOT EXISTS ornament_tile (
-  orient TEXT PRIMARY KEY, w REAL, h REAL, pitch REAL, path TEXT);
+  style_id TEXT, slot TEXT, w REAL, h REAL, pitch REAL, ox REAL, oy REAL, path TEXT,
+  PRIMARY KEY (style_id, slot));
 CREATE VIEW IF NOT EXISTS pending_diff AS
   SELECT d.song_no, c.标题 AS title, d.page, d.category, d.role, d.gt_value, d.out_value, d.note
   FROM diff d LEFT JOIN "check" c ON c.编号 = d.song_no
   WHERE d.status = 'pending';
 `;
 
+/**
+ * 老库迁移。`CREATE TABLE IF NOT EXISTS` 遇上已存在的旧表什么也不做，于是新列
+ * 一辈子建不出来——`replaceTable` 的 INSERT 会静默失败，整表变 0 行
+ * （文档里记过一次：注解全丢、PDF 掉 5MB）。所以主键变了的表要显式重建。
+ */
+function migrate(db) {
+  const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((r) => r.name));
+  // ornament_tile：orient 主键（全书两片）→ (style_id, slot) 主键（逐框八片）。
+  // 里头存的是可以重新提取的派生数据，直接重建，不必搬运。
+  if (cols("ornament_tile").has("orient")) {
+    db.exec("DROP TABLE ornament_tile");
+    db.exec(`CREATE TABLE ornament_tile (
+      style_id TEXT, slot TEXT, w REAL, h REAL, pitch REAL, ox REAL, oy REAL, path TEXT,
+      PRIMARY KEY (style_id, slot))`);
+  }
+}
+
 export function openDb(path = DB_PATH) {
   const db = new DatabaseSync(path);
   db.exec(SCHEMA);
+  migrate(db);
   return db;
 }
 
@@ -154,7 +175,10 @@ function ensureColumns(db, table, cols) {
 
 export function replaceTable(db, table, columns, rows) {
   if (table === "annotation")
-    ensureColumns(db, table, [["frame_kind", "TEXT"], ["frame_outer", "REAL"], ["frame_inner", "REAL"], ["frame_gap", "REAL"]]);
+    ensureColumns(db, table, [
+      ["frame_kind", "TEXT"], ["frame_outer", "REAL"], ["frame_inner", "REAL"], ["frame_gap", "REAL"],
+      ["frame_style", "TEXT"], ["frame_edges", "TEXT"],
+    ]);
   db.exec(`DELETE FROM ${table}`);
   if (!rows.length) return 0;
   const st = db.prepare(`INSERT INTO ${table} (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`);
