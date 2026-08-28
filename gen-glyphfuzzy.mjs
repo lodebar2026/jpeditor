@@ -159,6 +159,52 @@ if (ambiguous.length) {
   for (const r of ambiguous.slice(0, 10)) console.log(`  ${r.w.toFixed(1)}x${r.h.toFixed(1)}  「${r.ch}」d=${r.d}  vs 「${r.second.ch}」d=${r.second.d}`);
 }
 
+// ── 第二条路：**上下文规则**补那些签名救不了的字
+//
+// 生卒年份之间的连接号：字典里 `-`/`—`/`～` 一个都没有（原书这个字形从没在别处出现过），
+// 签名匹配无从下手。但它的上下文强到不用猜——**横条，两侧紧邻都是数字**：
+// 全书 26 个这样的横条里 18 个两侧都是数字（`1872⟦?⟧1958`、`1483⟦?⟧1546`…），
+// 画出来是直的实心横条，不是波浪线，所以是连字符不是「～」。
+// 宽度按字身分档：不到 0.95 个字身是半角 `-`（实测 0.52~0.81），到了就是全角 `—`。
+// （`gen-storyocr` 的注释里也记着「Martin Luther 1483-1546」的连字符是半角。）
+const ruleFills = new Map(); // key → Map(char → 票数)
+{
+  const j = JSON.parse(await readFile(flags.layout ?? "pdf-layout.json", "utf8"));
+  const isDigit = (c) => c && /[0-9]/.test(c);
+  const scan = (chars) => {
+    const cs = chars ?? [];
+    const hs = cs.map((c) => c.h).sort((a, b) => a - b);
+    const body = hs[Math.floor(hs.length * 0.7)] || 1;
+    for (let i = 0; i < cs.length; i++) {
+      const c = cs[i];
+      if (charOf(c.key)) continue;
+      if (!(c.w > c.h * 3 && c.h < body * 0.25 && c.w > body * 0.4 && c.w < body * 1.3)) continue;
+      if (!isDigit(cs[i - 1] && charOf(cs[i - 1].key)) || !isDigit(cs[i + 1] && charOf(cs[i + 1].key))) continue;
+      const want = c.w / body < 0.95 ? "-" : "—";
+      if (!ruleFills.has(c.key)) ruleFills.set(c.key, new Map());
+      const v = ruleFills.get(c.key);
+      v.set(want, (v.get(want) ?? 0) + 1);
+    }
+  };
+  for (const p2 of j.pages) {
+    for (const b of p2.storyBoxes ?? []) for (const l of b.lines ?? []) scan(l.chars);
+    for (const l of p2.textLines ?? []) scan(l.chars);
+    for (const sg of p2.songs ?? []) for (const l of sg.creditRuns ?? []) scan(l.chars);
+  }
+}
+const ruleRows = [...ruleFills].map(([k, v]) => {
+  const [ch, n] = [...v].sort((a, b) => b[1] - a[1])[0];
+  return { k, ch, n };
+});
+if (ruleRows.length) {
+  const byC = new Map();
+  for (const r of ruleRows) byC.set(r.ch, (byC.get(r.ch) ?? 0) + r.n);
+  console.log(
+    `\n上下文规则补字 ${ruleRows.length} 类 / ${ruleRows.reduce((a, r) => a + r.n, 0)} 实例` +
+      `（年份区间连接号：${[...byC].map(([c, n]) => `「${c}」×${n}`).join(" ")}）`,
+  );
+}
+
 // --why：按「注解里的实例数」排序，说明每个仍未定的类卡在哪一条判据上
 if ("why" in flags) {
   const j = JSON.parse(await readFile("pdf-layout.json", "utf8"));
@@ -184,6 +230,9 @@ if (dry) {
   db.close();
   process.exit(0);
 }
-recordGlyphFixes(db, take.map((r) => ({ shape_key: r.k, char: r.ch, source: "fuzzy" })));
+recordGlyphFixes(db, [
+  ...take.map((r) => ({ shape_key: r.k, char: r.ch, source: "fuzzy" })),
+  ...ruleRows.map((r) => ({ shape_key: r.k, char: r.ch, source: "rule-dash" })),
+]);
 db.close();
-console.log(`\n→ 校对.db 的 glyph_fix 写入 ${take.length} 条（source=fuzzy；人工确认过的不覆盖）`);
+console.log(`\n→ 校对.db 的 glyph_fix 写入 ${take.length} 条（source=fuzzy）+ ${ruleRows.length} 条（source=rule-dash）；人工确认过的不覆盖`);
