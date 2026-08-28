@@ -396,6 +396,15 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   /** 「有一行明显比同曲其它行长」的权重（contentOnly 用，见 quality 的 outlier）。 */
   const OUTLIER_WEIGHT = 60;
   /**
+   * **行末收在主音上**的加分（contentOnly 用，见 quality 的 tailTonic）。
+   *
+   * 用户口径：平行句「落在主音上（**次要**）」。与 `tailLongWeight` 是同一族的收束凭据，
+   * 分量比它轻——061《坚固保障》正是两者打架：4 行的两套方案里，
+   * 16/24/16/16 的行末多收在一个 `5--` 的长音上（tailLong 多一分），
+   * 16/16/24/16 才是原书的排法，它的前两行各收在主音 `1` 上（一模一样的四小节）。
+   */
+  const TAIL_TONIC_WEIGHT = 2;
+  /**
    * 候选方案那几遍 DP 的行长权重（`runWith`）。
    *
    * 它**不是评分**，只是「让 DP 真能排出指定的行数」的手段——评分用的是 `quality`，
@@ -874,6 +883,36 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const PARALLEL_MAX = 16;
   /** 至少这么多个音一样才算平行——三两个音相同到处都是，不算数。 */
   const PARALLEL_MIN = 4;
+  /** 从 flat 的第 i 个音起头的旋律键（先跳掉行首的休止，最多取 `PARALLEL_MAX` 个）。
+   *  行首的休止是弱起的留白、不是旋律的一部分：同一段旋律有的行从休止起头、有的直接从
+   *  弱起音起头（363《倾听我的心》第 1 行 `0_ 5,_`、第 3 行 `5,_`）。
+   *
+   *  两处共用：候选池那一遍的两两比对，与方案评分里「平行的两行一样长吗」（见 quality 的 evenOf）。 */
+  const headKeysFrom = (i: number): string[] => {
+    let j = i;
+    while (j < K && flat[j].chord.rest) j++;
+    const keys: string[] = [];
+    for (let t = j; t < K && keys.length < PARALLEL_MAX; t++) keys.push(noteKeyOf(flat[t].chord));
+    return keys;
+  };
+  /**
+   * 两个行首重合几个音。**允许一个音的出入**：同一段旋律在两处只差一个装饰音是常事
+   * ——158《一件礼物》的「生命有限，时光也会走…」与「礼物，虽然好，如果你不要…」
+   * 从第 5 个音起差一个（`5 1 2 3 7…` / `5 1 2 1 7…`），严格前缀只有 3 个音、
+   * 连 `PARALLEL_MIN` 都不够，那一对平行乐句整个判没了。
+   * 差的那个音**不计入**长度，且前后都要接得上（各至少 2 个音）才算——
+   * 否则随便两处「开头两个音相同」都能靠一次豁免攀上亲。
+   */
+  const commonPrefix = (ka: string[], kb: string[]): number => {
+    let n = 0;
+    while (n < ka.length && n < kb.length && ka[n] === kb[n]) n++;
+    if (n >= 2 && n + 1 < ka.length && n + 1 < kb.length) {
+      let m = n + 1;
+      while (m < ka.length && m < kb.length && ka[m] === kb[m]) m++;
+      if (m - n - 1 >= 2) return m - 1;
+    }
+    return n;
+  };
   /**
    * 潜在行首 → 它与**别的**潜在行首的**最长公共前缀**（音符数，0 = 不平行）。
    *
@@ -881,9 +920,6 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
    * 定短了噪声大（随便两处开头几个音相同就算平行），定长了又漏——072《信徒欢唱》
    * 的两处平行开头是 `5 6 5 4 | 3 2 1`，第 8 个音就分岔了，10 音指纹认不出来。
    * 改成动态算公共前缀，**重复得越长得分越高**，不必再拍一个长度出来。
-   *
-   * 行首的休止先跳掉（弱起的留白，不是旋律的一部分）：同一段旋律有的行从休止起头、
-   * 有的直接从弱起音起头（363《倾听我的心》第 1 行 `0_ 5,_`、第 3 行 `5,_`）。
    */
   const parallelLen = new Map<number, number>();
   if (PARALLEL_WEIGHT > 0) {
@@ -893,30 +929,9 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         const pv = flat[i - 1];
         if (!(pv.isLast || punctAfter[i - 1] > 0 || pv.chord.beats >= 2 || pv.chord.rest)) continue;
       }
-      let j = i;
-      while (j < K && flat[j].chord.rest) j++;
-      const keys: string[] = [];
-      for (let t = j; t < K && keys.length < PARALLEL_MAX; t++) keys.push(noteKeyOf(flat[t].chord));
+      const keys = headKeysFrom(i);
       if (keys.length >= PARALLEL_MIN) heads.push({ at: i, keys });
     }
-    /**
-     * 两个行首重合几个音。**允许一个音的出入**：同一段旋律在两处只差一个装饰音是常事
-     * ——158《一件礼物》的「生命有限，时光也会走…」与「礼物，虽然好，如果你不要…」
-     * 从第 5 个音起差一个（`5 1 2 3 7…` / `5 1 2 1 7…`），严格前缀只有 3 个音、
-     * 连 `PARALLEL_MIN` 都不够，那一对平行乐句整个判没了。
-     * 差的那个音**不计入**长度，且前后都要接得上（各至少 2 个音）才算——
-     * 否则随便两处「开头两个音相同」都能靠一次豁免攀上亲。
-     */
-    const commonPrefix = (ka: string[], kb: string[]): number => {
-      let n = 0;
-      while (n < ka.length && n < kb.length && ka[n] === kb[n]) n++;
-      if (n >= 2 && n + 1 < ka.length && n + 1 < kb.length) {
-        let m = n + 1;
-        while (m < ka.length && m < kb.length && ka[m] === kb[m]) m++;
-        if (m - n - 1 >= 2) return m - 1;
-      }
-      return n;
-    };
     for (let a = 0; a < heads.length; a++) {
       for (let b = a + 1; b < heads.length; b++) {
         const n = commonPrefix(heads[a].keys, heads[b].keys);
@@ -1472,11 +1487,29 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       let weak = 0;
       let parallel = 0;
       let tailLong = 0;
+      let tailTonic = 0;
+      /** 每一行的**行首旋律**、时值与「收在主音上吗」，供下面按平行配对结算
+       *  （见 evenOf / tailTonic）。 */
+      const rows: { keys: string[]; dur: number; tonic: boolean; fits: boolean; par: number }[] = [];
       for (let a = 0; a < M; ) {
         const b = nb[a];
         if (b <= a) break;
         cells.push(cellsBetween(a, b));
         durs.push(durBetween(a, b));
+        if (PARALLEL_WEIGHT > 0) {
+          // **收在主音上吗**（简谱的 `1`，八度不限）——行末那个音；末行不算（它总收在主音上）。
+          const tc = b < M ? flat[cand[b - 1]].chord : null;
+          rows.push({
+            keys: headKeysFrom(idxAt[a] + 1), dur: durBetween(a, b),
+            tonic: !!tc && !tc.rest && tc.notes[0]?.number === "1",
+            // **放不下的行不给奖励**（口径同 `parallel`）：那一行终归要被补刀切开，
+            // 切完「两行一样长、各收在主音上」也就不成立了。139《主爱有多少》的 4 行方案
+            // （31/32/33/36 拍，每行都超版心）正是这么把 D5 又拽了回来。
+            fits: !FIT || lineFits(a, b),
+            // 这一行的**下一行**是不是平行开头（值多少，见下面 parallel 那一段）
+            par: 0,
+          });
+        }
         // 按**段**归组（主歌一组、副歌一组），见下面 cv 的注释
         const segNo = cuts.findIndex((c) => c >= b);
         if (!bySeg.has(segNo)) bySeg.set(segNo, []);
@@ -1509,7 +1542,8 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         // **放不下的行不给平行奖励**：这条奖励的前提是「平行乐句各自成行、对齐着排」，
         // 而一行放不下就一定会被补刀切开，切完那份对齐也就没了。009《荣耀归与至高神》
         // 的「天上众军」正是靠这道闸才断在了该断的地方（全书 36 → 29 处、定点 19 → 15）。
-        if (b < M && (!FIT || lineFits(a, b))) parallel += Math.min(parallelAt(cand[b - 1]), 12) / 12;
+        if (b < M && (!FIT || lineFits(a, b)) && rows.length)
+          rows[rows.length - 1].par = Math.min(parallelAt(cand[b - 1]), 12) / 12;
         // **这一行收在长音上吗**（`parallel` 的镜像：那条看下一行从哪儿起，这条看本行在哪儿收）。
         // 判据与 `scoreBase` 的「长音收尾」同一把尺子——标点顺延到休止/拖腔上时要往前追
         //（`carriedFrom`），行末那个音自己是不是长音不算数。
@@ -1598,6 +1632,48 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
             - Math.min(durs[durs.length - 1], durs[durs.length - 2])
               / Math.max(durs[durs.length - 1], durs[durs.length - 2], 1e-9))
         : 0;
+      /**
+       * **平行的两行还得一样长**（用户口径：「平行句需要尽量长度相等或相近」，**重要**）。
+       *
+       * 不是另给一份奖励，而是**给 `parallel` 打折**：一行的开头与别处同源、值多少分，
+       * 要乘上「它与那个伙伴一样长吗」（短 ÷ 长）。试过另立一项加分，355《你已否祷告》
+       * 立刻从原书的 16/24/16/16 变成 16/8/16/16/16——凭空多出来的奖励会奖励
+       * 「多切几行等长的平行行」，切碎反而更划算。折扣不加总量，只把**不等长**的平行削掉。
+       *
+       * 打折看的是**下一行**（`parallel` 那份奖励本来就属于「下一行从一段重复的旋律起头」），
+       * 所以第 i 行的奖励乘 `evenOf(i + 1)`。
+       */
+      const evenOf = (k: number): number => {
+        const r = rows[k];
+        if (!r || !r.fits) return 1;
+        let best = 0;
+        let found = false;
+        for (let j = 0; j < rows.length; j++) {
+          if (j === k || !rows[j].fits) continue;
+          const n = commonPrefix(r.keys, rows[j].keys);
+          if (n < PARALLEL_MIN) continue;
+          const lo = Math.min(r.dur, rows[j].dur);
+          const hi2 = Math.max(r.dur, rows[j].dur);
+          if (!(hi2 > 0)) continue;
+          found = true;
+          best = Math.max(best, lo / hi2);
+        }
+        // 行首同源的伙伴一个都没有（`parallelAt` 认的是**任意**潜在行首，不限于成了行的那些）
+        // ——那就不打折，保持原样。
+        return found ? best : 1;
+      };
+      for (let i = 0; i < rows.length; i++) parallel += rows[i].par * evenOf(i + 1);
+      // **平行的一对句子双双收在主音上**（用户口径：平行句「落在主音上」，**次要**）。
+      // 要求**成对**：只有一边收在主音上不算——那说明这两句的收束本来就不对称，
+      // 给了分反而会把好好的两行拆开（125《主名至宝》原书 24/36 两行，
+      // 单边算分时会被拆成 24/24/12，只为让其中一行收在 `1` 上）。
+      for (let k = 0; k < rows.length; k++) {
+        if (!rows[k].tonic || !rows[k].fits) continue;
+        for (let j = 0; j < rows.length; j++) {
+          if (j === k || !rows[j].tonic || !rows[j].fits) continue;
+          if (commonPrefix(rows[k].keys, rows[j].keys) >= PARALLEL_MIN) { tailTonic += 1; break; }
+        }
+      }
       const breakW = CONTENT_ONLY ? BREAK_QUALITY_WEIGHT : 1;
       // @ts-ignore 调试钩子：一套方案的分是怎么摊出来的。页面里先 `window.__qDebug = []`，
       // 排完读它——`__evenDebug` 只给总分，看不出「这一版明明更匀却输了」输在哪一项
@@ -1611,12 +1687,14 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         lastPair: +((CONTENT_ONLY ? LAST_PAIR_QUALITY_WEIGHT * lastPair : 0)).toFixed(2),
         weak: +(breakW * (weak / cells.length)).toFixed(2),
         parallel: +(-PARALLEL_WEIGHT * (parallel / cells.length) * 10).toFixed(2),
-        tailLong: +(-TAIL_LONG_WEIGHT * (tailLong / cells.length) * 10).toFixed(2) });
+        tailLong: +(-TAIL_LONG_WEIGHT * (tailLong / cells.length) * 10).toFixed(2),
+        tailTonic: +(-(CONTENT_ONLY ? TAIL_TONIC_WEIGHT : 0) * (tailTonic / cells.length) * 10).toFixed(2) });
       return EVEN_WEIGHT * 100 * cv + OUTLIER_WEIGHT * (outlier + shortOutlier)
         + (CONTENT_ONLY ? LAST_PAIR_QUALITY_WEIGHT * lastPair : 0)
         + breakW * (weak / cells.length)
         - PARALLEL_WEIGHT * (parallel / cells.length) * 10
-        - TAIL_LONG_WEIGHT * (tailLong / cells.length) * 10;
+        - TAIL_LONG_WEIGHT * (tailLong / cells.length) * 10
+        - (CONTENT_ONLY ? TAIL_TONIC_WEIGHT : 0) * (tailTonic / cells.length) * 10;
     };
     const runWith = (want: number[], lenW = RUN_WITH_LEN_WEIGHT): { nb: number[]; lines: number[] } => {
       const r = runDP((sIdx) => {
@@ -1770,6 +1848,62 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
     // 第一遍那套也要参与评分（它可能就是最好的）
     if (quality(nextB) <= best.score) best = { score: quality(nextB), nb: nextB };
     consider(quality(nextB), nextB);
+    /**
+     * **让平行的两行一样长**（用户口径：「平行句需要尽量长度相等或相近」，061《坚固保障》）。
+     *
+     * `quality` 的 `evenOf` 只能在**已有的候选方案里**挑，而 DP 那几遍压根生成不出
+     * 「两行等长」的那一套：061 的前两行是一模一样的四小节，可 DP 的 4 行方案是
+     * 16/24/16/16——两套方案的行长目标一样、行时值多重集也一样，差别只在第 2 刀落在
+     * 哪个逗号上（「恐慌，」还是「撒但，」），而两处的断点强度分不出高下。
+     *
+     * 所以在评分之前**照平行伙伴补一套候选**：一行的开头若与前面某行同源，就把它的收尾
+     * 挪到「与那一行等长」最近的候选断点上，差额推给下一行（**行数不变**）。
+     * 补出来的方案好不好照旧由 `quality` 说了算（`evenOf` 就是给它打分的那一项）。
+     */
+    const alignParallel = (nb: number[]): number[] | null => {
+      if (!(PARALLEL_WEIGHT > 0)) return null;
+      const bs: number[] = [0];
+      for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; bs.push(b); a = b; }
+      // 至少三行才有得挪：末行的差额没处推。
+      if (bs.length < 4) return null;
+      const keysAt = (a: number) => headKeysFrom(idxAt[a] + 1);
+      let changed = false;
+      for (let k = 1; k + 2 < bs.length; k++) {
+        const keys = keysAt(bs[k]);
+        let best = { n: 0, dur: 0 };
+        for (let j = 0; j < k; j++) {
+          const n = commonPrefix(keysAt(bs[j]), keys);
+          if (n >= PARALLEL_MIN && n > best.n) best = { n, dur: durBetween(bs[j], bs[j + 1]) };
+        }
+        if (!best.n || !(best.dur > 0)) continue;
+        let pick = bs[k + 1];
+        const diff0 = Math.abs(durBetween(bs[k], pick) - best.dur);
+        let diff = diff0;
+        for (let b = bs[k] + 1; b < bs[k + 2]; b++) {
+          // **挪过去的地方本身得是个像样的乐句落点**：不看这一条就会挪到拖腔中间，
+          // 半拍的零头单独描成一行（403《救主子民还在世间》曾被切出一行 0.5 拍）。
+          // 口径同候选池（`scoreAt` 减行首罚为正才算数）。
+          if (scoreAt(cand[b - 1]) - headPenalty(cand[b - 1]) <= 0) continue;
+          const d = Math.abs(durBetween(bs[k], b) - best.dur);
+          if (d < diff) { diff = d; pick = b; }
+        }
+        // **差不多长就别动了**（用户口径是「相等或相近」）：挪半拍换不来什么，反倒会把断点
+        // 推到拖腔中间，描出个 0.5 拍的碎行（403《救主子民还在世间》）。要挪就得挪得值——
+        // 差距至少砍掉一半、且至少差着一拍。
+        if (pick !== bs[k + 1] && diff <= diff0 / 2 && diff0 - diff >= 1) { bs[k + 1] = pick; changed = true; }
+      }
+      if (!changed) return null;
+      const out = nb.slice();
+      for (let i = 0; i + 1 < bs.length; i++) out[bs[i]] = bs[i + 1];
+      return out;
+    };
+    for (const o of [...all]) {
+      const v = alignParallel(o.nb);
+      // **补出来的那套不许有碎行**：挪断点是照「与伙伴等长」挑最近的候选，挑不到合适的
+      // 就会甩出个两三拍的零头（403《救主子民还在世间》曾被切出一行 0.5 拍）。
+      // 用的是与「硬排出来的方案」同一条地板（版心三分之一，见 notTooThin）。
+      if (v && notTooThin(v)) consider(quality(v), v);
+    }
     /**
      * **纸张只当平局的裁判**（用户口径：「断句结果只有 2 行超长行的，应该选 4 行更短的」）。
      *
