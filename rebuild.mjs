@@ -312,6 +312,8 @@ for (const s of picked) {
           // 上面几步会造出新的行首（DP 管不到），再兜两次：行首不留半小节休止、
           // 补刀留下的碎行并回上一行（见 applybreaks.ts 两个函数的注释）。
           B.tidyLineHeads(score.parts[0], brk, { useMidBreaks: st.layout.phraseMidBreak, cells, fit: fitMetric });
+          // 对称的另一半：行末不留半个小节的休止（用户口径「不管行首还是行尾」，J09）
+          B.tidyLineTails(score.parts[0], brk, { useMidBreaks: st.layout.phraseMidBreak, cells, fit: fitMetric });
           B.mergeSliverLines(score.parts[0], brk, st.layout.phraseMidBreak, cells, fitMetric);
           // 逐行事实（行首残小节 / 行末标点 / 格数…）留给 line-check.mjs 断言；
           // Chord 是对象，跨不过 page.evaluate 的序列化，只带纯数据出去。
