@@ -187,6 +187,10 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     // 「整行合成 path」那一步原先不看已有归类，把框里 2662 行正文全改判成了 textLine，
     // 它们于是又流回谱行的判据里去（当署名、当歌词）。
     if (out[i].cls === "storyText" && cls !== "storyText") return;
+    // 框的一圈纹样同样是 0a 定的案，同样不许后面改判。整条边合成一个 path 的那种花边边
+    // （`collectSolidEdges`）又宽又扁又多段，紧接着的「步骤 0：整行合成的文字对象」正好
+    // 把它当成一行字收走——于是那条边又落回框内，以正文首行的身份印出来（p92/p591/p633…）。
+    if (out[i].cls === "ornament" && cls !== "ornament") return;
     out[i].cls = cls;
     out[i].why = why;
   };
@@ -196,7 +200,7 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
 
   // ── 0a. 花边框：同一批小纹样沿矩形四边重复平铺。**必须在结构线之前**，
   //      否则点线花边的每个点都会被小节线判据收走。
-  const ornaments = detectOrnamentFrames(objs, noteH);
+  const ornaments = detectOrnamentFrames(objs, noteH, profile.contentBox.w);
   for (const orn of ornaments) {
     for (const i of orn.idx) set(i, "ornament", `重复纹样 ×${orn.idx.length}，围成 ${orn.box.w.toFixed(0)}×${orn.box.h.toFixed(0)} 的框`);
   }
@@ -1446,6 +1450,38 @@ interface OrnamentHit {
 interface TileRun {
   idx: number[];
   horizontal: boolean;
+  /** 整条边合成一个 path 的那种边（见 `collectSolidEdges`）。它自己不足以成框。 */
+  solid?: boolean;
+}
+
+/**
+ * 整条边合成一个 path 的花边边。
+ *
+ * 同一本书里，有的页花边的每一片是独立对象（走 `collectRuns`），有的页整条边被合并成了
+ * **一个** path 对象——密排那套「≥7 片」的判据根本看不见它，于是那条边落在框外：
+ * 框的包围盒只由剩下三条边定出来，顶边连同它压着的正文一起流回谱面判据里去。
+ * 全书 13 页栽在这上面（92/286/287/351/355/379/451/463/591/614/618/633/635），
+ * 而且清一色缺的是**顶**边。
+ *
+ * 判据只有三条，是拿全书扫描标定的（873 个「长宽比极端且够长」的对象里只命中这 13 个，零误报）：
+ *   - **够长**：长边 ≥ 版心宽 0.85（实测这批边 287~294，版心 307.6）
+ *   - **够扁**：短边 ≤ noteH*0.85（这批 2.8~6.6；注解正文整行合成的 path 高 7.8+，就此分开）
+ *   - **段数够多**：`segs ≥ 60`（**这条是要害**）。普通结构线——通栏横线、双细线框的边——
+ *     `segs` 恒等于 5，一条都混不进来。
+ *
+ * **不要改用 `curves`**：这批合并边的 curves 从 0（p351/p451）到 1372（p287）都有，
+ * 拿它当判据会把一半漏掉。分开「花边合并边」与「结构线」的是段数，不是曲线数。
+ */
+function collectSolidEdges(objs: VecObj[], noteH: number, contentW: number): TileRun[] {
+  const out: TileRun[] = [];
+  for (let i = 0; i < objs.length; i++) {
+    const o = objs[i];
+    const long = Math.max(o.bbox.w, o.bbox.h);
+    const short = Math.min(o.bbox.w, o.bbox.h);
+    if (long < contentW * 0.85 || short > noteH * 0.85 || o.segs < 60) continue;
+    out.push({ idx: [i], horizontal: o.bbox.w >= o.bbox.h, solid: true });
+  }
+  return out;
 }
 
 /**
@@ -1459,7 +1495,7 @@ interface TileRun {
  *
  * 为什么要把不同形状的线合起来：一圈花边常由几种纹样拼成（横边一种、竖边一种、角上一种）。
  */
-function detectOrnamentFrames(objs: VecObj[], noteH: number): OrnamentHit[] {
+function detectOrnamentFrames(objs: VecObj[], noteH: number, contentW: number): OrnamentHit[] {
   const groups = new Map<string, number[]>();
   for (let i = 0; i < objs.length; i++) {
     const o = objs[i];
@@ -1480,6 +1516,9 @@ function detectOrnamentFrames(objs: VecObj[], noteH: number): OrnamentHit[] {
     // 纵向密排
     collectRuns(idx, objs, false, w * 0.6, h * 2.5, runs);
   }
+  // 整条边合成一个 path 的那种边。放在密排线之后：它只补边，自己成不了框。
+  const solids = collectSolidEdges(objs, noteH, contentW);
+  runs.push(...solids);
   if (runs.length < 2) return [];
 
   // 把交叠/相邻的线并成一个框（一圈花边由几条线组成）
@@ -1514,22 +1553,84 @@ function detectOrnamentFrames(objs: VecObj[], noteH: number): OrnamentHit[] {
     const hasH = group.some((g) => runs[g].horizontal);
     const hasV = group.some((g) => !runs[g].horizontal);
     if (!hasH || !hasV) continue;
+    // 合成边只补边，不立框：全靠它凑出来的「框」没有密排线背书，
+    // 那是两条无关的宽扁 path 撞在一起，不是花边。
+    if (group.every((g) => runs[g].solid)) continue;
     // **必须是「环」：中间三分之一区域基本没有本簇的纹样。**
     // 目录页的引导点线（……）也是同形状密排、也凑得出一横一竖，但它布满整页中心；
     // 少了这条约束，全书会误报 131 个花边框（真正带注解的框只有三十来个）。
     const mid = { x: x0 + w / 3, y: y0 + h / 3, w: w / 3, h: h / 3 };
     if (bs.filter((b) => intersectRect(b, mid)).length > idx.length * 0.03) continue;
-    const edge = Math.max(noteH * 0.8, Math.min(w, h) * 0.06);
+    const box = { x: x0, y: y0, w, h };
+    const corners = collectCornerTiles(objs, box, noteH, new Set(idx));
+    const all = corners.length ? [...idx, ...corners] : idx;
+    const abs = all.map((i) => objs[i].bbox);
+    // 角片比边突出去一点，box 要按并集重算，否则压在角上的那一圈收不进来。
+    const bx0 = Math.min(...abs.map((b) => b.x));
+    const by0 = Math.min(...abs.map((b) => b.y));
+    const bw = Math.max(...abs.map(right)) - bx0;
+    const bh = Math.max(...abs.map(bottom)) - by0;
+    const edge = Math.max(noteH * 0.8, Math.min(bw, bh) * 0.06);
     out.push({
-      idx,
-      box: { x: x0, y: y0, w, h },
-      inner: { x: x0 + edge, y: y0 + edge, w: w - edge * 2, h: h - edge * 2 },
+      idx: all,
+      box: { x: bx0, y: by0, w: bw, h: bh },
+      inner: { x: bx0 + edge, y: by0 + edge, w: bw - edge * 2, h: bh - edge * 2 },
       tileW: median(bs.map((b) => b.w)),
       tileH: median(bs.map((b) => b.h)),
     });
   }
 
   return out;
+}
+
+/**
+ * 花边框四角上那枚**独立的**纹样。
+ *
+ * 四角印的不是横竖两条边的母题，而是第三枚字形（实测尺寸也不同：p42 的角片 7.7×7.6，
+ * 边片却是 10.8×5.0）。每框只有 4 个，永远够不着 `collectRuns` 那个「≥7 片」的门槛，
+ * 于是全书 427 个角片一路落到框内正文里，被当成字读出来——**「X」44 个、「S」19 个、
+ * 「米」18 个、「K」11 个……110 条注解里有 103 条正文混着这种垃圾字**。
+ * （`bookmeta.ts` 那条「1~2 个拉丁字母独占一行就丢掉」的过滤只挡住了独占整行的那部分。）
+ *
+ * 判据是拿全书 110 个框实测标定的：
+ *   - **贴角**：中心距框角 ≤ `noteH*1.2`（实测 3.1~9.6，中位 5.4，p90 只有 7）。
+ *     这条才是主力：框内正文离角至少隔着一圈内边距，第一个字的中心距角 14 以上。
+ *   - **够小**：bbox ≤ `noteH*1.35`（实测 4.8×4.8 ~ 10.6×10.5）。放到 1.35 是为了 p149/p555
+ *     那两个框的角片（10.0×8.8 / 10.5×10.4），卡在 1.2 上它们会整框漏掉。
+ *   - **四角同源**：四个角位上至少两个的 `curves/segs` 一致。角片是同一枚字形的四种旋转，
+ *     旋转不改段数——实测每种 `curves/segs` 的计数都是 4 的整倍数。
+ *     少了这条，尺寸上限放宽后框内贴着角的正文字就会被当成角片吞掉。
+ *     **同源要按四个角位一起看，不能只看待补的那几个**：角片与边片同形状时（p633 的
+ *     `12/29`），三个角早被 `collectRuns` 当边片收走了，只剩一个孤角——只数它自己永远凑不够两票。
+ *
+ * 全书 427 个角片，补完只剩 0 个流进正文。
+ */
+function collectCornerTiles(objs: VecObj[], box: Rect, noteH: number, taken: Set<number>): number[] {
+  const near = noteH * 1.2;
+  const size = noteH * 1.35;
+  const pts: [number, number][] = [
+    [box.x, box.y],
+    [box.x + box.w, box.y],
+    [box.x, box.y + box.h],
+    [box.x + box.w, box.y + box.h],
+  ];
+  const found: { i: number; sig: string; taken: boolean }[] = [];
+  for (const [px, py] of pts) {
+    let best: { i: number; d: number } | null = null;
+    for (let i = 0; i < objs.length; i++) {
+      const b = objs[i].bbox;
+      if (b.w > size || b.h > size) continue;
+      const d = Math.hypot(b.x + b.w / 2 - px, b.y + b.h / 2 - py);
+      if (d <= near && (!best || d < best.d)) best = { i, d };
+    }
+    if (best) found.push({ i: best.i, sig: `${objs[best.i].curves}/${objs[best.i].segs}`, taken: taken.has(best.i) });
+  }
+  // 同源统计连已收为边片的角位一起数，再只补没收的那几个。
+  const tally = new Map<string, number>();
+  for (const f of found) tally.set(f.sig, (tally.get(f.sig) ?? 0) + 1);
+  const win = [...tally].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1])[0];
+  if (!win) return [];
+  return found.filter((f) => f.sig === win[0] && !f.taken).map((f) => f.i);
 }
 
 /** 在同形状的一组对象里，找沿某方向密排 ≥8 个的连续段。 */
