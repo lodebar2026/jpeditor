@@ -509,6 +509,64 @@ export function xmlNoteDigits(musicxml) {
 }
 
 /**
+ * MusicXML → 简谱的**八度点**序列，与 `xmlNoteDigits` 一一对应（休止同样出 `"0"` 占位）。
+ *
+ * 简谱记的是「相对主音的音级 + 上下点」，musicxml 记的是绝对音高（`<step>` + `<octave>`）。
+ * 换算要两步：
+ *   1. 全音阶序号 `D = octave*7 + STEP_IDX[step]`（科学音高记法在 C 处进位，所以能直接线性化）。
+ *   2. 主音落在哪个八度（`D0`）：**取让「不带点的音」最多的那一档**。
+ *      简谱的约定就是「本位八度不加点」，所以这个统计口径与刻谱人的选择一致；
+ *      不能想当然取第一个音的八度（很多曲子从属音起唱、从低音区起唱）。
+ * 点数 = `floor((D - D0) / 7)`，正数是高音点、负数是低音点。
+ *
+ * 曲中转调（021/137/144 首）时主音会换，`D0` 按每个调段各自统计。
+ */
+export function xmlNoteOctaves(musicxml) {
+  const seg = [];
+  let tonic = 0;
+  for (const m of musicxml.matchAll(/<fifths>(-?\d+)<\/fifths>|<note[ >][\s\S]*?<\/note>/g)) {
+    if (m[1] !== undefined) {
+      const key = FIFTHS_KEY[String(Number(m[1]))] ?? "C";
+      tonic = STEP_IDX[key[key.length - 1]] ?? 0;
+      continue;
+    }
+    const t = m[0];
+    if (/<chord\s*\/>/.test(t)) continue;
+    if (/<rest\s*\/?>/.test(t)) {
+      seg.push({ rest: true, tonic });
+      continue;
+    }
+    const step = /<step>([A-G])<\/step>/.exec(t)?.[1];
+    const oct = /<octave>(-?\d+)<\/octave>/.exec(t)?.[1];
+    if (!step || oct === undefined) continue;
+    seg.push({ d: Number(oct) * 7 + (STEP_IDX[step] ?? 0), tonic });
+  }
+  // 每个调段各自定「本位八度」：让点数为 0 的音最多的那一档
+  const byTonic = new Map();
+  for (const n of seg) {
+    if (n.rest) continue;
+    const a = byTonic.get(n.tonic) ?? [];
+    a.push(n.d);
+    byTonic.set(n.tonic, a);
+  }
+  const base = new Map();
+  for (const [tn, ds] of byTonic) {
+    let best = 0;
+    let bestN = -1;
+    for (let o = 0; o <= 9; o++) {
+      const d0 = o * 7 + tn;
+      const n = ds.filter((d) => Math.floor((d - d0) / 7) === 0).length;
+      if (n > bestN) {
+        bestN = n;
+        best = d0;
+      }
+    }
+    base.set(tn, best);
+  }
+  return seg.map((n) => (n.rest ? "0" : String(Math.floor((n.d - base.get(n.tonic)) / 7)))).join("|");
+}
+
+/**
  * MusicXML → 各段歌词（`<lyric number="N">` 按音符顺序拼）。
  * 一个音符上可能挂多段；段号就是 `number`。
  */

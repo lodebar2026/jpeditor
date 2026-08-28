@@ -10,7 +10,7 @@
 // **纯 Node，不起浏览器。**
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { openDb, loadGlyphFixes } from "./scripts/checkdb.mjs";
-import { loadCli, openPdf, loadCorpus, readSongGt, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, xmlNoteDigits, xmlLyricVerses, xmlTitle, xmlCredit, collectSongGlyphs, mergePagemapEntries, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
+import { loadCli, openPdf, loadCorpus, readSongGt, gtHarmonies, gtKeyTime, gtSlurTie, gtRepeats, xmlNoteDigits, xmlNoteOctaves, xmlLyricVerses, xmlTitle, xmlCredit, collectSongGlyphs, mergePagemapEntries, csvRow, CORPUS_PDF, isCreditWordGlyph } from "./scripts/node-harness.mjs";
 
 
 const args = process.argv.slice(2);
@@ -47,6 +47,7 @@ for (let p = 40; p <= 200; p += 4) {
   g.cleanup();
 }
 const profile = cli.detectProfile(sample, "hymn500");
+const noteHeight = cli.noteHeightOf(profile);
 
 /** 带回溯的编辑脚本：返回 [op, gtIdx, recIdx, gtTok, recTok]，op ∈ sub/ins/del。 */
 function alignOps(a, b) {
@@ -247,6 +248,7 @@ for (const [id, entries] of byId) {
   const arcs = [];
   let repeatDots = 0;
   let brackets = 0;
+  const octaveDots = [];
   let objTotal = 0;
   let unclassified = 0;
   let storyChars = 0;
@@ -287,6 +289,7 @@ for (const [id, entries] of byId) {
       else if (o.cls === "slur") arcs.push({ o, bandNotes: null });
       else if (o.cls === "repeatDot") repeatDots++;
       else if (o.cls === "bracket") brackets++;
+      else if (o.cls === "octaveDot") octaveDots.push(o);
     }
     // 圆滑线覆盖了哪几个音符：拿弧的**两个端点**各找同谱行里最近的音符。
     // 先前用「音符中心落在弧的横向范围内」来框，短弧常常一个音符都框不住
@@ -435,6 +438,23 @@ for (const [id, entries] of byId) {
   // `�` 留着，那是「未识别」不是「录错」。
   const noteSeq = notes.map((o) => ({ ch: charAt(o), o })).filter((it) => /[0-7\ufffd]/.test(it.ch));
   const recNotes = noteSeq.map((it) => it.ch).join("");
+  // 八度点：与音符同 x、在其上/下方的小圆点，几个点就是几个八度。
+  // `inventory.ts` 归类时已经判过归属与上下（见那里的第 4 步），但只写进了 why 字符串，
+  // 所以这里按同一把尺子（同 x 容差 0.6 字宽、距离上限 2.2 个音符高）重新聚一次。
+  const recOct = noteSeq.map(({ o }) => {
+    const nb = o.obj.bbox;
+    let up = 0;
+    let down = 0;
+    for (const d of octaveDots) {
+      if (d.row !== o.row) continue;
+      const db = d.obj.bbox;
+      if (Math.abs(db.x + db.w / 2 - (nb.x + nb.w / 2)) > nb.w * 0.6) continue;
+      if (Math.hypot(db.x + db.w / 2 - (nb.x + nb.w / 2), db.y + db.h / 2 - (nb.y + nb.h / 2)) > noteHeight * 2.2) continue;
+      if (db.y + db.h <= nb.y) up++;
+      else if (db.y >= nb.y + nb.h) down++;
+    }
+    return String(up - down);
+  });
   const recTitle = readSeq(title);
   const titleSeq = lyricNormSeq(title.map((o) => ({ ch: charAt(o), o })));
   // 有些「歌词行」其实是和弦行或音符行被归错了（读出来一个汉字都没有）。
@@ -598,6 +618,52 @@ for (const [id, entries] of byId) {
     }
   }
   const gtNotesEff = noteRepeat > 1 ? gtNotes.repeat(noteRepeat) : gtNotes;
+
+  // ── 八度点：**以音符的对齐结果为骨架**逐位比，不让八度序列自己再对齐一次
+  //（那样一处音符错位就会把后面整串八度带偏，报出一堆假差异）。
+  // GT 侧 `xmlNoteOctaves` 与 `xmlNoteDigits` 一一对应，同样含休止的 "0" 占位；
+  // 识别侧只有真音符（休止不进 noteSeq），所以先把 GT 的休止位剔掉再配。
+  // `xmlNoteOctaves` 与 `xmlNoteDigits` 逐位对应（休止同样占一位），`recOct` 与 `recNotes`
+  // 也逐位对应（休止在识别侧是数字「0」，同样落在 noteSeq 里），所以两边下标都不必再修。
+  const gtOctAll = gt.musicxml ? xmlNoteOctaves(gt.musicxml).split("|") : [];
+  // 顺着音符的对齐脚本走一遍，取出**音符本身就对上**的那些位置对。
+  // 增删改的位置没得比：那里的八度点属于另一个音，硬比会报出一串成对的假差异。
+  const octDiffs = [];
+  {
+    const ops = dNote.ops;
+    let gi = 0;
+    let ri = 0;
+    let k = 0;
+    while (gi < gtNotesEff.length && ri < recNotes.length) {
+      const op = ops[k];
+      if (op && op[0] === "del" && op[1] === gi) {
+        gi++;
+        k++;
+        continue;
+      }
+      if (op && op[0] === "ins" && op[2] === ri) {
+        ri++;
+        k++;
+        continue;
+      }
+      if (op && op[0] === "sub" && op[1] === gi && op[2] === ri) {
+        gi++;
+        ri++;
+        k++;
+        continue;
+      }
+      // 这一位音符两边一致，可以比八度了（休止没有八度，跳过）
+      if (gtNotesEff[gi] !== "0") {
+        const g = gtOctAll.length ? gtOctAll[gi % gtOctAll.length] : undefined;
+        const r = recOct[ri];
+        if (g !== undefined && r !== undefined && g !== r) octDiffs.push({ at: gi, gt: g, rec: r, o: noteSeq[ri]?.o });
+      }
+      gi++;
+      ri++;
+    }
+  }
+  const octTotal = Math.min(gtOctAll.length * noteRepeat, recOct.length);
+  const octAcc = octTotal ? 1 - octDiffs.length / octTotal : 1;
   // 标题同样只比汉字：它的标点也是随排版走的（「圣哉，圣哉，圣哉」的顿号常识别不全）
   const gtTitleN = lyricNorm(xmlTitle(gt.musicxml) || song.title);
   const recTitleN = lyricNorm(recTitle);
@@ -791,6 +857,10 @@ for (const [id, entries] of byId) {
     sTitle,
     pages: entries.map((e) => e.page).join(" "),
     noteAcc: acc(gtNotesEff, recNotes, dNote.dist - restOps.length), // 休止记法不算错
+    octAcc,
+    octDiffs,
+    octGt: gtOctAll.length * noteRepeat,
+    octRec: recOct.length,
     noteGt: gtNotes.length,
     noteRec: recNotes.length,
     noteDiffs: dNote.ops.length,
@@ -980,6 +1050,13 @@ for (const r of rows) {
     L.push(`  音符 ${r.sNote.content.length} 项（GT ${r.noteGt}${r.noteRepeat > 1 ? `×${r.noteRepeat}遍` : ""} / PDF ${r.noteRec}）`);
     L.push(...fmt(r.sNote.content, r.gtNotes));
   }
+  if (r.octDiffs.length) {
+    // 八度点：0 = 本位、正数 = 高音点、负数 = 低音点
+    const dot = (v) => (v === "0" ? "无点" : Number(v) > 0 ? `高${v}` : `低${-Number(v)}`);
+    L.push(`  八度点 ${r.octDiffs.length} 项（按音符位置逐位比，GT ${r.octGt} / PDF ${r.octRec}）`);
+    L.push(...r.octDiffs.slice(0, 12).map((d) => `    第 ${d.at + 1} 个音  GT=${dot(d.gt)}  PDF=${dot(d.rec)}`));
+    if (r.octDiffs.length > 12) L.push(`    …另有 ${r.octDiffs.length - 12} 处`);
+  }
   for (const d of r.verseDiffs) {
     if (!d.content.length) continue;
     L.push(`  歌词第 ${d.verse} 段 ${d.content.length} 项（GT ${d.gt.length} / PDF ${d.rec.length}，配到 PDF 第 ${d.pdfVerse} 行）`);
@@ -1100,12 +1177,16 @@ for (const r of rows) {
     continue;
   }
   L.push("", `## 覆盖：页面对象 ${r.objTotal}${r.unclassified ? `，未归类 ${r.unclassified}` : ""}`);
-  L.push(`   准确率：音符 ${(r.noteAcc * 100).toFixed(1)}%  歌词 ${(r.lyricAcc * 100).toFixed(1)}%  标题 ${(r.titleAcc * 100).toFixed(1)}%`);
+  L.push(`   准确率：音符 ${(r.noteAcc * 100).toFixed(1)}%  八度 ${(r.octAcc * 100).toFixed(1)}%  歌词 ${(r.lyricAcc * 100).toFixed(1)}%  标题 ${(r.titleAcc * 100).toFixed(1)}%`);
   await writeFile(`${OUTDIR}/${r.id}.txt`, L.join("\n"));
 }
 
 console.log(`${rows.length} 首`);
-console.log(`音符平均 ${(avg((r) => r.noteAcc) * 100).toFixed(2)}%  歌词平均 ${(avg((r) => r.lyricAcc) * 100).toFixed(2)}%  标题平均 ${(avg((r) => r.titleAcc) * 100).toFixed(2)}%`);
+console.log(
+  `音符平均 ${(avg((r) => r.noteAcc) * 100).toFixed(2)}%（**只比 1-7 的音级**）` +
+    `  八度平均 ${(avg((r) => r.octAcc) * 100).toFixed(2)}%（高低音点，${sum((r) => r.octDiffs.length)} 处不同）` +
+    `  歌词平均 ${(avg((r) => r.lyricAcc) * 100).toFixed(2)}%  标题平均 ${(avg((r) => r.titleAcc) * 100).toFixed(2)}%`,
+);
 console.log(
   `内容差异合计 ${sum((r) => r.contentDiffs)}（音符 ${sum((r) => r.sNote.content.length)}` +
     ` / 歌词 ${sum((r) => r.verseDiffs.reduce((a, d) => a + d.content.length, 0))}` +
