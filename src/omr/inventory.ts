@@ -466,12 +466,26 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
 
   // ── 4. 圆点：八度点 / 附点 / 反复点
   const dotMax = Math.max(profile.dotDiam * 1.8, noteH * 0.35);
+  // **下限**：印刷的圆点直径极其集中——全书 8810 个八度点里 p5~p95 全是 1.89~1.90
+  //（正是 `dotDiam`）。原先只卡上限，于是一批 **0.4×0.4** 的碎点也当成了八度点：
+  // 它们成对出现在音符上方 6.5~8 pt 处（真点只贴 0.7~2.6），全书 175 个，
+  // 169/429/028 那几首的「GT 无点 / PDF 高音点」几乎全是它们。
+  // 定在半个 dotDiam：真点 1.89 稳过，碎点 0.4 挡住（`augmentDot` 8060 个里只有 1 个 < 1.0）。
+  const dotMin = profile.dotDiam * 0.5;
   for (let i = 0; i < objs.length; i++) {
     if (out[i].cls !== "unclassified") continue;
     const o = objs[i];
     const { w, h } = o.bbox;
     if (w > dotMax || h > dotMax) continue;
     if (Math.abs(w - h) / Math.max(w, h) > 0.45) continue;
+    // 太小的**当场定成版面记号**，不能只是 `continue`：放着不管它们会落进后面的
+    // 和弦带判据，被当成和弦符号的一部分（p503 一页就有 17 个跑进 `chord`，
+    // 全书和弦内容差异因此多出 10 项）。它们是 `segs=5 / curves=0` 的退化短线段，
+    // 成对出现在音符上方 6.5~8pt 处，既不是八度点也不是任何内容。
+    if (w < dotMin && h < dotMin) {
+      set(i, "rule", `碎点 ${w.toFixed(2)}×${h.toFixed(2)}，不足半个 dotDiam`);
+      continue;
+    }
     let best = -1;
     let bestD = Infinity;
     for (const n of noteBoxes) {
