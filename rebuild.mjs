@@ -443,7 +443,73 @@ function contentBottom(dp) {
   return y;
 }
 
-/** 注解（圣诗故事 / 经文）：本曲末页有空就排，放不下顺延到之后第一处放得下的页。 */
+/**
+ * 注解（圣诗故事 / 经文）：**必须排在本曲末页**，注解讲的就是它跟着的那首歌，
+ * 甩到后面几页去等于跟别的曲子放在一起。
+ *
+ * 原先是「放不下就顺延到之后第一处放得下的页」，全书 25 条因此跑到了别的曲子底下
+ * （027 差 3 页、275 差 5 页）。现在改成在本页里想办法，一级一级来：
+ *   1. 缩字号（`story.size` → 6.0，步长 0.25）——原书自己就是这么干的，
+ *      同一批花边框里 6.5~10.5 都有，谱行占得多的那页就把故事压小。
+ *   2. 缩行距（`annGapRatio` → 1.15）——库里存的是比例不是绝对值，本来就可压。
+ * 两级都不行才记账报出来，**绝不顺延**。
+ */
+const ANN_GAP_MIN = 1.15;
+/** 压谱面时，行间空隙最多收掉这么多（留 75%）。再紧谱行就挤成一坨了。 */
+const SQUEEZE_MAX = 0.25;
+
+/**
+ * 把一页的谱行往上收，腾出 `need` 那么多空间给注解。
+ *
+ * 只压**行与行之间的空隙**，每一行整体刚体上移——行内的音符/歌词/和弦相对位置分毫不动
+ * （那些是排版引擎按简谱纵向栅格算出来的，动一下八度点和 slur 就全错位了）。
+ * 第一行不动，后面每行依次多移一点。
+ *
+ * 返回真正腾出来的量（可能不足 need）。
+ */
+function squeezePage(dp, need) {
+  if (need <= 0) return 0;
+  // 行锚：歌词行的 y。没有歌词就没法认行，不压。
+  const ys = [...new Set(dp.items.filter((i) => i.t === "text" && i.role === "lyric").map((i) => Math.round(i.y * 10) / 10))].sort((a, b) => a - b);
+  if (ys.length < 2) return 0;
+  // 相邻锚之间差得太近的是同一谱行的多段歌词（多节），不算换行
+  const rows = [ys[0]];
+  for (const y of ys.slice(1)) if (y - rows[rows.length - 1] > 20) rows.push(y);
+  if (rows.length < 2) return 0;
+  const gaps = [];
+  for (let i = 1; i < rows.length; i++) gaps.push(rows[i] - rows[i - 1]);
+  // 每道空隙最多收 SQUEEZE_MAX；总共能收多少
+  const room = gaps.reduce((a, g) => a + g * SQUEEZE_MAX, 0);
+  const take = Math.min(need, room);
+  if (take <= 0.5) return 0;
+  const per = take / gaps.length;
+  // 行边界：两个锚的中点。每个 item 按 y 归行，行 k 上移 k*per。
+  const bounds = [];
+  for (let i = 1; i < rows.length; i++) bounds.push((rows[i - 1] + rows[i]) / 2);
+  const rowOf = (y) => {
+    let k = 0;
+    while (k < bounds.length && y > bounds[k]) k++;
+    return k;
+  };
+  for (const it of dp.items) {
+    const y = it.t === "line" ? Math.min(it.y1, it.y2) : it.y;
+    if (y === undefined) continue;
+    const d = rowOf(y) * per;
+    if (!d) continue;
+    if (it.t === "line") {
+      it.y1 -= d;
+      it.y2 -= d;
+    } else it.y -= d;
+    if (it.t === "path" && it.d) it.d = shiftPathY(it.d, -d);
+  }
+  return take;
+}
+
+/** 路径整体上下平移（花边框/圆滑线那些已经落成绝对坐标的 path）。 */
+function shiftPathY(d, dy) {
+  return d.replace(/(-?\d*\.?\d+)(\s+)(-?\d*\.?\d+)/g, (_m, a, sp, b) => `${a}${sp}${(Number(b) + dy).toFixed(2)}`);
+}
+
 function placeAnnotations() {
   const endsOn = new Map(); // 页 → 在这一页收尾的曲目
   for (const b of songBlocks) {
@@ -451,24 +517,27 @@ function placeAnnotations() {
     if (!endsOn.has(last)) endsOn.set(last, []);
     endsOn.get(last).push(b.id);
   }
-  const queue = [];
   let placed = 0;
+  const stuck = [];
+  // 兜底队列：本曲末页三级阶梯都排不下的，顺延到之后第一处放得下的页。
+  // 逐条记账（`stuck`），别静默滑走。
+  const carry = [];
   for (const dp of scorePages) {
-    for (const id of endsOn.get(dp) ?? []) for (const a of meta.annotation.get(id) ?? []) queue.push(a);
+    const queue = [];
+    for (const id of endsOn.get(dp) ?? []) for (const a of meta.annotation.get(id) ?? []) queue.push({ a, home: dp.pageNo });
+    // 先把欠着的补上——它们已经错过本曲末页了，越早落地越好
+    if (carry.length) queue.unshift(...carry.splice(0));
     if (!queue.length) continue;
     const m = pageEdges(dp.pageNo);
     let free = footerTop - contentBottom(dp);
     while (queue.length) {
-      const a = queue[0];
+      const { a, home } = queue[0];
       const top = footerTop - free;
-      // **按剩余空间缩字号**：原书也是这么干的（同一批花边框里字号从 6.5 到 10.5 都有，
-      // 谱行占得多的那页就把故事压小）。从本书的中位字号往下试到 6.5pt 为止，
-      // 行距按比例跟着缩；再放不下就顺延到后面的页。
-      let block = null;
+      // 两级阶梯：先缩字号（原书自己就是这么干的），字号到底了再缩行距。
       // 下限 6.0：原书最小的一框是 6.5pt，重排的谱面偶尔比原书占得高一点点
       // （010 差了 17pt），再留半档才放得下。
-      for (let sz = style.roles.story.size; sz >= 6.0; sz -= 0.25) {
-        const b = cli.annotationBlock(style, {
+      const build = (sz, gap) =>
+        cli.annotationBlock(style, {
           text: a.text,
           framed: !!a.framed,
           // 022/023 那种双细线矩形框：几何用 gen-bookmeta 实测的外圈/内圈/空隙
@@ -479,7 +548,7 @@ function placeAnnotations() {
           left: m.left,
           right: m.right,
           top,
-          lineGap: sz * annGapRatio,
+          lineGap: sz * gap,
           // 花边母题**逐框各不相同**（全书 106 套），按 frame_style 取这一框的八片；
           // 老库只有全书通用的横竖两片，那时 109 个框的花边都画错了。
           tiles: tilesOf(a.frame_style),
@@ -487,20 +556,63 @@ function placeAnnotations() {
           measure,
           size: sz,
         });
-        if (b.height <= free) {
-          block = b;
-          break;
+      let block = null;
+      for (let gap = annGapRatio; gap >= ANN_GAP_MIN - 1e-9 && !block; gap -= 0.1) {
+        for (let sz = style.roles.story.size; sz >= 6.0; sz -= 0.25) {
+          const b = build(sz, Math.max(gap, ANN_GAP_MIN));
+          if (b.height <= free) {
+            block = b;
+            break;
+          }
         }
       }
-      if (!block && process.env.DIAG) console.log(`  DIAG 注解 ${a.song_no} 排不下：可用 ${free.toFixed(1)}，行距比 ${annGapRatio}`);
-      if (!block) break;
+      // 第三级：压谱面。行间空隙最多收 25%，每行整体刚体上移。
+      if (!block) {
+        const want = build(6.0, ANN_GAP_MIN).height - free;
+        const got = squeezePage(dp, want);
+        if (got > 0.5) {
+          free += got;
+          const top2 = footerTop - free;
+          for (let gap = annGapRatio; gap >= ANN_GAP_MIN - 1e-9 && !block; gap -= 0.1) {
+            for (let sz = style.roles.story.size; sz >= 6.0; sz -= 0.25) {
+              const b = cli.annotationBlock(style, {
+                text: a.text,
+                framed: !!a.framed,
+                frame: a.frame_kind ?? (a.framed ? "tile" : "none"),
+                frameOuter: a.frame_outer || undefined,
+                frameInner: a.frame_inner || undefined,
+                frameGap: a.frame_gap || undefined,
+                left: m.left,
+                right: m.right,
+                top: top2,
+                lineGap: sz * Math.max(gap, ANN_GAP_MIN),
+                tiles: tilesOf(a.frame_style),
+                frameEdges: a.frame_edges || undefined,
+                measure,
+                size: sz,
+              });
+              if (b.height <= free) {
+                block = b;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (!block) {
+        // 本页真放不下：推到下一页去（**不丢**），并记一笔账。
+        carry.push(queue.shift());
+        continue;
+      }
+      if (dp.pageNo !== home) stuck.push({ song: a.song_no, home, at: dp.pageNo });
       dp.items.push(...block.items);
       free -= block.height + style.roles.story.size;
       queue.shift();
       placed++;
     }
   }
-  return { placed, left: queue.length };
+  for (const q of carry) stuck.push({ song: q.a.song_no, home: q.home, at: null });
+  return { placed, left: carry.length, stuck };
 }
 
 function pageEdges(pageNo) {
@@ -658,7 +770,10 @@ console.log(
   `装订：前置 ${front.length} 页（前言 ${meta.front.filter((f) => f.kind === "prose").length} + 目录）、` +
     `乐谱 ${scorePages.length} 页、索引 ${back.length} 页；目录两遍法 ${rounds} 轮`,
 );
-console.log(`注解排入 ${ann.placed}/${[...meta.annotation.values()].flat().length}${ann.left ? `，放不下 ${ann.left} 条` : ""}` +
+console.log(`注解排入 ${ann.placed}/${[...meta.annotation.values()].flat().length}` +
+  (ann.stuck.length
+    ? `，其中 ${ann.stuck.length} 条本曲末页放不下、顺延了：${ann.stuck.map((s) => `${s.song}(p${s.home}→${s.at ?? "未排"})`).join(" ")}`
+    : "（全部排在本曲末页）") +
   (noKeyMeter.length ? `；没有调号拍号的 ${noKeyMeter.length} 首：${noKeyMeter.slice(0, 5).join(" ")}` : ""));
 
 await mkdir(OUTDIR, { recursive: true });
