@@ -52,6 +52,7 @@ export function runChars(run: TextRun, ov?: CharOverride): { ch: string; x: numb
 
 const median = (v: number[]): number => (v.length ? [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)] : 0);
 const bottom = (r: { y: number; h: number }) => r.y + r.h;
+const right = (r: { x: number; w: number }) => r.x + r.w;
 
 // ────────────────────────────────────────────────────────────── 调号拍号
 
@@ -199,6 +200,11 @@ export interface Annotation {
   frameOuterWidth?: number;
   frameInnerWidth?: number;
   frameGap?: number;
+  /** 这一框用的花边样式 id（`frame === "tile"` 时有值）。全书 110 个框几乎各不相同，
+   *  所以要逐框记，不能像原先那样全书共用一套母题。 */
+  frameStyle?: string;
+  /** 哪几条边真有纹样，如 `"TBLR"`。有的框缺一条边（原书就那样印的），缺的边不画。 */
+  frameEdges?: string;
   text: string;
   box: Rect;
   page: number;
@@ -402,12 +408,22 @@ export interface FrontPage {
 
 // ────────────────────────────────────────────────────────────── 花边纹样
 
+/** 花边框上的一个位置：四条边 + 四个角。 */
+export type TileSlot = "top" | "bottom" | "left" | "right" | "tl" | "tr" | "bl" | "br";
+
+export const TILE_SLOTS: TileSlot[] = ["top", "bottom", "left", "right", "tl", "tr", "bl", "br"];
+
 export interface OrnamentTile {
-  orient: "h" | "v";
+  /** 同款花边共用一个 id（按八个槽的路径内容算）。 */
+  style: string;
+  slot: TileSlot;
   w: number;
   h: number;
-  /** 相邻两片的步距。 */
+  /** 相邻两片的步距（角片恒为 0）。 */
   pitch: number;
+  /** 角片相对框角的偏移；边片恒为 0。角片压在角上、比边突出去一点，不存会画偏。 */
+  ox: number;
+  oy: number;
   /** 归一化到 (0,0) 的路径。整圈边框重排时由它平铺拼成**一条** path。 */
   path: string;
 }
@@ -439,30 +455,132 @@ export function translatePath(d: string, dx: number, dy: number): string {
   return out;
 }
 
-/** 从一页的记号里取出花边纹样母题：横向一片、纵向一片，外加铺排步距。
- *  全书 110 个框同一母题，取实例最多的那一页就够。 */
-export function extractOrnamentTiles(spec: PageSpec): OrnamentTile[] {
-  const orn = spec.marks.filter((m) => m.cls === "ornament" && m.d);
+/**
+ * 从一个花边框里取出它的八片母题：四条边 + 四个角。
+ *
+ * **不能按长宽比分横竖**（老做法 `box.w > box.h`）。原因有两条：
+ *   - 四角是**第三枚**字形，尺寸与边片不同（p42 角片 7.7×7.6，边片 10.8×5.0），
+ *     按比例分只会把它塞进横或竖里去，重排时四角就没得画，只能靠边的端片重叠糊。
+ *   - 有的花边母题近方形（p79 的 4.2×4.5、p253 的 9.2×8.8），横竖之比在 1 附近打转，
+ *     分出来的方向纯看抖动。
+ * 改按**位置**：件的中心落在框的哪条边带、哪个角容差里，就是哪个槽。
+ *
+ * 另外，「全书同一母题」这句是错的——实测 110 个框，把八槽的路径平移归一后
+ * **量化到 1pt 仍有 107 套不同**（不是抖动，是真的不同纹样：10.8×5.0、10.7×3.6、
+ * 4.2×4.5、9.2×8.8…）。老代码只存了第一页的两片，重排里 109 个框的花边全画错了。
+ * 所以逐框提取、按内容去重，不做形状聚类。
+ */
+export function extractOrnamentTiles(spec: PageSpec, box: Rect, noteH: number): OrnamentTile[] {
+  const orn = spec.marks.filter(
+    (m) => m.cls === "ornament" && m.d && m.box.x >= box.x - 1 && m.box.y >= box.y - 1 && right(m.box) <= right(box) + 1 && bottom(m.box) <= bottom(box) + 1,
+  );
   if (!orn.length) return [];
+  const edge = Math.max(noteH * 0.8, Math.min(box.w, box.h) * 0.06);
+  const near = noteH * 1.35;
+  const slotOf = (b: Rect): TileSlot | null => {
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    const atL = cx - box.x <= near;
+    const atR = right(box) - cx <= near;
+    const atT = cy - box.y <= near;
+    const atB = bottom(box) - cy <= near;
+    if (atT && atL) return "tl";
+    if (atT && atR) return "tr";
+    if (atB && atL) return "bl";
+    if (atB && atR) return "br";
+    const dT = cy - box.y;
+    const dB = bottom(box) - cy;
+    const dL = cx - box.x;
+    const dR = right(box) - cx;
+    const mn = Math.min(dT, dB, dL, dR);
+    if (mn > edge) return null;
+    return mn === dT ? "top" : mn === dB ? "bottom" : mn === dL ? "left" : "right";
+  };
+
+  const bySlot = new Map<TileSlot, { box: Rect; d: string }[]>();
+  for (const m of orn) {
+    const s = slotOf(m.box);
+    if (!s) continue;
+    const a = bySlot.get(s) ?? [];
+    a.push({ box: m.box, d: m.d! });
+    bySlot.set(s, a);
+  }
+
   const out: OrnamentTile[] = [];
-  for (const orient of ["h", "v"] as const) {
-    const set = orn.filter((m) => (orient === "h" ? m.box.w > m.box.h : m.box.h > m.box.w));
-    if (!set.length) continue;
-    // 步距：同一条边上相邻两片的间距（横边按 x、纵边按 y）
-    const edge = set.filter((m) => (orient === "h" ? m.box.y : m.box.x) === (orient === "h" ? set[0].box.y : set[0].box.x));
-    const pos = (orient === "h" ? edge.map((m) => m.box.x) : edge.map((m) => m.box.y)).sort((a, b) => a - b);
-    const gaps: number[] = [];
-    for (let i = 1; i < pos.length; i++) gaps.push(pos[i] - pos[i - 1]);
-    const t = set[0];
+  for (const slot of TILE_SLOTS) {
+    const a = bySlot.get(slot);
+    if (!a?.length) continue;
+    // 代表片：该槽里出现最多的那条路径（归一到自身原点后比）
+    const tally = new Map<string, { n: number; box: Rect }>();
+    for (const m of a) {
+      const k = translatePath(m.d, -m.box.x, -m.box.y);
+      const e = tally.get(k);
+      if (e) e.n++;
+      else tally.set(k, { n: 1, box: m.box });
+    }
+    const [path, rep] = [...tally].sort((x, y) => y[1].n - x[1].n)[0];
+    const horiz = slot === "top" || slot === "bottom";
+    const corner = slot.length === 2;
+    // 步距：同一条边上相邻两片的间距中位数（角片没有步距）
+    let pitch = 0;
+    if (!corner) {
+      const pos = a.map((m) => (horiz ? m.box.x : m.box.y)).sort((p, q) => p - q);
+      const gaps: number[] = [];
+      for (let i = 1; i < pos.length; i++) gaps.push(pos[i] - pos[i - 1]);
+      pitch = median(gaps) || (horiz ? rep.box.w : rep.box.h);
+    }
+    // 角片相对框角的偏移（角片常比边突出去一点）
+    let ox = 0;
+    let oy = 0;
+    if (corner) {
+      ox = rep.box.x - (slot[1] === "l" ? box.x : right(box) - rep.box.w);
+      oy = rep.box.y - (slot[0] === "t" ? box.y : bottom(box) - rep.box.h);
+    }
     out.push({
-      orient,
-      w: Number(t.box.w.toFixed(3)),
-      h: Number(t.box.h.toFixed(3)),
-      pitch: Number((median(gaps) || (orient === "h" ? t.box.w : t.box.h)).toFixed(3)),
-      path: translatePath(t.d!, -t.box.x, -t.box.y),
+      style: "",
+      slot,
+      w: Number(rep.box.w.toFixed(3)),
+      h: Number(rep.box.h.toFixed(3)),
+      pitch: Number(pitch.toFixed(3)),
+      ox: Number(ox.toFixed(3)),
+      oy: Number(oy.toFixed(3)),
+      path,
     });
   }
+  // 样式 id：八个槽的路径内容。同款框自然并成一条。
+  const id = hashHex(out.map((t) => `${t.slot}:${t.path}`).join("|"));
+  for (const t of out) t.style = id;
   return out;
+}
+
+/** 哪几条边有纹样，如 `"TBLR"`。缺的边重排时不画（原书就那样印的）。 */
+export function edgeMask(tiles: OrnamentTile[]): string {
+  const has = new Set(tiles.map((t) => t.slot));
+  return (has.has("top") ? "T" : "") + (has.has("bottom") ? "B" : "") + (has.has("left") ? "L" : "") + (has.has("right") ? "R" : "");
+}
+
+/**
+ * 注解归给**框上方最近的那一首**。
+ *
+ * 老做法是「y 落在 `[yFrom, yTo)` 里的那首，落不进就取本页最后一首」。注解讲的是它
+ * 跟着的那首歌，正确的口径就是框上方最近的一首；y 区间那套在框恰好压过区间边界、
+ * 或框在页顶（上一首跨页续排）时会归错。
+ */
+function ownerAbove(spec: PageSpec, y: number): string | null {
+  const above = spec.songs.filter((s) => s.yFrom <= y).sort((a, b) => b.yFrom - a.yFrom)[0];
+  return above?.id ?? spec.songs[spec.songs.length - 1]?.id ?? null;
+}
+
+/** 短哈希（djb2+sdbm，与 glyphdict 的 `hash2` 同法）。只用来给同款花边并 id。 */
+function hashHex(s: string): string {
+  let a = 5381;
+  let b = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    a = (a * 33) ^ c;
+    b = (c + (b << 6) + (b << 16) - b) | 0;
+  }
+  return ((a >>> 0).toString(36) + "-" + (b >>> 0).toString(36)).slice(0, 14);
 }
 
 // ────────────────────────────────────────────────────────────── 总装
@@ -491,10 +609,13 @@ export interface BookMetaOptions {
   override?: CharOverride;
   /** 页 → 该页上的曲目（gen-pagemap 的结果），用来把花边框与索引条目归到曲上。 */
   entriesByPage?: Map<number, PageMapEntry[]>;
+  /** 音符字号（`noteHeightOf(profile)`）。花边框分槽的边带宽与角容差都按它算。 */
+  noteH?: number;
 }
 
 export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): BookMeta {
   const ov = opt.override;
+  const noteH = opt.noteH ?? 8.3;
   const meta: BookMeta = {
     keyMeters: [],
     sectionWords: [],
@@ -558,16 +679,24 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
     // 原书这类框是**内外两圈**：外圈粗（1.5pt 见方）、内圈细（0.4pt），中间空 1.7pt 左右。
     const lineBoxes = clusterRuleFrames(spec.frames);
 
-    // 花边框：归给 y 区间包住它的那首（一页两首时靠这个分开）
+    // 花边框：归给**框上方最近的那一首**——注解讲的是它跟着的那首歌。
     for (const box of spec.storyBoxes) {
-      const owner =
-        spec.songs.find((s) => box.box.y >= s.yFrom && box.box.y < s.yTo)?.id ??
-        spec.songs[spec.songs.length - 1]?.id ??
-        null;
+      const owner = ownerAbove(spec, box.box.y);
       const text = regroupBoxLines(box.lines, ov).join("\n");
       if (text.replace(/\s/g, "").length < 4) continue;
       const hs = box.lines.flatMap((l) => l.chars.map((c) => c.h)).filter((h) => h > 2);
-      meta.annotations.push({ songId: owner, framed: true, frame: "tile", size: Number(median(hs).toFixed(2)), text, box: box.box, page: spec.page });
+      const tiles = extractOrnamentTiles(spec, box.box, noteH);
+      if (tiles.length) meta.ornaments.push(...tiles);
+      meta.annotations.push({
+        songId: owner,
+        framed: true,
+        frame: "tile",
+        size: Number(median(hs).toFixed(2)),
+        text,
+        box: box.box,
+        page: spec.page,
+        ...(tiles.length ? { frameStyle: tiles[0].style, frameEdges: edgeMask(tiles) } : {}),
+      });
     }
     // 未装框的经文（p36 / p39 那种，印在谱行下方、没有花边）。
     // 门槛 4 个字：乐谱页的 textLines 里绝大多数是掉出谱行的「一」，那些不能算。
@@ -581,9 +710,9 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
       };
       const rows = spec.textLines.map((l) => ({ t: runText(l, ov), l })).filter((r) => realText(r.t));
       if (rows.length) {
-        const owner = spec.songs[spec.songs.length - 1]?.id ?? null;
         const x = Math.min(...rows.map((r) => r.l.box.x));
         const y = Math.min(...rows.map((r) => r.l.box.y));
+        const owner = ownerAbove(spec, y);
         const textBox = {
           x,
           y,
@@ -605,8 +734,15 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
       }
     }
 
-    if (!meta.ornaments.length && spec.storyBoxes.length) meta.ornaments = extractOrnamentTiles(spec);
   }
+  // 逐框收来的母题按 (style, slot) 去重——同款花边只存一份。
+  const seen = new Set<string>();
+  meta.ornaments = meta.ornaments.filter((t) => {
+    const k = `${t.style}/${t.slot}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 
   // 书级：目录 / 首句索引 / 扉页
   let tocSeq = 0;

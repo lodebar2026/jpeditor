@@ -99,11 +99,18 @@ export function keyMeterItems(style: BookStyle, km: KeyMeterSpec, x: number, bas
 
 // ─────────────────────────────────────────────── 花边框
 
+// 槽位的定义在 bookmeta（提取侧）那边，这里只是照着画，type-only import 编译期就擦掉了。
+import type { TileSlot } from "./bookmeta";
+export type { TileSlot };
+
 export interface OrnamentTileSpec {
-  orient: "h" | "v";
+  slot: TileSlot;
   w: number;
   h: number;
   pitch: number;
+  /** 角片相对框角的偏移；边片恒为 0。 */
+  ox: number;
+  oy: number;
   path: string;
 }
 
@@ -113,30 +120,63 @@ function movePath(d: string, x: number, y: number): string {
 }
 
 /**
- * 花边框：横母题沿上下边平铺、纵母题沿左右边平铺，**拼成一条 path**。
- * 原书一个框 78 片（上下各 28、左右各 11），当成 78 个对象画既慢又难改。
- * 末片按余量把步距均分（原书就是均分的：实测步距 10.674 而母题宽 10.771，略有交叠）。
+ * 花边框：四条边各按自己的母题平铺、四角各摆一片，**拼成一条 path**。
+ * 原书一个框 78 片（上下各 28、左右各 11，外加四角），当成 78 个对象画既慢又难改。
+ *
+ * 三件事跟老版本不同：
+ *   - **四条边各有各的母题**（`slot`），不再是「横一片、竖一片」全书通用。实测 110 个框
+ *     把八槽路径归一后量化到 1pt 仍有 107 套不同，老版本拿第一页那两片画了所有框。
+ *   - **四角是独立的第三枚字形**，先摆角、边再排在两角之间。老版本没有角片，
+ *     靠横竖边的端片各画一次互相重叠糊过去。
+ *   - **`edges` 掩码**：原书有的框就是缺一条边，缺的边不画。
+ *
+ * 边的落点：从左角片内缘排到右角片内缘，`n` 向上凑，首末片贴死两角，`step ≤ pitch`，
+ * 交叠不小于原书（原书步距 10.674 而母题宽 10.771，本来就微叠）。
  */
-export function ornamentFramePath(tiles: OrnamentTileSpec[], box: { x: number; y: number; w: number; h: number }): string {
-  const h = tiles.find((t) => t.orient === "h");
-  const v = tiles.find((t) => t.orient === "v");
+export function ornamentFramePath(tiles: OrnamentTileSpec[], box: { x: number; y: number; w: number; h: number }, edges = "TBLR"): string {
+  const at = (s: TileSlot) => tiles.find((t) => t.slot === s);
   const parts: string[] = [];
-  if (h) {
-    const n = Math.max(1, Math.round((box.w - h.w) / h.pitch));
-    const step = (box.w - h.w) / n;
-    for (let i = 0; i <= n; i++) {
-      parts.push(movePath(h.path, box.x + i * step, box.y));
-      parts.push(movePath(h.path, box.x + i * step, box.y + box.h - h.h));
+  const x1 = box.x + box.w;
+  const y1 = box.y + box.h;
+
+  // 四角先摆：边要排在两角之间
+  const corner = (s: TileSlot, cx: number, cy: number) => {
+    const t = at(s);
+    if (!t) return null;
+    parts.push(movePath(t.path, cx + t.ox, cy + t.oy));
+    return t;
+  };
+  const tl = corner("tl", box.x, box.y);
+  const tr = corner("tr", x1 - (at("tr")?.w ?? 0), box.y);
+  const bl = corner("bl", box.x, y1 - (at("bl")?.h ?? 0));
+  const br = corner("br", x1 - (at("br")?.w ?? 0), y1 - (at("br")?.h ?? 0));
+
+  /** 一条边：在 [from, to] 之间铺 t，铺满且首末贴边。 */
+  const run = (t: OrnamentTileSpec | undefined, from: number, to: number, place: (p: number) => void) => {
+    if (!t) return;
+    const size = t.slot === "top" || t.slot === "bottom" ? t.w : t.h;
+    const span = to - from - size;
+    if (span <= 0) {
+      place(from);
+      return;
     }
-  }
-  if (v) {
-    const n = Math.max(1, Math.round((box.h - v.h) / v.pitch));
-    const step = (box.h - v.h) / n;
-    for (let i = 0; i <= n; i++) {
-      parts.push(movePath(v.path, box.x, box.y + i * step));
-      parts.push(movePath(v.path, box.x + box.w - v.w, box.y + i * step));
-    }
-  }
+    const pitch = t.pitch > 0.01 ? t.pitch : size;
+    const n = Math.max(1, Math.round(span / pitch));
+    const step = span / n;
+    for (let i = 0; i <= n; i++) place(from + i * step);
+  };
+
+  // 边的可用跨度：有角片就从角片内缘起，没有就贴框缘（老口径，行为不变）
+  const lx = box.x + (tl?.w ?? bl?.w ?? 0);
+  const rx = x1 - (tr?.w ?? br?.w ?? 0);
+  const ty = box.y + (tl?.h ?? tr?.h ?? 0);
+  const by = y1 - (bl?.h ?? br?.h ?? 0);
+
+  if (edges.includes("T")) run(at("top"), lx, rx, (p) => parts.push(movePath(at("top")!.path, p, box.y)));
+  if (edges.includes("B")) run(at("bottom"), lx, rx, (p) => parts.push(movePath(at("bottom")!.path, p, y1 - at("bottom")!.h)));
+  if (edges.includes("L")) run(at("left"), ty, by, (p) => parts.push(movePath(at("left")!.path, box.x, p)));
+  if (edges.includes("R")) run(at("right"), ty, by, (p) => parts.push(movePath(at("right")!.path, x1 - at("right")!.w, p)));
+
   return parts.join("");
 }
 
@@ -197,6 +237,8 @@ export interface AnnotationOptions {
   top: number;
   lineGap: number;
   tiles: OrnamentTileSpec[];
+  /** 哪几条边有纹样（`"TBLR"`）。原书有的框就是缺一条边。 */
+  frameEdges?: string;
   measure: Measure;
   size?: number;
 }
@@ -207,12 +249,17 @@ export interface AnnotationOptions {
  */
 export function annotationBlock(style: BookStyle, o: AnnotationOptions): AnnotationBlock {
   const size = o.size ?? style.roles.story.size;
-  const tileH = o.tiles.find((t) => t.orient === "h")?.h ?? 0;
+  // 边厚逐槽取：四条边的母题各不相同，厚薄能差一倍（实测 2.5 ~ 8.8）。
+  // 老代码一律拿「横母题的 h」当四边的厚度，薄边那侧的正文会贴到花边上。
+  const thick = (a: TileSlot, b: TileSlot, dim: "w" | "h") =>
+    Math.max(o.tiles.find((t) => t.slot === a)?.[dim] ?? 0, o.tiles.find((t) => t.slot === b)?.[dim] ?? 0);
+  const tileY = thick("top", "bottom", "h");
+  const tileX = thick("left", "right", "w");
   const isLine = o.frame === "line";
   // 线框的边宽 = 外圈 + 空隙 + 内圈（原书实测约 1.5 + 1.7 + 0.4），再加一点文字余量
   const lineEdge = isLine ? (o.frameOuter ?? 1.5) + (o.frameGap ?? 1.7) + (o.frameInner ?? 0.4) : 0;
-  const padX = isLine ? lineEdge + size * 0.6 : o.framed ? tileH + size * 0.6 : 0;
-  const padY = isLine ? lineEdge + size * 0.5 : o.framed ? tileH + size * 0.5 : 0;
+  const padX = isLine ? lineEdge + size * 0.6 : o.framed ? tileX + size * 0.6 : 0;
+  const padY = isLine ? lineEdge + size * 0.5 : o.framed ? tileY + size * 0.5 : 0;
   const innerW = o.right - o.left - padX * 2;
   // 原文里的换行是**原书那一框的排版结果**，不是内容里的分段（gen-bookmeta 是按视觉行拼的）。
   // 照着它分段再各自折行，每行就只有原书那么长——重排后的框更宽，右边会空掉一大截
@@ -224,7 +271,7 @@ export function annotationBlock(style: BookStyle, o: AnnotationOptions): Annotat
   const height = padY * 2 + size + Math.max(0, lines.length - 1) * o.lineGap;
   if (o.framed && o.tiles.length) {
     const box = { x: o.left, y: o.top, w: o.right - o.left, h: height };
-    const d = ornamentFramePath(o.tiles, box);
+    const d = ornamentFramePath(o.tiles, box, o.frameEdges ?? "TBLR");
     if (d) items.unshift({ t: "path", d, fill: 0x000000 });
   } else if (isLine) {
     // 双细线矩形框：外圈粗、内圈细，中间空一道（022/023 的经文框就是这样）
