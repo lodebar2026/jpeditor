@@ -717,21 +717,11 @@ export function tidyLineTails(part: Part, breaks: PhraseBreaks,
     if (barStart <= cur.from) continue;
     // 推过去之后下一行有多宽：**真实坐标**（残小节的头一个和弦到 next 的行末）
     if (f.on && f.spanOf(barStart, next.to) >= f.capacity) continue;
-    // **别把上一句的收气推到下一行行首**（D5 的口径，与 `headPenalty` 同一把尺子）：
-    // 上一行收在句读标点上、推过去之后下一行以一段与本曲弱起对不上的休止起头时，那口气
-    // 是上一句唱完的，留在行末才对——139《主爱有多少》每句都是 `|5-多 5-深？|0 3主 …|`，
-    // 不看这一条会把四行的 `0` 全推到下一行行首（D5 1 → 7 处）。
-    // J09《祢的话》推过去后行首正是本曲的 4 拍弱起，不在此列。
-    let barEnd = barStart;
-    while (barEnd + 1 < f.book.chords.length && !f.book.isLast[barEnd]) barEnd++;
-    const headDur = f.book.durUpto[barEnd + 1] - f.book.durUpto[barStart];
-    const firstDur = f.book.chords[barStart].duration?.toFloat() ?? 0;
-    // 半拍及以下的休止凑成整拍的照旧可以推（403《救主子民还在世间》那种「为了凑整拍」）
-    const headWhole = firstDur > 0 && firstDur <= 0.5 && Math.abs(headDur - Math.round(headDur)) < 0.01;
-    const pickup = lines[0]?.head.dur ?? 0;
-    // 问的是 `lastWordPunct` 不是 `punct`：现在的行末就是那个休止（没有词、`punct` 恒为 0），
-    // 推走之后行末才落回前面那个字上——要看的正是那个字有没有收句。
-    if (cur.tail.lastWordPunct > 0 && !headWhole && !(pickup > 0 && Math.abs(headDur - pickup) < 0.01)) continue;
+    // **上一句的收气休止也照推**（用户口径 2026-08-28：「139 的休止改在行首」）。
+    // 原来这里照 D5 挡了一道——`|5-多 5-深？|0 3主 1恩 3有|` 的那个 `0` 是上一句唱完的
+    // 那口气，留在行末才对（139《主爱有多少》原书四行行末就都是 `|0`）。用户后来定了新口径：
+    // **残小节全是休止，行首行尾都不许**，那口气宁可挪到下一行行首去。D5 因此只管
+    // **不在小节头**的行首休止（见 line-check 的 D5）。
     if (cur.mi !== null) breaks.measureBreaks.delete(cur.mi);
     if (cur.chord) breaks.midBreaks.delete(cur.chord);
     // 新断点落在那个残小节**之前**（`measureBreaks` 的语义是「在这个下标的小节前起新行」）

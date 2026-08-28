@@ -154,10 +154,14 @@ for (const song of lineDoc.songs) {
     //     凑成整整 2 拍，断在休止之前才齐，挪下去反而剩 1.5 拍。只认「半拍及以下的休止 +
     //     凑成整拍」，169 行首那个整小节休止的首音有 1 拍，不在此列。
     //     与 phrase.ts::headPenalty 的 `headWhole` 同一口径。
+    //     **整小节起头的不算**（用户口径 2026-08-28：「139 的休止改在行首」）：新口径下
+    //     「残小节全是休止」行首行尾都不许，那口气宁可挪到下一行行首去——挪过去之后
+    //     行首就是一个完整小节、头一个音是休止（139 每行的 `|0 3主 1恩 3有|`）。
+    //     这一档于是只管**残小节**起头的那种（行首连半个小节都不到、还从休止开始）。
     const pickup = ls[0]?.head.dur ?? 0;
     const headWhole = l.head.firstDur > 0 && l.head.firstDur <= 0.5
       && Math.abs(l.head.dur - Math.round(l.head.dur)) < 0.01;
-    if (i > 0 && l.head.rest && ls[i - 1].tail.punct > 0 && !headWhole
+    if (i > 0 && l.head.rest && !l.head.full && ls[i - 1].tail.punct > 0 && !headWhole
         && !(pickup > 0 && Math.abs(l.head.dur - pickup) < 0.01))
       hit("D5", song.id, `第 ${i + 1} 行从休止起头（${l.head.dur} 拍，本曲弱起 ${pickup} 拍），上一行收在「${ls[i - 1].tail.text}」`);
     // D10 行末的残小节里只有休止：下一句的弱起被留在了上一行行尾，那儿挂着个没人唱的空拍
