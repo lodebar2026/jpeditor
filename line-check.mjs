@@ -16,6 +16,7 @@
 // 其中旧 L5「末两行悬殊」已并入 D8「段内行长悬殊」。
 import { readFile, writeFile } from "node:fs/promises";
 import { makeMetrics } from "./scripts/textmetrics.mjs";
+import { loadCli } from "./scripts/node-harness.mjs";
 
 const args = process.argv.slice(2);
 const flags = Object.fromEntries(args.filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")));
@@ -25,6 +26,8 @@ const only = flags.one ? String(flags.one).split(",") : null;
 
 const style = JSON.parse(await readFile(flags.style ?? "testdata/500/bookstyle.json", "utf8"));
 const metrics = await makeMetrics(style);
+// 标点的分类与挤压规则（全仓唯一一份，src/common/cjkpunct.ts；走 dist-cli）
+const { HANG_PUNCT, pairTrimIn } = await loadCli();
 
 const lineDoc = JSON.parse(await readFile(`${OUTDIR}/rebuild-lines.json`, "utf8"));
 const drawDoc = JSON.parse(await readFile(`${OUTDIR}/rebuild-drawlist.json`, "utf8"));
@@ -53,7 +56,7 @@ const ENDING_MIN_GAP = 1.0;   // 同一行相邻两条房号横线的净距下�
  */
 const FAMILY = {
   断句: ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9"],
-  版面: ["V1", "V2", "V3", "V4", "V5", "V6", "V7"],
+  版面: ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9"],
 };
 
 /** 一档检查的违例集合。 */
@@ -76,7 +79,12 @@ const kinds = {
   V5: "房号数字里有非法字符（只许数字与半角句点）",
   V6: "同一谱行里多个房号不等高",
   V7: "相邻两个房号的横线连在一起",
+  V8: "跨音符的两个标点挤过头（比排在同一个 <text> 里还紧）",
+  V9: "书级正文（注解/目录/署名…）连排里相邻两字的墨迹相压",
 };
+
+/** 连排落字的角色：一行一个 run，笔位由 textmetrics 的 `run` 复算（V9）。 */
+const RUN_ROLES = new Set(["story", "toc", "tocSub", "credit", "title", "category", "header", "frontTitle"]);
 const bad = Object.fromEntries(Object.keys(kinds).map((k) => [k, []]));
 let substSkipped = 0; // 因字体回退判不了的相邻歌词对（见 V2）
 const hit = (k, id, note) => bad[k].push({ id, note });
@@ -276,7 +284,7 @@ for (const dp of drawDoc.pages) {
   {
     // 含**半角 CJK 标点** `｡､`：这批字书里的字体没有，pdfwrite 换成全角等价字画出来
     // （与 V2 主动跳过的是同一批），照样是行末悬挂的标点。
-    const HANG = /[，。、；：！？…”’）」』】》｡､｣,.;:!?)\]}]/u;
+    const HANG = HANG_PUNCT;
     let mx = -Infinity, mn = Infinity, who = "";
     for (const it of dp.items) {
       if (it.t !== "text") continue;
@@ -356,6 +364,34 @@ for (const dp of drawDoc.pages) {
     }
   }
 
+  // ── V9 书级正文的连排：标点挤压压过头就会压到字上。
+  //    这一路的 DrawText 只给一个起点（bookparts.ts::textItem），逐字笔位在 pdfwrite 里
+  //    由 `compressRun` 算——这里拿 textmetrics 的 `run`（同一个 compressRun）复算一遍，
+  //    再按墨迹判相压。**曾经真出过事**：ASCII 的 `(` `)` 被当成全角压了半格，
+  //    `《有活的确据》(13首)`、`Elizabeth R.Charles(1828−1896)` 全被括号压穿。
+  for (const it of dp.items) {
+    if (it.t !== "text" || !RUN_ROLES.has(it.role)) continue;
+    const chars = [...it.text];
+    if (chars.length < 2) continue;
+    const { xs } = metrics.run(it.role, it.text, it.size);
+    // 不挤压时**本来就压**的不算这里的账：`克J` 那种是 J 的负左边距（字体自身），
+    // 与标点挤压无关（同 V2 跳过字体回退的道理）。
+    const raw = metrics.run(it.role, it.text, it.size, "none").xs;
+    for (let i = 0; i + 1 < chars.length; i++) {
+      const a = chars[i], b = chars[i + 1];
+      if (!a.trim() || !b.trim()) continue;
+      if (!metrics.hasGlyph(it.role, a) || !metrics.hasGlyph(it.role, b)) continue;
+      const aInk = metrics.ink(it.role, a, it.size);
+      const bInk = metrics.ink(it.role, b, it.size);
+      if (!aInk || !bInk) continue;
+      const over = (xs[i] + aInk.right) - (xs[i + 1] + bInk.left);
+      const rawOver = (raw[i] + aInk.right) - (raw[i + 1] + bInk.left);
+      if (rawOver > OVERLAP_TOL) { substSkipped++; continue; }
+      if (over > OVERLAP_TOL)
+        hit("V9", id, `p${dp.pageNo} ${it.role}「${a}${b}」相压 ${over.toFixed(1)}pt（${it.text.slice(0, 12)}…）`);
+    }
+  }
+
   // 同一基线上的歌词逐个比对右缘与下一个的左缘
   const rows = new Map();
   for (const it of dp.items) {
@@ -371,14 +407,29 @@ for (const dp of drawDoc.pages) {
       // 按**墨迹**算，不按 advance——全角标点的墨只占方框的一角，照 advance 算处处是「压字」
       const aCh = [...a.text].pop();
       const bCh = [...b.text][0];
-      // 书里字体没有的字（半角 CJK 标点 `｡､`）由 pdfwrite 换成全角等价字画出来，
-      // 画出来的比排版器量的宽——那是**字体回退**的账，不是排版判据的账，这里判不了，跳过。
-      // 全书 121 处都是这一类，另见 docs/实现/矢量PDF识别.md。
+      // 字体没有的字由 pdfwrite 换成等价字画出来，画出来的比排版器量的宽——那是**字体回退**
+      // 的账，不是排版判据的账，这里判不了，跳过。（排版器不再把标点换成半角字符之后，
+      // 这一类只剩原文自带的生僻字，全书从 180 对降到个位数。）
       if (!metrics.hasGlyph("lyric", aCh) || !metrics.hasGlyph("lyric", bCh)) { substSkipped++; continue; }
       const aEnd = Math.max(...a.xs) + (metrics.ink("lyric", aCh, a.size)?.right ?? 0);
       const bStart = Math.min(...b.xs) + (metrics.ink("lyric", bCh, b.size)?.left ?? 0);
       if (aEnd - bStart > OVERLAP_TOL)
         hit("V2", id, `p${dp.pageNo}「${a.text}」压住「${b.text}」${(aEnd - bStart).toFixed(1)}pt`);
+      // ── V8 跨音符的两个标点**挤过头**。歌词逐字挂音符，`召：` 与 `“将` 分属两个 `<text>`，
+      //    OpenType 的上下文特性管不到，挤压由 layout.ts::calcXPos 补（那里补的是一道下限）。
+      //    这里就守那道下限：墨迹间距不许比「这两个字排在同一个 `<text>` 里」还紧。
+      //    只在这一对里真有可压标点时才判——两个汉字之间本来就没有该压的空白。
+      if (pairTrimIn("halfwidth", aCh, bCh) > 0) {
+        const trim = metrics.punctTrim("lyric", aCh, bCh, a.size, "halfwidth");
+        const sameText =
+          metrics.advance("lyric", aCh, a.size) -
+          (metrics.ink("lyric", aCh, a.size)?.right ?? 0) +
+          (metrics.ink("lyric", bCh, b.size)?.left ?? 0) -
+          trim;
+        const gap = bStart - aEnd;
+        if (gap < sameText - OVERLAP_TOL)
+          hit("V8", id, `p${dp.pageNo}「${a.text}」「${b.text}」间距 ${gap.toFixed(1)} < 同 text ${sameText.toFixed(1)}pt`);
+      }
     }
   }
 }

@@ -871,6 +871,8 @@ export function drawLrc(
     t.color = 0xff000000;
     t.x = x + lrc.xOffset;
     t.y = -lrc.y;
+    // 标点挤压（CLREQ）：`widthInfo` 量的就是挤压后的宽度，绘制拿同一串笔位。
+    if ([...lrc.text].length > 1) t.charXs = lrc.font.run(lrc.text).xs;
     container.add(t);
 
     if (lrc.prefix) {

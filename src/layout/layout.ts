@@ -5,6 +5,7 @@
 import { Fraction } from "../common/fraction";
 import { Point, Rect, Matrix33, newMatrix, Colors } from "../common/geom";
 import { pathTightBounds } from "../common/measure";
+import { LYRIC_SPLIT_PUNCT, type CompressMode } from "../common/cjkpunct";
 import { Font } from "./font";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 import { chordTextSegs, layoutHarmonySegs } from "./harmony";
@@ -243,6 +244,10 @@ export class TextFrame extends PageItem {
    *  这一行就凭空高出四个字号——行距全乱。SmuflText 自己重写了 bound，
    *  但 layout/harmony.ts 里的音乐段是普通 TextFrame，靠这个开关。 */
   inkBound = false;
+  /** 逐字笔位（相对本 item 的 x，按码点）。null = 连排，由字体的 advance 说了算。
+   *  标点挤压后的歌词用它——测量与绘制拿同一串坐标，`<text>` 的 `x` 直接吃它，
+   *  绝不在渲染端再叠 font-feature-settings（会挤两遍）。见 common/measure.ts。 */
+  charXs: number[] | null = null;
 
   measureText(beg = 0, len = -1): number {
     const str = len < 0 ? this.text.substring(beg) : this.text.substring(beg, beg + len);
@@ -352,6 +357,8 @@ export class JpNumber extends TextFrame {
 
 export class Lyric extends TextFrame {
   _widths = [0, 0, 0];
+  /** 标点挤压的档（`LayoutOptions.punctCompress`）。 */
+  compress: CompressMode = "halfwidth";
   constructor() {
     super();
     this.selectable = true;
@@ -370,44 +377,46 @@ export class Lyric extends TextFrame {
   get tailBlank(): number {
     const t = this.text;
     if (!t) return 0;
-    const last = [...t].pop() as string;
-    const upto = this.measureText(0, t.length - last.length);
+    const chars = [...t];
+    const last = chars[chars.length - 1];
+    // 末字的落笔点按**挤压后**的笔位算（charXs 是 update 时量的，与绘制同一串坐标）
+    const upto = this.charXs ? this.charXs[chars.length - 1] : this.measureText(0, t.length - last.length);
     return Math.max(0, this.width - (upto + LayoutOptions.charBound(this.font, last).right));
   }
-  /** 首字左侧的留白（墨迹离落笔点多远）。`“` 这种标点的墨只占方框右半边。 */
+  /** 首字左侧的留白（墨迹离本条歌词的落笔点多远）。`“` 这种标点的墨只占方框右半边。
+   *  **要从挤压后的笔位起算**：半角档下前引号的笔位已经左挪了半格（墨正好落在格内左半），
+   *  照字形的 inkLeft 算就把这半格又算了一遍，避让时凭空多出半格空档，
+   *  上一个字的尾标点就被压住了（076「说：」压「“忠」、159 两处、376「召：」压「“将」）。 */
   get headBlank(): number {
     const t = this.text;
     if (!t) return 0;
-    return Math.max(0, LayoutOptions.charBound(this.font, [...t][0]).left);
+    const pen = this.charXs?.[0] ?? 0;
+    return Math.max(0, pen + LayoutOptions.charBound(this.font, [...t][0]).left);
   }
   override update(): void {
-    let sl = "", sc = "", sr = "";
-    if (this.text.length === 1) {
-      sc = this.text;
-    } else {
-      // **与 Kotlin 原文的一处刻意背离**：补了半角冒号 `:`。这批语料的歌词用半角冒号
-      // 引出引语（376《将心给我》的 `呼召:“将心给我。”`），漏收它就当成正文的一部分，
-      // 下一个字的前引号照旧悬挂过来，冒号与引号就叠在一起了。
-      const punct = "1234567890.,;:'\"!?。：，；！？“”｡､";
+    // 切成「左标点 / 主体 / 右标点」三段。表在 common/cjkpunct.ts（含数字与半角冒号的
+    // 缘由写在那里）。**按码点切**，索引就是 `run()` 里 xs 的索引。
+    const chars = [...this.text];
+    let nl = 0, nc = chars.length;
+    if (chars.length > 1) {
+      const punct = LYRIC_SPLIT_PUNCT;
       let pos = 0;
-      while (pos < this.text.length) {
-        const c = this.text[pos];
-        if (punct.includes(c)) sl += c;
-        else break;
-        pos++;
-      }
-      while (pos < this.text.length) {
-        const c = this.text[pos];
-        if (!punct.includes(c)) sc += c;
-        else break;
-        pos++;
-      }
-      sr = this.text.substring(pos);
+      while (pos < chars.length && punct.includes(chars[pos])) pos++;
+      nl = pos;
+      while (pos < chars.length && !punct.includes(chars[pos])) pos++;
+      nc = pos - nl;
     }
-    this._widths[0] = this.measureText(0, sl.length);
-    this._widths[1] = this.measureText(sl.length, sc.length);
-    this._widths[2] = this.measureText(sl.length + sc.length, sr.length);
-    this.width = this._widths[0] + this._widths[1] + this._widths[2];
+    // 宽度取**挤压后**的笔位（`召：` 的冒号右半格、`“凡` 的引号左半格在这里就压掉了）。
+    // 三段宽按落笔点划分，段与段之间的挤压自然落在它该在的那一段里。
+    const { xs, width } = this.compress !== "none"
+      ? this.font.run(this.text, this.compress)
+      : { xs: chars.map((_, i) => this.font.measureText(chars.slice(0, i).join(""))), width: this.measureText() };
+    this.charXs = this.compress !== "none" && xs.length > 1 ? xs : null;
+    const at = (i: number): number => (i <= 0 ? 0 : i >= xs.length ? width : xs[i]);
+    this._widths[0] = at(nl);
+    this._widths[1] = at(nl + nc) - at(nl);
+    this._widths[2] = width - at(nl + nc);
+    this.width = width;
     this.height = this.font.size;
   }
 }
@@ -895,7 +904,8 @@ export class NoteEntry extends Entry {
       lit.font = options.lrcFont;
       lit.y = 1.0 * options.numberFont.size + (stack ? row * options.lyricStack : 0);
       row++;
-      lit.text = options.halfWidthPunct ? CJKUtil.toHalfWidth(text) : text;
+      lit.compress = options.punctCompress;
+      lit.text = text;
       lit.color = options.color;
       lit.update();
       lit.x = it.left - lit.left;
@@ -1474,8 +1484,15 @@ export class Line {
       //（`音:` 的冒号）右边也空着一截，两边的留白加上字距就是能挤进去的量。
       // 照整个 `leadWidth` 悬挂会把引号压在那个冒号上（376《将心给我》的 `呼召:“将心给我。”`），
       // 一律不悬挂又把音符间距白白拉开（190 首）——按墨迹算两头都占着。
+      // **跨音符的那一对标点也得挤**：`召：` 的冒号与 `“将` 的引号分属两个 `<text>`，
+      // OpenType 的上下文特性管不到它们，挤压由 `Lyric.update` 各自压完、这里只管避让。
+      // 避让补的是一道**下限**——挤完的墨迹间距不许比「这两个字排在同一个 `<text>` 里」还紧。
+      // 同 text 的墨间距 = prevBlank + headBlank（两头的留白都已经是**挤压后**的口径），
+      // 跨音符的 = room − hang = prevBlank + lyricGap + headBlank − hang，
+      // 两边一减，下限就是 **`hang ≤ lyricGap`**：悬挂只许吃掉字与字之间那道呼吸，
+      // 不许吃到墨迹之间的距离里去。
       const room = prevBlank + this.lyricGap + Math.min(...lrcs.map((l) => l.headBlank));
-      const hang = Math.max(0, Math.min(Math.min(...lrcs.map((l) => l.leadWidth)), room));
+      const hang = Math.max(0, Math.min(Math.min(...lrcs.map((l) => l.leadWidth)), room, this.lyricGap));
       const leftMost = Math.min(...lrcs.map((l) => l.x)) + hang;
       const rightMost = Math.max(...lrcs.map((l) => l.x + l.width));
       const xx = Math.max(curX - leftMost, e.group.x + offset);
@@ -1796,15 +1813,21 @@ export class Line {
   private addSlurTie(a: S.Note, b: S.Note, ypos: number): void {
     const ena = this.chordEntry.get(a.chord);
     const enb = this.chordEntry.get(b.chord);
+    // 两端都得在**本行**里才画得出来。调用点查的是 `chord`，这里查的是 `note.chord`——
+    // 两者在多声部/并音的谱里可以不是同一个和弦，查不到就只能不画（不是每一行都有两端）。
+    if (!ena || !enb) {
+      console.error("slur/tie 有一端不在本行，跳过");
+      return;
+    }
     const grp = new Tie();
-    let pl = new Point(ena!.cx, ypos);
-    let pr = new Point(enb!.cx, ypos);
-    const dx = ena!.number!.font.size / 14;
+    let pl = new Point(ena.cx, ypos);
+    let pr = new Point(enb.cx, ypos);
+    const dx = ena.number!.font.size / 14;
     if (a.tiePrev !== null || a.tupletEnd) pl = pl.offset(dx, 0);
     if (b.tieNext !== null) pr = pr.offset(-dx, 0);
-    pr = pr.offset(enb!.group.x - ena!.group.x, 0);
+    pr = pr.offset(enb.group.x - ena.group.x, 0);
     grp.init(pl, pr, this.slurStyle);
-    grp.x += ena!.group.x;
+    grp.x += ena.group.x;
     grp.normalizeX();
     grp.normalizeY();
     this.group.add(grp);
@@ -1960,8 +1983,13 @@ export class Line {
         console.error("no end entry for tuplet");
         continue;
       }
-      const leftItem = start.entryItem()! as JpNumber;
-      const rightItem = end.entryItem()! as JpNumber;
+      const leftItem = start.entryItem() as JpNumber | null;
+      const rightItem = end.entryItem() as JpNumber | null;
+      // 三连音的两端得都有可画的音符项（休止/拖腔起头的那一端没有 JpNumber）
+      if (!leftItem || !rightItem) {
+        console.error("三连音有一端没有音符项，跳过");
+        continue;
+      }
       const left = leftItem.pos(this.group).x + leftItem.cx;
       let right = rightItem.pos(this.group).x + rightItem.cx;
       if (end.beginOfSlurTied) right -= opt.numberSize / 14;
@@ -2382,17 +2410,6 @@ export class Line {
 
 // ---------------- options / CJK util ----------------
 
-export class CJKUtil {
-  static readonly halfPunctMap: Record<string, string> = {
-    "。": "｡", "，": ",", "、": "､", "？": "?", "！": "!", "：": ":", "；": ";",
-  };
-  static toHalfWidth(s: string): string {
-    let res = "";
-    for (const c of s) res += CJKUtil.halfPunctMap[c] ?? c;
-    return res;
-  }
-}
-
 export class LayoutOptions {
   static charBound(font: Font, ch: string): Rect {
     return font.charBound(ch);
@@ -2442,7 +2459,18 @@ export class LayoutOptions {
    *  只在「无反复、纯多段」（PlayData.isSimpple）的曲子上生效——有反复房号的谱
    *  每一遍的谱面本来就不同，叠不到一起。 */
   lyricStack = 0;
-  halfWidthPunct = true;
+  /** 歌词标点挤压的档（见 common/cjkpunct.ts::CompressMode）。
+   *
+   *  默认 `halfwidth`：**简谱歌词的标点不占音符格**，原书印的就是压缩形。
+   *  换成 CLREQ 的上下文挤压（孤立标点占满一格）会把音符间距整排撑开——
+   *  实测全书 655 → 695 页，定点断言里 459/363/355/446 的规整分行全都排不出来。
+   *  中文**正文**（注解、目录、索引、前言）不受此限，那条路走 `clreq`，见 bookparts.ts。
+   *
+   *  **原来这里是 `halfWidthPunct = true`**：把 `。，、？！：；` 换成 U+FF61 系半角**字符**。
+   *  字符替换的账很难算——印刷字库多半没有那些码位（PDF 端要换回全角、line-check 的 V2
+   *  因此跳过 121 处），半角 `,` 又是西文逗号、不在中文逗号该在的位置。挤压是**排版**的事，
+   *  不该改内容里的字，所以改成压 advance（字体有 `halt` 就交给字体）。 */
+  punctCompress: CompressMode = "halfwidth";
   ignoreVerseNumber = true;
   slurTieThickness = 6; // musicpp render.cpp:1076 (`lw0 = 6/cos`)，按 fontSize≈28 调
   /** 弧高与弧描边宽。同样是按 fontSize≈28 调出来的绝对值，换字号排版要跟着缩。 */

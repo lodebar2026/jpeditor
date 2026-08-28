@@ -7,10 +7,12 @@
 // 只能分批，而每批各嵌一份字体子集（实测 666 页 43MB）。pdf-lib 一次嵌一份，12MB 出头。
 import { writeFile } from "node:fs/promises";
 import { resolveBookFonts } from "./fontres.mjs";
+import { BOOK_MODE, punctRules } from "./punctshape.mjs";
 
-/** 半角 CJK 标点 → 全角等价。排版器为对位把标点压成半角（LayoutOptions.halfWidthPunct），
- *  但宋体一类的字体没有 U+FF61 这些半角形，画出来是空白。找不到字形时退到等价的全角字符：
- *  宽度会宽一点，但字在，内容不丢。 */
+/** 半角 CJK 标点 → 全角等价。**排版器已经不产半角标点了**（挤压改成按 CLREQ 压 advance，
+ *  见 src/common/cjkpunct.ts），这张表只兜底原文里本来就带着半角形的那些字：
+ *  宋体一类的印刷字库没有 U+FF61 这些码位，画出来是空白。
+ *  找不到字形时退到等价的全角字符——宽度会宽一点，但字在，内容不丢。 */
 const PUNCT_EQUIV = {
   "\uff61": "。", "\uff62": "「", "\uff63": "」", "\uff64": "、", "\uff65": "・",
   "\uff0e": "．", "\uff0c": "，",
@@ -119,6 +121,7 @@ function hasGlyph(metric, ch) {
 export async function writePdf(book, opt) {
   const { PDFDocument, rgb, setCharacterSpacing, setTextRenderingMode, TextRenderingMode } = await import("pdf-lib");
   const fontkit = (await import("@pdf-lib/fontkit")).default;
+  const { compressRun } = await punctRules();
   const style = book.style;
 
   const { fonts, missing: missingFonts } = await resolveBookFonts(style);
@@ -280,21 +283,30 @@ export async function writePdf(book, opt) {
       });
     } else {
       // 连排文字：整段自然排。自然宽与原件差得多（>8%）时按逐字摆，绝不横向缩放。
-      const natural = advOf(mainMetric, it.text, it.size);
+      //
+      // **自然宽是挤压后的宽**（半身式，见 src/common/cjkpunct.ts）：书级正文（注解、目录、
+      // 索引、前言）走的就是这一支，与 scripts/textmetrics.mjs::advance 同一个 `compressRun`
+      // ——折行是拿那个数算的，两边不一致就会处处差半格。
+      const metricOf = (c) => metrics.get(fontFor(it.role, c) ?? mainId);
+      // 挤压量受**实际留白**封顶（只压空白不压墨）：`》《` 那类墨迹伸出半角格的字，
+      // 照规则压满半格会压穿（注解框里全书 104 处，line-check 的 V9 守着）。
+      const slack = (c) => {
+        const b = inkOf(metricOf(c), c, it.size);
+        return b ? { left: b.left, right: advOf(metricOf(c), c, it.size) - (b.left + b.width) } : { left: 0, right: 0 };
+      };
+      const cr = compressRun(chars, (c) => advOf(metricOf(c), c, it.size), it.size, BOOK_MODE, slack);
+      const natural = cr.width;
       const boxW = it.box?.w ?? natural;
-      const lead = inkOf(mainMetric, chars[0] ?? " ", it.size)?.left ?? 0;
+      // 落笔点要让**首字的墨**对到给定的 x 上。半身档下起始类的笔位自己还左挪了半格
+      //（`cr.xs[0]` < 0），那半格也得算进来，不然整段左偏。
+      const lead = (inkOf(mainMetric, chars[0] ?? " ", it.size)?.left ?? 0) + (cr.xs[0] ?? 0);
       let x = (it.xs[0] ?? 0) - lead;
       if (it.align === "right" || it.align === "outer") x = (it.box ? it.box.x + boxW : x) - natural;
       else if (it.align === "center") x = (it.box ? it.box.x + boxW / 2 : x) - natural / 2;
       if (boxW > 0 && Math.abs(natural - boxW) / boxW > 0.08) {
         pens = chars.map((c, i) => (it.xs[i] ?? 0) - (inkOf(metrics.get(fontFor(it.role, c) ?? mainId), c, it.size)?.left ?? 0));
       } else {
-        pens = [];
-        let cx = x;
-        for (const c of chars) {
-          pens.push(cx);
-          cx += advOf(metrics.get(fontFor(it.role, c) ?? mainId), c, it.size);
-        }
+        pens = cr.xs.map((dx) => x + dx);
       }
     }
 

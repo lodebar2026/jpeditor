@@ -236,6 +236,10 @@ function text(str: string, x: number, y: number, font: Font, color: number): Tex
   t.color = color;
   t.x = x;
   t.y = y;
+  // 标点挤压（CLREQ，见 common/cjkpunct.ts）：一个音节 = 一个 `<text>`，
+  // 字 + 尾随标点、或前引号 + 字都在同一串里，挤压在这里就压掉了。
+  // **横向步进不看歌词宽度**（pu/layout.ts 只按拍值走），所以这条路只挤字符、不做避让。
+  if ([...str].length > 1) t.charXs = font.run(str).xs;
   return t;
 }
 
@@ -1238,7 +1242,7 @@ export class PuPainter {
       const bodyWidth = font.measureText(syl.text);
       g.add(text(str, x - bodyWidth / 2, voice.lyricY[verse]!, font, LYRIC_COLOR));
       if (rightEdge) {
-        rightEdge[verse] = Math.max(rightEdge[verse] ?? 0, x - bodyWidth / 2 + font.measureText(str));
+        rightEdge[verse] = Math.max(rightEdge[verse] ?? 0, x - bodyWidth / 2 + font.run(str).width);
       }
       root.add(g);
       this.syllableItems.set(syl, { page: pageIndex, item: g });

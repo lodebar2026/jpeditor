@@ -3,7 +3,8 @@
 // agrees with rendering.
 
 import { Rect } from "../common/geom";
-import { measureGlyphText, measureFontMetrics } from "../common/measure";
+import { measureGlyphRun, measureGlyphText, measureFontMetrics, punctTrim } from "../common/measure";
+import type { CompressMode } from "../common/cjkpunct";
 
 export class Font {
   constructor(
@@ -33,6 +34,21 @@ export class Font {
   measureText(str: string): number {
     if (str.length === 0) return 0;
     return measureGlyphText(str, this.family, this.size, this.weight).width;
+  }
+
+  /**
+   * 一串字**标点挤压后**的逐字笔位与总宽（CLREQ，见 common/cjkpunct.ts）。
+   * 字体带 `chws` 就用字体的账，不带按规则自算——两条路同一个口径。
+   * 渲染端把 `xs` 原样给 `<text>` 的 `x`，绝不再叠一层 font-feature-settings（会挤两遍）。
+   */
+  run(str: string, mode: CompressMode = "clreq"): { xs: number[]; width: number } {
+    if (str.length === 0) return { xs: [], width: 0 };
+    return measureGlyphRun(str, this.family, this.size, this.weight, mode);
+  }
+
+  /** 相邻两个字之间该压掉多少像素（跨 `<text>` 的那一对标点拿它当间距下限）。 */
+  punctTrim(prev: string, next: string, mode: CompressMode = "clreq"): number {
+    return punctTrim(prev, next, this.family, this.size, this.weight, mode);
   }
 
   /** tight glyph bbox (Skija font.getPath(gid).bounds). */

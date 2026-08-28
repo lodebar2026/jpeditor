@@ -36,7 +36,7 @@ npm run build && node omr-export-check.mjs             # 同上，但底本取�
 npm run build && node abc-shot.mjs <abc> /tmp/abc.png  # 拖入 .abc 端到端渲染核对
 npm run build && node omr-pu-check.mjs                 # 识别→文本谱原文→回解析 逐项对拍
 npm run build:cli && node pdf-diff.mjs && node pdf-mark.mjs   # 矢量 PDF 识别 ↔ GT 对比 + 差异标记版 PDF
-node rebuild.mjs [--one=020,373] && node line-check.mjs        # 成书重排 + 判据断言（断句 D1~D9 / 版面 V1~V7 + 全书基线）
+node rebuild.mjs [--one=020,373] && node line-check.mjs        # 成书重排 + 判据断言（断句 D1~D9 / 版面 V1~V9 + 全书基线）
 node gen-storyocr.mjs && node gen-glyphsheet.mjs               # 整行 OCR 补字 + 人工确认表
 node gen-bookmeta.mjs [--check]                                # 书级内容（调号拍号/目录/索引/注解…）入 校对.db
 node gen-glyphmerge.mjs        # 字形建库第三步：同一字形的分身归并、标注取齐
@@ -138,7 +138,7 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   「一行的头尾长什么样」那几条（行首不留半小节休止、弱起要齐、行首不挂上一句的长音收尾、
   末两行要均匀、段落词不出版心、歌词标点不相压）由 **`line-check.mjs`** 守着：
   `rebuild.mjs` 顺带写出逐行事实 `pdf-out/rebuild-lines.json`，脚本读它 + drawlist 判**两族**
-  ——**D1~D9 断句**（行首 → 行末 → 行长 → 整首口径）与 **V1~V7 版面**（绘制与几何，断句改动
+  ——**D1~D9 断句**（行首 → 行末 → 行长 → 整首口径）与 **V1~V9 版面**（绘制与几何，断句改动
   不该动到它们）；全书基线在 `testdata/500/line-check-baseline.json`（任一档变差即失败），
   另有十几首定点断言。**「一行放不放得下」一律按真实坐标判**（`applybreaks.ts::FitMetric`
   ← `browser.ts::measureChordSpans` ← `layout.ts::Line.naturalSpans`），不按格数。
@@ -179,6 +179,19 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   长弧底下**和弦与段落词整排让位**也在那篇里；三条简谱路（编辑器 / 成书重排 / 文本谱）
   共用 `SlurTieBase` 一套参数，`src/mixed/` 的副本不在此列。**改这几个常量会牵动全书断句**
   （弧高→行高→每页行数→重排），动完必跑 `rebuild.mjs && line-check.mjs`。
+- **[歌词标点挤压](docs/实现/歌词标点挤压.md)**（`src/common/cjkpunct.ts` + `common/measure.ts` +
+  `scripts/punctshape.mjs`）——标点挤压的**两派**都在这里，**全仓唯一一份规则**：
+  **全书一律半身式**（开明式，点号占半个字身）——谱面歌词由 `LayoutOptions.punctCompress` 定、
+  书级正文由 `punctshape.mjs::BOOK_MODE` 定；歌词逐字挂音符、标点不占音符格，原书就是半身，
+  改走全身式会把全书从 673 撑到 695 页。另一派 `clreq`（全身式 + 上下文挤压，CLREQ 3.1.6：
+  只在相邻标点与行首行末压掉多余的半格）也实现了，换档即可。OpenType 的 `chws`/`halt` **有就用**
+  （本书那套方正字体一个都没有，实测后走等效实现）。挤压出**逐字笔位**（`TextFrame.charXs` →
+  `<text>` 的 `x` 列表 → DrawList 的 `xs`），渲染端**绝不再叠 font-feature-settings**。
+  压缩量一律受**实际留白**封顶（只压空白不压墨；表里也只收全角形——ASCII 的 `(` `)` 没有那半格）；
+  半身**不是把 advance 砍一半就完了**——字形要在半角格里居中（否则 `（第一调）` 括号两侧各空 0.37em），
+  相邻标点之间再收拢到 `PUNCT_PAIR_GAP`（否则 `：「`、`！」` 中间摞着两截边距）。
+  跨音符的那一对标点（`召：` + `“将` 分属两个 `<text>`，特性管不到）由 `calcXPos` 补一道下限
+  `hang ≤ lyricGap`；`line-check` 的 **V8**（谱面）与 **V9**（书级正文连排）守着。`halfWidthPunct` 那套**换字符**的老做法已退休。
 - **[乐句排版](docs/实现/乐句排版.md)**（`src/score/phrase.ts`）——工具栏「按乐句重排」的 DP 与代价项
   （行长目标、整句独占一行、断点凭据、段落/副歌分页）。回归 `node phrase-lines.mjs [曲名子串]`。
 - **[ABC 记谱导入](docs/实现/ABC-导入.md)**（`src/abc/`）——abc2xml.py 的全量忠实移植（含 pyparsing /

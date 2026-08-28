@@ -10,6 +10,7 @@
 import type { BookStyle, StyleRole } from "./bookstyle";
 import type { DrawItem, DrawPage, DrawText } from "./drawlist";
 import { pageMargins } from "./bookstyle";
+import { NO_LINE_START } from "../common/cjkpunct";
 
 export type Measure = (role: StyleRole, text: string, size: number) => number;
 
@@ -141,9 +142,11 @@ export function ornamentFramePath(tiles: OrnamentTileSpec[], box: { x: number; y
 
 // ─────────────────────────────────────────────── 折行
 
-/** 中日文折行：按字宽贪心，行首不许出现收尾标点（禁则）。 */
+/** 中日文折行：按字宽贪心，行首不许出现收尾标点（禁则）。
+ *  **宽度含标点挤压**（半身式，见 common/cjkpunct.ts）：注入的 `measure` 量的就是挤压后的宽度
+ *  （Node 侧是 scripts/textmetrics.mjs，与 pdfwrite 的落笔同一个 `compressRun`）。
+ *  半身式下每个字压多少与前后无关，所以逐字累加就是整行的宽度。 */
 export function wrapText(text: string, role: StyleRole, size: number, width: number, measure: Measure): string[] {
-  const NO_LINE_START = /[，。、；：！？」』）〉》…·%,.;:!?)\]}]/;
   const out: string[] = [];
   let line = "";
   let w = 0;

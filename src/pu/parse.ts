@@ -34,6 +34,7 @@ import {
   type VoiceGroup,
 } from "./ast";
 import { dialectSpec, sniffDialect, type Dialect, type DialectSpec } from "./dialect";
+import { PU_LYRIC_PUNCTUATION, PU_LYRIC_QUOTES } from "../common/cjkpunct";
 
 /** 音符后可跟的记号名（`&xx`）。不在表里的会报 unknown-command 但仍保留。 */
 const NOTE_COMMANDS = new Set([
@@ -638,9 +639,9 @@ export function parseMusicLine(
 
 // ---------------- 歌词 ----------------
 
-/** 能自动附到前一个字后面、不占音符位的标点。 */
-const LYRIC_PUNCTUATION = "，。！？、；：,.!?;:…—～~《》()（）";
-const LYRIC_QUOTES = "“”‘’\"";
+/** 能自动附到前一个字后面、不占音符位的标点（表在 common/cjkpunct.ts）。 */
+const LYRIC_PUNCTUATION = PU_LYRIC_PUNCTUATION;
+const LYRIC_QUOTES = PU_LYRIC_QUOTES;
 
 function isCjk(ch: string): boolean {
   const c = ch.codePointAt(0) ?? 0;
