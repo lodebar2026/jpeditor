@@ -76,7 +76,14 @@ for (const p of pages) {
     }
     lines.push({ page: p.page, role, chars: cs.map((c) => ({ key: c.key, x: c.x, y: c.y, w: c.w, h: c.h })) });
   };
-  for (const b of p.storyBoxes) for (const l of b.lines) take(l.chars, "story");
+  // 框内按**视觉行**送（`groupBoxRows` 与 bookmeta 同一口径）：矮元素（引号、句读点）
+  // 在 `groupLines` 那一层会掉出正文行自成一组，单送没上下文，行识别读不出。
+  for (const b of p.storyBoxes) for (const row of cli.groupBoxRows(b.lines)) take(row, "story");
+  // 乐谱页上的注解：022 那种**双细线框**里的经文，以及无框的经文。花边框那一路
+  // 走 storyBoxes，这一路以前整个漏在外面——「(代上 16:23)」的数字全书都没补过。
+  for (const grp of cli.scoreAnnotationGroups(p, cli.clusterRuleFrames(p.frames)))
+    for (const row of cli.groupBoxRows(grp.lines)) take(row, "story");
+  // 目录/索引**不能**按 y 聚行——索引是多栏排，同一 y 的两栏会被并成一行。
   if (p.kind === "toc" || p.kind === "index" || p.kind === "front-matter")
     for (const l of p.textLines) take(l.chars, p.kind === "front-matter" ? "story" : "toc");
 }
@@ -152,7 +159,84 @@ close();
 // 改成：已知元素当**锚点**在 OCR 串里定位，锚点之间的残余文本分给那一段里的未知元素。
 // 一段里只有一个未知元素 → 整段给它；有多个 → 只有「都是单字且字数正好对上」才逐字给，
 // 否则留给人工（宁可不补，也不能补错）。
-const OKCH = /[一-鿿　-〿！-～0-9A-Za-z·♭#「」《》]/;
+// OCR 串里留得下的字符。**半角标点也要留**：经文出处「(代上 16:23)」印的是半角
+// 括号与冒号，剔掉的话这一行的括号锚点全落空，中间的「代上」「16」「23」三个未知
+// 元素并成一段，字数对不上就整段弃掉——全书的经文出处就是这么丢了数字的。
+const OKCH = /[一-鿿　-〿！-～0-9A-Za-z·♭#「」《》()[\]:;,.\-]/;
+/** 字身宽：ASCII（数字、拉丁字母、半角标点）半身，汉字与全角标点一身。 */
+const charEm = (ch) => (/[\x20-\x7e]/.test(ch) ? 0.5 : 1);
+const emOf = (t) => [...t].reduce((a, c) => a + charEm(c), 0);
+/**
+ * 一段 OCR 文本按宽度校准：剥掉两头多出来的标点，取与墨迹宽度最吻合的那个写法。
+ * 宽度是硬凭据——OCR 多读一个字符，宽度立刻对不上（「(代上」要 2.5 个字身，
+ * 那个对象只有 19.0pt ≈ 2 个）。差得离谱的直接判 null，宁可不补。
+ */
+function trimToWidth(text, w, u) {
+  const cands = new Set([text, text.replace(/^[^\p{L}\p{N}]+/u, ""), text.replace(/[^\p{L}\p{N}]+$/u, "")]);
+  cands.add(text.replace(/^[^\p{L}\p{N}]+/u, "").replace(/[^\p{L}\p{N}]+$/u, ""));
+  let best = null;
+  for (const t of cands) {
+    if (!t) continue;
+    const err = Math.abs(w - u * emOf(t));
+    if (!best || err < best.err) best = { t, err };
+  }
+  if (!best) return null;
+  return best.err > Math.max(u * emOf(best.t) * 0.3, u * 0.35) ? null : best.t;
+}
+/**
+ * 一段 OCR 文本按**宽度**分给该段里的几个未知元素。
+ *
+ * 花边框正文里一段连排的字常常合成一个 path 对象，所以「元素」与「字」不是一一对应；
+ * 但每个元素的宽度是精确的，字身总数也算得出来，两者一除就是这一行的字身宽 u。
+ * DP 找一种切法使 Σ|实宽 − u·段字身| 最小，再逐段验收：偏差超过 35%（或 0.3 个字身）
+ * 的一律不要——宁可不补，也不能补错。
+ */
+function splitByWidth(elems, items, text, uLine) {
+  const k = items.length;
+  const ws = items.map((j) => elems[j].w);
+  const total = ws.reduce((a, b) => a + b, 0);
+  // 段的两头先按**整行**的字身宽校准：锚点在 OCR 串里重复出现时段界会挪一格
+  //（p54 那行的行首「“」被 OCR 读成「(」，「(」锚点匹配到前一个，段就多带了一个括号）。
+  // 段内自估字身宽是自洽的——多带一个字符，u 就跟着缩，验收照样过；
+  // 只有拿整行的 u 来量才露馅。
+  const t0 = uLine ? trimToWidth(text, total, uLine) : text;
+  if (!t0) return null;
+  const cs = [...t0];
+  if (k < 2 || cs.length < k || cs.length > 24) return null;
+  const em = [0];
+  for (const c of cs) em.push(em[em.length - 1] + charEm(c));
+  const u = uLine || total / em[cs.length];
+  if (!(u > 0)) return null;
+  const cost = (a, b, i) => Math.abs(ws[i] - u * (em[b] - em[a]));
+  const INF = Infinity;
+  // best[i][j]：前 i 个字符分给前 j 个元素的最小代价；from 记回溯点
+  const best = Array.from({ length: cs.length + 1 }, () => new Array(k + 1).fill(INF));
+  const from = Array.from({ length: cs.length + 1 }, () => new Array(k + 1).fill(-1));
+  best[0][0] = 0;
+  for (let j = 1; j <= k; j++)
+    for (let i = j; i <= cs.length - (k - j); i++)
+      for (let a = j - 1; a < i; a++) {
+        const v = best[a][j - 1] + cost(a, i, j - 1);
+        if (v < best[i][j]) {
+          best[i][j] = v;
+          from[i][j] = a;
+        }
+      }
+  if (best[cs.length][k] === INF) return null;
+  const parts = [];
+  let i = cs.length;
+  for (let j = k; j > 0; j--) {
+    const a = from[i][j];
+    parts.unshift(cs.slice(a, i).join(""));
+    i = a;
+  }
+  for (let x = 0; x < k; x++) {
+    const want = u * [...parts[x]].reduce((a, c) => a + charEm(c), 0);
+    if (Math.abs(ws[x] - want) > Math.max(want * 0.35, u * 0.3)) return null;
+  }
+  return parts;
+}
+
 const median = (v) => (v.length ? [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)] : 0);
 const fill = new Map(); // repKey → Map(text → 票数)
 const bump = (m, key, ch, n = 1) => {
@@ -177,11 +261,14 @@ for (let i = 0; i < lines.length; i++) {
       pending.push(j);
       continue;
     }
-    const at = gt.indexOf(e.text, cur);
+    // 锚点比对要**全半角归一**：`gt` 已经 NFKC 过（全角括号、冒号都成了半角），
+    // 而字典里那些字是全角（「作词：」的冒号）。不归一的话「(诗 150：6)」的冒号
+    // 锚点永远落空，「150」那一段就一路吃到「6」跟前，补出个「150:」来。
+    const at = gt.indexOf(e.text.normalize("NFKC"), cur);
     if (at < 0) continue; // 这个锚点没找到（OCR 读错或漏），并进下一段
     if (pending.length) segs.push({ from: cur, to: at, items: pending });
     pending = [];
-    cur = at + e.text.length;
+    cur = at + e.text.normalize("NFKC").length;
   }
   if (pending.length) segs.push({ from: cur, to: gt.length, items: pending });
   if (!segs.length) continue;
@@ -193,6 +280,15 @@ for (let i = 0; i < lines.length; i++) {
   const hs = elems.map((e) => e.h).sort((a, b) => a - b);
   const body = hs[Math.floor(hs.length * 0.7)] || 1;
   const cellW = median(elems.map((e) => e.w)) || 1;
+  // 这一行的**字身宽**：只拿多字汉字块估（标点的墨迹比字身窄得多，单字块噪声也大）。
+  // 用来验收补进去的字——宽度是硬凭据，OCR 多读一个字符宽度立刻对不上。
+  const uLine =
+    median(
+      elems
+        .filter((e) => e.text && [...e.text].length >= 2 && !/[\x20-\x7e]/.test(e.text))
+        .map((e) => e.w / emOf(e.text)),
+    ) || cellW;
+
   // 全角标点 + **半角标点**：英文人名、曲号里用的是半角 `( ) - : ,`
   //（037「《坚固保障》(61首)」的右括号、「Martin Luther 1483-1546」的连字符都是半角，
   //  只认全角的话它们永远补不回来）。
@@ -212,16 +308,36 @@ for (let i = 0; i < lines.length; i++) {
     //（真正的「。」只有 3.1×3.1）。这些错标后来又成了模糊匹配的参照，会把错扩散出去。
     if (LOW_PUNCT.test(text) && e.h / body > 0.45) return false;
     if (e.h / body <= 0.45) return n === 1 && PUNCT_OK.test(text);
-    const want = Math.max(1, Math.round(e.w / cellW));
-    return n >= want * 0.5 && n <= want * 2 + 1;
+    // 字数闸按**字身**算，不按「元素宽度的中位数」当格宽：一行里元素有宽有窄
+    //（「全地都要向耶和华歌唱」98pt 与引号 3.3pt 同在一行），中位数根本不是字格；
+    // p54 那行的中位数是 3.3，「代上」那个 19pt 的对象于是被要求装下 3 个字。
+    const want = Math.max(1, e.w / uLine);
+    const got = emOf(text);
+    return got >= want * 0.5 && got <= want * 2 + 0.5;
   };
+  /**
+   * 段文本按宽度校准：**锚点在 OCR 串里重复出现**时，段的边界会挪一格。
+   * p54 那行 OCR 把行首的「“」也读成了「(」，于是「(」锚点匹配到前一个，
+   * 「代上」那个元素分到的是「(代上」——19.0pt 的墨迹装不下 2.5 个字身。
+   * 拿整行的字身宽一验就露馅，剥掉两头的标点再验，取最吻合的那个。
+   */
+  const calibrate = (j, text) => ([...text].length < 2 ? text : trimToWidth(text, elems[j].w, uLine));
   for (const sg of segs) {
     const text = gt.slice(sg.from, sg.to);
     if (!text) continue;
     if (sg.items.length === 1) {
-      if (takeable(sg.items[0], text)) bump(fill, elems[sg.items[0]].key, text, 2);
+      const t = calibrate(sg.items[0], text);
+      if (t && takeable(sg.items[0], t)) bump(fill, elems[sg.items[0]].key, t, 2);
     } else if (sg.items.length === [...text].length && sg.items.every((j) => elems[j].w < elems[j].h * 3)) {
       [...text].forEach((ch, k) => takeable(sg.items[k], ch) && bump(fill, elems[sg.items[k]].key, ch));
+    } else {
+      // 字数对不上：按**宽度**切。经文出处「(代上 16:23)」在矢量层是三个对象
+      //（「代上 」19.0pt、「16」8.8、「23」9.3），OCR 又读不出括号和冒号，
+      // 于是一整段「代上1623」落给三个未知元素——按字数判等于直接放弃，
+      // 全书的经文出处就是这么只剩「(经)」的。宽度是硬凭据：汉字占一个字身、
+      // ASCII 占半身，一段里字身总数与总宽度之比就定出字身宽 u，再按 u 切。
+      const cuts = splitByWidth(elems, sg.items, text, uLine);
+      if (cuts) cuts.forEach((t, k) => takeable(sg.items[k], t) && bump(fill, elems[sg.items[k]].key, t, 2));
     }
   }
   if (trace.length < 60)

@@ -205,6 +205,54 @@ if (ruleRows.length) {
   );
 }
 
+// ── 第三条路：**字形规则**认冒号
+//
+// 这本书的「：」印成上下两个小圆点。它跟签名匹配无缘（未读的那 9 个小类各自只有
+// 一两个实例、尺寸零散），更要命的是**字典里已经把它标错了**：636 个实例的那一类
+// 被 GT 自举投票标成了「经」——署名行「作词：」在 GT 里对着「经」字的位置，
+// 投票就那么定下来了，全书唯一一个「墨迹不到 1.4×4.1pt 却标着汉字」的类。
+// 投票救不了自己，字形判据可以：**两条子路径、各自近圆、一般大、上下分离、
+// 每点只占整体高的三成以内**。全书 14 个类照这条判下来全是冒号（4 个已标「：」、
+// 1 个错标「经」、9 个未读），一个「？」「；」都没混进来——问号的钩占了大半个字身，
+// 分号的下点带尾巴，两条比例闸各挡一个。
+const COLON = "："; // 全角：524 个实例在「作词：」这种中文语境，与字典里已标注的那 4 类取齐
+/** d 串的各条子路径包围盒（只需 M 分段与坐标，指令字母当分隔符即可）。 */
+const subBoxes = (d) =>
+  d
+    .split("M")
+    .slice(1)
+    .map((seg) => {
+      const nums = (seg.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+      const xs = nums.filter((_, i) => i % 2 === 0);
+      const ys = nums.filter((_, i) => i % 2 === 1);
+      return xs.length && ys.length
+        ? { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }
+        : null;
+    })
+    .filter(Boolean);
+const isColonShape = (c) => {
+  if (!c.d || !(c.w > 0 && c.h > 0)) return false;
+  if (!(c.w / c.h > 0.2 && c.w / c.h < 0.6)) return false;
+  const bs = subBoxes(c.d);
+  if (bs.length !== 2) return false;
+  const [a, b] = bs.sort((p, q) => p.y0 - q.y0);
+  const aw = a.x1 - a.x0, ah = a.y1 - a.y0, bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+  if (!(aw > 0 && ah > 0 && bw > 0 && bh > 0)) return false;
+  if (!(aw / ah > 0.7 && aw / ah < 1.5 && bw / bh > 0.7 && bw / bh < 1.5)) return false; // 各自近圆
+  if (!(aw / bw > 0.7 && aw / bw < 1.4 && ah / bh > 0.7 && ah / bh < 1.4)) return false; // 一般大
+  if (Math.max(ah, bh) > c.h * 0.35) return false; // 点只占一小截（挡问号的钩）
+  if (Math.abs((a.x0 + a.x1) / 2 - (b.x0 + b.x1) / 2) > aw * 0.5) return false; // 上下对齐
+  return b.y0 > a.y1; // 两点分开
+};
+const colonRows = Object.values(dict.classes)
+  .filter((c) => isColonShape(c) && charOf(c.key) !== COLON)
+  .map((c) => ({ k: c.key, was: charOf(c.key), n: c.count }));
+if (colonRows.length)
+  console.log(
+    `\n字形规则认出冒号 ${colonRows.length} 类 / ${colonRows.reduce((a, r) => a + r.n, 0)} 实例` +
+      `（原先：${colonRows.map((r) => `${r.was ?? "未读"}×${r.n}`).join(" ")}）`,
+  );
+
 // --why：按「注解里的实例数」排序，说明每个仍未定的类卡在哪一条判据上
 if ("why" in flags) {
   const j = JSON.parse(await readFile("pdf-layout.json", "utf8"));
@@ -233,6 +281,10 @@ if (dry) {
 recordGlyphFixes(db, [
   ...take.map((r) => ({ shape_key: r.k, char: r.ch, source: "fuzzy" })),
   ...ruleRows.map((r) => ({ shape_key: r.k, char: r.ch, source: "rule-dash" })),
+  ...colonRows.map((r) => ({ shape_key: r.k, char: COLON, source: "rule-colon" })),
 ]);
 db.close();
-console.log(`\n→ 校对.db 的 glyph_fix 写入 ${take.length} 条（source=fuzzy）+ ${ruleRows.length} 条（source=rule-dash）；人工确认过的不覆盖`);
+console.log(
+  `\n→ 校对.db 的 glyph_fix 写入 ${take.length} 条（source=fuzzy）+ ${ruleRows.length} 条（source=rule-dash）` +
+    ` + ${colonRows.length} 条（source=rule-colon）；人工确认过的不覆盖`,
+);

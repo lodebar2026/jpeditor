@@ -275,45 +275,104 @@ export function clusterRuleFrames(frames: { type: string; box: Rect; lineWidth: 
 const r2 = (v: number): number => Number(v.toFixed(2));
 
 /**
+ * 乐谱页上的注解正文行，按**框**分组。
+ *
+ * 两种：022/023 那种双细线矩形框（`clusterRuleFrames` 认出来的圈），
+ * 以及 p36 / p39 那种没有框、直接印在谱行下方的经文。
+ *
+ * 框外那一路要跟「掉出谱行的一」分开：乐谱页 textLines 里 467 行是纯粹的「一」
+ *（歌词里的一悬在字格中部，聚行时会掉出来），所以要求 8 个以上汉字、且不同的字有 4 个以上。
+ * **框内不套这条**——框本身就是强凭据，框里那半行「(诗 150:6)」汉字不够也是正文；
+ * 套上去的话读不出的字一多，整框就整个丢了。
+ */
+export function scoreAnnotationGroups(
+  spec: PageSpec,
+  lineBoxes: RuleFrame[],
+  ov?: CharOverride,
+): { frame: RuleFrame | null; lines: TextRun[] }[] {
+  if (spec.kind !== "score" || !spec.textLines.length) return [];
+  const out: { frame: RuleFrame | null; lines: TextRun[] }[] = [];
+  const taken = new Set<TextRun>();
+  for (const f of lineBoxes) {
+    const inside = spec.textLines.filter((l) => contains(f.box, l.box));
+    if (!inside.length) continue;
+    for (const l of inside) taken.add(l);
+    const cjk = (runText({ chars: inside.flatMap((l) => l.chars) } as TextRun, ov).match(/[一-鿿]/g) ?? []).length;
+    if (cjk >= 8) out.push({ frame: f, lines: inside });
+  }
+  const realText = (t: string) => {
+    const cjk = t.match(/[一-鿿]/g) ?? [];
+    return cjk.length >= 8 && new Set(cjk).size >= 4;
+  };
+  const rest = spec.textLines.filter((l) => !taken.has(l) && realText(runText(l, ov)));
+  if (rest.length) out.push({ frame: null, lines: rest });
+  return out;
+}
+
+/**
  * 框内文字重新聚行。
  *
  * `spec.ts::groupLines` 的容差是固定 4pt，对花边框正文偏紧：p46 那一框里
  * 同一条视觉行被拆成两组（框内混着 8.2 与 10.5 两档字），拼出来是
  * 「1这一信胜的凯他心 / 《有活的确据》(3首)是首徒得歌」这种乱序。
  * 改成按**框内行距中位数的 0.45 倍**聚行，两档字号也能并回同一行。
+ *
+ * **矮元素（标点、引号）另走一趟**：按下缘聚行只对正文字管用——引号悬在字身上部
+ *（p54 那句经文开头的「“」下缘比同行正文高 5.5pt），句读点又比正文低一点点，
+ * 一趟贪心下来「“」把整组的基准带高，同一行的「，。()：」就被甩进了下一组，
+ * 排出来是「…救恩代上16 23 / ，。(：)」。所以先只拿**正文高度**的元素聚出行、
+ * 定出每行的字身区间，矮元素再按**中心 y** 认领最近的那一行。
  */
-export function regroupBoxLines(lines: TextRun[], ov?: CharOverride): string[] {
-  const chars = lines.flatMap((l) => runChars(l, ov));
+export function groupBoxRows(lines: TextRun[]): TextRun["chars"][] {
+  const chars = lines.flatMap((l) => l.chars);
   if (!chars.length) return [];
   const baselines = [...new Set(lines.map((l) => l.baselineY))].sort((a, b) => a - b);
   const gaps: number[] = [];
   for (let i = 1; i < baselines.length; i++) gaps.push(baselines[i] - baselines[i - 1]);
   const pitch = median(gaps.filter((g) => g > 2)) || 12;
   const tol = Math.max(3, pitch * 0.45);
-  const sorted = [...chars].sort((a, b) => bottom(a) - bottom(b));
-  const rows: { y: number; items: typeof sorted }[] = [];
-  for (const c of sorted) {
+  const body = median(chars.map((c) => c.h)) || 1;
+  const tall = chars.filter((c) => c.h >= body * 0.5);
+  const short = chars.filter((c) => c.h < body * 0.5);
+  const seed = (tall.length ? tall : chars).sort((a, b) => bottom(a) - bottom(b));
+  const rows: { y: number; items: TextRun["chars"] }[] = [];
+  for (const c of seed) {
     const last = rows[rows.length - 1];
-    if (last && bottom(c) - last.y <= tol) last.items.push(c);
-    else rows.push({ y: bottom(c), items: [c] });
+    // 与组内**最后一个**（下缘最大的）比，不是与组首比——组首固定的话，一组里
+    // 攒够几个 1pt 的小台阶就会把后面的甩掉。
+    if (last && bottom(c) - last.y <= tol) {
+      last.items.push(c);
+      last.y = bottom(c);
+    } else rows.push({ y: bottom(c), items: [c] });
   }
-  return rows
-    .map((r) => {
-      // 与 runText 同一套：西文词之间按字距补回空格（矢量层没有空格对象）
-      const items = r.items.sort((a, b) => a.x - b.x).filter((c) => c.ch);
-      let out = "";
-      let prev: (typeof items)[number] | null = null;
-      for (const c of items) {
-        if (prev && LATIN_EDGE.test(prev.ch) && LATIN_HEAD.test(c.ch) && c.x - (prev.x + prev.w) > Math.max(prev.h, c.h) * 0.22)
-          out += " ";
-        out += c.ch;
-        prev = c;
+  if (tall.length)
+    for (const c of short) {
+      const cy = c.y + c.h / 2;
+      let best = rows[0];
+      let bestD = Infinity;
+      for (const r of rows) {
+        const top = Math.min(...r.items.map((it) => it.y));
+        const bot = Math.max(...r.items.map((it) => bottom(it)));
+        const d = cy < top ? top - cy : cy > bot ? cy - bot : 0;
+        if (d < bestD) {
+          bestD = d;
+          best = r;
+        }
       }
-      return out;
-    })
-    // 花边框四角的纹样偶尔被当成字（读作 X / XX），一两个拉丁字母独占一行
-    // 在这本书的注解正文里不可能出现，丢掉。
-    .filter((t) => t.trim().length >= 2 && !/^[A-Za-z]{1,2}$/.test(t.trim()));
+      if (best) best.items.push(c);
+    }
+  return rows.map((r) => [...r.items].sort((a, b) => a.x - b.x));
+}
+
+/** 框内文字重新聚行 → 逐行文本（聚行判据见 `groupBoxRows`）。 */
+export function regroupBoxLines(lines: TextRun[], ov?: CharOverride): string[] {
+  return (
+    groupBoxRows(lines)
+      .map((items) => runText({ chars: items } as TextRun, ov))
+      // 花边框四角的纹样偶尔被当成字（读作 X / XX），一两个拉丁字母独占一行
+      // 在这本书的注解正文里不可能出现，丢掉。
+      .filter((t) => t.trim().length >= 2 && !/^[A-Za-z]{1,2}$/.test(t.trim()))
+  );
 }
 
 // ────────────────────────────────────────────────────────────── 目录 / 索引
@@ -698,42 +757,34 @@ export function buildBookMeta(specs: PageSpec[], opt: BookMetaOptions = {}): Boo
         ...(tiles.length ? { frameStyle: tiles[0].style, frameEdges: edgeMask(tiles) } : {}),
       });
     }
-    // 未装框的经文（p36 / p39 那种，印在谱行下方、没有花边）。
-    // 门槛 4 个字：乐谱页的 textLines 里绝大多数是掉出谱行的「一」，那些不能算。
-    if (spec.kind === "score" && spec.textLines.length) {
-      // 未装框的经文得跟「掉出谱行的一」分开：乐谱页 textLines 里 467 行是纯粹的「一」
-      // （歌词里的一因为悬在字格中部，聚行时会掉出来），所以要求 8 个以上汉字、
-      // 且不同的字有 4 个以上。
-      const realText = (t: string) => {
-        const cjk = t.match(/[一-鿿]/g) ?? [];
-        return cjk.length >= 8 && new Set(cjk).size >= 4;
+    // 乐谱页上的注解正文：022/023 那种**双细线框**里的经文，以及 p36 / p39 那种
+    // 没有框、直接印在谱行下方的。分组判据见 `scoreAnnotationGroups`。
+    for (const grp of scoreAnnotationGroups(spec, lineBoxes, ov)) {
+      // 框内一律走 `regroupBoxLines`：引号、句读点这些矮元素在 `groupLines` 那一层
+      // 会掉出正文行自成一组（p54 开头的「“」就是），只有并回同一行才排得出来。
+      const lines = regroupBoxLines(grp.lines, ov);
+      const text = lines.join("\n");
+      const chars = grp.lines.flatMap((l) => l.chars);
+      const x = Math.min(...chars.map((c) => c.x));
+      const y = Math.min(...chars.map((c) => c.y));
+      const textBox = {
+        x,
+        y,
+        w: Math.max(...chars.map((c) => c.x + c.w)) - x,
+        h: Math.max(...chars.map((c) => c.y + c.h)) - y,
       };
-      const rows = spec.textLines.map((l) => ({ t: runText(l, ov), l })).filter((r) => realText(r.t));
-      if (rows.length) {
-        const x = Math.min(...rows.map((r) => r.l.box.x));
-        const y = Math.min(...rows.map((r) => r.l.box.y));
-        const owner = ownerAbove(spec, y);
-        const textBox = {
-          x,
-          y,
-          w: Math.max(...rows.map((r) => r.l.box.x + r.l.box.w)) - x,
-          h: Math.max(...rows.map((r) => r.l.box.y + r.l.box.h)) - y,
-        };
-        // 这段文字是不是**框在线框里**（022/023）：找一圈把它围住的矩形
-        const lf = lineBoxes.find((f) => contains(f.box, textBox));
-        meta.annotations.push({
-          songId: owner,
-          framed: false,
-          frame: lf ? "line" : "none",
-          ...(lf ? { frameOuterWidth: lf.outer, frameInnerWidth: lf.inner, frameGap: lf.gap } : {}),
-          size: Number(median(rows.flatMap((r) => r.l.chars.map((c) => c.h)).filter((h) => h > 2)).toFixed(2)),
-          text: rows.map((r) => r.t).join("\n"),
-          box: lf ? lf.box : textBox,
-          page: spec.page,
-        });
-      }
+      const lf = grp.frame;
+      meta.annotations.push({
+        songId: ownerAbove(spec, y),
+        framed: false,
+        frame: lf ? "line" : "none",
+        ...(lf ? { frameOuterWidth: lf.outer, frameInnerWidth: lf.inner, frameGap: lf.gap } : {}),
+        size: Number(median(chars.map((c) => c.h).filter((h) => h > 2)).toFixed(2)),
+        text,
+        box: lf ? lf.box : textBox,
+        page: spec.page,
+      });
     }
-
   }
   // 逐框收来的母题按 (style, slot) 去重——同款花边只存一份。
   const seen = new Set<string>();
