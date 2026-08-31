@@ -1177,6 +1177,9 @@ export interface SectionWordGeom {
   hangLeft: number;
   /** 行的右缘（版心右缘）。**段落词一个字都不许挂到版心外面**，越过小节线也不行。 */
   rightLimit: number;
+  /** 行首那一条：**跨在锚点上方**（谱面为它缩进过，见 `Line.sectionWordIndent`）——
+   *  左括号落到音符左边、词身压着音符，而不是整个躲到左边去。 */
+  straddle?: boolean;
 }
 
 /** 段落词的落点。 */
@@ -1214,13 +1217,48 @@ function sectionWordHangLeft(barLeft: number | undefined): number {
  * 129 首《荣耀的一天》的「（副歌）」曾因此被抬到和弦上方（spread 那边只按「锚点到小节线
  * 够不够放下这几个字」算，没算跳过和弦这一段）。
  */
+/**
+ * 段落词的字宽——**要按标点挤压量**（全书半身式，见 common/cjkpunct.ts）。
+ *
+ * 「（副歌）」四个字里有两个全角括号，半身档下各压掉半格，整词窄一个字身。照全宽量的话，
+ * 一是**摆的时候两侧各空半格**（与「（第一调）」那个老毛病同源），二是**冲突检测偏胖**，
+ * 明明躲得开和弦却判成让不开，于是去撑小节——撑开量全堆在一两个空档上，音符右边就
+ * 空出一大块（173/175/189/193 四首的「（副歌）」）。量和画共用这一份笔位，两边不会错开。
+ */
+function sectionWordRun(font: Font, text: string, mode: CompressMode): { width: number; xs: number[] | null } {
+  if (mode === "none") return { width: font.measureText(text), xs: null };
+  const { xs, width } = font.run(text, mode);
+  // 首字是开括号时它的**笔位是负的**（半身档下「（」左挪半格，墨才落在半角格里）。
+  // 落点是拿 `x` 当左界算的，不把这半格挪回来，段落词就整体左偏、挂出版心
+  //（line-check 的 V1：106/170/189… 六首起点量到 60.x，版心左缘 62.8）。
+  const lead = xs[0] ?? 0;
+  return { width: width - lead, xs: xs.length > 1 ? xs.map((v) => v - lead) : null };
+}
+
 export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
-  const gap = g.size * 0.3;
+  // 与和弦之间要留的净空。**半身档下末字是收口括号**，它的墨迹一直顶到 advance 的右边缘，
+  // 原来那 0.3 个字身量到纸上只剩一线（173 的「（副歌）」右括号与后面的 G 描边挨着）。
+  const gap = g.size * 0.6;
   // 压不压字看**全行的和弦**（段落词本来就可以伸出小节线，撞的往往是下一小节的第一个和弦）；
   // 但**让位只能在本小节内**——这两件事口径不同，别混。撞上小节外的和弦时右移左移都没用，
   // 只能靠 spreadForSectionWords 撑开本小节：小节线右边的东西整体右移，段落词留在原处，空档就出来了。
+  // 「撞不撞」按**留了净空的**区间算：光看有没有重叠，落点会紧贴着和弦停下
+  //（173 的「（副歌）」右括号与 G 之间只剩 0.4pt）。
   const hit = (x: number): { x0: number; x1: number } | undefined =>
-    g.chords.find((c) => Math.abs(c.y - g.baseY) < g.size && x < c.x1 && c.x0 < x + g.width);
+    g.chords.find((c) => Math.abs(c.y - g.baseY) < g.size && x - gap < c.x1 && c.x0 < x + g.width + gap);
+  // 行首那一条先试「跨在锚点上」：谱面已经为它缩进过半个词（`sectionWordIndent`），
+  // 左边那点地方就是给左括号留的。整个躲到音符左边没必要，就地从锚点起排又会把
+  // 音符与小节线之间豁开一道口子——摆中间，两头都只让半个词。
+  if (g.straddle) {
+    const mid = Math.max(g.hangLeft, g.anchorX - g.width / 2);
+    const block = hit(mid);
+    // 撞上了也**摆在这儿不动**，只报「后面那个和弦还得让开多少」——行首这一条不许再往右
+    // 挪、更不许抬到和弦上方（那是刻意否掉的），差的量由 `Line.nudgeForSectionWords`
+    // 在 justify 之后从行内其它空档里匀出来。
+    return block
+      ? { x: mid, lifted: true, shortfall: mid + g.width + gap - block.x0 }
+      : { x: mid, lifted: false, shortfall: 0 };
+  }
   const first = hit(g.anchorX);
   if (!first) return { x: g.anchorX, lifted: false, shortfall: 0 };
   // 右移找空档：**只跳过本小节内的和弦**。挡路的和弦已经在小节线右边（属下一小节）时就别再跳了，
@@ -1505,6 +1543,21 @@ export class Line {
   }
 
   /**
+   * 在**假想的 justify 之后**跑一次 `fn`，跑完把横坐标复原。
+   *
+   * `adjust` 只会往空档里加距离，所以「justify 之后放得下」是比撑开更该先问的一句。
+   */
+  private probeJustified<T>(width: number, opt: LayoutOptions, fn: () => T): T {
+    const saved = this.entries.map((e) => e.group.x);
+    try {
+      this.adjust(width, opt.maxHorizontalScale);
+      return fn();
+    } finally {
+      this.entries.forEach((e, i) => { e.group.x = saved[i]; });
+    }
+  }
+
+  /**
    * 为段落词（「（副歌）」）**按小节撑开**。
    *
    * 段落词印在和弦那一带、不许跨过小节线，横向地方不够时就得撑。但撑开量**不能全堆在
@@ -1539,30 +1592,44 @@ export class Line {
         if (k >= endIdx) return 1;
         return (inBar.indexOf(k) + 1) / steps;
       };
-      const chordBase: { x0: number; x1: number; y: number; f: number }[] = [];
-      this.entries.forEach((ent, k) => {
-        if (!(ent instanceof NoteEntry)) return;
-        for (const it of this.chordGroups(ent))
-          chordBase.push({ x0: ent.group.x + it.x, x1: ent.group.x + it.x + it.width, y: ent.group.y + it.y, f: shiftFrac(k) });
-      });
-      const anchorX = e.group.x + item.x;
-      const lastEnt = this.entries[this.entries.length - 1];
-      const barRight0 = this.entries[endIdx]?.group.x ?? lastEnt.group.x + lastEnt.group.width;
-      const barLeftAt = [...bars].reverse().map((b) => this.entries[b].group.x).find((bx) => bx <= anchorX);
-      const barLeft = barLeftAt ?? 0;
-      const width = font.measureText(e.chord.sectionWord);
-      const at = (spread: number): SectionWordSlot =>
-        placeSectionWord({
-          anchorX,
-          width,
-          size,
-          baseY: this.sectionWordBaseY(e, opt, chordBase),
-          chords: chordBase.map((c) => ({ x0: c.x0 + spread * c.f, x1: c.x1 + spread * c.f, y: c.y })),
-          barLeft,
-          barRight: barRight0 + spread,
-          hangLeft: sectionWordHangLeft(barLeftAt),
-          rightLimit: lineWidth || this.group.width || barRight0 + spread,
+      /** 从**当前坐标**造一个「撑开 spread 时段落词落哪儿」的函数。 */
+      const placer = (): ((spread: number) => SectionWordSlot) => {
+        const chordBase: { x0: number; x1: number; y: number; f: number }[] = [];
+        this.entries.forEach((ent, k) => {
+          if (!(ent instanceof NoteEntry)) return;
+          for (const it of this.chordGroups(ent))
+            chordBase.push({ x0: ent.group.x + it.x, x1: ent.group.x + it.x + it.width, y: ent.group.y + it.y, f: shiftFrac(k) });
         });
+        const anchorX = e.group.x + item.x;
+        const lastEnt = this.entries[this.entries.length - 1];
+        const barRight0 = this.entries[endIdx]?.group.x ?? lastEnt.group.x + lastEnt.group.width;
+        const barLeftAt = [...bars].reverse().map((b) => this.entries[b].group.x).find((bx) => bx <= anchorX);
+        const barLeft = barLeftAt ?? 0;
+        const width = sectionWordRun(font, e.chord.sectionWord!, opt.punctCompress).width;
+        return (spread: number): SectionWordSlot =>
+          placeSectionWord({
+            anchorX,
+            width,
+            size,
+            baseY: this.sectionWordBaseY(e, opt, chordBase),
+            chords: chordBase.map((c) => ({ x0: c.x0 + spread * c.f, x1: c.x1 + spread * c.f, y: c.y })),
+            barLeft,
+            barRight: barRight0 + spread,
+            hangLeft: sectionWordHangLeft(barLeftAt),
+            rightLimit: lineWidth || this.group.width || barRight0 + spread,
+            straddle: this.entries[0] === e,
+          });
+      };
+      // **先问 justify 之后放不放得下**：本行内容窄时（副歌那种只有一个弱起音符起头的行）
+      // justify 会把空档撑得很宽，段落词本来就摆得下，这时再撑一遍等于白撑——撑出来的那个
+      // 大空档 justify 也收不回去（`adjust` 只加不减），音符右边就空出一大块
+      //（173/175/189/193 四首的「（副歌）」）。
+      if (lineWidth > 0 && !this.probeJustified(lineWidth, opt, () => placer()(0)).lifted) continue;
+      const at = placer();
+      // 行首那一条不在这儿撑：justify 前的间距是紧的，照它算出来的撑开量会大出一截，
+      // 而 justify 随后又要把同一段空档拉开一遍——两笔叠起来就是音符右边那道大口子。
+      // 它改在 justify 之后按真实坐标微调（`nudgeForSectionWords`）。
+      if (this.entries[0] === e) continue;
       const now = at(0);
       if (!now.lifted) continue;
       // 上界：末尾那个空档只分到 1/steps 的撑开量（空档更靠前的话分到的更多），
@@ -1748,8 +1815,74 @@ export class Line {
     // 段落词的撑开要在 **justify 之前、分行之后**：分行前撑的是错的锚点（段落词落到行末时
     // 会被挪到下一行行首去，见 layout() 里那段），而 justify 只会往空档里**加**距离、不会收窄，
     // 所以这里放得下，justify 之后也放得下。
-    l.spreadForSectionWords(opt, width);
-    l.adjust(width, opt.maxHorizontalScale);
+    // 行首那一条段落词要挂到音符**左边**，得先给它腾出地方：整行**左缩进**一截，
+    // 排版按缩进后的宽度做，排完整行右移回来（见 sectionWordIndent）。
+    const indent = l.sectionWordIndent(opt, width);
+    l.spreadForSectionWords(opt, width - indent);
+    l.adjust(width - indent, opt.maxHorizontalScale);
+    if (indent > 0) for (const e of l.entries) e.group.x += indent;
+  }
+
+  /**
+   * 行首那一条段落词要占的**左缩进**。
+   *
+   * 段落词挂在行首音符上时，左边一点地方都没有——那个音符自己就贴着版心左缘
+   * （「一个字都不许出版心」是定死的口径，见 `sectionWordHangLeft`）。于是它只能就地
+   * 摆或往右让，右让就得撑开小节，音符与小节线之间豁开一道口子
+   * （173/175/189/193 的「（副歌）」）。
+   *
+   * 这里换个办法：**整行往右缩进半个段落词**，谱面按 `width − indent` 排、排完整体右移，
+   * 段落词就能跨在行首音符上方——左括号落到音符左边，右半边压在音符上，两头各让半个词，
+   * 音符与小节线之间也不用再豁开一道口子。整个词躲到音符左边是不必要的，那样缩进太深。
+   * 段号（行首的「1.」「2.」）挂的是行首音符的绝对坐标（`addVerseNumbers`），跟着一起走。
+   *
+   * 只在**行本身还有富余**时这么做（缩进吃掉的是 justify 本来要摊掉的空白）；
+   * 富余不够就返回 0，退回原来的「撑开小节」那条路。
+   */
+  sectionWordIndent(opt: LayoutOptions, width: number): number {
+    if (!width) return 0;
+    const e = this.entries[0];
+    if (!(e instanceof NoteEntry)) return 0;
+    let need = 0;
+    if (opt.sectionWordSize > 0 && e.chord.sectionWord) {
+      const font = opt.lrcFont.makeWithSize(opt.sectionWordSize);
+      const w = sectionWordRun(font, e.chord.sectionWord, opt.punctCompress).width;
+      // 要的地方**正好是「词的左半边探出音符墨迹的那一截」**：缩进这么多之后，词的左端
+      // 贴着版心左缘、中心对着锚点音符。多要一点（比如再搭个和弦净空）词就整个往右挪，
+      // 左边白空一截（189 曾在版心左缘与「（副歌）」之间空出 15pt）。
+      // 对齐的是**音符墨迹的中心**而不是它的左缘——按左缘算，音符连着底下的歌词
+      // 整体偏右半个数字，看着就不居中（193）。
+      const it = e.entryItem();
+      need = w / 2 - (it ? it.x + it.width / 2 : 0);
+    }
+    need = Math.max(need, this.verseNumberIndent(opt, e));
+    if (need <= 0) return 0;
+    let right = 0;
+    for (const ent of this.entries) right = Math.max(right, ent.group.x + ent.group.childrenBound.right);
+    return need <= width - right ? need : 0;
+  }
+
+  /**
+   * 行首歌词的段号（「1.」「2.」…）要占的左缩进。
+   *
+   * 段号是**悬在首字左边**的（`addVerseNumbers` 拿行首音符的绝对坐标减去段号宽），
+   * 行首音符贴着版心左缘时它就整个挂到版心外面去了。这里按「最宽的那个段号减去首字
+   * 在音符里的偏移」要地方，谱面整行右移这么多，段号就落回版心内。
+   */
+  private verseNumberIndent(opt: LayoutOptions, e: NoteEntry): number {
+    if (opt.lyricStack <= 0 || opt.verseNumbers === "never" || e.lrcs.length < 2) return 0;
+    if (opt.verseNumbers === "auto") {
+      let verses = 0;
+      for (const ent of this.entries) if (ent instanceof NoteEntry) verses = Math.max(verses, ent.lrcs.length);
+      if (verses <= opt.verseNumberAutoMin) return 0;
+    }
+    let need = 0;
+    for (let k = 0; k < e.lrcs.length; k++) {
+      const li = e.lrcs[k];
+      if (!li.text) continue;
+      need = Math.max(need, opt.lrcFont.measureText(`${k + 1}.`) - li.x);
+    }
+    return Math.max(0, need);
   }
 
   private layoutVertically(lines: Line[], opt: LayoutOptions, height: number): Group[] {
@@ -1939,6 +2072,9 @@ export class Line {
     }
     for (const l of lines) {
       this.updateXPos(l, width, opt);
+      // 段落词要的那点地方**必须在画符杠/连音线/弧线之前**匀出来：那些东西的坐标
+      // 是照音符位置算死的，之后再挪音符，减时线就跟音符错开了。
+      l.nudgeForSectionWords(opt, width);
       l.addBeams(opt);
       l.addTuplet(opt);
       l.addTie(opt);
@@ -2178,13 +2314,7 @@ export class Line {
     if (opt.sectionWordSize <= 0) return;
     const size = opt.sectionWordSize;
     const font = opt.lrcFont.makeWithSize(size);
-    // 本行已经排好的和弦：{x0, x1, y}
-    const chords: { x0: number; x1: number; y: number }[] = [];
-    for (const e of this.entries) {
-      if (!(e instanceof NoteEntry)) continue;
-      for (const it of this.chordGroups(e))
-        chords.push({ x0: e.group.x + it.x, x1: e.group.x + it.x + it.width, y: e.group.y + it.y });
-    }
+    const chords = this.chordBoxes();
     // 版心右缘：**优先用传进来的行宽**——`group.width` 只有 justify 过的行才有，
     // 末行常是 0，段落词就没人钳得住它（106 首末行那一条伸到了版心外 25pt）。
     const lineRight = lineWidth || this.group.width || Infinity;
@@ -2209,27 +2339,89 @@ export class Line {
       tf.color = opt.color;
       tf.text = e.chord.sectionWord;
       tf.update();
+      // 量宽与笔位都按挤压后的来（见 sectionWordRun）；`charXs` 一路传到 `<text>` 的 `x`。
+      const run = sectionWordRun(font, e.chord.sectionWord, opt.punctCompress);
+      tf.width = run.width;
+      tf.charXs = run.xs;
       // 段落词**可以横向伸出锚点音符的范围**（它只是个标记，原书也这么印），
       // 所以不为它撑开音符间距；能不能放下只看「本小节内有没有不撞和弦的空档」。
       const anchorX = e.group.x + item.x;
       const baseY = this.sectionWordBaseY(e, opt, chords);
-      const barLeftAt = [...barXs].reverse().find((bx) => bx <= anchorX);
-      const slot = placeSectionWord({
-        anchorX,
-        width: tf.width,
-        size,
-        baseY,
-        chords,
-        barLeft: barLeftAt ?? 0,
-        barRight: barXs.find((bx) => bx > anchorX) ?? lineRight,
-        hangLeft: sectionWordHangLeft(barLeftAt),
-        rightLimit: lineRight,
-      });
+      const place = (): SectionWordSlot => {
+        const barLeftAt = [...barXs].reverse().find((bx) => bx <= anchorX);
+        return placeSectionWord({
+          anchorX,
+          width: tf.width,
+          size,
+          baseY,
+          chords,
+          barLeft: barLeftAt ?? 0,
+          barRight: barXs.find((bx) => bx > anchorX) ?? lineRight,
+          hangLeft: sectionWordHangLeft(barLeftAt),
+          rightLimit: lineRight,
+          straddle: this.entries[0] === e,
+        });
+      };
+      const slot = place();
       tf.x = slot.x;
-      tf.y = slot.lifted ? baseY - size * 1.5 : baseY;
+      // 行首那一条永远不抬（口径如此）：匀不出地方也就贴着和弦，不上去占一层。
+      tf.y = slot.lifted && this.entries[0] !== e ? baseY - size * 1.5 : baseY;
       this.group.children.push(tf);
       tf.parent = this.group;
     }
+  }
+
+  /** 本行已经排好的和弦盒子 {x0, x1, y}——段落词的落位与让位都照它算。 */
+  private chordBoxes(): { x0: number; x1: number; y: number }[] {
+    const out: { x0: number; x1: number; y: number }[] = [];
+    for (const e of this.entries) {
+      if (!(e instanceof NoteEntry)) continue;
+      for (const it of this.chordGroups(e))
+        out.push({ x0: e.group.x + it.x, x1: e.group.x + it.x + it.width, y: e.group.y + it.y });
+    }
+    return out;
+  }
+
+  /**
+   * 行首段落词还差的那点地方——**从行内其它空档里匀**（justify 之后，行长不变）。
+   *
+   * 撑开（`spreadForSectionWords`）是在 justify 之前做的，那时的间距还是紧的，
+   * 照它算出来的量偏大，而 justify 随后又把同一段空档拉开一遍，两笔叠起来就是
+   * 音符右边那道大口子（173/175/189/193 的「（副歌）」，一处吃掉 16pt）。这里改在
+   * **排完之后**按真实坐标补：锚点后面的东西右移「差的那一点」，位移沿行**线性衰减到 0**
+   * （行末不动），于是那点量被后面二十来个空档各摊掉零点几 pt，眼睛看不出来，
+   * 行也不会伸出版心。
+   *
+   * **必须在画符杠/连音线/弧线之前跑**：那些东西的坐标照音符位置算死，之后再挪音符，
+   * 减时线就与音符错开了。
+   */
+  nudgeForSectionWords(opt: LayoutOptions, lineWidth: number): void {
+    if (opt.sectionWordSize <= 0) return;
+    const e = this.entries[0];
+    if (!(e instanceof NoteEntry) || !e.chord.sectionWord) return;
+    const item = e.entryItem();
+    if (!item) return;
+    const n = this.entries.length;
+    if (n < 3) return;
+    const font = opt.lrcFont.makeWithSize(opt.sectionWordSize);
+    const anchorX = e.group.x + item.x;
+    const chords = this.chordBoxes();
+    const barXs = this.entries.filter((x): x is Barline => x instanceof Barline).map((b) => b.group.x).sort((a, b) => a - b);
+    const slot = placeSectionWord({
+      anchorX,
+      width: sectionWordRun(font, e.chord.sectionWord, opt.punctCompress).width,
+      size: opt.sectionWordSize,
+      baseY: this.sectionWordBaseY(e, opt, chords),
+      chords,
+      barLeft: 0,
+      barRight: barXs[0] ?? lineWidth,
+      hangLeft: 0,
+      rightLimit: lineWidth || this.group.width || Infinity,
+      straddle: true,
+    });
+    if (!slot.lifted || slot.shortfall <= 0) return;
+    const need = slot.shortfall;
+    this.entries.forEach((ent, k) => { if (k > 0) ent.group.x += (need * (n - 1 - k)) / (n - 2); });
   }
 
   addBeams(opt: LayoutOptions): void {
