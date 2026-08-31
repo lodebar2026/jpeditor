@@ -1830,6 +1830,21 @@ u 就跟着缩，验收照样过。p54 那行的行首「“」被 OCR 读成「
 `pdf-diff` 各档一字不差（音符 99.96%、八度 99.53%、歌词 99.32%、标题 99.66%、
 和弦 99.16%、弧线 96.90%），`rebuild` + `line-check` 定点断言全过、全书基线持平。
 
+#### 注解对比册（`gen-annocheck.mjs`）
+
+挑错要看原件。这个脚本把每一条注解出成一块：上半是**原件**——从原 PDF 里
+把这一框的矩形区域整块嵌进来（`pdf-lib` 的 `embedPage` 带 boundingBox，矢量、不栅格化），
+下半是识别文本，**读不出的字画成 `□`**（正路那边是留空——绝不写问号，那会跟着排进成品）。
+按缺字数排序，`--issues` 只出还有缺字的，`--one=022,078` 挑几条看。
+全书 169 条 90 页，还有缺字的 49 条。
+
+#### 夹在数字之间的冒号写半角
+
+冒号的字形只有一个（全书 1181 个实例都是那两个小圆点），`glyph_fix` 只能给它一个字符，
+可原书两种宽度都在用：「作词：某某」量到的左间距是 0.43 个字身，跟全角的 0.435 对得上；
+「代上 16:23」里 16 与 23 之间只隔 0.58 个字身，装不下一个全角。
+只好在 `runText` 出文本时按上下文分——两侧都是西文数字/字母的写半角。
+
 ### 排回去（`bookparts.ts` + `rebuild.mjs`）
 
 - **调号拍号**的各处比例基准是**墨迹高**（`roles.keyMeter.size`），不是字号。
@@ -1890,6 +1905,7 @@ node gen-bookstyle.mjs                       # 统计 → testdata/500/bookstyle
 node gen-backfill.mjs                        # GT 回填未读字形 → testdata/500/backfill.json
 node gen-storyocr.mjs [--dry] [--pages=..]   # 整行 OCR 补字 → glyph_fix + pdf-out/storyocr-report.json
 node gen-glyphsheet.mjs [--apply=x.tsv]      # 人工确认表 → pdf-out/glyphsheet-*.svg + .tsv
+node gen-annocheck.mjs [--issues] [--one=..]  # 注解对比册 → pdf-out/注解对比.pdf
 node gen-bookmeta.mjs [--check]              # 书级元数据 → 校对.db + pdf-out/bookmeta-report.json
 node relayout.mjs --mode=text [--db]         # A 路 → pdf-out/诗歌500首-文字版.pdf + relayout.csv/-report.json
 node rebuild.mjs [--one=028] [--parts] [--db]  # B 路 → pdf-out/诗歌500首-重排版.pdf + rebuild.csv + rebuild-drawlist.json
