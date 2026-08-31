@@ -285,6 +285,45 @@ const r2 = (v: number): number => Number(v.toFixed(2));
  * **框内不套这条**——框本身就是强凭据，框里那半行「(诗 150:6)」汉字不够也是正文；
  * 套上去的话读不出的字一多，整框就整个丢了。
  */
+/**
+ * 注解正文里的**连接号**：矢量层是一条独立的细横线（归类进了 `frames` 的 `rule-h`），
+ * 不是字形，文本里就少一个字——「(诗 29:1-2)」排成了「(诗29:12)」，
+ * 「1807-1884」那种生卒年也一样（那一路另有 `gen-glyphfuzzy` 的 `rule-dash` 管，
+ * 但那条只认**有字形**的横条）。
+ *
+ * 全书 13 条，尺寸清一色 11.3×0.47。判据：细（≤1.2pt）、短（≤30pt）、
+ * **完全落在某一行的字身框内**、且这一行里它左右都有字。宽度按字身分档，
+ * 与 `rule-dash` 同一口径：不到 0.95 个字身是半角 `-`，到了就是全角 `—`。
+ */
+function withInlineDashes(spec: PageSpec, lines: TextRun[]): TextRun[] {
+  const dashes = spec.frames.filter((f) => f.type === "rule-h" && f.box.h <= 1.2 && f.box.w <= 30);
+  if (!dashes.length) return lines;
+  return lines.map((l) => {
+    const add = dashes.filter(
+      (f) =>
+        f.box.y > l.box.y - 2 &&
+        bottom(f.box) < bottom(l.box) + 2 &&
+        f.box.x > l.box.x - 2 &&
+        right(f.box) < right(l.box) + 2 &&
+        l.chars.some((c) => right(c) <= f.box.x + 1) &&
+        l.chars.some((c) => c.x >= right(f.box) - 1),
+    );
+    if (!add.length) return l;
+    const chars = [
+      ...l.chars,
+      ...add.map((f) => ({
+        x: f.box.x,
+        y: f.box.y,
+        w: f.box.w,
+        h: f.box.h,
+        ch: f.box.w / (l.size || 1) < 0.95 ? "-" : "—",
+        key: "", // 没有字形类：`gen-storyocr` 按 `shapeOf.has(key)` 过滤，自然跳过
+      })),
+    ].sort((a, b) => a.x - b.x);
+    return { ...l, chars };
+  });
+}
+
 export function scoreAnnotationGroups(
   spec: PageSpec,
   lineBoxes: RuleFrame[],
@@ -298,14 +337,14 @@ export function scoreAnnotationGroups(
     if (!inside.length) continue;
     for (const l of inside) taken.add(l);
     const cjk = (runText({ chars: inside.flatMap((l) => l.chars) } as TextRun, ov).match(/[一-鿿]/g) ?? []).length;
-    if (cjk >= 8) out.push({ frame: f, lines: inside });
+    if (cjk >= 8) out.push({ frame: f, lines: withInlineDashes(spec, inside) });
   }
   const realText = (t: string) => {
     const cjk = t.match(/[一-鿿]/g) ?? [];
     return cjk.length >= 8 && new Set(cjk).size >= 4;
   };
   const rest = spec.textLines.filter((l) => !taken.has(l) && realText(runText(l, ov)));
-  if (rest.length) out.push({ frame: null, lines: rest });
+  if (rest.length) out.push({ frame: null, lines: withInlineDashes(spec, rest) });
   return out;
 }
 
