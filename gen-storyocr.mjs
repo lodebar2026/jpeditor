@@ -28,6 +28,19 @@ const LAYOUT = flags.layout ?? "pdf-layout.json";
 const DICT = flags.dict ?? "testdata/500/glyphdict.json";
 const UNREAD = "�";
 
+/**
+ * 一个字符占多宽（用来预测**墨迹**宽度，不是排版的字身）：
+ * ASCII（数字、拉丁字母、半角标点）半身，汉字一身，
+ * **中日文标点只算 0.35**——它们的字身是满格，墨迹却小得多
+ *（句号 3.1/10.4 = 0.30、逗号 0.14、书名号 0.39、全角括号 0.29）。
+ * 按一身算的话「》。1719」要 40.8pt，那个块只有 27.4，整段就被判成对不上而弃掉
+ *（077「书名《圣诗灵歌》。1719年」的年份就是这么丢的）。
+ */
+const CJK_PUNCT = /[\u3000-\u303f\uff01-\uff20\uff3b-\uff40\uff5b-\uff65]/;
+const charEm = (ch) => (/[\x20-\x7e]/.test(ch) ? 0.5 : CJK_PUNCT.test(ch) ? 0.35 : 1);
+const emOf = (t) => [...t].reduce((a, c) => a + charEm(c), 0);
+const median = (v) => (v.length ? [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)] : 0);
+
 /** d 串的各条子路径包围盒（只需 M 分段与坐标，指令字母当分隔符）。 */
 const subBoxes = (d) =>
   d
@@ -106,6 +119,40 @@ const charOf = (key) => fixes[key] ?? fixes[repOf(key)] ?? dictChar.get(key) ?? 
     if (!DRY) recordGlyphFixes(db, rows);
     for (const r of rows) fixes[r.shape_key] = r.char;
   }
+}
+
+// ── 体检之二：**块的墨迹比它读出来的字宽得多**
+//
+// 077「贵。1707年」里那个四位数的块，字典只学到一个「7」——不是未读，是**读少了**，
+// 于是它成了锚点，行识别再也没机会纠。宽度露馅：一个「7」预测 5.2pt 的墨迹，
+// 那个块有 18.9pt，三倍半。这种一律**退回未读**，让本轮补字重新定案。
+// 只挡「宽得多」这一头：标点的墨迹本来就比预测窄（「，」1.5 对 3.6），不在此列。
+if (!DRY) {
+  const del = db.prepare(`DELETE FROM glyph_fix WHERE shape_key=? AND confirmed_by IS NULL`);
+  const suspects = new Map(); // key → [可疑实例数, 总实例数]
+  const scan = (chars) => {
+    const known = chars.filter((c) => charOf(c.key) && [...charOf(c.key)].length >= 2 && !/[\x20-\x7e]/.test(charOf(c.key)));
+    const u = median(known.map((c) => c.w / emOf(charOf(c.key))));
+    if (!(u > 0)) return;
+    for (const c of chars) {
+      const ch = fixes[c.key];
+      if (!ch || !shapeOf.has(c.key)) continue;
+      const rec = suspects.get(c.key) ?? [0, 0];
+      rec[1]++;
+      if (c.w > u * emOf(ch) * 2) rec[0]++;
+      suspects.set(c.key, rec);
+    }
+  };
+  for (const p2 of pages) {
+    for (const b of p2.storyBoxes) for (const l of b.lines) scan(l.chars);
+    if (p2.kind === "score" || p2.kind === "toc" || p2.kind === "index" || p2.kind === "front-matter") for (const l of p2.textLines) scan(l.chars);
+  }
+  const dropped = [...suspects].filter(([, [bad, all]]) => bad && bad === all).map(([k]) => k);
+  for (const k of dropped) {
+    del.run(k);
+    delete fixes[k];
+  }
+  if (dropped.length) console.log(`墨迹比读出来的字宽一倍以上：退回未读 ${dropped.length} 类`);
 }
 
 // ── 要送识别的行：花边框正文 + 目录/索引/前言页的文本行。
@@ -235,9 +282,6 @@ close();
 // 括号与冒号，剔掉的话这一行的括号锚点全落空，中间的「代上」「16」「23」三个未知
 // 元素并成一段，字数对不上就整段弃掉——全书的经文出处就是这么丢了数字的。
 const OKCH = /[一-鿿　-〿！-～0-9A-Za-z·♭#「」《》()[\]:;,.\-]/;
-/** 字身宽：ASCII（数字、拉丁字母、半角标点）半身，汉字与全角标点一身。 */
-const charEm = (ch) => (/[\x20-\x7e]/.test(ch) ? 0.5 : 1);
-const emOf = (t) => [...t].reduce((a, c) => a + charEm(c), 0);
 /**
  * 一段 OCR 文本按宽度校准：剥掉两头多出来的标点，取与墨迹宽度最吻合的那个写法。
  * 宽度是硬凭据——OCR 多读一个字符，宽度立刻对不上（「(代上」要 2.5 个字身，
@@ -356,7 +400,6 @@ const toFullPunct = (t) =>
   /[^\x00-\x7f]/.test(t) ? t.replace(/,/g, "，").replace(/;/g, "；").replace(/:/g, "：").replace(/\./g, "。") : t;
 const RE_ESC = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const median = (v) => (v.length ? [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)] : 0);
 const fill = new Map(); // repKey → Map(text → 票数)
 const digitFix = new Map(); // repKey → Map(text → 票数)：改**已有**标注（块内补回标点）
 const bump = (m, key, ch, n = 1) => {
@@ -499,7 +542,7 @@ for (let i = 0; i < lines.length; i++) {
     if (!text) continue;
     if (sg.items.length === 1) {
       const t = calibrate(sg.items[0], text);
-      if (t && takeable(sg.items[0], t)) bump(fill, elems[sg.items[0]].key, t, 2);
+      if (t && takeable(sg.items[0], t)) bump(fill, elems[sg.items[0]].key, toFullPunct(t), 2);
     } else if (sg.items.length === [...text].length && sg.items.every((j) => elems[j].w < elems[j].h * 3)) {
       [...text].forEach((ch, k) => takeable(sg.items[k], ch) && bump(fill, elems[sg.items[k]].key, ch));
     } else {
@@ -509,7 +552,7 @@ for (let i = 0; i < lines.length; i++) {
       // 全书的经文出处就是这么只剩「(经)」的。宽度是硬凭据：汉字占一个字身、
       // ASCII 占半身，一段里字身总数与总宽度之比就定出字身宽 u，再按 u 切。
       const cuts = splitByWidth(elems, sg.items, text, uLine);
-      if (cuts) cuts.forEach((t, k) => takeable(sg.items[k], t) && bump(fill, elems[sg.items[k]].key, t, 2));
+      if (cuts) cuts.forEach((t, k) => takeable(sg.items[k], t) && bump(fill, elems[sg.items[k]].key, toFullPunct(t), 2));
     }
   }
 }
@@ -566,10 +609,27 @@ const punctRows = decide(punctVote, 3, 0.9).filter((r) => r.ok);
 // 没定案的把最高票写进 unread_glyph.guess_char 供人工确认。
 const expand = (rows, source) =>
   rows.flatMap((r) => (membersOf.get(r.g) ?? [r.g]).map((key) => ({ shape_key: key, char: r.ch, source })));
+// ── 收尾：**块里夹着的标点**（判据在 `glyphdict.ts::blockPunct`，与 gen-glyphfuzzy 共用）
+//
+// 这一步要放在补字之后：060 的「1:4」是这一轮才被行识别认出「14」的，
+// 冒号夹在块中间、不是独立字形，只有拿字形再走一遍才排得回去。
+const blockRows = [];
+{
+  const latest = { ...fixes };
+  for (const r of [...expand(okFill, ""), ...expand(okDigitFix, "")]) latest[r.shape_key] = r.char;
+  for (const [key, c] of shapeOf) {
+    const ch = latest[key] ?? dictChar.get(key);
+    const t = ch && c.d ? cli.blockPunct(c.d, ch) : null;
+    if (t) blockRows.push({ shape_key: key, char: t, source: "rule-dash-inblock" });
+  }
+  if (blockRows.length)
+    console.log(`块里夹着的标点 ${blockRows.length} 类：${blockRows.slice(0, 8).map((r) => r.char).join(" ")}${blockRows.length > 8 ? " …" : ""}`);
+}
 if (!DRY) {
   recordGlyphFixes(db, expand(okFill, "ocr-line"));
   recordGlyphFixes(db, expand(okDigitFix, "ocr-line-fix"));
   recordGlyphFixes(db, expand(punctRows, "rule-punct"));
+  recordGlyphFixes(db, blockRows);
   updateUnreadGuess(
     db,
     fillRows.filter((r) => !r.ok).flatMap((r) => (membersOf.get(r.g) ?? [r.g]).map((key) => ({ shape_key: key, guess_char: r.ch, confidence: r.ratio }))),

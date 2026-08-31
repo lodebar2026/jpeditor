@@ -392,7 +392,6 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
         const y1 = objs[wide[b]].bbox.y;
         const gap = y1 - y0;
         if (gap <= lyricH * 0.5) continue; // 紧挨着的两条是同一道双线
-        if (gap > lyricH * 8) break; // 太远，中间不是一个框
         // 两头各有一条把上下两道通栏线连起来的竖边 = 这是个实打实的矩形框，
         // 框里不可能有谱行。**框里的经文会让第 2 步凑出假谱行**（368 首那个框里
         // 凑出了一个只有 1 个音符的「谱行」），不认框就永远被这道判据挡在外面。
@@ -404,6 +403,10 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
             return out[j].cls === "rule" && q.w <= 2 && q.y <= y0 + 2 && bottom(q) >= y1 - 2 && Math.abs(cx(q) - nearX) <= lyricH;
           });
         const boxed = vAt(hx0) && vAt(hx1);
+        // 太远、又没有竖边把两条横线连起来，那中间就不是一个框。
+        // **有竖边就不卡这个上限**：078 那个框有 7 行经文、100pt 高，
+        // 按 8 个歌词行的老上限正好卡在外面，整框的字于是全被当成歌词读了。
+        if (!boxed && gap > lyricH * 8) break;
         if (!boxed && bands.some((bd) => bd.top < y1 && bd.bottom > y0)) break; // 中间夹着谱行，那不是框
         for (let i = 0; i < objs.length; i++) {
           if (!inBoxText(i)) continue;

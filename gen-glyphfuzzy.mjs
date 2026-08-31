@@ -293,56 +293,22 @@ if (colonRows.length)
       `（原先：${colonRows.map((r) => `${r.was ?? "未读"}×${r.n}`).join(" ")}）`,
   );
 
-// ── 第五条路：**数字块里的连接号**
+// ── 第五条路：**数字块里夹着的标点**
 //
-// 生卒年在矢量层常常是**一个**对象：037 的「1483－」、044 的「1808～1889」——
-// 逐类 OCR 学到的 char 只有数字，连接号在块内部或块末尾，不是独立字形，
-// 排出来就成了「1483 1546」「18081889」。行识别也救不了：PP-OCR 把那一横读丢了
-//（实测 044 那行读出的就是 `18081889`）。
-//
-// 但**字形自己说得清**：把块的子路径按 x 聚成字符组（间隙 > 0.02 个块高就断开，
-// 数字之间本来就有字距），组数减去扁条数正好等于 char 的位数时，
-// 就按组的顺序把数字与连接号排回去。扁条判据同 `rule-dash`：宽高比 ≥ 2.5、
-// 高不到块高的三成。**直线还是波浪看曲线**：那一段子路径有贝塞尔就是「～」，
-// 没有就是「-」（按高度分档会错——19162007 那条 1.02pt 高的其实是直线）。
-// 全书 41 个类，清一色生卒年。
+// 生卒年与经文出处在矢量层常常是一个对象（「1483－」「1808～1889」「1:4」），
+// 那件标点在块内部、不是独立字形，OCR 也读丢。判据（子路径按 x 聚成字符组、
+// 组数减标点组数等于位数）写在 `glyphdict.ts::blockPunct`——`gen-storyocr`
+// 补完字之后还要再走一遍同一条，所以放在那边共用。
 const inBlockRows = [];
 for (const c of Object.values(dict.classes)) {
   const ch = charOf(c.key);
-  if (!ch || !c.d || !/^\d{2,}$/.test(ch)) continue;
-  const segs = c.d.split("M").slice(1);
-  const boxes = segs
-    .map((seg) => {
-      const nums = (seg.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
-      const xs = nums.filter((_, i) => i % 2 === 0);
-      const ys = nums.filter((_, i) => i % 2 === 1);
-      return xs.length && ys.length
-        ? { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), curves: (seg.match(/C/g) ?? []).length }
-        : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.x0 - b.x0);
-  const groups = [];
-  for (const b of boxes) {
-    const last = groups[groups.length - 1];
-    if (last && b.x0 <= last.x1 + c.h * 0.02) {
-      last.x1 = Math.max(last.x1, b.x1);
-      last.y0 = Math.min(last.y0, b.y0);
-      last.y1 = Math.max(last.y1, b.y1);
-      last.n++;
-      last.curves += b.curves;
-    } else groups.push({ ...b, n: 1 });
-  }
-  const flat = (g) => g.n === 1 && (g.x1 - g.x0) / Math.max(g.y1 - g.y0, 0.01) >= 2.5 && g.y1 - g.y0 <= c.h * 0.3;
-  const flats = groups.filter(flat);
-  if (!flats.length || groups.length - flats.length !== ch.length) continue;
-  let i = 0;
-  const text = groups.map((g) => (flat(g) ? (g.curves ? "～" : "-") : ch[i++])).join("");
-  if (text !== ch) inBlockRows.push({ k: c.key, ch: text, was: ch, n: c.count });
+  if (!ch || !c.d) continue;
+  const text = cli.blockPunct(c.d, ch);
+  if (text) inBlockRows.push({ k: c.key, ch: text, was: ch, n: c.count });
 }
 if (inBlockRows.length)
   console.log(
-    `\n数字块里的连接号 ${inBlockRows.length} 类：${inBlockRows.slice(0, 8).map((r) => r.ch).join(" ")}${inBlockRows.length > 8 ? " …" : ""}`,
+    `\n数字块里夹着的标点 ${inBlockRows.length} 类：${inBlockRows.slice(0, 8).map((r) => r.ch).join(" ")}${inBlockRows.length > 8 ? " …" : ""}`,
   );
 
 // --why：按「注解里的实例数」排序，说明每个仍未定的类卡在哪一条判据上
