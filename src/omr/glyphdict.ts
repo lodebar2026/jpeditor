@@ -339,3 +339,72 @@ export class GlyphIndex {
     return this.lookup(o.data)?.char ?? null;
   }
 }
+
+/**
+ * 数字块里夹着的标点：把它排回文本里。
+ *
+ * 生卒年与经文出处在矢量层常常是**一个**对象：037 的「1483－」、044 的「1808～1889」、
+ * 060 的「1:4」——逐类 OCR（以及行识别）学到的 char 只有数字，那件标点在块内部，
+ * 不是独立字形，怎么送识别都补不回来（PP-OCR 实测就把那一横、那个冒号整个读丢了）。
+ *
+ * 字形自己说得清：把子路径按 x 聚成**字符组**（间隙超过 0.02 个块高就断开，
+ * 数字之间本来就有字距），组数减去标点组数正好等于数字位数时，按组的顺序排回去。
+ * 标点组三族：
+ *   - `-` / `～`：一笔、扁（宽高比 ≥ 2.5、高不到块高的三成）。
+ *     **直线还是波浪看曲线**——那段子路径有贝塞尔就是波浪，按高度分档会错
+ *     （实测 1.02pt 高的那条是直线，1.83pt 高的才是波浪）。
+ *   - `:`：两笔、窄（宽高比 ≤ 0.6），两点上下分离。
+ *
+ * 只认**纯数字**块：汉字块的部件本来就分得开（「作」是两组），组数对不上。
+ * 返回重排后的文本；与原文一样、或判据对不上就返回 null。
+ */
+export function blockPunct(d: string, text: string): string | null {
+  if (!/^[0-9]{2,}$/.test(text)) return null;
+  const boxes = d
+    .split("M")
+    .slice(1)
+    .map((seg) => {
+      const nums = (seg.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+      const xs = nums.filter((_, i) => i % 2 === 0);
+      const ys = nums.filter((_, i) => i % 2 === 1);
+      if (!xs.length || !ys.length) return null;
+      return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), curves: (seg.match(/C/g) ?? []).length, n: 1 };
+    })
+    .filter((b): b is NonNullable<typeof b> => !!b)
+    .sort((a, b) => a.x0 - b.x0);
+  if (!boxes.length) return null;
+  const H = Math.max(...boxes.map((b) => b.y1)) - Math.min(...boxes.map((b) => b.y0));
+  if (!(H > 0)) return null;
+  const groups: (typeof boxes)[number][] = [];
+  const parts: (typeof boxes)[number][][] = [];
+  for (const b of boxes) {
+    const last = groups[groups.length - 1];
+    if (last && b.x0 <= last.x1 + H * 0.02) {
+      last.x1 = Math.max(last.x1, b.x1);
+      last.y0 = Math.min(last.y0, b.y0);
+      last.y1 = Math.max(last.y1, b.y1);
+      last.curves += b.curves;
+      last.n++;
+      parts[parts.length - 1].push(b);
+    } else {
+      groups.push({ ...b });
+      parts.push([b]);
+    }
+  }
+  const kindOf = (g: (typeof groups)[number], ps: (typeof boxes)[number][]): string | null => {
+    const w = g.x1 - g.x0;
+    const h = Math.max(g.y1 - g.y0, 0.01);
+    if (g.n === 1 && w / h >= 2.5 && h <= H * 0.3) return g.curves ? "～" : "-";
+    if (g.n === 2 && w / h <= 0.6) {
+      const [a, b] = [...ps].sort((p, q) => p.y0 - q.y0);
+      if (b.y0 > a.y1) return ":";
+    }
+    return null;
+  };
+  const kinds = groups.map((g, i) => kindOf(g, parts[i]));
+  const marks = kinds.filter(Boolean).length;
+  if (!marks || groups.length - marks !== text.length) return null;
+  let i = 0;
+  const out = kinds.map((k) => k ?? text[i++]).join("");
+  return out === text ? null : out;
+}
