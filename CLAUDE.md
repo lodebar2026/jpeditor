@@ -37,7 +37,8 @@ npm run build && node abc-shot.mjs <abc> /tmp/abc.png  # 拖入 .abc 端到端�
 npm run build && node omr-pu-check.mjs                 # 识别→文本谱原文→回解析 逐项对拍
 npm run build:cli && node pdf-diff.mjs && node pdf-mark.mjs   # 矢量 PDF 识别 ↔ GT 对比 + 差异标记版 PDF
 node rebuild.mjs [--one=020,373] && node line-check.mjs        # 成书重排 + 判据断言（断句 D1~D10 / 版面 V1~V11 + 全书基线）
-node gen-storyocr.mjs && node gen-glyphsheet.mjs               # 整行 OCR 补字 + 人工确认表
+node gen-storyocr.mjs && node gen-glyphsheet.mjs               # 整行 OCR 补字（两引擎投票）+ 人工确认表
+swiftc -O -o tools/vision-ocr tools/vision-ocr.swift -framework Vision -framework PDFKit  # Apple Vision 那一路
 node gen-glyphaudit.mjs [祂 …]                                 # 同字多形审计：捞原书错字/错标（→ glyph_fix）
 node gen-annocheck.mjs [--issues] [--one=022]                  # 注解对比册：原件裁图 ↕ 识别文本（缺字画 □）
 node gen-glyphfuzzy.mjs [--dry] [--why]                        # 形近补字：签名匹配回字典已认得的类 + 上下文规则
@@ -151,7 +152,7 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   横向细长条两边都不参与，但**竖的不挡**——窄高的括号宽高比也在 0.25 上下；
   另有上下文规则补生卒年份的连接号）、`gen-glyphsheet.mjs`（人工确认表，`--from=layout`
   可直接从版面取）；空格没有字形对象，按**字距**还原（只对西文补）。
-  花边框正文缺字率 0.52%（565 → 84）；双细线框里的经文也走整行 OCR（原先整个漏在外面），
+  花边框正文缺字率 0.37%（565 → 60）；双细线框里的经文也走整行 OCR（原先整个漏在外面），
   冒号与数字、开头的引号都补得回来（判据见那篇的「经文出处那一行」）。
   注解框有花边纹样框与**双细线矩形框**两种（后者 53 条，`clusterRuleFrames` 认）。
   整本 675 页、注解 169/169 排入、缺字 0。

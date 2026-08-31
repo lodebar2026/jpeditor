@@ -56,3 +56,6 @@ public/redist/pdfjs
 
 # 文本谱规范外写法笔记（本地保留，不入库）
 docs/实现/文本谱-规范外写法.md
+
+# Swift 工具的编译产物（源码在 tools/*.swift，编译命令见 CLAUDE.md）
+tools/vision-ocr
