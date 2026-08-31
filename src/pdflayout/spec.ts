@@ -306,6 +306,11 @@ export function buildPageSpec(
             .filter((r): r is TextRun => !!r),
         };
       });
+    // 「一」也可能落在署名行（429 的「作词：陈赞一」），inventory 按同行上下文认出来
+    // 记成 `lyricYi`；这里按 y 带把落在署名行里的那些收回署名，剩下的留给谱行的歌词。
+    const creditObjs = pick("credit", yFrom, yTo);
+    const creditBottom = creditObjs.length ? Math.max(...creditObjs.map((o) => bottom(o.obj.bbox))) : -Infinity;
+    const creditYi = creditObjs.length ? pick("lyricYi", yFrom, creditBottom + 2) : [];
     songs.push({
       id: e.id,
       gtTitle: e.title,
@@ -316,7 +321,7 @@ export function buildPageSpec(
       titleRun: toTextRun(pick("title", yFrom, yTo), lookup),
       keyMeterRun: toTextRun(pick("keyMeter", yFrom, yTo), lookup),
       categoryRun: null,
-      creditRuns: groupLines(pick("credit", yFrom, yTo))
+      creditRuns: groupLines([...creditObjs, ...creditYi])
         .map((ln) => toTextRun(ln, lookup))
         .filter((r): r is TextRun => !!r),
       systems,
