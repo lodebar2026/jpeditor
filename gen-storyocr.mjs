@@ -28,6 +28,22 @@ const LAYOUT = flags.layout ?? "pdf-layout.json";
 const DICT = flags.dict ?? "testdata/500/glyphdict.json";
 const UNREAD = "�";
 
+/** d 串的各条子路径包围盒（只需 M 分段与坐标，指令字母当分隔符）。 */
+const subBoxes = (d) =>
+  d
+    .split("M")
+    .slice(1)
+    .map((seg) => {
+      const nums = (seg.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+      const xs = nums.filter((_, i) => i % 2 === 0);
+      const ys = nums.filter((_, i) => i % 2 === 1);
+      return xs.length && ys.length
+        ? { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }
+        : null;
+    })
+    .filter(Boolean);
+
+
 const cli = await loadCli();
 const dict = JSON.parse(await readFile(DICT, "utf8"));
 const { pages } = JSON.parse(await readFile(LAYOUT, "utf8"));
@@ -50,6 +66,47 @@ const dictChar = new Map();
 for (const c of Object.values(dict.classes)) if (c.char) dictChar.set(c.key, c.char);
 /** 这个字形现在读作什么（人工/上一轮定案优先），读不出给 null。 */
 const charOf = (key) => fixes[key] ?? fixes[repOf(key)] ?? dictChar.get(key) ?? null;
+
+// ── 开工前先体检：**两头多出来的句读点**
+//
+// 上一轮（以及更早）的行识别给多字块补字时，会顺手把段末的句号也塞进块里：
+// 「而作。」那个块只有 21.6pt 宽——两个汉字的位置，第三个字根本站不下，
+// 于是排出来就是「而作。。」（块里一个、后面那个独立的句号对象一个）。
+// 宽度分不开（句号的墨迹只有 3pt，加不加都在阈值内），**字形能**：
+// 句读点是个矮矮的小点（墨迹高不到块高的四成、宽高比接近 1），
+// 块的最后一组子路径要不是这么个点，那个句号就是补出来的。首部同理。
+// 全书 29 类，清一色「两个汉字 + 多余的句号」或「数字 + 多余的顿号」。
+{
+  const SENT_PUNCT = /[。，、；：]/;
+  const smallDot = (g, H) => g && g.y1 - g.y0 <= H * 0.4 && (g.x1 - g.x0) / Math.max(g.y1 - g.y0, 0.01) >= 0.6 && (g.x1 - g.x0) / Math.max(g.y1 - g.y0, 0.01) <= 1.7;
+  const rows = [];
+  for (const [key, ch] of Object.entries(fixes)) {
+    const c = shapeOf.get(key);
+    if (!c || [...ch].length < 2) continue;
+    if (!SENT_PUNCT.test(ch[0]) && !SENT_PUNCT.test(ch[ch.length - 1])) continue;
+    const bs = subBoxes(c.d).sort((a, b) => a.x0 - b.x0);
+    if (!bs.length) continue;
+    const H = Math.max(...bs.map((b) => b.y1)) - Math.min(...bs.map((b) => b.y0)) || 1;
+    const gs = [];
+    for (const b of bs) {
+      const last = gs[gs.length - 1];
+      if (last && b.x0 <= last.x1 + H * 0.02) {
+        last.x1 = Math.max(last.x1, b.x1);
+        last.y0 = Math.min(last.y0, b.y0);
+        last.y1 = Math.max(last.y1, b.y1);
+      } else gs.push({ ...b });
+    }
+    let t = ch;
+    if (SENT_PUNCT.test(t[t.length - 1]) && !smallDot(gs[gs.length - 1], H)) t = t.slice(0, -1);
+    if (t.length > 1 && SENT_PUNCT.test(t[0]) && !smallDot(gs[0], H)) t = t.slice(1);
+    if (t && t !== ch) rows.push({ shape_key: key, char: t, source: "ocr-line-fix" });
+  }
+  if (rows.length) {
+    console.log(`两头多出来的句读点：剥掉 ${rows.length} 类（${rows.slice(0, 6).map((r) => r.char).join(" ")}${rows.length > 6 ? " …" : ""}）`);
+    if (!DRY) recordGlyphFixes(db, rows);
+    for (const r of rows) fixes[r.shape_key] = r.char;
+  }
+}
 
 // ── 要送识别的行：花边框正文 + 目录/索引/前言页的文本行。
 //    乐谱页的歌词行不送——那一路有 GT，gen-glyphdict 已经自举过，再送只会添乱。
@@ -189,13 +246,19 @@ const emOf = (t) => [...t].reduce((a, c) => a + charEm(c), 0);
 function trimToWidth(text, w, u) {
   const cands = new Set([text, text.replace(/^[^\p{L}\p{N}]+/u, ""), text.replace(/[^\p{L}\p{N}]+$/u, "")]);
   cands.add(text.replace(/^[^\p{L}\p{N}]+/u, "").replace(/[^\p{L}\p{N}]+$/u, ""));
-  let best = null;
+  const errOf = (t) => Math.abs(w - u * emOf(t));
+  const base = errOf(text);
+  let best = { t: text, err: base };
   for (const t of cands) {
-    if (!t) continue;
-    const err = Math.abs(w - u * emOf(t));
-    if (!best || err < best.err) best = { t, err };
+    if (!t || t === text) continue;
+    const err = errOf(t);
+    if (err < best.err) best = { t, err };
   }
-  if (!best) return null;
+  // **只有显著更优才剥**（误差降到原文的一半以下）。字身宽是拿汉字块估的，
+  // 对西文偏大——「E.」（9.2pt）按 1 个字身算差 4.2，剥成「E」差 2.5，
+  // 一律取小的话点就没了，而剥完的单个拉丁字母又会被 takeable 挡掉，整块全丢。
+  // 「(代上」那种真该剥的差得远（5.5 → 0.6），这条闸拦不住它。
+  if (best.t !== text && best.err > base / 2) best = { t: text, err: base };
   return best.err > Math.max(u * emOf(best.t) * 0.3, u * 0.35) ? null : best.t;
 }
 /**
@@ -251,6 +314,47 @@ function splitByWidth(elems, items, text, uLine) {
   }
   return parts;
 }
+
+/**
+ * 这个块的**两头**是不是一条扁横条（连接号）。
+ *
+ * 「1483－」「1808～1889」这种块，逐类 OCR 学到的 char 只有数字，连接号在块内部
+ * 或块末尾，不是独立字形——037 的生卒年就这么成了「1483 1546」。
+ * 让 OCR 的匹配串在两头各多带一个标点是危险的（「(诗 150:6)」的「150」会顺手
+ * 把冒号吃进去），所以要**字形说了算**：只有那一头的子路径确实是条扁横条
+ *（宽高比 ≥ 2.5、只占整块高度的三成以内）才许带。
+ */
+const dashEnds = (d) => {
+  const bs = subBoxes(d).sort((a, b) => a.x0 - b.x0);
+  if (!bs.length) return { head: false, tail: false };
+  const h = Math.max(...bs.map((b) => b.y1)) - Math.min(...bs.map((b) => b.y0)) || 1;
+  // 子路径按 x 聚成字符组（数字之间本来就有字距），只看两头那一组
+  const gs = [];
+  for (const b of bs) {
+    const last = gs[gs.length - 1];
+    if (last && b.x0 <= last.x1 + h * 0.02) {
+      last.x1 = Math.max(last.x1, b.x1);
+      last.y0 = Math.min(last.y0, b.y0);
+      last.y1 = Math.max(last.y1, b.y1);
+      last.n++;
+    } else gs.push({ ...b, n: 1 });
+  }
+  /** 独立的一件小标点，**分两族**：横着的是连接号，方的是句读点。 */
+  const kind = (g) => {
+    if (!g || g.n !== 1) return null;
+    const w = g.x1 - g.x0;
+    const hh = Math.max(g.y1 - g.y0, 0.01);
+    if (w / hh >= 2.5 && hh <= h * 0.3) return "dash";
+    if (hh <= h * 0.4 && w / hh >= 0.6 && w / hh <= 1.7) return "dot";
+    return null;
+  };
+  return { head: kind(gs[0]), tail: kind(gs[gs.length - 1]) };
+};
+/** 结果里有非 ASCII（汉字、书名号…）就把半角句读点还原成全角
+ *  ——`gt` 是 NFKC 过的，「，」在那儿是 ","，照抄会把全角标点排成半角。 */
+const toFullPunct = (t) =>
+  /[^\x00-\x7f]/.test(t) ? t.replace(/,/g, "，").replace(/;/g, "；").replace(/:/g, "：").replace(/\./g, "。") : t;
+const RE_ESC = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const median = (v) => (v.length ? [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)] : 0);
 const fill = new Map(); // repKey → Map(text → 票数)
@@ -337,17 +441,38 @@ for (let i = 0; i < lines.length; i++) {
       }
       if (best) at = best.at;
     }
-    if (at < 0 && /^\d{3,}$/.test(t)) {
+    // 块尾/块首那条横条要单独问一句：`indexOf` 找得到「1483」（它是「1483-」的前缀），
+    // 光看 at < 0 会漏掉尾部多一个连接号的那一族（037 的生卒年就是这样）。
+    // 块的两头**多着一件标点**是常事：「1483－」的连字符、「》，」的逗号——
+    // 逐类 OCR 学到的 char 只有主体，那件标点在块内部，不是独立字形。
+    // 只有**字形上确实多着那么一件**（两头那一组是一笔的矮点或扁条）才许 OCR 多带一个，
+    // 否则「(诗 150:6)」的「150」会顺手把冒号吃进去。
+    const PUNCT_ANY = /[:.\-~～–—,，。、；;：]/;
+    const ends = shapeOf.has(e.key) ? dashEnds(shapeOf.get(e.key).d) : { head: null, tail: null };
+    // **纯数字块只认连接号**：目录条目的曲号后面跟着引导点，「279」的尾巴上
+    // 认出个矮点就写成「279.」，全书目录会被改得一塌糊涂。生卒年那一横不在此列。
+    const digits = /^\d+$/.test(t);
+    const ok = (k) => k === "dash" || (k === "dot" && !digits);
+    const headOK = ok(ends.head) && !PUNCT_ANY.test(t[0]);
+    const tailOK = ok(ends.tail) && !PUNCT_ANY.test(t[t.length - 1]);
+    if ((at < 0 || headOK || tailOK) && shapeOf.has(e.key) && (/^\d{3,}$/.test(t) || headOK || tailOK)) {
       // **块内丢了标点的数字**：这个元素读作「11824」，OCR 读出的是「118:24」。
       // 数字序列一字不差、只是中间多了标点——这一条硬到不用投票边际：
       // 在 gt 里按「数字之间允许插入一个 : . - 」重找，命中就连带把这个类改对
       //（`source=ocr-line-fix`，比补空更险，所以闸另设 0.75）。
-      const re = new RegExp([...t].join("[:.\\-]?"));
+      // 连接号那一族也算：年份区间用的是「～」，经文出处用的是「-」。
+      const P = "[:.\\-~～–—,;]";
+      const DASH = "[-~～–—]";
+      const DOT = "[,;:.，。、；：]";
+      const side = (k) => (k === "dash" ? DASH : DOT) + "?";
+      // 纯数字块的连接号可能在**中间**（「1808～1889」），别的块只看两头。
+      const body = /^\d{3,}$/.test(t) ? [...t].join(`${P}?`) : RE_ESC(t);
+      const re = new RegExp(`${headOK ? side(ends.head) : ""}${body}${tailOK ? side(ends.tail) : ""}`);
       const m = re.exec(gt.slice(cur));
       if (m && m[0] !== t) {
         at = cur + m.index;
         len = m[0].length;
-        bump(digitFix, e.key, m[0], 2);
+        bump(digitFix, e.key, toFullPunct(m[0]), 2);
       }
     }
     if (at < 0) continue; // 这个锚点没找到（OCR 读错或漏），并进下一段
@@ -356,6 +481,10 @@ for (let i = 0; i < lines.length; i++) {
     cur = at + len;
   }
   if (pending.length) segs.push({ from: cur, to: gt.length, items: pending });
+  // 一行都没分出段也要记进 trace——**整行已知**的那些正是靠 `digitFix` 纠错的
+  //（「1808～1889」那种块内丢标点的行），出了问题只能从这里看。
+  if (trace.length < 60)
+    trace.push({ page: lines[i].page, now: elems.map((e) => e.text ?? UNREAD).join(""), ocr: gt, segs: segs.length });
   if (!segs.length) continue;
   aligned++;
   /**
@@ -383,8 +512,6 @@ for (let i = 0; i < lines.length; i++) {
       if (cuts) cuts.forEach((t, k) => takeable(sg.items[k], t) && bump(fill, elems[sg.items[k]].key, t, 2));
     }
   }
-  if (trace.length < 60)
-    trace.push({ page: lines[i].page, now: elems.map((e) => e.text ?? UNREAD).join(""), ocr: gt, segs: segs.length });
 }
 console.log(`分段成功 ${aligned}/${lines.length} 行`);
 

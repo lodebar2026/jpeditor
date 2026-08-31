@@ -264,7 +264,14 @@ export function annotationBlock(style: BookStyle, o: AnnotationOptions): Annotat
   // 原文里的换行是**原书那一框的排版结果**，不是内容里的分段（gen-bookmeta 是按视觉行拼的）。
   // 照着它分段再各自折行，每行就只有原书那么长——重排后的框更宽，右边会空掉一大截
   //（037 的故事框只排到半幅宽）。所以先把软换行抹平，整段重新折。
-  const lines = wrapText(o.text.replace(/\r?\n/g, ""), "story", size, innerW, o.measure).filter((l) => l.trim());
+  // 抹平时**西文之间要补回空格**：矢量层没有空格对象，行内的空档靠字距还原
+  //（`bookmeta.ts::runText`），可行末那个空档无处可看——044 的
+  //「(Horatius ⏎ Bonar」抹平就成了「HoratiusBonar」。两侧都是拉丁字母或数字才补，
+  // 汉字之间不补；上一行末尾是连接号（`1483-` ⏎ `1546`）也不补。
+  const flat = o.text
+    .replace(/(.)\r?\n(.)/gs, (_m, a: string, b: string) => (/[A-Za-z0-9]/.test(a) && /[A-Za-z0-9]/.test(b) ? `${a} ${b}` : `${a}${b}`))
+    .replace(/\r?\n/g, "");
+  const lines = wrapText(flat, "story", size, innerW, o.measure).filter((l) => l.trim());
   const items: DrawItem[] = [];
   const textTop = o.top + padY;
   lines.forEach((l, i) => items.push(textItem(l, "story", size, o.left + padX, textTop + size + i * o.lineGap)));
