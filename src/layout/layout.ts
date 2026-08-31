@@ -1272,7 +1272,10 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
         ? [Math.max(g.hangLeft, g.anchorX - g.width / 2), g.anchorX]
         : [g.anchorX];
     for (const x of cands) if (!hit(x)) return { x, lifted: false, shortfall: 0 };
-    const x = cands[cands.length - 1];
+    // 都撞就退回**首选**那个落点报差额（不是最后一个候选）：差额是拿来匀空档的，
+    // 照更靠右的候选算会多推一截，词摆回首选落点后与和弦之间就空出小半个词
+    // （173/189/193 空出 15pt）。
+    const x = cands[0];
     const block = hit(x)!;
     return { x, lifted: true, shortfall: x + g.width + gap - block.x0 };
   }
