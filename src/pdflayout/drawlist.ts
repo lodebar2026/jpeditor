@@ -83,7 +83,16 @@ export interface DrawPage {
   h: number;
   meta: {
     kind: PageKind;
-    songs: { id: string | null; title: string | null; first: boolean }[];
+    /** 本页上的曲目。**一页可能两首**（半页起排），下游一律按 y 带归属，
+     *  别再假设 `songs[0]` 就是本页唯一那首（见 rebuild.mjs 的装箱器、line-check.mjs）。 */
+    songs: {
+      id: string | null;
+      title: string | null;
+      first: boolean;
+      /** 本首在页内占的 y 带（含标题块）。半页起排时靠它把 item 归给正确的曲子。 */
+      yFrom?: number;
+      yTo?: number;
+    }[];
     /** 页面上印的页码文本（A 路照抄原件，B 路重新生成）。 */
     pageLabel?: string | null;
   };

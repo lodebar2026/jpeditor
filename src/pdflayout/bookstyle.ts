@@ -200,6 +200,9 @@ export interface TitleBlock {
   firstSystemTop: number;
   /** 续页第一条谱行的音符墨迹上缘。 */
   contSystemTop: number;
+  /** **半页起排**：上一首的内容墨迹底 → 本首曲号基线的净距（原书 25 处实测中位数）。
+   *  标题块内部的几个基线相对曲号基线的偏移与页顶起排共用（同一版式，整体下移）。 */
+  midStartGap: number;
   /** 页眉 / 页码的基线（页内绝对 y）。 */
   headerBaseline: number;
   footerBaseline: number;
@@ -484,6 +487,7 @@ export function defaultBookStyle(): BookStyle {
       creditLineGap: 15.6,
       firstSystemTop: 139.95,
       contSystemTop: 106,
+      midStartGap: 40,
       headerBaseline: 68.9,
       footerBaseline: 556.5,
     },

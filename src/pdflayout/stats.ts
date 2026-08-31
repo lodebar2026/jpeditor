@@ -215,6 +215,8 @@ export interface MetricSamples {
   creditLineGap: number[];
   firstSystemTop: number[];
   contSystemTop: number[];
+  /** 半页起排：上一首的内容墨迹底 → 本首曲号基线的净距（只从原书那 25 处半页起排的曲子量）。 */
+  midStartGap: number[];
 }
 
 function emptySamples(): MetricSamples {
@@ -230,7 +232,7 @@ function emptySamples(): MetricSamples {
     titleToSystem: [], creditToSystem: [], keyMeterToSystem: [],
     oddX0: [], oddX1: [], evenX0: [], evenX1: [], topY: [], bottomY: [],
     numberBaseline: [], titleBaseline: [], keyMeterBaseline: [], creditFirstBaseline: [],
-    creditLineGap: [], firstSystemTop: [], contSystemTop: [],
+    creditLineGap: [], firstSystemTop: [], contSystemTop: [], midStartGap: [],
   };
 }
 
@@ -269,8 +271,14 @@ export function collectMetricSamples(pages: PageSpec[], opt: SampleOptions = {})
     }
     let pageX0 = Infinity;
     let pageX1 = -Infinity;
-    for (const s of p.songs) {
+    // 一页可能印两首（原书 11 页如此）。**按 yFrom 排序**再扫：
+    // 「本页第一首」才是页顶起排，标题块那几个**绝对 y** 只许从它身上量；
+    // 下半页那首量的是**相对上一首的净距**（midStartGap）。混在一起会把全书的绝对基线拉偏。
+    const songsOnPage = [...p.songs].sort((a, b) => a.yFrom - b.yFrom);
+    let prevBottom = -Infinity; // 上一首的内容墨迹底（末条歌词的墨迹底）
+    for (const s of songsOnPage) {
       const sys = s.systems;
+      const atPageTop = s === songsOnPage[0];
       for (let i = 0; i < sys.length; i++) {
         const y = sys[i];
         const notes = y.notes.filter((n) => n.h > 0 && n.w > 0);
@@ -410,22 +418,32 @@ export function collectMetricSamples(pages: PageSpec[], opt: SampleOptions = {})
       // 标题块：只在这首歌起始的那一页量
       if (s.startsHere && sys.length) {
         const top = sys[0].noteTop;
-        out.firstSystemTop.push(top);
-        if (s.titleRun) {
-          out.titleToSystem.push(top - s.titleRun.baselineY);
-          out.titleBaseline.push(s.titleRun.baselineY);
-        }
-        if (s.numberRun) out.numberBaseline.push(s.numberRun.baselineY);
-        if (s.keyMeterRun) {
-          out.keyMeterToSystem.push(top - s.keyMeterRun.baselineY);
-          out.keyMeterBaseline.push(s.keyMeterRun.baselineY);
-        }
+        // 标题块内部的**相对量**（标题/调号/署名到首行音符）两种起排方式共用，一律收；
+        // **绝对 y** 只收页顶起排的那一首。
+        if (s.titleRun) out.titleToSystem.push(top - s.titleRun.baselineY);
+        if (s.keyMeterRun) out.keyMeterToSystem.push(top - s.keyMeterRun.baselineY);
         // 署名只取标题块里那几行：creditRuns 会捎上歌词区里被判成 credit 的标点
         const cr = s.creditRuns.filter((c) => c.baselineY < top).map((c) => c.baselineY).sort((a, b) => a - b);
-        if (cr.length) out.creditFirstBaseline.push(cr[0]);
         for (let k = 1; k < cr.length; k++) out.creditLineGap.push(cr[k] - cr[k - 1]);
+        if (atPageTop) {
+          out.firstSystemTop.push(top);
+          if (s.titleRun) out.titleBaseline.push(s.titleRun.baselineY);
+          if (s.numberRun) out.numberBaseline.push(s.numberRun.baselineY);
+          if (s.keyMeterRun) out.keyMeterBaseline.push(s.keyMeterRun.baselineY);
+          if (cr.length) out.creditFirstBaseline.push(cr[0]);
+        } else if (s.numberRun && Number.isFinite(prevBottom)) {
+          // 半页起排：量「上一首末条歌词的墨迹底 → 本首曲号基线」。
+          // 曲号基线是标题块的最上沿，标题块内部的相对量与页顶那套共用（同一版式，整体下移）。
+          out.midStartGap.push(s.numberRun.baselineY - prevBottom);
+        }
       } else if (sys.length) {
         out.contSystemTop.push(sys[0].noteTop);
+      }
+
+      // 本首的内容墨迹底，留给下半页那首量 midStartGap 用
+      for (const y of sys) {
+        for (const l of y.lyricLines) prevBottom = Math.max(prevBottom, bottom(l.box));
+        prevBottom = Math.max(prevBottom, y.noteBottom);
       }
     }
     if (Number.isFinite(pageX0)) (p.page % 2 === 1 ? out.oddX0 : out.evenX0).push(pageX0);
@@ -641,6 +659,7 @@ export function inferBookStyle(
   rec("creditLineGap", ms.creditLineGap, false);
   rec("firstSystemTop", ms.firstSystemTop, false);
   rec("contSystemTop", ms.contSystemTop, false);
+  rec("midStartGap", ms.midStartGap, false);
 
   // 三个层距（高音点上距 / 低音点下距 / 减时线首层距）够近才共用一把尺子，
   // 否则 applyBookStyle 那边要分开覆写（见计划 §5.3 与 docs/实现/简谱纵向栅格.md）。
@@ -730,6 +749,7 @@ export function inferBookStyle(
       creditLineGap: pt(ms.creditLineGap) || base.titleBlock.creditLineGap,
       firstSystemTop: pt(ms.firstSystemTop) || base.titleBlock.firstSystemTop,
       contSystemTop: pt(ms.contSystemTop) || base.titleBlock.contSystemTop,
+      midStartGap: pt(ms.midStartGap) || base.titleBlock.midStartGap,
       headerBaseline: pt(ms.topY) || base.titleBlock.headerBaseline,
       footerBaseline: pt(ms.bottomY) || base.titleBlock.footerBaseline,
     },
