@@ -22,9 +22,10 @@ const UNREAD = "�";
 /** 一个 run 的文本，套上人工/OCR 补字。读不出的位置留空（**绝不写问号**，
  *  那会跟着排进 PDF）。 */
 /** 西文（拉丁字母 / 数字）—— 只有这两族之间才按字距补空格。
- *  左边那头**连缩写点也算**：047 的「Carrie E. Breck」里「E.」是一个对象，
- *  以点结尾，不认的话空格就补不出来（半角句点只出现在西文语境，不会误伤中文句号）。 */
-const LATIN_EDGE = /[A-Za-z0-9.]$/;
+ *  左边那头**连缩写点、逗号也算**：047 的「Carrie E. Breck」里「E.」是一个对象、
+ *  111 的「John Su, 1916-2007」里「Su,」是一个对象，都以标点结尾，
+ *  不认的话空格就补不出来（半角句点/逗号只出现在西文语境，不会误伤中文标点）。 */
+const LATIN_EDGE = /[A-Za-z0-9.,]$/;
 const LATIN_HEAD = /^[A-Za-z0-9]/;
 
 export function runText(run: TextRun | null | undefined, ov?: CharOverride): string {
@@ -37,7 +38,10 @@ export function runText(run: TextRun | null | undefined, ov?: CharOverride): str
     // **空格在矢量 PDF 里没有对象**，只能按字距还原：西文词之间的空档比字内间隙宽得多
     //（037 的「Martin Luther」两个对象之间空 4.5pt，字号才 8.8）。
     // 只在两侧都是西文时补——汉字之间本来就疏，照这个补会到处塞空格。
-    if (prev && LATIN_EDGE.test(prev.text) && LATIN_HEAD.test(text)) {
+    // **数字紧跟数字不补**：同一个数不会被空格断开，而「1789」在矢量层常是
+    // 「1」+「789」两个对象（字距照样过得了下面那道闸），补出来就成了「1 789」。
+    const digitRun = /[0-9]$/.test(prev?.text ?? "") && /^[0-9]/.test(text);
+    if (prev && !digitRun && LATIN_EDGE.test(prev.text) && LATIN_HEAD.test(text)) {
       const gap = c.x - prev.right;
       if (gap > Math.max(prev.h, c.h) * 0.22) out.push(" ");
     }
@@ -409,11 +413,35 @@ export function groupBoxRows(lines: TextRun[]): TextRun["chars"][] {
   return rows.map((r) => [...r.items].sort((a, b) => a.x - b.x));
 }
 
+/**
+ * 注解正文里读不出的**扁横条**就是「一」。
+ *
+ * 歌词那一路**故意不收**「一」（`gen-glyphfuzzy` 的 `NEVER`）：谱面上它与减时线、
+ * 增时线同形，捞回来插进序列反而错位，实测准确率 86.9% → 72.7%。
+ * 但注解框里没有减时线——框内一律 `storyText`——横条只可能是字。
+ * 上下文也印证：「达十⟦?⟧年之久」「四十⟦?⟧岁」「下第⟦?⟧首圣诗」「她⟦?⟧共写了」。
+ *
+ * 判据两条：宽高比 ≥ 5，且宽度正好一个字身（0.8~1.25 个，按这一行的墨迹高估）。
+ * 连接号不在此列——它宽 1.34 个字身、又细得多（11.3×0.47 → 宽高比 24），
+ * 而且它根本不是字形对象（`withInlineDashes` 插进来的伪字，`ch` 已经填好了）。
+ */
+function hbarAsYi(items: TextRun["chars"], ov?: CharOverride): TextRun["chars"] {
+  const hs = items.map((c) => c.h).filter((h) => h > 2).sort((a, b) => a - b);
+  const em = hs.length ? hs[Math.floor(hs.length / 2)] : 0;
+  if (!em) return items;
+  return items.map((c) => {
+    if (c.ch !== UNREAD || ov?.(c.key, c.ch)) return c;
+    const ratio = c.w / Math.max(c.h, 0.01);
+    if (ratio < 5 || c.w < em * 0.8 || c.w > em * 1.25) return c;
+    return { ...c, ch: "一", key: "" };
+  });
+}
+
 /** 框内文字重新聚行 → 逐行文本（聚行判据见 `groupBoxRows`）。 */
 export function regroupBoxLines(lines: TextRun[], ov?: CharOverride): string[] {
   return (
     groupBoxRows(lines)
-      .map((items) => runText({ chars: items } as TextRun, ov))
+      .map((items) => runText({ chars: hbarAsYi(items, ov) } as TextRun, ov))
       // 花边框四角的纹样偶尔被当成字（读作 X / XX），一两个拉丁字母独占一行
       // 在这本书的注解正文里不可能出现，丢掉。
       .filter((t) => t.trim().length >= 2 && !/^[A-Za-z]{1,2}$/.test(t.trim()))
