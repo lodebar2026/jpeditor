@@ -1177,9 +1177,14 @@ export interface SectionWordGeom {
   hangLeft: number;
   /** 行的右缘（版心右缘）。**段落词一个字都不许挂到版心外面**，越过小节线也不行。 */
   rightLimit: number;
-  /** 行首那一条：**跨在锚点上方**（谱面为它缩进过，见 `Line.sectionWordIndent`）——
-   *  左括号落到音符左边、词身压着音符，而不是整个躲到左边去。 */
+  /** 行首那一条：落点只有「就地」和「跨在锚点上」两种，不许往右让、更不许抬起来。 */
+  atLineStart?: boolean;
+  /** 谱面为它缩进过（`Line.sectionWordIndent`），于是**跨在锚点上方**——左括号落到
+   *  音符左边、词身压着音符。没缩进过就老老实实从锚点起排。 */
   straddle?: boolean;
+  /** 锚点音符**自己头上那个和弦**的右缘（没有就不给）。它跟着音符走，撑开、匀空档
+   *  都够不着，所以词只能落到它右边去（原书的 `G（副歌）`）。 */
+  ownChordRight?: number;
 }
 
 /** 段落词的落点。 */
@@ -1244,20 +1249,32 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
   // 只能靠 spreadForSectionWords 撑开本小节：小节线右边的东西整体右移，段落词留在原处，空档就出来了。
   // 「撞不撞」按**留了净空的**区间算：光看有没有重叠，落点会紧贴着和弦停下
   //（173 的「（副歌）」右括号与 G 之间只剩 0.4pt）。
+  // 纵向那一档取 1.5 个字身：和弦记的是**框顶**、段落词记的是**基线**，两者同带时差
+  // 恰好一个字身上下——照 `< size` 判会**整整差一线**地判成「不同带、不算撞」，
+  // 于是词就直接印在和弦上（020 行首的 B）。
   const hit = (x: number): { x0: number; x1: number } | undefined =>
-    g.chords.find((c) => Math.abs(c.y - g.baseY) < g.size && x - gap < c.x1 && c.x0 < x + g.width + gap);
+    g.chords.find((c) => Math.abs(c.y - g.baseY) < g.size * 1.5 && x - gap < c.x1 && c.x0 < x + g.width + gap);
   // 行首那一条先试「跨在锚点上」：谱面已经为它缩进过半个词（`sectionWordIndent`），
   // 左边那点地方就是给左括号留的。整个躲到音符左边没必要，就地从锚点起排又会把
   // 音符与小节线之间豁开一道口子——摆中间，两头都只让半个词。
-  if (g.straddle) {
-    const mid = Math.max(g.hangLeft, g.anchorX - g.width / 2);
-    const block = hit(mid);
-    // 撞上了也**摆在这儿不动**，只报「后面那个和弦还得让开多少」——行首这一条不许再往右
-    // 挪、更不许抬到和弦上方（那是刻意否掉的），差的量由 `Line.nudgeForSectionWords`
+  if (g.atLineStart) {
+    // 行首这一条只在两个落点里挑：**就地**（从锚点起排）或**跨在锚点上**（谱面为它
+    // 缩进过时）。跨在音符上是首选，但**锚点音符自己头上有和弦**时（020 行首的 B）
+    // 那个和弦挪不动——它跟着锚点走，撑开、匀空档都够不着它，于是整个词让到最左边。
+    // 撞上了也**摆在这儿不动**，只报「后面那个和弦还得让开多少」——不许再往右让、
+    // 更不许抬到和弦上方（刻意否掉的），差的量由 `Line.nudgeForSectionWords`
     // 在 justify 之后从行内其它空档里匀出来。
-    return block
-      ? { x: mid, lifted: true, shortfall: mid + g.width + gap - block.x0 }
-      : { x: mid, lifted: false, shortfall: 0 };
+    // **锚点音符自己头上压着和弦**时（020/103/131 行首的那个）它是挪不开的——它跟着
+    // 音符走，撑开、匀空档都够不着。那就只有一个落点：它的右边（原书的 `G（副歌）`）。
+    const cands = g.ownChordRight !== undefined
+      ? [g.ownChordRight + gap]
+      : g.straddle
+        ? [Math.max(g.hangLeft, g.anchorX - g.width / 2), g.anchorX]
+        : [g.anchorX];
+    for (const x of cands) if (!hit(x)) return { x, lifted: false, shortfall: 0 };
+    const x = cands[cands.length - 1];
+    const block = hit(x)!;
+    return { x, lifted: true, shortfall: x + g.width + gap - block.x0 };
   }
   const first = hit(g.anchorX);
   if (!first) return { x: g.anchorX, lifted: false, shortfall: 0 };
@@ -1268,7 +1285,12 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
   let cand = first.x1 + gap;
   let block = hit(cand);
   while (block && block.x0 < g.barRight) {
-    cand = block.x1 + gap;
+    // **落点必须真的往前走**，否则原地打转停不下来：`hit` 现在按「留了净空的区间」判，
+    // 而候选落点正是 `挡路者.x1 + gap`，浮点上 `x1 + gap - gap` 可能比 `x1` 小那么一丁点，
+    // 于是又命中同一个和弦（160《我需要祢》就这样把排版卡死）。
+    const next = block.x1 + gap;
+    if (next <= cand) break;
+    cand = next;
     block = hit(cand);
   }
   // 落点**起点必须留在本小节内**；尾巴可以伸过小节线（原书就有印到线右边的），只要不压字、不出版心。
@@ -1296,6 +1318,9 @@ export function placeSectionWord(g: SectionWordGeom): SectionWordSlot {
 
 export class Line {
   group = new Group();
+  /** 本行为行首段落词让出的左缩进（`sectionWordIndent` 定，`updateXPos` 施加）。
+   *  只有让过地方的行，段落词才按「跨在音符上」摆。 */
+  sectionIndent = 0;
   entries: Entry[] = [];
   beams: BeamLine[] = [];
   maxBeamLevel = 0;
@@ -1617,7 +1642,9 @@ export class Line {
             barRight: barRight0 + spread,
             hangLeft: sectionWordHangLeft(barLeftAt),
             rightLimit: lineWidth || this.group.width || barRight0 + spread,
-            straddle: this.entries[0] === e,
+            atLineStart: this.entries[0] === e,
+            straddle: this.sectionIndent > 0,
+            ownChordRight: this.ownChordRight(e),
           });
       };
       // **先问 justify 之后放不放得下**：本行内容窄时（副歌那种只有一个弱起音符起头的行）
@@ -1818,6 +1845,7 @@ export class Line {
     // 行首那一条段落词要挂到音符**左边**，得先给它腾出地方：整行**左缩进**一截，
     // 排版按缩进后的宽度做，排完整行右移回来（见 sectionWordIndent）。
     const indent = l.sectionWordIndent(opt, width);
+    l.sectionIndent = indent;
     l.spreadForSectionWords(opt, width - indent);
     l.adjust(width - indent, opt.maxHorizontalScale);
     if (indent > 0) for (const e of l.entries) e.group.x += indent;
@@ -1847,6 +1875,14 @@ export class Line {
     if (opt.sectionWordSize > 0 && e.chord.sectionWord) {
       const font = opt.lrcFont.makeWithSize(opt.sectionWordSize);
       const w = sectionWordRun(font, e.chord.sectionWord, opt.punctCompress).width;
+      // **就地摆得下就别折腾**：判据是「从锚点起排要压掉右边的和弦多少」——025 的
+      // 「副歌」两个字后面老远才有和弦，直接排在音符上方就是了。压得不多（不到一道净空）
+      // 也不缩进：那点量在 justify 之后由 `nudgeForSectionWords` 从行内匀掉就行，
+      // 整行缩进反而把音符推走一大截（101 只差 1.4pt 却缩进了 10pt）。
+      // 量按 **justify 之后**的间距算：justify 之前行是紧的，照它判会把一大批本来
+      // 放得下的也拖进来。
+      const over = this.probeJustified(width, opt, () => this.sectionWordOverlap(e, w, opt));
+      if (over <= opt.sectionWordSize * 0.6) return 0;
       // 要的地方**正好是「词的左半边探出音符墨迹的那一截」**：缩进这么多之后，词的左端
       // 贴着版心左缘、中心对着锚点音符。多要一点（比如再搭个和弦净空）词就整个往右挪，
       // 左边白空一截（189 曾在版心左缘与「（副歌）」之间空出 15pt）。
@@ -1854,12 +1890,37 @@ export class Line {
       // 整体偏右半个数字，看着就不居中（193）。
       const it = e.entryItem();
       need = w / 2 - (it ? it.x + it.width / 2 : 0);
+      // 锚点音符**自己头上就有和弦**时词跨不上去，那种情形由 `placeSectionWord` 让到
+      // 和弦右边（原书的 `G（副歌）`），缩进帮不上忙。
+      if (this.chordGroups(e).length) return 0;
     }
     need = Math.max(need, this.verseNumberIndent(opt, e));
     if (need <= 0) return 0;
     let right = 0;
     for (const ent of this.entries) right = Math.max(right, ent.group.x + ent.group.childrenBound.right);
     return need <= width - right ? need : 0;
+  }
+
+  /** 锚点音符**自己头上**那个和弦的右缘（行坐标）。没有和弦就返回 undefined。 */
+  private ownChordRight(e: NoteEntry): number | undefined {
+    let right: number | undefined;
+    for (const it of this.chordGroups(e)) right = Math.max(right ?? -Infinity, e.group.x + it.x + it.width);
+    return right;
+  }
+
+  /** 段落词**就地从锚点起排**要压掉右边和弦多少（含净空；不压就是 0）。 */
+  private sectionWordOverlap(e: NoteEntry, width: number, opt: LayoutOptions): number {
+    const size = opt.sectionWordSize;
+    const gap = size * 0.6;
+    const chords = this.chordBoxes();
+    const anchorX = e.group.x + (e.entryItem()?.x ?? 0);
+    const baseY = this.sectionWordBaseY(e, opt, chords);
+    let over = 0;
+    for (const c of chords) {
+      if (Math.abs(c.y - baseY) >= size * 1.5 || c.x1 <= anchorX) continue;
+      if (c.x0 < anchorX + width + gap) over = Math.max(over, anchorX + width + gap - c.x0);
+    }
+    return over;
   }
 
   /**
@@ -2359,7 +2420,9 @@ export class Line {
           barRight: barXs.find((bx) => bx > anchorX) ?? lineRight,
           hangLeft: sectionWordHangLeft(barLeftAt),
           rightLimit: lineRight,
-          straddle: this.entries[0] === e,
+          atLineStart: this.entries[0] === e,
+          straddle: this.sectionIndent > 0,
+          ownChordRight: this.ownChordRight(e),
         });
       };
       const slot = place();
@@ -2417,7 +2480,9 @@ export class Line {
       barRight: barXs[0] ?? lineWidth,
       hangLeft: 0,
       rightLimit: lineWidth || this.group.width || Infinity,
-      straddle: true,
+      atLineStart: true,
+      straddle: this.sectionIndent > 0,
+      ownChordRight: this.ownChordRight(e),
     });
     if (!slot.lifted || slot.shortfall <= 0) return;
     const need = slot.shortfall;
