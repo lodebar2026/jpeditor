@@ -311,6 +311,78 @@ if (inBlockRows.length)
     `\n数字块里夹着的标点 ${inBlockRows.length} 类：${inBlockRows.slice(0, 8).map((r) => r.ch).join(" ")}${inBlockRows.length > 8 ? " …" : ""}`,
   );
 
+// ── 第六条路：**西文的大小写与 0/o、1/l**
+//
+// 拉丁小字号那一族字典还很稀，自举投票分不开形状只差尺寸的那几对：
+// 275「Charlotte Elliott」读成「Char10tte E1110tt」（l→1、o→0）、
+// 294「Crosby」读成「Cr0Sby」。字形上分不开，**尺寸上分得开**：
+//   - 同形的大小写（`o c s v w x z u`）差一个 x-height：拿同一行里
+//     已经认得的小写（`acemnorsuvwxz`）与大写/数字/升部字母各取中位数当尺，
+//     标成大写或 `0` 的那些，墨迹只到 x-height 就是小写。
+//   - `1`、`l`、`i`：这套无衬线体的 `l` 就是一条竖，宽不到行高的两成（实测 0.10~0.12），
+//     真数字 `1` 是 0.29~0.63；而**同样宽窄的竖条，一笔是 `l`、两笔（竖 + 上头一点）是 `i`**
+//     ——275 的「Elliott」三个竖条一模一样，就靠这一条分出 `lli`。
+// 一个类的**所有**实例都判可疑才改——同一个字形不会一会儿大写一会儿小写。
+const CASE_PAIR = { "0": "o", O: "o", C: "c", S: "s", V: "v", W: "w", X: "x", Z: "z", U: "u" };
+const X_LOW = new Set([..."acemnorsuvwxz"]);
+const X_TALL = new Set([..."ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789bdfhklt"]);
+/** 窄竖条是 `l` 还是 `i`：一笔是 `l`，两笔且上头那笔又矮又在最上面的是 `i`。 */
+const vertChar = (key, now) => {
+  const cl = dict.classes[key];
+  if (!cl?.d) return null;
+  const bs = subBoxes(cl.d);
+  const want = bs.length === 1 ? "l" : bs.length === 2 ? (() => {
+    const [a, b] = [...bs].sort((p, q) => p.y0 - q.y0);
+    const h = Math.max(...bs.map((x) => x.y1)) - Math.min(...bs.map((x) => x.y0));
+    // PDF 系 y 朝上：点在上面（y 大的那段）且矮
+    return b.y1 - b.y0 <= h * 0.3 && a.y1 - a.y0 >= h * 0.5 ? "i" : null;
+  })() : null;
+  return want && want !== now ? want : null;
+};
+const caseVote = new Map(); // key → { bad, all, want }
+{
+  const j = JSON.parse(await readFile(flags.layout ?? "pdf-layout.json", "utf8"));
+  const med = (v) => (v.length ? [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)] : 0);
+  const scan = (chars) => {
+    const lat = (chars ?? []).filter((c) => {
+      const t = charOf(c.key);
+      return t && [...t].length === 1 && /[A-Za-z0-9]/.test(t);
+    });
+    if (lat.length < 4) return;
+    const xh = med(lat.filter((c) => X_LOW.has(charOf(c.key))).map((c) => c.h));
+    const cap = med(lat.filter((c) => X_TALL.has(charOf(c.key))).map((c) => c.h));
+    const H = med(lat.map((c) => c.h));
+    if (!(xh > 0 && cap > xh * 1.15)) return;
+    for (const c of lat) {
+      const ch = charOf(c.key);
+      const want = /^[1lI]$/.test(ch) && c.w <= H * 0.2 ? vertChar(c.key, ch) : c.h <= xh * 1.12 && c.h <= cap * 0.9 ? CASE_PAIR[ch] : null;
+      const rec = caseVote.get(c.key) ?? { bad: 0, all: 0, want: null };
+      rec.all++;
+      if (want) {
+        rec.bad++;
+        rec.want = want;
+      }
+      caseVote.set(c.key, rec);
+    }
+  };
+  for (const p2 of j.pages) {
+    for (const b of p2.storyBoxes ?? []) for (const l of b.lines ?? []) scan(l.chars);
+    for (const l of p2.textLines ?? []) scan(l.chars);
+    for (const sg of p2.songs ?? []) {
+      for (const l of sg.creditRuns ?? []) scan(l.chars);
+      if (sg.titleRun) scan(sg.titleRun.chars);
+    }
+  }
+}
+const caseRows = [...caseVote]
+  .filter(([, r]) => r.want && r.bad === r.all)
+  .map(([k, r]) => ({ k, ch: r.want, was: charOf(k), n: r.all }));
+if (caseRows.length) {
+  const by = new Map();
+  for (const r of caseRows) by.set(`${r.was}→${r.ch}`, (by.get(`${r.was}→${r.ch}`) ?? 0) + r.n);
+  console.log(`\n西文大小写 / 0o / 1l 纠正 ${caseRows.length} 类 / ${caseRows.reduce((a, r) => a + r.n, 0)} 实例：${[...by].map(([t, n]) => `${t}×${n}`).join(" ")}`);
+}
+
 // --why：按「注解里的实例数」排序，说明每个仍未定的类卡在哪一条判据上
 if ("why" in flags) {
   const j = JSON.parse(await readFile("pdf-layout.json", "utf8"));
@@ -342,10 +414,11 @@ recordGlyphFixes(db, [
   ...colonRows.map((r) => ({ shape_key: r.k, char: COLON, source: "rule-colon" })),
   ...punctShapeRows.map((r) => ({ shape_key: r.k, char: r.ch, source: "rule-punct-shape" })),
   ...inBlockRows.map((r) => ({ shape_key: r.k, char: r.ch, source: "rule-dash-inblock" })),
+  ...caseRows.map((r) => ({ shape_key: r.k, char: r.ch, source: "rule-latin-case" })),
 ]);
 db.close();
 console.log(
   `\n→ 校对.db 的 glyph_fix 写入 ${take.length} 条（source=fuzzy）+ ${ruleRows.length} 条（source=rule-dash）` +
     ` + ${colonRows.length} 条（rule-colon）+ ${punctShapeRows.length} 条（rule-punct-shape）` +
-    ` + ${inBlockRows.length} 条（rule-dash-inblock）；人工确认过的不覆盖`,
+    ` + ${inBlockRows.length} 条（rule-dash-inblock）+ ${caseRows.length} 条（rule-latin-case）；人工确认过的不覆盖`,
 );

@@ -32,6 +32,18 @@ export function runText(run: TextRun | null | undefined, ov?: CharOverride): str
   if (!run) return "";
   const out: string[] = [];
   let prev: { text: string; right: number; h: number } | null = null;
+  // **词间空档的阈值按这一行自己的字距定**。固定 0.22 个墨迹高太松：294 的
+  //「Fanny」里 n 与 n 之间隔 1.72pt（墨迹高 7.5，阈值 1.65），补出来成了「Fan ny」；
+  // 而同一行真正的词间空档是 5.05pt。行内西文间距的中位数（这里 1.24）才是字内间隙的尺，
+  // 超过它 2.2 倍的才是空格。行太短估不出来时退回原来那道闸。
+  const gaps: number[] = [];
+  for (let i = 1; i < run.chars.length; i++) {
+    const a = run.chars[i - 1];
+    const b = run.chars[i];
+    if (!/[A-Za-z0-9.,]$/.test(a.ch) || !/^[A-Za-z0-9]/.test(b.ch)) continue;
+    gaps.push(b.x - (a.x + a.w));
+  }
+  const medGap = gaps.length >= 4 ? [...gaps].sort((x, y) => x - y)[Math.floor(gaps.length / 2)] : 0;
   for (const c of run.chars) {
     const text = ov?.(c.key, c.ch) ?? (c.ch === UNREAD ? "" : c.ch);
     if (!text) continue;
@@ -43,7 +55,8 @@ export function runText(run: TextRun | null | undefined, ov?: CharOverride): str
     const digitRun = /[0-9]$/.test(prev?.text ?? "") && /^[0-9]/.test(text);
     if (prev && !digitRun && LATIN_EDGE.test(prev.text) && LATIN_HEAD.test(text)) {
       const gap = c.x - prev.right;
-      if (gap > Math.max(prev.h, c.h) * 0.22) out.push(" ");
+      const cut = medGap > 0 ? Math.max(medGap * 2.2, Math.max(prev.h, c.h) * 0.22) : Math.max(prev.h, c.h) * 0.22;
+      if (gap > cut) out.push(" ");
     }
     out.push(text);
     prev = { text, right: c.x + c.w, h: c.h };
