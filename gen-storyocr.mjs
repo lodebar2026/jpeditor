@@ -16,14 +16,20 @@
 // 另出 pdf-out/storyocr-report.json。**不动 glyphdict.json**——那是识别基线，
 // 补的字只服务于重排（与 gen-backfill.mjs 同一条纪律）。
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { serveDist, launchPage } from "./scripts/harness.mjs";
-import { loadCli } from "./scripts/node-harness.mjs";
+import { loadCli, CORPUS_PDF } from "./scripts/node-harness.mjs";
 import { openDb, loadGlyphFixes, recordGlyphFixes, updateUnreadGuess } from "./scripts/checkdb.mjs";
 
 const flags = Object.fromEntries(
   process.argv.slice(2).filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")),
 );
 const DRY = "dry" in flags;
+/** 识别引擎：`both`（默认，两个都跑、投票）/ `vision`（Apple Vision）/ `paddle`（PP-OCR）。
+ *  Vision 对**拉丁文字与标点**强得多——PP-OCR 是中文模型，把「Charlotte」读成
+ *  「Char10tte」、逗号整行整行地漏、开引号读不出；而且 Vision 不用起浏览器，
+ *  直接从原 PDF 裁那一块，连字形都不用重画。 */
+const ENGINE = flags.engine ?? "both";
 const LAYOUT = flags.layout ?? "pdf-layout.json";
 const DICT = flags.dict ?? "testdata/500/glyphdict.json";
 const UNREAD = "�";
@@ -203,72 +209,109 @@ for (const p of pages) {
 console.log(`送识别的行 ${lines.length}（story ${lines.filter((l) => l.role === "story").length}，目录/索引 ${lines.filter((l) => l.role === "toc").length}）`);
 if (!lines.length) process.exit(0);
 
-// ── 行 → 长条画布 → PP-OCR 行识别
-const { port, close } = await serveDist("dist");
-const { page, browser } = await launchPage({ quiet: true });
-await page.goto(`http://127.0.0.1:${port}/index.html`);
-await page.waitForFunction(() => !!window.__omr, null, { timeout: 60000 });
-
-const t0 = Date.now();
-const BATCH = 32;
+// ── 送识别
 const texts = new Array(lines.length).fill("");
-for (let i = 0; i < lines.length; i += BATCH) {
-  const chunk = lines.slice(i, i + BATCH).map((l) => ({
-    chars: l.chars.map((c) =>
-      shapeOf.has(c.key)
-        ? { d: shapeOf.get(c.key).d, bbox: shapeOf.get(c.key).bbox, x: c.x, y: c.y, w: c.w, h: c.h }
-        : { rect: true, x: c.x, y: c.y, w: c.w, h: c.h }, // 连接号那条细横线：本来就是个实心矩形
-    ),
-  }));
-  const got = await page.evaluate(async (items) => {
-    const omr = await window.__omr;
-    window.__ocr ??= omr.paddleOcrBackend();
-    const canvases = items.map((it) => {
-      // 行的墨迹包络（页面坐标，y 向下）
-      const x0 = Math.min(...it.chars.map((c) => c.x));
-      const x1 = Math.max(...it.chars.map((c) => c.x + c.w));
-      const y0 = Math.min(...it.chars.map((c) => c.y));
-      const y1 = Math.max(...it.chars.map((c) => c.y + c.h));
-      // 高度按**字格**放大一点：标点只占字格下部，按墨迹包络铺满会把整行顶歪
-      const pad = (y1 - y0) * 0.18;
-      const H = y1 - y0 + pad * 2;
-      const s = 40 / H;
-      const cw = Math.min(2048, Math.max(48, Math.round((x1 - x0) * s) + 8));
-      const cv = new OffscreenCanvas(cw, 48);
-      const ctx = cv.getContext("2d");
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, cw, 48);
-      ctx.fillStyle = "#000";
-      const vOff = (48 - H * s) / 2;
-      const cy = (pageY) => (pageY - (y0 - pad)) * s + vOff;
-      for (const c of it.chars) {
-        if (c.rect) {
-          ctx.fillRect(4 + (c.x - x0) * s, cy(c.y), Math.max(1, c.w * s), Math.max(1, c.h * s));
-          continue;
-        }
-        const [gx0, gy0, gx1, gy1] = c.bbox;
-        const gh = Math.max(gy1 - gy0, 0.01);
-        const gw = Math.max(gx1 - gx0, 0.01);
-        ctx.save();
-        // 字形自带坐标是 PDF 系（y 朝上），画布朝下，所以 y 要取负缩放；
-        // 锚点是这个字**自己的**下缘（与 relayout.mjs::placeGlyph 同一口径）。
-        ctx.translate(4 + (c.x - x0) * s, cy(c.y + c.h));
-        ctx.scale((c.w / gw) * s, -(c.h / gh) * s);
-        ctx.translate(-gx0, -gy0);
-        ctx.fill(new Path2D(c.d));
-        ctx.restore();
-      }
-      return cv;
-    });
-    return await window.__ocr.recognizeTexts(canvases);
-  }, chunk);
-  got.forEach((t, k) => (texts[i + k] = t ?? ""));
-  if ((i / BATCH) % 10 === 0) process.stdout.write(`\r  ${Math.min(i + BATCH, lines.length)}/${lines.length}…`);
+
+/** Apple Vision：直接从原 PDF 裁**这一行的矩形**送系统 OCR（`tools/vision-ocr`，
+ *  批量走 stdin——一行一个进程的话，进程启动就占掉四分之三的时间）。
+ *  拿到的可能不止一行（矩形边上蹭到邻行），按 y 取与本行最近的那一条。 */
+function runVision() {
+  const items = lines.map((l) => {
+    const x0 = Math.min(...l.chars.map((c) => c.x));
+    const x1 = Math.max(...l.chars.map((c) => c.x + c.w));
+    const y0 = Math.min(...l.chars.map((c) => c.y));
+    const y1 = Math.max(...l.chars.map((c) => c.y + c.h));
+    const pad = Math.max(1.5, (y1 - y0) * 0.12);
+    return { page: l.page, x: x0 - pad, y: y0 - pad, w: x1 - x0 + pad * 2, h: y1 - y0 + pad * 2 };
+  });
+  const r = spawnSync("tools/vision-ocr", ["--batch"], {
+    input: JSON.stringify({ pdf: CORPUS_PDF, scale: 6, items }),
+    maxBuffer: 1 << 28,
+    encoding: "utf8",
+  });
+  if (r.status !== 0) throw new Error(`vision-ocr 跑不起来（先 swiftc 编译，见 tools/vision-ocr.swift）：${r.stderr || r.error}`);
+  const { results } = JSON.parse(r.stdout);
+  results.forEach((rs, i) => {
+    if (!rs.length) return;
+    const mid = items[i].y + items[i].h / 2;
+    texts[i] = rs.sort((a, b) => Math.abs(a.y + a.h / 2 - mid) - Math.abs(b.y + b.h / 2 - mid))[0].text;
+  });
 }
-process.stdout.write("\r");
-console.log(`OCR 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-await browser.close();
-close();
+
+async function runPaddle() {
+  const { port, close } = await serveDist("dist");
+  const { page, browser } = await launchPage({ quiet: true });
+  await page.goto(`http://127.0.0.1:${port}/index.html`);
+  await page.waitForFunction(() => !!window.__omr, null, { timeout: 60000 });
+
+  const BATCH = 32;
+  for (let i = 0; i < lines.length; i += BATCH) {
+    const chunk = lines.slice(i, i + BATCH).map((l) => ({
+      chars: l.chars.map((c) =>
+        shapeOf.has(c.key)
+          ? { d: shapeOf.get(c.key).d, bbox: shapeOf.get(c.key).bbox, x: c.x, y: c.y, w: c.w, h: c.h }
+          : { rect: true, x: c.x, y: c.y, w: c.w, h: c.h }, // 连接号那条细横线：本来就是个实心矩形
+      ),
+    }));
+    const got = await page.evaluate(async (items) => {
+      const omr = await window.__omr;
+      window.__ocr ??= omr.paddleOcrBackend();
+      const canvases = items.map((it) => {
+        // 行的墨迹包络（页面坐标，y 向下）
+        const x0 = Math.min(...it.chars.map((c) => c.x));
+        const x1 = Math.max(...it.chars.map((c) => c.x + c.w));
+        const y0 = Math.min(...it.chars.map((c) => c.y));
+        const y1 = Math.max(...it.chars.map((c) => c.y + c.h));
+        // 高度按**字格**放大一点：标点只占字格下部，按墨迹包络铺满会把整行顶歪
+        const pad = (y1 - y0) * 0.18;
+        const H = y1 - y0 + pad * 2;
+        const s = 40 / H;
+        const cw = Math.min(2048, Math.max(48, Math.round((x1 - x0) * s) + 8));
+        const cv = new OffscreenCanvas(cw, 48);
+        const ctx = cv.getContext("2d");
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, cw, 48);
+        ctx.fillStyle = "#000";
+        const vOff = (48 - H * s) / 2;
+        const cy = (pageY) => (pageY - (y0 - pad)) * s + vOff;
+        for (const c of it.chars) {
+          if (c.rect) {
+            ctx.fillRect(4 + (c.x - x0) * s, cy(c.y), Math.max(1, c.w * s), Math.max(1, c.h * s));
+            continue;
+          }
+          const [gx0, gy0, gx1, gy1] = c.bbox;
+          const gh = Math.max(gy1 - gy0, 0.01);
+          const gw = Math.max(gx1 - gx0, 0.01);
+          ctx.save();
+          // 字形自带坐标是 PDF 系（y 朝上），画布朝下，所以 y 要取负缩放；
+          // 锚点是这个字**自己的**下缘（与 relayout.mjs::placeGlyph 同一口径）。
+          ctx.translate(4 + (c.x - x0) * s, cy(c.y + c.h));
+          ctx.scale((c.w / gw) * s, -(c.h / gh) * s);
+          ctx.translate(-gx0, -gy0);
+          ctx.fill(new Path2D(c.d));
+          ctx.restore();
+        }
+        return cv;
+      });
+      return await window.__ocr.recognizeTexts(canvases);
+    }, chunk);
+    got.forEach((t, k) => (texts[i + k] = t ?? ""));
+    if ((i / BATCH) % 10 === 0) process.stdout.write(`\r  ${Math.min(i + BATCH, lines.length)}/${lines.length}…`);
+  }
+  process.stdout.write("\r");
+  await browser.close();
+  close();
+
+}
+
+/** 跑一个引擎，结果写进 `texts`。 */
+async function runEngine(name) {
+  texts.fill("");
+  const t0 = Date.now();
+  if (name === "vision") runVision();
+  else await runPaddle();
+  console.log(`${name} 用时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+}
 
 // ── 锚点分段投票
 //
@@ -412,167 +455,182 @@ const bump = (m, key, ch, n = 1) => {
 let aligned = 0;
 const trace = [];
 const rejects = [];
-for (let i = 0; i < lines.length; i++) {
-  const gt = [...(texts[i] ?? "").trim().normalize("NFKC")].filter((c) => OKCH.test(c)).join("");
-  const elems = lines[i].chars.map((c) => ({ ...c, text: charOf(c.key) ?? (c.key ? null : (c.ch ?? null)) }));
-  if (gt.length < 3) continue;
-  // 两道保险，防止「一个 OCR 小错被写成整类的定案」：
-  //  1) 字数要与宽度对得上——一个单字宽的元素收下五个字，那多半是分段错位。
-  //  2) **标点大小的元素只收标点**：`James·Black` 的中点被 OCR 读成 M，
-  //     不挡的话全书的中点都会变成 M（实测就出过一次）。
-  const hs = elems.map((e) => e.h).sort((a, b) => a - b);
-  const body = hs[Math.floor(hs.length * 0.7)] || 1;
-  const cellW = median(elems.map((e) => e.w)) || 1;
-  // 这一行的**字身宽**：只拿多字汉字块估（标点的墨迹比字身窄得多，单字块噪声也大）。
-  // 用来验收补进去的字——宽度是硬凭据，OCR 多读一个字符宽度立刻对不上。
-  const uLine =
-    median(
-      elems
-        .filter((e) => e.text && [...e.text].length >= 2 && !/[\x20-\x7e]/.test(e.text))
-        .map((e) => e.w / emOf(e.text)),
-    ) || cellW;
+/**
+ * 一个引擎跑完之后：锚点分段 → 投票。
+ *
+ * **两个引擎都跑（`--engine=both`，默认）**：PP-OCR 是中文专精，正文与人名拼写更准
+ *（`Charlotte Elliott`、中点 `·`），却把引号整行整行地丢；Apple Vision 对拉丁与标点强，
+ * 引号、开引号都在，中文偶尔认岔（「为」读成「汐」）。两边投同一票就是 4 票，稳；
+ * 意见不合各 2 票、比例 0.5 卡在 0.6 那道闸外，自动弃权留给人工——正是想要的。
+ */
+function alignAndVote(engine) {
+  for (let i = 0; i < lines.length; i++) {
+    const gt = [...(texts[i] ?? "").trim().normalize("NFKC")].filter((c) => OKCH.test(c)).join("");
+    const elems = lines[i].chars.map((c) => ({ ...c, text: charOf(c.key) ?? (c.key ? null : (c.ch ?? null)) }));
+    if (gt.length < 3) continue;
+    // 两道保险，防止「一个 OCR 小错被写成整类的定案」：
+    //  1) 字数要与宽度对得上——一个单字宽的元素收下五个字，那多半是分段错位。
+    //  2) **标点大小的元素只收标点**：`James·Black` 的中点被 OCR 读成 M，
+    //     不挡的话全书的中点都会变成 M（实测就出过一次）。
+    const hs = elems.map((e) => e.h).sort((a, b) => a - b);
+    const body = hs[Math.floor(hs.length * 0.7)] || 1;
+    const cellW = median(elems.map((e) => e.w)) || 1;
+    // 这一行的**字身宽**：只拿多字汉字块估（标点的墨迹比字身窄得多，单字块噪声也大）。
+    // 用来验收补进去的字——宽度是硬凭据，OCR 多读一个字符宽度立刻对不上。
+    const uLine =
+      median(
+        elems
+          .filter((e) => e.text && [...e.text].length >= 2 && !/[\x20-\x7e]/.test(e.text))
+          .map((e) => e.w / emOf(e.text)),
+      ) || cellW;
 
-  // 全角标点 + **半角标点**：英文人名、曲号里用的是半角 `( ) - : ,`
-  //（037「《坚固保障》(61首)」的右括号、「Martin Luther 1483-1546」的连字符都是半角，
-  //  只认全角的话它们永远补不回来）。
-  const PUNCT_OK = /^[\u3000-\u303f\uff01-\uff20\uff3b-\uff40\uff5b-\uff65·～()\-:;,.[\]]+$/;
-  /** 只占字身下部的句读点——它们的墨迹必然矮。括号、引号、书名号不在此列（那些是高的）。 */
-  const LOW_PUNCT = /^[。，、．·,.]+$/;
-  const reject = (why, j, text) => {
-    if (rejects.length < 400) rejects.push({ why, text, w: +elems[j].w.toFixed(1), h: +elems[j].h.toFixed(1), page: lines[i].page });
-    return false;
-  };
-  const takeable = (j, text) => {
-    const e = elems[j];
-    const n = [...text].length;
-    // 孤零零一个拉丁字母不收：署名里的中点「·」被 OCR 读成 M、I 读成 l 这类
-    // 一旦定案就是全书的中点都变字母。这种留给人工确认表。
-    if (n === 1 && /[A-Za-z]/.test(text)) return reject("孤立拉丁字母", j, text);
-    // **句读点只能落在矮元素上**。这一条是反向的保险：原先只管「矮元素只收标点」，
-    // 却没管「句读点不许收在高元素上」——括号又窄又高（h/body≈0.9），宽度只有三分之一格，
-    // `want` 因此算成 1，OCR 把它读成「。」时一路畅通。全书 11 个类这么被标成了句号，
-    // 其中 2.5×10.5 / 3.0×9.1 明显是括号，9.5×9.9 / 10×9.9 那几个干脆是整个汉字
-    //（真正的「。」只有 3.1×3.1）。这些错标后来又成了模糊匹配的参照，会把错扩散出去。
-    if (LOW_PUNCT.test(text) && e.h / body > 0.45) return reject("句读点落在高元素上", j, text);
-    if (e.h / body <= 0.45) {
-      // **扁横条是「一」，不是标点**。行识别读得出它（全书 24 处），但这里故意不定案：
-      // 这几个形状类在歌词里有 477 个实例，写进 `glyph_fix` 就推翻了
-      //「歌词里的一不进字典、只按几何认」那条纪律（见 inventory.ts 的 lyricYi）。
-      // 注解那边由 `bookmeta.ts::hbarAsYi` 在出文本时认——只影响注解，不动字典。
-      if (text === "一") return false;
-      return n === 1 && PUNCT_OK.test(text) ? true : reject("矮元素只收单个标点", j, text);
-    }
-    // 字数闸按**字身**算，不按「元素宽度的中位数」当格宽：一行里元素有宽有窄
-    //（「全地都要向耶和华歌唱」98pt 与引号 3.3pt 同在一行），中位数根本不是字格；
-    // p54 那行的中位数是 3.3，「代上」那个 19pt 的对象于是被要求装下 3 个字。
-    const want = Math.max(1, e.w / uLine);
-    const got = emOf(text);
-    return got >= want * 0.5 && got <= want * 2 + 0.5 ? true : reject(`字数与宽度对不上（要 ${want.toFixed(1)} 得 ${got}）`, j, text);
-  };
-  // 锚点：已知且长度 ≥1 的元素，按序在 OCR 串里找。找不到就跳过这个锚点
-  //（OCR 会漏掉逗号，也会读错个别字，锚点少一个不影响分段）。
-  let cur = 0;
-  const segs = []; // { from, to, items:[元素下标] }
-  let pending = [];
-  for (let j = 0; j < elems.length; j++) {
-    const e = elems[j];
-    if (!e.text) {
-      pending.push(j);
-      continue;
-    }
-    // 锚点比对要**全半角归一**：`gt` 已经 NFKC 过（全角括号、冒号都成了半角），
-    // 而字典里那些字是全角（「作词：」的冒号）。不归一的话「(诗 150：6)」的冒号
-    // 锚点永远落空，「150」那一段就一路吃到「6」跟前，补出个「150:」来。
-    const t = e.text.normalize("NFKC");
-    // **同一个锚点在 gt 里出现好几次**时，按宽度挑：单字的「2」在「29:12」里有两个，
-    // 取第一个的话「29:1」那一段就成了空段，前面 18.99pt 的未读块什么也分不到。
-    // 拿这一段里待分的元素总宽与候选段文本的字身数一比，哪个吻合取哪个。
-    let at = gt.indexOf(t, cur);
-    let len = t.length;
-    if (at >= 0 && pending.length) {
-      const wSeg = pending.reduce((a, j2) => a + elems[j2].w, 0);
-      let best = null;
-      for (let p2 = at; p2 >= 0; p2 = gt.indexOf(t, p2 + 1)) {
-        const err = Math.abs(wSeg - uLine * emOf(gt.slice(cur, p2)));
-        if (!best || err < best.err) best = { at: p2, err };
+    // 全角标点 + **半角标点**：英文人名、曲号里用的是半角 `( ) - : ,`
+    //（037「《坚固保障》(61首)」的右括号、「Martin Luther 1483-1546」的连字符都是半角，
+    //  只认全角的话它们永远补不回来）。
+    const PUNCT_OK = /^[\u3000-\u303f\uff01-\uff20\uff3b-\uff40\uff5b-\uff65·～()\-:;,.[\]]+$/;
+    /** 只占字身下部的句读点——它们的墨迹必然矮。括号、引号、书名号不在此列（那些是高的）。 */
+    const LOW_PUNCT = /^[。，、．·,.]+$/;
+    const reject = (why, j, text) => {
+      if (rejects.length < 400) rejects.push({ engine, why, text, w: +elems[j].w.toFixed(1), h: +elems[j].h.toFixed(1), page: lines[i].page });
+      return false;
+    };
+    const takeable = (j, text) => {
+      const e = elems[j];
+      const n = [...text].length;
+      // 孤零零一个拉丁字母不收：署名里的中点「·」被 OCR 读成 M、I 读成 l 这类
+      // 一旦定案就是全书的中点都变字母。这种留给人工确认表。
+      if (n === 1 && /[A-Za-z]/.test(text)) return reject("孤立拉丁字母", j, text);
+      // **句读点只能落在矮元素上**。这一条是反向的保险：原先只管「矮元素只收标点」，
+      // 却没管「句读点不许收在高元素上」——括号又窄又高（h/body≈0.9），宽度只有三分之一格，
+      // `want` 因此算成 1，OCR 把它读成「。」时一路畅通。全书 11 个类这么被标成了句号，
+      // 其中 2.5×10.5 / 3.0×9.1 明显是括号，9.5×9.9 / 10×9.9 那几个干脆是整个汉字
+      //（真正的「。」只有 3.1×3.1）。这些错标后来又成了模糊匹配的参照，会把错扩散出去。
+      if (LOW_PUNCT.test(text) && e.h / body > 0.45) return reject("句读点落在高元素上", j, text);
+      if (e.h / body <= 0.45) {
+        // **扁横条是「一」，不是标点**。行识别读得出它（全书 24 处），但这里故意不定案：
+        // 这几个形状类在歌词里有 477 个实例，写进 `glyph_fix` 就推翻了
+        //「歌词里的一不进字典、只按几何认」那条纪律（见 inventory.ts 的 lyricYi）。
+        // 注解那边由 `bookmeta.ts::hbarAsYi` 在出文本时认——只影响注解，不动字典。
+        if (text === "一") return false;
+        return n === 1 && PUNCT_OK.test(text) ? true : reject("矮元素只收单个标点", j, text);
       }
-      if (best) at = best.at;
-    }
-    // 块尾/块首那条横条要单独问一句：`indexOf` 找得到「1483」（它是「1483-」的前缀），
-    // 光看 at < 0 会漏掉尾部多一个连接号的那一族（037 的生卒年就是这样）。
-    // 块的两头**多着一件标点**是常事：「1483－」的连字符、「》，」的逗号——
-    // 逐类 OCR 学到的 char 只有主体，那件标点在块内部，不是独立字形。
-    // 只有**字形上确实多着那么一件**（两头那一组是一笔的矮点或扁条）才许 OCR 多带一个，
-    // 否则「(诗 150:6)」的「150」会顺手把冒号吃进去。
-    const PUNCT_ANY = /[:.\-~～–—,，。、；;：]/;
-    const ends = shapeOf.has(e.key) ? dashEnds(shapeOf.get(e.key).d) : { head: null, tail: null };
-    // **纯数字块只认连接号**：目录条目的曲号后面跟着引导点，「279」的尾巴上
-    // 认出个矮点就写成「279.」，全书目录会被改得一塌糊涂。生卒年那一横不在此列。
-    const digits = /^\d+$/.test(t);
-    const ok = (k) => k === "dash" || (k === "dot" && !digits);
-    const headOK = ok(ends.head) && !PUNCT_ANY.test(t[0]);
-    const tailOK = ok(ends.tail) && !PUNCT_ANY.test(t[t.length - 1]);
-    if ((at < 0 || headOK || tailOK) && shapeOf.has(e.key) && (/^\d{3,}$/.test(t) || headOK || tailOK)) {
-      // **块内丢了标点的数字**：这个元素读作「11824」，OCR 读出的是「118:24」。
-      // 数字序列一字不差、只是中间多了标点——这一条硬到不用投票边际：
-      // 在 gt 里按「数字之间允许插入一个 : . - 」重找，命中就连带把这个类改对
-      //（`source=ocr-line-fix`，比补空更险，所以闸另设 0.75）。
-      // 连接号那一族也算：年份区间用的是「～」，经文出处用的是「-」。
-      const P = "[:.\\-~～–—,;]";
-      const DASH = "[-~～–—]";
-      const DOT = "[,;:.，。、；：]";
-      const side = (k) => (k === "dash" ? DASH : DOT) + "?";
-      // 纯数字块的连接号可能在**中间**（「1808～1889」），别的块只看两头。
-      const body = /^\d{3,}$/.test(t) ? [...t].join(`${P}?`) : RE_ESC(t);
-      const re = new RegExp(`${headOK ? side(ends.head) : ""}${body}${tailOK ? side(ends.tail) : ""}`);
-      const m = re.exec(gt.slice(cur));
-      if (m && m[0] !== t) {
-        at = cur + m.index;
-        len = m[0].length;
-        bump(digitFix, e.key, toFullPunct(m[0]), 2);
+      // 字数闸按**字身**算，不按「元素宽度的中位数」当格宽：一行里元素有宽有窄
+      //（「全地都要向耶和华歌唱」98pt 与引号 3.3pt 同在一行），中位数根本不是字格；
+      // p54 那行的中位数是 3.3，「代上」那个 19pt 的对象于是被要求装下 3 个字。
+      const want = Math.max(1, e.w / uLine);
+      const got = emOf(text);
+      return got >= want * 0.5 && got <= want * 2 + 0.5 ? true : reject(`字数与宽度对不上（要 ${want.toFixed(1)} 得 ${got}）`, j, text);
+    };
+    // 锚点：已知且长度 ≥1 的元素，按序在 OCR 串里找。找不到就跳过这个锚点
+    //（OCR 会漏掉逗号，也会读错个别字，锚点少一个不影响分段）。
+    let cur = 0;
+    const segs = []; // { from, to, items:[元素下标] }
+    let pending = [];
+    for (let j = 0; j < elems.length; j++) {
+      const e = elems[j];
+      if (!e.text) {
+        pending.push(j);
+        continue;
       }
+      // 锚点比对要**全半角归一**：`gt` 已经 NFKC 过（全角括号、冒号都成了半角），
+      // 而字典里那些字是全角（「作词：」的冒号）。不归一的话「(诗 150：6)」的冒号
+      // 锚点永远落空，「150」那一段就一路吃到「6」跟前，补出个「150:」来。
+      const t = e.text.normalize("NFKC");
+      // **同一个锚点在 gt 里出现好几次**时，按宽度挑：单字的「2」在「29:12」里有两个，
+      // 取第一个的话「29:1」那一段就成了空段，前面 18.99pt 的未读块什么也分不到。
+      // 拿这一段里待分的元素总宽与候选段文本的字身数一比，哪个吻合取哪个。
+      let at = gt.indexOf(t, cur);
+      let len = t.length;
+      if (at >= 0 && pending.length) {
+        const wSeg = pending.reduce((a, j2) => a + elems[j2].w, 0);
+        let best = null;
+        for (let p2 = at; p2 >= 0; p2 = gt.indexOf(t, p2 + 1)) {
+          const err = Math.abs(wSeg - uLine * emOf(gt.slice(cur, p2)));
+          if (!best || err < best.err) best = { at: p2, err };
+        }
+        if (best) at = best.at;
+      }
+      // 块尾/块首那条横条要单独问一句：`indexOf` 找得到「1483」（它是「1483-」的前缀），
+      // 光看 at < 0 会漏掉尾部多一个连接号的那一族（037 的生卒年就是这样）。
+      // 块的两头**多着一件标点**是常事：「1483－」的连字符、「》，」的逗号——
+      // 逐类 OCR 学到的 char 只有主体，那件标点在块内部，不是独立字形。
+      // 只有**字形上确实多着那么一件**（两头那一组是一笔的矮点或扁条）才许 OCR 多带一个，
+      // 否则「(诗 150:6)」的「150」会顺手把冒号吃进去。
+      const PUNCT_ANY = /[:.\-~～–—,，。、；;：]/;
+      const ends = shapeOf.has(e.key) ? dashEnds(shapeOf.get(e.key).d) : { head: null, tail: null };
+      // **纯数字块只认连接号**：目录条目的曲号后面跟着引导点，「279」的尾巴上
+      // 认出个矮点就写成「279.」，全书目录会被改得一塌糊涂。生卒年那一横不在此列。
+      const digits = /^\d+$/.test(t);
+      const ok = (k) => k === "dash" || (k === "dot" && !digits);
+      const headOK = ok(ends.head) && !PUNCT_ANY.test(t[0]);
+      const tailOK = ok(ends.tail) && !PUNCT_ANY.test(t[t.length - 1]);
+      if ((at < 0 || headOK || tailOK) && shapeOf.has(e.key) && (/^\d{3,}$/.test(t) || headOK || tailOK)) {
+        // **块内丢了标点的数字**：这个元素读作「11824」，OCR 读出的是「118:24」。
+        // 数字序列一字不差、只是中间多了标点——这一条硬到不用投票边际：
+        // 在 gt 里按「数字之间允许插入一个 : . - 」重找，命中就连带把这个类改对
+        //（`source=ocr-line-fix`，比补空更险，所以闸另设 0.75）。
+        // 连接号那一族也算：年份区间用的是「～」，经文出处用的是「-」。
+        const P = "[:.\\-~～–—,;]";
+        const DASH = "[-~～–—]";
+        const DOT = "[,;:.，。、；：]";
+        const side = (k) => (k === "dash" ? DASH : DOT) + "?";
+        // 纯数字块的连接号可能在**中间**（「1808～1889」），别的块只看两头。
+        const body = /^\d{3,}$/.test(t) ? [...t].join(`${P}?`) : RE_ESC(t);
+        const re = new RegExp(`${headOK ? side(ends.head) : ""}${body}${tailOK ? side(ends.tail) : ""}`);
+        const m = re.exec(gt.slice(cur));
+        if (m && m[0] !== t) {
+          at = cur + m.index;
+          len = m[0].length;
+          bump(digitFix, e.key, toFullPunct(m[0]), 2);
+        }
+      }
+      if (at < 0) continue; // 这个锚点没找到（OCR 读错或漏），并进下一段
+      if (pending.length) segs.push({ from: cur, to: at, items: pending });
+      pending = [];
+      cur = at + len;
     }
-    if (at < 0) continue; // 这个锚点没找到（OCR 读错或漏），并进下一段
-    if (pending.length) segs.push({ from: cur, to: at, items: pending });
-    pending = [];
-    cur = at + len;
-  }
-  if (pending.length) segs.push({ from: cur, to: gt.length, items: pending });
-  // 一行都没分出段也要记进 trace——**整行已知**的那些正是靠 `digitFix` 纠错的
-  //（「1808～1889」那种块内丢标点的行），出了问题只能从这里看。
-  // **有未读元素的行优先记**：那才是补字没成的现场，整行已知的行记满 20 条就够了。
-  const hasHole = elems.some((e) => !e.text);
-  if (hasHole ? trace.length < 120 : trace.filter((t) => !t.hole).length < 20)
-    trace.push({ page: lines[i].page, hole: hasHole, now: elems.map((e) => e.text ?? UNREAD).join(""), ocr: gt, segs: segs.length });
-  if (!segs.length) continue;
-  aligned++;
-  /**
-   * 段文本按宽度校准：**锚点在 OCR 串里重复出现**时，段的边界会挪一格。
-   * p54 那行 OCR 把行首的「“」也读成了「(」，于是「(」锚点匹配到前一个，
-   * 「代上」那个元素分到的是「(代上」——19.0pt 的墨迹装不下 2.5 个字身。
-   * 拿整行的字身宽一验就露馅，剥掉两头的标点再验，取最吻合的那个。
-   */
-  const calibrate = (j, text) => ([...text].length < 2 ? text : trimToWidth(text, elems[j].w, uLine));
-  for (const sg of segs) {
-    const text = gt.slice(sg.from, sg.to);
-    if (!text) continue;
-    if (sg.items.length === 1) {
-      const t = calibrate(sg.items[0], text);
-      if (t && takeable(sg.items[0], t)) bump(fill, elems[sg.items[0]].key, toFullPunct(t), 2);
-    } else if (sg.items.length === [...text].length && sg.items.every((j) => elems[j].w < elems[j].h * 3)) {
-      [...text].forEach((ch, k) => takeable(sg.items[k], ch) && bump(fill, elems[sg.items[k]].key, ch));
-    } else {
-      // 字数对不上：按**宽度**切。经文出处「(代上 16:23)」在矢量层是三个对象
-      //（「代上 」19.0pt、「16」8.8、「23」9.3），OCR 又读不出括号和冒号，
-      // 于是一整段「代上1623」落给三个未知元素——按字数判等于直接放弃，
-      // 全书的经文出处就是这么只剩「(经)」的。宽度是硬凭据：汉字占一个字身、
-      // ASCII 占半身，一段里字身总数与总宽度之比就定出字身宽 u，再按 u 切。
-      const cuts = splitByWidth(elems, sg.items, text, uLine);
-      if (cuts) cuts.forEach((t, k) => takeable(sg.items[k], t) && bump(fill, elems[sg.items[k]].key, toFullPunct(t), 2));
+    if (pending.length) segs.push({ from: cur, to: gt.length, items: pending });
+    // 一行都没分出段也要记进 trace——**整行已知**的那些正是靠 `digitFix` 纠错的
+    //（「1808～1889」那种块内丢标点的行），出了问题只能从这里看。
+    // **有未读元素的行优先记**：那才是补字没成的现场，整行已知的行记满 20 条就够了。
+    const hasHole = elems.some((e) => !e.text);
+    if (hasHole ? trace.length < 120 : trace.filter((t) => !t.hole).length < 20)
+      trace.push({ engine, page: lines[i].page, hole: hasHole, now: elems.map((e) => e.text ?? UNREAD).join(""), ocr: gt, segs: segs.length });
+    if (!segs.length) continue;
+    aligned++;
+    /**
+     * 段文本按宽度校准：**锚点在 OCR 串里重复出现**时，段的边界会挪一格。
+     * p54 那行 OCR 把行首的「“」也读成了「(」，于是「(」锚点匹配到前一个，
+     * 「代上」那个元素分到的是「(代上」——19.0pt 的墨迹装不下 2.5 个字身。
+     * 拿整行的字身宽一验就露馅，剥掉两头的标点再验，取最吻合的那个。
+     */
+    const calibrate = (j, text) => ([...text].length < 2 ? text : trimToWidth(text, elems[j].w, uLine));
+    for (const sg of segs) {
+      const text = gt.slice(sg.from, sg.to);
+      if (!text) continue;
+      if (sg.items.length === 1) {
+        const t = calibrate(sg.items[0], text);
+        if (t && takeable(sg.items[0], t)) bump(fill, elems[sg.items[0]].key, toFullPunct(t), 2);
+      } else if (sg.items.length === [...text].length && sg.items.every((j) => elems[j].w < elems[j].h * 3)) {
+        [...text].forEach((ch, k) => takeable(sg.items[k], ch) && bump(fill, elems[sg.items[k]].key, ch));
+      } else {
+        // 字数对不上：按**宽度**切。经文出处「(代上 16:23)」在矢量层是三个对象
+        //（「代上 」19.0pt、「16」8.8、「23」9.3），OCR 又读不出括号和冒号，
+        // 于是一整段「代上1623」落给三个未知元素——按字数判等于直接放弃，
+        // 全书的经文出处就是这么只剩「(经)」的。宽度是硬凭据：汉字占一个字身、
+        // ASCII 占半身，一段里字身总数与总宽度之比就定出字身宽 u，再按 u 切。
+        const cuts = splitByWidth(elems, sg.items, text, uLine);
+        if (cuts) cuts.forEach((t, k) => takeable(sg.items[k], t) && bump(fill, elems[sg.items[k]].key, toFullPunct(t), 2));
+      }
     }
   }
 }
-console.log(`分段成功 ${aligned}/${lines.length} 行`);
+
+for (const eng of ENGINE === "both" ? ["vision", "paddle"] : [ENGINE]) {
+  await runEngine(eng);
+  alignAndVote(eng);
+}
+console.log(`分段成功 ${aligned}/${lines.length} 行（两轮合计）`);
 
 const decide = (m, minVotes, minRatio) => {
   const out = [];
