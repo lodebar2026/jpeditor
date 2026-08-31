@@ -36,7 +36,7 @@ npm run build && node omr-export-check.mjs             # 同上，但底本取�
 npm run build && node abc-shot.mjs <abc> /tmp/abc.png  # 拖入 .abc 端到端渲染核对
 npm run build && node omr-pu-check.mjs                 # 识别→文本谱原文→回解析 逐项对拍
 npm run build:cli && node pdf-diff.mjs && node pdf-mark.mjs   # 矢量 PDF 识别 ↔ GT 对比 + 差异标记版 PDF
-node rebuild.mjs [--one=020,373] && node line-check.mjs        # 成书重排 + 判据断言（断句 D1~D9 / 版面 V1~V9 + 全书基线）
+node rebuild.mjs [--one=020,373] && node line-check.mjs        # 成书重排 + 判据断言（断句 D1~D10 / 版面 V1~V11 + 全书基线）
 node gen-storyocr.mjs && node gen-glyphsheet.mjs               # 整行 OCR 补字 + 人工确认表
 node gen-glyphaudit.mjs [祂 …]                                 # 同字多形审计：捞原书错字/错标（→ glyph_fix）
 node gen-glyphfuzzy.mjs [--dry] [--why]                        # 形近补字：签名匹配回字典已认得的类 + 上下文规则
@@ -153,15 +153,20 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   花边框正文缺字率 0.52%（565 → 84）；双细线框里的经文也走整行 OCR（原先整个漏在外面），
   冒号与数字、开头的引号都补得回来（判据见那篇的「经文出处那一行」）。
   注解框有花边纹样框与**双细线矩形框**两种（后者 53 条，`clusterRuleFrames` 认）。
-  整本 655 页、注解 164/164 排入、缺字 0。
+  整本 675 页、注解 169/169 排入、缺字 0。
   **B 路 rebuild 的排版口径**（谱面全走排版引擎，整本那一层只管书级装饰）：容量、断句、
   反复记号与房号、调号升降号、段落词（「（副歌）」挂 `Chord.sectionWord`）、目录与页眉版面
   ——每条判据都记在 [矢量PDF识别](docs/实现/矢量PDF识别.md) 的「成书排版」几节里，**动之前必看**。
+  **装箱**（`rebuild.mjs` 的 `packMid` / `packAlone`）：短曲**半页起排**接在上一首下面
+  （只收整首排成 1 页的，要按内容自然高 `compact` 重排，间距 `titleBlock.midStartGap` 从原书量）、
+  **一首歌不跨同一张纸的正反面**（页数 ≥ 2 的曲子必须起于偶数物理页，差一页时优先
+  撤掉最近一次半页起排、撤不了才空一页）；注解**字号全书统一**、按「离本曲多近」找空位
+  （不再缩字号缩行距）。一页两首之后下游一律按 `meta.songs[].yFrom/yTo` 的 **y 带归属**。
   「一行的头尾长什么样」那几条（行首不留半小节休止、弱起要齐、行首不挂上一句的长音收尾、
   末两行要均匀、段落词不出版心、歌词标点不相压）由 **`line-check.mjs`** 守着：
   `rebuild.mjs` 顺带写出逐行事实 `pdf-out/rebuild-lines.json`，脚本读它 + drawlist 判**两族**
-  ——**D1~D9 断句**（行首 → 行末 → 行长 → 整首口径）与 **V1~V9 版面**（绘制与几何，断句改动
-  不该动到它们）；全书基线在 `testdata/500/line-check-baseline.json`（任一档变差即失败），
+  ——**D1~D10 断句**（行首 → 行末 → 行长 → 整首口径）与 **V1~V11 版面**（绘制与几何，断句改动
+  不该动到它们；V10/V11 是装箱那一层：正反面与半页起排）；全书基线在 `testdata/500/line-check-baseline.json`（任一档变差即失败），
   另有十几首定点断言。**「一行放不放得下」一律按真实坐标判**（`applybreaks.ts::FitMetric`
   ← `browser.ts::measureChordSpans` ← `layout.ts::Line.naturalSpans`），不按格数。
   **归类判据一改就要重跑 `gen-glyphdict.mjs`**（再把上一版的 OCR 标注并回未定类）——

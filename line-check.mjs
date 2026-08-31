@@ -56,7 +56,7 @@ const ENDING_MIN_GAP = 1.0;   // 同一行相邻两条房号横线的净距下�
  */
 const FAMILY = {
   断句: ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10"],
-  版面: ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9"],
+  版面: ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11"],
 };
 
 /** 一档检查的违例集合。 */
@@ -82,6 +82,8 @@ const kinds = {
   V7: "相邻两个房号的横线连在一起",
   V8: "跨音符的两个标点挤过头（比排在同一个 <text> 里还紧）",
   V9: "书级正文（注解/目录/署名…）连排里相邻两字的墨迹相压",
+  V10: "一首歌跨了同一张纸的正反面（唱到一半得翻面）",
+  V11: "半页起排的曲子压住上一首、或越出版心下界",
 };
 
 /** 连排落字的角色：一行一个 run，笔位由 textmetrics 的 `run` 复算（V9）。 */
@@ -283,11 +285,20 @@ function edges(pageNo) {
   const odd = pageNo % 2 === 1;
   return { left: odd ? m.inner : m.outer, right: style.page.w - (odd ? m.outer : m.inner) };
 }
-const songOfPage = (dp) => dp.meta?.songs?.[0]?.id ?? "?";
+/** **按 y 带把 item 归给本页的曲子**：半页起排以后一页可能有两首，
+ *  `songs[0]` 不再等于「本页那一首」（见 drawlist.ts::DrawPage.meta.songs）。 */
+const songAt = (dp, y) => {
+  const ss = dp.meta?.songs ?? [];
+  if (!ss.length) return "?";
+  if (ss.length === 1) return ss[0].id ?? "?";
+  for (const s of ss) if (y >= (s.yFrom ?? 0) && y < (s.yTo ?? Infinity)) return s.id ?? "?";
+  return ss[ss.length - 1].id ?? "?";
+};
 for (const dp of drawDoc.pages) {
   if (dp.meta?.kind !== "score") continue;
-  const id = songOfPage(dp);
-  if (only && !only.includes(id)) continue;
+  const ids = (dp.meta.songs ?? []).map((x) => x.id);
+  // 一页两首时，只要有一首在 --one 里就得看这一页（违例按 y 带归到具体那一首）
+  if (only && !ids.some((x) => only.includes(x))) continue;
   const { left, right } = edges(dp.pageNo);
   for (const it of dp.items) {
     if (it.t !== "text") continue;
@@ -295,7 +306,7 @@ for (const dp of drawDoc.pages) {
       const x0 = Math.min(...it.xs);
       const x1 = Math.max(...it.xs) + metrics.advance("sectionWord", [...it.text].pop(), it.size);
       if (x0 < left - 0.5 || x1 > right + 0.5)
-        hit("V1", id, `p${dp.pageNo}「${it.text}」x ${x0.toFixed(1)}~${x1.toFixed(1)}，版心 ${left.toFixed(1)}~${right.toFixed(1)}`);
+        hit("V1", songAt(dp, it.y), `p${dp.pageNo}「${it.text}」x ${x0.toFixed(1)}~${x1.toFixed(1)}，版心 ${left.toFixed(1)}~${right.toFixed(1)}`);
     }
   }
   // ── V3 谱面越出版心。两条口径：
@@ -309,6 +320,7 @@ for (const dp of drawDoc.pages) {
     // （与 V2 主动跳过的是同一批），照样是行末悬挂的标点。
     const HANG = HANG_PUNCT;
     let mx = -Infinity, mn = Infinity, who = "";
+    let mxY = 0, mnY = 0;
     for (const it of dp.items) {
       if (it.t !== "text") continue;
       if (!["note", "lyric", "chord", "sectionWord"].includes(it.role)) continue;
@@ -318,17 +330,18 @@ for (const dp of drawDoc.pages) {
       while (k > 0 && HANG.test(chars[k])) k--;
       const r = it.xs[Math.min(k, it.xs.length - 1)] +
         (metrics.ink(it.role, chars[k], it.size)?.right ?? metrics.advance(it.role, chars[k], it.size));
-      if (r > mx) { mx = r; who = `${it.role}「${it.text}」`; }
-      mn = Math.min(mn, Math.min(...it.xs) + (metrics.ink(it.role, chars[0], it.size)?.left ?? 0));
+      if (r > mx) { mx = r; who = `${it.role}「${it.text}」`; mxY = it.y; }
+      const l = Math.min(...it.xs) + (metrics.ink(it.role, chars[0], it.size)?.left ?? 0);
+      if (l < mn) { mn = l; mnY = it.y; }
     }
-    if (Number.isFinite(mx) && mx > right + 0.5) hit("V3", id, `p${dp.pageNo} 右缘 ${mx.toFixed(1)} > ${right.toFixed(1)}（${who}）`);
-    if (Number.isFinite(mn) && mn < left - 0.5) hit("V3", id, `p${dp.pageNo} 左缘 ${mn.toFixed(1)} < ${left.toFixed(1)}`);
+    if (Number.isFinite(mx) && mx > right + 0.5) hit("V3", songAt(dp, mxY), `p${dp.pageNo} 右缘 ${mx.toFixed(1)} > ${right.toFixed(1)}（${who}）`);
+    if (Number.isFinite(mn) && mn < left - 0.5) hit("V3", songAt(dp, mnY), `p${dp.pageNo} 左缘 ${mn.toFixed(1)} < ${left.toFixed(1)}`);
   }
 
   // ── V5~V7 房号（volta）：文本判字符，横线判高度与间距
   for (const it of dp.items) {
     if (it.t === "text" && it.cls === "ending" && /[^0-9.]/.test(it.text))
-      hit("V5", id, `p${dp.pageNo} 房号「${it.text}」`);
+      hit("V5", songAt(dp, it.y), `p${dp.pageNo} 房号「${it.text}」`);
   }
   {
     // 房号横线是 `⌐` 形：起点在竖脚底、拐到横线、再往右。取 d 里所有点的**最高** y 作横线高度。
@@ -353,12 +366,12 @@ for (const dp of drawDoc.pages) {
       if (r.length < 2) continue;
       const lo = Math.min(...r.map((b) => b.y)), hi = Math.max(...r.map((b) => b.y));
       if (hi - lo > ENDING_SAME_Y_TOL)
-        hit("V6", id, `p${dp.pageNo} 同一行 ${r.length} 个房号，y ${r.map((b) => b.y.toFixed(1)).join(" / ")}`);
+        hit("V6", songAt(dp, r[0].y), `p${dp.pageNo} 同一行 ${r.length} 个房号，y ${r.map((b) => b.y.toFixed(1)).join(" / ")}`);
       const byX = [...r].sort((a, b) => a.x0 - b.x0);
       for (let i = 0; i + 1 < byX.length; i++) {
         const gap = byX[i + 1].x0 - byX[i].x1;
         if (gap < ENDING_MIN_GAP)
-          hit("V7", id, `p${dp.pageNo} 相邻房号净距 ${gap.toFixed(2)}pt`);
+          hit("V7", songAt(dp, byX[i].y), `p${dp.pageNo} 相邻房号净距 ${gap.toFixed(2)}pt`);
       }
     }
   }
@@ -381,7 +394,7 @@ for (const dp of drawDoc.pages) {
         for (const c of chords) {
           const b = boxOf(c, "chord");
           if (b.x1 <= a.x0 || b.x0 >= a.x1 || b.y1 <= a.y0 || b.y0 >= a.y1) continue;
-          hit("V4", id, `p${dp.pageNo}「${k.text}」压住和弦「${c.text}」`);
+          hit("V4", songAt(dp, k.y), `p${dp.pageNo}「${k.text}」压住和弦「${c.text}」`);
         }
       }
     }
@@ -411,7 +424,7 @@ for (const dp of drawDoc.pages) {
       const rawOver = (raw[i] + aInk.right) - (raw[i + 1] + bInk.left);
       if (rawOver > OVERLAP_TOL) { substSkipped++; continue; }
       if (over > OVERLAP_TOL)
-        hit("V9", id, `p${dp.pageNo} ${it.role}「${a}${b}」相压 ${over.toFixed(1)}pt（${it.text.slice(0, 12)}…）`);
+        hit("V9", songAt(dp, it.y), `p${dp.pageNo} ${it.role}「${a}${b}」相压 ${over.toFixed(1)}pt（${it.text.slice(0, 12)}…）`);
     }
   }
 
@@ -437,7 +450,7 @@ for (const dp of drawDoc.pages) {
       const aEnd = Math.max(...a.xs) + (metrics.ink("lyric", aCh, a.size)?.right ?? 0);
       const bStart = Math.min(...b.xs) + (metrics.ink("lyric", bCh, b.size)?.left ?? 0);
       if (aEnd - bStart > OVERLAP_TOL)
-        hit("V2", id, `p${dp.pageNo}「${a.text}」压住「${b.text}」${(aEnd - bStart).toFixed(1)}pt`);
+        hit("V2", songAt(dp, a.y), `p${dp.pageNo}「${a.text}」压住「${b.text}」${(aEnd - bStart).toFixed(1)}pt`);
       // ── V8 跨音符的两个标点**挤过头**。歌词逐字挂音符，`召：` 与 `“将` 分属两个 `<text>`，
       //    OpenType 的上下文特性管不到，挤压由 layout.ts::calcXPos 补（那里补的是一道下限）。
       //    这里就守那道下限：墨迹间距不许比「这两个字排在同一个 `<text>` 里」还紧。
@@ -451,8 +464,58 @@ for (const dp of drawDoc.pages) {
           trim;
         const gap = bStart - aEnd;
         if (gap < sameText - OVERLAP_TOL)
-          hit("V8", id, `p${dp.pageNo}「${a.text}」「${b.text}」间距 ${gap.toFixed(1)} < 同 text ${sameText.toFixed(1)}pt`);
+          hit("V8", songAt(dp, a.y), `p${dp.pageNo}「${a.text}」「${b.text}」间距 ${gap.toFixed(1)} < 同 text ${sameText.toFixed(1)}pt`);
       }
+    }
+  }
+}
+
+// ────────────────────────────────────────────── V10/V11 装箱（正反面 + 半页起排）
+//
+// 都是**整本那一层**的账（rebuild.mjs 的装箱器），与断句、与单页排版都无关。
+{
+  const scorePages = drawDoc.pages.filter((p) => p.meta?.kind === "score");
+  // ── V10 一首歌跨了同一张纸的正反面。
+  //    物理页 p 与 p+1 同属一张纸**当且仅当 p 是奇数**（第 1 页是首张纸的正面），
+  //    所以「奇 → 偶」这一跨就是翻面。页数 ≥ 3 的曲子怎么排都躲不开，豁免并单列。
+  const pagesOf = new Map();
+  for (const p of scorePages) for (const s of p.meta.songs ?? []) {
+    if (!pagesOf.has(s.id)) pagesOf.set(s.id, []);
+    pagesOf.get(s.id).push(p.pageNo);
+  }
+  const longSongs = [];
+  for (const [sid, ps] of pagesOf) {
+    if (only && !only.includes(sid)) continue;
+    if (ps.length >= 3) { longSongs.push(`${sid}(${ps.length}页)`); continue; }
+    for (let i = 1; i < ps.length; i++)
+      if (ps[i] === ps[i - 1] + 1 && ps[i - 1] % 2 === 1)
+        hit("V10", sid, `p${ps[i - 1]}→p${ps[i]} 是同一张纸的正反面`);
+  }
+  if (longSongs.length) console.log(`（V10 豁免：页数 ≥ 3 的曲子躲不开翻面 —— ${longSongs.join(" ")}）`);
+
+  // ── V11 半页起排的几何：不许压住上一首，也不许越出版心下界。
+  //    yFrom/yTo 是装箱器写的 y 带；这里**按 item 的墨迹重算**，压谱面之类的后手也能兜住。
+  const footerTop = style.titleBlock.footerBaseline - style.roles.footer.size * 1.6;
+  const inkTop = (it) => (it.t === "text" ? it.y - it.size * 0.85 : it.t === "rect" ? it.y : Math.min(it.y1 ?? 1e9, it.y2 ?? 1e9));
+  const inkBottom = (it) => (it.t === "text" ? it.y + it.size * 0.25 : it.t === "rect" ? it.y + it.h : Math.max(it.y1 ?? -1e9, it.y2 ?? -1e9));
+  for (const p of scorePages) {
+    const ss = p.meta.songs ?? [];
+    if (ss.length < 2) continue;
+    for (let k = 1; k < ss.length; k++) {
+      const sid = ss[k].id;
+      if (only && !only.includes(sid)) continue;
+      const cut = ss[k].yFrom ?? 0;
+      let above = -Infinity, top = Infinity, bottom = -Infinity;
+      for (const it of p.items) {
+        if (it.role === "header" || it.role === "footer") continue;
+        const t = inkTop(it), b = inkBottom(it);
+        if (b <= cut) above = Math.max(above, b);
+        else { top = Math.min(top, t); bottom = Math.max(bottom, b); }
+      }
+      if (Number.isFinite(above) && Number.isFinite(top) && top < above)
+        hit("V11", sid, `p${p.pageNo} 半页起排压住上一首 ${(above - top).toFixed(1)}pt`);
+      if (Number.isFinite(bottom) && bottom > footerTop + 0.5)
+        hit("V11", sid, `p${p.pageNo} 半页起排越出版心下界 ${(bottom - footerTop).toFixed(1)}pt`);
     }
   }
 }
