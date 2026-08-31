@@ -21,8 +21,10 @@ const UNREAD = "�";
 
 /** 一个 run 的文本，套上人工/OCR 补字。读不出的位置留空（**绝不写问号**，
  *  那会跟着排进 PDF）。 */
-/** 西文（拉丁字母 / 数字）—— 只有这两族之间才按字距补空格。 */
-const LATIN_EDGE = /[A-Za-z0-9]$/;
+/** 西文（拉丁字母 / 数字）—— 只有这两族之间才按字距补空格。
+ *  左边那头**连缩写点也算**：047 的「Carrie E. Breck」里「E.」是一个对象，
+ *  以点结尾，不认的话空格就补不出来（半角句点只出现在西文语境，不会误伤中文句号）。 */
+const LATIN_EDGE = /[A-Za-z0-9.]$/;
 const LATIN_HEAD = /^[A-Za-z0-9]/;
 
 export function runText(run: TextRun | null | undefined, ov?: CharOverride): string {
