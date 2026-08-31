@@ -78,6 +78,21 @@ const tall = (v) => v.h > v.w * 2.5;
  */
 const NEVER = new Set(["一"]);
 
+/** d 串的各条子路径包围盒（只需 M 分段与坐标，指令字母当分隔符即可）。 */
+const subBoxes = (d) =>
+  d
+    .split("M")
+    .slice(1)
+    .map((seg) => {
+      const nums = (seg.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+      const xs = nums.filter((_, i) => i % 2 === 0);
+      const ys = nums.filter((_, i) => i % 2 === 1);
+      return xs.length && ys.length
+        ? { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }
+        : null;
+    })
+    .filter(Boolean);
+
 // ── 扫全书：形状键 → 签名 + 尺寸
 const seen = new Map();
 await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (g) => {
@@ -167,6 +182,18 @@ if (ambiguous.length) {
 // 画出来是直的实心横条，不是波浪线，所以是连字符不是「～」。
 // 宽度按字身分档：不到 0.95 个字身是半角 `-`（实测 0.52~0.81），到了就是全角 `—`。
 // （`gen-storyocr` 的注释里也记着「Martin Luther 1483-1546」的连字符是半角。）
+//
+// **同一趟还纠句读点的错标**（`source=rule-punct-shape`）：逐类 OCR 在这个尺寸上
+// 只会瞎猜，把「，」读成 9 / J / 2、「、」读成 1（全书 117 个实例的顿号全标成了 1，
+// 023 首那句「配得荣耀、尊贵、权柄」于是成了「配得荣耀1 1」——顿号不是锚点，
+// 「尊贵」「权柄」两段也就跟着补不回来）。判据三条一起：
+//   1. **矮**：墨迹高不到正文的 0.45（真的数字与字母都 ≥0.7）；
+//   2. 当前读作的正是那几个「这个尺寸上不可能」的字符；
+//   3. **一笔**（单条子路径）——挡住冒号那种两点、等号那种两横；
+// 再按**宽高比**分族：逗号的钩窄高（1.5×2.6 → 0.58），顿号的撇宽扁（3.2×2.9 → 1.08）。
+// 更扁的（6.3×1.6 → 3.9）是波浪号，交给 rule-dash 与人工确认表，这里不碰。
+const SUSPECT_LABEL = /^[9J21]$/;
+const punctShape = new Map(); // key → Map(char → 票数)
 const ruleFills = new Map(); // key → Map(char → 票数)
 {
   const j = JSON.parse(await readFile(flags.layout ?? "pdf-layout.json", "utf8"));
@@ -177,7 +204,18 @@ const ruleFills = new Map(); // key → Map(char → 票数)
     const body = hs[Math.floor(hs.length * 0.7)] || 1;
     for (let i = 0; i < cs.length; i++) {
       const c = cs[i];
-      if (charOf(c.key)) continue;
+      const now = charOf(c.key);
+      if (now && SUSPECT_LABEL.test(now) && c.h <= body * 0.45) {
+        const shape = dict.classes[c.key];
+        const ratio = c.w / Math.max(c.h, 0.01);
+        const want = ratio < 0.8 ? "，" : ratio < 1.6 ? "、" : null;
+        if (want && shape?.d && subBoxes(shape.d).length === 1) {
+          if (!punctShape.has(c.key)) punctShape.set(c.key, new Map());
+          const v = punctShape.get(c.key);
+          v.set(want, (v.get(want) ?? 0) + 1);
+        }
+      }
+      if (now) continue;
       if (!(c.w > c.h * 3 && c.h < body * 0.25 && c.w > body * 0.4 && c.w < body * 1.3)) continue;
       if (!isDigit(cs[i - 1] && charOf(cs[i - 1].key)) || !isDigit(cs[i + 1] && charOf(cs[i + 1].key))) continue;
       const want = c.w / body < 0.95 ? "-" : "—";
@@ -191,6 +229,22 @@ const ruleFills = new Map(); // key → Map(char → 票数)
     for (const l of p2.textLines ?? []) scan(l.chars);
     for (const sg of p2.songs ?? []) for (const l of sg.creditRuns ?? []) scan(l.chars);
   }
+}
+// 一个类的实例分属两族（宽高比骑在界上）就整类不动——分不清就别猜。
+const punctShapeRows = [...punctShape]
+  .map(([k, v]) => {
+    const sorted = [...v].sort((a, b) => b[1] - a[1]);
+    const tot = sorted.reduce((a, r) => a + r[1], 0);
+    return { k, ch: sorted[0][0], n: sorted[0][1], tot, was: charOf(k) };
+  })
+  .filter((r) => r.n === r.tot);
+if (punctShapeRows.length) {
+  const byC = new Map();
+  for (const r of punctShapeRows) byC.set(r.ch, (byC.get(r.ch) ?? 0) + r.n);
+  console.log(
+    `\n字形规则纠正句读点 ${punctShapeRows.length} 类 / ${punctShapeRows.reduce((a, r) => a + r.n, 0)} 实例：` +
+      [...byC].map(([c, n]) => `「${c}」×${n}`).join(" "),
+  );
 }
 const ruleRows = [...ruleFills].map(([k, v]) => {
   const [ch, n] = [...v].sort((a, b) => b[1] - a[1])[0];
@@ -216,20 +270,6 @@ if (ruleRows.length) {
 // 1 个错标「经」、9 个未读），一个「？」「；」都没混进来——问号的钩占了大半个字身，
 // 分号的下点带尾巴，两条比例闸各挡一个。
 const COLON = "："; // 全角：524 个实例在「作词：」这种中文语境，与字典里已标注的那 4 类取齐
-/** d 串的各条子路径包围盒（只需 M 分段与坐标，指令字母当分隔符即可）。 */
-const subBoxes = (d) =>
-  d
-    .split("M")
-    .slice(1)
-    .map((seg) => {
-      const nums = (seg.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
-      const xs = nums.filter((_, i) => i % 2 === 0);
-      const ys = nums.filter((_, i) => i % 2 === 1);
-      return xs.length && ys.length
-        ? { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }
-        : null;
-    })
-    .filter(Boolean);
 const isColonShape = (c) => {
   if (!c.d || !(c.w > 0 && c.h > 0)) return false;
   if (!(c.w / c.h > 0.2 && c.w / c.h < 0.6)) return false;
@@ -282,9 +322,10 @@ recordGlyphFixes(db, [
   ...take.map((r) => ({ shape_key: r.k, char: r.ch, source: "fuzzy" })),
   ...ruleRows.map((r) => ({ shape_key: r.k, char: r.ch, source: "rule-dash" })),
   ...colonRows.map((r) => ({ shape_key: r.k, char: COLON, source: "rule-colon" })),
+  ...punctShapeRows.map((r) => ({ shape_key: r.k, char: r.ch, source: "rule-punct-shape" })),
 ]);
 db.close();
 console.log(
   `\n→ 校对.db 的 glyph_fix 写入 ${take.length} 条（source=fuzzy）+ ${ruleRows.length} 条（source=rule-dash）` +
-    ` + ${colonRows.length} 条（source=rule-colon）；人工确认过的不覆盖`,
+    ` + ${colonRows.length} 条（source=rule-colon）+ ${punctShapeRows.length} 条（source=rule-punct-shape）；人工确认过的不覆盖`,
 );

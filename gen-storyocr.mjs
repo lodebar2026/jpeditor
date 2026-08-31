@@ -67,14 +67,21 @@ const lines = [];
 for (const p of pages) {
   if (!pageFilter(p.page)) continue;
   const take = (chars, role) => {
-    const cs = chars.filter((c) => shapeOf.has(c.key));
+    // 没有字形类、但**自带 ch** 的也要收：注解正文里的连接号在矢量层是一条独立的细横线
+    //（`bookmeta.ts::withInlineDashes` 把它插回行里），它没有 `shapeKey`，
+    // 却是个实打实的锚点——「(诗 29:1-2)」少了它，「29:1」那一段就一路吃到「2」跟前。
+    const cs = chars.filter((c) => shapeOf.has(c.key) || (!c.key && c.ch));
     if (cs.length < 4) return; // 太短的行没有上下文，行识别不比逐类强
     if (!cs.some((c) => c.ch === UNREAD || !charOf(c.key))) {
       // 一行里一个未读字都没有，也还是要送——标点错标就藏在这种行里。
       // 但只送含标点嫌疑（当前读作 9 / O / 0 之类）的，省一半推理。
-      if (!cs.some((c) => /^[9Oo0IlXS]$/.test(charOf(c.key) ?? ""))) return;
+      // 另一族藏在这种行里的是**块内丢了标点的数字**：经文出处「(诗 118:24)」
+      // 在矢量层是一个对象，逐类 OCR 学到的 char 是「11824」——冒号在块内部，
+      // 不是独立字形，逐类怎么送都补不回来。整行送才有上下文。
+      const digits = cs.some((c) => /^\d{3,}$/.test(charOf(c.key) ?? ""));
+      if (!digits && !cs.some((c) => /^[9Oo0IlXS]$/.test(charOf(c.key) ?? ""))) return;
     }
-    lines.push({ page: p.page, role, chars: cs.map((c) => ({ key: c.key, x: c.x, y: c.y, w: c.w, h: c.h })) });
+    lines.push({ page: p.page, role, chars: cs.map((c) => ({ key: c.key, ch: c.ch, x: c.x, y: c.y, w: c.w, h: c.h })) });
   };
   // 框内按**视觉行**送（`groupBoxRows` 与 bookmeta 同一口径）：矮元素（引号、句读点）
   // 在 `groupLines` 那一层会掉出正文行自成一组，单送没上下文，行识别读不出。
@@ -101,7 +108,11 @@ const BATCH = 32;
 const texts = new Array(lines.length).fill("");
 for (let i = 0; i < lines.length; i += BATCH) {
   const chunk = lines.slice(i, i + BATCH).map((l) => ({
-    chars: l.chars.map((c) => ({ d: shapeOf.get(c.key).d, bbox: shapeOf.get(c.key).bbox, x: c.x, y: c.y, w: c.w, h: c.h })),
+    chars: l.chars.map((c) =>
+      shapeOf.has(c.key)
+        ? { d: shapeOf.get(c.key).d, bbox: shapeOf.get(c.key).bbox, x: c.x, y: c.y, w: c.w, h: c.h }
+        : { rect: true, x: c.x, y: c.y, w: c.w, h: c.h }, // 连接号那条细横线：本来就是个实心矩形
+    ),
   }));
   const got = await page.evaluate(async (items) => {
     const omr = await window.__omr;
@@ -125,6 +136,10 @@ for (let i = 0; i < lines.length; i += BATCH) {
       const vOff = (48 - H * s) / 2;
       const cy = (pageY) => (pageY - (y0 - pad)) * s + vOff;
       for (const c of it.chars) {
+        if (c.rect) {
+          ctx.fillRect(4 + (c.x - x0) * s, cy(c.y), Math.max(1, c.w * s), Math.max(1, c.h * s));
+          continue;
+        }
         const [gx0, gy0, gx1, gy1] = c.bbox;
         const gh = Math.max(gy1 - gy0, 0.01);
         const gw = Math.max(gx1 - gx0, 0.01);
@@ -239,6 +254,7 @@ function splitByWidth(elems, items, text, uLine) {
 
 const median = (v) => (v.length ? [...v].sort((a, b) => a - b)[Math.floor(v.length / 2)] : 0);
 const fill = new Map(); // repKey → Map(text → 票数)
+const digitFix = new Map(); // repKey → Map(text → 票数)：改**已有**标注（块内补回标点）
 const bump = (m, key, ch, n = 1) => {
   const g = repOf(key);
   if (!m.has(g)) m.set(g, new Map());
@@ -248,31 +264,8 @@ let aligned = 0;
 const trace = [];
 for (let i = 0; i < lines.length; i++) {
   const gt = [...(texts[i] ?? "").trim().normalize("NFKC")].filter((c) => OKCH.test(c)).join("");
-  const elems = lines[i].chars.map((c) => ({ ...c, text: charOf(c.key) }));
+  const elems = lines[i].chars.map((c) => ({ ...c, text: charOf(c.key) ?? (c.key ? null : (c.ch ?? null)) }));
   if (gt.length < 3) continue;
-  // 锚点：已知且长度 ≥1 的元素，按序在 OCR 串里找。找不到就跳过这个锚点
-  //（OCR 会漏掉逗号，也会读错个别字，锚点少一个不影响分段）。
-  let cur = 0;
-  const segs = []; // { from, to, items:[元素下标] }
-  let pending = [];
-  for (let j = 0; j < elems.length; j++) {
-    const e = elems[j];
-    if (!e.text) {
-      pending.push(j);
-      continue;
-    }
-    // 锚点比对要**全半角归一**：`gt` 已经 NFKC 过（全角括号、冒号都成了半角），
-    // 而字典里那些字是全角（「作词：」的冒号）。不归一的话「(诗 150：6)」的冒号
-    // 锚点永远落空，「150」那一段就一路吃到「6」跟前，补出个「150:」来。
-    const at = gt.indexOf(e.text.normalize("NFKC"), cur);
-    if (at < 0) continue; // 这个锚点没找到（OCR 读错或漏），并进下一段
-    if (pending.length) segs.push({ from: cur, to: at, items: pending });
-    pending = [];
-    cur = at + e.text.normalize("NFKC").length;
-  }
-  if (pending.length) segs.push({ from: cur, to: gt.length, items: pending });
-  if (!segs.length) continue;
-  aligned++;
   // 两道保险，防止「一个 OCR 小错被写成整类的定案」：
   //  1) 字数要与宽度对得上——一个单字宽的元素收下五个字，那多半是分段错位。
   //  2) **标点大小的元素只收标点**：`James·Black` 的中点被 OCR 读成 M，
@@ -315,6 +308,56 @@ for (let i = 0; i < lines.length; i++) {
     const got = emOf(text);
     return got >= want * 0.5 && got <= want * 2 + 0.5;
   };
+  // 锚点：已知且长度 ≥1 的元素，按序在 OCR 串里找。找不到就跳过这个锚点
+  //（OCR 会漏掉逗号，也会读错个别字，锚点少一个不影响分段）。
+  let cur = 0;
+  const segs = []; // { from, to, items:[元素下标] }
+  let pending = [];
+  for (let j = 0; j < elems.length; j++) {
+    const e = elems[j];
+    if (!e.text) {
+      pending.push(j);
+      continue;
+    }
+    // 锚点比对要**全半角归一**：`gt` 已经 NFKC 过（全角括号、冒号都成了半角），
+    // 而字典里那些字是全角（「作词：」的冒号）。不归一的话「(诗 150：6)」的冒号
+    // 锚点永远落空，「150」那一段就一路吃到「6」跟前，补出个「150:」来。
+    const t = e.text.normalize("NFKC");
+    // **同一个锚点在 gt 里出现好几次**时，按宽度挑：单字的「2」在「29:12」里有两个，
+    // 取第一个的话「29:1」那一段就成了空段，前面 18.99pt 的未读块什么也分不到。
+    // 拿这一段里待分的元素总宽与候选段文本的字身数一比，哪个吻合取哪个。
+    let at = gt.indexOf(t, cur);
+    let len = t.length;
+    if (at >= 0 && pending.length) {
+      const wSeg = pending.reduce((a, j2) => a + elems[j2].w, 0);
+      let best = null;
+      for (let p2 = at; p2 >= 0; p2 = gt.indexOf(t, p2 + 1)) {
+        const err = Math.abs(wSeg - uLine * emOf(gt.slice(cur, p2)));
+        if (!best || err < best.err) best = { at: p2, err };
+      }
+      if (best) at = best.at;
+    }
+    if (at < 0 && /^\d{3,}$/.test(t)) {
+      // **块内丢了标点的数字**：这个元素读作「11824」，OCR 读出的是「118:24」。
+      // 数字序列一字不差、只是中间多了标点——这一条硬到不用投票边际：
+      // 在 gt 里按「数字之间允许插入一个 : . - 」重找，命中就连带把这个类改对
+      //（`source=ocr-line-fix`，比补空更险，所以闸另设 0.75）。
+      const re = new RegExp([...t].join("[:.\\-]?"));
+      const m = re.exec(gt.slice(cur));
+      if (m && m[0] !== t) {
+        at = cur + m.index;
+        len = m[0].length;
+        bump(digitFix, e.key, m[0], 2);
+      }
+    }
+    if (at < 0) continue; // 这个锚点没找到（OCR 读错或漏），并进下一段
+    if (pending.length) segs.push({ from: cur, to: at, items: pending });
+    pending = [];
+    cur = at + len;
+  }
+  if (pending.length) segs.push({ from: cur, to: gt.length, items: pending });
+  if (!segs.length) continue;
+  aligned++;
   /**
    * 段文本按宽度校准：**锚点在 OCR 串里重复出现**时，段的边界会挪一格。
    * p54 那行 OCR 把行首的「“」也读成了「(」，于是「(」锚点匹配到前一个，
@@ -356,6 +399,13 @@ const decide = (m, minVotes, minRatio) => {
 };
 const fillRows = decide(fill, 2, 0.6);
 const okFill = fillRows.filter((r) => r.ok);
+// 改已有标注比补空更险，闸另设（≥2 票且 ≥0.75）——判据本身很硬（数字序列一字不差），
+// 险的是 OCR 把标点位置放错，那种只会在票数分散时露头。
+const okDigitFix = decide(digitFix, 2, 0.75).filter((r) => r.ok);
+if (okDigitFix.length)
+  console.log(
+    `块内补回标点 ${okDigitFix.length} 类：${okDigitFix.slice(0, 12).map((r) => r.ch).join(" ")}${okDigitFix.length > 12 ? " …" : ""}`,
+  );
 
 // ── 标点：不靠 OCR，靠字形与尺寸定案
 //
@@ -391,6 +441,7 @@ const expand = (rows, source) =>
   rows.flatMap((r) => (membersOf.get(r.g) ?? [r.g]).map((key) => ({ shape_key: key, char: r.ch, source })));
 if (!DRY) {
   recordGlyphFixes(db, expand(okFill, "ocr-line"));
+  recordGlyphFixes(db, expand(okDigitFix, "ocr-line-fix"));
   recordGlyphFixes(db, expand(punctRows, "rule-punct"));
   updateUnreadGuess(
     db,
