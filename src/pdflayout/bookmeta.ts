@@ -443,7 +443,11 @@ function hbarAsYi(items: TextRun["chars"], ov?: CharOverride): TextRun["chars"] 
   const em = hs.length ? hs[Math.floor(hs.length / 2)] : 0;
   if (!em) return items;
   return items.map((c) => {
-    if (c.ch !== UNREAD || ov?.(c.key, c.ch)) return c;
+    // `ov` 给出真字就轮不到这条规则。**`□` 不算真字**——那是对比册
+    //（`gen-annocheck.mjs`）给读不出的位置画的占位符，正路那边是留空的，
+    // 不认它的话对比册里这些「一」会全部显示成缺字。
+    const cur = ov?.(c.key, c.ch);
+    if (c.ch !== UNREAD || (cur && cur !== "□")) return c;
     const ratio = c.w / Math.max(c.h, 0.01);
     if (ratio < 5 || c.w < em * 0.8 || c.w > em * 1.25) return c;
     return { ...c, ch: "一", key: "" };
