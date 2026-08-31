@@ -853,6 +853,11 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     //（353 首的歌词少了个「五」）。
     const small = b.h <= noteH * 1.05;
     // **和弦带里宽扁带曲线的东西是短圆滑线，不是和弦**：和弦的字形没有比自己高还宽的
+    // （**署名行里的「一」也长这样**——429「作词：陈赞一」的那个「一」就在这儿被吃成了
+    //  圆滑线。试过在这里「缓一步」推给第 8 步的 `pendingYi`：两种闸口都试了，
+    //  兜底一下子多收 7000 个、未读出多 5000 个，那个「一」照样没捞回来
+    //  ——这一步太早，`credit`/`lyric` 都还没归类，缓下来的对象在后面无人认领。
+    //  收益只有全书 1 处，记为已知差异，别再动。）
     //（字母 6×7、`♭` 2.6×4.2、`/` 3×7.3），短弧却是 7.3×3.4。它卡在第 6 步弧线判据的
     // 宽高比门槛（2.2）外面一点点，落到这里就成了假和弦（379 首多出三个 `D`）。
     if (o.curves >= 1 && b.w >= noteH * 0.8 && b.w / Math.max(b.h, 0.1) >= 1.6 && b.h <= noteH * 0.5) {
@@ -1006,7 +1011,9 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
     let neighbor = 0;
     let neighborRow = -1;
     for (let j = 0; j < objs.length; j++) {
-      if (out[j].cls !== "lyric" || out[j].dup) continue;
+      // **词曲署名那一行也算**：429 的「作词：陈赞一」里那个「一」就落在 credit 带，
+      // 判据与歌词带的完全一样（共字格中心 + 相邻），只是参照汉字换成署名的字。
+      if ((out[j].cls !== "lyric" && out[j].cls !== "credit") || out[j].dup) continue;
       const q = objs[j].bbox;
       if (q.h < lyricH * 0.7) continue; // 拿满格的汉字当参照，标点不算
       if (Math.abs(cy(q) - mid) > lyricH * 0.28) continue; // 不在同一行
@@ -1014,7 +1021,9 @@ export function classifyPage(page: VecPage, profile: BookProfile, opts: Classify
       // 窗口放到 3.5 个字宽：行末那个「一」下面的音符常被拉得很开，与前一个汉字能隔到
       // 两三个字宽（034 首隔了 28 点）。放宽到 2.5/3.5/5/8 实测都一样——真圆滑线是靠
       // 「与汉字共基线」挡住的，不是靠这个窗口；完全一致 441→451 首。
-      if (gap <= lyricH * 3.5) {
+      // 宽度也要对得上一个字：连接号（`1483-1546` 里那一横）只有半个字宽，
+      // 长横线更宽，都不是「一」。
+      if (gap <= lyricH * 3.5 && b.w >= q.w * 0.75 && b.w <= q.w * 1.25) {
         neighbor = bottom(q); // 记下参照汉字的下缘，供聚行用
         neighborRow = out[j].row; // 归行也跟着它走（见下）
         break;

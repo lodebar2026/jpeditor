@@ -73,8 +73,10 @@ for (const c of Object.values(dict.classes)) {
 const shapeOf = new Map(); // key → {d,bbox}
 for (const c of Object.values(dict.classes)) if (c.d && c.bbox) shapeOf.set(c.key, c);
 
-const db = DRY ? null : openDb();
-const fixes = db ? loadGlyphFixes(db) : {};
+// `--dry` 只是不写库，**该读的照读**：不加载已有的补字，满屏都是「未读」，
+// 送识别的行数、分段成败、trace 全都不作数。
+const db = openDb();
+const fixes = loadGlyphFixes(db);
 const dictChar = new Map();
 for (const c of Object.values(dict.classes)) if (c.char) dictChar.set(c.key, c.char);
 /** 这个字形现在读作什么（人工/上一轮定案优先），读不出给 null。 */
@@ -409,6 +411,7 @@ const bump = (m, key, ch, n = 1) => {
 };
 let aligned = 0;
 const trace = [];
+const rejects = [];
 for (let i = 0; i < lines.length; i++) {
   const gt = [...(texts[i] ?? "").trim().normalize("NFKC")].filter((c) => OKCH.test(c)).join("");
   const elems = lines[i].chars.map((c) => ({ ...c, text: charOf(c.key) ?? (c.key ? null : (c.ch ?? null)) }));
@@ -435,25 +438,36 @@ for (let i = 0; i < lines.length; i++) {
   const PUNCT_OK = /^[\u3000-\u303f\uff01-\uff20\uff3b-\uff40\uff5b-\uff65·～()\-:;,.[\]]+$/;
   /** 只占字身下部的句读点——它们的墨迹必然矮。括号、引号、书名号不在此列（那些是高的）。 */
   const LOW_PUNCT = /^[。，、．·,.]+$/;
+  const reject = (why, j, text) => {
+    if (rejects.length < 400) rejects.push({ why, text, w: +elems[j].w.toFixed(1), h: +elems[j].h.toFixed(1), page: lines[i].page });
+    return false;
+  };
   const takeable = (j, text) => {
     const e = elems[j];
     const n = [...text].length;
     // 孤零零一个拉丁字母不收：署名里的中点「·」被 OCR 读成 M、I 读成 l 这类
     // 一旦定案就是全书的中点都变字母。这种留给人工确认表。
-    if (n === 1 && /[A-Za-z]/.test(text)) return false;
+    if (n === 1 && /[A-Za-z]/.test(text)) return reject("孤立拉丁字母", j, text);
     // **句读点只能落在矮元素上**。这一条是反向的保险：原先只管「矮元素只收标点」，
     // 却没管「句读点不许收在高元素上」——括号又窄又高（h/body≈0.9），宽度只有三分之一格，
     // `want` 因此算成 1，OCR 把它读成「。」时一路畅通。全书 11 个类这么被标成了句号，
     // 其中 2.5×10.5 / 3.0×9.1 明显是括号，9.5×9.9 / 10×9.9 那几个干脆是整个汉字
     //（真正的「。」只有 3.1×3.1）。这些错标后来又成了模糊匹配的参照，会把错扩散出去。
-    if (LOW_PUNCT.test(text) && e.h / body > 0.45) return false;
-    if (e.h / body <= 0.45) return n === 1 && PUNCT_OK.test(text);
+    if (LOW_PUNCT.test(text) && e.h / body > 0.45) return reject("句读点落在高元素上", j, text);
+    if (e.h / body <= 0.45) {
+      // **扁横条是「一」，不是标点**。行识别读得出它（全书 24 处），但这里故意不定案：
+      // 这几个形状类在歌词里有 477 个实例，写进 `glyph_fix` 就推翻了
+      //「歌词里的一不进字典、只按几何认」那条纪律（见 inventory.ts 的 lyricYi）。
+      // 注解那边由 `bookmeta.ts::hbarAsYi` 在出文本时认——只影响注解，不动字典。
+      if (text === "一") return false;
+      return n === 1 && PUNCT_OK.test(text) ? true : reject("矮元素只收单个标点", j, text);
+    }
     // 字数闸按**字身**算，不按「元素宽度的中位数」当格宽：一行里元素有宽有窄
     //（「全地都要向耶和华歌唱」98pt 与引号 3.3pt 同在一行），中位数根本不是字格；
     // p54 那行的中位数是 3.3，「代上」那个 19pt 的对象于是被要求装下 3 个字。
     const want = Math.max(1, e.w / uLine);
     const got = emOf(text);
-    return got >= want * 0.5 && got <= want * 2 + 0.5;
+    return got >= want * 0.5 && got <= want * 2 + 0.5 ? true : reject(`字数与宽度对不上（要 ${want.toFixed(1)} 得 ${got}）`, j, text);
   };
   // 锚点：已知且长度 ≥1 的元素，按序在 OCR 串里找。找不到就跳过这个锚点
   //（OCR 会漏掉逗号，也会读错个别字，锚点少一个不影响分段）。
@@ -526,8 +540,10 @@ for (let i = 0; i < lines.length; i++) {
   if (pending.length) segs.push({ from: cur, to: gt.length, items: pending });
   // 一行都没分出段也要记进 trace——**整行已知**的那些正是靠 `digitFix` 纠错的
   //（「1808～1889」那种块内丢标点的行），出了问题只能从这里看。
-  if (trace.length < 60)
-    trace.push({ page: lines[i].page, now: elems.map((e) => e.text ?? UNREAD).join(""), ocr: gt, segs: segs.length });
+  // **有未读元素的行优先记**：那才是补字没成的现场，整行已知的行记满 20 条就够了。
+  const hasHole = elems.some((e) => !e.text);
+  if (hasHole ? trace.length < 120 : trace.filter((t) => !t.hole).length < 20)
+    trace.push({ page: lines[i].page, hole: hasHole, now: elems.map((e) => e.text ?? UNREAD).join(""), ocr: gt, segs: segs.length });
   if (!segs.length) continue;
   aligned++;
   /**
@@ -649,6 +665,7 @@ await writeFile(
       pendingGuess: fillRows.length - okFill.length,
       fillSample: okFill.slice(0, 40).map((r) => ({ ch: r.ch, votes: r.votes, ratio: +r.ratio.toFixed(2) })),
       trace,
+      rejects,
       punctRows: punctRows.map((r) => ({ ch: r.ch, votes: r.votes })),
     },
     null,
