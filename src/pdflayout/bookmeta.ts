@@ -44,7 +44,11 @@ export function runText(run: TextRun | null | undefined, ov?: CharOverride): str
     out.push(text);
     prev = { text, right: c.x + c.w, h: c.h };
   }
-  return out.join("");
+  // **夹在西文数字之间的冒号写半角**。字形只有一个（全书 1181 个实例都是那两个小圆点），
+  // 所以 `glyph_fix` 只能给它一个字符，只好在这里按上下文分：
+  // 「作词：某某」那边量到的左间距是 0.43 个字身，跟全角的 0.435 对得上；
+  // 而「代上 16:23」里 16 与 23 之间只隔 0.58 个字身，装不下一个全角。
+  return out.join("").replace(/([0-9A-Za-z])：([0-9A-Za-z])/g, "$1:$2");
 }
 
 /** 逐字展开（覆盖后一个元素可能是多字：花边框正文常把一段字合成一个 path 对象）。 */

@@ -39,6 +39,7 @@ npm run build:cli && node pdf-diff.mjs && node pdf-mark.mjs   # 矢量 PDF 识�
 node rebuild.mjs [--one=020,373] && node line-check.mjs        # 成书重排 + 判据断言（断句 D1~D10 / 版面 V1~V11 + 全书基线）
 node gen-storyocr.mjs && node gen-glyphsheet.mjs               # 整行 OCR 补字 + 人工确认表
 node gen-glyphaudit.mjs [祂 …]                                 # 同字多形审计：捞原书错字/错标（→ glyph_fix）
+node gen-annocheck.mjs [--issues] [--one=022]                  # 注解对比册：原件裁图 ↕ 识别文本（缺字画 □）
 node gen-glyphfuzzy.mjs [--dry] [--why]                        # 形近补字：签名匹配回字典已认得的类 + 上下文规则
 node gen-bookmeta.mjs [--check]                                # 书级内容（调号拍号/目录/索引/注解…）入 校对.db
 node gen-glyphmerge.mjs        # 字形建库第三步：同一字形的分身归并、标注取齐
