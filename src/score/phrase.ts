@@ -395,6 +395,14 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const SHORT_OUTLIER_RATIO = 0.6;
   /** 「有一行明显比同曲其它行长」的权重（contentOnly 用，见 quality 的 outlier）。 */
   const OUTLIER_WEIGHT = 60;
+  /** 逐点爬山（见 `improve`）：最多爬几轮、爬前几套方案。两个数都是够用就好——
+   *  第 2 轮基本只在个别曲子上还动，方案按分数排过序、前 8 套之外的爬到头也选不上。 */
+  const HILL_ROUNDS = 2;
+  const HILL_PLANS = 8;
+  /** 爬山至少要赚这么多分才认（见 `improve` 末尾那段注释）。 */
+  const HILL_MIN_GAIN = 10;
+  /** 段内最短行 ÷ 最长行的下限，爬山的硬闸。与 line-check 的 D8 同一个 0.5。 */
+  const D8_RATIO = 0.5;
   /**
    * **行末收在主音上**的加分（contentOnly 用，见 quality 的 tailTonic）。
    *
@@ -1905,6 +1913,145 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
       if (v && notTooThin(v)) consider(quality(v), v);
     }
     /**
+     * **逐点爬山**：行数定了，落点还不一定是最好的那一组。
+     *
+     * 候选方案是「每段几行」这么列出来的（`tryWant`），每一档只跑一遍 DP、只交出**一套**
+     * 落点，而 DP 的每行代价与 `quality` 并不是同一把尺子——`breakCost` 把强度归一到
+     * `[0, 8]` 并在 24 分封顶（28 分与 24 分一样便宜），行长项在 `runWith` 里权重只有 2，
+     * 于是它乐意为一个「更便宜的落点」让出半行长度。171《回家吧》的 4 行档就是这样：
+     * DP 交出 11.5 / 20.5 / 16 / 20 拍（第 1 刀落在「回家吧！」那个 28 分的行内长音上），
+     * q = 16.7；而同样是 4 行的 16 / 16 / 16 / 20（刀落在「沦亡，」那个 14 分、
+     * 却带满 12 个音平行前缀的落点上）q 只有 2.0——**比全曲所有方案都好，却压根没被生成过**。
+     *
+     * 所以在评分之后再补一步：拿每套方案**逐个断点**在它左右两条边界之间试遍候选，
+     * `quality` 变好就挪过去（行数不变、段界与强制断点不动），最多两轮。
+     * 挪出来的方案好不好照旧由 `quality` 说了算，碎行仍由 `notTooThin` 挡着。
+     * `alignParallel` 是这条的特例（照平行伙伴的长度挪），保留着：它挪的是**下一行**的收尾，
+     * 爬山每次只动一个断点、评的是全局分，两者补出来的方案不一样。
+     */
+    const boundsOf = (nb: number[]): number[] => {
+      const bs = [0];
+      for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; bs.push(b); a = b; }
+      return bs;
+    };
+    const nbOf = (bs: number[]): number[] => {
+      const nb = new Array<number>(M + 1).fill(0);
+      for (let i = 0; i + 1 < bs.length; i++) nb[bs[i]] = bs[i + 1];
+      return nb;
+    };
+    const cutSet = new Set(cuts);
+    /**
+     * **挪过去的地方本身得是个像样的乐句落点**。`quality` 是**方案选优**的尺子，
+     * 不是可以随便优化的目标函数——行首那个字带不带标点、行末断没断在无词的拖腔上，
+     * 只经 `weak` 取了个均值就摊薄了，照直优化就会把它们挪坏（实测 D4 0 → 2、D6 0 → 1）。
+     * 三道闸，前一道是 `alignParallel` 的老口径，后两道**照着 line-check 的 D4/D6 写**
+     * ——判据是什么，爬山就不许踩什么：
+     *   1. `scoreAt` 减行首罚为正（这里像个落点）；
+     *   2. **D4**：下一行的头一个字带着句读标点，而本行自己没收尾（上一句的尾巴甩到行首）；
+     *   3. **D6**：断在无词的拖腔上，而往前最近的那个字还没有标点收尾（词被劈成两半）。
+     */
+    const decentCut = (b: number): boolean => {
+      if (!(b > 0 && b <= M)) return false;
+      const idx = cand[b - 1];
+      if (scoreAt(idx) - headPenalty(idx) <= 0) return false;
+      const endsHere = punctAfter[idx] > 0;
+      // D4：行首那个字带标点、上一行又没收尾
+      const head = flat[idx + 1];
+      if (head && !endsHere && lyricPunctScore(head.chord) > 0) return false;
+      // D6：行末落在无词的拖腔上，往前最近的那个字没有标点
+      if (!flat[idx].chord.rest && !mainLyricText(flat[idx].chord)) {
+        let j = idx;
+        while (j >= 0 && !mainLyricText(flat[j].chord)) j--;
+        if (j >= 0 && lyricPunctScore(flat[j].chord) === 0) return false;
+      }
+      return true;
+    };
+    /** 一套方案里有几行放不下（真实坐标；没有 `fit` 时恒为 0）。见 `improve` 末尾。 */
+    const overflows = (nb: number[]): number => {
+      if (!FIT) return 0;
+      let n = 0;
+      for (let a = 0; a < M; ) { const b = nb[a]; if (b <= a) break; if (!lineFits(a, b)) n++; a = b; }
+      return n;
+    };
+    /** 一套方案里**最差的那个段**的行长比（段内最短 ÷ 最长，按时值；单行段不算）。
+     *  与 line-check 的 D8 同一把尺子——爬山不许把它挪差（实测不设这条 D8 9 → 11 首）。
+     *  **按段界分组**（`sectionCuts`），不是按 `cuts`：后者还含强制断点（跳转记号 / 转调 /
+     *  前奏），照它分组会把一段拆成几小组，各组内部都很匀、合起来却悬殊，闸就形同虚设
+     *  （034《用我一生》与 348 就是这么漏过去的）。 */
+    const sectionEdges = [...sectionCuts].sort((a, b) => a - b);
+    const segRatio = (nb: number[]): number => {
+      const bySeg = new Map<number, number[]>();
+      for (let a = 0; a < M; ) {
+        const b = nb[a];
+        if (b <= a) break;
+        const sNo = sectionEdges.filter((c) => c < b).length;
+        const arr = bySeg.get(sNo) ?? [];
+        arr.push(durBetween(a, b));
+        bySeg.set(sNo, arr);
+        a = b;
+      }
+      let worst = 1;
+      for (const xs of bySeg.values()) {
+        if (xs.length < 2) continue;
+        const hi = Math.max(...xs);
+        if (hi > 0) worst = Math.min(worst, Math.min(...xs) / hi);
+      }
+      return worst;
+    };
+    const improve = (nb0: number[]): number[] | null => {
+      const bs = boundsOf(nb0);
+      if (bs.length < 3) return null;                 // 一行到底，没有可挪的断点
+      const q0 = quality(nb0);
+      let curQ = q0;
+      let moved = false;
+      for (let round = 0; round < HILL_ROUNDS; round++) {
+        let changed = false;
+        for (let k = 1; k + 1 < bs.length; k++) {
+          // 段界与强制断点（跳转记号 / 转调 / 前奏）不许动——它们本来就不是「挑」出来的。
+          // 段界一定是 bs 里的一员，所以相邻两条边界之间不会夹着别的段界，挪不出段去。
+          if (cutSet.has(bs[k])) continue;
+          const lo = bs[k - 1] + 1;
+          const hi = bs[k + 1] - 1;
+          const from = bs[k];
+          let bestB = from;
+          let bestQ = curQ;
+          for (let b = lo; b <= hi; b++) {
+            if (b === from || !decentCut(b)) continue;
+            bs[k] = b;
+            const q = quality(nbOf(bs));
+            if (q < bestQ - 1e-9) { bestQ = q; bestB = b; }
+          }
+          bs[k] = bestB;
+          if (bestB !== from) { curQ = bestQ; changed = true; moved = true; }
+        }
+        if (!changed) break;
+      }
+      // **爬得值才认**：`quality` 的量程里零点几分是噪声，为它挪断点只会把调好的谱挪坏
+      //（355《你已否祷告》与 020《向主歌唱》两条定点断言就是这么被挪掉的，各只赚了不到 1 分）。
+      // 171 那一套是 16.7 → 2.0，赚 14.7 分——真正该翻盘的差距是这个量级。
+      // @ts-ignore 调试钩子：这一套爬山赚了多少分、挪到哪儿了（页面里先 `window.__hillDebug = []`）
+      if (typeof window !== "undefined" && Array.isArray((window as any).__hillDebug))
+        (window as any).__hillDebug.push({ q0: +q0.toFixed(2), q1: +curQ.toFixed(2), moved, bs: bs.slice() });
+      if (!moved || q0 - curQ < HILL_MIN_GAIN) return null;
+      const out = nbOf(bs);
+      // 两道**绝对**门槛，都照着 line-check 的判据写：段内行长比 ≥ 0.5（D8）、
+      // 每行都放得下。**不能写成「别比出发的那套差」**——爬山是从好几套方案各爬一遍，
+      // 出发点本来就差的那套爬完仍然差，却照样能在评分里胜出：034《用我一生》原本是
+      // 十行各 8~15 拍、行行放得下，爬山从另一套方案爬出六行 15~20 拍（分数确实好看），
+      // 六行里有放不下的，补刀再切开就成了 8 / 20 拍，段内立刻悬殊（348 同理）。
+      //
+      // 「每行都放得下」这条不是「让纸张决定断句」（那条口径没变，见 `contentOnly`），
+      // 而是「爬山只在自己能负责到底的范围里动手」：放不下的行终归要被补刀切开，
+      // 切出来的两截长短由不得 `quality`，那时候爬山赚的那几分早就不作数了。
+      return segRatio(out) >= D8_RATIO && overflows(out) === 0 ? out : null;
+    };
+    // **只爬有希望的那些**：全爬一遍代价是「方案数 × 断点数 × 窗口宽」次 `quality`，
+    // 而分数已经落后一大截的方案爬到头也翻不了盘。
+    for (const o of [...all].sort((a, b) => a.score - b.score).slice(0, HILL_PLANS)) {
+      const v = improve(o.nb);
+      if (v && notTooThin(v)) consider(quality(v), v);
+    }
+    /**
      * **纸张只当平局的裁判**（用户口径：「断句结果只有 2 行超长行的，应该选 4 行更短的」）。
      *
      * 断句层照旧不把容量算进代价——试过给 `quality` 加一项软的超容量代价，全书七档一起变差
@@ -1982,6 +2129,20 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
         near.sort((a, b) => overRatio(a.nb) - overRatio(b.nb) || a.score - b.score);
         if (near.length && overRatio(near[0].nb) < overRatio(best.nb)) best = { score: near[0].score, nb: near[0].nb };
       }
+    }
+    // @ts-ignore 调试钩子：**手里这套断点值多少分**。页面里先把断点的 flat 下标写进
+    // `window.__tryPlan`（`__phraseDebug` 那份表里的 `i`），排完读 `window.__tryPlanQ`。
+    // 与 `__qDebug` 配着用：那份摊开的是「被生成出来的方案」，这个回答的是
+    // 「我想要的那套断法为什么没选上」——171《回家吧》就是靠它认出用户那套 16/16/16/20
+    // 其实 q = 2.0（全曲最优），只是 DP 在 4 行那一档压根没生成过它（于是有了 `improve`）。
+    if (typeof window !== "undefined" && Array.isArray((window as any).__tryPlan)) {
+      const bs = ((window as any).__tryPlan as number[])
+        .map((fi) => cand.findIndex((c) => c === fi) + 1).filter((b) => b > 0);
+      const nb = new Array<number>(M + 1).fill(0);
+      let a = 0;
+      for (const b of [...bs, M]) { nb[a] = b; a = b; }
+      // @ts-ignore
+      (window as any).__tryPlanQ = { bs, q: quality(nb) };
     }
     // @ts-ignore 调试钩子：段界
     if (typeof window !== "undefined" && (window as any).__cutsDebug !== undefined)

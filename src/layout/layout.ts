@@ -484,6 +484,15 @@ export interface SlurStyle {
 
 export abstract class SlurTieBase extends Group {
   /**
+   * 走了**扁平长连音线**那条路时，两端那个钩的水平长度（`initFlat` 的 `hx`）；画成弧的是 0。
+   *
+   * 上方带堆叠要拿它算「这一段 x 上墨迹到底多高」（`Line.collectBandItems` 的 `topAt`）：
+   * 弧的墨迹按抛物线两头低、中间高，扁平式却是**中段一路平着、只有两端 hx 那截往下收**
+   * ——照抛物线算，落在末端附近的 fermata 会被判成「那儿的弧几乎贴着音符」而不让位，
+   * 于是压在扁平线上（171《回家吧》末行的延长号）。
+   */
+  flatHx = 0;
+  /**
    * 弧高（正数，实际画的时候取负——简谱的弧一律在音符上方、开口朝下）。
    * **这是弧高的唯一算法**：谱面排版、成书重排、文本谱的绘制与纵向预留全走它。
    *
@@ -591,6 +600,7 @@ export abstract class SlurTieBase extends Group {
     // 与弧形同一套形状语言：**填充的月牙**，中段厚 t、两端收到端点上成尖角
     // （去程画上缘、回程沿同一条形状下压 t 画回来，两端共用 pl/pr 所以天然是尖的）。
     // 早先这里是一条等宽描边线，两端齐头齐脑，跟满页的月牙弧摆在一起很扎眼。
+    this.flatHx = hx;
     const obj = new GraphicPath();
     obj.fill = true;
     obj.stroke = false;
@@ -2094,7 +2104,15 @@ export class Line {
       // 弧在某一段里到底有多高：按抛物线近似（贝塞尔弧与它差不多），
       // 端点处贴着音符、中点处才是弧顶。压着弧的 fermata 多半落在两头，
       // 照包围盒让位就抬到半空中去了（302《一切全奉献》）。
+      //
+      // **扁平长连音线不吃这一套**（`SlurTieBase.flatHx > 0`）：它中段一路平着顶在 `top`，
+      // 只有两端 hx 那一截往下收到音符上，而那两截是**贝塞尔的钩**、一出端点就贴着顶走
+      // ——照抛物线（甚至照钩的线性插值）算，末端附近都会被判成「几乎贴着音符」，
+      // 于是不让位，171《回家吧》末行的延长号就直接压在扁平线上。
+      // 整条按 `top` 算：扁平线本来就只有几个点高（弧高的 0.75 再乘扁平那份薄），
+      // 让位让过头也就多抬那么几个点，比压上去强得多。
       const at = (x: number): number => {
+        if (s.flatHx > 0) return top;
         const u = x1 > x0 ? Math.min(1, Math.max(0, (x - x0) / (x1 - x0))) : 0;
         return bottom - 4 * (bottom - top) * u * (1 - u);
       };

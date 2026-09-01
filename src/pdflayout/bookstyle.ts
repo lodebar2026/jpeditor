@@ -243,6 +243,17 @@ export interface BookLayoutOpts {
    *  排成行首，两行就对齐得上（070 副歌两行、077 的 `13|5565|`、175 的一二行）。
    *  见 `phrase.ts::headFpOf`。 */
   phraseParallelWeight?: number;
+  /** **行末收在长音上**的加分（0 = 关，成书 3；编辑器那 15 首的基线不开）。
+   *  与 `phraseParallelWeight` 是一对——那条管「下一行从哪儿起」，这条管「本行在哪儿收」。
+   *  见 `phrase.ts::PhraseOptions.tailLongWeight`。 */
+  phraseTailLongWeight?: number;
+  /** **行数多的方案优先**的容差（内容层，与版心无关；0 = 关，成书 4）。
+   *  并回去是 B 档 `mergePairsUniform` 的活，而把一行劈开谁也补不回来。
+   *  见 `phrase.ts::PhraseOptions.moreRowsSlack`。 */
+  phraseMoreRowsSlack?: number;
+  /** **纸张当平局裁判**的容差（0 = 关，成书就是 0：版心不影响断句）。
+   *  见 `phrase.ts::PhraseOptions.fitSlack`。 */
+  phraseFitSlack?: number;
   /** 是否允许在小节中间换行。**默认允许**：原书每行都在小节线上收尾，但那是固定版式的结果——
    *  弱起谱（005《荣耀归与天父》）每句都收在小节中间的长音上，只认小节线就一条乐句断点都找不到，
    *  只能靠容量保险每 6 小节机械切一刀，句子被拦腰截断。phrase 的 DP 本来就给行内断点加罚 6、
@@ -466,6 +477,12 @@ export function defaultBookStyle(): BookStyle {
       phraseTailWeight: 1,
       phraseContentOnly: true,
       phraseParallelWeight: 6,
+      // 这三个是 2026-08-27/28 调好的成书口径，**同样只能写在这儿**（上面那段注释的
+      // 原话，可它们当时只落在了 JSON 里）：9 月 1 日重跑一次 gen-bookstyle.mjs 就全丢了
+      // ——096《哈利路亚！感谢主》的四行塌回两行（补刀再切成三行）、全书 D8 9 → 12。
+      phraseTailLongWeight: 3,
+      phraseMoreRowsSlack: 4,
+      phraseFitSlack: 0,
       verseNumbers: "auto",
       justify: true,
       songStart: "any",
