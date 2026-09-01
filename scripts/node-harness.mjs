@@ -382,6 +382,7 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
     const known = wants.filter((v) => v != null);
     const dupNo = new Set(known).size !== known.length;
     const anchored = useAnchor && !dupNo && lines.some((ln) => numbered(ln) && anchor.has(keyOfLine(ln)));
+    if (process.env.DBG) console.error("DBG row", { anchored, useAnchor, dupNo, lines: lines.length });
     if (!anchored) {
       lines.forEach((ln, vi) => {
         if (dupNo && numbered(ln)) {
@@ -394,15 +395,24 @@ export function collectSongGlyphs(inv, entry, profile, shapeKey = null) {
       continue;
     }
     let vi = -1; // 还没遇到段号的行：杂物/续行先归到第 1 段
-    for (const ln of lines) {
+    // 一行「够长」的尺子：本谱行编号行的平均字数（副歌与正文字数相当，折行只有零星几字）
+    const numberedLens = lines.filter(numbered).map((ln) => ln.length);
+    const fullLine = numberedLens.length ? (numberedLens.reduce((a, b) => a + b, 0) / numberedLens.length) * 0.5 : Infinity;
+    lines.forEach((ln, idx) => {
       if (numbered(ln)) {
         const k = keyOfLine(ln);
         const want = anchor.has(k) ? anchor.get(k) : vi + 1;
         vi = want > vi ? want : vi + 1; // 段号只能一路往下走
+      } else if (idx > vi && ln.length >= fullLine) {
+        // **不印段号、却排在段序之后的一整行 = 另起一段**（086 首第 5 段就是这样：
+        // 前三个谱行的那一行不印「5.」，只有最末一个谱行印了，照「未编号归到当前 vi」
+        // 会把整段 54 字并进第 4 段）。折行与杂物行只有零星几字，够不到 `fullLine`，
+        // 照旧接在当前段末尾——那才是它们该去的地方。
+        vi = idx;
       }
       if (numbered(ln)) numberedVerse.add(Math.max(vi, 0));
       (verses[Math.max(vi, 0)] ??= []).push(...stripVerseNo(ln));
-    }
+    });
   }
   for (let i = 0; i < verses.length; i++) verses[i] ??= []; // 跳号会留空洞，补齐免得下面的统计吃到 undefined
 
