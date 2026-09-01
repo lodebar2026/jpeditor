@@ -39,15 +39,17 @@ export interface KeyMeterSpec {
 /**
  * 调号里升降号的字号比（÷ 音名字号）与基线抬升量（× 音名墨迹高）。
  *
- * 原书 002 实测：♭ 墨迹高 6.3、音名 8.0，♭ 的墨迹**顶**比音名顶高 3.9pt。
- * 换算要走 Bravura 的字形盒：`accidentalFlat` 的墨迹在基线上方 0.448em、下方 0.168em
- * （高 0.616em），所以
- *   字号 = 6.3 / 0.616 ≈ 10.2 ÷ 音名字号 12.3 ≈ 0.83
- *   抬升 = (8.14 + 3.9 − 0.448 × 10.2) / 8.14 ≈ 0.92 个音名墨迹高
- * 抬得不够（先前按 0.45）就成了「♭ 与音名顶部对齐」，竖线该高出去的那截没了。
+ * **升降号写 ASCII 的 `#` / `b`**（用户口径，与和弦那边同一套）：`♯`/`♭` 那两个字符
+ * 在成书用的方正字体里没有字形，排出来会回退到乐谱字体——绕个圈子又用上了 SMuFL。
+ *
+ * 原书 002 实测：♭ 墨迹高 6.3、音名 8.0，♭ 的墨迹**顶**比音名顶高 3.9pt。换算到 ASCII：
+ * 小写 `b` 的墨迹高约 0.72 em、大写音名约 0.66 em，所以
+ *   字号 = (6.3 / 8.0) × (0.66 / 0.72) ≈ 0.72 个音名字号
+ *   抬升 = (0.66 × sz + 3.9 − 0.72 × 0.72 × sz) / 8.14 ≈ 0.69 个音名墨迹高
+ * 抬得不够就成了「升降号与音名顶部对齐」，该高出去的那截没了。
  */
-const KEY_ACC_SIZE = 0.83;
-const KEY_ACC_RISE = 0.92;
+const KEY_ACC_SIZE = 0.72;
+const KEY_ACC_RISE = 0.69;
 
 export function keyMeterItems(style: BookStyle, km: KeyMeterSpec, x: number, baseline: number, measure: Measure, size?: number): DrawItem[] {
   const sz = size ?? style.roles.keyMeter.size;
@@ -74,8 +76,9 @@ export function keyMeterItems(style: BookStyle, km: KeyMeterSpec, x: number, bas
       cur += measure("keyMeter", prefix, sz);
     }
     const accSz = sz * KEY_ACC_SIZE;
-    items.push(textItem(acc[1], "keyMeter", accSz, cur, baseline - ink * KEY_ACC_RISE));
-    cur += measure("keyMeter", acc[1], accSz) * 1.05;
+    const accCh = acc[1] === "♯" ? "#" : acc[1] === "♭" ? "b" : acc[1];
+    items.push(textItem(accCh, "keyMeter", accSz, cur, baseline - ink * KEY_ACC_RISE));
+    cur += measure("keyMeter", accCh, accSz) * 1.05;
     const tail = `${acc[2]}${suffix}`;
     items.push(textItem(tail, "keyMeter", sz, cur, baseline));
     cur += measure("keyMeter", tail, sz);

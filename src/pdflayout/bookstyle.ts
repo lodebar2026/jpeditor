@@ -340,8 +340,8 @@ export function defaultFonts(): Record<string, FontRef> {
     // **注意**：系统自带的 WeibeiSC-Bold.otf 是 CFF，pdf-lib 的子集产物 poppler 与 pdfjs
     // 都认不出来（"Unable to detect correct font file Type/Subtype"），那种只能 mode:"path"。
     wei: { family: "FZWeiBei-S03S", file: `${FZ}/方正魏碑简体.ttf` }, // 标题
-    serif: { family: "FZBaoSong-Z04S", file: `${FZ}/方正报宋简体.ttf` }, // 歌词与正文
-    kai: { family: "FZKai-Z03S", file: `${FZ}/方正楷体简体.ttf` }, // 词曲署名
+    serif: { family: "FZBaoSong-Z04", file: `${FZ}/方正报宋_GBK.TTF` }, // 歌词与正文
+    kai: { family: "FZKai-Z03", file: `${FZ}/方正楷体_GBK.TTF` }, // 词曲署名
     hei: { family: "FZHei-B01S", file: `${FZ}/方正黑体简体.TTF` }, // 曲号、分类页眉
     xingkai: { family: "FZXingKai-S04", file: `${FZ}/方正行楷_GBK.ttf` }, // 目录的分类标题
     times: { family: "Times New Roman", file: "/System/Library/Fonts/Supplemental/Times New Roman.ttf" },
