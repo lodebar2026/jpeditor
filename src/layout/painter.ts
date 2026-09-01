@@ -4,8 +4,6 @@
 import { Point, Rect, colorToCss } from "../common/geom";
 import { Font } from "./font";
 import {
-  GraphicLine,
-  GraphicPath,
   Group,
   Layout,
   NoteEntry,
@@ -15,6 +13,7 @@ import {
 } from "./layout";
 import { Chord, Score } from "../score/score";
 import type { PagePainter } from "./pagepainter";
+import { walkPageItem, type ItemVisitor } from "./walk";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -240,74 +239,90 @@ export class JinpuPainter implements PagePainter {
   }
 }
 
-/** 一页的页面树 → 独立 `<svg>`。JinpuPainter 与 PuPainter 共用（两者的页面树是同一套
- *  PageItem，只是排版器不同）。`root` 为空时给出一个空白页而不是抛错。 */
+/** `renderPageSvg` 的可选项。第四个参数直接给 WeakMap 是老写法，保留不动。 */
+export interface PageSvgOptions {
+  nodeMap?: WeakMap<PageItem, SVGGElement>;
+  /** `<svg>` 的 class，默认 `score-page`。混排那一路还要加 `mixed-page`。 */
+  cls?: string;
+  /** 页面树怎么变成 DOM。默认谱面那一路的语义；混排传它自己那份（见 mixed/painter.ts）。 */
+  visitor?: ItemVisitor<SVGGElement>;
+}
+
+/** 一页的页面树 → 独立 `<svg>`。JinpuPainter / PuPainter / MixedPainter 共用
+ *  （三者的页面树是同一套 PageItem，只是排版器与 visitor 不同）。
+ *  `root` 为空时给出一个空白页而不是抛错。 */
 export function renderPageSvg(
   root: PageItem | undefined,
   width: number,
   height: number,
-  nodeMap?: WeakMap<PageItem, SVGGElement>,
+  opts?: WeakMap<PageItem, SVGGElement> | PageSvgOptions,
 ): SVGSVGElement {
+  const o: PageSvgOptions = opts instanceof WeakMap ? { nodeMap: opts } : (opts ?? {});
   const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("class", "score-page");
+  svg.setAttribute("class", o.cls ?? "score-page");
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  if (root) svg.appendChild(renderPageItem(root, nodeMap));
+  if (root) {
+    const holder = document.createElementNS(SVG_NS, "g");
+    walkPageItem(root, holder, o.visitor ?? svgVisitor(o.nodeMap));
+    // visitor 可能不为根产生 <g>（混排那份只给 Group 造），所以整批搬过去
+    while (holder.firstChild) svg.appendChild(holder.firstChild);
+  }
   return svg;
 }
 
-// Recursively build an SVG <g> for a PageItem (matrix transform + self shape +
-// children), mirroring draw.kt's drawPageItem (save/concat/drawTo/recurse).
-export function renderPageItem(
-  item: PageItem,
-  nodeMap?: WeakMap<PageItem, SVGGElement>,
-): SVGGElement {
-  const g = document.createElementNS(SVG_NS, "g");
-  if (!item.matrix.isIdentity) g.setAttribute("transform", item.matrix.toSvg());
-  const self = renderSelf(item);
-  if (self) g.appendChild(self);
-  for (const ch of item.children) g.appendChild(renderPageItem(ch, nodeMap));
-  nodeMap?.set(item, g);
-  return g;
-}
-
-function renderSelf(item: PageItem): SVGElement | null {
-  if (item instanceof GraphicPath) {
-    const p = document.createElementNS(SVG_NS, "path");
-    p.setAttribute("d", item.d);
-    if (item.fill) p.setAttribute("fill", colorToCss(item.fillColor));
-    else p.setAttribute("fill", "none");
-    if (item.stroke) {
-      p.setAttribute("stroke", colorToCss(item.strokeColor));
-      p.setAttribute("stroke-width", String(item.strokeWidth));
-    }
-    return p;
-  }
-  if (item instanceof GraphicLine) {
-    const l = document.createElementNS(SVG_NS, "line");
-    l.setAttribute("x1", String(item.p0.x));
-    l.setAttribute("y1", String(item.p0.y));
-    l.setAttribute("x2", String(item.p1.x));
-    l.setAttribute("y2", String(item.p1.y));
-    l.setAttribute("stroke", colorToCss(item.strokeColor));
-    l.setAttribute("stroke-width", String(item.strokeWidth));
-    l.setAttribute("stroke-linecap", "butt");
-    return l;
-  }
-  if (item instanceof TextFrame) {
-    const t = document.createElementNS(SVG_NS, "text");
-    t.setAttribute("x", "0");
-    t.setAttribute("y", "0");
-    const family = item instanceof SmuflText ? "Bravura" : item.font.family;
-    t.setAttribute("font-family", family);
-    t.setAttribute("font-size", String(item.font.size));
-    if (item.font.bold) t.setAttribute("font-weight", "bold");
-    t.setAttribute("fill", colorToCss(item.color));
-    // 逐字笔位（标点挤压后的坐标，排版期量的那一串）。给了 `x` 列表就由它定位，
-    // **不再叠 font-feature-settings**——测量已经把挤压算进去了，再叠一层会挤两遍。
-    if (item.charXs && item.charXs.length > 1)
-      t.setAttribute("x", item.charXs.map((v) => v.toFixed(2)).join(" "));
-    t.textContent = item.text;
-    return t;
-  }
-  return null; // Group / bare PageItem: children only
+/**
+ * 谱面这一路的 visitor：**每个** PageItem 都产生一个 <g>，matrix 加在它身上，
+ * 自身图形与子级都放进去（所以叶子元素自己不带 transform）。
+ * 与 mixed 那份的语义差别见 mixed/painter.ts::mixedVisitor 的注释。
+ */
+function svgVisitor(nodeMap?: WeakMap<PageItem, SVGGElement>): ItemVisitor<SVGGElement> {
+  const enter = (item: PageItem, parent: SVGGElement): SVGGElement => {
+    const g = document.createElementNS(SVG_NS, "g");
+    if (!item.matrix.isIdentity) g.setAttribute("transform", item.matrix.toSvg());
+    parent.appendChild(g);
+    nodeMap?.set(item, g);
+    return g;
+  };
+  return {
+    descend: enter,
+    path: (item, g) => {
+      const p = document.createElementNS(SVG_NS, "path");
+      p.setAttribute("d", item.d);
+      if (item.fill) p.setAttribute("fill", colorToCss(item.fillColor));
+      else p.setAttribute("fill", "none");
+      if (item.stroke) {
+        p.setAttribute("stroke", colorToCss(item.strokeColor));
+        p.setAttribute("stroke-width", String(item.strokeWidth));
+      }
+      g.appendChild(p);
+    },
+    line: (item, g) => {
+      const l = document.createElementNS(SVG_NS, "line");
+      l.setAttribute("x1", String(item.p0.x));
+      l.setAttribute("y1", String(item.p0.y));
+      l.setAttribute("x2", String(item.p1.x));
+      l.setAttribute("y2", String(item.p1.y));
+      l.setAttribute("stroke", colorToCss(item.strokeColor));
+      l.setAttribute("stroke-width", String(item.strokeWidth));
+      l.setAttribute("stroke-linecap", "butt");
+      g.appendChild(l);
+    },
+    text: (item, g) => {
+      const t = document.createElementNS(SVG_NS, "text");
+      t.setAttribute("x", "0");
+      t.setAttribute("y", "0");
+      const family = item instanceof SmuflText ? "Bravura" : item.font.family;
+      t.setAttribute("font-family", family);
+      t.setAttribute("font-size", String(item.font.size));
+      if (item.font.bold) t.setAttribute("font-weight", "bold");
+      t.setAttribute("fill", colorToCss(item.color));
+      // 逐字笔位（标点挤压后的坐标，排版期量的那一串）。给了 `x` 列表就由它定位，
+      // **不再叠 font-feature-settings**——测量已经把挤压算进去了，再叠一层会挤两遍。
+      if (item.charXs && item.charXs.length > 1)
+        t.setAttribute("x", item.charXs.map((v) => v.toFixed(2)).join(" "));
+      t.textContent = item.text;
+      g.appendChild(t);
+    },
+    // Group / 裸 PageItem：只有子级，descend 里那个 <g> 就是全部
+  };
 }

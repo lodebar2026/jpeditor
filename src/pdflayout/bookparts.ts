@@ -102,25 +102,13 @@ export function keyMeterItems(style: BookStyle, km: KeyMeterSpec, x: number, bas
 
 // ─────────────────────────────────────────────── 花边框
 
-// 槽位的定义在 bookmeta（提取侧）那边，这里只是照着画，type-only import 编译期就擦掉了。
-import type { TileSlot } from "./bookmeta";
+// 槽位与母题的定义在 bookmeta（提取侧）那边，这里只是照着画。
+import { translatePath, type OrnamentTile, type TileSlot } from "./bookmeta";
 export type { TileSlot };
 
-export interface OrnamentTileSpec {
-  slot: TileSlot;
-  w: number;
-  h: number;
-  pitch: number;
-  /** 角片相对框角的偏移；边片恒为 0。 */
-  ox: number;
-  oy: number;
-  path: string;
-}
-
-/** 把一条已归一化到原点的路径平移到 (x,y)。 */
-function movePath(d: string, x: number, y: number): string {
-  return d.replace(/(-?\d*\.?\d+)\s+(-?\d*\.?\d+)/g, (_m, a, b) => `${(Number(a) + x).toFixed(2)} ${(Number(b) + y).toFixed(2)}`);
-}
+/** 画一片花边要知道的东西。提取侧的 `OrnamentTile` 去掉 `style`（那是分组用的 id，
+ *  排到版上时已经选定了一套，用不着）——字段原先在这里又抄了一遍，抄漏一个就画偏。 */
+export type OrnamentTileSpec = Omit<OrnamentTile, "style">;
 
 /**
  * 花边框：四条边各按自己的母题平铺、四角各摆一片，**拼成一条 path**。
@@ -146,7 +134,7 @@ export function ornamentFramePath(tiles: OrnamentTileSpec[], box: { x: number; y
   const corner = (s: TileSlot, cx: number, cy: number) => {
     const t = at(s);
     if (!t) return null;
-    parts.push(movePath(t.path, cx + t.ox, cy + t.oy));
+    parts.push(translatePath(t.path, cx + t.ox, cy + t.oy));
     return t;
   };
   const tl = corner("tl", box.x, box.y);
@@ -175,10 +163,10 @@ export function ornamentFramePath(tiles: OrnamentTileSpec[], box: { x: number; y
   const ty = box.y + (tl?.h ?? tr?.h ?? 0);
   const by = y1 - (bl?.h ?? br?.h ?? 0);
 
-  if (edges.includes("T")) run(at("top"), lx, rx, (p) => parts.push(movePath(at("top")!.path, p, box.y)));
-  if (edges.includes("B")) run(at("bottom"), lx, rx, (p) => parts.push(movePath(at("bottom")!.path, p, y1 - at("bottom")!.h)));
-  if (edges.includes("L")) run(at("left"), ty, by, (p) => parts.push(movePath(at("left")!.path, box.x, p)));
-  if (edges.includes("R")) run(at("right"), ty, by, (p) => parts.push(movePath(at("right")!.path, x1 - at("right")!.w, p)));
+  if (edges.includes("T")) run(at("top"), lx, rx, (p) => parts.push(translatePath(at("top")!.path, p, box.y)));
+  if (edges.includes("B")) run(at("bottom"), lx, rx, (p) => parts.push(translatePath(at("bottom")!.path, p, y1 - at("bottom")!.h)));
+  if (edges.includes("L")) run(at("left"), ty, by, (p) => parts.push(translatePath(at("left")!.path, box.x, p)));
+  if (edges.includes("R")) run(at("right"), ty, by, (p) => parts.push(translatePath(at("right")!.path, x1 - at("right")!.w, p)));
 
   return parts.join("");
 }

@@ -15,6 +15,7 @@ import {
   TextFrame,
   type PathSeg,
 } from "../layout/layout";
+import { walkPageItem, type ItemVisitor } from "../layout/walk";
 
 
 const EMU = (v: number) => Math.round(v * 12700); // 1 pt = 12700 EMU
@@ -74,66 +75,75 @@ function glyphSegs(font: opentype.Font, ch: string, size: number): { segs: PathS
 }
 
 // ---------------- tree walk -> shapes ----------------
-function collectShapes(item: PageItem, font: opentype.Font, out: Shape[]): void {
-  if (item instanceof GraphicLine) {
-    const pp = item.pos(null);
-    const x0 = item.p0.x + pp.x, y0 = item.p0.y + pp.y;
-    const x1 = item.p1.x + pp.x, y1 = item.p1.y + pp.y;
-    const ox = Math.min(x0, x1), oy = Math.min(y0, y1);
-    out.push({
-      kind: "geom", x: ox, y: oy, w: Math.max(Math.abs(x1 - x0), 0.01), h: Math.max(Math.abs(y1 - y0), 0.01),
-      segs: [{ op: "M", pts: [x0 - ox, y0 - oy] }, { op: "L", pts: [x1 - ox, y1 - oy] }],
-      fillHex: null, strokeHex: hex(item.strokeColor), strokeW: item.strokeWidth,
-    });
-    return;
-  }
-  if (item instanceof GraphicPath) {
-    const pp = item.pos(null);
-    out.push({
-      kind: "geom", x: pp.x, y: pp.y, w: Math.max(item.width, 0.01), h: Math.max(item.height, 0.01),
-      segs: item.segs,
-      fillHex: item.fill ? hex(item.fillColor) : null,
-      strokeHex: item.stroke ? hex(item.strokeColor) : null,
-      strokeW: item.strokeWidth,
-    });
-    return;
-  }
-  if (item instanceof SmuflText) {
-    const pp = item.pos(null);
-    const size = item.font.size * item.matrix.scaleY;
-    const scale = size / font.unitsPerEm;
-    let cx = 0;
-    for (const ch of item.text) {
-      const g = glyphSegs(font, ch, size);
-      if (g) {
-        const { segs, bbox } = g;
-        const ox = bbox.x1, oy = bbox.y1;
-        const local = segs.map((s) => ({ op: s.op, pts: s.pts.map((v, i) => v - (i % 2 === 0 ? ox : oy)) }));
-        out.push({
-          kind: "geom", x: pp.x + cx + ox, y: pp.y + oy,
-          w: Math.max(bbox.x2 - bbox.x1, 0.01), h: Math.max(bbox.y2 - bbox.y1, 0.01),
-          segs: local, fillHex: hex(item.color), strokeHex: null, strokeW: 0,
-        });
+//
+// 遍历骨架与另外三路共用（layout/walk.ts），但**坐标不走矩阵累积**：这里用
+// `item.pos(null)` 拿到叶子相对页根的绝对位置，所以 visitor 不需要携带任何东西（M = void）。
+// 与那三路一样，叶子的子级不再往下走。
+function shapeVisitor(font: opentype.Font, out: Shape[]): ItemVisitor<void> {
+  return {
+    descend: () => undefined,
+    descendChildren: (item) =>
+      !(item instanceof GraphicLine || item instanceof GraphicPath || item instanceof TextFrame),
+    line: (item) => {
+      const pp = item.pos(null);
+      const x0 = item.p0.x + pp.x, y0 = item.p0.y + pp.y;
+      const x1 = item.p1.x + pp.x, y1 = item.p1.y + pp.y;
+      const ox = Math.min(x0, x1), oy = Math.min(y0, y1);
+      out.push({
+        kind: "geom", x: ox, y: oy, w: Math.max(Math.abs(x1 - x0), 0.01), h: Math.max(Math.abs(y1 - y0), 0.01),
+        segs: [{ op: "M", pts: [x0 - ox, y0 - oy] }, { op: "L", pts: [x1 - ox, y1 - oy] }],
+        fillHex: null, strokeHex: hex(item.strokeColor), strokeW: item.strokeWidth,
+      });
+    },
+    path: (item) => {
+      const pp = item.pos(null);
+      out.push({
+        kind: "geom", x: pp.x, y: pp.y, w: Math.max(item.width, 0.01), h: Math.max(item.height, 0.01),
+        segs: item.segs,
+        fillHex: item.fill ? hex(item.fillColor) : null,
+        strokeHex: item.stroke ? hex(item.strokeColor) : null,
+        strokeW: item.strokeWidth,
+      });
+    },
+    text: (item) => {
+      // SMuFL **转曲**：PPT 里不能指望装了 Bravura，字形拆成 custGeom 路径
+      if (item instanceof SmuflText) {
+        const pp = item.pos(null);
+        const size = item.font.size * item.matrix.scaleY;
+        const scale = size / font.unitsPerEm;
+        let cx = 0;
+        for (const ch of item.text) {
+          const g = glyphSegs(font, ch, size);
+          if (g) {
+            const { segs, bbox } = g;
+            const ox = bbox.x1, oy = bbox.y1;
+            const local = segs.map((sg) => ({ op: sg.op, pts: sg.pts.map((v, i) => v - (i % 2 === 0 ? ox : oy)) }));
+            out.push({
+              kind: "geom", x: pp.x + cx + ox, y: pp.y + oy,
+              w: Math.max(bbox.x2 - bbox.x1, 0.01), h: Math.max(bbox.y2 - bbox.y1, 0.01),
+              segs: local, fillHex: hex(item.color), strokeHex: null, strokeW: 0,
+            });
+          }
+          cx += (font.charToGlyph(ch).advanceWidth ?? 0) * scale;
+        }
+        return;
       }
-      cx += (font.charToGlyph(ch).advanceWidth ?? 0) * scale;
-    }
-    return;
-  }
-  if (item instanceof TextFrame) {
-    const pp = item.pos(null);
-    const fm = item.font.metrics;
-    const height = fm.descent - fm.ascent;
-    const sz = item.font.size * item.matrix.scaleY;
-    out.push({
-      kind: "text", x: pp.x, y: pp.y + fm.descent - height - sz / 20,
-      w: Math.max(item.width, 1), h: height,
-      text: item.text, size: sz, colorHex: hex(item.color),
-      bold: item.font.bold, family: item.font.family,
-    });
-    return;
-  }
-  // Group / bare PageItem: recurse
-  for (const ch of item.children) collectShapes(ch, font, out);
+      const pp = item.pos(null);
+      const fm = item.font.metrics;
+      const height = fm.descent - fm.ascent;
+      const sz = item.font.size * item.matrix.scaleY;
+      out.push({
+        kind: "text", x: pp.x, y: pp.y + fm.descent - height - sz / 20,
+        w: Math.max(item.width, 1), h: height,
+        text: item.text, size: sz, colorHex: hex(item.color),
+        bold: item.font.bold, family: item.font.family,
+      });
+    },
+  };
+}
+
+function collectShapes(item: PageItem, font: opentype.Font, out: Shape[]): void {
+  walkPageItem(item, undefined, shapeVisitor(font, out));
 }
 
 // ---------------- OOXML shape builders ----------------

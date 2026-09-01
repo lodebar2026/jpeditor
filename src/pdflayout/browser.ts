@@ -6,13 +6,14 @@
 //
 // 为什么导出 DrawList 而不是 SVG 字符串：SVG 要在 Node 侧反解嵌套 transform 与字体度量，
 // 等于把 painter 再写一遍；而页面树本来就只有三种叶子（GraphicPath / GraphicLine / TextFrame），
-// 照着 painter.ts::renderPageItem 的递归扁平化一次就完事，逻辑一比一对应、不冒回归风险。
-import { GraphicLine, GraphicPath, JpNumber, JpOctaveDot, Lyric, PageItem, SmuflText, TextFrame } from "../layout/layout";
+// 照着 layout/walk.ts 的骨架递归扁平化一次就完事，逻辑一比一对应、不冒回归风险。
+import { GraphicPath, JpNumber, JpOctaveDot, Lyric, PageItem, SmuflText, TextFrame } from "../layout/layout";
 import { Font } from "../layout/font";
 import type { LayoutOptions } from "../layout/layout";
 import type { DrawItem, DrawPage, DrawText } from "./drawlist";
 import type { BookStyle, StyleRole } from "./bookstyle";
 import { JinpuPainter } from "../layout/painter";
+import { walkPageItem, type ItemVisitor } from "../layout/walk";
 import type { FitMetric } from "../score/applybreaks";
 import type { Score } from "../score/score";
 import type { MetaData } from "../smufl/smufl";
@@ -98,22 +99,16 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
   const off = o.offset ?? { x: 0, y: 0 };
   const base: Mat6 = [k, 0, 0, k, off.x, off.y];
 
-  const walk = (it: PageItem, parent: Mat6): void => {
-    const m = concat(parent, matOf(it));
-    emit(it, m);
-    for (const ch of it.children) walk(ch, m);
-  };
-
-  const emit = (it: PageItem, m: Mat6): void => {
-    if (it instanceof GraphicPath) {
+  const visitor: ItemVisitor<Mat6> = {
+    descend: (it, parent) => concat(parent, matOf(it)),
+    path: (it, m) => {
       const d = pathData(it, m);
       if (d) {
         const pcls = CLS_TAGS.find((c) => it.classes.has(c));
         items.push({ t: "path", d, fill: it.fill ? argbToRgb(it.fillColor) : null, stroke: it.stroke ? argbToRgb(it.strokeColor) : null, sw: it.stroke ? it.strokeWidth * scaleOf(m) : 0, ...(pcls ? { cls: pcls } : {}) });
       }
-      return;
-    }
-    if (it instanceof GraphicLine) {
+    },
+    line: (it, m) => {
       const lcls = CLS_TAGS.find((c) => it.classes.has(c));
       items.push({
         t: "line",
@@ -125,9 +120,8 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
         color: argbToRgb(it.strokeColor),
         ...(lcls ? { cls: lcls } : {}),
       });
-      return;
-    }
-    if (it instanceof TextFrame) {
+    },
+    text: (it, m) => {
       if (!it.text) return;
       const chars = [...it.text];
       // 逐字笔位用**浏览器实测的 advance 前缀和**：落位就是排版器排的那一版，
@@ -167,10 +161,10 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
         ...(it instanceof SmuflText ? { inkTop: it.bound.top * scaleOf(m) } : {}),
       };
       items.push(t);
-    }
+    },
   };
 
-  if (root) walk(root, base);
+  if (root) walkPageItem(root, base, visitor);
   return { pageNo: o.pageNo, w: w * k, h: h * k, meta: o.meta, items };
 }
 
@@ -378,6 +372,20 @@ export function maxStaffRowCells(pages: DrawPage[]): number {
 }
 
 /**
+ * 成书这一路的排版器构造：字号取 lyric 那一档、灌进 BookStyle、注入 SMuFL 元数据。
+ *
+ * 三个调用点（`measureChordSpans` / `measureCellsPerLine` / rebuild.mjs 的 `renderPages`）
+ * 原来各抄了一份这三行，改一处就得记得改另外两处。`smuflMeta` 不注入的话，
+ * layout 会在延长号/跳转记号上抛 "no smufl bbox"。
+ */
+export function makeBookPainter(style: BookStyle, smuflMeta?: MetaData): JinpuPainter {
+  const p = new JinpuPainter(fontSizeFor(style, "lyric"));
+  applyBookStyle(p.layout.options, style);
+  if (smuflMeta) p.layout.options.smuflMeta = smuflMeta;
+  return p;
+}
+
+/**
  * **真实坐标量一遍**：每个和弦占的横向区间 + 版心宽度。
  *
  * 「一行放不放得下」的唯一可靠判据（用户口径：「不要算格数，真实坐标排一遍，放不下再补刀」）。
@@ -391,9 +399,7 @@ export function maxStaffRowCells(pages: DrawPage[]): number {
  * 补刀/合并反复试的时候不必重排。
  */
 export function measureChordSpans(score: Score, style: BookStyle, smuflMeta?: MetaData): FitMetric {
-  const p = new JinpuPainter(fontSizeFor(style, "lyric"));
-  applyBookStyle(p.layout.options, style);
-  if (smuflMeta) p.layout.options.smuflMeta = smuflMeta;
+  const p = makeBookPainter(style, smuflMeta);
   // 与 measureCellsPerLine 同理：先清掉原谱的换行，量的是「自然排下来有多宽」。
   score.clearSystemBreak();
   const { width, spans } = p.layout.measureNatural(score, style.page.w);
@@ -408,10 +414,7 @@ export function measureChordSpans(score: Score, style: BookStyle, smuflMeta?: Me
  * 排版器会在小节中间再折一次，行尾挂着孤零零一个音。
  */
 export function measureCellsPerLine(score: Score, style: BookStyle, smuflMeta?: MetaData): number {
-  const p = new JinpuPainter(fontSizeFor(style, "lyric"));
-  applyBookStyle(p.layout.options, style);
-  // 不注入的话 layout 会在延长号/跳转记号上抛 "no smufl bbox"
-  if (smuflMeta) p.layout.options.smuflMeta = smuflMeta;
+  const p = makeBookPainter(style, smuflMeta);
   // **先清掉原谱的换行**：不清的话排版器照 musicxml 的 `<print new-system>` 分行，
   // 量到的是「原书每行几格」而不是「一行放得下几格」——005《荣耀归与天父》原书那几行是
   // 30/26/27/17 格，量出 27，可它其实放得下 30。清掉之后排版器才真的按宽度塞满再折行。
