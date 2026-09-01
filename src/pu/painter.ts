@@ -1,6 +1,6 @@
 // 文本谱绘制：定位结构 → PageItem 树 → SVG。
 //
-// 复用本项目的 PageItem/Group/GraphicPath/GraphicLine/TextFrame 与 renderPageItem，
+// 复用本项目的 PageItem/Group/GraphicPath/GraphicLine/TextFrame 与 renderPageSvg，
 // 所以「导出 PPTX」那条路（collectShapes 认这几种图元）不用改就能吃文本谱的页面。
 //
 // 数字用系统字体按**墨迹居中**于步进锚点（字号由 digitInkHeight 反推），
@@ -14,6 +14,9 @@ import { graceGeometry } from "../common/gracenote";
 import { Matrix33, Point, type Rect } from "../common/geom";
 import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFrame } from "../layout/layout";
 import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
+import { jpBarlineItems, jpDot, jpTimeSigItems } from "../layout/jpglyph";
+import type { BarlineSpec } from "../layout/layout";
+import { BarStyle } from "../score/score";
 import { renderPageSvg } from "../layout/painter";
 import type { LyricSyllable, Metadata, NoteElement, PuDoc } from "./ast";
 import { primaryMetadata } from "./ast";
@@ -60,17 +63,10 @@ function barlineBlocks(voices: readonly PlacedVoice[]): PlacedVoice[][] {
   return blocks.filter((b) => b.length > 0);
 }
 
-function dot(cx: number, cy: number, r: number, color = BLACK): GraphicPath {
-  const p = new GraphicPath();
-  // 两段半圆弧拼一个整圆
-  p.moveTo(cx - r, cy);
-  p.cubicTo(cx - r, cy - r * 1.34, cx + r, cy - r * 1.34, cx + r, cy);
-  p.cubicTo(cx + r, cy + r * 1.34, cx - r, cy + r * 1.34, cx - r, cy);
-  p.close();
-  p.fill = true;
-  p.fillColor = color;
-  return p;
-}
+/** 实心圆。谱面/混排/文本谱共用一份（`jpglyph.ts::jpDot`，四段贝塞尔的标准正圆）。
+ *  这里原先是两段近似（控制点 1.34r），腰部比正圆略胖。 */
+const dot = (cx: number, cy: number, r: number, color = BLACK): GraphicPath =>
+  jpDot(cx, cy, r, color);
 
 function rect(x: number, y: number, w: number, h: number, color = BLACK): GraphicPath {
   const p = new GraphicPath();
@@ -243,6 +239,16 @@ function text(str: string, x: number, y: number, font: Font, color: number): Tex
   if ([...str].length > 1) t.charXs = font.run(str).xs;
   return t;
 }
+
+/** 文本谱的小节线类型 → 谱面那一路的 `BarlineSpec`（两边的表达力一一对上）。 */
+const PU_BARLINE_SPEC: Record<string, BarlineSpec | undefined> = {
+  normal: {},
+  double: { style: BarStyle.LIGHT_LIGHT },
+  end: { style: BarStyle.LIGHT_HEAVY },
+  "repeat-start": { repeatForward: true },
+  "repeat-end": { repeatBackward: true },
+  "repeat-both": { repeatBackward: true, repeatForward: true },
+};
 
 export class PuPainter {
   metrics: PuMetrics;
@@ -596,22 +602,22 @@ export class PuPainter {
     meter: { numerator: number; denominator: number },
     font: Font,
   ): number {
-    const top = String(meter.numerator);
-    const bottom = String(meter.denominator);
-    const wt = font.measureText(top);
-    const wb = font.measureText(bottom);
-    const w = Math.max(wt, wb);
-    root.add(text(top, x + (w - wt) / 2, y - font.size * 0.42, font, BLACK));
-    root.add(text(bottom, x + (w - wb) / 2, y + font.size * 0.62, font, BLACK));
-    const bar = new GraphicLine();
-    bar.p0.x = x - 1;
-    bar.p0.y = y - font.size * 0.1;
-    bar.p1.x = x + w + 1;
-    bar.p1.y = bar.p0.y;
-    bar.strokeColor = BLACK;
-    bar.strokeWidth = 1.4;
-    root.add(bar);
-    return w;
+    // 尺寸走公共那一份：**一切长度都是小节线高度的比例**（jpglyph.ts::jpTimeSigItems），
+    // 两个数字横向居中于分数线。原先这里各按 `font.size` 的 0.42/0.62/0.1 给，
+    // 与谱面、混排三处口径各不相同。
+    const r = jpTimeSigItems(meter.numerator, meter.denominator, {
+      height: this.metrics.barlineHeight,
+      centerY: 0,
+      ruleWidth: 1.4,
+      color: BLACK,
+      font,
+    });
+    for (const item of r.items) {
+      item.x += x;
+      item.y += y;
+      root.add(item);
+    }
+    return r.width;
   }
 
   /**
@@ -1092,19 +1098,6 @@ export class PuPainter {
       return;
     }
 
-    const top = baseline - m.barlineHeight * 0.5;
-    const height = m.barlineHeight + spanHeight;
-    const mid = top + height / 2;
-    const thin = (cx: number): void => {
-      root.add(rect(cx - m.barlineWidth / 2, top, m.barlineWidth, height));
-    };
-    const thick = (cx: number): void => {
-      root.add(rect(cx - m.barlineWidth, top, m.barlineWidth * 2.6, height));
-    };
-    const dots = (cx: number): void => {
-      root.add(dot(cx, mid - m.barlineHeight * 0.18, m.repeatDotRadius));
-      root.add(dot(cx, mid + m.barlineHeight * 0.18, m.repeatDotRadius));
-    };
     if (el.ornaments.length > 0) {
       const g = new Group();
       this.paintOrnaments(g, el.ornaments, x, baseline);
@@ -1115,36 +1108,29 @@ export class PuPainter {
       const font = new Font(m.fontFamily, m.headerSize * 0.85);
       this.paintMeter(root, x + m.barlineDoubleGap, baseline, el.temporaryMeter, font);
     }
-    const gap = m.barlineDoubleGap;
-    switch (el.type) {
-      case "normal":
-        thin(x);
-        break;
-      case "double":
-        thin(x - gap / 2);
-        thin(x + gap / 2);
-        break;
-      case "end":
-        thin(x - gap / 2);
-        thick(x + gap / 2);
-        break;
-      case "repeat-start":
-        thick(x - gap / 2);
-        thin(x + gap / 2);
-        dots(x + gap / 2 + 6);
-        break;
-      case "repeat-end":
-        dots(x - gap / 2 - 6);
-        thin(x - gap / 2);
-        thick(x + gap / 2);
-        break;
-      case "repeat-both":
-        dots(x - gap - 6);
-        thin(x - gap);
-        thick(x);
-        thin(x + gap);
-        dots(x + gap + 6);
-        break;
+
+    // 粗细组合、反复点、线间距**全部走谱面那一路的画法**（jpglyph.ts::jpBarlineItems）。
+    // 原先这里是自成一套：填充 rect 而不是 GraphicLine、粗线 ×2.6、线距 barlineDoubleGap、
+    // 反复点在 ±0.18H 且离线 6px——同一件事两种写法，改一处忘一处。
+    // 纵向范围仍是文本谱自己的（`barlineHeight` 居中于基线、再加 spanHeight），
+    // 那是照原版量的，不是谱面那套 jpStaffTop/Bottom。
+    const half = m.barlineHeight * 0.5;
+    const spec = PU_BARLINE_SPEC[el.type];
+    if (!spec) return;
+    const r = jpBarlineItems(spec, el.type === "end", {
+      top: -half,
+      bot: half + spanHeight,
+      light: m.barlineWidth,
+      heavy: m.barlineWidth * 2.6,
+      dotRadius: m.repeatDotRadius,
+      color: BLACK,
+    });
+    // jpBarlineItems 的 x 从 0 起；文本谱的小节线是**居中于锚点**的
+    const ox = x - r.width / 2;
+    for (const item of r.items) {
+      item.x += ox;
+      item.y += baseline;
+      root.add(item);
     }
   }
 

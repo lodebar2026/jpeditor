@@ -3,6 +3,7 @@
 // the common geom types, and the Font abstraction (measurement via SVG/canvas).
 
 import { Fraction } from "../common/fraction";
+import { jpBarlineItems, jpDot, jpTimeSigItems } from "./jpglyph";
 import { Point, Rect, Matrix33, newMatrix, Colors } from "../common/geom";
 import { pathTightBounds } from "../common/measure";
 import { LYRIC_SPLIT_PUNCT, type CompressMode } from "../common/cjkpunct";
@@ -317,15 +318,35 @@ export class SmuflText extends TextFrame {
   }
 }
 
-export class JpOctaveDot extends TextFrame {
-  constructor() {
+/**
+ * 八度点 —— **一个实心矢量圆**，不是字体里的 `.` 字形。
+ *
+ * 三条简谱路统一走 `jpglyph.ts::jpDot`（文本谱本来就是自绘的，谱面与混排原先用
+ * `.`／`·` 字形——同一个点三种画法，还得各自补一道「按墨迹而非 advance 居中」的修正）。
+ * 圆没有这个问题：局部包围盒恒为 (0,0)–(2r,2r)，调用点照旧 `x − width/2` 居中即可。
+ *
+ * `update()` / `bound` 都按解析式给，**不走 `computeTightBounds`**——那是一次
+ * `<path>`.getBBox 的 DOM 测量，全书几万个八度点经不起。
+ */
+export class JpOctaveDot extends GraphicPath {
+  readonly radius: number;
+  constructor(r: number, color: number) {
     super();
-    this.text = ".";
     this.selectable = true;
+    this.radius = r;
+    this.segs = jpDot(r, r, r, color).segs;
+    this.fill = true;
+    this.stroke = false;
+    this.fillColor = color;
+    this.width = 2 * r;
+    this.height = 2 * r;
+  }
+  override update(): void {
+    this.width = 2 * this.radius;
+    this.height = 2 * this.radius;
   }
   override get bound(): Rect {
-    const bnd = LayoutOptions.charBound(this.font, this.text[0]);
-    return new Rect(0, bnd.top, this.width, bnd.bottom);
+    return new Rect(0, 0, 2 * this.radius, 2 * this.radius);
   }
 }
 
@@ -453,6 +474,12 @@ export interface SlurStyle {
   flatRatio?: number;
   /** 扁平式**中段**的墨迹厚度（两端一样收尖）。省略 = `thickness * 0.45`。 */
   flatLineWidth?: number;
+  /**
+   * 弧的开口朝向。默认 `"up"`——**简谱的弧一律在音符上方、开口朝下**，
+   * 三条简谱路（编辑器 / 成书重排 / 文本谱）都不设它。
+   * `"down"` 只给混排的五线谱层用：那里 slur/tie 跟着符干走，符干朝上时弧在音符下方。
+   */
+  side?: "up" | "down";
 }
 
 export abstract class SlurTieBase extends Group {
@@ -475,7 +502,7 @@ export abstract class SlurTieBase extends Group {
     return Math.min(raw, cap) * (o.heightScale ?? 1);
   }
 
-  static calcSlurPoints(pl: Point, pr: Point, o: Pick<SlurStyle, "heightScale" | "maxHeight" | "minHeight"> = {}): [Point, Point, number] {
+  static calcSlurPoints(pl: Point, pr: Point, o: Pick<SlurStyle, "heightScale" | "maxHeight" | "minHeight" | "side"> = {}): [Point, Point, number] {
     const xr = pr.x, xl = pl.x, yr = pr.y, yl = pl.y;
     const dx = xr - xl, dy = yr - yl;
     const square = dx * dx + dy * dy;
@@ -484,7 +511,8 @@ export abstract class SlurTieBase extends Group {
     const cos = Math.cos(-theta);
     const sin = Math.sin(-theta);
     const xlen = Math.min(dist * 0.04 + 10, dist * 0.25);
-    const h = -SlurTieBase.arcHeight(dist, o);
+    // 页面坐标 y 向下为正，所以「弧在上方」= 控制点 y 取负。
+    const h = SlurTieBase.arcHeight(dist, o) * (o.side === "down" ? 1 : -1);
     let p1 = new Point(xlen, h).rotate(cos, sin);
     let p2 = new Point(dist - xlen, h).rotate(cos, sin);
     p1 = p1.offset(xl, yl);
@@ -704,35 +732,19 @@ export class TimeSig extends Entry {
   layout(opt: LayoutOptions): void {
     const top = opt.jpStaffTop;
     const bot = opt.jpStaffBottom;
-    const cy = (bot + top) / 2;
-    const font = opt.numberFont.withBold().makeWithSize(opt.numberSize * 0.75);
-    const tf1 = new TextFrame();
-    tf1.color = opt.color;
-    tf1.font = font;
-    tf1.text = String(this.beats);
-    const w1 = tf1.measureText();
-    const tf2 = new TextFrame();
-    tf2.font = font;
-    tf2.color = opt.color;
-    tf2.text = String(this.beatType);
-    const w2 = tf2.measureText();
-    this.width = Math.max(w1, w2);
-    const ln = new GraphicLine();
-    // 分数线的粗细：原书量到的才 0.3pt（比小节线 1.0 还细一半多），
-    // 引擎默认的 1.5 是按屏幕上 fontSize≈28 调的，缩到成书字号就成了一道黑杠。
-    ln.strokeWidth = opt.timeSigRuleWidth > 0 ? opt.timeSigRuleWidth : 1.5;
-    ln.strokeColor = opt.color;
-    const y = cy - ln.strokeWidth / 2;
-    ln.p0 = new Point(0, y);
-    ln.p1 = new Point(this.width, y);
-    tf1.y = y - opt.numberSize * 0.1;
-    tf1.x = (this.width - w1) / 2;
-    tf2.y = y + opt.numberSize * 0.625;
-    tf2.x = (this.width - w2) / 2;
-    this.hline = ln;
-    this.group.add(tf1);
-    this.group.add(tf2);
-    this.group.add(ln);
+    // 尺寸一律按**小节线高度**的比例（见 jpglyph.ts::jpTimeSigItems），三条简谱路同一份。
+    const r = jpTimeSigItems(this.beats, this.beatType, {
+      height: bot - top,
+      centerY: (bot + top) / 2,
+      // 分数线的粗细：原书量到的才 0.3pt（比小节线 1.0 还细一半多），
+      // 引擎默认的 1.5 是按屏幕上 fontSize≈28 调的，缩到成书字号就成了一道黑杠。
+      ruleWidth: opt.timeSigRuleWidth > 0 ? opt.timeSigRuleWidth : 1.5,
+      color: opt.color,
+      font: opt.numberFont.withBold(),
+    });
+    this.width = r.width;
+    this.hline = r.rule;
+    for (const it of r.items) this.group.add(it);
   }
 }
 
@@ -942,20 +954,16 @@ export class NoteEntry extends Entry {
     const oct = ch.notes[0].jpOctave;
     const numBound = options.numberBound("1");
     for (let d = 0; d < Math.abs(oct); d++) {
-      const tf = new JpOctaveDot();
-      tf.font = options.numberFont;
-      tf.color = options.color;
-      // Ladder positions are ink-to-ink, so convert to a text baseline by
-      // backing off the dot glyph's own ink offset (a "." sits above its
-      // baseline, so the two sides need different corrections).
-      const dotBound = options.numberBound(".");
+      const r = options.jpDotRadius;
+      const tf = new JpOctaveDot(r, options.color);
+      // 栅格是**墨迹到墨迹**量的。圆的局部包围盒就是墨迹本身（(0,0)–(2r,2r)），
+      // 所以直接按上/下缘落位——不必再像字形那样倒扣 `.` 自己的基线偏移。
       if (oct >= 0) {
         const inkBottom = numBound.top - options.jpStackGap - d * options.jpDotRung;
-        tf.y = inkBottom - dotBound.bottom;
+        tf.y = inkBottom - 2 * r;
       } else {
         const above = Math.max(numBound.bottom, options.jpBeamBottom(ch.beams));
-        const inkTop = above + options.jpStackGap + d * options.jpDotRung;
-        tf.y = inkTop - dotBound.top;
+        tf.y = above + options.jpStackGap + d * options.jpDotRung;
       }
       ent.group.add(tf);
       ent.octaveDot.push(tf);
@@ -1035,15 +1043,14 @@ export class NoteEntry extends Entry {
       it.y = d.cy - (cb.top + cb.bottom) / 2;
       ent.group.add(it);
     }
-    // 八度点仍用主音那套字形（`·`），只取公共几何算好的位置
+    // 八度点与主音同一套画法（实心圆），只取公共几何算好的位置。
+    // 半径用 graceMetricsOf 里那个倚音专用的 `octaveDotRadius`（比主音的小）。
     for (const o of geom.dots) {
-      const dot = new JpOctaveDot();
-      dot.color = options.color;
-      dot.font = font;
-      dot.text = "·";
-      dot.update();
-      dot.x = ox + o.cx - font.inkCenter("·");
-      dot.y = o.cy;
+      // 半径用公共几何算好的那个（倚音专用，比主音小；`GraceGeom.dots[].r`）
+      const r = o.r;
+      const dot = new JpOctaveDot(r, options.color);
+      dot.x = ox + o.cx - r;
+      dot.y = o.cy - r;
       ent.group.add(dot);
     }
     for (const bm of geom.beams) {
@@ -1185,50 +1192,19 @@ export class Barline extends Entry {
     const bot = opt.jpStaffBottom;
     this.defaultTop = top;
     this.bot = bot;
-    const heavyWidth = opt.finalBarlineWidth;
-    const light = opt.barlineWidth; // musicpp lineWidths.lightBarline (pptutil.cpp:139)
-    const res = this.group;
-    // 粗细组合按 bar-style 来（五线谱怎么画，简谱就怎么画）：
-    // 终止线 `light-heavy` 细+粗、反复起点 `heavy-light` 粗+细、`light-light` 双细线。
-    // repeatForward/Backward 自带隐含样式：谱上没标 bar-style 也要画成粗细组合。
-    const st = spec.style ?? null;
-    let widths: number[];
-    // **前后反复背靠背**（`:‖:`）：上一小节收尾的 `:‖` 与本小节起头的 `‖:` 合成一条，
-    // 五线谱的画法是「细 粗 细」+ 两侧各两点，而不是两根粗线并排
-    // （`dropDoubledBarlines` 把它们并起来后才会走到这里）。
-    if (spec.repeatBackward && spec.repeatForward) widths = [light, heavyWidth, light];
-    else if (st === S.BarStyle.LIGHT_HEAVY || (final && !spec.repeatForward)) widths = [light, heavyWidth];
-    else if (st === S.BarStyle.HEAVY_LIGHT || spec.repeatForward) widths = [heavyWidth, light];
-    else if (st === S.BarStyle.LIGHT_LIGHT) widths = [light, light];
-    else if (st === S.BarStyle.HEAVY || st === S.BarStyle.HEAVY_HEAVY) widths = [heavyWidth];
-    else widths = [light];
-    if (spec.repeatBackward && widths.length === 1) widths = [light, heavyWidth];
-    const dist = heavyWidth;
-    let xpos = 0;
-    // 反复点在**细线那一侧**（`:‖` 左、`‖:` 右），先占位再画线，x 顺序才对
-    const dotR = opt.repeatDotRadius > 0 ? opt.repeatDotRadius : light * 1.6;
-    const dotGap = dotR * 1.6;
-    if (spec.repeatBackward) {
-      this.addDots(opt, xpos + dotR, dotR, top, bot);
-      xpos += dotR * 2 + dotGap;
-    }
-    for (const w of widths) {
-      const l = new GraphicLine();
-      l.strokeColor = opt.color;
-      l.x = xpos + w / 2;
-      l.p0 = new Point(0, top);
-      l.p1 = new Point(0, bot);
-      l.strokeWidth = w;
-      xpos += w + dist;
-      res.add(l);
-      this.lines.push(l);
-    }
-    if (spec.repeatForward) {
-      xpos += dotGap - dist;
-      this.addDots(opt, xpos + dotR, dotR, top, bot);
-    }
-    this.isPlain = widths.length === 1 && !spec.repeatBackward && !spec.repeatForward;
-    res.update();
+    // 粗细组合、反复点、间距一律走公共那一份（jpglyph.ts）——文本谱也用它。
+    const r = jpBarlineItems(spec, final, {
+      top,
+      bot,
+      light: opt.barlineWidth, // musicpp lineWidths.lightBarline (pptutil.cpp:139)
+      heavy: opt.finalBarlineWidth,
+      dotRadius: opt.repeatDotRadius,
+      color: opt.color,
+    });
+    for (const it of r.items) this.group.add(it);
+    this.lines.push(...r.lines);
+    this.isPlain = r.isPlain;
+    this.group.update();
   }
 
   /** 小节线**墨迹**的左右缘（相对本 entry 的组原点）。
@@ -1245,25 +1221,6 @@ export class Barline extends Entry {
     return l ? l.x + l.strokeWidth / 2 : 0;
   }
 
-  /** 反复点：小节线中线上下各一个实心圆（四段三次贝塞尔近似）。 */
-  private addDots(opt: LayoutOptions, cx: number, r: number, top: number, bot: number): void {
-    const mid = (top + bot) / 2;
-    const off = (bot - top) / 6;
-    for (const cy of [mid - off, mid + off]) {
-      const p = new GraphicPath();
-      p.fill = true;
-      p.stroke = false;
-      p.fillColor = opt.color;
-      const k = r * 0.5523;
-      p.moveTo(cx - r, cy);
-      p.cubicTo(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
-      p.cubicTo(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
-      p.cubicTo(cx + r, cy + k, cx + k, cy + r, cx, cy + r);
-      p.cubicTo(cx - k, cy + r, cx - r, cy + k, cx - r, cy);
-      p.close();
-      this.group.add(p);
-    }
-  }
 
   /**
    * Lower the top edge so the barline stops below a slur/tie crossing it.
@@ -3305,6 +3262,9 @@ export class LayoutOptions {
   lyricGap = 0;
   /** 反复点的半径。0 = 按小节线宽推算。成书排版给原书量到的值（metrics.repeatDotDiam）。 */
   repeatDotRadius = 0;
+  /** 八度点（实心圆）的半径。0 = 按数字字体里 `.` 字形的**墨迹高**折半推算——
+   *  纵向栅格是墨迹到墨迹量的（见《简谱纵向栅格》），取墨迹高才能与原来的字形等大。 */
+  octaveDotRadius = 0;
   /** 和弦排成**纯文本**（升降号不换 SMuFL 的 csym 字形、后缀不上标）。
    *  原书 500 首就是这么印的，成书重排由 `applyBookStyle` 打开；
    *  编辑器 / 五线谱 / 文本谱三路维持富文本排法。见 layout/harmony.ts。 */
@@ -3456,6 +3416,13 @@ export class LayoutOptions {
   }
   set numberSize(v: number) {
     this.numberFont = this.numberFont.makeWithSize(v);
+  }
+
+  /** 八度点的实际半径（`octaveDotRadius` 为 0 时按 `.` 的墨迹高折半）。 */
+  get jpDotRadius(): number {
+    if (this.octaveDotRadius > 0) return this.octaveDotRadius;
+    const b = this.numberBound(".");
+    return (b.bottom - b.top) / 2;
   }
 
   /** Tight glyph box of a jianpu number/dot. Was measured on `lrcFont`, which

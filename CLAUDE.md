@@ -67,8 +67,20 @@ npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿�
 三个排版器（`JinpuPainter` / `PuPainter` / `MixedPainter`）实现同一个
 `layout/pagepainter.ts::PagePainter`（`pageCount` / `pageSize` / `renderPage`），
 编辑器的铺页逻辑（`App._renderPagesWith`）只依赖它。**高亮不在接口里**——三者语义不同。
-`mixed/painter.ts` 的 `renderItem` 与 `layout/painter.ts` 的 `renderPageItem` 看着像但
-**不要合并**（matrix 加在 `<g>` 还是叶子上、颜色取 item 还是写死 black），理由写在前者的注释里。
+简谱字形的**绘制原语**收在 `layout/jpglyph.ts`（`jpDot` 实心圆 / `jpBarlineItems`
+小节线 / `jpTimeSigItems` 拍号），三条简谱路共用：八度点、附点、反复点一律**矢量圆**，
+小节线的粗细组合与反复点排布一律照谱面那一份，拍号两个数字**居中**于分数线、
+**一切长度都是小节线高度 H 的比例**（分数线长按位数：`0.28125 × H × 位数`，
+这个数正好复现 Times 等宽数字的 advance，故成书那一路逐位不变）。
+纵向范围各路仍给自己的（谱面 `jpStaffTop/Bottom`、文本谱实测的 `barlineHeight`、
+混排 `mixStaffHeight`）——那是量出来的，不是画法。
+
+页面树 → 别的东西，**四个消费者共用一个遍历骨架** `layout/walk.ts::walkPageItem`
+（SVG DOM 两路 + `pdflayout/browser.ts` 的 DrawList + `editor/pptx.ts` 的 OOXML 形状）：
+骨架只管「怎么走」，**坐标与颜色语义由各自的 visitor 决定**——`mixed/painter.ts::mixedVisitor`
+把 matrix 加在**叶子**上、线与文字写死 black、只递归 Group，`layout/painter.ts::svgVisitor`
+每个 PageItem 都产生 `<g>`、颜色取 item、无条件递归。**这些差别不许收进骨架**，
+理由写在两个 visitor 的注释里。外壳 `renderPageSvg` 三个排版器共用（可传 `cls` / `visitor`）。
 
 - `src/common/` — `fraction.ts`（含 `gcd`/`lcm`）、`geom.ts`（Point/Rect/Matrix33，含
   `toSvg()`）、`measure.ts`（SVG 测量基础设施，**核心**）、`filetypes.ts`（能打开哪些
@@ -215,7 +227,9 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   这三样混用过好几次。
   高音点/低音点、slur/tie、三连音、fermata、减时线、小节线高度共用的一把尺子
   （唯一常量 `jpStackGap`，墨迹到墨迹等距；
-  musicpp 自己在这里并不等距），以及八度点按**墨迹**而非 advance 居中（`1` 在 PingFang 里偏 0.88px）。
+  musicpp 自己在这里并不等距）。**八度点是实心矢量圆**（`layout/jpglyph.ts::jpDot`，三条简谱路统一），
+  按圆心落位，所以不再有「按墨迹还是按 advance 居中」那道修正；
+  `JpNumber.cx`（墨迹中心，`1` 在 PingFang 里偏 0.88px）仍然是弧、括线、和弦的锚点。
   含跨小节 slur 的小节线避让，和两处刻意背离 musicpp 的地方。**动这些常量前必看。**
   弧高的**上下限**（按原书 1205 条实测定的）、超长跨度**改画扁平长连音线**（参 open-fanqie）、
   长弧底下**和弦与段落词整排让位**也在那篇里。音符上方那一带（弧 / 三连音括线 / fermata /
@@ -224,7 +238,9 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   一律按**墨迹**判（`TextFrame.y` 是基线）。**和弦是标记**：撞上了沿 x 让
   （`spreadChordsHorizontally`），且不算进「一行放不放得下」（`entryRight`，
   `doLineBreak` 与 `naturalSpans` 共用）。三条简谱路（编辑器 / 成书重排 / 文本谱）
-  共用 `SlurTieBase` 一套参数，`src/mixed/` 的副本不在此列。**改这几个常量会牵动全书断句**
+  共用 `SlurTieBase`；**混排也已并进来**（`mixed/model.ts::mixedSlurStyle` 把原先写死的
+  `lw0=6`/纯黑/描边 0.7 表达成 `SlurStyle`，上下限与扁平长连音线一律不设 = 退化成 musicpp
+  的裸对数公式；`SlurStyle.side` 管五线谱那条朝下的弧）。**改这几个常量会牵动全书断句**
   （弧高→行高→每页行数→重排），动完必跑 `rebuild.mjs && line-check.mjs`。
 - **[歌词标点挤压](docs/实现/歌词标点挤压.md)**（`src/common/cjkpunct.ts` + `common/measure.ts` +
   `scripts/punctshape.mjs`）——标点挤压的**两派**都在这里，**全仓唯一一份规则**：

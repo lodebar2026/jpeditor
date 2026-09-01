@@ -5,7 +5,9 @@
 
 import { Fraction } from "../common/fraction";
 import { Matrix33, Point } from "../common/geom";
-import { GraphicLine, GraphicPath, Group, TextFrame } from "../layout/layout";
+// `Slur` 这个名字在 model.ts 里是**跨度对象**（哪两个音符之间有弧），
+// layout.ts 里的是**画出来的那条弧**，所以起个别名区分。
+import { GraphicLine, GraphicPath, Group, Slur as SlurArc, TextFrame } from "../layout/layout";
 import { GlyphCodes } from "../smufl/smufl";
 import {
   AccidentalStat,
@@ -32,7 +34,7 @@ import {
   TimeSig,
   Tuplet,
   Wedge,
-  calcSlurPoints,
+  mixedSlurStyle,
   fGe,
   fLt,
   slurTiedPos,
@@ -43,6 +45,7 @@ import {
 } from "./model";
 import { Font } from "../layout/font";
 import { harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
+import { jpDot, jpTimeSigItems } from "../layout/jpglyph";
 
 // -----------------------------------------------------------------------
 // primitives
@@ -369,37 +372,24 @@ export function drawBeams(
 // -----------------------------------------------------------------------
 // drawSlurTied / drawTied / drawSlur（render.cpp:1073-1329）
 
-/** Bezier slur/tie lens shape (render.cpp::drawSlurTied). */
+/**
+ * 月牙形的 slur/tie（render.cpp::drawSlurTied）。
+ *
+ * 几何与画法**与谱面那一路共用** `SlurTieBase`（layout/layout.ts）——
+ * 这里原本是它的逐行副本（同一个 `xlen = min(dist*0.04+10, dist*0.25)`、
+ * 同一个 `log10(dist)*17-16`、同一个「去程 cubic + 回程两个控制点各下压 lw0/2」的
+ * 填充月牙 + `lw0/4` 细描边），差别只是把 SlurStyle 全部写死成常量。
+ * 现在常量收在 `mixedSlurStyle` 里（见那儿的注释）。
+ */
 function drawSlurTied(
   container: Group,
   plx: number, ply: number,
   prx: number, pry: number,
   above: boolean,
 ): void {
-  const [pt0, pt1, cos] = calcSlurPoints({ x: plx, y: ply }, { x: prx, y: pry }, above);
-  const lw0 = 6 / cos;
-
-  // filled lens
-  const path = new GraphicPath();
-  path.fill = true;
-  path.stroke = false;
-  path.fillColor = 0xff000000;
-  path.moveTo(plx, ply);
-  path.cubicTo(pt0.x, pt0.y, pt1.x, pt1.y, prx, pry);
-  path.cubicTo(pt1.x, pt1.y + lw0 / 2, pt0.x, pt0.y + lw0 / 2, plx, ply);
-  path.close();
-
-  // thin stroke outline
-  const path2 = new GraphicPath();
-  path2.fill = false;
-  path2.stroke = true;
-  path2.strokeColor = 0xff000000;
-  path2.strokeWidth = 0.7;
-  path2.moveTo(plx, ply);
-  path2.cubicTo(pt0.x, pt0.y + lw0 / 4, pt1.x, pt1.y + lw0 / 4, prx, pry);
-
-  container.add(path);
-  container.add(path2);
+  const arc = new SlurArc();
+  arc.init(new Point(plx, ply), new Point(prx, pry), mixedSlurStyle(above));
+  container.add(arc);
 }
 
 /** Draw tie (render.cpp::drawTied). */
@@ -1488,30 +1478,23 @@ function drawNotesJianPu(
           octY = staffHeight + eng.beamDistJP * ch.jpBeamCount();
           octY -= 2;
         }
-        const dotStr = ".";
-        const dotW = font.measureText(dotStr);
+        // 八度点是**实心矢量圆**，不是字体里的 `.` 字形（三条简谱路统一，见 jpglyph.ts）。
+        // 半径照原先 `.` 的墨迹高折半取，与字形等大；圆按**中心**定位，
+        // 于是也不必再拿 advance 的一半去凑「看着居中」。
+        const db = font.charBound(".");
+        const r = (db.bottom - db.top) / 2;
         for (let i = 0; i < Math.abs(oct); i++) {
-          const dx0 = x + nw / 2 - dotW / 2;
-          const dy0 = octY + i * eng.octaveDotDist * sc * graceSc + graceDy;
+          const cx0 = x + nw / 2;
+          const cy0 = octY + i * eng.octaveDotDist * sc * graceSc + graceDy;
           if (ch.grace) {
             const g = new Group();
-            const m = new Matrix33();
-            m.setAffine([graceSc, 0, 0, graceSc, dx0, dy0]);
-            g.matrix = m;
-            const dd = new TextFrame();
-            dd.text = dotStr;
-            dd.font = font;
-            dd.color = 0xff000000;
-            g.add(dd);
+            const mtx = new Matrix33();
+            mtx.setAffine([graceSc, 0, 0, graceSc, cx0, cy0]);
+            g.matrix = mtx;
+            g.add(jpDot(0, 0, r, 0xff000000));
             container.add(g);
           } else {
-            const dd = new TextFrame();
-            dd.text = dotStr;
-            dd.font = font;
-            dd.color = 0xff000000;
-            dd.x = dx0;
-            dd.y = dy0;
-            container.add(dd);
+            container.add(jpDot(cx0, cy0, r, 0xff000000));
           }
         }
       }
@@ -1691,36 +1674,31 @@ function drawJpTimeSignature(
 ): void {
   const time = ps.getTime(mif.offset);
   const staffHeight = eng.mixStaffHeight;
-  const sc = staffHeight / 40;
   const font = eng.mixFont;
-
-  const beats = String(time.beats);
-  const beatType = String(time.beatType);
-  const w1 = font.measureText(beats);
-  const w2 = font.measureText(beatType);
-  const lineW = Math.max(w1, w2) + 1;
 
   const grp = translated(x, 0);
 
-  // 数字垂直偏移 = jianpuFont 降部 × 缩放（render.cpp:2085-2088 Mixed 分支）。
-  const dy = eng.jianpuFont.metrics.descent * sc;
-  const t1 = new TextFrame();
-  t1.text = beats;
-  t1.font = font;
-  t1.color = 0xff000000;
-  t1.x = 0;
-  t1.y = sc * (20 - dy);
-  grp.add(t1);
-
-  const t2 = new TextFrame();
-  t2.text = beatType;
-  t2.font = font;
-  t2.color = 0xff000000;
-  t2.x = 0;
-  t2.y = sc * (40 + dy);
-  grp.add(t2);
-
-  addLine(grp, -1, staffHeight / 2, lineW, staffHeight / 2, 1.5);
+  // 拍号走公共那一份（jpglyph.ts::jpTimeSigItems）：两个数字**横向居中**于分数线，
+  // 一切长度按**小节线高度**的比例。原先这里两个数字都贴 x=0 左对齐、纵向按 musicpp
+  // 的 staff space 常量（`sc*(20−dy)` / `sc*(40+dy)`）给，与谱面、文本谱三处口径各不相同。
+  //
+  // 基准高度取这条谱表的高（简谱层的小节线就是这么高），基线取谱表底——
+  // jpTimeSigItems 里的 y 都是相对基线的，谱表顶 y=0 故基线在 staffHeight。
+  const r = jpTimeSigItems(time.beats, time.beatType, {
+    height: staffHeight,
+    centerY: staffHeight / 2 - staffHeight,
+    ruleWidth: 1.5,
+    color: 0xff000000,
+    font,
+    // 混排的拍号数字**保留原大小**：musicpp 的 mixFont 就是 `30 × mixStaffHeight/40`，
+    // 即 0.75 H（谱面那一路是 0.5625 H）。居中与「长度按 H 的比例」照统一那份走，
+    // 只有字号这一档各留各的。
+    digitRatio: 0.75,
+  });
+  for (const item of r.items) {
+    item.y += staffHeight;
+    grp.add(item);
+  }
   container.add(grp);
 }
 
