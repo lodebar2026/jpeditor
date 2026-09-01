@@ -4,10 +4,13 @@
 
 import { Fraction } from "../common/fraction";
 import { harmonyElemToText } from "./harmonyparse";
+import { DYNAMICS } from "../pu/glyph";
+import { GlyphCodes } from "../smufl/smufl";
 import {
   BarStyle,
   BarlineEntry,
   Chord,
+  ChordDirection,
   Credit,
   JumpSpec,
   Lyric,
@@ -112,6 +115,10 @@ function parseNotations(nt: Note, noteEl: Element): void {
       else nt.tupletEnd = true;
     } else if (it.tagName === "fermata") {
       nt.chord.fermata = true;
+    } else if (it.tagName === "articulations") {
+      // 目前只认重音（原书 34 处，全是 accent）；其余奏法记号读进来也没人画，先不收。
+      for (const a of Array.from(it.children))
+        if (a.tagName === "accent") nt.chord.articulations.push("accent");
     } else if (it.tagName === "slur") {
       const ty = it.getAttribute("type");
       if (ty === "start") nt.chord.slurStart = true;
@@ -141,11 +148,23 @@ function parseDuration(ch: Chord, noteEl: Element): void {
 
 // ---------------- Measure ----------------
 function onNote(m: Measure, noteEl: Element, tmp: ParserTemp, div: number, st: MState): void {
-  if (has(noteEl, "grace")) return;
+  // **倚音**：`<grace>` 音符没有 duration，不占拍位，挂到它后面那个和弦上（Chord.graceNotes）。
+  // 从前这里整颗丢掉，260《感恩的泪》与 264《陶我成器》的 7 颗倚音就此不见。
+  if (has(noteEl, "grace")) {
+    const g = new Note(null as unknown as Chord);
+    loadNote(g, noteEl);
+    tmp.graceNotes.push(g);
+    return;
+  }
   const isChord = has(noteEl, "chord");
   const newChord = m.entries.length === 0 || !isChord;
   if (newChord) m.add(new Chord(m));
   const last = m.entries[m.entries.length - 1] as Chord;
+  if (tmp.graceNotes.length && newChord) {
+    for (const g of tmp.graceNotes) g.chord = last;
+    last.graceNotes.push(...tmp.graceNotes);
+    tmp.graceNotes = [];
+  }
   const nt = new Note(last);
   loadNote(nt, noteEl);
   if (last.slurEnd) {
@@ -190,6 +209,57 @@ function parsePrint(m: Measure, printEl: Element): void {
 // 免把普通文字当段落；`<rehearsal>` 本就是排练/段落记号，一律收下。
 const SECTION_WORD_RE =
   /^(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|refrain|tag|前奏|主歌|副歌|间奏|尾奏|尾声|桥段|插曲)\s*\d*$/i;
+
+/**
+ * 从 `<direction>` 取**表情/跳转记号**（`rit.` / `Fine` / `D.S.` / `mf`）。
+ *
+ * 从前这里除了段落标记之外一概丢弃（`<words>` 只放行 `SECTION_WORD_RE` 白名单），
+ * 于是 321《主使我更爱祢》第 23 小节那个 `rit.` 整个不见了——它那条 `<direction>`
+ * 连 `<sound>` 都没有，连 `PlayData` 也接不住。段落标记那一路照旧（它另有用处：
+ * 乐句排版按段落硬换行），这里只收白名单**之外**的文字。
+ */
+function parseDirectionMarks(dirEl: Element): ChordDirection[] {
+  const res: ChordDirection[] = [];
+  for (const dt of elems(dirEl, "direction-type")) {
+    for (const el of Array.from(dt.children)) {
+      if (el.tagName === "words") {
+        const t = (el.textContent ?? "").trim();
+        // 段落词要**剥了括号再判**：底本写的是「（副歌）」「(副歌)」（全书 133 处），
+        // `SECTION_WORD_RE` 不剥括号就匹配不上，于是全被当成表情记号排了出来——
+        // 而段落词另有一路（成书从 `校对.db::section_word` 注入），两下里画重了。
+        const bare = t.replace(/^[（(]\s*/, "").replace(/\s*[）)]$/, "");
+        if (!t || SECTION_WORD_RE.test(t) || SECTION_WORD_RE.test(bare)) continue;
+        // 纯符号的不是记号：006 首底本里有个孤零零的 `<words>(</words>`（段落词的括号
+        // 掉出来了），排出来正好压在「（副歌）」上。至少得有一个字母/数字/汉字。
+        if (!/[\p{L}\p{N}]/u.test(t)) continue;
+        // `justify="right"` 就是「靠小节线那头印」——底本里 `Fine` / `D.S.` / `D.C.` 全带它，
+        // 而 `rit.` 那种表情记号不带。有的谱把 `D.S.` 标在小节最后一个音符**之前**
+        //（064《啊！圣善夜》），只看「在不在小节末」认不出来，这个属性认得出来。
+        res.push({
+          text: t,
+          music: false,
+          italic: el.getAttribute("font-style") === "italic",
+          ...(el.getAttribute("justify") === "right" ? { atBarEnd: true } : {}),
+        });
+      } else if (el.tagName === "segno" || el.tagName === "coda") {
+        // **跳转的目标记号**（𝄋 / ⊕）。从前只读 `<sound segno=>` 的属性——播放跳得对，
+        // 谱面上却什么都没印（344《万古磐石为我开》的 Segno 就这么丢了）。
+        res.push({
+          text: el.tagName === "segno" ? GlyphCodes.segno : GlyphCodes.coda,
+          music: true,
+          italic: false,
+        });
+      } else if (el.tagName === "dynamics") {
+        // 力度记号是 Bravura 的字形拼出来的（`mf` = mezzo + forte），与文本谱共用一张表
+        for (const d of Array.from(el.children)) {
+          const g = DYNAMICS[d.tagName] ?? (d.tagName === "other-dynamics" ? (d.textContent ?? "").trim() : "");
+          if (g) res.push({ text: g, music: d.tagName !== "other-dynamics", italic: false });
+        }
+      }
+    }
+  }
+  return res;
+}
 
 /** 从 `<direction>` 取段落标记 → `Measure.sectionMark`（供乐句排版按段落硬换行）。 */
 function parseSectionMark(m: Measure, dirEl: Element): void {
@@ -261,6 +331,8 @@ function loadMeasure(
   const st: MState = { pos: new Fraction(0), noteEnd: new Fraction(0) };
   // `<harmony>` 印在**它后面那个音符**的上方（MusicXML 的约定）。
   let pendingHarmony: string | null = null;
+  // 表情/跳转记号同理：`<direction>` 印在**它后面那个音符**的上方。
+  let pendingDirections: ChordDirection[] = [];
   for (const item of Array.from(measureEl.children)) {
     switch (item.tagName) {
       case "harmony": pendingHarmony = harmonyElemToText(item) ?? pendingHarmony; break;
@@ -271,6 +343,13 @@ function loadMeasure(
           if (last instanceof Chord && !last.harmony) {
             last.harmony = pendingHarmony;
             pendingHarmony = null;
+          }
+        }
+        if (pendingDirections.length) {
+          const last = m.entries[m.entries.length - 1];
+          if (last instanceof Chord) {
+            last.directions.push(...pendingDirections);
+            pendingDirections = [];
           }
         }
         break;
@@ -285,6 +364,20 @@ function loadMeasure(
         const snd = elem(item, "sound");
         if (snd) parseSound(snd, tmp.playData, m.index, st, div);
         parseSectionMark(m, item);
+        pendingDirections.push(...parseDirectionMarks(item));
+        break;
+      }
+    }
+  }
+  // 记号写在小节最后一个音符**之后**（`Fine` / `D.S.` 都这么标，还带 `justify="right"`）：
+  // 挂到本小节最后一个和弦上，并记成 `atBarEnd`——排版时贴着小节线右对齐，
+  // 不居中在音符上方（原书就印在小节末尾那条线跟前）。
+  if (pendingDirections.length) {
+    for (let i = m.entries.length - 1; i >= 0; i--) {
+      const e = m.entries[i];
+      if (e instanceof Chord) {
+        for (const d of pendingDirections) d.atBarEnd = true;
+        e.directions.push(...pendingDirections);
         break;
       }
     }

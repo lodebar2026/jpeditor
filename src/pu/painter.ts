@@ -10,6 +10,7 @@
 // highlight() 直接按 AST 节点取用，不必反查 SVG。
 
 import { Font } from "../layout/font";
+import { graceGeometry } from "../common/gracenote";
 import { Matrix33, Point, type Rect } from "../common/geom";
 import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFrame } from "../layout/layout";
 import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
@@ -946,9 +947,8 @@ export class PuPainter {
   /**
    * 倚音：dir=-1 前倚音（画在左），dir=1 后倚音（画在右）。
    *
-   * 所有比例都照原版矢量量的（单位 = 主音数字墨迹高）：倚音墨迹高 0.50、
-   * 中心在主音墨迹中心上方 0.94、离主音中心 0.665；减时线长 0.388、线宽 0.055、
-   * 落在倚音中心下方 0.36；连接钩从减时线中点垂下再朝主音弯（水平 0.249、垂直 0.304）。
+   * **几何走公共那一份**（`src/common/gracenote.ts`），简谱排版引擎那条路
+   * （`layout.ts::addGraceNotes`）用的是同一套比例——两边各自落笔，坐标只算一次。
    */
   private paintGrace(
     g: Group,
@@ -959,48 +959,35 @@ export class PuPainter {
   ): void {
     if (notes.length === 0) return;
     const m = this.metrics;
-    const ink = m.digitInkHeight;
     const font = new Font(m.fontFamily, this.digitFont.size * m.graceScale);
-    const step = ink * 0.45; // 多个倚音之间的中心距
-    const nearest = x + dir * ink * 0.665; // 最靠近主音的那个（dir=-1 在左）
-    const gy = baseline - ink * 0.94;
-    const halfBeam = ink * 0.194;
-    // 靠近主音的那个倚音挂连接钩
-    let hook: { mid: number; y: number } | null = null;
-    notes.forEach((gn, i) => {
-      // 前倚音：最后一个贴着主音，往左依次排开；后倚音镜像
-      const order = dir < 0 ? notes.length - 1 - i : i;
-      const gx = nearest + dir * order * step;
-      const ch = String(gn.pitch);
-      const b = font.charBound(ch);
-      g.add(text(ch, gx - (b.left + b.right) / 2, gy - (b.top + b.bottom) / 2, font, BLACK));
-      for (let k = 0; k < gn.octave; k++) {
-        g.add(dot(gx, gy + m.octaveUpY * m.graceScale - k * m.octaveDotGap * 0.7, m.octaveDotRadius * 0.75));
-      }
-      for (let k = 0; k < -gn.octave; k++) {
-        g.add(dot(gx, gy + m.octaveDownY * m.graceScale + k * m.octaveDotGap * 0.7, m.octaveDotRadius * 0.75));
-      }
-      // 倚音默认八分：一条减时线；多一条 `/` 再加一层。比主音的细得多。
-      const levels = Math.max(1, Math.log2(gn.duration / 4));
-      let lastY = gy + ink * 0.36;
-      for (let lv = 0; lv < levels; lv++) {
-        lastY = gy + ink * 0.36 + lv * m.underlineGap * 0.8;
-        g.add(rect(gx - halfBeam, lastY, halfBeam * 2, ink * 0.055));
-      }
-      if (order === 0) hook = { mid: gx, y: lastY };
-    });
-    if (hook === null) return;
-    const { mid, y: uy } = hook as { mid: number; y: number };
-    const toward = -dir; // 前倚音（画在左）朝右弯，后倚音朝左弯
-    const drop = ink * 0.304;
-    const reach = ink * 0.249 * toward;
-    const p = stroke(BLACK, ink * 0.055);
-    p.moveTo(mid, uy + ink * 0.033);
-    p.cubicTo(mid, uy + drop * 0.6, mid - reach * 0.15, uy + drop * 0.87, mid + reach, uy + drop);
-    g.add(p);
+    const geom = graceGeometry(
+      notes.map((gn) => ({ digit: String(gn.pitch), octave: gn.octave, duration: gn.duration })),
+      {
+        ink: m.digitInkHeight,
+        scale: m.graceScale,
+        octaveUpY: m.octaveUpY,
+        octaveDownY: m.octaveDownY,
+        octaveDotGap: m.octaveDotGap,
+        octaveDotRadius: m.octaveDotRadius,
+        underlineGap: m.underlineGap,
+      },
+      x, baseline, dir, this.digitFont.size,
+    );
+    for (const d of geom.digits) {
+      // 数字按**墨迹中心**定位（公共几何给的是中心，这里换算成落笔点）
+      const b = font.charBound(d.text);
+      g.add(text(d.text, d.cx - (b.left + b.right) / 2, d.cy - (b.top + b.bottom) / 2, font, BLACK));
+    }
+    for (const o of geom.dots) g.add(dot(o.cx, o.cy, o.r));
+    for (const bm of geom.beams) g.add(rect(bm.x, bm.y, bm.w, bm.h));
+    if (geom.hook) {
+      const p = stroke(BLACK, geom.hook.width);
+      p.moveTo(geom.hook.m[0], geom.hook.m[1]);
+      p.cubicTo(...geom.hook.c);
+      g.add(p);
+    }
   }
 
-  /** `&xx`：装饰、力度、术语、伴奏括弧、小节线上的反复记号。 */
   private paintOrnaments(
     g: Group,
     ornaments: readonly { name: string; level: number }[],
