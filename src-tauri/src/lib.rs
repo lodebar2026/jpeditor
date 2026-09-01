@@ -1,9 +1,34 @@
-use svg2pdf::{usvg, ConversionOptions, PageOptions};
 use lopdf::{Document, Object, ObjectId};
+use std::io::Write;
+use svg2pdf::{usvg, ConversionOptions, PageOptions};
 use tauri::Manager;
 
+/// 桌面端文件写入统一从原生层完成。`Cmd/Ctrl+S` 传入当前文档路径时会直接截断并
+/// 写回同一个文件，不再出现第二个“另存为”对话框。
+#[tauri::command]
+fn write_file_cmd(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    let path = std::path::PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err("保存路径必须是绝对路径".into());
+    }
+    let parent = path.parent().ok_or("保存路径没有父目录")?;
+    if !parent.is_dir() {
+        return Err(format!("保存目录不存在：{}", parent.display()));
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|e| format!("无法打开 {}：{e}", path.display()))?;
+    file.write_all(&bytes)
+        .map_err(|e| format!("无法写入 {}：{e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("无法同步 {}：{e}", path.display()))
+}
+
 /// Build usvg options with system fonts + bundled Bravura.otf embedded.
-fn build_usvg_options(app_handle: &tauri::AppHandle) -> usvg::Options {
+fn build_usvg_options(app_handle: &tauri::AppHandle) -> usvg::Options<'_> {
     let mut options = usvg::Options::default();
     options.fontdb_mut().load_system_fonts();
     // Load bundled Bravura.otf from Tauri resources
@@ -18,8 +43,7 @@ fn build_usvg_options(app_handle: &tauri::AppHandle) -> usvg::Options {
 
 /// Convert a single SVG string to a single-page PDF (bytes).
 fn svg_to_pdf_bytes(svg_str: &str, options: &usvg::Options) -> Result<Vec<u8>, String> {
-    let tree = usvg::Tree::from_str(svg_str, options)
-        .map_err(|e| format!("usvg: {e}"))?;
+    let tree = usvg::Tree::from_str(svg_str, options).map_err(|e| format!("usvg: {e}"))?;
     svg2pdf::to_pdf(&tree, ConversionOptions::default(), PageOptions::default())
         .map_err(|e| format!("svg2pdf: {e}"))
 }
@@ -99,13 +123,17 @@ fn merge_pdf_pages(pdfs: Vec<Vec<u8>>) -> Result<Vec<u8>, String> {
     pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
     pages_dict.set("Kids", Object::Array(kids));
     pages_dict.set("Count", Object::Integer(page_ids.len() as i64));
-    merged.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    merged
+        .objects
+        .insert(pages_id, Object::Dictionary(pages_dict));
 
     // Build /Catalog
     let mut cat_dict = lopdf::Dictionary::new();
     cat_dict.set("Type", Object::Name(b"Catalog".to_vec()));
     cat_dict.set("Pages", Object::Reference(pages_id));
-    merged.objects.insert(catalog_id, Object::Dictionary(cat_dict));
+    merged
+        .objects
+        .insert(catalog_id, Object::Dictionary(cat_dict));
 
     merged.trailer.set("Root", Object::Reference(catalog_id));
     merged.max_id = next_id;
@@ -219,7 +247,10 @@ fn infer_one(
             }
             idx.push(best as i32);
         }
-        Ok((vec![bn as i32, t as i32], bytemuck::cast_slice(&idx).to_vec()))
+        Ok((
+            vec![bn as i32, t as i32],
+            bytemuck::cast_slice(&idx).to_vec(),
+        ))
     } else {
         let out_dims: Vec<i32> = shape.iter().map(|&d| d as i32).collect();
         Ok((out_dims, bytemuck::cast_slice(out).to_vec()))
@@ -390,6 +421,7 @@ pub fn run() {
     let builder = builder.manage(MidiState::default());
     builder
         .invoke_handler(tauri::generate_handler![
+            write_file_cmd,
             export_pdf_cmd,
             omr_onnx,
             omr_onnx_batch,

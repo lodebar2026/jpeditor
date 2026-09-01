@@ -257,6 +257,8 @@ export class PuPainter {
   private noteItems = new Map<NoteElement, { page: number; item: PageItem }>();
   private syllableItems = new Map<LyricSyllable, { page: number; item: PageItem }>();
   private highlighted: PageItem[] = [];
+  private editingEl: SVGGElement | null = null;
+  private editingCaret: SVGLineElement | null = null;
 
   private profile: PageProfileName;
   private dialect: Dialect = "tomato";
@@ -320,6 +322,8 @@ export class PuPainter {
     this.noteItems.clear();
     this.syllableItems.clear();
     this.highlighted = [];
+    this.editingEl = null;
+    this.editingCaret = null;
     this.layout.pages = this.placed.pages.map((pg, i) => {
       const g = this.paintPage(pg, i);
       g.x += this._pageShiftX;
@@ -1314,6 +1318,42 @@ export class PuPainter {
     return hit ? (this.nodeMap.get(hit.item) ?? null) : null;
   }
 
+  /** 按源码偏移显示编辑光标。优先命中 token；在 token 间空白时取同一行最近的音符/歌词。 */
+  highlightEditingAt(offset: number, line: number): { page: number; el: SVGGElement } | null {
+    this.editingEl?.classList.remove("editing");
+    this.editingCaret?.remove();
+    this.editingEl = null;
+    this.editingCaret = null;
+
+    const candidates: Array<{ from: number; to: number; line: number; page: number; item: PageItem }> = [];
+    for (const [note, hit] of this.noteItems) {
+      candidates.push({
+        from: note.source.offset,
+        to: note.source.offset + Math.max(1, note.source.length),
+        line: note.source.line,
+        ...hit,
+      });
+    }
+    for (const [syllable, hit] of this.syllableItems) {
+      candidates.push({
+        from: syllable.source.offset,
+        to: syllable.source.offset + Math.max(1, syllable.source.length),
+        line: syllable.source.line,
+        ...hit,
+      });
+    }
+    const sameLine = candidates.filter((c) => c.line === line);
+    const hit = sameLine.find((c) => c.from <= offset && offset <= c.to)
+      ?? sameLine.sort((a, b) => spanDistance(a, offset) - spanDistance(b, offset))[0];
+    if (!hit) return null;
+    const el = this.nodeMap.get(hit.item);
+    if (!el) return null;
+    this.editingEl = el;
+    el.classList.add("editing");
+    this.editingCaret = appendEditingCaret(el);
+    return { page: hit.page, el };
+  }
+
   /** 定位结构（回归脚本核对几何用）。 */
   placedPages(): PlacedPage[] {
     return this.placed?.pages ?? [];
@@ -1321,5 +1361,27 @@ export class PuPainter {
 
   get availableWidth(): number {
     return contentWidth(this.metrics);
+  }
+}
+
+function spanDistance(span: { from: number; to: number }, offset: number): number {
+  return offset < span.from ? span.from - offset : offset > span.to ? offset - span.to : 0;
+}
+
+function appendEditingCaret(el: SVGGElement): SVGLineElement | null {
+  try {
+    const b = el.getBBox();
+    if (!Number.isFinite(b.x) || !Number.isFinite(b.y)) return null;
+    const caret = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    caret.setAttribute("class", "editing-caret");
+    const x = b.x - Math.max(3, b.width * 0.08);
+    caret.setAttribute("x1", String(x));
+    caret.setAttribute("x2", String(x));
+    caret.setAttribute("y1", String(b.y - 2));
+    caret.setAttribute("y2", String(b.y + Math.max(b.height, 16) + 2));
+    el.appendChild(caret);
+    return caret;
+  } catch {
+    return null;
   }
 }

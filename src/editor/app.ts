@@ -8,7 +8,7 @@ import { jpwHighlighter } from "./highlight";
 import { puHighlighter } from "../pu/highlight";
 import { PuPainter } from "../pu/painter";
 import { parsePu, puToScore, sniffDialect, dialectSpec, type Dialect } from "../pu";
-import type { Chord, Score } from "../score/score";
+import { Chord, type Score } from "../score/score";
 import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
 import type { PageProfileName } from "../pu/metrics";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
@@ -21,7 +21,9 @@ import { loadMusicXml } from "../score/musicxml";
 import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
-import { decodeJpwabc, encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
+import { decodeJpwabc, encodeJpwabc, isTauriRuntime, saveBytes, writeBytesInPlace } from "./fileio";
+import { TokenData } from "../jpword/tokens";
+import { JpwabcLexer } from "../jpword/parse";
 import { DOC_EXT, acceptAttr, isPuFile } from "../common/filetypes";
 import { MixedPainter } from "../mixed/painter";
 import { PlaybackController, type PlaybackHost } from "./playback";
@@ -98,6 +100,13 @@ export class App implements OmrHost, PlaybackHost {
   // Selected note (for "play from here"): its chord + which verse/pass row.
   private _selectedChord: import("../score/score").Chord | null = null;
   private _selectedVerse = 0;
+  /** `.Voice` 源码 token 与排版后 Chord 的同序映射，驱动右侧绿色编辑光标。 */
+  private _jpCursorTargets: Array<{ from: number; to: number; chord: Chord }> = [];
+  private _savedText = "";
+  private _dirty = false;
+  private _readOnly = false;
+  private _saveTask: Promise<void> | null = null;
+  private _saveFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
 
 
   constructor(meta: MetaData, scorePane: HTMLElement) {
@@ -190,12 +199,14 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   mountEditor(parent: HTMLElement, initialText: string): void {
+    this._savedText = initialText;
     const updateListener = EditorView.updateListener.of((u) => {
       if (u.docChanged) {
         // 识别映射随用户编辑迁移偏移，保持点选仍落在正确 token。
         this.omr.remapMeta((m) => mapMeta(m, u.changes));
         this.scheduleReload();
       }
+      if (u.docChanged || u.selectionSet) this._syncEditorState();
     });
     this.view = new EditorView({
       parent,
@@ -204,7 +215,22 @@ export class App implements OmrHost, PlaybackHost {
         extensions: [
           lineNumbers(),
           history(),
-          keymap.of([...defaultKeymap, ...historyKeymap]),
+          keymap.of([
+            {
+              key: "Mod-s",
+              run: () => { void this.saveFile(); return true; },
+              preventDefault: true,
+              stopPropagation: true,
+            },
+            {
+              key: "Mod-Shift-s",
+              run: () => { void this.saveFileAs(); return true; },
+              preventDefault: true,
+              stopPropagation: true,
+            },
+            ...defaultKeymap,
+            ...historyKeymap,
+          ]),
           this._puHighlightCompartment.of(jpwHighlighter),
           updateListener,
           this._readOnlyCompartment.of(EditorState.readOnly.of(false)),
@@ -217,10 +243,69 @@ export class App implements OmrHost, PlaybackHost {
       }),
     });
     this.reload(initialText);
+    this._syncEditorState();
   }
 
   getText(): string {
     return this.view.state.doc.toString();
+  }
+
+  /** 打开/恢复成功后把当前内容设为存盘基线；之后撤销回该文本也会自动恢复“未修改”。 */
+  markDocumentClean(text = this.getText()): void {
+    this._savedText = text;
+    this._syncEditorState();
+  }
+
+  private _syncEditorState(): void {
+    if (!this.view) return;
+    const text = this.getText();
+    this._dirty = text !== this._savedText;
+    const saveBtn = document.getElementById("btn-save") as HTMLButtonElement | null;
+    saveBtn?.classList.toggle("has-unsaved", this._dirty);
+    if (saveBtn) {
+      const shortcut = navigator.platform.toLowerCase().includes("mac") ? "⌘S" : "Ctrl+S";
+      saveBtn.title = this._dirty ? `保存修改 (${shortcut})` : `已保存 (${shortcut})`;
+    }
+    this._syncEditorMeta();
+    this._syncEditingCursor();
+  }
+
+  private _syncEditorMeta(): void {
+    if (!this.view) return;
+    const pos = this.view.state.selection.main.head;
+    const line = this.view.state.doc.lineAt(pos);
+    const prefix = this._readOnly ? "只读" : this._formatLabel();
+    const dirty = this._dirty ? " · 已修改" : "";
+    const meta = document.getElementById("code-pane-meta");
+    if (meta) meta.textContent = `${prefix}${dirty} · 行 ${line.number}，列 ${pos - line.from + 1}`;
+  }
+
+  /** 把源码 caret 投射到当前简谱预览；光标只滚动右侧容器，不改变源码焦点。 */
+  private _syncEditingCursor(): void {
+    if (!this.view) return;
+    if (this.mode !== "jp") {
+      this.painter.highlightEditingChord(null);
+      this._puPainter?.highlightEditingAt(-1, -1);
+      return;
+    }
+    const offset = this.view.state.selection.main.head;
+    const line = this.view.state.doc.lineAt(offset);
+    if (this.docFormat === "pu") {
+      const hit = this._puPainter?.highlightEditingAt(offset, line.number - 1) ?? null;
+      if (hit) {
+        this.pageIndex = hit.page;
+        hit.el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+      return;
+    }
+    const sameLine = this._jpCursorTargets.filter((r) => r.from <= line.to && r.to >= line.from);
+    const target = sameLine.find((r) => r.from <= offset && offset <= r.to)
+      ?? sameLine.sort((a, b) => rangeDistance(a, offset) - rangeDistance(b, offset))[0];
+    const hit = this.painter.highlightEditingChord(target?.chord ?? null);
+    if (hit) {
+      this.pageIndex = hit.page;
+      hit.el.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   }
 
   /** 当前文本是否与「导入 MusicXML 时生成的 .jpwabc」逐字相同。
@@ -264,6 +349,7 @@ export class App implements OmrHost, PlaybackHost {
     if (!score) return false;
 
     this.painter.score = score;
+    this._jpCursorTargets = buildJpwCursorTargets(text, score);
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
     try {
       this.painter.resize(this.pageW, this.pageH, breakDesc);
@@ -331,6 +417,7 @@ export class App implements OmrHost, PlaybackHost {
         return `${w} / ${h}`;
       },
     });
+    this._syncEditingCursor();
   }
 
   /** 文本谱版面切换（原版 / PPT）。 */
@@ -477,6 +564,7 @@ export class App implements OmrHost, PlaybackHost {
     this._renderPagesWith(this.painter.pageCount, (i) => this.painter.renderPage(i), {
       onPage: (svg, _wrap, i) => svg.addEventListener("click", (e) => this.onPageClick(i, svg, e)),
     });
+    this._syncEditingCursor();
   }
 
   // ---------------- picking / selection ----------------
@@ -933,12 +1021,12 @@ export class App implements OmrHost, PlaybackHost {
 
   /** Staff preview is rendered from MusicXML, so the visible JP source is read-only. */
   private _setMixedLayout(on: boolean): void {
+    this._readOnly = on;
     this.view.dispatch({
       effects: this._readOnlyCompartment.reconfigure(EditorState.readOnly.of(on)),
     });
     document.getElementById("body")?.classList.toggle("mixed", on);
-    const meta = document.getElementById("code-pane-meta");
-    if (meta) meta.textContent = on ? "只读" : this._formatLabel();
+    this._syncEditorMeta();
   }
 
   /** 代码区右上角的格式标签。 */
@@ -949,8 +1037,7 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   private _syncFormatLabel(): void {
-    const meta = document.getElementById("code-pane-meta");
-    if (meta && meta.textContent !== "只读") meta.textContent = this._formatLabel();
+    this._syncEditorMeta();
   }
 
   private async _renderMixedPages(): Promise<void> {
@@ -992,7 +1079,8 @@ export class App implements OmrHost, PlaybackHost {
       const { readFile } = await import("@tauri-apps/plugin-fs");
       const bytes = await readFile(path);
       this.importBytes(bytes, path);
-      if (!/\.(xml|musicxml)$/i.test(path)) this.filePath = path;
+      if (!/\.(xml|musicxml|abc)$/i.test(path)) this.filePath = path;
+      this.markDocumentClean();
       return true;
     } catch {
       // 文件已被移动/删除/不可读 — 忘掉它，回退到示例
@@ -1019,6 +1107,7 @@ export class App implements OmrHost, PlaybackHost {
       this.importBytes(bytes, sel);
       if (!/\.(xml|musicxml|abc)$/i.test(sel)) this.filePath = sel;
       this.rememberLastFile(sel);
+      this.markDocumentClean();
       return true;
     }
 
@@ -1040,6 +1129,7 @@ export class App implements OmrHost, PlaybackHost {
         const buf = new Uint8Array(await file.arrayBuffer());
         this.importBytes(buf, file.name);
         if (!/\.(xml|musicxml|abc)$/i.test(file.name)) this.filePath = file.name;
+        this.markDocumentClean();
         finish(true);
       };
       window.addEventListener("focus", () => setTimeout(() => {
@@ -1050,19 +1140,47 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   async saveFile(): Promise<void> {
-    if (this.filePath && isTauriRuntime()) {
-      await this.writeTo(this.filePath);
-      return;
-    }
-    await this.saveFileAs();
+    await this._save(false);
   }
 
   async saveFileAs(): Promise<void> {
-    // 落盘细节（对话框 / a[download]）统一在 fileio.saveBytes，这里只管记住路径。
-    const dest = await saveBytes(this.encodeForSave(), this.defaultSaveName());
-    if (!dest) return;
-    this.filePath = dest;
-    this.rememberLastFile(dest);
+    await this._save(true);
+  }
+
+  private async _save(forceSaveAs: boolean): Promise<void> {
+    if (this._saveTask) return this._saveTask;
+    this._saveTask = this._performSave(forceSaveAs).finally(() => { this._saveTask = null; });
+    return this._saveTask;
+  }
+
+  private async _performSave(forceSaveAs: boolean): Promise<void> {
+    const text = this.getText();
+    const bytes = this.encodeForSave(text);
+    this._setSaveFeedback("保存中…");
+    try {
+      if (!forceSaveAs && this.filePath && isTauriRuntime()) {
+        await this.writeTo(this.filePath, bytes);
+      } else {
+        // 首次保存/另存为才弹路径选择；有路径的 Cmd/Ctrl+S 永远原地写回。
+        const dest = await saveBytes(bytes, this.defaultSaveName());
+        if (!dest) {
+          this._setSaveFeedback("保存", false);
+          return;
+        }
+        this.filePath = dest;
+        this.rememberLastFile(dest);
+      }
+      // 保存期间仍可继续输入；只把真正写入磁盘的快照设为基线。
+      this.markDocumentClean(text);
+      const name = this.filePath?.split(/[\\/]/).pop();
+      this.setStatus(name ? `已保存：${name}` : "已保存");
+      this._setSaveFeedback("已保存", false, 1200);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("save failed", e);
+      this.setStatus(`保存失败：${message}`);
+      this._setSaveFeedback("保存失败", true, 2200);
+    }
   }
 
   /** 存盘用的文件名：文本谱存 `.pu`，其余存 `.jpwabc`。 */
@@ -1084,15 +1202,34 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   /** 文本谱是纯文本源格式，存 UTF-8 原文；`.jpwabc` 仍按 JP-Word 的 UTF-16LE+BOM。 */
-  private encodeForSave(): Uint8Array {
+  private encodeForSave(text = this.getText()): Uint8Array {
     return this.docFormat === "pu"
-      ? new TextEncoder().encode(this.getText())
-      : encodeJpwabc(this.getText());
+      ? new TextEncoder().encode(text)
+      : encodeJpwabc(text);
   }
 
-  private async writeTo(path: string): Promise<void> {
-    const { writeFile } = await import("@tauri-apps/plugin-fs");
-    await writeFile(path, this.encodeForSave());
+  private async writeTo(path: string, bytes = this.encodeForSave()): Promise<void> {
+    await writeBytesInPlace(path, bytes);
+  }
+
+  private _setSaveFeedback(label: string, error = false, restoreAfter = 0): void {
+    const btn = document.getElementById("btn-save") as HTMLButtonElement | null;
+    if (!btn) return;
+    clearTimeout(this._saveFeedbackTimer);
+    btn.textContent = label;
+    btn.classList.toggle("save-error", error);
+    btn.disabled = label === "保存中…";
+    if (restoreAfter > 0) {
+      this._saveFeedbackTimer = setTimeout(() => {
+        btn.textContent = "保存";
+        btn.classList.remove("save-error");
+        btn.disabled = false;
+        this._syncEditorState();
+      }, restoreAfter);
+    } else if (label === "保存") {
+      btn.classList.remove("save-error");
+      btn.disabled = false;
+    }
   }
 
   /** Load dropped file content (already decoded). */
@@ -1111,6 +1248,34 @@ export class App implements OmrHost, PlaybackHost {
     const f = JpwFile.fromString(this.getText());
     return f?.getSection(LayoutSection)?.linesPerPage?.trim() ?? "";
   }
+}
+
+function rangeDistance(range: { from: number; to: number }, offset: number): number {
+  return offset < range.from ? range.from - offset : offset > range.to ? offset - range.to : 0;
+}
+
+/** TokenData 与 fromJpw 都按 `.Voice` 的出现顺序工作，因此可稳定地把第 N 个源码音符
+ * 对到第 N 个 Chord；格式空白和注释不会影响映射。 */
+function buildJpwCursorTargets(
+  text: string,
+  score: Score,
+): Array<{ from: number; to: number; chord: Chord }> {
+  const ranges: Array<{ from: number; to: number }> = [];
+  try {
+    let pos = 0;
+    for (const token of TokenData.parse(text).tokens) {
+      const from = pos;
+      pos += token.text.length;
+      if (token.type === JpwabcLexer.Note) ranges.push({ from, to: pos });
+    }
+  } catch {
+    return [];
+  }
+  const chords: Chord[] = [];
+  for (const measure of score.parts[0]?.measures ?? []) {
+    for (const entry of measure.entries) if (entry instanceof Chord) chords.push(entry);
+  }
+  return ranges.slice(0, chords.length).map((range, i) => ({ ...range, chord: chords[i]! }));
 }
 
 /** Insert/update/remove `LinesPerPage = N` within a `.Layout` section. */

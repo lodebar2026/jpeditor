@@ -28,6 +28,8 @@ export class JinpuPainter implements PagePainter {
   /** Chord -> its note-entry groups (one per rendered verse/pass), for playback cursor. */
   private chordItem = new Map<Chord, { page: number; item: PageItem; verse: number }[]>();
   private highlighted: PageItem | null = null;
+  private editingEl: SVGGElement | null = null;
+  private editingCaret: SVGLineElement | null = null;
 
   constructor(fontSize: number) {
     this.layout = new Layout(fontSize);
@@ -46,6 +48,8 @@ export class JinpuPainter implements PagePainter {
   private buildChordIndex(): void {
     this.chordItem.clear();
     this.highlighted = null;
+    this.editingEl = null;
+    this.editingCaret = null;
     const walk = (item: PageItem, page: number): void => {
       if (item.data instanceof NoteEntry) {
         const ch = item.data.chord;
@@ -85,6 +89,22 @@ export class JinpuPainter implements PagePainter {
   chordGroupEl(chord: Chord, pass = 0): SVGGElement | null {
     const hit = this.hitFor(chord, pass);
     return hit ? this.nodeMap.get(hit.item) ?? null : null;
+  }
+
+  /** 源码插入点对应的谱面光标。与橙色播放光标分开，二者可以同时存在。 */
+  highlightEditingChord(chord: Chord | null, pass = 0): { page: number; el: SVGGElement } | null {
+    this.editingEl?.classList.remove("editing");
+    this.editingCaret?.remove();
+    this.editingEl = null;
+    this.editingCaret = null;
+    if (!chord) return null;
+    const hit = this.hitFor(chord, pass);
+    const el = hit ? this.nodeMap.get(hit.item) : null;
+    if (!hit || !el) return null;
+    this.editingEl = el;
+    el.classList.add("editing");
+    this.editingCaret = appendEditingCaret(el);
+    return { page: hit.page, el };
   }
 
   private multipleLineText(str: string, fnt: Font, w: number, clr: number): PageItem {
@@ -237,6 +257,25 @@ export class JinpuPainter implements PagePainter {
     const pg = this.layout.pages[page];
     const [p] = this.pick(pg, pos.x, pos.y);
     return p;
+  }
+}
+
+/** 在目标记谱组左侧画一根真正的 SVG 插入光标；class 着色作为 getBBox 不可用时的兜底。 */
+function appendEditingCaret(el: SVGGElement): SVGLineElement | null {
+  try {
+    const b = el.getBBox();
+    if (!Number.isFinite(b.x) || !Number.isFinite(b.y)) return null;
+    const caret = document.createElementNS(SVG_NS, "line");
+    caret.setAttribute("class", "editing-caret");
+    const x = b.x - Math.max(3, b.width * 0.08);
+    caret.setAttribute("x1", String(x));
+    caret.setAttribute("x2", String(x));
+    caret.setAttribute("y1", String(b.y - 2));
+    caret.setAttribute("y2", String(b.y + Math.max(b.height, 16) + 2));
+    el.appendChild(caret);
+    return caret;
+  } catch {
+    return null;
   }
 }
 

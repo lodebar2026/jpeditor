@@ -7,6 +7,8 @@
   --black: #000;
   --bg: #0f0f0f;
   --panel: #181818;
+  --editor-bg: #22262c;
+  --editor-gutter: #191d22;
   --panel-raised: #242424;
   --panel-hover: #2c2c2c;
   --canvas: #101010;
@@ -253,7 +255,7 @@ button:focus-visible, select:focus-visible {
   white-space: nowrap;
 }
 .staff-layer-toggle input { width: 13px; height: 13px; margin: 0; accent-color: var(--green); }
-#code-pane { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--panel); }
+#code-pane { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--editor-bg); }
 
 /* Five-line staff preview is rendered from MusicXML; keep source visible but read-only. */
 #body.mixed #code-pane-shell { background: #151515; }
@@ -459,6 +461,29 @@ button:focus-visible, select:focus-visible {
 .score-page g.playing [fill]:not([fill="none"]) { fill: #e8590c; }
 .score-page g.playing [stroke] { stroke: #e8590c; }
 
+/* editing cursor — follows the CodeMirror insertion point in the rendered score */
+.score-page g.editing [fill]:not([fill="none"]) { fill: #169c46; }
+.score-page g.editing [stroke]:not(.editing-caret) { stroke: #169c46; }
+.score-page .editing-caret {
+  stroke: #169c46;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+#btn-save.has-unsaved::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #f0b429;
+  vertical-align: 1px;
+}
+#btn-save.save-error { color: #ff8a80; border-color: rgba(255, 138, 128, .55); }
+
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -617,12 +642,31 @@ button:focus-visible, select:focus-visible {
 .help-render svg.help-svg { position: static; inset: auto; display: block; }
 
 /* CodeMirror follows the dark workspace while syntax colours keep their semantic roles. */
-#code-pane .cm-editor { height: 100%; background: var(--panel); color: #e8e8e8; }
+#code-pane .cm-editor,
+#code-pane .cm-scroller { background: var(--editor-bg); }
+#code-pane .cm-editor { height: 100%; color: #e8e8e8; }
 #code-pane .cm-scroller { overflow: auto; }
-#code-pane .cm-gutters { background: #141414; color: #666; border-right: 1px solid var(--border); }
-#code-pane .cm-activeLine, #code-pane .cm-activeLineGutter { background: rgba(255,255,255,.045); }
+#code-pane .cm-gutters { background: var(--editor-gutter); color: #777d87; border-right: 1px solid rgba(255,255,255,.13); }
+#code-pane .cm-activeLine { background: rgba(255,255,255,.065); }
+#code-pane .cm-activeLineGutter { background: #282d34; }
 #code-pane .cm-selectionBackground, #code-pane .cm-content ::selection { background: rgba(30,215,96,.22) !important; }
-#code-pane .cm-cursor { border-left-color: var(--green); }
+#code-pane .cm-cursor {
+  width: 3px;
+  margin-left: -1px;
+  border-left: 0 !important;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow:
+    0 0 2px 1px rgba(255, 255, 255, .95),
+    0 0 8px 2px rgba(255, 255, 255, .65);
+}
+#code-pane .cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer {
+  animation: jpeditor-cursor-blink 1.1s steps(1) infinite !important;
+}
+@keyframes jpeditor-cursor-blink {
+  0%, 48%, 100% { opacity: 1; }
+  49%, 78% { opacity: .32; }
+}
 
 @media (max-width: 900px) {
   .brand-subtitle, .tool-label { display: none; }

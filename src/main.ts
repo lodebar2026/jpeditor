@@ -99,6 +99,7 @@ async function boot() {
       changes: { from: 0, to: app.view.state.doc.length, insert: SAMPLE },
     });
     app.filePath = null;
+    app.markDocumentClean();
     revealWorkspace();
   };
   const setRecognitionBusy = (busy: boolean) => { recognitionProgress.hidden = !busy; };
@@ -196,7 +197,12 @@ async function boot() {
   // paging / zoom keys
   window.addEventListener("keydown", (e) => {
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); app.zoomBy(1.2); updateZoom(); }
+    if (mod && !e.altKey && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      if (e.shiftKey) void app.saveFileAs();
+      else void app.saveFile();
+    }
+    else if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); app.zoomBy(1.2); updateZoom(); }
     else if (mod && e.key === "-") { e.preventDefault(); app.zoomBy(1 / 1.2); updateZoom(); }
     else if (mod && e.key === "0") { e.preventDefault(); app.resetZoom(); updateZoom(); }
     else if (e.key === "PageDown") app.nextPage();
@@ -403,6 +409,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
         app.importBytes(bytes, path);
         if (!isConvertedFile(path)) app.filePath = path;
         app.rememberLastFile(path);
+        app.markDocumentClean();
         hooks.onOpened();
       }
     });
@@ -433,6 +440,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
       // 与 Tauri 分支同一套白名单：以前这里不判，拖进任意文件都会试着导入。
       if (!isDocFile(file.name)) return;
       app.importBytes(buf, file.name);
+      app.markDocumentClean();
       hooks.onOpened();
     });
   }

@@ -31,7 +31,15 @@ export function decodeJpwabc(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(bytes);
 }
 
-/** 落盘：Tauri 走保存对话框 + writeFile，浏览器走 a[download]。
+/** 桌面端统一交给 Rust 写盘。除了绕开 WebView 的文件权限差异，也保证“保存”写回
+ *  当前文件本身，而不是再次弹出下载/另存为。 */
+export async function writeBytesInPlace(path: string, bytes: Uint8Array): Promise<void> {
+  if (!isTauriRuntime()) throw new Error("原地写入只在桌面版可用");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("write_file_cmd", { path, bytes: Array.from(bytes) });
+}
+
+/** 落盘：Tauri 走保存对话框 + 原生写盘命令，浏览器走 a[download]。
  *  返回落盘路径（仅 Tauri；用户取消或浏览器下载返回 null）。 */
 export async function saveBytes(
   bytes: Uint8Array,
@@ -42,8 +50,7 @@ export async function saveBytes(
     const { save } = await import("@tauri-apps/plugin-dialog");
     const dest = await save({ defaultPath: defaultName });
     if (!dest) return null;
-    const { writeFile } = await import("@tauri-apps/plugin-fs");
-    await writeFile(dest, bytes);
+    await writeBytesInPlace(dest, bytes);
     return dest;
   } else {
     const ab = new ArrayBuffer(bytes.byteLength);
