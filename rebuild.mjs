@@ -229,11 +229,9 @@ const RENDER_SONG = async ([xmlText, st, id, sectionRows, delta, compact]) => {
        *  `delta` = **半页起排**的整体下移量：页高按 `h − delta` 排（分页与撑行都跟着缩），
        *  排完整页下移 delta。页顶起排时 delta = 0，与老行为逐位一致。 */
       const renderPages = (score) => {
-        const p = new B.JinpuPainter(B.fontSizeFor(st, "lyric"));
-        B.applyBookStyle(p.layout.options, st);
-        // SMuFL 元数据（延长号、跳转记号的包围盒）不注入的话，layout 会抛 "no smufl bbox"。
-        // 页面里已经加载过一份，直接借用（App 的构造参数就是它）。
-        p.layout.options.smuflMeta = window.__app.meta;
+        // SMuFL 元数据（延长号、跳转记号的包围盒）页面里已经加载过一份，直接借用
+        //（App 的构造参数就是它）。构造那几步与 measureChordSpans 共用，见 browser.ts。
+        const p = B.makeBookPainter(st, window.__app.meta);
         p.score = score;
         p.resize(st.page.w, st.page.h - delta, null);
         // 第 1 页（第 0 页是排版器自带的标题页）的自然高：谱行高之和 + (n−1) 道最小行距

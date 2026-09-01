@@ -10,17 +10,9 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
+import { mark } from "./deco";
 import { TokenData, tokenClass } from "../jpword/tokens";
 
-const markCache = new Map<string, Decoration>();
-function mark(cls: string): Decoration {
-  let m = markCache.get(cls);
-  if (!m) {
-    m = Decoration.mark({ class: cls });
-    markCache.set(cls, m);
-  }
-  return m;
-}
 
 function buildDeco(view: EditorView): DecorationSet {
   const text = view.state.doc.toString();

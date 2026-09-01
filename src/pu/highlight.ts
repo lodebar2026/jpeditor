@@ -14,16 +14,8 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
+import { mark } from "../editor/deco";
 
-const markCache = new Map<string, Decoration>();
-function mark(cls: string): Decoration {
-  let m = markCache.get(cls);
-  if (!m) {
-    m = Decoration.mark({ class: cls });
-    markCache.set(cls, m);
-  }
-  return m;
-}
 
 /** 行首前缀：`Q1"女高":` / `C1-2:` / `W:` */
 const BODY_PREFIX = /^\s*([QCW])([!+-]?)(\d*)(?:-\d+)?(?:"[^"]*"|<[^>]*>)?\s*[:：]/;

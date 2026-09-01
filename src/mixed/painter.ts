@@ -6,7 +6,10 @@ import { MetaData } from "../smufl/smufl";
 import { Fraction } from "../common/fraction";
 import { Matrix33 } from "../common/geom";
 import { Font } from "../layout/font";
-import { GraphicLine, GraphicPath, Group, PageItem, TextFrame } from "../layout/layout";
+import { Group, TextFrame } from "../layout/layout";
+import { renderPageSvg } from "../layout/painter";
+import type { ItemVisitor } from "../layout/walk";
+import { colorToCss } from "../common/geom";
 import type { PagePainter } from "../layout/pagepainter";
 import { LCR, MixedOptions, MixedScore, Notation, ScoreCredit, Sys, SysStaff } from "./model";
 import { loadMixedXml } from "./loader";
@@ -307,43 +310,36 @@ export class MixedPainter implements PagePainter {
   renderPage(pageIndex: number): SVGSVGElement {
     if (!this.score || pageIndex >= this._pages.length) throw new Error("MixedPainter: not loaded");
 
-    const svg = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
-    const w = this.pageWidthTenths;
-    const h = this.pageHeightTenths;
-    svg.setAttribute("class", "score-page mixed-page");
-    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-
-    svg.appendChild(renderGroup(this._pages[pageIndex]));
-    return svg;
+    return renderPageSvg(this._pages[pageIndex], this.pageWidthTenths, this.pageHeightTenths, {
+      cls: "score-page mixed-page",
+      visitor: mixedVisitor,
+    });
   }
 }
 
 // -----------------------------------------------------------------------
 // PageItem → SVGElement。
 //
-// **不要与 layout/painter.ts::renderPageItem 合并**——两者看着像，语义不同：
-//   - 那边把 matrix 加在包裹的 <g> 上、子节点递归进这个 g，叶子元素自身不带 transform；
-//     这边把 matrix 加在**叶子元素**上（TextFrame 更是无条件加，matrix 里就含 x/y 平移），
-//     只有 Group 才产生 <g>。
+// 遍历骨架与 layout/painter.ts 共用（layout/walk.ts），但**坐标与颜色语义不同**，
+// 这些差别就是这个 visitor 存在的理由，别把它并回 svgVisitor 去：
+//   - 那边**每个** PageItem 都产生一个 <g>、matrix 加在 <g> 上；这边只有 Group 产生 <g>，
+//     matrix 加在**叶子元素**上（TextFrame 更是无条件加，matrix 里就含 x/y 平移）。
 //   - 那边用 item 自己的 fillColor/strokeColor/color；这边线与文字一律写死 black
-//     （musicpp 的五线谱层本就是纯黑）。
-// 合并任一条都会改变渲染结果。真正共用的是 renderPageSvg（外壳），已在 layout/painter.ts。
+//     （musicpp 的五线谱层本就是纯黑）。GraphicPath 例外，它照 item 的颜色走。
+//   - 那边无条件递归子级；这边只递归 Group（叶子的子级会被丢掉）。
+// 真正共用的是 renderPageSvg（外壳）与 walkPageItem（骨架）。
 
-function renderGroup(grp: Group): SVGGElement {
-  const g = document.createElementNS(SVG_NS, "g") as SVGGElement;
-  if (!grp.matrix.isIdentity) g.setAttribute("transform", grp.matrix.toSvg());
-  for (const child of grp.children) {
-    const el = renderItem(child);
-    if (el) g.appendChild(el);
-  }
-  return g;
-}
-
-function renderItem(item: PageItem): SVGElement | null {
-  if (item instanceof Group) {
-    return renderGroup(item);
-  }
-  if (item instanceof GraphicLine) {
+const mixedVisitor: ItemVisitor<SVGGElement> = {
+  descend: (item, parent) => {
+    // 只有 Group 产生新的 <g>；叶子直接落在父级的 <g> 里，自带 transform
+    if (!(item instanceof Group)) return parent;
+    const g = document.createElementNS(SVG_NS, "g") as SVGGElement;
+    if (!item.matrix.isIdentity) g.setAttribute("transform", item.matrix.toSvg());
+    parent.appendChild(g);
+    return g;
+  },
+  descendChildren: (item) => item instanceof Group,
+  line: (item, g) => {
     const el = document.createElementNS(SVG_NS, "line") as SVGLineElement;
     el.setAttribute("x1", String(item.p0.x));
     el.setAttribute("y1", String(item.p0.y));
@@ -353,9 +349,9 @@ function renderItem(item: PageItem): SVGElement | null {
     el.setAttribute("stroke-width", String(item.strokeWidth));
     el.setAttribute("stroke-linecap", "butt");
     if (!item.matrix.isIdentity) el.setAttribute("transform", item.matrix.toSvg());
-    return el;
-  }
-  if (item instanceof TextFrame) {
+    g.appendChild(el);
+  },
+  text: (item, g) => {
     const el = document.createElementNS(SVG_NS, "text") as SVGTextElement;
     el.setAttribute("x", "0");
     el.setAttribute("y", "0");
@@ -368,35 +364,20 @@ function renderItem(item: PageItem): SVGElement | null {
       el.setAttribute("x", item.charXs.map((v) => v.toFixed(2)).join(" "));
     el.textContent = item.text;
     el.setAttribute("transform", item.matrix.toSvg()); // matrix contains x,y translation
-    return el;
-  }
-  if (item instanceof GraphicPath) {
+    g.appendChild(el);
+  },
+  path: (item, g) => {
     const el = document.createElementNS(SVG_NS, "path") as SVGPathElement;
     el.setAttribute("d", item.d);
-    if (item.fill) {
-      const c = item.fillColor;
-      el.setAttribute("fill", argbToCss(c));
-    } else {
-      el.setAttribute("fill", "none");
-    }
+    if (item.fill) el.setAttribute("fill", colorToCss(item.fillColor));
+    else el.setAttribute("fill", "none");
     if (item.stroke) {
-      const c = item.strokeColor;
-      el.setAttribute("stroke", argbToCss(c));
+      el.setAttribute("stroke", colorToCss(item.strokeColor));
       el.setAttribute("stroke-width", String(item.strokeWidth));
     } else {
       el.setAttribute("stroke", "none");
     }
     if (!item.matrix.isIdentity) el.setAttribute("transform", item.matrix.toSvg());
-    return el;
-  }
-  return null;
-}
-
-function argbToCss(argb: number): string {
-  const r = (argb >> 16) & 0xff;
-  const g = (argb >> 8) & 0xff;
-  const b = argb & 0xff;
-  const a = ((argb >>> 24) & 0xff) / 255;
-  if (a >= 1) return `rgb(${r},${g},${b})`;
-  return `rgba(${r},${g},${b},${a.toFixed(3)})`;
-}
+    g.appendChild(el);
+  },
+};
