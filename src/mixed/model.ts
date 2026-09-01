@@ -4,7 +4,9 @@
 // 水平位置全部信任 MusicXML 内嵌版面（default-x / measure width）。
 
 import { Fraction } from "../common/fraction";
+import { Point } from "../common/geom";
 import { Font } from "../layout/font";
+import { SlurTieBase, type SlurStyle } from "../layout/layout";
 import { MIXED_PUNCT } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 
@@ -2338,7 +2340,8 @@ export class SysStaff {
       if (!sl.above) continue;
       if (sys.contains(sl.startTick) && sys.contains(sl.endTick)) {
         const [pl, pr] = slurTiedPos(eng, sl.startChord(), sl.endChord(), true);
-        const [pt0, pt1] = calcSlurPoints(pl, pr, true);
+        const [pt0, pt1] = SlurTieBase.calcSlurPoints(
+          new Point(pl.x, pl.y), new Point(pr.x, pr.y), mixedSlurStyle(true));
         // 三次贝塞尔 y 范围：取四个控制点 y 的最小值近似（够用：仅决定简谱层高度）
         const top = Math.min(pl.y, pt0.y, pt1.y, pr.y);
         miny = Math.min(miny, top - 1);
@@ -2821,25 +2824,28 @@ export interface Pt2 {
   y: number;
 }
 
-/** 贝塞尔控制点（SpanObj::calcSlurPoints）。返回 [p1, p2, cos]。 */
-export function calcSlurPoints(pl: Pt2, pr: Pt2, up: boolean): [Pt2, Pt2, number] {
-  const dx = pr.x - pl.x;
-  const dy = pr.y - pl.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  const theta = Math.atan2(dy, dx);
-  const cos = Math.cos(-theta);
-  const sin = Math.sin(-theta);
-  const xlen = Math.min(dist * 0.04 + 10, dist * 0.25);
-  let h = Math.log10(Math.max(dist, 1e-6)) * 17 - 16;
-  if (up) h *= -1;
-  const rot = (p: Pt2): Pt2 => ({ x: p.x * cos + p.y * sin, y: p.y * cos - p.x * sin });
-  const p1 = rot({ x: xlen, y: h });
-  const p2 = rot({ x: dist - xlen, y: h });
-  p1.x += pl.x;
-  p1.y += pl.y;
-  p2.x += pl.x;
-  p2.y += pl.y;
-  return [p1, p2, cos];
+/**
+ * 混排（五线谱层与简谱层）的弧线样式。
+ *
+ * 这几个数原先是 `drawSlurTied` 里的字面量（`lw0 = 6`、纯黑、描边 0.7）——
+ * musicpp render.cpp:1076-1104 就是这么写死的。弧的几何与画法**与谱面那一路共用**
+ * `SlurTieBase`（layout/layout.ts），差别全在这个 style 上：
+ *
+ *   - `maxHeight`/`minHeight`/`flatSpan`/`flatRatio` **一律不设** → 退化成 musicpp 的
+ *     裸对数公式（那几条上下限与扁平长连音线是本项目为简谱加的，五线谱不要）。
+ *   - `side` 跟着符干走；简谱层恒为 `above = true`。
+ *
+ * 唯一与旧副本不同的地方：`SlurTieBase.arcHeight` 有一条 1.2 的下限，而裸公式在
+ * `dist < 10.2` 时算出的弧高比它还小（再短就变负、弧会翻过来开口朝上）。
+ * 那是旧副本的缺陷，不是特性。
+ */
+export function mixedSlurStyle(above: boolean): SlurStyle {
+  return {
+    thickness: 6,
+    color: 0xff000000,
+    outlineWidth: 0.7,
+    side: above ? "up" : "down",
+  };
 }
 
 /** 五线谱 slur/tied 锚点（SpanObj::slurTiedPos）。 */
