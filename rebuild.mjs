@@ -82,6 +82,11 @@ function contentEdges(style, pageNo) {
   return { left, right: style.page.w - (odd ? m.outer : m.inner) };
 }
 
+/** 调号拍号整体上抬多少（pt）。原书实测的基线紧挨着第一条谱行，而首行音符上方还有和弦。 */
+const KEYMETER_LIFT = 5;
+/** 抬完之后与首行和弦/音符之间至少留这么多（pt）。 */
+const KEYMETER_GAP = 1.5;
+
 /** 页的装饰：页眉与页码。**一页一次**——半页起排时一页上有两首，
  *  跟着曲子走的东西（曲号/标题/署名/调号拍号）在 decorateSong 里，这里只管页自己的。 */
 function decoratePage(dp, ctx) {
@@ -136,7 +141,35 @@ function decorateSong(dp, ctx) {
   // 调号拍号：原书写作「1=♭B  4/4  (1=A)」，拍号上下叠排、中间一条细横线，
   // 括号里是移调建议。musicxml 只有 fifths/beats，装不下这些，所以走 song_meta
   //（读不到库时退回按 musicxml 推断，只出「1=X」加一个平铺的拍号）。
-  if (ctx.km) dp.items.push(...cli.keyMeterItems(st, ctx.km, left + 2.3, tb.keyMeterBaseline + dy, measure, ctx.sizes?.keyMeter));
+  if (ctx.km) {
+    // **整体往上抬一点**（用户口径）：原书实测的 `keyMeterBaseline` 下面紧接着就是第一条
+    // 谱行，而拍号是**上下叠排**的（分母还在基线下方 0.98 个墨迹高），首行音符上方又挂着
+    // 和弦——271《切慕见祢》的分母 `4` 就压在和弦 `Bm` 上（实测 2.9pt）。
+    // 先按常量抬 `KEYMETER_LIFT`，再按**这一首**首行的和弦/音符墨迹顶兜底：
+    // 抬完仍压着就继续抬到让开为止（首页左上角那一片除了曲号只有它，抬得动）。
+    const base = tb.keyMeterBaseline + dy - KEYMETER_LIFT;
+    const items = cli.keyMeterItems(st, ctx.km, left + 2.3, base, measure, ctx.sizes?.keyMeter);
+    const boxOf = (it) => {
+      const x0 = it.t === "rect" ? it.x : (it.xs?.[0] ?? it.box?.x ?? 0);
+      const w = it.t === "rect" ? it.w : measure(it.role, it.text, it.size);
+      const top = it.t === "rect" ? it.y : it.y - it.size * 0.72;
+      const bot = it.t === "rect" ? it.y + it.h : it.y;
+      return { x0, x1: x0 + w, top, bot };
+    };
+    const kmBoxes = items.map(boxOf);
+    const kmBot = Math.max(...kmBoxes.map((b) => b.bot));
+    let need = 0;
+    for (const it of dp.items) {
+      if (it.t !== "text" || (it.role !== "chord" && it.role !== "note")) continue;
+      const x0 = it.xs?.[0] ?? 0;
+      const x1 = x0 + measure(it.role, it.text, it.size);
+      const top = it.y - it.size * 0.72;
+      if (top > kmBot || !kmBoxes.some((b) => b.x1 > x0 && b.x0 < x1 && b.bot > top)) continue;
+      need = Math.max(need, kmBot - top + KEYMETER_GAP);
+    }
+    for (const it of items) it.y -= need;
+    dp.items.push(...items);
+  }
   // 词曲署名：原书写「作词：X」「作曲：Y」两行，右对齐。
   // 这批 musicxml 的 <creator> 里已经带好了标签、多行写在一个字段里（Finale 导出的样子），
   // 只有没带标签时才按 type 补一个。
@@ -230,7 +263,21 @@ const RENDER_SONG = async ([xmlText, st, id, sectionRows, delta, compact]) => {
             ...probe.items.filter((t) => t.t === "text" && t.role === "note").map((t) => t.y - t.size),
           );
           const want = out.length === 0 ? st.titleBlock.firstSystemTop : st.titleBlock.contSystemTop;
-          out.push(Number.isFinite(noteTop) ? mk(delta + want - noteTop) : mk(delta));
+          // **平移不许把内容推进页脚**（347《生命的执着》的末行歌词压在页码上；
+          // 全书 75 页有这个毛病）。引擎是按 `page.margin` 排的，排完这里再整页下移
+          // `want − noteTop` 给标题块让位，从前这一步一点下界都没有——版心下界
+          // （`footerTop`）只在半页起排与注解那两处用过，整页独占的曲子从不过闸。
+          // 让位与不侵页脚冲突时，让位那一头认输：首行略高于原书那条线，总比压着页码强。
+          const footerTop = st.titleBlock.footerBaseline - st.roles.footer.size * 1.6;
+          const inkBottom = Math.max(
+            ...probe.items.map((t) =>
+              t.t === "text" ? t.y + t.size * 0.25 : t.t === "line" ? Math.max(t.y1, t.y2) : -Infinity,
+            ),
+            -Infinity,
+          );
+          let dy = delta + want - noteTop;
+          if (Number.isFinite(inkBottom) && inkBottom + dy > footerTop) dy = footerTop - inkBottom;
+          out.push(Number.isFinite(noteTop) ? mk(dy) : mk(delta));
         }
         return out;
       };

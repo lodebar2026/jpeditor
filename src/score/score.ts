@@ -65,6 +65,8 @@ export class ParserTemp {
   slurStart: Chord | null = null;
   tieNotes: Note[] = [];
   tupletNotes: Note[] = [];
+  /** 还没落到主音符上的倚音（`<grace>` 排在它修饰的音符**之前**）。 */
+  graceNotes: Note[] = [];
   constructor(public playData: PlayData) {}
 
   pairTuplet(): void {
@@ -233,6 +235,19 @@ export class BarlineEntry extends Entry {
   }
 }
 
+/** 印在音符上方的表情/跳转记号（`Chord.directions`）。 */
+export interface ChordDirection {
+  /** 要排的字：文字记号是原文（`rit.`），力度记号是 Bravura 字形串。 */
+  text: string;
+  /** 走乐谱字体（力度记号）还是文本字体（`rit.` / `Fine` / `D.S.`）。 */
+  music: boolean;
+  /** 原文标的斜体（底本里 `rit.` 是 `font-style="italic"`）。 */
+  italic: boolean;
+  /** 记号写在小节**最后一个音符之后**（`Fine` / `D.S.` 就是这么标的，底本还带
+   *  `justify="right"`）。这类要贴着小节线右对齐排，不居中在音符上方。 */
+  atBarEnd?: boolean;
+}
+
 export class Chord extends Entry {
   notes: Note[] = [];
   dot = 0;
@@ -253,6 +268,16 @@ export class Chord extends Entry {
   /** 印在这个音符上方的**段落词**（「（副歌）」「（间奏）」…）。原书印在和弦那一带，
    *  与和弦同一条基线、左右并排。成书重排从 `校对.db::section_word` 按音符序号注进来。 */
   sectionWord: string | null = null;
+  /** 印在这个音符上方的**表情/跳转记号**：`rit.`、`Fine`、`D.S.`、`mf`…
+   *  来自 musicxml 的 `<direction>`（`<words>` 与 `<dynamics>`）。`music` 为真时
+   *  `text` 是 Bravura 的力度字形串（`mf` = mezzo + forte，见 pu/glyph.ts::DYNAMICS）。
+   *  `.jpwabc` 同样装不下（与 `harmony` 一个道理），走 jpscore 那条路会丢。 */
+  directions: ChordDirection[] = [];
+  /** 奏法记号（目前只有 `<accent>`）。画在音符上方，与 fermata 同一带。 */
+  articulations: string[] = [];
+  /** **倚音**：印在主音符左上角的小号数字（原书 260/264 两首共 7 颗）。
+   *  MusicXML 里是 duration 为 0 的独立 `<note><grace/>`，模型上挂在它修饰的那个和弦上。 */
+  graceNotes: Note[] = [];
 
   hasLrc(num: number): boolean {
     for (const nt of this.notes) {
@@ -414,6 +439,8 @@ export class Measure {
     const stat = new AccidentalStat(this.key.fifths);
     for (const ent of this.entries) {
       if (!(ent instanceof Chord)) continue;
+      // 倚音先于主音（临时记号是按左右顺序生效的，`AccidentalStat` 认这个次序）
+      for (const nt of ent.graceNotes) nt.init(this.key.fifths, stat);
       if (ent.rest) continue;
       for (const nt of ent.notes) nt.init(this.key.fifths, stat);
     }

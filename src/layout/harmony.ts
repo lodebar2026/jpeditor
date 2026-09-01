@@ -15,12 +15,15 @@ export interface HarmonySeg {
   music: boolean;
   superscript: number;
   dy: number;
+  /** 就地缩放（不上标、基线不动）。纯文本风格的升降号用它——原书量到的
+   *  `♭` 是 2.62×4.21，字母 `B` 是 6.33×7.01，升降号本来就印得小一号。 */
+  scale?: number;
 }
 
 /** 分段总宽（未缩放的 advance 之和，与居中口径一致）。 */
 export function harmonyWidth(segs: readonly HarmonySeg[], wordFont: Font, musicFont: Font): number {
   let w = 0;
-  for (const s of segs) w += (s.music ? musicFont : wordFont).measureText(s.text);
+  for (const s of segs) w += (s.music ? musicFont : wordFont).measureText(s.text) * (s.scale ?? 1);
   return w;
 }
 
@@ -49,9 +52,9 @@ export function layoutHarmonySegs(
     t.font = font;
     t.color = color;
     let scl = 1;
-    if (s.superscript === 1 || s.superscript === -1) {
-      scl = 0.75;
-      const dy = s.superscript === 1 ? -font.size / 4 : font.size / 4;
+    if (s.superscript === 1 || s.superscript === -1 || (s.scale ?? 1) !== 1) {
+      scl = s.superscript === 0 ? s.scale! : 0.75;
+      const dy = s.superscript === 1 ? -font.size / 4 : s.superscript === -1 ? font.size / 4 : 0;
       const g = new Group();
       const m = new Matrix33();
       m.setAffine([scl, 0, 0, scl, xpos, dy]);
@@ -67,6 +70,9 @@ export function layoutHarmonySegs(
   }
   return grp;
 }
+
+/** 纯文本风格里升降号相对字母的字号比例（原书实测 ♭ 高 4.21 / 字母 7.01）。 */
+const PLAIN_ACCIDENTAL_SCALE = 0.6;
 
 const SHARP_CHARS = "#♯";
 const FLAT_CHARS = "b♭";
@@ -95,13 +101,58 @@ const QUALITY_SYMBOL: ReadonlyArray<[RegExp, string]> = [
 /**
  * 把和弦**文字**（`Cm`、`B♭7`、`C♯m`、`Fm/A♭`、`Cadd9`）解析成分段。
  *
+ * `plain` 为真时不分段、整串原文一段（见函数体开头的注释）。
+ *
  * 文本谱里和弦本来就是写死的字符串（`"hx:C♯m"` 或不带引号的 `Dm`），没有 MusicXML
  * 那样的 kind/degree 结构，所以按写法拆：根音 → 质量后缀 → `/低音`。
  * 认不出来的整段按原文排，不猜。
  */
-export function chordTextSegs(text: string): HarmonySeg[] {
+export function chordTextSegs(text: string, plain = false): HarmonySeg[] {
   const segs: HarmonySeg[] = [];
   const src = text.trim();
+  if (plain) {
+    // **纯文本风格**，三条都照原书那本来：
+    //   - 升降号写成 ASCII 的 `#` / `b`。`♯`/`♭` 那两个字符在成书用的方正字体里没有字形，
+    //     排出来会回退到乐谱字体——绕个圈子又用上了 SMuFL，而纯文本要的正是不用它。
+    //   - 升降号排在**根音字母之前**（原书与谱面都写作 `#Fm`、`♭B`，中文简谱的习惯；
+    //     musicxml 那侧给的是 `B♭` 那种字母在前的写法，这里翻过来）。
+    //   - 就地缩到 `PLAIN_ACCIDENTAL_SCALE`：字母与后缀数字同字号同基线，
+    //     只有升降号印得小一号（字形库量的 `♭` 是 2.62×4.21、`B` 是 6.33×7.01）。
+    const segs: HarmonySeg[] = [];
+    const emit = (text: string, acc = false): void => {
+      segs.push({ text, music: false, superscript: 0, dy: 0, ...(acc ? { scale: PLAIN_ACCIDENTAL_SCALE } : {}) });
+    };
+    /** 排一个「字母 + 升降号」，升降号提到字母前面。返回剩下的部分。 */
+    const emitRoot = (str: string): string => {
+      const m = /^([A-G])([#♯b♭]?)/.exec(str);
+      if (!m) {
+        emit(str);
+        return "";
+      }
+      if (m[2]) emit(SHARP_CHARS.includes(m[2]) ? "#" : "b", true);
+      emit(m[1]!);
+      return str.slice(m[0].length);
+    };
+    let rest = emitRoot(src);
+    let bass = "";
+    const slashAt = rest.indexOf("/");
+    if (slashAt >= 0) {
+      bass = rest.slice(slashAt + 1);
+      rest = rest.slice(0, slashAt);
+    }
+    // 后缀里的升降号（`C7♭9`）留在原处，只换字符、缩字号
+    for (const part of rest.split(/([#♯♭])/).filter(Boolean)) {
+      if (part === "#" || part === "♯") emit("#", true);
+      else if (part === "♭") emit("b", true);
+      else emit(part);
+    }
+    if (bass) {
+      emit("/");
+      emitRoot(bass);
+    }
+    return segs.length ? segs : [{ text: src, music: false, superscript: 0, dy: 0 }];
+  }
+
   const root = /^([A-G])([#♯b♭]?)/.exec(src);
   if (!root) {
     // 不是「字母打头」的和弦（例如汉字注记），原样排

@@ -72,7 +72,14 @@ export async function makeMetrics(style) {
       const b = g?.bbox;
       if (!b || !Number.isFinite(b.minX)) return null;
       const upem = m.unitsPerEm || 1000;
-      return { left: (b.minX / upem) * size, right: (b.maxX / upem) * size };
+      // y 方向也给出来：字形的 bbox 是**字体坐标**（y 向上为正），转成页面坐标
+      //（相对基线，向下为正）时要翻号——`maxY` 是墨迹上缘、`minY` 是下缘。
+      return {
+        left: (b.minX / upem) * size,
+        right: (b.maxX / upem) * size,
+        top: Number.isFinite(b.maxY) ? (-b.maxY / upem) * size : undefined,
+        bottom: Number.isFinite(b.minY) ? (-b.minY / upem) * size : undefined,
+      };
     } catch {
       return null;
     }

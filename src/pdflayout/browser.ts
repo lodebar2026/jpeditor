@@ -51,12 +51,14 @@ function dashInkShift(opt: LayoutOptions): number {
 }
 
 /** 透到 `DrawText.cls` 的那几个 class（顺序即优先级）。 */
-const CLS_TAGS = ["ending", "ending-line", "section-word", "key-change", "chord"];
+const CLS_TAGS = ["ending", "ending-line", "section-word", "key-change", "chord", "direction", "tuplet-line", "grace", "grace-line", "artic"];
 
 function roleOfItem(it: TextFrame, opt: LayoutOptions): StyleRole {
   // 和弦是 layout/harmony.ts 造的普通 TextFrame，只有 classes 认得出来（见那边的注释）
   if (it.classes.has("chord-music")) return "smufl";
   if (it.classes.has("chord")) return "chord";
+  // 表情/跳转记号（rit. / Fine / D.S. / mf）：字号与和弦同源，力度记号走乐谱字体
+  if (it.classes.has("direction")) return it instanceof SmuflText ? "smufl" : "chord";
   // 房号（1./2.）归 verseNum 那一档：字体与段号同源，**且不能算成 note**——
   // countStaffRows / measureCellsPerLine 数「占一格的音符」时会把 "1." 当成音符，
   // 一个房号就凭空多出一条谱行（010 曾因此每轮都判成折行、迭代六轮都收不住）。
@@ -108,6 +110,7 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
       return;
     }
     if (it instanceof GraphicLine) {
+      const lcls = CLS_TAGS.find((c) => it.classes.has(c));
       items.push({
         t: "line",
         x1: applyX(m, it.p0.x, it.p0.y),
@@ -116,6 +119,7 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
         y2: applyY(m, it.p1.x, it.p1.y),
         sw: it.strokeWidth * scaleOf(m),
         color: argbToRgb(it.strokeColor),
+        ...(lcls ? { cls: lcls } : {}),
       });
       return;
     }
@@ -147,10 +151,16 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
         text: it.text,
         size: (it.font?.size ?? 10) * scaleOf(m),
         role: role0,
-        align: "pen",
+        // **表情/跳转记号整段自然排**（`left`），不逐字按笔位落。
+        // 逐字笔位是浏览器量的 advance 前缀和，而 PDF 里嵌的字体 advance 与它有微差——
+        // 单字符的和弦、音符看不出来，`D.C. al Coda` 这种带空格的多字词就被摆成了
+        // 「D.C.a lC oda」。这一类交给 pdfwrite 用**它自己的字体度量**连排。
+        align: cls === "direction" ? "left" : "pen",
         xs,
         color: argbToRgb(it.color),
         ...(cls ? { cls } : {}),
+        // SMuFL 字形的真实墨迹上缘（`SmuflText.bound` 已经是页面坐标，见那儿的注释）
+        ...(it instanceof SmuflText ? { inkTop: it.bound.top * scaleOf(m) } : {}),
       };
       items.push(t);
     }
@@ -244,6 +254,11 @@ export function applyBookStyle(opt: LayoutOptions, s: BookStyle): void {
     opt.slurMinHeight = toRaw((m.slurMinArcEm ?? 0.41) * noteSize);
     const flatSteps = m.slurFlatSpanSteps ?? 4;
     opt.slurFlatSpan = flatSteps > 0 ? m.noteStepEm * noteSize * flatSteps : -1;
+    // 跨度那条阈值是物理宽度，音符密的谱行上够不着（91《我灵镇静》罩着五六个十六分音符
+    // 的弧，跨度还不到 4 个音符步距）。再按**音符个数**兜一条。
+    opt.slurFlatNotes = m.slurFlatNotes ?? 0;
+    // 「看着扁不扁」按宽高比判（跨度 ÷ 弧顶高）——绝对跨度那条阈值跟不上字号与弧高上限
+    opt.slurFlatRatio = m.slurFlatRatio ?? 7;
     // 扁平长连音线的中段厚度取**小节线宽**：按弧厚折算（× 0.45）在成书的小字号下
     // 显得太肥，长长一条粗线很扎眼。
     opt.slurFlatWidth = m.barlineWidthEm * lyric;
@@ -271,6 +286,8 @@ export function applyBookStyle(opt: LayoutOptions, s: BookStyle): void {
   opt.verseNumbers = s.layout.verseNumbers ?? "auto";
   opt.bracketFoot = m.bracketFootEm && m.bracketFootEm > 0 ? em(m.bracketFootEm) : 0;
   opt.chordGap = em(m.chordToNoteEm);
+  // 原书的和弦是纯文本（见 layout/harmony.ts）；旧的 bookstyle.json 里没这个字段，缺省即为真
+  opt.chordPlainText = m.chordPlain !== false;
   opt.sectionWordSize = fontSizeFor(s, "sectionWord");
   opt.pageFurniture = "none";
 }
@@ -331,7 +348,8 @@ export function countStaffRows(pages: DrawPage[]): number {
   for (const p of pages) {
     const ys = new Set<number>();
     for (const it of p.items)
-      if (it.t === "text" && it.role === "note" && isCellNote(it.text)) ys.add(Math.round(it.y));
+      // 倚音不占格（`cls === "grace"`，见 layout.ts::addGraceNotes）
+      if (it.t === "text" && it.role === "note" && it.cls !== "grace" && isCellNote(it.text)) ys.add(Math.round(it.y));
     n += ys.size;
   }
   return n;
@@ -346,7 +364,7 @@ export function maxStaffRowCells(pages: DrawPage[]): number {
   for (const p of pages) {
     const per = new Map<number, number>();
     for (const it of p.items) {
-      if (it.t !== "text" || it.role !== "note" || !isCellNote(it.text)) continue;
+      if (it.t !== "text" || it.role !== "note" || it.cls === "grace" || !isCellNote(it.text)) continue;
       const k = Math.round(it.y);
       per.set(k, (per.get(k) ?? 0) + 1);
     }
@@ -414,7 +432,7 @@ export function measureCellsPerLine(score: Score, style: BookStyle, smuflMeta?: 
     for (const it of dp.items) {
       // 只数**占一格**的：数字与增时线。八度点（"."）也是 note 角色，
       // 但它在音符上/下方、自成一「行」，混进来会把行的计数搅乱。
-      if (it.t !== "text" || it.role !== "note" || !isCellNote(it.text)) continue;
+      if (it.t !== "text" || it.role !== "note" || it.cls === "grace" || !isCellNote(it.text)) continue;
       // 按**页 + 基线**分组：各页的谱行落在同样几条基线上，只用 y 会把跨页的行并成一行、计数翻倍
       const key = `${i}:${Math.round(it.y)}`;
       const a = byRow.get(key) ?? [];

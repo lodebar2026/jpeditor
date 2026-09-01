@@ -41,6 +41,10 @@ export interface DrawText {
    *  不参与任何度量或绘制。房号与段号同归 `verseNum` 角色、转调标记混在 lyric 里，
    *  光看 `role` 分不开，line-check.mjs 的 L9~L12 靠这个认。 */
   cls?: string;
+  /** 墨迹上缘相对基线的偏移（负 = 在基线上方）。**只有 SMuFL 字形写**：
+   *  fermata 的墨迹高 0.3 个字号、重音只有 0.12，判据照字号估会差出好几个点
+   *  （470《出到营外》的重音因此被判成压着三连音括线）。 */
+  inkTop?: number;
 }
 
 export interface DrawPath {

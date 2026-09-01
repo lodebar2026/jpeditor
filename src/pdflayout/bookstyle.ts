@@ -138,6 +138,8 @@ export interface BookMetrics {
 
   // —— 上下带 ——
   chordToNoteEm: number; // 和弦 baseline → 音符墨迹上缘
+  /** 和弦排成纯文本（原书就是一行普通文字，没有 SMuFL 字形）。见 LayoutOptions.chordPlainText。 */
+  chordPlain?: boolean;
   musicToLyricEm: number; // 音符墨迹下缘 → 首行歌词 baseline（净距，不含减时线/低音点）
   lyricToLyricEm: number; // 相邻歌词行 baseline 差
   titleToSystemEm: number;
@@ -170,6 +172,10 @@ export interface BookMetrics {
    *  open-fanqie 的 `slurStyle: auto` 就是这么干的，只是它的阈值约 4 个音符）。
    *  0 = 一律画弧。**手调常量，不从原书量。** */
   slurFlatSpanSteps?: number;
+  /** 弧罩住这么多个音符就改画扁平式（与跨度阈值并用，取先满足的那个）。0 = 不看。 */
+  slurFlatNotes?: number;
+  /** 弧的**宽高比**（跨度 ÷ 弧顶高）超过它就改画扁平式。 */
+  slurFlatRatio?: number;
   /** 引擎绘制厚度，× 字号。默认取引擎在 fontSize 28 下的比例，保持它调好的观感。 */
   slurThicknessEm: number;
   beamWidthEm: number;
@@ -420,6 +426,7 @@ export function defaultBookStyle(): BookStyle {
       finalBarGap: 1.2,
       repeatDotDiam: 1.6,
       chordToNoteEm: 1.3,
+      chordPlain: true,
       musicToLyricEm: 1.6,
       lyricToLyricEm: 1.5,
       titleToSystemEm: 4.5,
@@ -434,6 +441,8 @@ export function defaultBookStyle(): BookStyle {
       slurMaxArcEm: 0.66,
       slurMinArcEm: 0.41,
       slurFlatSpanSteps: 4,
+      slurFlatNotes: 0,
+      slurFlatRatio: 7,
       slurThicknessEm: 6 / 28,
       beamWidthEm: 1.5 / 28,
       barlineWidthEm: 2 / 28,

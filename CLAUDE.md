@@ -159,6 +159,14 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   **B 路 rebuild 的排版口径**（谱面全走排版引擎，整本那一层只管书级装饰）：容量、断句、
   反复记号与房号、调号升降号、段落词（「（副歌）」挂 `Chord.sectionWord`）、目录与页眉版面
   ——每条判据都记在 [矢量PDF识别](docs/实现/矢量PDF识别.md) 的「成书排版」几节里，**动之前必看**。
+  **底本特性**（`rit.`/`Fine`/`D.S.`、`mf` 等力度、`accent`、倚音）2026-09-01 补齐，
+  覆盖清单与三处要害（`rit.` 那条 direction 没有 `<sound>`、段落词要剥括号再判、
+  倚音不占格）见那篇的「底本特性覆盖」。和弦按原书排成**纯文本**
+  （`BookStyle.metrics.chordPlain`：字母与后缀同字号同基线，升降号写 ASCII 的 `#`/`b`、
+  缩到 0.6、**提到根音之前**（`#Fm`、`♭B` 是原书写法），一个 SMuFL 字形都不用）。
+  跳转记号（`Fine`/`D.S.`，认 `justify="right"`）贴小节线、与和弦同一条基线，
+  纵向留到堆叠之后定（`Line.placeDirections`），撞了先沿 x 让、让不开才抬一层。
+  **页码底下那道闸**：整页平移要按 `footerTop` 钳住（从前全书 75 页的正文压到页码上），判据 V13。
   **装箱**（`rebuild.mjs` 的 `packMid` / `packAlone`）：短曲**半页起排**接在上一首下面
   （只收整首排成 1 页的，要按内容自然高 `compact` 重排，间距 `titleBlock.midStartGap` 从原书量）、
   **一首歌不跨同一张纸的正反面**（页数 ≥ 2 的曲子必须起于偶数物理页，差一页时优先
@@ -200,12 +208,22 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   格式清单是 `src/omr/emit.ts` 的注册表（加一种 = 补一项，文本谱那几种由 `DIALECTS` 派生），
   几何/统计小工具在 `src/omr/geom.ts`（`clusterByY` 的容差**一律由调用点传**，见那篇）；
   文本谱那路是 `src/omr/topu.ts` 直出原文（不过 Score），回归 `node omr-pu-check.mjs`。
-- **[简谱纵向栅格](docs/实现/简谱纵向栅格.md)**（`src/layout/layout.ts`）——高音点/低音点、slur/tie、
-  三连音、fermata、减时线、小节线高度共用的一把尺子（唯一常量 `jpStackGap`，墨迹到墨迹等距；
+- **[简谱纵向栅格](docs/实现/简谱纵向栅格.md)**（`src/layout/layout.ts` + `layout/upperband.ts`）——
+  ⚠ 动乐谱字形（fermata/重音/升降号/Segno/力度记号）的避让前先读那篇开头的
+  「SMuFL 字形的包围盒是**乐谱坐标**」——y 向上为正、与页面坐标反号且 top/bottom 对调，
+  `SmuflText.bound` 已翻好，但 `TextFrame.y` 是基线、条目组归一化后子级 `y` 相对组原点，
+  这三样混用过好几次。
+  高音点/低音点、slur/tie、三连音、fermata、减时线、小节线高度共用的一把尺子
+  （唯一常量 `jpStackGap`，墨迹到墨迹等距；
   musicpp 自己在这里并不等距），以及八度点按**墨迹**而非 advance 居中（`1` 在 PingFang 里偏 0.88px）。
   含跨小节 slur 的小节线避让，和两处刻意背离 musicpp 的地方。**动这些常量前必看。**
   弧高的**上下限**（按原书 1205 条实测定的）、超长跨度**改画扁平长连音线**（参 open-fanqie）、
-  长弧底下**和弦与段落词整排让位**也在那篇里；三条简谱路（编辑器 / 成书重排 / 文本谱）
+  长弧底下**和弦与段落词整排让位**也在那篇里。音符上方那一带（弧 / 三连音括线 / fermata /
+  和弦 / 表情记号 / 转调标记 / 房号）**统一由 `upperband.ts::stackUpperBand` 分层**，
+  不再各写各的避让：同类不互避（弧与弧本来就是嵌套画的）、异类按 x 跨度堆叠（跨度小的在下）、
+  一律按**墨迹**判（`TextFrame.y` 是基线）。**和弦是标记**：撞上了沿 x 让
+  （`spreadChordsHorizontally`），且不算进「一行放不放得下」（`entryRight`，
+  `doLineBreak` 与 `naturalSpans` 共用）。三条简谱路（编辑器 / 成书重排 / 文本谱）
   共用 `SlurTieBase` 一套参数，`src/mixed/` 的副本不在此列。**改这几个常量会牵动全书断句**
   （弧高→行高→每页行数→重排），动完必跑 `rebuild.mjs && line-check.mjs`。
 - **[歌词标点挤压](docs/实现/歌词标点挤压.md)**（`src/common/cjkpunct.ts` + `common/measure.ts` +

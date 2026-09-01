@@ -56,7 +56,7 @@ const ENDING_MIN_GAP = 1.0;   // 同一行相邻两条房号横线的净距下�
  */
 const FAMILY = {
   断句: ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10"],
-  版面: ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11"],
+  版面: ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12", "V13", "V14"],
 };
 
 /** 一档检查的违例集合。 */
@@ -84,6 +84,9 @@ const kinds = {
   V9: "书级正文（注解/目录/署名…）连排里相邻两字的墨迹相压",
   V10: "一首歌跨了同一张纸的正反面（唱到一半得翻面）",
   V11: "半页起排的曲子压住上一首、或越出版心下界",
+  V12: "谱行上方那一带互相压着（和弦/表情记号/房号/三连音括线）",
+  V13: "谱面越过版心下界，压到页码上",
+  V14: "调号拍号压住第一条谱行（和弦或音符）",
 };
 
 /** 连排落字的角色：一行一个 run，笔位由 textmetrics 的 `run` 复算（V9）。 */
@@ -493,6 +496,112 @@ for (const dp of drawDoc.pages) {
   }
   if (longSongs.length) console.log(`（V10 豁免：页数 ≥ 3 的曲子躲不开翻面 —— ${longSongs.join(" ")}）`);
 
+  // ── V12 上方带互不相压：和弦、表情记号（rit./Fine/mf）、段落词、房号数字、三连音括线
+  //    同处音符上方那一带，各自的落位归 layout.ts::stackAbove 统一堆叠（见那儿的注释）。
+  //    弧不判：它是曲线，包围盒里大半是弧底下的空白，照直判全是误报。
+  {
+    const BAND_TEXT = new Set(["chord", "direction", "ending", "section-word"]);
+    // fermata / 重音是 SMuFL 字形，`metrics` 那边没有它们的墨迹数据，按字号估一个盒子
+    //（SMuFL 的上方记号墨迹都落在基线上方 0.3~0.4 个字号里）。
+    const boxOfArtic = (it) => {
+      const x = it.xs?.[0] ?? 0;
+      // 墨迹上缘用 drawlist 带过来的真值（`DrawText.inkTop`）；没有才按字号估
+      return { x0: x, x1: x + it.size * 0.5, y0: it.y + (it.inkTop ?? -it.size * 0.4), y1: it.y, what: `记号` };
+    };
+    const boxOfBand = (it) => {
+      const role = it.cls === "ending" ? "verseNum" : it.role;
+      const chars = [...it.text];
+      const xs = it.xs ?? [it.x ?? 0];
+      const x0 = Math.min(...xs) + (metrics.ink(role, chars[0], it.size)?.left ?? 0);
+      const lastc = chars[chars.length - 1];
+      const x1 = Math.max(...xs) +
+        (metrics.ink(role, lastc, it.size)?.right ?? metrics.advance(role, lastc, it.size));
+      // 纵向也按**真实墨迹**：SMuFL 字形用 drawlist 带来的 `inkTop`（下缘就是基线），
+      // 其余按字形 bbox 取这一串的极值。照「基线 ∓ 0.85/0.25 字号」估会差出零点几个点，
+      // 正好卡在这条判据的容差上（321《主使我更爱祢》的 `rit.`）。
+      let top = Infinity, bot = -Infinity;
+      for (const c of chars) {
+        const k = metrics.ink(role, c, it.size);
+        if (!k) continue;
+        if (k.top !== undefined) top = Math.min(top, k.top);
+        if (k.bottom !== undefined) bot = Math.max(bot, k.bottom);
+      }
+      const y0 = it.inkTop !== undefined ? it.y + it.inkTop
+        : it.y + (Number.isFinite(top) ? top : -it.size * 0.85);
+      const y1 = it.inkTop !== undefined ? it.y
+        : it.y + (Number.isFinite(bot) ? bot : it.size * 0.25);
+      return { x0, x1, y0, y1, what: `${it.cls}「${it.text}」` };
+    };
+    for (const p of scorePages) {
+      let boxes = [];
+      for (const it of p.items) {
+        if (it.t === "text" && BAND_TEXT.has(it.cls)) boxes.push(boxOfBand(it));
+        else if (it.t === "text" && it.cls === "artic") boxes.push(boxOfArtic(it));
+        else if (it.t === "path" && it.cls === "tuplet-line") {
+          const n = (it.d.match(/-?[\d.]+/g) ?? []).map(Number);
+          const xs = [], ys = [];
+          for (let i = 0; i + 1 < n.length; i += 2) { xs.push(n[i]); ys.push(n[i + 1]); }
+          if (!xs.length) continue;
+          boxes.push({ x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys), what: "三连音括线" });
+        }
+      }
+      // **同一个和弦的几段要先并回去**：纯文本风格把 `E♭7` 排成 `E` + 小号 `♭` + `7`
+      // 三个 DrawText，段与段本来就紧挨着（间隙 ≈ 0），照直两两判全是自己压自己。
+      // 真压上的（间隙为负）不并——那正是要报的。
+      boxes.sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+      const merged = [];
+      for (const b of boxes) {
+        const last = merged[merged.length - 1];
+        const same = last && last.what.startsWith("chord") && b.what.startsWith("chord")
+          && Math.abs(last.y1 - b.y1) < 1.5 && b.x0 >= last.x1 - OVERLAP_TOL && b.x0 - last.x1 < 1.5;
+        if (same) {
+          last.x1 = Math.max(last.x1, b.x1);
+          last.y0 = Math.min(last.y0, b.y0);
+          last.y1 = Math.max(last.y1, b.y1);
+        } else merged.push({ ...b });
+      }
+      boxes = merged;
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          const a = boxes[i], b = boxes[j];
+          if (b.x1 <= a.x0 + OVERLAP_TOL || b.x0 >= a.x1 - OVERLAP_TOL) continue;
+          if (b.y1 <= a.y0 + OVERLAP_TOL || b.y0 >= a.y1 - OVERLAP_TOL) continue;
+          const sid = songAt(p, a.y1);
+          if (only && !only.includes(sid)) continue;
+          const ov = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+          hit("V12", sid, `p${p.pageNo} ${a.what}[${a.x0.toFixed(1)},${a.x1.toFixed(1)}]@${a.y1.toFixed(1)} 与 ${b.what}[${b.x0.toFixed(1)},${b.x1.toFixed(1)}]@${b.y1.toFixed(1)} 相压 ${ov.toFixed(2)}pt`);
+        }
+      }
+    }
+  }
+
+  // ── V14 调号拍号不许压住第一条谱行。原书实测的 `keyMeterBaseline` 紧挨着首行，
+  //    而拍号是上下叠排的、首行音符上方又挂着和弦（271《切慕见祢》的分母 `4` 压在 `Bm` 上）。
+  //    落位见 rebuild.mjs 的 `KEYMETER_LIFT`（常量上抬 + 按本首首行兜底）。
+  for (const p of scorePages) {
+    const km = p.items.filter((it) => it.role === "keyMeter");
+    if (!km.length) continue;
+    const boxOf = (it) => {
+      const x0 = it.t === "rect" ? it.x : (it.xs?.[0] ?? 0);
+      const w = it.t === "rect" ? it.w : metrics.advance(it.role, it.text, it.size);
+      const top = it.t === "rect" ? it.y : it.y - it.size * 0.72;
+      const bot = it.t === "rect" ? it.y + it.h : it.y;
+      return { x0, x1: x0 + w, top, bot };
+    };
+    const kb = km.map(boxOf);
+    for (const it of p.items) {
+      if (it.t !== "text" || (it.role !== "chord" && it.role !== "note" && it.role !== "lyric")) continue;
+      const b = boxOf(it);
+      const hit = kb.find((k) => k.x1 > b.x0 + OVERLAP_TOL && k.x0 < b.x1 - OVERLAP_TOL
+        && k.bot > b.top + OVERLAP_TOL && k.top < b.bot - OVERLAP_TOL);
+      if (!hit) continue;
+      const sid = songAt(p, b.bot);
+      if (only && !only.includes(sid)) continue;
+      hit("V14", sid, `p${p.pageNo} 调号拍号压住${it.role}「${it.text}」`);
+      break;
+    }
+  }
+
   // ── V11 半页起排的几何：不许压住上一首，也不许越出版心下界。
   //    yFrom/yTo 是装箱器写的 y 带；这里**按 item 的墨迹重算**，压谱面之类的后手也能兜住。
   const footerTop = style.titleBlock.footerBaseline - style.roles.footer.size * 1.6;
@@ -517,6 +626,22 @@ for (const dp of drawDoc.pages) {
       if (Number.isFinite(bottom) && bottom > footerTop + 0.5)
         hit("V11", sid, `p${p.pageNo} 半页起排越出版心下界 ${(bottom - footerTop).toFixed(1)}pt`);
     }
+  }
+
+  // ── V13 谱面不许压到页码上。**每一页都判**，不只半页起排那些（V11 只遍历 midStarts）：
+  //    整页独占的曲子从前一道闸都不过——首页给标题块让位是整页平移的，平移量原来没有下界，
+  //    全书 75 页的正文越过了 footerTop（347《生命的执着》的末行歌词直接压在页码上）。
+  for (const p of scorePages) {
+    let worst = -Infinity, who = "";
+    for (const it of p.items) {
+      if (it.role === "header" || it.role === "footer") continue;
+      const b = inkBottom(it);
+      if (b > worst) { worst = b; who = it.t === "text" ? `「${it.text}」` : it.t; }
+    }
+    if (!Number.isFinite(worst) || worst <= footerTop + 0.5) continue;
+    const sid = songAt(p, worst);
+    if (only && !only.includes(sid)) continue;
+    hit("V13", sid, `p${p.pageNo} 越过版心下界 ${(worst - footerTop).toFixed(1)}pt（${who}）`);
   }
 }
 
@@ -548,7 +673,10 @@ const SPOT = {
   "096": [],
   "120": ["V1", "V3"],             // 「（副歌）」不许挂出版心，也不许把整行撑出版心
   "144": ["V4"],                   // 转调标记不许压和弦
-  "158": ["V7"],                   // 两个房号不许连在一起
+  "158": ["V7", "V12"],            // 两个房号不许连在一起；弧/三连音/和弦/房号也不许互相压
+  "456": ["V12"],                  // 三连音括线底下的和弦要抬起来
+  "347": ["V13"],                  // 末行不许压到页码上
+  "019": ["V12"], "078": ["V12"],  // 纯文本风格的宽和弦（`E♭7`）不许顶到下一个和弦上
   "169": ["V6"],                   // 同一行的房号要等高
   "175": ["D7"],                    // 在「能大力，」后断句
   "363": ["D7", "D8", "D6"],       // 六行、三对平行乐句（另见下面的专属断言）
@@ -615,6 +743,34 @@ const bare = (t) => String(t ?? "").replace(/[，。！？…；、：""''）]+$
     const fps = ls.map((l) => l.headFp);
     if (!(fps[0] && fps[0] === fps[1] && fps[0] === fps[3]))
       spotFails.push(`${id} 一二四行开头旋律应相同，实际 ${fps.map((f) => f.slice(0, 12)).join(" | ")}`);
+  }
+}
+{
+  // 321《主使我更爱祢》：第 23 小节上方那个 `rit.` 要排出来。
+  // 它那条 `<direction>` 连 `<sound>` 都没有，从前既进不了段落词白名单也进不了 PlayData，
+  // 整个记号就此丢掉（见 score/musicxml.ts::parseDirectionMarks）。
+  const rits = drawDoc.pages
+    .filter((p) => (p.meta?.songs ?? []).some((x) => x.id === "321"))
+    .flatMap((p) => p.items.filter((it) => it.t === "text" && it.cls === "direction" && /^rit/.test(it.text)));
+  if ((!only || only.includes("321")) && !rits.length) spotFails.push("321 第 23 小节的 `rit.` 没排出来");
+}
+{
+  // 116《献上感恩》：反复的收尾 `:‖` 与起点 `‖:` 挨在一起时只画一条
+  //（`layout.ts::dropDoubledBarlines`；从前循环里删掉中间那条普通线之后会跳过新形成的
+  // 相邻对，于是画成「细 粗 粗 细」四道竖线）。判据：同一谱行上不许有四条挨着的竖线。
+  for (const p of drawDoc.pages) {
+    if (!(p.meta?.songs ?? []).some((x) => x.id === "116")) continue;
+    if (only && !only.includes("116")) continue;
+    const vs = p.items
+      .filter((it) => it.t === "line" && Math.abs(it.x1 - it.x2) < 0.6 && Math.abs(it.y2 - it.y1) > 3)
+      .sort((a, b) => a.y1 - b.y1 || a.x1 - b.x1);
+    for (let i = 3; i < vs.length; i++) {
+      const run = vs.slice(i - 3, i + 1);
+      if (Math.abs(run[3].y1 - run[0].y1) > 1) continue;
+      if (run[3].x1 - run[0].x1 > 12) continue;
+      spotFails.push(`116 p${p.pageNo} y${run[0].y1.toFixed(0)} 有四条挨着的竖线（背靠背反复线没并成一条）`);
+      break;
+    }
   }
 }
 {
