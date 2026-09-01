@@ -57,8 +57,12 @@ function roleOfItem(it: TextFrame, opt: LayoutOptions): StyleRole {
   // 和弦是 layout/harmony.ts 造的普通 TextFrame，只有 classes 认得出来（见那边的注释）
   if (it.classes.has("chord-music")) return "smufl";
   if (it.classes.has("chord")) return "chord";
-  // 表情/跳转记号（rit. / Fine / D.S. / mf）：字号与和弦同源，力度记号走乐谱字体
-  if (it.classes.has("direction")) return it instanceof SmuflText ? "smufl" : "chord";
+  // 表情/跳转记号：力度记号走乐谱字体；**中文记号**（「结束句」）走歌词那档的报宋
+  //（和弦那档是 Times，中文字会一路回退到魏碑上去）；西文的 `rit.`/`Fine` 仍随和弦。
+  if (it.classes.has("direction")) {
+    if (it instanceof SmuflText) return "smufl";
+    return /[\u3400-\u9fff\uf900-\ufaff]/.test(it.text) ? "lyric" : "chord";
+  }
   // 房号（1./2.）归 verseNum 那一档：字体与段号同源，**且不能算成 note**——
   // countStaffRows / measureCellsPerLine 数「占一格的音符」时会把 "1." 当成音符，
   // 一个房号就凭空多出一条谱行（010 曾因此每轮都判成折行、迭代六轮都收不住）。

@@ -86,6 +86,8 @@ function contentEdges(style, pageNo) {
 const KEYMETER_LIFT = 5;
 /** 抬完之后与首行和弦/音符之间至少留这么多（pt）。 */
 const KEYMETER_GAP = 1.5;
+/** 兜底只扫调号基线**下方**这么高的一段（本曲首行就在这一带）。 */
+const KEYMETER_SCAN = 60;
 
 /** 页的装饰：页眉与页码。**一页一次**——半页起排时一页上有两首，
  *  跟着曲子走的东西（曲号/标题/署名/调号拍号）在 decorateSong 里，这里只管页自己的。 */
@@ -164,6 +166,10 @@ function decorateSong(dp, ctx) {
       const x0 = it.xs?.[0] ?? 0;
       const x1 = x0 + measure(it.role, it.text, it.size);
       const top = it.y - it.size * 0.72;
+      // **只看本曲首行那一带**：半页起排时一页上有两首，照直扫整页的话，上一首的谱面
+      //（在这条调号**上方**）会把它一路顶到页顶去，与上一首的调号叠在一起，
+      //  看着就像拍号印了两遍（500/D03、D09/D13、J22/J26 三对）。
+      if (top < base || top > base + KEYMETER_SCAN) continue;
       if (top > kmBot || !kmBoxes.some((b) => b.x1 > x0 && b.x0 < x1 && b.bot > top)) continue;
       need = Math.max(need, kmBot - top + KEYMETER_GAP);
     }
