@@ -247,6 +247,7 @@ for (const [id, entries] of byId) {
   const credits = [];
   const arcs = [];
   let repeatDots = 0;
+  const repeatDotObjs = [];
   let brackets = 0;
   const octaveDots = [];
   let objTotal = 0;
@@ -287,7 +288,10 @@ for (const [id, entries] of byId) {
       if (o.cls === "keyMeter") keyMeters.push(o);
       else if (o.cls === "credit") credits.push(o);
       else if (o.cls === "slur") arcs.push({ o, bandNotes: null });
-      else if (o.cls === "repeatDot") repeatDots++;
+      else if (o.cls === "repeatDot") {
+        repeatDots++;
+        repeatDotObjs.push(o);
+      }
       else if (o.cls === "bracket") brackets++;
       else if (o.cls === "octaveDot") octaveDots.push(o);
     }
@@ -425,10 +429,9 @@ for (const [id, entries] of byId) {
   const dArc = alignOps(gtArcs.map((v) => v.join("-")), recArcs.map((v) => v.join("-")));
 
   // ── 反复与房号：识别侧只有几何（反复冒号的点、房号括线），拿数量比。
+  // **数反复点要等和弦那一段走完**：`D.S.` 的缩写点归类时落进 `repeatDot`，
+  // 那边认出来之后会把它们从 `repeatDots` 里减掉（见下面 chordGroups 那一段）。
   const gtRep = gt.musicxml ? gtRepeats(gt.musicxml) : null;
-  const recRepeats = Math.round(repeatDots / 2); // 一个反复记号两个点
-  const repeatDelta = gtRep ? recRepeats - gtRep.repeats.length : null;
-  const endingDelta = gtRep ? brackets - gtRep.endings.length : null;
   const gtVerseRaw = xmlLyricVerses(gt.musicxml).map((v) => v.chars);
   const gtVerses = gtVerseRaw.map(lyricNorm);
   const gtPunct = gtVerseRaw.map(punctOnly).join("");
@@ -495,23 +498,51 @@ for (const [id, entries] of byId) {
   {
     const botOf = (b) => b.y + b.h;
     let open = []; // 同一谱行上还够得着的几撮
-    for (const o of chords) {
+    // **`D.S.` `D.C.` 的缩写点归类时落进了 `repeatDot`**（判据是「近音符、既不同 x
+    // 也不在右侧」，缩写点正好满足），于是下面那道「一撮里出现小圆点，整撮就是跳转记号」
+    // 的判据看不见它，`D.S.` 的 `D` 被当成和弦读了出来（094 首多一个 `D`）。
+    // 把它们与和弦一起按 x 走一遍即可——真反复点在小节线旁，撮里没有够得着的字母
+    //（下面还要求点贴着字母基线 ≤2.5），走到就直接跳过，不会误伤。
+    // **排序要先比页**：跨页的曲子每页的 row 都从 0 数起，只按 row 排会把两页的和弦
+    // 交错洗牌（279 首 41 个和弦全乱了序）。
+    for (const o of [...chords, ...repeatDotObjs].sort((a, b) => a.page - b.page || a.row - b.row || a.obj.bbox.x - b.obj.bbox.x)) {
       const b = o.obj.bbox;
-      if (open.length && open[0].row !== o.row) open = [];
-      open = open.filter((g) => b.x - g.x1 <= 4);
+      // 点**不参与 open 的维护**：反复点归类时 row 常与和弦那一行对不上，
+      // 拿它去清 open 会把正在读的那一撮拦腰打断（`Am` 拆成 `A`+`m`，全书和弦差异 92→1161）。
+      // 它只是来「看一眼」自己贴在谁后面，看完就走。
+      const isDot = b.w <= 2.5 && b.h <= 2.5;
+      // **只有借来的反复点不动 `open`**：它归类时的 row 与和弦那一撮常对不上，
+      // 拿它去清 `open` 会把正在读的那一撮拦腰打断（`Am` 拆成 `A`+`m`，和弦差异 92→1161）。
+      // 和弦带自己的对象照旧维护 `open`，行为与从前一字不差。
+      if (o.cls !== "repeatDot") {
+        if (open.length && open[0].row !== o.row) open = [];
+        open = open.filter((g) => b.x - g.x1 <= 4);
+      }
       // `D.C.` `D.S.` 里的点：和弦本身没有点这么小的部件（`♭` 2.6×4.2、`#` 2.9×3.8），
       // 一撮里出现小圆点，整撮就是跳转记号，不是和弦（J21 首的 `D.C.` 曾被读成 `D`+`C`）。
       // **点得真挨着这一撮才算**：房号括线的端头在矢量层是 0.4×0.4 的碎点，落在和弦带里，
       // 隔着大半个小节、甚至隔着一整行谱，照样把刚读到的那一撮判成跳转记号——
       // 037/084/116/158 首各丢了两三个和弦（084 首那个点还在下一行谱上）。
-      if (b.w <= 2.5 && b.h <= 2.5) {
+      if (isDot) {
         // 点要**贴着字母的基线**：`D.C.` 的点与字母同底（差 0.1），而变拍号的分数线
         // 碎片、房号括线的端头虽然也小、也挨着，却差着十来点（401 首的 `F` 就是被
         // 一个高出 12.3 点的碎点判成了跳转记号）。
         // 比的是**紧挨着的那个字母**的底，不是整撮的底：同一撮里 `C` 比 `D` 低 2.7
         //（344 首的 `C D.S.`），拿整撮的最低处比就差 2.6，一卡就把点甩了。
+        // 归类进 `repeatDot` 的点要**按更严的尺子**认：反复冒号的点也贴在小节线旁、
+        // 也够得着某一撮，松门槛下全书有一大批真和弦被当成跳转记号剔掉（和弦 99.2→93.6）。
+        // 缩写点与它前面那个字母**几乎同底**（差 0.1）、又**紧挨着**（`D` 与点隔 1.2）；
+        // 反复点是上下两点排成冒号，两点里总有一个与字母基线差着好几点。
+        const tolY = o.cls === "repeatDot" ? 1.0 : 2.5;
         let near = null;
-        for (const c of open) if (c.lastBot != null && Math.abs(b.y + b.h - c.lastBot) <= 2.5 && (!near || c.x1 > near.x1)) near = c;
+        for (const c of open) {
+          if (b.x - c.x1 > 4) continue; // 原先靠 open 的 filter 做这道门槛，点不再动 open，就自己判
+          if (c.lastBot == null || Math.abs(b.y + b.h - c.lastBot) > tolY) continue;
+          if (o.cls === "repeatDot" && b.x - c.x1 > 2.5) continue;
+          if (!near || c.x1 > near.x1) near = c;
+        }
+        // 认出来是缩写点的，就不是反复记号的冒号点了（反复数不该跟着 `D.S.` 涨）
+        if (near && o.cls === "repeatDot") repeatDots--;
         // **只把点算给它前面那一个字母，不废掉整撮**：`C` 紧挨着 `D.S.` 印在一起时
         //（344 首行末），整撮一废，那个真和弦 `C` 也跟着没了。
         if (near && near.chars.length) near.chars[near.chars.length - 1].dotted = true;
@@ -582,6 +613,9 @@ for (const [id, entries] of byId) {
     const text = g.chars.filter((c) => !c.dotted).map((c) => c.ch).join("");
     for (const tok of normChords(text).split("|").filter(Boolean)) recChordSeq.push({ ch: tok, objs: g.objs });
   }
+  const recRepeats = Math.round(repeatDots / 2); // 一个反复记号两个点
+  const repeatDelta = gtRep ? recRepeats - gtRep.repeats.length : null;
+  const endingDelta = gtRep ? brackets - gtRep.endings.length : null;
   const recChords = recChordSeq.map((it) => it.ch).join("|");
   const gtChords = gt.musicxml ? normChords(gtHarmonies(gt.musicxml).join("")) : "";
   // **谱面把旋律印两遍时，和弦也跟着印两遍**（见下面音符那段的同一件事）：
