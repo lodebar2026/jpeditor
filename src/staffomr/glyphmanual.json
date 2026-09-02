@@ -1,0 +1,63 @@
+{
+  "_": "人工确认的字形标注。生成流程：node gen-staffglyphs.mjs → staff-out/undone.html 截图看图 → 在这里补一条。按 family + unicode + 宽高(容差0.02) 匹配，见 staffglyphs.ts::applyManual。Anastasia（Sibelius 手写体）musicpp 全仓没有映射表，整档都靠这里。",
+  "rules": [
+    { "family": "Anastasia", "uni": 61, "w": 1.011, "h": 1.018, "smufl": "staff5Lines", "note": "一个 em 的五线块，横向平铺成谱行；Anastasia 那 115 页没有任何长横路径，谱线全是它" },
+    { "family": "Anastasia", "uni": 187, "w": 0.018, "h": 0.259, "smufl": "stem", "note": "一个线距高的竖段，同 x 上下堆成符干（实测 p21 x=343 处 y 连成一串）" },
+    { "family": "Anastasia", "uni": 95, "w": 0.5, "h": 0.018, "smufl": "legerLine", "note": "加线：横向短线，落在符头 x 附近" },
+    { "family": "Anastasia", "uni": 108, "w": 0.025, "h": 1.018, "smufl": "barlineSingle", "note": "整个谱表高的细竖线" },
+    { "family": "Anastasia", "uni": 8220, "w": 0.258, "h": 1.018, "smufl": "bracket", "note": "系统左端的粗竖线；上下各配一枚钩（bracketTop/Bottom），实测 p21 x=111 每系统两笔" },
+    { "family": "Anastasia", "uni": 172, "w": 0.408, "h": 0.451, "smufl": "bracketTop", "note": "与 bracket 同 x 的上钩" },
+    { "family": "Anastasia", "uni": 76, "w": 0.408, "h": 0.451, "smufl": "bracketBottom", "note": "与 bracket 同 x 的下钩（实测在 bracket 顶端下方 17pt，越过谱表底）" },
+    { "family": "Anastasia", "uni": 8221, "w": 0.258, "h": 1.018, "smufl": "barlineFinal", "note": "落在系统右端（p22 x=497.7 末系统）" },
+
+    { "family": "Anastasia", "uni": 339, "w": 0.3, "h": 0.256, "smufl": "noteheadBlack" },
+    { "family": "Anastasia", "uni": 729, "w": 0.3, "h": 0.268, "smufl": "noteheadHalf" },
+    { "family": "Anastasia", "uni": 119, "w": 0.412, "h": 0.252, "smufl": "noteheadWhole" },
+    { "family": "Anastasia", "uni": 191, "w": 0.3, "h": 0.299, "smufl": "noteheadXBlack" },
+    { "family": "Anastasia", "uni": 46, "w": 0.094, "h": 0.094, "smufl": "augmentationDot" },
+
+    { "family": "Anastasia", "uni": 35, "w": 0.224, "h": 0.694, "smufl": "accidentalSharp" },
+    { "family": "Anastasia", "uni": 98, "w": 0.198, "h": 0.639, "smufl": "accidentalFlat" },
+    { "family": "Anastasia", "uni": 110, "w": 0.176, "h": 0.64, "smufl": "accidentalNatural" },
+
+    { "family": "Anastasia", "uni": 106, "w": 0.264, "h": 0.75, "smufl": "flag8thUp" },
+    { "family": "Anastasia", "uni": 74, "w": 0.264, "h": 0.75, "smufl": "flag8thDown" },
+    { "family": "Anastasia", "uni": 107, "w": 0.276, "h": 0.816, "smufl": "flag16thUp" },
+
+    { "family": "Anastasia", "uni": 338, "w": 0.252, "h": 0.755, "smufl": "restQuarter" },
+    { "family": "Anastasia", "uni": 8240, "w": 0.262, "h": 0.462, "smufl": "rest8th" },
+    { "family": "Anastasia", "uni": 8776, "w": 0.331, "h": 0.706, "smufl": "rest16th" },
+    { "family": "Anastasia", "uni": 211, "w": 0.313, "h": 0.125, "smufl": "restHalf", "note": "全休止与二分休止在字体里是同一个方块，靠**落在第几线**分（musicpp 也如此）" },
+
+    { "family": "Anastasia", "uni": 38, "w": 0.611, "h": 1.805, "smufl": "gClef" },
+    { "family": "Anastasia", "uni": 99, "w": 0.398, "h": 0.483, "smufl": "timeSigCommon" },
+    { "family": "Anastasia", "uni": 181, "w": 0.448, "h": 0.427, "smufl": "timeSigCutCommon" },
+    { "family": "Anastasia", "uni": 50, "w": 0.372, "h": 0.483, "smufl": "timeSig2" },
+    { "family": "Anastasia", "uni": 51, "w": 0.36, "h": 0.483, "smufl": "timeSig3" },
+    { "family": "Anastasia", "uni": 52, "w": 0.378, "h": 0.482, "smufl": "timeSig4" },
+    { "family": "Anastasia", "uni": 54, "w": 0.371, "h": 0.483, "smufl": "timeSig6" },
+    { "family": "Anastasia", "uni": 56, "w": 0.364, "h": 0.483, "smufl": "timeSig8" },
+
+    { "family": "Anastasia", "uni": 85, "w": 0.658, "h": 0.352, "smufl": "fermataAbove" },
+    { "family": "Anastasia", "uni": 62, "w": 0.417, "h": 0.253, "smufl": "articAccentAbove" },
+    { "family": "Anastasia", "uni": 8730, "w": 0.573, "h": 0.36, "smufl": "ottavaAlta" },
+    { "family": "Anastasia", "uni": 163, "w": 0.244, "h": 0.312, "smufl": "tuplet3" },
+
+    { "family": "Anastasia", "uni": 113, "w": 0.3, "h": 0.999, "smufl": "metNoteQuarterUp", "note": "速度记号里的四分音符（♩=）" },
+    { "family": "Anastasia", "uni": 81, "w": 0.3, "h": 0.999, "smufl": "metNoteQuarterUp" },
+    { "family": "Anastasia", "uni": 101, "w": 0.546, "h": 0.999, "smufl": "metNote8thUp" },
+    { "family": "Anastasia", "uni": 69, "w": 0.3, "h": 0.999, "smufl": "metNote8thUp" },
+
+    { "family": "Maestro", "uni": 175, "w": 0.286, "h": 0.221, "smufl": "articTenutoStaccatoAbove", "note": "一横一点" },
+    { "family": "Maestro", "uni": 126, "w": 0.175, "h": 0.406, "smufl": "wiggleTrill", "note": "'~' 颤音波纹段" },
+
+    { "family": "Maestro", "uni": 14, "w": 0.398, "h": 0.418, "smufl": "articAccentStaccatoBelow", "note": "重音 '>' 加一枚点在下（与 0xFB02 那个合字同义，字体里两个码位都有）" },
+    { "family": "Anastasia", "uni": 123, "w": 0.126, "h": 0.389, "smufl": "repeatDots", "note": "上下两枚点，跨约 1.5 线距——反复小节线的点；不是花括号" },
+    { "family": "Anastasia", "uni": 45, "w": 0.3, "h": 0.038, "smufl": "articTenutoAbove", "note": "'-' 一道短横，压在基线上" },
+    { "family": "Opus", "uni": 10, "w": 0.345, "h": 0.045, "smufl": "articTenutoAbove", "note": "同上，Opus 的 '-'（PUA U+F02D）" },
+    { "family": "Opus", "uni": 61679, "w": 0.294, "h": 0.613, "smufl": "breathMarkComma", "note": "U+F0EF：一枚大逗号" },
+    { "family": "Opus", "uni": 61601, "w": 0.939, "h": 0.557, "smufl": "keyboardPedalPed", "note": "U+F0A1：花体 'Ped'。0xA1 不在 musicpp 的 Opus 表里，子集码位恰是 54('6') 才被读成 timeSig6" },
+    { "family": "Opus", "uni": 61608, "w": 0.453, "h": 0.927, "smufl": "rest32nd", "note": "U+F0A8：三道钩的休止；与 0.367x0.678 那个十六分休止按尺寸分" },
+    { "family": "OpusSpecial", "uni": 61662, "w": 0.437, "h": 0.359, "smufl": "graceNoteSlashStemUp", "note": "U+F0DE：斜穿倚音符干的那道粗斜线" }
+  ]
+}

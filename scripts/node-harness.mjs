@@ -13,6 +13,14 @@ import { decodeJpwabc } from "./harness.mjs";
 export const CORPUS_ROOT = process.env.HYMN500 ?? "/Users/jonah/Documents/诗歌/500首";
 export const CORPUS_PDF = join(CORPUS_ROOT, "诗歌500首内页校再校对编定稿2019年2月.pdf");
 
+/** 赞美之泉语料（**五线谱**那条路的底本）。用 env `ZMZQ` 覆盖。
+ *  与 500 首那本的根本区别：这本**文字层是齐的**（Finale/Sibelius 直出，音乐符号是
+ *  Maestro/Opus/Anastasia 的真字符），走 `src/omr/vectext.ts` + `src/staffomr/`。 */
+export const ZMZQ_ROOT = process.env.ZMZQ ?? "/Users/jonah/Documents/诗歌/赞美之泉";
+export const ZMZQ_PDF = join(ZMZQ_ROOT, "赞美之泉pdf谱全系列.pdf");
+/** GT：222 份 Finale v25 导出的 musicxml（同目录还有 .musx 原件，不读）。 */
+export const ZMZQ_GT_DIR = join(ZMZQ_ROOT, "赞美之泉zq");
+
 /** dist-cli 产物（`npm run build:cli`）。 */
 export async function loadCli() {
   const p = join(process.cwd(), "dist-cli", "index.js");
@@ -25,11 +33,21 @@ export async function loadPdfjs() {
   return import("pdfjs-dist/legacy/build/pdf.mjs");
 }
 
-/** 打开 PDF，返回 { pdfjs, doc, OPS }。 */
+/** 打开 PDF，返回 { pdfjs, doc, OPS }。
+ *
+ * `disableFontFace: true` **不是可选项**：它让 worker 走 `buildFontPaths`，
+ * 把每个字形的矢量轮廓以 commonObjs 的 `<loadedName>_path_<fontChar>` 送出来
+ * （`src/omr/vectext.ts` 的紧包围盒与形状签名全靠它）。关掉就一个轮廓都拿不到。
+ * 对 500 首那条只读路径的路没有影响（那本书文字层是空的）。 */
 export async function openPdf(path = CORPUS_PDF) {
   const pdfjs = await loadPdfjs();
   const bytes = new Uint8Array(await readFile(path));
-  const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
+  const doc = await pdfjs.getDocument({
+    data: bytes,
+    isEvalSupported: false,
+    disableFontFace: true,
+    fontExtraProperties: true,
+  }).promise;
   return { pdfjs, doc, OPS: pdfjs.OPS };
 }
 
@@ -477,6 +495,112 @@ const STEP_IDX = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
  *
  * 和弦附音（`<chord/>`）不占格；`<rest/>` 记 0，谱面上休止就印作 `0`。
  */
+/**
+ * MusicXML → **五线谱口径**的音符序列：每个音一个 `音名+八度`（休止记 `R`）。
+ *
+ * 与 `xmlNoteDigits`（简谱口径，只出 1-7 的音级）不是一回事，别混用：
+ * 那边比的是「相对主音的级数」，这边比的是绝对音高的**拼写**。
+ * 升降号不进这一档——谱面上它是另一个对象，两边都单列（见 `xmlStaffAlters`）。
+ * `<chord/>` 的附加音**照收**（本书 GT 里只占 2%，但漏了就对不齐）。
+ */
+export function xmlStaffNotes(musicxml) {
+  const out = [];
+  for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
+    const seg = m[0];
+    if (/<grace\s*\/?>/.test(seg)) continue; // 倚音不占格
+    if (/<rest\s*\/?>/.test(seg)) {
+      out.push("R");
+      continue;
+    }
+    const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
+    const oct = /<octave>(-?\d+)<\/octave>/.exec(seg)?.[1];
+    if (!step || oct === undefined) continue;
+    out.push(step + oct);
+  }
+  return out;
+}
+
+/** MusicXML → 小节数（第一个 part 的 `<measure>` 个数）。 */
+export function xmlMeasureCount(musicxml) {
+  const part = /<part\b[\s\S]*?<\/part>/.exec(musicxml)?.[0] ?? musicxml;
+  return (part.match(/<measure\b/g) || []).length;
+}
+
+/**
+ * MusicXML → 逐音的**含升降**音高：`音名[+/-/=]八度`（休止 `R`）。
+ *
+ * 与 `xmlStaffNotes`（只比音名与八度）分档：那一档不看升降号，
+ * 这一档专门盯「调号与小节内延续算对了没有」——`<alter>` 是**发声**的升降，
+ * 谱面上没印记号的音也可能带（G 调里的 F♯）。
+ */
+export function xmlStaffPitches(musicxml) {
+  const out = [];
+  for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
+    const seg = m[0];
+    if (/<grace\s*\/?>/.test(seg)) continue;
+    if (/<rest\s*\/?>/.test(seg)) {
+      out.push("R");
+      continue;
+    }
+    const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
+    const oct = /<octave>(-?\d+)<\/octave>/.exec(seg)?.[1];
+    if (!step || oct === undefined) continue;
+    const alter = Number(/<alter>(-?\d+)<\/alter>/.exec(seg)?.[1] ?? 0);
+    out.push(step + (alter > 0 ? "+".repeat(alter) : alter < 0 ? "-".repeat(-alter) : "") + oct);
+  }
+  return out;
+}
+
+/**
+ * MusicXML → **逐音**的圆滑线/连音线标记，与 `xmlStaffNotes` 一一对应。
+ *
+ * 每个音出一个记号串：`s` 弧起、`S` 弧止、`t` 连音起、`T` 连音止，都没有就是 `.`。
+ * 这样能直接拿逐音编辑距离比，不必先把弧配成对——配对那一步两边口径难对齐
+ * （谱面一条跨行的弧在 GT 里是两条）。
+ */
+export function xmlSlurMarks(musicxml) {
+  const out = [];
+  for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
+    const seg = m[0];
+    if (/<grace\s*\/?>/.test(seg)) continue;
+    let t = "";
+    if (/<slur\b[^>]*type="start"/.test(seg)) t += "s";
+    if (/<slur\b[^>]*type="stop"/.test(seg)) t += "S";
+    if (/<tied\b[^>]*type="start"/.test(seg)) t += "t";
+    if (/<tied\b[^>]*type="stop"/.test(seg)) t += "T";
+    out.push(t || ".");
+  }
+  return out;
+}
+
+/** MusicXML → 逐音的时值记号（`quarter` / `eighth`…，附点记成 `.` 后缀）。 */
+export function xmlStaffTypes(musicxml) {
+  const out = [];
+  for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
+    const seg = m[0];
+    if (/<grace\s*\/?>/.test(seg)) continue;
+    const t = /<type>([a-z\-]+)<\/type>/.exec(seg)?.[1] ?? "?";
+    const dots = (seg.match(/<dot\s*\/?>/g) || []).length;
+    out.push(t + ".".repeat(dots));
+  }
+  return out;
+}
+
+/** MusicXML → 标题（中文 `movement-title`）与英文标题（`credit-words` 里第一条纯 ASCII 的）。 */
+export function xmlTitles(musicxml) {
+  const zh = /<movement-title>([^<]*)<\/movement-title>/.exec(musicxml)?.[1]?.trim() ?? "";
+  let en = "";
+  for (const m of musicxml.matchAll(/<credit-words[^>]*>([^<]*)</g)) {
+    const t = m[1].trim();
+    if (!t || t === zh) continue;
+    if (!/^[\x20-\x7e]+$/.test(t)) continue;
+    if (/^[\d.:,;\-\s]+$/.test(t)) continue;
+    en = t;
+    break;
+  }
+  return { zh, en };
+}
+
 export function xmlNoteDigits(musicxml) {
   // 注：`<note[ >]` 不能写成 `<note\b`——`\b` 在 `<note-size>`（`<defaults>` 里的）
   // 前面也成立，那一匹配会一路吞到第一个 `</note>`，把开头的调号和首音一起吃掉。

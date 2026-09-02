@@ -45,6 +45,12 @@ node gen-glyphfuzzy.mjs [--dry] [--why]                        # 形近补字：
 node gen-bookmeta.mjs [--check]                                # 书级内容（调号拍号/目录/索引/注解…）入 校对.db
 node gen-glyphmerge.mjs        # 字形建库第三步：同一字形的分身归并、标注取齐
 npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿（须人工核对后才算 GT）
+npm run build:cli && node gen-staffglyphs.mjs          # 五线谱：建字形库 + 人工确认表
+node gen-stafflyrics.mjs                               # 五线谱：拿 GT 自举正文字形字典（修乱码 CJK）
+npm run build && node gen-staffocr.mjs                 # 五线谱：未定字形送 OCR 兜底（与上一步交替跑）
+node staff-report.mjs && node staff-diff.mjs           # 五线谱：逐页事实 + 逐首对拍（基线断言）
+node staff-export.mjs <页范围> out.musicxml            # 五线谱：识别 → MusicXML
+npm run build && node staff-ui-check.mjs [页号]        # 五线谱：编辑器接线的端到端检查
 ```
 
 `shot.mjs` 用 Playwright `channel: "msedge"` 驱动本地 Edge，serve `dist/`，加载后截图并
@@ -204,6 +210,47 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   text 模式用 pdf-lib 直出 666 页文字版 PDF（可选中可搜索，12.3MB，不经浏览器故字体只嵌一份）。
   篇中逐条记录了归类判据的判据与反例（重复描边的 3×3 邻域配对、小节线高度门槛、
   花边框的密排线判据、页顶续尾、段号重印…），**动那些阈值前必看**。
+- **[五线谱识别](docs/实现/五线谱识别.md)**（`src/staffomr/` + `src/omr/vectext.ts`）——
+  **文字层完整**的印刷五线谱 PDF（Finale/Sibelius 直出）→ MusicXML，移植自 musicpp 的 `qtomr/`。
+  与 500 首那条矢量路的分界：那本文字**全部转曲**（只有路径），这本音乐符号是 Maestro/Opus/
+  Anastasia 的**真字符**。抽取在 `src/omr/vectext.ts`（`extractTextPage`）——
+  **`getDocument({disableFontFace:true})` 是字形轮廓可取的前提**，`node-harness.mjs::openPdf`
+  已写死，别去掉。码位与 ToUnicode 都不可靠（同一字形分在多个子集里各有各的码位），
+  定案靠**轮廓聚类**（复用 `glyphdict.ts` 的 `shapeKey`/`shapeSig`）：全书 17 万个音乐字形
+  → 176 个形状类，人工确认表定完，未定 0。**一切几何门槛都是小节线高度 H 的比例**
+  （与 `jpglyph.ts` 同口径，H 由音乐字体字号量出来），别写绝对点值。
+  Anastasia 那 115 页**谱线/符干/加线/小节线全是字形、一条长横路径都没有**；
+  另有一批 PDF 把整行谱画进一个 path 对象、连填充也是密排细线——所以有 `Seg`（线段层），
+  标记挂在段上不挂在对象上。判音高用**墨迹中心**不用字形基线。
+  MusicXML 的 `<alter>` 是**发声**的升降（调号 + 小节内延续 + 临时记号三层叠加，
+  `calcAlters` ← `Bar::calcAlter`），`<accidental>` 才是谱面印出来的那个记号——不算这一层，
+  带升降号的调导出的音高全是错的。**弧有三种画法**（贝塞尔实心月牙 / 描边曲线 / 压平成 60 段折线的多边形），三种都要认，
+  且要先挑掉渐强渐弱与和弦图的小圆点；跨行的弧要接回一条。时值按符杠**分层**算，
+  但取「这根符干上有几个不同的层」而不是「最高的那一层」（外推会把层判高）。
+  文本层（歌词/和弦/速度/表情，`textanalyze.ts` ← `TextAnalyze.cpp`）**musicpp 只打标不导出**，
+  「歌词逐字挂音符、和弦拼回一个记号」是本仓新加的。坏 ToUnicode 的 CJK 字体
+  （标题与歌词读成乱码）靠**拿 GT 自举字形字典**修（`gen-stafflyrics.mjs`）——
+  曲目先按音符序列对上 GT（不依赖字体），再逐字投票；**票要投繁体**，
+  且**一个音节一个字形才投**（拉丁词会把字母的类污染成一锅粥）。
+  GT 教不到的字（全书只对上一百首）再由 `gen-staffocr.mjs` **每类送一次 OCR** 兜底，
+  **与自举交替跑**（补上的字 → 更多标题认得出 → 更多曲子对上 GT → 更多歌词可投票）；
+  这是五线谱路里唯一要起浏览器的建库步骤。
+  移植时**最要命的一处**：`findLegers` 里 `abs(step)/2-2` 在 C++ 是**整数除**，
+  谱表外一两级的音符不需要加线就该收；写成浮点除会把它们全丢掉，连带那根符干
+  被当成小节线（全书音符少一成、逐首准确率差 4 个点）。
+  **跨系统连接与声部**（`score.ts` ← `Score::connectSystems`）：逐系统 LCS 对齐谱表签名，
+  钢琴/SATB 的两行合成一个 `<part>`（`<staves>2` + `<backup>`）——没有这一层时导出只取
+  每个系统的顶行，全书 7.2% 的音符（伴奏行）整批丢掉。花括号在 Opus 那一路找不到，
+  补了一条「同系统里相邻的 G 谱号 + F 谱号是大谱表」的约定判据。
+  另有**不靠 GT 的小节时值自检**（`checkBars` ← `Bar::checkFull`）：小节里时值加起来
+  对不上拍号就说明那一小节读错了，`node staff-report.mjs` 打印，全书都能用。
+  对拍 `node staff-diff.mjs`（基线 `testdata/赞美之泉/staff-baseline.json`），
+  口径分档照 500 首那本：只有「音符数与 GT 相差一成以内」的进分母；
+  **歌词档是配对的照妖镜**——配错曲时歌词立刻掉到 0 而音符相似度还有五六成。
+  编辑器接入在 `staffomr/browser.ts`（`isStaffPdf` 判该走哪条路）+ `omrctl.ts`：
+  产物**只进混排视图**（`OmrHost.adoptStaffXml`），不走 `importBytes`——那条对单声部
+  MusicXML 会转简谱 Score，五线谱装不进去（直接抛 `measure has no chord`）。
+  接线回归 `node staff-ui-check.mjs`。**动几何判据前必看那篇。**
 - **[OMR 简谱识别](docs/实现/OMR-简谱识别.md)**（`src/omr/`，最长的一篇）——图片/PDF → MusicXML。
   全本地一条路：连通域几何 + PaddleOCR PP-OCRv6_small，浏览器离线。14 首 GT 基线：音符/八度/附点/小节/对位/标题/词曲 100%，slur-tie 99.8%、歌词 99.5%。
   回归 `node measure-all.mjs`、`node bench-lyrics.mjs`、`node check-gt.mjs`。

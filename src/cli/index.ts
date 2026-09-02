@@ -6,6 +6,8 @@
 // common/measure.ts 及一切依赖它的排版件）一律不许进这条 import 链。
 export * from "../common/cjkpunct";
 export * from "../omr/vector";
+export * from "../omr/vectext";
+export * from "../staffomr/index";
 export * from "../omr/bookprofile";
 export * from "../omr/inventory";
 export * from "../omr/glyphdict";
