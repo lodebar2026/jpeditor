@@ -84,14 +84,15 @@ async function boot() {
   ]).then(([out, patch, layout, imp, jpscore, jpwfile, parse, jpwimport]) =>
     ({ ...out, ...patch, ...layout, ...imp, ...jpscore, ...jpwfile, ...parse, ...jpwimport }));
 
-  // 文本谱版面切换（原版 / PPT）
+  // 版面切换（原版 / PPT）。简谱与文本谱共用这一对按钮，由 App 按文档格式分派：
+  // 文本谱切 print/slide（换整套 metrics），简谱切 normal/pptx（换笔画常量）。
   const puSwitch = document.getElementById("pu-profile-switch");
   const puPrint = document.getElementById("btn-pu-print") as HTMLButtonElement | null;
   const puSlide = document.getElementById("btn-pu-slide") as HTMLButtonElement | null;
   if (puSwitch && puPrint && puSlide) {
-    app.setPuProfileButtons(puSwitch, puPrint, puSlide);
-    puPrint.onclick = () => app.setPuProfile("print");
-    puSlide.onclick = () => app.setPuProfile("slide");
+    app.setProfileButtons(puSwitch, puPrint, puSlide);
+    puPrint.onclick = () => app.setProfile(false);
+    puSlide.onclick = () => app.setProfile(true);
   }
 
   const revealWorkspace = () => {

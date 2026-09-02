@@ -2,6 +2,8 @@
 import type { App } from "./app";
 import { scoreToMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
+import { JinpuPainter } from "../layout/painter";
+import { applyPptxStyle } from "../layout/pptxstyle";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { scoreToJpwabc } from "../score/jpscore";
 import { puToMusicXml } from "../pu";
@@ -101,14 +103,32 @@ export async function exportMidi(app: App): Promise<void> {
 }
 
 export async function exportPptx(app: App): Promise<void> {
-  // 文本谱用它自己的排版器出片（PPT 版面），简谱走原来的
-  const painter = app.docFormat === "pu" ? app.puPainter : null;
-  const bytes = await buildPptx(painter ?? app.painter);
+  // 文本谱用它自己的排版器出片（PPT 版面）；简谱**另排一遍 PPT 档**，
+  // 不吃屏幕上那个 painter——这样屏幕在原版档也导得出 PPT 观感，
+  // 切到 PPT 档预览则是所见即所得。字号/纸张仍取用户设置。
+  const pu = app.docFormat === "pu" ? app.puPainter : null;
+  if (app.docFormat === "pu" && !pu) throw new Error("这份文本谱还没有排出可导出的页面");
+  const bytes = await buildPptx(pu ?? pptxPainter(app));
   await saveBytes(
     bytes,
     `${baseName(app)}.pptx`,
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   );
+}
+
+/** 按 PPT 档另排一份简谱。屏幕已在 PPT 档时直接用屏幕那个，省一次排版。 */
+function pptxPainter(app: App): JinpuPainter {
+  if (app.jpProfile === "pptx") return app.painter;
+  const p = new JinpuPainter(app.fontSize);
+  const opt = p.layout.options;
+  opt.smuflMeta = app.painter.layout.options.smuflMeta;
+  opt.color = app.painter.layout.options.color;
+  opt.titleSize = app.painter.layout.options.titleSize;
+  opt.creditSize = app.painter.layout.options.creditSize;
+  applyPptxStyle(opt); // 契约：构造之后、resize 之前
+  p.score = app.painter.score;
+  p.resize(app.pageW, app.pageH, app.breakDesc);
+  return p;
 }
 
 const MUSICXML_MIME = "application/vnd.recordare.musicxml+xml";

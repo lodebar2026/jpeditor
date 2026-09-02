@@ -24,6 +24,9 @@ export interface PersistedSettings {
   playSpeed?: unknown;
   /** 交 OmrController 自己校验 */
   omrFormat?: unknown;
+  /** 版面档（原版 / PPT）。两种谱各记各的：简谱 normal|pptx、文本谱 print|slide。 */
+  jpProfile?: "normal" | "pptx";
+  puProfile?: "print" | "slide";
 }
 
 export function loadPersistedSettings(): PersistedSettings | null {

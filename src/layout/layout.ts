@@ -751,6 +751,11 @@ export class TimeSig extends Entry {
       ruleWidth: opt.timeSigRuleWidth > 0 ? opt.timeSigRuleWidth : 1.5,
       color: opt.color,
       font: opt.numberFont.withBold(),
+      // 0 = 让 jpTimeSigItems 用它自己的默认比例（编辑器/成书两条路不变）
+      digitRatio: opt.timeSigDigitRatio > 0 ? opt.timeSigDigitRatio : undefined,
+      upperRatio: opt.timeSigUpperRatio > 0 ? opt.timeSigUpperRatio : undefined,
+      lowerRatio: opt.timeSigLowerRatio > 0 ? opt.timeSigLowerRatio : undefined,
+      ruleLengthRatio: opt.timeSigRuleLenRatio > 0 ? opt.timeSigRuleLenRatio : undefined,
     });
     this.width = r.width;
     this.hline = r.rule;
@@ -903,6 +908,13 @@ export class NoteEntry extends Entry {
   entryTop(opt: LayoutOptions): number {
     const oct = this.chord.notes[0].jpOctave;
     const bnd = opt.numberBound("1");
+    if (opt.jpGridLegacy) {
+      // 旧式：高音点按 1.5 倍点高步进且带半格偏移，整摞再退 numberSize/8——
+      // 那个 1/8 就是当年的「gap」，所以 legacy 下 slurRung 不再额外退（见下）。
+      let y = bnd.top;
+      if (oct > 0) y -= (oct + 0.5) * opt.numberBound(".").height * 1.5;
+      return y - opt.numberSize / 8;
+    }
     if (oct <= 0) return bnd.top;
     return bnd.top - oct * opt.jpDotRung;
   }
@@ -910,6 +922,8 @@ export class NoteEntry extends Entry {
    * stacks — the same gap that separates the digit from its first octave dot,
    * and one dot from the next. */
   slurRung(opt: LayoutOptions): number {
+    // 旧式栅格里 entryTop 自带了那 numberSize/8 的间隙，弧就落在它上面。
+    if (opt.jpGridLegacy) return this.entryTop(opt);
     return this.entryTop(opt) - opt.jpStackGap;
   }
   /** Mirror of entryTop below the baseline (low octave dots clear the beams). */
@@ -917,6 +931,13 @@ export class NoteEntry extends Entry {
     const oct = this.chord.notes[0].jpOctave;
     const bnd = options.numberBound("1");
     const beamBottom = options.jpBeamBottom(this.chord.beams);
+    if (options.jpGridLegacy) {
+      // 旧式：低音点从基线按 numberSize 的比例往下排，只让开减时线的**层号**
+      // （不是墨迹底），且与数字墨迹底无关。
+      let y = this.chord.beams * options.jpBeamDist;
+      if (oct < 0) y += options.numberSize * ((-oct - 1) * 0.175 + 0.25) + options.numberSize / 4;
+      return y;
+    }
     if (oct >= 0) return beamBottom;
     const above = Math.max(bnd.bottom, beamBottom);
     const dotBnd = options.numberBound(".");
@@ -968,7 +989,15 @@ export class NoteEntry extends Entry {
       const tf = new JpOctaveDot(r, options.color);
       // 栅格是**墨迹到墨迹**量的。圆的局部包围盒就是墨迹本身（(0,0)–(2r,2r)），
       // 所以直接按上/下缘落位——不必再像字形那样倒扣 `.` 自己的基线偏移。
-      if (oct >= 0) {
+      if (options.jpGridLegacy) {
+        // 旧式落位。当年八度点是字体的 `.` 字形、按**基线**摆，今天是矢量圆、按**墨迹顶**摆，
+        // 所以把老的基线 y 加上 `.` 自己的墨迹上缘 `dotBnd.top` 才落回同一处。
+        const dotBnd = options.numberBound(".");
+        const baseY = oct >= 0
+          ? numBound.top - (d + 0.5) * dotBnd.height * 1.5
+          : options.numberSize * (d * 0.175 + 0.25) + ch.beams * options.jpBeamDist;
+        tf.y = baseY + dotBnd.top;
+      } else if (oct >= 0) {
         const inkBottom = numBound.top - options.jpStackGap - d * options.jpDotRung;
         tf.y = inkBottom - 2 * r;
       } else {
@@ -2603,21 +2632,26 @@ export class Line {
   private tiedTop(ent: NoteEntry, opt: LayoutOptions, left: boolean): number {
     let res = ent.slurRung(opt);
     const nt = ent.chord.notes[0];
+    // 旧式栅格里三连音让 numberSize/2、tie 让 numberSize/8，与点的步长各不相干。
+    const rung = opt.jpGridLegacy ? opt.numberSize / 2 : opt.jpDotRung;
     if (left) {
-      if (nt.tupletBegin) res -= opt.jpDotRung;
+      if (nt.tupletBegin) res -= rung;
     } else {
-      if (nt.tupletEnd) res -= opt.jpDotRung;
+      if (nt.tupletEnd) res -= rung;
     }
     return res;
   }
   private slurTop(ent: NoteEntry, opt: LayoutOptions, left: boolean): number {
     let res = ent.slurRung(opt);
     const nt = ent.chord.notes[0];
+    const rung = opt.jpGridLegacy ? opt.numberSize / 8 : opt.jpDotRung;
     if (left) {
-      if (nt.tieStart) res -= opt.jpDotRung;
+      if (nt.tieStart) res -= rung;
     } else {
-      if (nt.tieEnd) res -= opt.jpDotRung;
+      if (nt.tieEnd) res -= rung;
     }
+    // 旧式还要为三连音再退半个 em（新式由上方带按跨度分层，见 Line.stackAbove）
+    if (opt.jpGridLegacy && (nt.tupletEnd || nt.tupletBegin)) res -= opt.numberSize / 2;
     // 三连音括线不在这里避了：它与弧同属上方带 layer 0，谁在下面由跨度定
     // （范围小的在下），见 Line.stackAbove。
     return res;
@@ -3297,6 +3331,14 @@ export class LayoutOptions {
   verseNumberAutoMin = 3;
   /** 转拍号那条分数线的粗细。0 = 用引擎默认的 1.5（编辑器那条路不变）。 */
   timeSigRuleWidth = 0;
+  /** 拍号的四个比例（都是 ÷ 小节线高度 H）。0 = 用 `jpglyph.ts::TIME_SIG_DEFAULTS`。
+   *  单独提出来是因为 H 一变（见 `jpStaffTopOverride`），照默认比例算出来的拍号会跟着
+   *  整体缩放；PPT 档要的是**旧观感**——字号 0.75em、上 0.1em、下 0.625em、
+   *  分数线长按数字实测宽——那套在 H = numberSize 下才对得上。 */
+  timeSigDigitRatio = 0;
+  timeSigUpperRatio = 0;
+  timeSigLowerRatio = 0;
+  timeSigRuleLenRatio = 0;
   /** 房号/三连音括线的线宽与「脚」（下垂那一小段）的长度。0 = 按字号推算。 */
   bracketWidth = 0;
   bracketFoot = 0;
@@ -3386,6 +3428,26 @@ export class LayoutOptions {
   jpBeamTop!: number;
   jpBeamWidth = 1.5; // musicpp lineWidths.jpBeam (pptutil.cpp:138)
 
+  /** `jpStaffTop` / `jpStaffBottom` 的覆写（0 = 按字号推算，见那两个 getter）。
+   *  PPT 档要回到本项目原来的 −23/28 em 与 +5/28 em。 */
+  jpStaffTopOverride = 0;
+  jpStaffBottomOverride = 0;
+
+  /**
+   * **旧式纵向栅格**（PPT 档专用；默认 false = 等距的单一 `jpStackGap`）。
+   *
+   * 打开后，数字上下堆叠的那几样东西回到 2026-08 重构之前的**三套步长**：
+   * 高音点按 `dotBound.height * 1.5` 步进、`entryTop` 在此之上再退 `numberSize/8`
+   * （弧就落在这里，不再额外让一个 gap）、三连音退 `numberSize/2`、tie 退 `numberSize/8`，
+   * 低音点按 `numberSize * (d*0.175 + 0.25)` 排。
+   *
+   * 这几个数彼此对不齐（数字↔点 ≈ 2.0px 而点↔弧 ≈ 4.4px，故有了后来的等距栅格），
+   * 但那正是老 PPTX 的观感。**只在 PPT 档打开**，默认那条路一个数都不许受影响。
+   * 换算不成单纯的 gap/rung 两个数——老式带 0.5 格偏移，且八度点当年是字形、
+   * 按基线落位，今天是矢量圆、按墨迹落位，两者差一个 `dotBound.top`。
+   */
+  jpGridLegacy = false;
+
   /** One rung of the stack: a dot plus the gap above it. Also the amount by
    * which anything that must clear a slur (a second arc, a tuplet bracket)
    * steps up. */
@@ -3459,9 +3521,11 @@ export class LayoutOptions {
    * not even reach the first low octave dot.
    */
   get jpStaffTop(): number {
+    if (this.jpStaffTopOverride !== 0) return this.jpStaffTopOverride;
     return -this.numberSize;
   }
   get jpStaffBottom(): number {
+    if (this.jpStaffBottomOverride !== 0) return this.jpStaffBottomOverride;
     return this.numberSize / 3;
   }
 }

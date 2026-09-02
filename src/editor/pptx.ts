@@ -132,12 +132,27 @@ function shapeVisitor(font: opentype.Font, out: Shape[]): ItemVisitor<void> {
       const fm = item.font.metrics;
       const height = fm.descent - fm.ascent;
       const sz = item.font.size * item.matrix.scaleY;
-      out.push({
-        kind: "text", x: pp.x, y: pp.y + fm.descent - height - sz / 20,
-        w: Math.max(item.width, 1), h: height,
-        text: item.text, size: sz, colorHex: hex(item.color),
+      const y = pp.y + fm.descent - height - sz / 20;
+      const mk = (text: string, x: number, w: number): TextShape => ({
+        kind: "text", x, y, w: Math.max(w, 1), h: height,
+        text, size: sz, colorHex: hex(item.color),
         bold: item.font.bold, family: item.font.family,
       });
+      // **逐字笔位**（标点挤压的产物，见 layout.ts::TextFrame.charXs）：DrawingML 的
+      // 一个 run 只能整串连排，字距没法逐字给，所以带 charXs 的文本要**拆成逐字文本框**
+      // 才落得回排版量好的那串坐标。不拆的话挤压在 PPT 里整个失效——歌词的标点回到全角，
+      // 整行比屏幕上宽出一截（这正是导出的谱看着比屏幕「胖」的原因）。
+      // 代价是一条歌词变成几个形状，PPT 里不好整串编辑；没有 charXs 的文本仍是一个 run。
+      const chars = [...item.text];
+      if (item.charXs && item.charXs.length === chars.length && chars.length > 1) {
+        const xs = item.charXs;
+        for (let i = 0; i < chars.length; i++) {
+          const next = i + 1 < chars.length ? xs[i + 1] : item.width;
+          out.push(mk(chars[i], pp.x + xs[i], next - xs[i]));
+        }
+        return;
+      }
+      out.push(mk(item.text, pp.x, item.width));
     },
   };
 }

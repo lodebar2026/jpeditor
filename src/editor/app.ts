@@ -14,6 +14,7 @@ import type { PageProfileName } from "../pu/metrics";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
 import { JinpuPainter } from "../layout/painter";
+import { applyPptxStyle, type JpProfileName } from "../layout/pptxstyle";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/layout";
 import { Point } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
@@ -45,7 +46,11 @@ export class App implements OmrHost, PlaybackHost {
   docFormat: "jpwabc" | "pu" = "jpwabc";
   /** 文本谱的版面：原版 A4 / PPT 16:9。 */
   puProfile: PageProfileName = "print";
+  /** 简谱版面档：`normal` = 当前观感；`pptx` = 排版重构之前的笔画（导出 PPTX 用的那一档）。 */
+  jpProfile: JpProfileName = "normal";
   private _puPainter: PuPainter | null = null;
+  /** 最近一次排版用的 `.Layout` 分页描述（导出 PPTX 按 PPT 档另排一遍时要用同一份）。 */
+  private _breakDesc: string | null = null;
   /** 已解析出的文本谱方言，用于代码区标签（解析前未知）。 */
   private _puDialect: Dialect | null = null;
   /** 上次解析结果的缓存（同一份文本不重复解析）。 */
@@ -108,10 +113,13 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   /** 换字号要重建 painter（字号是 JinpuPainter 的构造参数），保留已排好的 Score。
-   *  随后把 color/titleSize/creditSize 三个选项同步进新 painter。两个调用点共用。 */
-  private _rebuildPainter(fontSize?: number): void {
-    if (fontSize && fontSize !== this.fontSize) {
-      this.fontSize = fontSize;
+   *  随后把 color/titleSize/creditSize 三个选项同步进新 painter。三个调用点共用。
+   *
+   *  `force` 用于换版面档：`applyPptxStyle` 是**单向覆写**，从 PPT 档切回原版
+   *  只能重新构造一份干净的 LayoutOptions。 */
+  private _rebuildPainter(fontSize?: number, force = false): void {
+    if (force || (fontSize && fontSize !== this.fontSize)) {
+      if (fontSize) this.fontSize = fontSize;
       const score = this.painter.score;
       this.painter = new JinpuPainter(this.fontSize);
       this.painter.layout.options.smuflMeta = this.meta;
@@ -120,6 +128,19 @@ export class App implements OmrHost, PlaybackHost {
     this.painter.layout.options.color = this.color;
     this.painter.layout.options.titleSize = this.titleSize;
     this.painter.layout.options.creditSize = this.creditSize;
+    // 版面档的笔画常量最后灌，覆盖在上面那几个之上（契约同 applyBookStyle）
+    if (this.jpProfile === "pptx") applyPptxStyle(this.painter.layout.options);
+  }
+
+  /** 简谱版面切换（原版 / PPT）。PPT 档 = 2026-08 排版重构之前的笔画观感，
+   *  也是「导出 PPTX」用的那一档，见 layout/pptxstyle.ts。 */
+  setJpProfile(profile: JpProfileName): void {
+    if (this.jpProfile === profile) return;
+    this.jpProfile = profile;
+    this._rebuildPainter(undefined, true);
+    this._syncProfileButtons();
+    this.saveSettings();
+    if (this.docFormat !== "pu") this.reload(this.getText());
   }
 
   /** Apply page-size / font-size / title-size / credit-size / color render settings and re-render. */
@@ -149,7 +170,10 @@ export class App implements OmrHost, PlaybackHost {
     if (s.creditSize !== undefined) this.creditSize = s.creditSize;
     if (s.color !== undefined) this.color = s.color;
     if (s.zoom) this.zoom = s.zoom;
+    if (s.jpProfile === "normal" || s.jpProfile === "pptx") this.jpProfile = s.jpProfile;
+    if (s.puProfile === "print" || s.puProfile === "slide") this.puProfile = s.puProfile;
     this._applyZoom();
+    // jpProfile 要在重建之前定好——_rebuildPainter 末尾按它灌 PPT 档的笔画常量
     this._rebuildPainter(s.fontSize);
   }
 
@@ -167,6 +191,8 @@ export class App implements OmrHost, PlaybackHost {
       mixedShowJianpuLayer: this.mixedShowJianpuLayer,
       playSpeed: this.playback.speed,
       omrFormat: this.omr.format,
+      jpProfile: this.jpProfile,
+      puProfile: this.puProfile,
     });
   }
 
@@ -265,6 +291,7 @@ export class App implements OmrHost, PlaybackHost {
 
     this.painter.score = score;
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
+    this._breakDesc = breakDesc; // 导出 PPTX 时另排一遍要用同一份分页描述
     try {
       this.painter.resize(this.pageW, this.pageH, breakDesc);
     } catch (e) {
@@ -337,12 +364,15 @@ export class App implements OmrHost, PlaybackHost {
   setPuProfile(profile: PageProfileName): void {
     if (this.puProfile === profile) return;
     this.puProfile = profile;
-    this._syncPuProfileButtons();
+    this._syncProfileButtons();
+    this.saveSettings();
     if (this.docFormat === "pu") this.reload(this.getText());
   }
 
-  /** 注册文本谱版面切换按钮（原版 / PPT）。 */
-  setPuProfileButtons(
+  /** 注册「原版 / PPT」版面切换按钮。**两种谱共用这一对按钮**：文本谱时它切
+   *  `puProfile`（print/slide，换整套 metrics），简谱时切 `jpProfile`
+   *  （normal/pptx，只换笔画常量）。所以按钮不再随格式隐藏。 */
+  setProfileButtons(
     switchEl: HTMLElement,
     printBtn: HTMLButtonElement,
     slideBtn: HTMLButtonElement,
@@ -350,16 +380,23 @@ export class App implements OmrHost, PlaybackHost {
     this._puProfileSwitchEl = switchEl;
     this._puPrintBtnEl = printBtn;
     this._puSlideBtnEl = slideBtn;
-    this._setPuControlsAvailable(this.docFormat === "pu");
+    this._setPuControlsAvailable(true);
+  }
+
+  /** 当前档下点「原版」/「PPT」该做什么——按文档格式分派。 */
+  setProfile(slide: boolean): void {
+    if (this.docFormat === "pu") this.setPuProfile(slide ? "slide" : "print");
+    else this.setJpProfile(slide ? "pptx" : "normal");
   }
 
   private _setPuControlsAvailable(available: boolean): void {
+    // 混排模式下这对按钮无意义（那条路既不是简谱排版器也不是文本谱排版器）
     if (this._puProfileSwitchEl) this._puProfileSwitchEl.hidden = !available;
-    this._syncPuProfileButtons();
+    this._syncProfileButtons();
   }
 
-  private _syncPuProfileButtons(): void {
-    const slide = this.puProfile === "slide";
+  private _syncProfileButtons(): void {
+    const slide = this.docFormat === "pu" ? this.puProfile === "slide" : this.jpProfile === "pptx";
     for (const [btn, on] of [
       [this._puPrintBtnEl, !slide],
       [this._puSlideBtnEl, slide],
@@ -406,6 +443,11 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   /** 当前文本谱的排版器（播放高亮 / 导出用）。 */
+  /** 见 `_breakDesc`。 */
+  get breakDesc(): string | null {
+    return this._breakDesc;
+  }
+
   get puPainter(): PuPainter | null {
     return this.docFormat === "pu" ? this._puPainter : null;
   }
@@ -430,7 +472,7 @@ export class App implements OmrHost, PlaybackHost {
       this._puDoc = null;
       this._puScoreCache = null;
     }
-    this._setPuControlsAvailable(format === "pu");
+    this._setPuControlsAvailable(this.mode !== "mixed");
     this._syncFormatLabel();
   }
 
