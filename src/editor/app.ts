@@ -32,6 +32,17 @@ import {
 } from "./settings";
 export type { OmrFormat } from "../omr";
 
+/** 「简谱」档多段歌词叠排时的段间行距 ÷ 歌词字号。原书量到的是 1.3 上下。 */
+const JP_LYRIC_STACK_RATIO = 1.35;
+
+/** 「简谱」档的纸宽。**不用 PPT 那张 16:9 的纸**（用户口径：「简谱模式相当于文本谱的展示」）
+ *  ——那一档是一张连续长纸，宽度取文本谱「原版」的那一份（`pu/metrics.ts::PRINT.pageWidth`，
+ *  A4 比例），高度由内容说了算（`JinpuPainter.pageSize`）。 */
+const JP_CONTINUOUS_WIDTH = 1000;
+
+/** 谱面区的四档排版模式。见 `App.setViewModeButtons` 的注释：这是两组正交状态的组合。 */
+export type ViewMode = "ppt" | "jianpu" | "staff" | "mixed";
+
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 
 export class App implements OmrHost, PlaybackHost {
@@ -45,9 +56,9 @@ export class App implements OmrHost, PlaybackHost {
   /** 当前编辑的是哪种源格式：`.jpwabc` 还是文本谱（番茄 / 诗歌本）。 */
   docFormat: "jpwabc" | "pu" = "jpwabc";
   /** 文本谱的版面：原版 A4 / PPT 16:9。 */
-  puProfile: PageProfileName = "print";
+  puProfile: PageProfileName = "slide";
   /** 简谱版面档：`normal` = 当前观感；`pptx` = 排版重构之前的笔画（导出 PPTX 用的那一档）。 */
-  jpProfile: JpProfileName = "normal";
+  jpProfile: JpProfileName = "pptx";
   private _puPainter: PuPainter | null = null;
   /** 最近一次排版用的 `.Layout` 分页描述（导出 PPTX 按 PPT 档另排一遍时要用同一份）。 */
   private _breakDesc: string | null = null;
@@ -62,14 +73,14 @@ export class App implements OmrHost, PlaybackHost {
     noteMap: Map<Chord, PuNoteElement>;
   } | null = null;
   private _puHighlightCompartment = new Compartment();
-  private _puProfileSwitchEl: HTMLElement | null = null;
-  private _puPrintBtnEl: HTMLButtonElement | null = null;
-  private _puSlideBtnEl: HTMLButtonElement | null = null;
+
   mixedXmlText: string | null = null;
   private _mixedPainter: MixedPainter | null = null;
-  private _mixedBtnEl: HTMLButtonElement | null = null;
-  private _jpPreviewBtnEl: HTMLButtonElement | null = null;
-  private _staffJianpuToggleEl: HTMLInputElement | null = null;
+  /** 排版模式切换（PPT / 简谱 / 五线谱 / 混排）的四个按钮，见 `ViewMode`。 */
+  private _viewBtns = new Map<ViewMode, HTMLButtonElement>();
+  private _viewSwitchEl: HTMLElement | null = null;
+  /** 有没有 MusicXML 底本——没有就排不出五线谱/混排，那两档置灰。 */
+  private _mixedAvailable = false;
   /** 简谱 OMR 的那一摊（识别、叠加核对、点选定位、输出格式）——见 editor/omrctl.ts。 */
   readonly omr: OmrController = new OmrController(this);
   /** 最近一次 xml 导入的序列化映射，供 OmrController 接管为它的点选映射。 */
@@ -110,6 +121,9 @@ export class App implements OmrHost, PlaybackHost {
     this.painter = new JinpuPainter(this.fontSize);
     this.painter.layout.options.smuflMeta = meta;
     this.scorePane = scorePane;
+    // 默认档是 PPT，构造出来的 painter 也要带上那一档的笔画常量
+    // （loadSettings 在没有持久化设置时会直接 return，不能指望它来灌）。
+    this._rebuildPainter();
   }
 
   /** 换字号要重建 painter（字号是 JinpuPainter 的构造参数），保留已排好的 Score。
@@ -129,7 +143,17 @@ export class App implements OmrHost, PlaybackHost {
     this.painter.layout.options.titleSize = this.titleSize;
     this.painter.layout.options.creditSize = this.creditSize;
     // 版面档的笔画常量最后灌，覆盖在上面那几个之上（契约同 applyBookStyle）
-    if (this.jpProfile === "pptx") applyPptxStyle(this.painter.layout.options);
+    const opt = this.painter.layout.options;
+    if (this.jpProfile === "pptx") {
+      applyPptxStyle(opt);
+    } else {
+      // **「简谱」档按原谱排一遍**（用户口径：「PPT 模式是把多段展开，简谱是原样展示」）。
+      // 多段歌词叠在同一条谱行下、反复不展开——传统圣诗本的排法，也是原书 500 首的排法。
+      // PPT 档相反：一段一遍、逐遍成页，投影时一屏一段。见 layout.ts::LayoutOptions.lyricStack。
+      opt.lyricStack = opt.lrcFont.size * JP_LYRIC_STACK_RATIO;
+      // 而且不分页：一张连续长纸，观感同文本谱的「原版」。见 LayoutOptions.continuousPage。
+      opt.continuousPage = true;
+    }
   }
 
   /** 简谱版面切换（原版 / PPT）。PPT 档 = 2026-08 排版重构之前的笔画观感，
@@ -138,7 +162,7 @@ export class App implements OmrHost, PlaybackHost {
     if (this.jpProfile === profile) return;
     this.jpProfile = profile;
     this._rebuildPainter(undefined, true);
-    this._syncProfileButtons();
+    this._syncViewModeButtons();
     this.saveSettings();
     if (this.docFormat !== "pu") this.reload(this.getText());
   }
@@ -293,7 +317,10 @@ export class App implements OmrHost, PlaybackHost {
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
     this._breakDesc = breakDesc; // 导出 PPTX 时另排一遍要用同一份分页描述
     try {
-      this.painter.resize(this.pageW, this.pageH, breakDesc);
+      // 简谱档不用 PPT 那张纸（见 JP_CONTINUOUS_WIDTH）；连续长纸的高度由内容定，
+      // 传进去的 pageH 只是个不参与分页的占位。
+      const pptx = this.jpProfile === "pptx";
+      this.painter.resize(pptx ? this.pageW : JP_CONTINUOUS_WIDTH, this.pageH, breakDesc);
     } catch (e) {
       console.error("layout failed", e);
       return false;
@@ -364,47 +391,21 @@ export class App implements OmrHost, PlaybackHost {
   setPuProfile(profile: PageProfileName): void {
     if (this.puProfile === profile) return;
     this.puProfile = profile;
-    this._syncProfileButtons();
+    this._syncViewModeButtons();
     this.saveSettings();
     if (this.docFormat === "pu") this.reload(this.getText());
   }
 
-  /** 注册「原版 / PPT」版面切换按钮。**两种谱共用这一对按钮**：文本谱时它切
-   *  `puProfile`（print/slide，换整套 metrics），简谱时切 `jpProfile`
-   *  （normal/pptx，只换笔画常量）。所以按钮不再随格式隐藏。 */
-  setProfileButtons(
-    switchEl: HTMLElement,
-    printBtn: HTMLButtonElement,
-    slideBtn: HTMLButtonElement,
-  ): void {
-    this._puProfileSwitchEl = switchEl;
-    this._puPrintBtnEl = printBtn;
-    this._puSlideBtnEl = slideBtn;
-    this._setPuControlsAvailable(true);
-  }
-
-  /** 当前档下点「原版」/「PPT」该做什么——按文档格式分派。 */
+  /** 当前档下切「PPT」/「简谱」该做什么——按文档格式分派：文本谱换整套 metrics
+   *  （print/slide），简谱只换笔画常量（normal/pptx）。 */
   setProfile(slide: boolean): void {
     if (this.docFormat === "pu") this.setPuProfile(slide ? "slide" : "print");
     else this.setJpProfile(slide ? "pptx" : "normal");
   }
 
-  private _setPuControlsAvailable(available: boolean): void {
-    // 混排模式下这对按钮无意义（那条路既不是简谱排版器也不是文本谱排版器）
-    if (this._puProfileSwitchEl) this._puProfileSwitchEl.hidden = !available;
-    this._syncProfileButtons();
-  }
-
-  private _syncProfileButtons(): void {
-    const slide = this.docFormat === "pu" ? this.puProfile === "slide" : this.jpProfile === "pptx";
-    for (const [btn, on] of [
-      [this._puPrintBtnEl, !slide],
-      [this._puSlideBtnEl, slide],
-    ] as const) {
-      if (!btn) continue;
-      btn.classList.toggle("active", on);
-      btn.setAttribute("aria-pressed", String(on));
-    }
+  /** 当前是不是 PPT 档（文本谱看 puProfile，简谱看 jpProfile）。 */
+  private _slideProfile(): boolean {
+    return this.docFormat === "pu" ? this.puProfile === "slide" : this.jpProfile === "pptx";
   }
 
   /** 当前文本谱的 AST（MusicXML 直出用；与排版器共用同一份对象）。 */
@@ -472,7 +473,7 @@ export class App implements OmrHost, PlaybackHost {
       this._puDoc = null;
       this._puScoreCache = null;
     }
-    this._setPuControlsAvailable(this.mode !== "mixed");
+    this._syncViewModeButtons();
     this._syncFormatLabel();
   }
 
@@ -517,6 +518,11 @@ export class App implements OmrHost, PlaybackHost {
     this.playback.stop(); // relayout invalidates chord objects / highlight
     this.selectedEl = null;
     this._renderPagesWith(this.painter.pageCount, (i) => this.painter.renderPage(i), {
+      // 连续长纸的宽高比逐页不同（CSS 里写死的 960/540 只对 PPT 那张纸成立）
+      aspectRatio: (i) => {
+        const { w, h } = this.painter.pageSize(i);
+        return `${w} / ${h}`;
+      },
       onPage: (svg, _wrap, i) => svg.addEventListener("click", (e) => this.onPageClick(i, svg, e)),
     });
   }
@@ -705,7 +711,7 @@ export class App implements OmrHost, PlaybackHost {
       }
 
       const score = loadMusicXml(xml);
-      this._setPreviewModeActive("jp");
+      this._syncViewModeButtons();
       this.filePath = null; // imported; save as new .jpwabc
       const { text, meta } = scoreToJpwabcWithMeta(score);
       this._lastImportMeta = meta; // 供 OmrController 接管为它的点选映射
@@ -873,40 +879,54 @@ export class App implements OmrHost, PlaybackHost {
     }
   }
 
-  /** Register the right-preview segmented control. */
-  setPreviewModeButtons(jp: HTMLButtonElement, mixed: HTMLButtonElement): void {
-    this._jpPreviewBtnEl = jp;
-    this._mixedBtnEl = mixed;
-    this._setMixedAvailable(false);
-    this._setPreviewModeActive("jp");
+  /** 注册「PPT / 简谱 / 五线谱 / 混排」四档排版模式按钮。
+   *
+   *  这四档是**两组正交状态的组合**，不是四个独立视图：
+   *  前两档走简谱/文本谱排版器（`mode = "jp"`），差别只在版面档（`setProfile`）；
+   *  后两档走混排排版器（`mode = "mixed"`），差别只在要不要叠简谱层
+   *  （`mixedShowJianpuLayer`——「五线谱」= 关，「混排」= 开）。 */
+  setViewModeButtons(switchEl: HTMLElement, btns: ReadonlyMap<ViewMode, HTMLButtonElement>): void {
+    this._viewSwitchEl = switchEl;
+    this._viewBtns = new Map(btns);
+    this._syncViewModeButtons();
   }
 
-  setStaffJianpuToggle(el: HTMLInputElement): void {
-    this._staffJianpuToggleEl = el;
-    el.checked = this.mixedShowJianpuLayer;
-    const label = el.closest<HTMLElement>(".staff-layer-toggle");
-    if (label) label.hidden = this.mode !== "mixed";
+  /** 当前处于哪一档。识别模式沿用「简谱那一侧」的档（工具条上它不是独立一档）。 */
+  get viewMode(): ViewMode {
+    if (this.mode === "mixed") return this.mixedShowJianpuLayer ? "mixed" : "staff";
+    return this._slideProfile() ? "ppt" : "jianpu";
+  }
+
+  /** 切档。**唯一入口**：两组状态该怎么配由这里说了算。 */
+  async setViewMode(mode: ViewMode): Promise<void> {
+    if (mode === "staff" || mode === "mixed") {
+      if (!this.mixedXmlText) return;
+      // 先定简谱层再进混排：setStaffJianpuLayer 会作废 painter，进去后只排一遍
+      await this.setStaffJianpuLayer(mode === "mixed");
+      await this.showStaffPreview();
+    } else {
+      // 反过来：先换版面档（此时 mode 还是 mixed，reload 直接返回、不白排一遍），再回简谱
+      this.setProfile(mode === "ppt");
+      await this.showJpPreview();
+    }
+    this._syncViewModeButtons();
   }
 
   private _setMixedAvailable(available: boolean): void {
-    const switchEl = this._mixedBtnEl?.closest<HTMLElement>(".preview-mode-switch");
-    if (switchEl) switchEl.hidden = !available;
-    if (this._mixedBtnEl) this._mixedBtnEl.disabled = !available;
-    if (!available) {
-      const label = this._staffJianpuToggleEl?.closest<HTMLElement>(".staff-layer-toggle");
-      if (label) label.hidden = true;
-    }
-    if (!available) this._setPreviewModeActive("jp");
+    this._mixedAvailable = available;
+    this._syncViewModeButtons();
   }
 
-  private _setPreviewModeActive(mode: "jp" | "mixed"): void {
-    const mixed = mode === "mixed";
-    this._jpPreviewBtnEl?.classList.toggle("active", !mixed);
-    this._mixedBtnEl?.classList.toggle("active", mixed);
-    this._jpPreviewBtnEl?.setAttribute("aria-pressed", String(!mixed));
-    this._mixedBtnEl?.setAttribute("aria-pressed", String(mixed));
-    const label = this._staffJianpuToggleEl?.closest<HTMLElement>(".staff-layer-toggle");
-    if (label) label.hidden = !mixed;
+  private _syncViewModeButtons(): void {
+    if (this._viewSwitchEl) this._viewSwitchEl.hidden = this._viewBtns.size === 0;
+    const active = this.viewMode;
+    for (const [mode, btn] of this._viewBtns) {
+      const needsXml = mode === "staff" || mode === "mixed";
+      btn.disabled = needsXml && !this._mixedAvailable;
+      const on = mode === active;
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-pressed", String(on));
+    }
   }
 
   // ---------------- OmrHost：识别控制器要的那几样能力 ----------------
@@ -956,7 +976,7 @@ export class App implements OmrHost, PlaybackHost {
 
   /** 预览模式切换的**唯一**入口：退出当前模式的副作用 + 进入新模式的副作用。
    *
-   *  以前这三连（`mode = …` / `_setMixedLayout` / `_setPreviewModeActive`）在五处各写一遍，
+   *  以前这三连（`mode = …` / `_setMixedLayout` / 按钮同步）在五处各写一遍，
    *  漏一处就出「按钮亮着但布局是另一个模式」。识别模式的那套布局由 OmrController 自己接管
    *  （omrctl.ts::setLayout），这里只管 mode 与混排布局。 */
   private _setMode(next: "jp" | "mixed" | "recognize"): void {
@@ -966,7 +986,7 @@ export class App implements OmrHost, PlaybackHost {
     this.mode = next;
     if (next === "mixed") this._setMixedLayout(true);
     // 识别模式沿用「简谱」这个预览档（工具条上它不是独立一档）。
-    this._setPreviewModeActive(next === "mixed" ? "mixed" : "jp");
+    this._syncViewModeButtons();
   }
 
   async showJpPreview(): Promise<void> {
@@ -995,7 +1015,6 @@ export class App implements OmrHost, PlaybackHost {
   async setStaffJianpuLayer(on: boolean): Promise<void> {
     if (this.mixedShowJianpuLayer === on) return;
     this.mixedShowJianpuLayer = on;
-    if (this._staffJianpuToggleEl) this._staffJianpuToggleEl.checked = on;
     this._mixedPainter = null;
     this.saveSettings();
     if (this.mode === "mixed") await this._renderMixedPages();

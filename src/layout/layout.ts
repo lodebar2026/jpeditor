@@ -351,15 +351,22 @@ export class JpOctaveDot extends GraphicPath {
 }
 
 export class JpNumber extends TextFrame {
+  /** 附点是画上去的矢量圆、不在文本里（见 `NoteEntry.addAugDots`），可横向间距还得
+   *  照原来那样给它留出位置——这里记的就是那几个 `·` 的 advance。 */
+  augDotAdvance = 0;
   constructor() {
     super();
     this.selectable = true;
+  }
+  override update(): void {
+    super.update();
+    this.width += this.augDotAdvance;
   }
   get left(): number {
     return this.measureText(0, 1) / 2;
   }
   get right(): number {
-    return this.measureText(0, 1) / 2 + this.measureText(1);
+    return this.measureText(0, 1) / 2 + this.measureText(1) + this.augDotAdvance;
   }
   /**
    * Anchor for decorations that must look centred on the digit: octave dots,
@@ -377,7 +384,7 @@ export class JpNumber extends TextFrame {
   }
   get numberPos(): number {
     let end = this.text.length;
-    if (this.text.endsWith("·")) end--;
+    if (this.text.endsWith("·")) end--; // 附点早已不写进文本了，留着这道兜底不碍事
     return this.measureText(0, end);
   }
   override get bound(): Rect {
@@ -940,8 +947,7 @@ export class NoteEntry extends Entry {
     }
     if (oct >= 0) return beamBottom;
     const above = Math.max(bnd.bottom, beamBottom);
-    const dotBnd = options.numberBound(".");
-    return above + options.jpStackGap + (-oct - 1) * options.jpDotRung + dotBnd.height;
+    return above + options.jpBelowGap + (-oct - 1) * options.jpLowDotRung + 2 * options.jpDotRadius;
   }
 
   static addAccidental(it: JpNumber, options: LayoutOptions, ch: S.Chord, ent: NoteEntry): void {
@@ -1002,7 +1008,7 @@ export class NoteEntry extends Entry {
         tf.y = inkBottom - 2 * r;
       } else {
         const above = Math.max(numBound.bottom, options.jpBeamBottom(ch.beams));
-        tf.y = above + options.jpStackGap + d * options.jpDotRung;
+        tf.y = above + options.jpBelowGap + d * options.jpLowDotRung;
       }
       ent.group.add(tf);
       ent.octaveDot.push(tf);
@@ -1165,6 +1171,41 @@ export class NoteEntry extends Entry {
       ent.notations.push(t);
     }
   }
+  /**
+   * 附点 —— **一个实心矢量圆**（三条简谱路统一，见 `jpglyph.ts`；八度点、反复点同理）。
+   * 大小默认照字体里那个 `·`（`jpAugDotRadius`），PPT 档把它与八度点设成同一个值。
+   *
+   * **advance 照旧留给附点**（`JpNumber.augDotAdvance`）：横向间距走 `JpNumber.right`，
+   * 把 `·` 从文本里摘掉而不补回它的 advance，带附点的音符就会与后一个音符贴到一起。
+   */
+  static addAugDots(num: JpNumber, opt: LayoutOptions, dots: number, ent: NoteEntry): void {
+    const font = opt.numberFont;
+    const adv = font.measureText("·");
+    const r = opt.jpAugDotRadius;
+    // 数字本身的 advance。**不能用 `num.width`**——此刻 `update()` 还没跑过，它还是 0。
+    const x0 = num.measureText(0, num.text.length);
+    // **横向落在「数字墨迹右缘 → 条目右缘」的正中**（用户口径：附点要与音符居中对齐）。
+    // 照 `·` 字形自己的位置摆不行：数字的 advance 比墨迹宽得多，宽出多少还因数字而异
+    // （Times 28pt：`1` advance 11.2 而墨迹只到 8.2，`5` advance 16.8、墨迹到 15.4），
+    // 于是 `1.` 的点比 `5.` 的点离数字远出 1.6pt，一眼看得出来。
+    const last = num.text[num.text.length - 1] ?? "0";
+    const nb = LayoutOptions.charBound(font, last);
+    const inkRight = num.measureText(0, num.text.length - 1) + nb.right;
+    // **纵向：圆心与数字墨迹的中心等高**（用户口径）。照 `·` 字形自己的墨迹中心摆也差不多，
+    // 但那是「跟着标点走」，数字一换字体就对不齐了——直接量数字。
+    const cy = (nb.top + nb.bottom) / 2;
+    const runW = adv * (dots - 1) + 2 * r;
+    const start = inkRight + (x0 + adv * dots - inkRight - runW) / 2;
+    for (let d = 0; d < dots; d++) {
+      const dot = new JpOctaveDot(r, opt.color);
+      dot.x = start + adv * d;
+      dot.y = cy - r;
+      ent.group.add(dot);
+    }
+    num.augDotAdvance = adv * dots;
+    num.update();
+  }
+
   static fromChord(res: Entry[], ch: S.Chord, lrc: number, options: LayoutOptions): void {
     let ent = new NoteEntry();
     ent.beams = ch.beams;
@@ -1176,9 +1217,7 @@ export class NoteEntry extends Entry {
     it.font = options.numberFont;
     ent.add(it);
     NoteEntry.addAccidental(it, options, ch, ent);
-    if (ch.beats <= 1) {
-      for (let d = 0; d < ch.dot; d++) it.text += "·";
-    }
+    if (ch.beats <= 1 && ch.dot > 0) NoteEntry.addAugDots(it, options, ch.dot, ent);
     NoteEntry.addGraceNotes(ch, options, ent, it);
     NoteEntry.octaveDot(ch, options, ent);
     NoteEntry.addLyric(ch, options, ent, it, lrc);
@@ -2481,6 +2520,21 @@ export class Line {
   private layoutVertically(lines: Line[], opt: LayoutOptions, height: number): Group[] {
     const top = opt.marginTop;
     const maxDist = opt.maxLineDist;
+    // **一张连续长纸**（`continuousPage`，「简谱」档走这条）：不分页、不为了撑满纸张
+    // 摊开行距，各行首尾相接、间距恒为 `maxLineDist`。纸有多高由内容说了算
+    // （`JinpuPainter.pageSize` 按这一页的实际高度报），观感与文本谱的「原版」一致。
+    if (opt.continuousPage) {
+      const one = new Group();
+      let y = top;
+      for (const l of lines) {
+        l.group.update();
+        one.add(l.group);
+        l.group.y = y;
+        y += l.group.height + maxDist;
+      }
+      one.update();
+      return [one];
+    }
     const dist = opt.staffDist;
     const res: Page[] = [];
     let bottomOfLastLine = 0;
@@ -3317,6 +3371,9 @@ export class LayoutOptions {
   /** 八度点（实心圆）的半径。0 = 按数字字体里 `.` 字形的**墨迹高**折半推算——
    *  纵向栅格是墨迹到墨迹量的（见《简谱纵向栅格》），取墨迹高才能与原来的字形等大。 */
   octaveDotRadius = 0;
+  /** 附点（实心圆）的半径。**0 = 与八度点同大**（`jpDotRadius`）。
+   *  附点一律是矢量圆、且圆心与数字墨迹的中心等高，见 `NoteEntry.addAugDots`。 */
+  augDotRadius = 0;
   /** 和弦排成**纯文本**（升降号不换 SMuFL 的 csym 字形、后缀不上标）。
    *  原书 500 首就是这么印的，成书重排由 `applyBookStyle` 打开；
    *  编辑器 / 五线谱 / 文本谱三路维持富文本排法。见 layout/harmony.ts。 */
@@ -3347,6 +3404,10 @@ export class LayoutOptions {
    *  只在「无反复、纯多段」（PlayData.isSimpple）的曲子上生效——有反复房号的谱
    *  每一遍的谱面本来就不同，叠不到一起。 */
   lyricStack = 0;
+  /** **一张连续长纸**：不按纸张高度分页，所有谱行首尾相接排成一页（高度由内容定）。
+   *  「简谱」档走它——那一档是「原样展示」，与文本谱的「原版」同一种观感；
+   *  PPT 档仍按 16:9 的纸分页。见 `Line.layoutVertically` 与 `JinpuPainter.resize`。 */
+  continuousPage = false;
   /** 歌词标点挤压的档（见 common/cjkpunct.ts::CompressMode）。
    *
    *  默认 `halfwidth`：**简谱歌词的标点不占音符格**，原书印的就是压缩形。
@@ -3427,6 +3488,17 @@ export class LayoutOptions {
    * digit, more so once the stroke widened to musicpp's 1.5. */
   jpBeamTop!: number;
   jpBeamWidth = 1.5; // musicpp lineWidths.jpBeam (pptutil.cpp:138)
+  /**
+   * 数字 ↓ 减时线 ↓ 低音点 这条**向下**阶梯的墨迹净距（用户口径：「音符、减时线、
+   * 低音点之间的距离要相等、均匀排布」）。
+   *
+   * 为什么不跟上方共用 `jpStackGap`：上方那一格要给弧/三连音括线留手，量出来是 1/6 em；
+   * 下方三样是紧挨着排的一摞，1/6 em 会把低音点推得离减时线明显比减时线离数字远
+   * （实测 3.9 : 4.7，因为减时线原来是按**线心**摆在 `jpStackGap` 上、而低音点是按**墨迹**
+   * 摆在减时线墨迹之下，两处口径不一致）。这里取 PPT 档实测的那个距离（≈ 1/9 em，
+   * 那一档是 2.9 / 3.0），并且两处都按墨迹算，看着才是均匀的一摞。
+   */
+  jpBelowGap!: number;
 
   /** `jpStaffTop` / `jpStaffBottom` 的覆写（0 = 按字号推算，见那两个 getter）。
    *  PPT 档要回到本项目原来的 −23/28 em 与 +5/28 em。 */
@@ -3453,6 +3525,11 @@ export class LayoutOptions {
    * steps up. */
   get jpDotRung(): number {
     return this.jpStackGap + this.numberBound(".").height;
+  }
+
+  /** 低音点那一摞的步距：一个点加它上面那道空（口径同 `jpDotRung`，只是用向下那个 gap）。 */
+  get jpLowDotRung(): number {
+    return this.jpBelowGap + 2 * this.jpDotRadius;
   }
 
   /** Bottom edge of the lowest of `n` beams, or the digit baseline if n = 0.
@@ -3482,7 +3559,9 @@ export class LayoutOptions {
     this.maxLineDist = fontSize * 0.75;
     this.jpBeamDist = fontSize / 8;
     this.jpStackGap = fontSize / 6;
-    this.jpBeamTop = fontSize / 6; // musicpp 35 − baseline 30, at jianpuFont 30
+    this.jpBelowGap = fontSize / 9;
+    // 减时线按**墨迹上缘**离数字 `jpBelowGap`（字段本身记的是线心，故加半个线宽）
+    this.jpBeamTop = this.jpBelowGap + this.jpBeamWidth / 2;
   }
 
   get lrcSize(): number {
@@ -3503,6 +3582,12 @@ export class LayoutOptions {
     if (this.octaveDotRadius > 0) return this.octaveDotRadius;
     const b = this.numberBound(".");
     return (b.bottom - b.top) / 2;
+  }
+
+  /** 附点的实际半径。0 = **与八度点同大**（用户口径：三种点一个大小）。
+   *  别拿 `·` 字形的墨迹高折半——那是 ⌀4.06 @28pt，比八度点的 ⌀3.44 明显胖一圈。 */
+  get jpAugDotRadius(): number {
+    return this.augDotRadius > 0 ? this.augDotRadius : this.jpDotRadius;
   }
 
   /** Tight glyph box of a jianpu number/dot. Was measured on `lrcFont`, which
@@ -3705,7 +3790,9 @@ export class Layout {
   }
 
   titleAndPageNumber(title: string, width: number, height: number, cw: number): void {
-    if (this.options.pageFurniture === "none") {
+    // 连续长纸只有一页，页眉页脚（曲名 + 「第 i/n 页」）无从谈起——标题由
+    // `JinpuPainter` 排在纸顶（`titleBlock`）。
+    if (this.options.continuousPage || this.options.pageFurniture === "none") {
       // 成书：页眉页脚由整本那一层按书页码统一加，这里印「第 i/n 页」只会打架
       for (const pg of this.pages) pg.x += this.options.marginLeft;
       return;

@@ -30,6 +30,10 @@ export interface JpwMeta {
   authorRanges: Array<{ text: string; range: JpwRange }>; // WordsByAndMusicBy 里每个作者条目
 }
 
+/** 乐句排版时一页排几行。`balanceVoicePages` 按它分页，`computePhraseBreaks` 按它把末页排满
+ *  （`PhraseOptions.pageLines`）——**两处必须是同一个数**，否则 DP 凑满的那一页排版器不认。 */
+const PAGE_LINES = 4;
+
 /** 行内相对记录（line=最终 this.lines 下标，col=行内偏移），最后统一换算成绝对偏移。 */
 interface Rec {
   line: number;
@@ -193,7 +197,7 @@ class JpScore {
   fromMusicXml(scr: Score): void {
     this.lines.push("// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************");
     this.makeMetaData(scr);
-    this._breaks = this.phrase ? computePhraseBreaks(scr.parts[0]) : null;
+    this._breaks = this.phrase ? computePhraseBreaks(scr.parts[0], { pageLines: PAGE_LINES }) : null;
     this.makeVoiceData(scr.parts[0]);
     this.makeWordData(scr.parts[0]);
     this.makeRepeatData(scr);
@@ -320,26 +324,38 @@ class JpScore {
     }
   }
 
-  // 乐句排版：按实际乐句行数重排每页换页标记（每页至多 4 行；末页仅剩 1 行的 4+1
+  // 乐句排版：按实际乐句行数重排每页换页标记（每页至多 PAGE_LINES 行；末页仅剩 1 行的 4+1
   // 情形把最后一个换页上移一行 → 3+2）。voiceStart = .Voice 首行在 this.lines 的下标。
   private balanceVoicePages(voiceStart: number): void {
     const R = this.lines.length - voiceStart;
     if (R <= 0) return;
     const pageAt = new Set<number>(); // 1 基乐句行号：其行尾为换页
-    // 主歌 / 副歌各自成段（_pageLines 记的是段末行号），段内再按每页至多 4 行分。
+    // 主歌 / 副歌各自成段（_pageLines 记的是段末行号），段内再按每页至多 PAGE_LINES 行分。
     const rawBounds = [0, ...[...this._pageLines].filter((n) => n > 0 && n < R).sort((a, b) => a - b), R];
     // 只有 1 行的段（如前奏 Intro）单独占一页太空 → 并入下一段（丢掉它的段界）。
-    const bounds = [rawBounds[0]];
+    const merged = [rawBounds[0]];
     for (let i = 1; i < rawBounds.length; i++) {
-      if (i < rawBounds.length - 1 && rawBounds[i] - bounds[bounds.length - 1] < 2) continue;
-      bounds.push(rawBounds[i]);
+      if (i < rawBounds.length - 1 && rawBounds[i] - merged[merged.length - 1] < 2) continue;
+      merged.push(rawBounds[i]);
     }
+    // **段界换页是「放不下才换」，不是逢段必换**（用户口径：「主歌和副歌无法在一页内排下时
+    // 才在副歌前换页」）。006《颂赞归与耶稣圣名》主歌 2 行 + 副歌 2 行正好一页，逢段必换
+    // 会把一遍拆成两页各 2 行；005《荣耀归与天父》主歌 4 行 + 副歌 4 行放不下，那才该换。
+    // 相邻的段能凑进同一页就并成一组，组界才是换页处。
+    const bounds = [merged[0]];
+    for (let i = 1; i < merged.length; i++) {
+      const start = bounds[bounds.length - 1];
+      // 把第 i 段也并进当前组就超出一页了 → 当前组到上一段末为止，本段另起一组。
+      if (merged[i] - start > PAGE_LINES && merged[i - 1] > start) bounds.push(merged[i - 1]);
+    }
+    const last = merged[merged.length - 1];
+    if (bounds[bounds.length - 1] !== last) bounds.push(last);
     for (let s = 0; s + 1 < bounds.length; s++) {
       const beg = bounds[s];
       const len = bounds[s + 1] - beg;
-      for (let p = 4; p <= len - 1; p += 4) pageAt.add(beg + p);
+      for (let p = PAGE_LINES; p <= len - 1; p += PAGE_LINES) pageAt.add(beg + p);
       pageAt.add(beg + len); // 段末收尾（分隔主歌/副歌、反复段）
-      if (len % 4 === 1 && len >= 5) {
+      if (len % PAGE_LINES === 1 && len >= PAGE_LINES + 1) {
         pageAt.delete(beg + len - 1);
         pageAt.add(beg + len - 2);
       }
@@ -365,7 +381,7 @@ class JpScore {
     // 换行：乐句模式每 4 行自动换页（一页不超过 4 行）；否则沿用源换页标记。
     const pushBreak = (sourcePage: boolean): void => {
       lineNo++;
-      const page = breaks ? lineNo % 4 === 0 : sourcePage;
+      const page = breaks ? lineNo % PAGE_LINES === 0 : sourcePage;
       l += page ? "$(true,0,0,true)" : "$(true)";
       this.lines.push(l);
       l = "";

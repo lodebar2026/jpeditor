@@ -250,21 +250,15 @@
           </div>
           <div id="code-pane"></div>
         </section>
-        <section id="score-pane-shell" class="workspace-pane" aria-label="排版预览">
+        <section id="score-pane-shell" class="workspace-pane" aria-label="排版">
           <div class="pane-heading">
-            <span>排版预览</span>
+            <span>排版</span>
             <div class="pane-heading-actions">
-              <label id="staff-jianpu-toggle" class="staff-layer-toggle" hidden>
-                <input id="chk-staff-jianpu" type="checkbox" checked />
-                <span>显示简谱层</span>
-              </label>
-              <div id="preview-mode-switch" class="preview-mode-switch" aria-label="乐谱预览模式" hidden>
-                <button id="btn-preview-jp" class="active" aria-pressed="true">简谱</button>
-                <button id="btn-preview-staff" aria-pressed="false">五线谱</button>
-              </div>
-              <div id="pu-profile-switch" class="preview-mode-switch" aria-label="文本谱版面" hidden>
-                <button id="btn-pu-print" class="active" aria-pressed="true" title="按文本谱原本的排版规则显示">原版</button>
-                <button id="btn-pu-slide" aria-pressed="false" title="投影用的宽屏版面">PPT</button>
+              <div id="view-mode-switch" class="preview-mode-switch" aria-label="排版模式">
+                <button id="btn-view-ppt" class="active" aria-pressed="true" title="投影用的 PPT 版面">PPT</button>
+                <button id="btn-view-jianpu" aria-pressed="false" title="简谱原版版面">简谱</button>
+                <button id="btn-view-staff" aria-pressed="false" title="五线谱（需有 MusicXML 底本）">五线谱</button>
+                <button id="btn-view-mixed" aria-pressed="false" title="五线谱叠加简谱层（需有 MusicXML 底本）">混排</button>
               </div>
             </div>
           </div>
