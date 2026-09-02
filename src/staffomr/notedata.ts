@@ -295,6 +295,12 @@ export function findBeams(pg: SPage): BeamShape[] {
       out.push(beamFromPts(pts));
     }
   }
+  // **斜符杠是一叠平行细线**（这一批 PDF 连填充也拿密排细线画，见 `model.ts` 的 `Seg` 注释）。
+  // 平的那种叠出来还能并成一条横段（下面那条路收得到）；斜的每条 y 都不同，
+  // `Seg` 的 `isH`/`isV` 两头不沾，整条符杠没人认——实测 p185~p204 那一带
+  // 「八分音符读成四分」，一首歌能错六成的时值。
+  out.push(...slantedBeams(pg, sp));
+
   // 密排细线画出来的符杠
   for (const s of pg.segs) {
     if (!s.isH || s.hasAnyTag()) continue;
@@ -317,6 +323,71 @@ function dedupeBeams(list: BeamShape[], unit: number): BeamShape[] {
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(b);
+  }
+  return out;
+}
+
+/**
+ * 一叠平行斜细线 → 一条符杠。
+ *
+ * 判据是「同起讫 x、同斜率、y 一层层错开」——这正是填充算法吐出来的样子。
+ * 只收**斜的**：平的那种由横段那条路收，两头都收会把同一条符杠算两遍，
+ * 层数跟着翻倍（时值减半）。
+ */
+function slantedBeams(pg: SPage, sp: number): BeamShape[] {
+  const out: BeamShape[] = [];
+  for (const o of pg.objs) {
+    const p = o.path;
+    if (!p || p.curves) continue;
+    const groups = new Map<string, { a: { x: number; y: number }; b: { x: number; y: number } }[]>();
+    for (const spath of subPaths(p)) {
+      if (spath.pts.length !== 2) continue;
+      let [a, b] = spath.pts;
+      if (a.x > b.x) [a, b] = [b, a];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      // 太短的不是符杠；水平的走横段那条路；比 45° 还陡的不是符杠
+      if (dx < sp * 0.8) continue;
+      if (Math.abs(dy) < 0.02) continue;
+      if (Math.abs(dy) >= dx) continue;
+      const q = Math.max(sp / 8, 1e-3);
+      const k = [a.x, b.x, dy / dx].map((v) => Math.round(v / q)).join(",");
+      const g = groups.get(k) ?? [];
+      g.push({ a, b });
+      groups.set(k, g);
+    }
+    for (const g of groups.values()) {
+      g.sort((m, n) => m.a.y - n.a.y);
+      let run: typeof g = [];
+      const flush = () => {
+        // 一条细线不成束（那是渐强线之类）；厚度要落在符杠的范围里
+        if (run.length >= 3) {
+          const th = run[run.length - 1].a.y - run[0].a.y;
+          if (th >= sp * 0.2 && th <= sp * 1.2) {
+            const x0 = run[0].a.x;
+            const x1 = run[0].b.x;
+            const y0 = (run[0].a.y + run[run.length - 1].a.y) / 2;
+            const y1 = (run[0].b.y + run[run.length - 1].b.y) / 2;
+            out.push({
+              box: {
+                left: x0,
+                right: x1,
+                top: Math.min(run[0].a.y, run[0].b.y),
+                bottom: Math.max(run[run.length - 1].a.y, run[run.length - 1].b.y),
+              },
+              x0, y0, x1, y1, level: 0,
+            });
+          }
+        }
+        run = [];
+      };
+      for (const l of g) {
+        // 一层层错开的才是同一条符杠；隔开半格的是另一条（第二、第三条符杠）
+        if (run.length && l.a.y - run[run.length - 1].a.y > sp * 0.3) flush();
+        run.push(l);
+      }
+      flush();
+    }
   }
   return out;
 }
