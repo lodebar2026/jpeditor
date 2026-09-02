@@ -381,8 +381,11 @@ function glyphStaves(pg: SPage): Staff[] {
 /** `Page::findNoteheads`：给每个符头/休止找它属于哪一行谱。 */
 export function findNoteheads(pg: SPage): boolean {
   if (!pg.staves.length) return false;
-  // 加线候选：长度在**一到三个线距**之间的横段。
-  // 不加这道门槛，吉他和弦图的格线（本书每首歌上方都有一排）会被当成加线，
+  // 加线候选：长度**下限**一个线距、上限六个。上限只是粗筛，真正的判据在
+  // `findLegers` 里按**符头宽**量——加线是给符头垫的，不会比符头宽出几倍。
+  // 早先上限写死三个线距，全音符（符头有两个线距宽、加线也跟着长）的加线全被筛掉，
+  // 于是 Opus 那一路谱表外的全音符整批丢掉（实测 p665 谱行0 整小节空着）。
+  // 门槛本身不能去掉：吉他和弦图的格线（本书每首歌上方都有一排）会被当成加线，
   // 把图里的黑点收成谱表上方的高音符头——实测 038 首因此多出十几个 E5/C5。
   const space = pg.normalStaffSpace || pg.space;
   // **Anastasia 的加线也是字形**（同谱线、符干、小节线），路径里一条都没有。
@@ -390,7 +393,7 @@ export function findNoteheads(pg: SPage): boolean {
   // ——实测那 115 页下加一线上下的 C4/B3 整批丢掉（一首歌漏十来个音）。
   // 只在本函数内部用，不推进 `pg.segs`：加线对后面几步（符干/符杠/小节线）没有意义。
   const hlines = [
-    ...pg.segs.filter((s) => s.isH && !s.hasAnyTag() && s.len >= space * 0.8 && s.len <= space * 3),
+    ...pg.segs.filter((s) => s.isH && !s.hasAnyTag() && s.len >= space * 0.8 && s.len <= space * 6),
     ...glyphLegers(pg),
   ];
   for (const s of pg.symbols) {
@@ -464,6 +467,9 @@ export function findLegers(nt: Sym, stf: Staff, lines: Seg[]): boolean {
     // 加线要**横跨**符头（musicpp 只比左端点，那是因为它的加线对象与符头同起点；
     // 本书的加线两端都伸出符头，只比左端会把附近别的短横线也算进来）
     if (nt.px < l.left || nt.px > l.right) continue;
+    // 加线按**符头宽**量：黑符头一格出头、全音符两格，加线各自跟着长。
+    // 按线距写死一个上限，全音符那一档就整批落选。
+    if (l.len > (nt.box.right - nt.box.left) * 3) continue;
     if (between(l.cy, y1, y2)) poss.push(l);
   }
   // **整数除**：musicpp 是 `abs(step)/2-2`，C++ 的整数除法让 |step| ≤ 5 时 need ≤ 0
