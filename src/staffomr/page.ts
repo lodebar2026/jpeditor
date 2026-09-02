@@ -385,7 +385,14 @@ export function findNoteheads(pg: SPage): boolean {
   // 不加这道门槛，吉他和弦图的格线（本书每首歌上方都有一排）会被当成加线，
   // 把图里的黑点收成谱表上方的高音符头——实测 038 首因此多出十几个 E5/C5。
   const space = pg.normalStaffSpace || pg.space;
-  const hlines = pg.segs.filter((s) => s.isH && !s.hasAnyTag() && s.len >= space * 0.8 && s.len <= space * 3);
+  // **Anastasia 的加线也是字形**（同谱线、符干、小节线），路径里一条都没有。
+  // 不把它们一并当成横段，谱表外的符头就永远没有加线撑着，`findLegers` 一律判否
+  // ——实测那 115 页下加一线上下的 C4/B3 整批丢掉（一首歌漏十来个音）。
+  // 只在本函数内部用，不推进 `pg.segs`：加线对后面几步（符干/符杠/小节线）没有意义。
+  const hlines = [
+    ...pg.segs.filter((s) => s.isH && !s.hasAnyTag() && s.len >= space * 0.8 && s.len <= space * 3),
+    ...glyphLegers(pg),
+  ];
   for (const s of pg.symbols) {
     if (!isNoteHead(s.code)) continue;
     findStaffForNote(pg, s, hlines);
@@ -510,6 +517,16 @@ export function findStems(pg: SPage): void {
       l.addTag("Stem");
     }
   }
+}
+
+/** `legerLine` 字形 → 横段（Anastasia 一路）。一个字形就是一条加线，不必拼。 */
+function glyphLegers(pg: SPage): Seg[] {
+  return pg.symbols
+    .filter((s) => s.code === "legerLine")
+    .map((s) => {
+      const y = (s.box.top + s.box.bottom) / 2;
+      return new Seg(s.parent, s.box.left, y, s.box.right, y, Math.max(s.box.bottom - s.box.top, 0.3));
+    });
 }
 
 /** `stem` 字形 → 竖段：按 x 归列，列内纵向相接的一串并成一条。 */
