@@ -579,7 +579,7 @@ export function xmlStaffTypes(musicxml) {
   for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
     const seg = m[0];
     if (/<grace\s*\/?>/.test(seg)) continue;
-    const t = /<type>([a-z\-]+)<\/type>/.exec(seg)?.[1] ?? "?";
+    const t = /<type>([a-z0-9\-]+)<\/type>/.exec(seg)?.[1] ?? "?";
     const dots = (seg.match(/<dot\s*\/?>/g) || []).length;
     out.push(t + ".".repeat(dots));
   }
