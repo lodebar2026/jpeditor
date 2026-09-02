@@ -680,6 +680,34 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   /** 导入 MusicXML/OMR 得到的默认（原始排版）文本：缓存以便乐句排版无损切回，并启用切换按钮。 */
+  /**
+   * 五线谱识别产物落地：MusicXML → 混排视图（`OmrHost.adoptStaffXml`）。
+   *
+   * 与 `importBytes` 的 `.musicxml` 分支的差别：那条对单声部会转成简谱 Score
+   * （`loadMusicXml` → `scoreToJpwabc`），而五线谱识别的产物带和弦、多声部、slur，
+   * `.jpwabc`/Score 装不下——单声部时它直接抛 `measure has no chord`。
+   * 这里**一律进混排**，编辑器文本那份只做 best-effort（转不出来就留空，不影响预览）。
+   */
+  adoptStaffXml(xml: string): boolean {
+    this._setDocFormat("jpwabc");
+    this.mixedXmlText = xml;
+    this._mixedPainter = null;
+    this._setMixedAvailable(true);
+    this._setMode("mixed");
+    this.filePath = null;
+    let jpOk = true;
+    try {
+      this._applyImportedJp(scoreToJpwabc(loadMusicXml(xml)));
+    } catch (e) {
+      // 简谱转换失败不影响混排预览——五线谱本来就未必装得进简谱。
+      // **不动编辑器里的文本**（那可能是用户没存的稿子），只把这件事回报给调用方。
+      jpOk = false;
+      console.warn("五线谱 → 简谱文本转换失败（不影响混排预览）", e);
+    }
+    void this._renderMixedPages();
+    return jpOk;
+  }
+
   private _applyImportedJp(text: string): void {
     this._origLayoutText = text;
     this._phraseOn = false;

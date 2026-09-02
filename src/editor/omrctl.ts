@@ -17,6 +17,12 @@ import type { Binary, RecognizedScore } from "../omr";
 import type { JpwMeta } from "../score/jpscore";
 import { showConfirmDialog } from "./dialogs";
 
+/** 是否 PDF 字节（mime 或 `%PDF-` 魔数）。与 `omr/decode.ts` 里那份同判据。 */
+function isPdfBytes(bytes: Uint8Array, mime?: string): boolean {
+  if (mime === "application/pdf") return true;
+  return bytes.length >= 5 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+}
+
 /** OmrController 向编辑器要的全部能力。 */
 export interface OmrHost {
   /** 当前预览模式。识别模式期间为 "recognize"。 */
@@ -35,6 +41,14 @@ export interface OmrHost {
   reload(text: string): void;
   /** 走 MusicXML/jpwabc 导入路径落地产物。 */
   importBytes(bytes: Uint8Array, name: string): void;
+  /**
+   * 五线谱识别产物落地：MusicXML → **混排视图**。
+   *
+   * 不能走 `importBytes`：那条路对单声部 MusicXML 会转成简谱 Score，
+   * 而五线谱的和弦、多声部、slur 在 `.jpwabc`/Score 里装不下
+   * （单声部时它直接抛 `measure has no chord`）。
+   */
+  adoptStaffXml(xml: string): boolean;
 
   /** 清空 #score-pane 与翻页状态（各预览铺页前都要做）。 */
   clearPages(): void;
@@ -169,6 +183,9 @@ export class OmrController {
     this.host.setStatus("识别中…可能需要几十秒");
     try {
       const t0 = performance.now();
+      // **文字层完整的五线谱 PDF** 走另一条路（src/staffomr/）：不栅格化、直接读文字与矢量，
+      // 出 MusicXML。判据见 staffomr/browser.ts::isStaffPdf。
+      if (isPdfBytes(picked.bytes, picked.mime) && (await this.tryStaffPdf(picked.bytes, t0))) return true;
       const { bin, score } = await recognizeMusicppDetailed(picked.bytes, picked.mime);
       this.emit(score, bin);
       if (this.host.mode !== "recognize") await this.toggle(); // 识别后默认进叠加核对（本仓库「先核对」取向）
@@ -179,6 +196,42 @@ export class OmrController {
       this.host.setStatus("识别失败：" + (e instanceof Error ? e.message : String(e)));
       return false;
     }
+  }
+
+  /**
+   * 五线谱 PDF 那条路：识别 → MusicXML → 走导入路径落地。
+   *
+   * 与简谱那条路的分工写在 `staffomr/browser.ts` 开头。识别不出谱表就返回 false，
+   * 让调用方继续走简谱那条（该 PDF 多半是扫描件或简谱）。
+   */
+  private async tryStaffPdf(bytes: Uint8Array, t0: number): Promise<boolean> {
+    const { openStaffPdf, isStaffPdf, recognizeStaffPdf } = await import("../staffomr/browser");
+    let ok = false;
+    try {
+      const { pdf, OPS } = await openStaffPdf(bytes);
+      ok = await isStaffPdf(pdf, OPS);
+      pdf.destroy?.();
+    } catch {
+      return false;
+    }
+    if (!ok) return false;
+    const res = await recognizeStaffPdf(bytes, {
+      onProgress: (done, total) => this.host.setStatus(`五线谱识别中… ${done}/${total} 页`),
+    });
+    if (!res.notes) {
+      this.host.setStatus("这份 PDF 里没找到五线谱");
+      return false;
+    }
+    // 五线谱只出 MusicXML，且只进混排视图（理由见 OmrHost.adoptStaffXml）。
+    this.clear();
+    const jpOk = this.host.adoptStaffXml(res.musicxml);
+    this.host.setStatus(
+      `五线谱识别完成（${((performance.now() - t0) / 1000).toFixed(1)}s）：` +
+        `${res.pages} 页 / ${res.parts} 个声部 / ${res.notes} 个音符` +
+        (res.skipped ? `，${res.skipped} 页无谱表已跳过` : "") +
+        (jpOk ? "" : "；简谱文本未变——五线谱装不进 .jpwabc，请从「导出 → MusicXML」取产物"),
+    );
+    return true;
   }
 
   /**

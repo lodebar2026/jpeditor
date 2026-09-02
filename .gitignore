@@ -22,6 +22,7 @@ pdf-pages.csv
 pdf-pages/
 pdf-layout.json
 pdf-out/
+staff-out/
 
 # OMR 测试数据（本地保留，不入库）
 testdata/*
@@ -36,6 +37,10 @@ testdata/500/*
 # 期望值不是语料——那十几首是逐首核对过、认可了的排法，丢了就没法验「有没有排回去」。
 !testdata/500/line-snapshots.json
 !testdata/500/phrase-snapshots.json
+# 例外：五线谱对拍的基线（staff-diff.mjs 的门槛值）。同上，是测试的期望值不是语料。
+!testdata/赞美之泉/
+testdata/赞美之泉/*
+!testdata/赞美之泉/staff-baseline.json
 
 # pdf.js 位图解码器 wasm：来自 pdfjs-dist 包，构建时从 node_modules 拷入（见 vite.config.ts），不入库
 public/redist/pdfjs
