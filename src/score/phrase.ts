@@ -326,6 +326,12 @@ export interface PhraseOptions {
    *  **`targetMeas` 由容量折算时要反过来调小**（成书那条路 0.25）：目标行长已经就是版心宽，
    *  行长代价再重就会压过「断在乐句收尾处」，把行末从标点上挪走（实测全书行末收标点 94% → 81%）。 */
   lenWeight?: number;
+  /** **一页排几行**（0 = 不管分页；编辑器/PPT 那条路传 4，与 `jpscore.ts::balanceVoicePages`
+   *  同一个数）。给了就在第一遍 DP 之后补一道「把末页排满」：整首排下来若剩个半空的页
+   *  （001《圣哉，圣哉，圣哉》16 小节排成 4+6+6 三行，而版面装得下 4 行），就照
+   *  「行数凑满整页」再排一遍，每行仍不许太稀（`MIN_MEAS` / `MIN_CELLS` 满足其一）。
+   *  凑不出合规的方案就维持原判——5 行的曲子不会为了凑 8 行被切碎。 */
+  pageLines?: number;
 }
 
 /**
@@ -364,6 +370,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const REPEAT_LEN_BONUS = opts.repeatLenBonus ?? false;
   const BREAK_WEIGHT = opts.breakWeight ?? 1;
   const LAST_PAIR_WEIGHT = opts.lastPairWeight ?? 1;
+  const PAGE_LINES = opts.pageLines ?? 0;
   const EVEN_WEIGHT = opts.evenWeight ?? 0;
   const TAIL_WEIGHT = opts.tailWeight ?? 0;
   const CELLS_ARE_ITEMS = opts.cellsAreItems ?? false;
@@ -1456,6 +1463,48 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
 
   // 第一遍：contentOnly 下 `lenW = 0`，纯按内容断，行数自然涌现（作为下面候选方案的底）。
   let { nextB } = runDP(() => TARGET_MEAS, CONTENT_ONLY ? 0 : LEN_WEIGHT);
+
+  // **把末页排满**（`pageLines > 0` 时，即编辑器/PPT 那条路）。
+  //
+  // 第一遍只按「行长目标 + 断点强度」算，看不见纸：001《圣哉，圣哉，圣哉》16 小节排成
+  // 4+6+6 三行（行长代价 8，但少断一次正好省回 8 分，默认权重下打平），而一页装得下 4 行
+  // ——投影时白空掉四分之一页，两条 6 小节的行还挤。**要么排满，要么不动**：
+  // 行数凑到 `pageLines` 的倍数再排一遍，凑出来的每行仍得够厚实，否则维持原判
+  //（5 行的曲子若为了凑 8 行把每行切到 2 小节，那是切碎不是排满）。
+  //
+  // 用 `LEN_WEIGHT * 4` 重排的道理同下面 `tryWant` 的那段注释：行长权重是 1 的时候
+  // 断点代价一压就把行数拉回去，要几行就得把行长项加重到真排得出来为止。
+  if (PAGE_LINES > 0) {
+    const base = linesPerSeg(nextB);
+    const total = base.reduce((x, y) => x + y, 0);
+    const want = Math.ceil(total / PAGE_LINES) * PAGE_LINES;
+    if (total > 0 && want > total) {
+      // 缺的行加给「平均行最长」的那一段（那一段最经得起再切一刀）。
+      const plan = base.slice();
+      const spanOf = (i: number) => ends[cuts[i + 1]] - ends[cuts[i]];
+      for (let d = want - total; d > 0; d--) {
+        let bi = 0;
+        for (let i = 1; i < plan.length; i++)
+          if (spanOf(i) / plan[i] > spanOf(bi) / plan[bi]) bi = i;
+        plan[bi]++;
+      }
+      const alt = runDP((sIdx) => {
+        const span = ends[cuts[sIdx]] - ends[cuts[sIdx - 1]];
+        const k = plan[sIdx - 1];
+        return k > 0 ? span / k : TARGET_MEAS;
+      }, LEN_WEIGHT * 4).nextB;
+      const got = linesPerSeg(alt);
+      // 真排出了想要的行数、且每一行都还够厚实（口径同 DP 里那条「只有段末行可短」的下限）
+      let ok = got.reduce((x, y) => x + y, 0) === want;
+      for (let a = 0; ok && a < M; ) {
+        const b = alt[a];
+        if (b <= a) { ok = false; break; }
+        if (ends[b] - ends[a] < MIN_MEAS && cellsBetween(a, b) < MIN_CELLS) ok = false;
+        a = b;
+      }
+      if (ok) nextB = alt;
+    }
+  }
   // **出几种方案再评分选优**（`evenWeight > 0` 时）。
   //
   // 第一遍只保证「每行都放得下」，于是一段顶着版心、另一段只有半幅——051《赞美我主君王》

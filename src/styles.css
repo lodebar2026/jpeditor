@@ -242,17 +242,6 @@ button:focus-visible, select:focus-visible {
 .preview-mode-switch button:hover { color: var(--text); }
 .preview-mode-switch button.active { background: var(--panel-hover); color: var(--text); }
 .preview-mode-switch button:disabled { color: #555; cursor: not-allowed; }
-.staff-layer-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 650;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.staff-layer-toggle input { width: 13px; height: 13px; margin: 0; accent-color: var(--green); }
 #code-pane { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--panel); }
 
 /* Five-line staff preview is rendered from MusicXML; keep source visible but read-only. */
@@ -655,7 +644,6 @@ button:focus-visible, select:focus-visible {
   .start-heading h1 { font-size: 26px; }
   .start-mode { min-height: 132px; padding: 18px; }
   .start-footer { align-items: flex-start; flex-direction: column; }
-  .staff-layer-toggle span { display: none; }
 }
 
 /* ---- .jpwabc syntax highlight classes (ported from editor.css) ---- */

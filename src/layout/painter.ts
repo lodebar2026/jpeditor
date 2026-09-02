@@ -27,6 +27,8 @@ export class JinpuPainter implements PagePainter {
   /** Chord -> its note-entry groups (one per rendered verse/pass), for playback cursor. */
   private chordItem = new Map<Chord, { page: number; item: PageItem; verse: number }[]>();
   private highlighted: PageItem | null = null;
+  /** 逐页高度。空 = 各页同高（`pageHeight`）；连续长纸那一档按内容逐页给。 */
+  private pageHeights: number[] = [];
 
   constructor(fontSize: number) {
     this.layout = new Layout(fontSize);
@@ -35,10 +37,34 @@ export class JinpuPainter implements PagePainter {
   resize(w: number, h: number, dur: string | null): void {
     this.pageWidth = w;
     this.pageHeight = h;
+    this.pageHeights = [];
     this.layout.fromScore(this.score, dur, w, h);
-    this.layout.pages.unshift(this.titlePage(w, h));
+    if (this.layout.options.continuousPage) this.stackContinuous(w);
+    else this.layout.pages.unshift(this.titlePage(w, h));
     for (const p of this.layout.pages) p.update();
     this.buildChordIndex();
+  }
+
+  /**
+   * 连续长纸（「简谱」档）：标题与词曲**排在同一张纸的顶上**，谱面接在下面，
+   * 整张纸多高由内容说了算——不另起标题页，也没有页脚。
+   */
+  private stackContinuous(w: number): void {
+    const opt = this.layout.options;
+    const score = this.layout.pages[0];
+    if (!score) return;
+    score.update();
+    const head = this.titleBlock(w);
+    head.update();
+    const outer = new Group();
+    outer.add(head);
+    head.y = opt.marginTop;
+    outer.add(score);
+    // 标题块与第一条谱行之间留一个上边距那么宽的空
+    score.y = head.y + head.height + opt.marginTop;
+    outer.update();
+    this.layout.pages = [outer];
+    this.pageHeights = [outer.y + outer.height + opt.marginBottom];
   }
 
   /** Walk each page tree, mapping every Chord to its note-entry group(s). */
@@ -107,6 +133,13 @@ export class JinpuPainter implements PagePainter {
     return grp;
   }
 
+  /** 标题 + 词曲那一块，从 y = 0 往下排（连续长纸的纸顶用）。
+   *  与 `titlePage` 同一份内容，差别只在纵向落位（那个是整页居中）。 */
+  titleBlock(w: number): Group {
+    return this.titlePage(w, 0);
+  }
+
+  /** `h > 0` 时标题块整页居中（老行为，标题页用）；`h = 0` 时从纸顶排起（连续长纸用）。 */
   titlePage(w: number, h: number): Group {
     const opt = this.layout.options;
     const fnt = opt.lrcFont;
@@ -150,7 +183,8 @@ export class JinpuPainter implements PagePainter {
 
   /** Render one page group into a standalone <svg> of pageWidth x pageHeight. */
   renderPage(pageIndex: number): SVGSVGElement {
-    return renderPageSvg(this.layout.pages[pageIndex], this.pageWidth, this.pageHeight, this.nodeMap);
+    const { w, h } = this.pageSize(pageIndex);
+    return renderPageSvg(this.layout.pages[pageIndex], w, h, this.nodeMap);
   }
 
   /** Walk up from a picked item to its enclosing "entry" group (else the item). */
@@ -167,9 +201,9 @@ export class JinpuPainter implements PagePainter {
     return this.layout.pages.length;
   }
 
-  /** PagePainter：本排版器所有页同尺寸（resize 给定的纸张）。 */
-  pageSize(_index: number): { w: number; h: number } {
-    return { w: this.pageWidth, h: this.pageHeight };
+  /** PagePainter：一般各页同尺寸（resize 给定的纸张）；连续长纸那一档按内容逐页给高。 */
+  pageSize(index: number): { w: number; h: number } {
+    return { w: this.pageWidth, h: this.pageHeights[index] ?? this.pageHeight };
   }
 
   // ---------------- picking (Phase 3) ----------------

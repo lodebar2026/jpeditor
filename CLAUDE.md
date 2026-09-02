@@ -30,7 +30,7 @@ cd src-tauri && cargo check   # 仅检查 Rust 侧
 
 # 无头渲染/交互校验（用本地 Edge，免下载 chromium）：
 npm run build && node shot.mjs /tmp/out.png            # 截 #score-pane + 诊断
-npm run build && node pptx-check.mjs                   # PPT 版面档：原版档零变化 + PPT 档笔画回到 2a8aa85
+npm run build && node pptx-check.mjs                   # 两档版面：简谱档叠排多段 + PPT 档笔画
 npm run build && node abc-check.mjs                    # ABC→MusicXML 移植回归（见 docs/实现/ABC-导入.md）
 npm run build && node xml-roundtrip.mjs                # MusicXML 导出回归（序列化往返 / 增量 patch / 版面）
 npm run build && node omr-export-check.mjs             # 同上，但底本取自真跑一遍 OMR 的识别原文
@@ -75,7 +75,8 @@ npm run build && node staff-ui-check.mjs [页号]        # 五线谱：编辑器
 `layout/pagepainter.ts::PagePainter`（`pageCount` / `pageSize` / `renderPage`），
 编辑器的铺页逻辑（`App._renderPagesWith`）只依赖它。**高亮不在接口里**——三者语义不同。
 简谱字形的**绘制原语**收在 `layout/jpglyph.ts`（`jpDot` 实心圆 / `jpBarlineItems`
-小节线 / `jpTimeSigItems` 拍号），三条简谱路共用：八度点、附点、反复点一律**矢量圆**，
+小节线 / `jpTimeSigItems` 拍号），三条简谱路共用：八度点、附点、反复点一律**矢量圆**
+（附点的**圆心与数字墨迹的中心等高**，大小默认与八度点相同——`augDotRadius` 只有 PPT 档另给），
 小节线的粗细组合与反复点排布一律照谱面那一份，拍号两个数字**居中**于分数线、
 **一切长度都是小节线高度 H 的比例**（分数线长按位数：`0.28125 × H × 位数`，
 这个数正好复现 Times 等宽数字的 advance，故成书那一路逐位不变）。
@@ -107,6 +108,19 @@ npm run build && node staff-ui-check.mjs [页号]        # 五线谱：编辑器
   `.Title` 的字段值与 `.Words` 的歌词内容；歌词行先把非 ASCII 内容字符抽出拼成整串再送词表
   （跨过 `/`、`-`、`()` 等记号，否则 `日光/之下` 会被拆开导致词汇级转换失效），转换结果按原位
   逐字回填，长度对不上就退回逐字转换，绝不错位。
+- **谱面区的四档排版模式**（`app.ts::ViewMode`，工具条上叫「排版」）是**两组正交状态的组合**，
+  不是四个视图：`PPT` / `简谱` 走简谱（或文本谱）排版器，差别只在版面档
+  （`setProfile` → `jpProfile` normal/pptx、`puProfile` print/slide）；`五线谱` / `混排`
+  走 `MixedPainter`，差别只在要不要叠简谱层（`mixedShowJianpuLayer`）。默认 **PPT**。
+  两档简谱的另一处分工在 `_rebuildPainter`：**PPT 逐段展开**（一段歌词一遍谱、一屏一段，
+  16:9 的纸），**简谱按原谱排一遍**（`lyricStack > 0`，多段歌词叠在同一条谱行下、反复不展开，
+  且 `continuousPage` = 一张连续长纸，宽 1000、高由内容定、标题排在纸顶、没有页眉页脚
+  ——观感同文本谱的「原版」）。
+  PPT 档的笔画见 `layout/pptxstyle.ts`（底子是 2026-08 重构前的观感，另有几处刻意背离：
+  小节线高度用简谱档那一份、附点/高音点/低音点三种点同一半径）；回归 `node pptx-check.mjs`。
+  **数字 ↓ 减时线 ↓ 低音点**这条向下的阶梯走自己的 `jpBelowGap`（1/9 em，按 PPT 档实测的
+  距离定），三档墨迹净距相等；上方那一带仍是 `jpStackGap`（1/6 em，要给弧留手）。
+  混排的简谱层同口径（`mixed/render.ts`），成书仍用原书量到的 `stackGapEm`。
 - `src/editor/` — `app.ts`（编辑器↔实时重排↔翻页↔文件 I/O 控制器）、`highlight.ts`
   （CodeMirror 装饰）、`fileio.ts`（UTF-16LE 编解码 + Tauri 运行时探测）、
   `settings.ts`（localStorage 持久化，只管存取不管应用）。
@@ -313,6 +327,10 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   `hang ≤ lyricGap`；`line-check` 的 **V8**（谱面）与 **V9**（书级正文连排）守着。`halfWidthPunct` 那套**换字符**的老做法已退休。
 - **[乐句排版](docs/实现/乐句排版.md)**（`src/score/phrase.ts`）——工具栏「按乐句重排」的 DP 与代价项
   （行长目标、整句独占一行、断点凭据、段落/副歌分页）。回归 `node phrase-lines.mjs [曲名子串]`。
+  **「一页 4 行」是分页与断句共用的那个数**（`jpscore.ts::PAGE_LINES` → `PhraseOptions.pageLines`）：
+  末页排不满就把行数凑到 4 的倍数再排一遍（001 由 4+6+6 变成 4+4+4+4），
+  段界（主歌/副歌）换页改成**放不下才换**（006 的主歌 2 行 + 副歌 2 行留在同一页）。
+  成书那条路不传 `pageLines`，两条判据都不生效。
 - **[ABC 记谱导入](docs/实现/ABC-导入.md)**（`src/abc/`）——abc2xml.py 的全量忠实移植（含 pyparsing /
   etree shim）。改前先核对 python 原文，回归 `node abc-check.mjs`、`node abc-shot.mjs`。
 - **[文本谱](docs/实现/文本谱.md)**（`src/pu/`）——番茄简谱 / 诗歌本两种**纯文本简谱**的

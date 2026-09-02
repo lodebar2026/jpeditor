@@ -1,19 +1,29 @@
-// PPT 版面档的回归：确认「原版」档一个数都没动、「PPT」档回到排版重构之前的笔画。
+// 「简谱」/「PPT」两档版面的回归。
 //
-// 基准是 2a8aa85（观感大改 29ae9dd 的父提交）。那一版的实测值直接写死在下面的
-// EXPECT 里——不再需要 worktree，也就不会因为老版依赖装不上而跑不了。
-// 原委见 src/layout/pptxstyle.ts 与 docs/实现/简谱纵向栅格.md。
+// PPT 档原本是 2a8aa85（观感大改 29ae9dd 的父提交）的**逐点复刻**，如今有两处**刻意背离**
+// （用户口径，见 src/layout/pptxstyle.ts）：小节线的上下缘改用简谱档那一份（老档矮三分之一，
+// 投影上看不出是小节线；拍号比例跟着回默认，画出来仍与老档等大），
+// 以及附点/高音点/低音点三种点统一成同一个半径（附点从字形改成矢量圆）。
+// 其余笔画（小节线宽、减时线、弧、旧式纵向栅格）仍按 2a8aa85 的实测值写死在 EXPECT 里。
+//
+// 简谱档这边是另一套观感（不是 PPT 档的「前身」）：多段歌词**叠排**在同一条谱行下
+// （`lyricStack`）、整首排成**一张连续长纸**（`continuousPage`，宽 1000、高由内容定）、
+// 标题排在纸顶、没有页眉页脚。所以下面页脚那一节只查 PPT 档。
 //
 // 用法：npm run build && node pptx-check.mjs
 import { serveDist, launchPage, loadApp } from "./scripts/harness.mjs";
 
 /** 2a8aa85 在内置示例谱（圣哉，圣哉，圣哉 / 28pt / 960×540）上实测到的笔画。 */
 const EXPECT = {
+  // 简谱档：一张连续长纸（标题在纸顶，4 段歌词叠在一条谱行下）
+  normalPages: 1,
+  normalLeaves: 288,
+  // PPT 档：逐段展开，一段一页（1 张标题页 + 4 段）
   pages: 5,
-  leaves: 534,
-  // 小节线与拍号的上下缘（−23/28 em、+5/28 em），减时线宽/基准，弧厚
-  jpStaffTop: -23,
-  jpStaffBottom: 5,
+  leaves: 550,
+  // 小节线的上下缘：**改用简谱档那一份**（−1 em / +1/3 em），不再是老档的 −23/28、+5/28
+  jpStaffTop: -28,
+  jpStaffBottom: 9.333,
   barlineWidth: 1.5,
   finalBarlineWidth: 3.5,
   jpBeamWidth: 1.25,
@@ -65,6 +75,9 @@ const probe = async () =>
     };
   });
 
+// 默认档已经是 PPT（编辑器的「排版」四档里 PPT 打头），原版档要显式切过去。
+await page.evaluate(() => window.__app.setJpProfile("normal"));
+await page.waitForTimeout(800);
 const normal = await probe();
 await page.evaluate(() => window.__app.setJpProfile("pptx"));
 await page.waitForTimeout(800);
@@ -78,10 +91,10 @@ console.log("【原版档】不该受 PPT 档影响");
 eq(normal.opt.jpGridLegacy, false, "jpGridLegacy");
 eq(normal.opt.jpBeamWidth, 1.5, "减时线宽");
 eq(normal.opt.barlineWidth, 2, "小节线宽");
-eq(normal.pages, EXPECT.pages, "页数");
-eq(normal.leaves.length, EXPECT.leaves, "叶子数");
+eq(normal.pages, EXPECT.normalPages, "页数");
+eq(normal.leaves.length, EXPECT.normalLeaves, "叶子数");
 
-console.log("【PPT 档】回到 2a8aa85 的笔画");
+console.log("【PPT 档】笔画（除小节线高度与三种点外，仍是 2a8aa85 那一套）");
 for (const k of ["jpStaffTop", "jpStaffBottom", "barlineWidth", "finalBarlineWidth",
                  "jpBeamWidth", "jpBeamTop", "slurTieThickness", "slurOutlineWidth"]) {
   eq(pptx.opt[k], EXPECT[k], k);
@@ -101,8 +114,8 @@ eq(vert[1.5] ?? 0, EXPECT.barlineStrokes[1.5], "第2页小节线（1.5pt）条�
 eq(horiz[1.25] ?? 0, EXPECT.beamStrokes[1.25], "第2页减时线（1.25pt）条数");
 
 // 页脚：两档都得与老版一致
-console.log("【页脚】曲名 + 页码，两档都不许动");
-for (const [name, d] of [["原版", normal], ["PPT", pptx]]) {
+console.log("【页脚】曲名 + 页码（只有 PPT 档有；简谱档是连续长纸，没有页眉页脚）");
+for (const [name, d] of [["PPT", pptx]]) {
   const foot = d.leaves.filter((e) => e.k === "text" && e.pg === 1 && e.y === EXPECT.footerY);
   if (foot.length !== 2) { fail(`${name}档第2页页脚元素 ${foot.length} 个（应为 2）`); continue; }
   eq(foot[0].sz, EXPECT.footerSize, `${name}档页脚字号`);

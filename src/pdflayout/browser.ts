@@ -205,6 +205,9 @@ function pathData(p: GraphicPath, m: Mat6): string {
  * 这里取三者的中位（`metrics.stackGapEm`）；要分开还原得先把 layout.ts 里那三处使用点拆开，
  * 那是背离《简谱纵向栅格》的既定写法，需要单独记账。
  */
+/** 减时线宽 ÷ 小节线宽。取自混排简谱层的 `MixedOptions.lineWidths`（jpBeam 1 : lightBarline 1.5）。 */
+const JP_BEAM_TO_BARLINE = 2 / 3;
+
 export function applyBookStyle(opt: LayoutOptions, s: BookStyle): void {
   const note = fontSizeFor(s, "note");
   const lyric = fontSizeFor(s, "lyric");
@@ -223,12 +226,19 @@ export function applyBookStyle(opt: LayoutOptions, s: BookStyle): void {
   opt.marginTop = s.page.margin.top;
   opt.marginBottom = s.page.margin.bottom;
   opt.jpStackGap = em(m.stackGapEm);
+  // 向下那条阶梯（数字↓减时线↓低音点）成书仍用同一个 `stackGapEm`——编辑器新调的
+  // `jpBelowGap`（1/9 em，见 LayoutOptions）是屏幕观感，原书量到的是这个。
+  opt.jpBelowGap = opt.jpStackGap;
+  // 附点也按原书那个大小：引擎默认让它与八度点同大（`.` 的墨迹高折半），
+  // 而原书印的是 `·`，墨迹高出一截——照默认排全书会差出两页。
+  opt.augDotRadius = opt.numberBound("·").height / 2;
   opt.jpBeamTop = em(m.divLineGapEm);
   opt.jpBeamDist = em(m.divLineStepEm);
-  // 减时线用**原书实测的墨迹宽**（0.19pt 上下）：它本来就是一条细线，
-  // 引擎那个 1.5（按 fontSize≈28 调的）换算过来会粗上两三倍。
-  // 弧与小节线不同——那两个是有形状的笔画，按字号等比缩放才对（见下）。
-  opt.jpBeamWidth = m.inkDivLineWidth > 0 ? m.inkDivLineWidth : m.beamWidthEm * lyric;
+  // 减时线宽**按小节线宽折算**，比例照混排的简谱层（`MixedOptions.lineWidths`：
+  // jpBeam 1 : lightBarline 1.5 = 2/3）。用户口径：「成书重排减时线太细了」
+  // ——原来取的是原书**实测的墨迹宽**（0.19pt 上下），那是扫描件里的一条细线，
+  // 排出来几乎看不见；小节线本来就是按字号等比缩的，拿它当基准，两条线的粗细关系才稳定。
+  opt.jpBeamWidth = m.barlineWidthEm * lyric * JP_BEAM_TO_BARLINE;
   opt.slurTieThickness = m.slurThicknessEm * lyric;
   // 弧高：**按物理目标反算**，不是按字号等比缩。
   // 引擎的 `log10(dist)*17−16` 是 fontSize≈28 下的绝对像素，等比缩到成书的小字号

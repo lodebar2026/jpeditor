@@ -2,7 +2,7 @@ import "./styles.css";
 import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
 import { asset } from "./common/asset";
-import { App } from "./editor/app";
+import { App, type ViewMode } from "./editor/app";
 import { IMAGE_EXT, IMAGE_ACCEPT, isDocFile, isImageFile, isConvertedFile } from "./common/filetypes";
 import { showOptionsDialog, showHanConvDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
@@ -84,17 +84,6 @@ async function boot() {
   ]).then(([out, patch, layout, imp, jpscore, jpwfile, parse, jpwimport]) =>
     ({ ...out, ...patch, ...layout, ...imp, ...jpscore, ...jpwfile, ...parse, ...jpwimport }));
 
-  // 版面切换（原版 / PPT）。简谱与文本谱共用这一对按钮，由 App 按文档格式分派：
-  // 文本谱切 print/slide（换整套 metrics），简谱切 normal/pptx（换笔画常量）。
-  const puSwitch = document.getElementById("pu-profile-switch");
-  const puPrint = document.getElementById("btn-pu-print") as HTMLButtonElement | null;
-  const puSlide = document.getElementById("btn-pu-slide") as HTMLButtonElement | null;
-  if (puSwitch && puPrint && puSlide) {
-    app.setProfileButtons(puSwitch, puPrint, puSlide);
-    puPrint.onclick = () => app.setProfile(false);
-    puSlide.onclick = () => app.setProfile(true);
-  }
-
   const revealWorkspace = () => {
     startScreen.hidden = true;
     appRoot.classList.remove("is-starting");
@@ -152,18 +141,21 @@ async function boot() {
   }
   on("btn-export", () => showExportDialog(app));
   on("btn-help", () => showHelpDialog(app));
-  const jpPreviewBtn = document.getElementById("btn-preview-jp") as HTMLButtonElement | null;
-  const staffPreviewBtn = document.getElementById("btn-preview-staff") as HTMLButtonElement | null;
-  if (jpPreviewBtn && staffPreviewBtn) {
-    app.setPreviewModeButtons(jpPreviewBtn, staffPreviewBtn);
-    jpPreviewBtn.addEventListener("click", () => void app.showJpPreview());
-    staffPreviewBtn.addEventListener("click", () => void app.showStaffPreview());
+  // 排版模式（PPT / 简谱 / 五线谱 / 混排）。四档 = 「哪个排版器」×「哪一档版面」的组合，
+  // 配法由 App.setViewMode 说了算，这里只负责接线。
+  const viewSwitch = document.getElementById("view-mode-switch");
+  const viewBtns = new Map<ViewMode, HTMLButtonElement>();
+  for (const [mode, id] of [
+    ["ppt", "btn-view-ppt"], ["jianpu", "btn-view-jianpu"],
+    ["staff", "btn-view-staff"], ["mixed", "btn-view-mixed"],
+  ] as const) {
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (btn) {
+      viewBtns.set(mode, btn);
+      btn.addEventListener("click", () => void app.setViewMode(mode));
+    }
   }
-  const staffJianpuToggle = document.getElementById("chk-staff-jianpu") as HTMLInputElement | null;
-  if (staffJianpuToggle) {
-    app.setStaffJianpuToggle(staffJianpuToggle);
-    staffJianpuToggle.addEventListener("change", () => void app.setStaffJianpuLayer(staffJianpuToggle.checked));
-  }
+  if (viewSwitch) app.setViewModeButtons(viewSwitch, viewBtns);
   const recognizeBtn = document.getElementById("btn-recognize") as HTMLButtonElement | null;
   if (recognizeBtn) {
     app.omr.setRecognizeBtn(recognizeBtn);

@@ -1471,21 +1471,35 @@ function drawNotesJianPu(
       // octave dots
       const oct = n.octaveJp(eng.addOctaveJpForKeyA);
       if (oct !== 0) {
+        const dotBnd = font.charBound(".");
+        const dotR = (dotBnd.bottom - dotBnd.top) / 2;
+        // 低音点那一摞的步距：一档 = 一个点 + 它上面那道空（与减时线同一个 gap）。
+        const belowGap = font.size / 9;
         let octY: number;
+        let step = eng.octaveDotDist * sc;
         if (oct > 0) {
           octY = 3 - eng.jpTopDy;
         } else {
-          octY = staffHeight + eng.beamDistJP * ch.jpBeamCount();
-          octY -= 2;
+          // **低音点接着减时线往下排，间距与「数字↓减时线」那一档相等**（用户口径：
+          // 音符、减时线、低音点看起来要均匀）。原来是从 `staffHeight` 起算的经验值
+          // （`staffHeight + beamDistJP*层数 − 2`），与减时线的实际墨迹底无关，
+          // 层数一多就越飘越远。
+          const beams = ch.jpBeamCount();
+          const nb = font.charBound(String(num));
+          const beamBottom = beams > 0
+            ? ypos + belowGap + eng.lineWidths.jpBeam / 2
+              + (beams - 1) * eng.beamDistJP * sc + eng.lineWidths.jpBeam / 2
+            : ypos + nb.bottom;
+          octY = beamBottom + belowGap + dotR;
+          step = 2 * dotR + belowGap;
         }
         // 八度点是**实心矢量圆**，不是字体里的 `.` 字形（三条简谱路统一，见 jpglyph.ts）。
         // 半径照原先 `.` 的墨迹高折半取，与字形等大；圆按**中心**定位，
         // 于是也不必再拿 advance 的一半去凑「看着居中」。
-        const db = font.charBound(".");
-        const r = (db.bottom - db.top) / 2;
+        const r = dotR;
         for (let i = 0; i < Math.abs(oct); i++) {
           const cx0 = x + nw / 2;
-          const cy0 = octY + i * eng.octaveDotDist * sc * graceSc + graceDy;
+          const cy0 = octY + i * step * graceSc + graceDy;
           if (ch.grace) {
             const g = new Group();
             const mtx = new Matrix33();
@@ -1524,15 +1538,19 @@ function drawNotesJianPu(
         }
       } else {
         // noteType <= 1: draw augmentation dots
+        //
+        // 附点是**实心矢量圆**（与八度点、谱面那一路统一，见 jpglyph.ts / layout.ts::addAugDots），
+        // 且**与数字居中对齐**（用户口径：所有模式下都要对齐）：纵向落在数字墨迹的正中
+        // （原来写死 `font.size * 0.75` 的基线，与数字中线对不上），横向从数字的墨迹右缘
+        // 起算（原来是 `nw/2 + 10` 的经验偏移，且给的是 `.` 字形的左边界，
+        // 宽窄不同的数字看着离得远近不一）。
+        const nb = font.charBound(str);
+        const db = font.charBound(".");
+        const r = (db.bottom - db.top) / 2;
+        const gap = (r * 2) * (mix ? 0.75 : 1);
+        const cy = ypos + (nb.top + nb.bottom) / 2;
         for (let d = 0; d < ch.dot; d++) {
-          const dd = new TextFrame();
-          dd.text = ".";
-          dd.font = font;
-          dd.color = 0xff000000;
-          const dotDx = (nw / 2 + 10) * (mix ? 0.75 : 1);
-          dd.x = x + dotDx;
-          dd.y = font.size * 0.75;
-          container.add(dd);
+          container.add(jpDot(x + nb.right + gap + r + d * (2 * r + gap), cy, r, 0xff000000));
         }
       }
     }
@@ -1548,7 +1566,6 @@ function drawJpBeams(
 ): void {
   const staffHeight = mix ? eng.mixStaffHeight : 40;
   const sc = staffHeight / 40;
-  const diff = 40 - staffHeight;
   const font = mix ? eng.mixFont : eng.jianpuFont;
   const meta = eng.meta;
 
@@ -1590,7 +1607,12 @@ function drawJpBeams(
           ntL.x + (first.noteheadWidth(meta) / 2 - font.measureText(numL) / 2) * graceSc;
         const rx =
           ntR.x + (last.noteheadWidth(meta) / 2 + font.measureText(numR) / 2) * graceSc;
-        let y = lev * eng.beamDistJP * sc + 35 - diff * 0.8;
+        // 第一层减时线按**墨迹上缘**离数字墨迹底 `font.size / 9`（与谱面那一路的
+        // `LayoutOptions.jpBelowGap` 同一口径：数字↓减时线↓低音点三档等距）。
+        // 原来写死 musicpp 的 `35 − diff*0.8`（jianpuFont 30 时基线 30、线心 35），
+        // 与低音点那一档的距离对不齐。
+        let y = lev * eng.beamDistJP * sc
+          + font.size + font.size / 9 + eng.lineWidths.jpBeam / 2;
 
         if (grace) {
           // grace 减时线上移并加尾钩（render.cpp:165-186）。
