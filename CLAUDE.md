@@ -30,6 +30,7 @@ cd src-tauri && cargo check   # 仅检查 Rust 侧
 
 # 无头渲染/交互校验（用本地 Edge，免下载 chromium）：
 npm run build && node shot.mjs /tmp/out.png            # 截 #score-pane + 诊断
+npm run build && node pptx-check.mjs                   # PPT 版面档：原版档零变化 + PPT 档笔画回到 2a8aa85
 npm run build && node abc-check.mjs                    # ABC→MusicXML 移植回归（见 docs/实现/ABC-导入.md）
 npm run build && node xml-roundtrip.mjs                # MusicXML 导出回归（序列化往返 / 增量 patch / 版面）
 npm run build && node omr-export-check.mjs             # 同上，但底本取自真跑一遍 OMR 的识别原文
