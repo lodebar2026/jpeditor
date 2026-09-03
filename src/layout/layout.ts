@@ -758,10 +758,9 @@ export class TimeSig extends Entry {
       ruleWidth: opt.timeSigRuleWidth > 0 ? opt.timeSigRuleWidth : 1.5,
       color: opt.color,
       font: opt.numberFont.withBold(),
-      // 0 = 让 jpTimeSigItems 用它自己的默认比例（编辑器/成书两条路不变）
+      // 0 = 让 jpTimeSigItems 用它自己的默认比例（编辑器/成书两条路不变）。
+      // 竖向不在这里给：它只认拍值字号（jpglyph.ts::TIME_SIG_GAP_EM）。
       digitRatio: opt.timeSigDigitRatio > 0 ? opt.timeSigDigitRatio : undefined,
-      upperRatio: opt.timeSigUpperRatio > 0 ? opt.timeSigUpperRatio : undefined,
-      lowerRatio: opt.timeSigLowerRatio > 0 ? opt.timeSigLowerRatio : undefined,
       ruleLengthRatio: opt.timeSigRuleLenRatio > 0 ? opt.timeSigRuleLenRatio : undefined,
     });
     this.width = r.width;
@@ -3388,13 +3387,11 @@ export class LayoutOptions {
   verseNumberAutoMin = 3;
   /** 转拍号那条分数线的粗细。0 = 用引擎默认的 1.5（编辑器那条路不变）。 */
   timeSigRuleWidth = 0;
-  /** 拍号的四个比例（都是 ÷ 小节线高度 H）。0 = 用 `jpglyph.ts::TIME_SIG_DEFAULTS`。
+  /** 拍号的两个比例（都是 ÷ 小节线高度 H）。0 = 用 `jpglyph.ts::TIME_SIG_DEFAULTS`。
    *  单独提出来是因为 H 一变（见 `jpStaffTopOverride`），照默认比例算出来的拍号会跟着
-   *  整体缩放；PPT 档要的是**旧观感**——字号 0.75em、上 0.1em、下 0.625em、
-   *  分数线长按数字实测宽——那套在 H = numberSize 下才对得上。 */
+   *  整体缩放。**竖向没有旋钮**：上下两个数字各离分数线一格「减时线与音符」的距离，
+   *  只认拍值字号（`jpglyph.ts::TIME_SIG_GAP_EM`）。 */
   timeSigDigitRatio = 0;
-  timeSigUpperRatio = 0;
-  timeSigLowerRatio = 0;
   timeSigRuleLenRatio = 0;
   /** 房号/三连音括线的线宽与「脚」（下垂那一小段）的长度。0 = 按字号推算。 */
   bracketWidth = 0;

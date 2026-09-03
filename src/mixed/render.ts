@@ -1714,8 +1714,16 @@ function drawJpTimeSignature(
     font,
     // 混排的拍号数字**保留原大小**：musicpp 的 mixFont 就是 `30 × mixStaffHeight/40`，
     // 即 0.75 H（谱面那一路是 0.5625 H）。居中与「长度按 H 的比例」照统一那份走，
-    // 只有字号这一档各留各的。
+    // 只有字号与下面三档间距各留各的。
     digitRatio: 0.75,
+    // 竖向不必给：`jpTimeSigItems` 按「减时线与音符」那一格排（TIME_SIG_GAP_EM ×
+    // 拍值字号，墨迹到墨迹），字号一改自己跟着走。
+    //
+    // 分数线长度得给：默认那个 0.28125 H 是按谱面档的数字（0.5625 H）反算的，
+    // 配 0.75 H 的数字线比数字还窄，整条藏在数字底下。musicpp 原式是
+    // `max(w1,w2) + 2`（mixFont 22.5 的数字 advance ≈ 12.4，共 14.4 = 0.48 H），
+    // 与参考排版（Praise as One 成书 PDF）量到的 14.4 一致。
+    ruleLengthRatio: 0.48,
   });
   for (const item of r.items) {
     item.y += staffHeight;

@@ -411,8 +411,19 @@ button:focus-visible, select:focus-visible {
   gap: 12px;
 }
 
+/* 纸张宽度**全仓一份**：简谱 / 五线谱 / 混排 / PPT / 识别叠加视图共用这个上限，
+   免得切档时纸忽宽忽窄（混排从前单独写 620px，同一首歌在简谱档与混排档纸宽差三分之一）。
+
+   **只把上限提出来，别把整个 calc 提出来**：`--score-zoom` 是设在 `#score-pane` 上的，
+   自定义属性里的 `var()` 在**声明它的那个元素**上就替换掉了——把
+   `calc(min(960px,100%) * var(--score-zoom,1))` 整条放进 `:root`，`--score-zoom`
+   在 :root 上查不到，恒取回退值 1，双指缩放与工具栏的 ± 就全都不动了。 */
+:root {
+  --score-page-max: 960px;
+}
+
 .score-page-wrap {
-  width: calc(min(960px, 100%) * var(--score-zoom, 1));
+  width: calc(min(var(--score-page-max), 100%) * var(--score-zoom, 1));
   aspect-ratio: 960 / 540;
   flex: 0 0 auto;
   position: relative;
