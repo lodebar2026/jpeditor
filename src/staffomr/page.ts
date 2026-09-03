@@ -778,6 +778,21 @@ export function makeBars(pg: SPage): void {
       const b = stf.bars.find((x) => s.px >= x.left && s.px < x.right);
       if (b) b.notes.push(s);
     }
+    // **一行的头尾若切出一个空条，那不是小节。**
+    //   行首：谱行左端到第一根小节线之间只有谱号/调号/拍号——曲子起头印 `|:` 的
+    //         （或每行行首都画一根线的）就会白白多出一个小节，全书好些曲子的
+    //         「小节数比 GT 多一个」都是它。
+    //   行末：终止线/复纵线到谱线右端还剩一小截（实测 p101 第二行剩 13pt）。
+    // 休止也带 `Note` 标记，所以「一个都没有」是真的空——整小节休止不会被误删。
+    // 只动头尾两条，中间的空条留着（那多半是真读漏了，删掉反而看不见）。
+    while (stf.bars.length > 1 && !stf.bars[0].notes.length) {
+      const gone = stf.bars.shift()!;
+      // 删掉的那一条右端若是粗笔（`|:` 的 heavy-light），把样式挪到新的首小节左端。
+      if (gone.rightStyle && !stf.bars[0].leftStyle) {
+        stf.bars[0].leftStyle = gone.rightStyle === "light-heavy" ? "heavy-light" : gone.rightStyle;
+      }
+    }
+    while (stf.bars.length > 1 && !stf.bars[stf.bars.length - 1].notes.length) stf.bars.pop();
     for (const b of stf.bars) sortByLeft(b.notes);
   }
 }

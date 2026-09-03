@@ -155,7 +155,8 @@ export async function alignSongs(opts = {}) {
       measures: r.page.systems.reduce((a, sys) => a + sys.top.bars.length, 0),
       // 反复与结构性小节线（只数每个系统顶行的）
       repeats: r.page.systems.reduce((a, sys) => a + sys.top.bars.filter((b) => b.leftRepeat || b.rightRepeat).length, 0),
-      barStyles: r.page.systems.reduce((a, sys) => a + sys.top.bars.filter((b) => b.rightStyle).length, 0),
+      // 结构性小节线：右端的样式，外加行首那条并掉之后落到左端的（`|:` 的 heavy-light）
+      barStyles: r.page.systems.reduce((a, sys) => a + sys.top.bars.filter((b) => b.rightStyle).length + sys.top.bars.filter((b) => b.leftStyle).length, 0),
       // 房号（按 `<ending>` 的个数记，起讫各算一个，与 gtRepeats 的口径一致）
       endings: r.page.systems.reduce(
         (a, sys) => a + sys.top.bars.filter((b) => b.endingStart).length + sys.top.bars.filter((b) => b.endingStop).length,

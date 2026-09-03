@@ -374,6 +374,10 @@ export class Bar {
   rightRepeat: boolean = false;
   /** 左端是不是正向反复（`|:`）。 */
   leftRepeat: boolean = false;
+  /** 左端的 `<bar-style>`（`heavy-light` = `|:` 那一笔）。**只有行首那条被并掉时才有**：
+   *  谱行左端到第一根小节线之间不是小节（只有谱号/调号/拍号），那一条删掉之后，
+   *  它右端的样式要落到下一小节的左端来，不然整首少一根结构性小节线。 */
+  leftStyle: string | null = null;
   /** 反复房号（`1.`/`2.`）：号码，以及这一小节是不是这一房的起头/结尾。 */
   endingNumber: string | null = null;
   endingStart = false;

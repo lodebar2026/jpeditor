@@ -528,7 +528,11 @@ export function xmlStaffNotes(musicxml) {
  * 后者让 part 段从曲目表开始截。 */
 export function xmlMeasureCount(musicxml) {
   const part = /<part[ >][\s\S]*?<\/part>/.exec(musicxml)?.[0] ?? musicxml;
-  return (part.match(/<measure[ >]/g) || []).length;
+  // **不可见小节线要把两个 `<measure>` 并回一个**：GT 为排版把一个小节切成两半时，
+  // 前一半的右端写 `<bar-style>none</bar-style>`——谱面上那一笔根本没画，
+  // 识别侧数出来的是一个小节。全书 141 处，逐首对上从 68/84 涨到 71/84。
+  const none = (part.match(/<bar-style>none<\/bar-style>/g) || []).length;
+  return (part.match(/<measure[ >]/g) || []).length - none;
 }
 
 /**
@@ -816,10 +820,12 @@ export function gtRepeats(musicxml) {
     number: m[1],
     type: m[2],
   }));
-  // 只数结构性的小节线（终止线、复纵线），普通细线不算
+  // 只数结构性的小节线（终止线、复纵线），普通细线不算。
+  // **`none` 也不算**：那是 GT 为排版把一个小节切成两半时写的**不可见**小节线
+  // （全书 141 处），谱面上根本没有这一笔——数进来就凭空多出一堆「识别漏掉的结构线」。
   const barStyles = [...musicxml.matchAll(/<bar-style>([\w-]+)<\/bar-style>/g)]
     .map((m) => m[1])
-    .filter((b) => b !== "regular");
+    .filter((b) => b !== "regular" && b !== "none");
   return { repeats, endings, barStyles };
 }
 
