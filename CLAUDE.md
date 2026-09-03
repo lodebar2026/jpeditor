@@ -31,6 +31,7 @@ cd src-tauri && cargo check   # 仅检查 Rust 侧
 # 无头渲染/交互校验（用本地 Edge，免下载 chromium）：
 npm run build && node shot.mjs /tmp/out.png            # 截 #score-pane + 诊断
 npm run build && node pptx-check.mjs                   # 两档版面：简谱档叠排多段 + PPT 档笔画
+npm run build && node zoom-check.mjs                    # 纸张宽度四档一致 + 双指缩放/平移
 npm run build && node abc-check.mjs                    # ABC→MusicXML 移植回归（见 docs/实现/ABC-导入.md）
 npm run build && node xml-roundtrip.mjs                # MusicXML 导出回归（序列化往返 / 增量 patch / 版面）
 npm run build && node omr-export-check.mjs             # 同上，但底本取自真跑一遍 OMR 的识别原文
@@ -77,9 +78,12 @@ npm run build && node staff-ui-check.mjs [页号]        # 五线谱：编辑器
 简谱字形的**绘制原语**收在 `layout/jpglyph.ts`（`jpDot` 实心圆 / `jpBarlineItems`
 小节线 / `jpTimeSigItems` 拍号），三条简谱路共用：八度点、附点、反复点一律**矢量圆**
 （附点的**圆心与数字墨迹的中心等高**，大小默认与八度点相同——`augDotRadius` 只有 PPT 档另给），
-小节线的粗细组合与反复点排布一律照谱面那一份，拍号两个数字**居中**于分数线、
-**一切长度都是小节线高度 H 的比例**（分数线长按位数：`0.28125 × H × 位数`，
-这个数正好复现 Times 等宽数字的 advance，故成书那一路逐位不变）。
+小节线的粗细组合与反复点排布一律照谱面那一份，拍号两个数字**居中**于分数线。
+拍号的**竖向只认拍值字号**：上下两个数字各离分数线一格「减时线与音符」的距离
+（`TIME_SIG_GAP_EM` = 1/9 em，口径同 `LayoutOptions.jpBelowGap`），墨迹到墨迹、上下对称
+——原先是两个「基线 ÷ H」的比例常量，那是按谱面档的数字（0.5625 H）反算的，
+换个字号（混排 0.75 H）就挤成一团。分数线长度**按位数**算：给了 `ruleLengthRatio`
+就按 H 的比例，没给就按拍值字号的半个 em（数字 advance，正是默认 0.28125 的来历）。
 纵向范围各路仍给自己的（谱面 `jpStaffTop/Bottom`、文本谱实测的 `barlineHeight`、
 混排 `mixStaffHeight`）——那是量出来的，不是画法。
 
@@ -112,10 +116,21 @@ npm run build && node staff-ui-check.mjs [页号]        # 五线谱：编辑器
   不是四个视图：`PPT` / `简谱` 走简谱（或文本谱）排版器，差别只在版面档
   （`setProfile` → `jpProfile` normal/pptx、`puProfile` print/slide）；`五线谱` / `混排`
   走 `MixedPainter`，差别只在要不要叠简谱层（`mixedShowJianpuLayer`）。默认 **PPT**。
+  **纸张宽度全仓一份**：`styles.css` 的 `--score-page-max`（默认 960px），四档连同识别
+  叠加视图共用——混排从前在 `_renderPagesWith` 里单独写 620px，同一首歌切到混排纸就窄
+  三分之一。`_renderPagesWith` 的 `width` 旋钮已经删了，要改纸宽只改那个 CSS 变量。
+  **变量里只放上限、别把整条 calc 放进去**：`--score-zoom` 设在 `#score-pane` 上，
+  自定义属性里的 `var()` 在**声明它的那个元素**上就替换掉了，整条 calc 挪到 `:root`
+  会让 `--score-zoom` 恒取回退值 1，双指缩放与工具栏的 ± 全都不动
+  （双指那一路在 `main.ts`：ctrl+wheel / WebKit 的 `gesture*`，按页内归一化坐标锚定）。
   两档简谱的另一处分工在 `_rebuildPainter`：**PPT 逐段展开**（一段歌词一遍谱、一屏一段，
   16:9 的纸），**简谱按原谱排一遍**（`lyricStack > 0`，多段歌词叠在同一条谱行下、反复不展开，
-  且 `continuousPage` = 一张连续长纸，宽 1000、高由内容定、标题排在纸顶、没有页眉页脚
-  ——观感同文本谱的「原版」）。
+  且 `continuousPage` = 一张连续长纸，宽 1000、高由内容定、没有页眉页脚
+  ——观感同文本谱的「原版」）。纸顶那一块**照 500 首重排排**
+  （`painter.ts::bookHead` ← `rebuild.mjs::decorateSong`）：标题居中、**调号拍号在左**
+  （`1=♭B ⁴⁄₄`，升降号提到音名之前、小一号并抬高）、**词曲署名右对齐逐行**，
+  调号拍号的基线与最后一行署名齐。首调与首拍号从前**根本没画**（编辑器那一路只画
+  曲中的转调/转拍号），`.jpwabc` 的调号也一直没写进 `Measure.key`（一律读成 C）。
   PPT 档的笔画见 `layout/pptxstyle.ts`（底子是 2026-08 重构前的观感，另有几处刻意背离：
   小节线高度用简谱档那一份、附点/高音点/低音点三种点同一半径）；回归 `node pptx-check.mjs`。
   **数字 ↓ 减时线 ↓ 低音点**这条向下的阶梯走自己的 `jpBelowGap`（1/9 em，按 PPT 档实测的

@@ -16,8 +16,10 @@ import { serveDist, launchPage, loadApp } from "./scripts/harness.mjs";
 /** 2a8aa85 在内置示例谱（圣哉，圣哉，圣哉 / 28pt / 960×540）上实测到的笔画。 */
 const EXPECT = {
   // 简谱档：一张连续长纸（标题在纸顶，4 段歌词叠在一条谱行下）
+  // 288 → 293：纸顶那一块改照 500 首重排排（painter.ts::bookHead），
+  // 多出调号拍号那 5 笔（`1=` / 音名 / 拍值两个数字 / 分数线）。
   normalPages: 1,
-  normalLeaves: 288,
+  normalLeaves: 293,
   // PPT 档：逐段展开，一段一页（1 张标题页 + 4 段）
   pages: 5,
   leaves: 550,

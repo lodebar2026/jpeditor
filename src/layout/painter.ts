@@ -11,7 +11,8 @@ import {
   TextFrame,
   SmuflText,
 } from "./layout";
-import { Chord, Score } from "../score/score";
+import { Chord, MusicCommon, Score } from "../score/score";
+import { jpTimeSigItems } from "./jpglyph";
 import type { PagePainter } from "./pagepainter";
 import { walkPageItem, type ItemVisitor } from "./walk";
 
@@ -54,7 +55,7 @@ export class JinpuPainter implements PagePainter {
     const score = this.layout.pages[0];
     if (!score) return;
     score.update();
-    const head = this.titleBlock(w);
+    const head = this.bookHead(w);
     head.update();
     const outer = new Group();
     outer.add(head);
@@ -133,10 +134,146 @@ export class JinpuPainter implements PagePainter {
     return grp;
   }
 
-  /** 标题 + 词曲那一块，从 y = 0 往下排（连续长纸的纸顶用）。
+  /** 标题 + 词曲那一块，从 y = 0 往下排。
    *  与 `titlePage` 同一份内容，差别只在纵向落位（那个是整页居中）。 */
   titleBlock(w: number): Group {
     return this.titlePage(w, 0);
+  }
+
+  /** 词曲署名拆成逐行的文本：一个字段里可能写了好几行（Finale 导出的样子），
+   *  没带「作词：」这类标签的按 `type` 补一个（rebuild.mjs::decorateSong 同一份规则）。 */
+  private creditLines(): string[] {
+    const LABEL: Record<string, string> = {
+      lyricist: "作词", poet: "作词", composer: "作曲", arranger: "编曲",
+    };
+    const out: string[] = [];
+    for (const c of this.score.credit) {
+      if (c.type === "title") continue;
+      for (const raw of c.text.split(/\r?\n/)) {
+        const t = raw.trim();
+        if (!t) continue;
+        out.push(/[:：]/.test(t) || !c.type ? t : `${LABEL[c.type] ?? c.type}：${t}`);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 「简谱」档纸顶那一块 —— **照 500 首重排的成书排版**（`rebuild.mjs::decorateSong`）：
+   * 标题居中、**调号拍号排在左边**、**词曲署名右对齐逐行**。
+   *
+   * 原先这一块把词曲跟标题一样居中堆在标题底下，调号拍号则**根本没画**——
+   * 编辑器那一路只在曲中转调/转拍号时才画（`KeySig` / `TimeSig` 两个 Entry），
+   * 首调与首拍号历来只存在 `.Title` 的字段里，排不上纸。
+   *
+   * 纵向那几个间距按成书实测反算（基准是署名字号 `roles.credit.size` = 8.99pt）：
+   * 行距 `creditLineGap` 13.1 = 1.46 个署名字号；调号拍号的基线与**最后一行**署名齐
+   * （成书 `keyMeterBaseline` 117.94 落在第二行署名 116.08 上，两行署名是常态）。
+   */
+  private bookHead(w: number): Group {
+    const opt = this.layout.options;
+    const pg = new Group();
+    const fnt = opt.lrcFont;
+    const left = opt.marginLeft;
+    const right = w - opt.marginRight;
+
+    // 标题：居中（可多行），与 titlePage 同一份内容
+    const titles: string[] = [];
+    for (const it of this.score.credit) if (it.type === "title") titles.push(it.text);
+    if (titles.length === 0 && this.score.title.trim().length > 0) titles.push(this.score.title);
+
+    let ypos = 0;
+    for (const t of titles) {
+      const obj = this.multipleLineText(t, fnt.makeWithSize(opt.titleSize), w, opt.color);
+      obj.y = ypos;
+      obj.update();
+      pg.add(obj);
+      ypos += obj.height;
+    }
+
+    // 词曲署名：右对齐，一行一条
+    const credits = this.creditLines();
+    const cf = fnt.makeWithSize(opt.creditSize);
+    const cfm = cf.metrics;
+    const gap = opt.creditSize * 1.46;
+    const base = ypos - cfm.ascent;
+    credits.forEach((t, i) => {
+      const tf = new TextFrame();
+      tf.font = cf;
+      tf.color = opt.color;
+      tf.text = t;
+      tf.y = base + i * gap;
+      tf.x = right - tf.measureText();
+      pg.add(tf);
+    });
+
+    // 调号拍号：左对齐，基线与最后一行署名齐
+    const km = this.keyMeter(left, base + Math.max(0, credits.length - 1) * gap);
+    if (km) pg.add(km);
+    return pg;
+  }
+
+  /**
+   * 「1=♭B ⁴⁄₄」——调号 + 上下叠排的拍号（成书 `bookparts.ts::keyMeterItems` 的观感）。
+   *
+   * 两处照成书：**升降号提到音名之前**、比音名小一号并抬高（连成一串画的话 ♭ 会跟音名
+   * 同基线同字号，位置就塌了）；拍号**上下叠排**、分数线与音名的墨迹中心齐平。
+   * 拍号本身仍走公共那一份 `jpglyph.ts::jpTimeSigItems`（三条简谱路共用），
+   * 尺寸与曲中的转拍号同一把尺子（`TimeSig.layout`），不另立一套。
+   */
+  private keyMeter(x: number, baseline: number): Group | null {
+    const opt = this.layout.options;
+    const m0 = this.score.parts[0]?.measures[0];
+    if (!m0) return null;
+    const g = new Group();
+    // 升降号写在音名**之前**（`MusicCommon.keys` 就是这个写法，成书亦然：`♭B` / `#F`），
+    // 与曲中的「转1=Bb」不同——那一处是既有观感，不在这里改。
+    const name = MusicCommon.keys[m0.key.fifths + 7] ?? "C";
+    const acc = /^([b#])(.+)$/.exec(name);
+    const font = opt.numberFont;
+    const ink = opt.numberBound("1").height;
+
+    let cur = x;
+    const put = (text: string, f: Font, y: number): number => {
+      const tf = new TextFrame();
+      tf.font = f;
+      tf.color = opt.color;
+      tf.text = text;
+      tf.x = cur;
+      tf.y = y;
+      g.add(tf);
+      return tf.measureText();
+    };
+    cur += put("1=", font, baseline);
+    if (acc) {
+      // 成书实测：升降号 0.72 个音名字号、墨迹顶高出音名 0.69 个音名墨迹高
+      cur += put(acc[1], font.makeWithSize(font.size * 0.72), baseline - ink * 0.69) * 1.05;
+      cur += put(acc[2], font, baseline);
+    } else {
+      cur += put(name, font, baseline);
+    }
+
+    cur += ink * 0.37;
+    const top = opt.jpStaffTop;
+    const bot = opt.jpStaffBottom;
+    const r = jpTimeSigItems(m0.time.beats, m0.time.beatType, {
+      height: bot - top,
+      centerY: 0,
+      // 成书这一处的拍值与音名同大小（`roles.keyMeter` 一个字号管两者），
+      // 比曲中的转拍号（0.75 个音符字号）大一点。
+      digitRatio: opt.numberSize / (bot - top),
+      ruleWidth: opt.timeSigRuleWidth > 0 ? opt.timeSigRuleWidth : 1.5,
+      color: opt.color,
+      // **不加粗**：成书这一处调号与拍号同字体同字重，曲中的转拍号才是加粗的那一份。
+      font: opt.numberFont,
+    });
+    for (const it of r.items) {
+      it.x += cur;
+      // 分数线与音名的**墨迹中心**齐平（成书 keyMeterItems 把线放在基线上方 0.34 个墨迹高）
+      it.y += baseline - ink * 0.34;
+      g.add(it);
+    }
+    return g;
   }
 
   /** `h > 0` 时标题块整页居中（老行为，标题页用）；`h = 0` 时从纸顶排起（连续长纸用）。 */

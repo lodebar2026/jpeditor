@@ -485,8 +485,6 @@ export class App implements OmrHost, PlaybackHost {
     opts: {
       /** 容器宽高比（连续长图/混排纸张随谱而变，不能用 CSS 里写死的 960/540）。 */
       aspectRatio?: (i: number) => string;
-      /** 容器宽度（覆盖 CSS 默认）。 */
-      width?: string;
       /** 容器 position（识别浮窗要相对它绝对定位）。 */
       position?: string;
       /** 每页渲染完的额外处理（挂事件、改样式）。 */
@@ -502,7 +500,6 @@ export class App implements OmrHost, PlaybackHost {
       const wrap = document.createElement("div");
       wrap.className = "score-page-wrap";
       if (opts.aspectRatio) wrap.style.aspectRatio = opts.aspectRatio(i);
-      if (opts.width) wrap.style.width = opts.width;
       if (opts.position) wrap.style.position = opts.position;
       wrap.appendChild(svg);
       opts.onPage?.(svg, wrap, i);
@@ -1054,11 +1051,12 @@ export class App implements OmrHost, PlaybackHost {
     const painter = this._mixedPainter;
     this._renderPagesWith(painter.pageCount, (i) => painter.renderPage(i), {
       // Portrait paper sized from the MusicXML page dimensions.
+      // **纸宽不在这里给**：简谱/五线谱/混排共用 `--score-page-max`（styles.css）。
+      // 这里原先单独写 620px，切到混排纸就窄了三分之一。
       aspectRatio: (i) => {
         const { w, h } = painter.pageSize(i);
         return `${w} / ${h}`;
       },
-      width: "calc(min(620px, 100%) * var(--score-zoom, 1))",
       onPage: (svg) => {
         svg.style.width = "100%";
         svg.style.display = "block";

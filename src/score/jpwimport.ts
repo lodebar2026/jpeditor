@@ -203,7 +203,13 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
 
   doPairTuplet(tupNotes);
   updateTimeInf(res);
-  for (const m of res.measures) m.time = ts;
+  // 调号与拍号都要写进小节：原先只写了 `time`，`Measure.key` 一直是默认的 C，
+  // 于是「排版 → 简谱」纸顶那块调号（painter.ts::keyMeter）永远印成 `1=C`。
+  // `keyChange` 不动——那是曲中转调的标志，首调不该冒出一个「转1=X」。
+  for (const m of res.measures) {
+    m.time = ts;
+    m.key = key;
+  }
   return res;
 }
 

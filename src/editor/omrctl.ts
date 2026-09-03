@@ -58,7 +58,6 @@ export interface OmrHost {
     svgOf: (i: number) => SVGSVGElement,
     opts?: {
       aspectRatio?: (i: number) => string;
-      width?: string;
       position?: string;
       onPage?: (svg: SVGSVGElement, wrap: HTMLDivElement, i: number) => void;
       resetPageIndex?: boolean;
@@ -303,7 +302,6 @@ export class OmrController {
     const score = this.score;
     this.host.renderPagesWith(1, () => renderRecognitionSvg(bin, score, this.view), {
       aspectRatio: () => `${bin.w} / ${bin.h}`,
-      width: "calc(min(960px, 100%) * var(--score-zoom, 1))",
       position: "relative", // 浮窗绝对定位相对此容器
       onPage: (svg, wrap) => this.wireInteraction(svg, wrap),
       resetPageIndex: true,

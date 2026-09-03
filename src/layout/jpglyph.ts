@@ -8,7 +8,7 @@
 // 原语一律是**纯函数**：只认坐标与 style，不认 Entry / MChord / PlacedItem 那些模型类型，
 // 各路的坐标换算留在自己的调用点（musicpp 的 `sc = staffHeight/40` 之类别漏进来）。
 
-import { Point } from "../common/geom";
+import { Point, Rect } from "../common/geom";
 import { GraphicLine, GraphicPath, PageItem, TextFrame } from "./layout";
 import type { BarlineSpec } from "./layout";
 import * as S from "../score/score";
@@ -142,20 +142,29 @@ export interface TimeSigStyle {
   color: number;
   /** 数字字体（字号由 `digitRatio × H` 定，传进来的 size 会被覆盖）。 */
   font: Font;
-  /** 数字字号 ÷ H。 */
+  /** 数字字号 ÷ H。**竖向排布只认这一个参数**（见 `TIME_SIG_GAP_EM`）。 */
   digitRatio?: number;
-  /** 上数字基线在分数线**上方** ÷ H。 */
-  upperRatio?: number;
-  /** 下数字基线在分数线**下方** ÷ H。 */
-  lowerRatio?: number;
   /** 分数线长度 ÷ H，**按每一位数字算**（长度 = ratio × H × 位数）。 */
   ruleLengthRatio?: number;
 }
 
+/**
+ * 数字墨迹与分数线墨迹之间的净距 ÷ 拍值字号 —— 就是**减时线与音符**那一格
+ * （`LayoutOptions.jpBelowGap` = 1/9 em，按 PPT 档实测的距离定）。
+ *
+ * 竖向排布因此**只由拍值字号一个参数决定**：上数字的墨迹底离分数线上缘一格、
+ * 下数字的墨迹顶离分数线下缘一格，上下对称。原先是两个「基线 ÷ H」的比例常量
+ * （`upperRatio` / `lowerRatio`），那两个数是按谱面档的数字（0.5625 H）反算的，
+ * 换个字号就散架：混排的数字是 0.75 H，照搬会让两个数字挤到一处、
+ * 分数线还压在下数字的墨迹上。
+ *
+ * 两处口径都按**墨迹**算（数字的墨迹底≈基线、墨迹顶要减去数字高），
+ * 与「数字 ↓ 减时线 ↓ 低音点」那一摞同一把尺子。
+ */
+export const TIME_SIG_GAP_EM = 1 / 9;
+
 export const TIME_SIG_DEFAULTS = {
   digitRatio: 0.5625,
-  upperRatio: 0.075,
-  lowerRatio: 0.46875,
   /**
    * **每一位数字**占的分数线长度 ÷ H。
    *
@@ -182,23 +191,29 @@ export function jpTimeSigItems(
   const font = style.font.makeWithSize(H * (style.digitRatio ?? d.digitRatio));
   const y = style.centerY - style.ruleWidth / 2;
 
-  const mk = (s: string): { tf: TextFrame; w: number } => {
+  const mk = (s: string): { tf: TextFrame; w: number; ink: Rect } => {
     const tf = new TextFrame();
     tf.font = font;
     tf.color = style.color;
     tf.text = s;
-    return { tf, w: tf.measureText() };
+    return { tf, w: tf.measureText(), ink: font.charBound(s) };
   };
   const up = mk(String(beats));
   const lo = mk(String(beatType));
 
-  // **长度按 H 的比例 × 位数**，不再跟着字体量出来的数字宽度走。
+  // **长度按位数算**，不跟着字体量出来的数字宽度走：给了 `ruleLengthRatio` 就按 H 的比例，
+  // 没给就按**拍值字号的半个 em**（数字 advance）——那正是默认比例 0.28125 的来历
+  //（0.5 × 默认 digitRatio 0.5625），字号一改自己跟着走，不必再算一遍比例。
   const digits = Math.max(String(beats).length, String(beatType).length);
-  const width = H * (style.ruleLengthRatio ?? d.ruleLengthRatio) * digits;
+  const width = digits * (style.ruleLengthRatio !== undefined ? H * style.ruleLengthRatio : font.size * 0.5);
 
-  up.tf.y = y - H * (style.upperRatio ?? d.upperRatio);
+  // 竖向：两个数字各离分数线**一格**（TIME_SIG_GAP_EM × 拍值字号，墨迹到墨迹），
+  // `TextFrame.y` 是基线，故上数字要减去墨迹底（数字一般 ≈ 0）、下数字要减去墨迹顶
+  //（负值，即数字高）。`y` 是分数线的**描边中心**。
+  const gap = font.size * TIME_SIG_GAP_EM;
+  up.tf.y = y - style.ruleWidth / 2 - gap - up.ink.bottom;
   up.tf.x = (width - up.w) / 2;
-  lo.tf.y = y + H * (style.lowerRatio ?? d.lowerRatio);
+  lo.tf.y = y + style.ruleWidth / 2 + gap - lo.ink.top;
   lo.tf.x = (width - lo.w) / 2;
 
   const rule = new GraphicLine();
