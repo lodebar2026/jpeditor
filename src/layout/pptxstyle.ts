@@ -52,10 +52,15 @@ export function applyPptxStyle(opt: LayoutOptions): void {
   opt.barlineWidth = 1.5;
   opt.finalBarlineWidth = 3.5;
 
-  // 减时线：线宽 1.25（今 1.5）。基准 y 取 jpBeamDist，于是
-  // 今天的 `jpBeamTop + jpBeamDist*(lev−1)` 退化成旧式的 `jpBeamDist * lev`（lev 1 基）。
-  opt.jpBeamWidth = 1.25;
-  opt.jpBeamTop = opt.jpBeamDist;
+  // 减时线：线宽 1.4（= em/20，同样量自成品；老档 1.25、今默认 1.5）。
+  // **第一道的高度与层间步距也改按 2019 年那批成品
+  // .pptx 量回来的**（`ppt500/`，28pt 上是 4.667 与 3.267）——原先两者都取 `jpBeamDist`
+  // = em/8 = 3.5，减时线贴着数字，投影上看着像粘在音符底下（用户口径：
+  // 「减时线离音符太近」）。低音点那一摞按 `jpBeamDist` 让开减时线、
+  // 旧式八度点阶梯（`LayoutOptions.jpLegacyDotCenter`）也逐级走它，所以两个数一起改。
+  opt.jpBeamWidth = em / 20;
+  opt.jpBeamDist = (em * 7) / 60; // 0.11667 em
+  opt.jpBeamTop = em / 6;
 
   // 拍号只留分数线粗细（比例走默认，见上面小节线那一段）。
   opt.timeSigRuleWidth = 1.5;

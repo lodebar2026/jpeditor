@@ -58,7 +58,7 @@ async function boot() {
   const app = new App(meta, scorePane);
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown };
+  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown; __pptx: unknown };
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
   // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
@@ -67,6 +67,9 @@ async function boot() {
   win.__abc2musicxml = import("./abc/abc2xml");
   // 文本谱（番茄 / 有谱）解析与排版暴露，供 pu-*.mjs 回归。
   win.__pu = import("./pu");
+  // PPTX 导出（序列化器 + PPT 档另排一遍那个 painter）暴露，供 pptx-export.mjs 批量转出用。
+  win.__pptx = Promise.all([import("./editor/pptx"), import("./editor/export")])
+    .then(([pptx, exp]) => ({ ...pptx, pptxPainter: exp.pptxPainter }));
   // 成书重排（BookStyle 注入 + 页面树 → DrawList）暴露，供 rebuild.mjs 用。
   win.__book = Promise.all([
     import("./pdflayout/browser"), import("./layout/painter"), import("./score/musicxml"),

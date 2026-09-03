@@ -16,7 +16,9 @@ export interface GraceMetrics {
   ink: number;
   /** 倚音字号 ÷ 主音字号。 */
   scale: number;
-  /** 高音点的 y（相对主音基线，向上为负）与低音点的 y。 */
+  /** 高音点的 y（相对主音基线，向上为负）与低音点的 y。
+   *  **倚音不用这两个**（倚音的八度点按自己的墨迹边缘排，见 `graceGeometry`）——
+   *  它们是各路画**主音**八度点用的，留在这里是因为两条路共用同一个度量对象。 */
   octaveUpY: number;
   octaveDownY: number;
   /** 多个八度点之间的间距、点半径。 */
@@ -71,16 +73,12 @@ export function graceGeometry(
   const nearest = x + dir * ink * 0.665; // 最靠近主音的那个
   const gy = centerY !== undefined ? centerY : baseline - ink * 0.94;
   const halfBeam = ink * 0.194;
-  let hookAt: { mid: number; y: number } | null = null;
+  let hookAt: { mid: number; y: number; low: boolean } | null = null;
   notes.forEach((gn, i) => {
     // 前倚音：最后一个贴着主音，往左依次排开；后倚音镜像
     const order = dir < 0 ? notes.length - 1 - i : i;
     const gx = nearest + dir * order * step;
     out.digits.push({ text: gn.digit, cx: gx, cy: gy, size });
-    for (let k = 0; k < gn.octave; k++)
-      out.dots.push({ cx: gx, cy: gy + m.octaveUpY * m.scale - k * m.octaveDotGap * 0.7, r: m.octaveDotRadius * 0.75 });
-    for (let k = 0; k < -gn.octave; k++)
-      out.dots.push({ cx: gx, cy: gy + m.octaveDownY * m.scale + k * m.octaveDotGap * 0.7, r: m.octaveDotRadius * 0.75 });
     // 倚音默认八分：一条减时线；时值再短就多一层。比主音的细得多。
     const levels = Math.max(1, Math.log2((gn.duration ?? 8) / 4));
     let lastY = gy + ink * 0.36;
@@ -88,19 +86,65 @@ export function graceGeometry(
       lastY = gy + ink * 0.36 + lv * m.underlineGap * 0.8;
       out.beams.push({ x: gx - halfBeam, y: lastY, w: halfBeam * 2, h: ink * 0.055 });
     }
-    if (order === 0) hookAt = { mid: gx, y: lastY };
+    // 八度点**按倚音自己的墨迹边缘排**（上边缘往上、减时线下边缘往下），净距取
+    // `ink * 0.11`——就是减时线离墨迹底那一截，与这一份里其它比例同一个口径。
+    //
+    // 从前用的是 `m.octaveUpY` / `m.octaveDownY`：那两个数是**相对主音基线**量的
+    //（`bnd.top − jpStackGap` 与 `jpDotRung`），却加在倚音的**墨迹中心** `gy` 上，
+    // 两个原点对不上——低音点因此落进数字里（`jpDotRung × scale ≈ 4pt` 还不到
+    // 倚音墨迹的半高 6pt，用户口径：「倚音的低音点和倚音数字重叠了」），
+    // 高音点则被推到墨迹顶上方一个半字高。
+    // **点半径照主音整体缩小**：倚音的墨迹高是主音的一半（这份文件里 0.50 × ink），
+    // 点也该是一半。原先给 0.75，点比该有的胖出一半，整摞跟着往外顶
+    //（用户口径：「倚音的低音点离音符太远，参考正常音符整体缩小」）。
+    const rr = m.octaveDotRadius * 0.5;
+    // 墨迹到第一个点的净距，同样是**主音那一格缩一半**：PPT 档 28pt 上主音的
+    // 「减时线下缘 → 低音点墨迹顶」是 2.09pt，减半 1.04pt，`ink * 0.055` 折出来 1.10pt。
+    const inkGap = ink * 0.055;
+    const dotStep = rr * 2 + inkGap;
+    for (let k = 0; k < gn.octave; k++)
+      out.dots.push({ cx: gx, cy: gy - ink * 0.25 - inkGap - rr - k * dotStep, r: rr });
+    for (let k = 0; k < -gn.octave; k++)
+      out.dots.push({ cx: gx, cy: lastY + ink * 0.055 + inkGap + rr + k * dotStep, r: rr });
+    if (order === 0) hookAt = { mid: gx, y: lastY, low: gn.octave < 0 };
   });
   if (hookAt === null) return out;
-  const { mid, y: uy } = hookAt as { mid: number; y: number };
+  const { mid, y: uy, low } = hookAt as { mid: number; y: number; low: boolean };
   const toward = -dir; // 前倚音（画在左）朝右弯，后倚音朝左弯
   const drop = ink * 0.304;
   const reach = ink * 0.249 * toward;
+  const width = ink * 0.055;
+  // **有低音点时钩子要错开**：低音点排在数字正下方（cx = gx），钩子本来也从那儿垂下来，
+  // 两者正好叠在一起（用户口径：「有低音点时需要把倚音的小弧线左移错开」）。两件事一起做：
+  //   1. 起脚往**反着弯的方向**挪一个「点半径 + 半个线宽 + 一格」——仍落在减时线上
+  //      （减时线半长 0.194 ink，让的量只有它的六成）；
+  //   2. 控制点改成**先垂直落到底、再横着甩过去**，这样扫到低音点那一段 x 时曲线已经
+  //      在点的下缘之外。只挪起脚不够：默认那套控制点是斜着扫的，半路正好从点上穿过。
+  const hx = low ? mid - toward * (m.octaveDotRadius * 0.5 + width / 2 + ink * 0.055) : mid;
+  const dy = low ? drop * 1.1 : drop; // 有低音点时再垂深一成，横甩那一段稳稳走在点的下面
   out.hook = {
-    m: [mid, uy + ink * 0.033],
-    c: [mid, uy + drop * 0.6, mid - reach * 0.15, uy + drop * 0.87, mid + reach, uy + drop],
-    width: ink * 0.055,
+    m: [hx, uy + ink * 0.033],
+    c: low
+      ? [hx, uy + dy, hx, uy + dy, mid + reach, uy + dy] // 直角圆转：先落到底再横甩
+      : [hx, uy + drop * 0.6, hx - reach * 0.15, uy + drop * 0.87, mid + reach, uy + drop],
+    width,
   };
   return out;
+}
+
+/**
+ * 一组倚音的**墨迹底缘**（相对传给 `graceGeometry` 的那个 `centerY`）。
+ *
+ * 最低的那一笔不一定是数字：减时线在数字之下、连接钩还要再往下垂一截，有低音点时
+ * 低音点更低。「倚音底缘贴着主音墨迹顶」这条落位规则要用它——按 `centerY = 0` 排一遍
+ * 量出底缘，再回填真正的 `centerY`（见 `layout.ts::addGraceNotes`）。
+ */
+export function graceBottom(g: GraceGeom, m: GraceMetrics): number {
+  let low = m.ink * 0.25; // 数字自己的墨迹底
+  for (const b of g.beams) low = Math.max(low, b.y + b.h);
+  for (const d of g.dots) low = Math.max(low, d.cy + d.r);
+  if (g.hook) low = Math.max(low, g.hook.c[5] + g.hook.width / 2);
+  return low;
 }
 
 /** 一组倚音占多宽（主音之外的那一截）——排版要按它给音符前面留位。 */

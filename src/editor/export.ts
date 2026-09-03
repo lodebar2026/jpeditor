@@ -117,7 +117,7 @@ export async function exportPptx(app: App): Promise<void> {
 }
 
 /** 按 PPT 档另排一份简谱。屏幕已在 PPT 档时直接用屏幕那个，省一次排版。 */
-function pptxPainter(app: App): JinpuPainter {
+export function pptxPainter(app: App): JinpuPainter {
   if (app.jpProfile === "pptx") return app.painter;
   const p = new JinpuPainter(app.fontSize);
   const opt = p.layout.options;
