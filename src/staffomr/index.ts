@@ -23,7 +23,7 @@ import type { SPage, Staff } from "./model";
 import { buildNotes, checkBars, findBeams, findClefKeyTime, lastTimeSignature, staffOmrOptions, type BarCheck, type BeamShape, type StaffContext, type StaffNote, type StemInfo } from "./notedata";
 import { analyzeText, attachHarmonies, attachLyrics, buildLyricLines, type LyricLine, type TextAnalysis } from "./textanalyze";
 import type { TextGlyphLookup } from "./textglyphs";
-import { attachSlurs, findSlurs, findWedges, markSlurNotes, reconnectSlurs, type SlurArc } from "./slur";
+import { attachSlurs, findSlurs, mergeArcHalves, findWedges, markSlurNotes, reconnectSlurs, type SlurArc } from "./slur";
 import { attachDynamics, attachNotations, findNotations, findTuplets } from "./notations";
 import { applyOctaveShifts, attachVoltas, findOctaveShifts, findVoltas, type OctaveShift, type Volta } from "./octave";
 
@@ -90,7 +90,8 @@ export async function recognizeStaffPage(
   // 弧要在音符之后找：判断「哪条曲线是谱表括号」要用到系统线，挂两端要用到音符。
   // 渐强渐弱要**先于**弧挑出来——它们也是又宽又扁的图形。
   findWedges(pg);
-  const slurs = findSlurs(pg);
+  // 一条弧在这批 PDF 里画成左右两半两个对象，挂音符之前先并回一条
+  const slurs = mergeArcHalves(findSlurs(pg), pg.normalStaffSpace || pg.space);
   attachSlurs(slurs, notes, pg.normalStaffSpace || pg.space);
   reconnectSlurs(pg, slurs);
   markSlurNotes(slurs);
