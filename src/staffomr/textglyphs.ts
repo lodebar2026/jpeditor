@@ -39,6 +39,14 @@ export interface TextGlyphClass {
 export interface TextGlyphDict {
   book: string;
   classes: TextGlyphClass[];
+  /**
+   * **贴图字**：指纹 → 汉字。
+   *
+   * 这本书把造字区的汉字（禰 一类）当 JBIG2 位图贴进内容流，不走文字层
+   * （见 `omr/vectext.ts::maskRun`）。它们没有轮廓、没有码位，只能按位图指纹查。
+   * 全书 277 处、归成 22 类，由 `gen-staffmasks.mjs` 拿 GT 的歌词投票定案。
+   */
+  masks?: Record<string, string>;
 }
 
 export const textClassId = (font: string, key: string): string => font + "|" + key;
@@ -166,13 +174,21 @@ export class TextGlyphBuilder {
 /** 识别时用的查表器：字形 → 字符。查不到就退回 ToUnicode 的结果。 */
 export class TextGlyphLookup {
   private map = new Map<string, string>();
-  constructor(dict: TextGlyphDict) {
+  private masks = new Map<string, string>();
+  /** 字典里没有的贴图字读成什么。默认空串（= 不吐字）；
+   *  建库那一路（`gen-staffmasks.mjs`）传一个占位汉字，好让它在歌词行里占住位子去对 GT。 */
+  private maskPlaceholder: string;
+  constructor(dict: TextGlyphDict, maskPlaceholder = "") {
     for (const c of dict.classes) if (c.char) this.map.set(textClassId(c.font, c.key), c.char);
+    for (const [k, v] of Object.entries(dict.masks ?? {})) this.masks.set(k, v);
+    this.maskPlaceholder = maskPlaceholder;
   }
   get size(): number {
     return this.map.size;
   }
   lookup(font: string, g: VecGlyph): string {
+    // 贴图字先查（它没有轮廓，`glyphClassKey` 一律落空）
+    if (g.maskSig) return this.masks.get(g.maskSig) ?? this.maskPlaceholder;
     const id = glyphClassKey(font, g);
     if (!id) return g.unicode;
     return this.map.get(id) ?? g.unicode;

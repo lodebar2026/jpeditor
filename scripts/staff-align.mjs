@@ -255,6 +255,8 @@ export async function alignSongs(opts = {}) {
             .filter((m) => m.id),
           // 形近补字要用的签名（只带首个字形的：投票也只投单字形音节）
           sig: g0 ? cli.glyphSig(g0) : undefined,
+          // 贴图字（JBIG2 位图当字用）的指纹；`gen-staffmasks.mjs` 拿它投票
+          maskSig: g0?.maskSig,
           uni: g0?.unicode ?? "",
           // 单字形音节的墨迹尺寸（em）。建库那一路靠它把标点挡在外面——
           // 标点的墨迹只有半个字大，而 GT 那侧的标点已经被归一化抹掉了。

@@ -9,7 +9,7 @@
 //
 // **要跑好几轮**：字典一补上，中文标题就读得出来了，于是更多曲子能按标题对上 GT，
 // 于是又有更多歌词可投票。轮次之间只看「定案类数」还在不在涨。
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { alignSongs, lev, loadT2S, loadS2T } from "./scripts/staff-align.mjs";
 
 const args = process.argv.slice(2);
@@ -135,6 +135,12 @@ for (let round = 1; round <= ROUNDS; round++) {
 const fuzzy = cli0.fuzzyFill(dict);
 console.log(`形近补字 ${fuzzy} 类（末轮一次性），定案共 ${dict.classes.filter((c) => c.char).length} 类`);
 
+// **贴图字表要原样带过去**（`masks`，见 gen-staffmasks.mjs）：那一档不是靠轮廓聚类的，
+// 这里重建的是字形类，别把它冲掉。
+try {
+  const prev = JSON.parse(await readFile(OUT, "utf8"));
+  if (prev.masks) dict.masks = prev.masks;
+} catch { /* 头一回建库，没有旧的 */ }
 await writeFile(OUT, JSON.stringify(dict, null, 1));
 console.log("→", OUT);
 

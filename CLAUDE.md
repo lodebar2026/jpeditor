@@ -52,7 +52,9 @@ npm run build && node gen-pu-gt.mjs                    # 生成和弦 GT 底稿�
 npm run build:cli && node gen-staffglyphs.mjs          # 五线谱：建字形库 + 人工确认表
 node gen-stafflyrics.mjs                               # 五线谱：拿 GT 自举正文字形字典（修乱码 CJK）
 npm run build && node gen-staffocr.mjs                 # 五线谱：未定字形送 OCR 兜底（与上一步交替跑）
+npm run build:cli && node gen-staffmasks.mjs            # 五线谱：贴图字（JBIG2 位图当字用）建库
 node staff-report.mjs && node staff-diff.mjs           # 五线谱：逐页事实 + 逐首对拍（基线断言）
+node staff-crop.mjs 110 40,360,580,400 /tmp/a.png      # 五线谱：按识别用的坐标裁一块原件出来看
 node staff-export.mjs <页范围> out.musicxml            # 五线谱：识别 → MusicXML
 npm run build && node staff-ui-check.mjs [页号]        # 五线谱：编辑器接线的端到端检查
 ```
@@ -367,8 +369,17 @@ Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保�
   标题命中的是**一组候选**不是一首（全书三组同名，如 075/135 都叫「耶稣爱你」）。
   **斜杠符头**（前奏「照这个节奏弹和弦」那种，`StaffNote.slash`）落在第三线上，
   当音符就是一串 B4 四分——不进旋律序列，MusicXML 里带 `<notehead>slash</notehead>`。
-  **歌词剩下那一成大半是底本缺字**：97 处「祢」在 PDF 里根本没画
-  （pdfjs / poppler / 算子流三条路都确认），别再去调判据找它。
+  **造字区的汉字（禰/祢）是 JBIG2 贴图**，不在文字层：`openPdf` **必须给 `wasmUrl`**，
+  不给的话 pdfjs 解不开 JBIG2 就**整个丢掉那个 XObject**，文字层/算子流/poppler
+  三条路一起看不见它——一度被误判成「底本缺字」（**三个工具都读不到 ≠ 文件里没有**，
+  它们可能共用同一层没打开的开关；查实靠自己 inflate 内容流）。
+  全书 277 处由 `gen-staffmasks.mjs` 按位图指纹建表（GT 投票 + 形近 + `maskmanual.json`
+  人工确认），定案 272 个；它与 `gen-stafflyrics.mjs` 要**交替跑**，且后者要把 `masks` 带过去。
+  接上之后歌词 92.2% → 95.0%。
+  **复合音符字形**（Anastasia 把「符头+符干+符尾」画成一个字形，码位映到 `metNote8thUp` 一族）
+  要收编成音符（`adoptCompositeNotes`，全书 29 处）：只收落在谱表里的、盒收窄到符头、
+  **符干朝向从 32×32 形状签名自己看**（签名行号是字形坐标 y 向上，行号小 = 符头在下）。
+  **全休止与半休止是同一个方块**，按「坐在中线上（半）还是吊在上面一线下（全）」判。
   编辑器接入在 `staffomr/browser.ts`（`isStaffPdf` 判该走哪条路）+ `omrctl.ts`：
   产物**只进混排视图**（`OmrHost.adoptStaffXml`），不走 `importBytes`——那条对单声部
   MusicXML 会转简谱 Score，五线谱装不进去（直接抛 `measure has no chord`）。

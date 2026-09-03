@@ -7,6 +7,7 @@
 import { readFile, readdir, mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, extname, basename } from "node:path";
+import { pathToFileURL } from "node:url";
 import { decodeJpwabc } from "./harness.mjs";
 
 /** 500 首语料默认位置。用 env `HYMN500` 覆盖。 */
@@ -28,10 +29,11 @@ export async function loadCli() {
   return import(p);
 }
 
-/** pdfjs 的 Node 构建（legacy，无需 worker；矢量路不解码位图，故不给 wasmUrl）。 */
+/** pdfjs 的 Node 构建（legacy，无需 worker）。 */
 export async function loadPdfjs() {
   return import("pdfjs-dist/legacy/build/pdf.mjs");
 }
+
 
 /** 打开 PDF，返回 { pdfjs, doc, OPS }。
  *
@@ -47,6 +49,15 @@ export async function openPdf(path = CORPUS_PDF) {
     isEvalSupported: false,
     disableFontFace: true,
     fontExtraProperties: true,
+    // **`wasmUrl` 不是可有可无**：赞美之泉那本把造字区的字（禰 之类）当成 **JBIG2 位图**
+    // 贴进内容流（`/Im2 Do`，全书 277 处）。没有它 pdfjs 解不开 JBIG2，
+    // 会**整个丢掉那个 XObject**（`Jbig2Error: JBig2 failed to initialize` →
+    // `ignoring XObject`）——于是那些字在文字层、路径层、算子流里通通看不见，
+    // 一度被当成「底本自己缺字」。见 docs/实现/五线谱识别.md 的「贴图字」。
+    // （Node 的 fetch 不认 `file:`，wasm 本身其实没加载成功——pdfjs 随即退回
+    //   自带的纯 JS 解码器 `jbig2_nowasm_fallback`，位图照样解得出来。
+    //   要紧的是**把 wasmUrl 给出去**：不给的话 pdfjs 连退路都不走。）
+    wasmUrl: pathToFileURL(join(process.cwd(), "node_modules/pdfjs-dist/wasm/")).href,
   }).promise;
   return { pdfjs, doc, OPS: pdfjs.OPS };
 }
