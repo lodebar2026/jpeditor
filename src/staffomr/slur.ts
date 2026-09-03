@@ -118,6 +118,45 @@ export function findSlurs(pg: SPage): SlurArc[] {
   return out;
 }
 
+/**
+ * **一条弧画成两个对象**：这一批 PDF 把每条弧从极点处劈成左右两半，各是一个路径对象
+ * （实测 p170 那些连音线：`(283.9,173.3)→(289.8,175.0)` 与 `(289.8,175.0)→(295.7,173.3)`
+ * 明明是同一条）。不并回去的话，每一半各自去找两端的音符：
+ * 左半的右端落在弧顶下面那个音符上，两端音高就不同了——**连音线整批读成圆滑线**
+ * （全书 113 处 `t→s` + 111 处 `T→S`，弧的条数也比 GT 多出两成）。
+ *
+ * 判据：前一条的右端与后一条的左端**重合**（五分之一格以内）、朝向相同，
+ * 且接口正好是**极点**——朝下的弧是「前一段降、后一段升」，朝上的反过来。
+ * 极点这一条是要害：两条**真的相邻**的弧（前一条收在某个音符上、后一条从它起头）
+ * 端点也重合，但那里是两条弧各自的端，前一段升、后一段降，正好相反。
+ */
+export function mergeArcHalves(arcs: SlurArc[], sp: number): SlurArc[] {
+  const tol = sp * 0.2;
+  const sorted = arcs.slice().sort((a, b) => a.lx - b.lx);
+  const used = new Set<SlurArc>();
+  const out: SlurArc[] = [];
+  /** b 接得上 a 吗（端点重合 + 接口是极点）。 */
+  const joins = (a: SlurArc, b: SlurArc): boolean => {
+    if (b.above !== a.above) return false;
+    if (Math.abs(b.lx - a.rx) > tol || Math.abs(b.ly - a.ry) > tol) return false;
+    return a.above ? a.ry < a.ly && b.ry > b.ly : a.ry > a.ly && b.ry < b.ly;
+  };
+  for (const a of sorted) {
+    if (used.has(a)) continue;
+    used.add(a);
+    const cur: SlurArc = { ...a };
+    for (;;) {
+      const b = sorted.find((q) => !used.has(q) && joins(cur, q));
+      if (!b) break;
+      used.add(b);
+      cur.rx = b.rx;
+      cur.ry = b.ry;
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
 /** 从路径点算出弧的两端与朝向（`SlurTie::SlurTie`）。 */
 function arcOf(o: PObj): SlurArc | null {
   const pts = pathPoints(o.path!);
