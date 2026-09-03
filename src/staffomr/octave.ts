@@ -121,14 +121,17 @@ export function findVoltas(pg: SPage): Volta[] {
   const sp = pg.normalStaffSpace || pg.space;
   const out: Volta[] = [];
   const hlines = pg.segs.filter((s) => s.isH && !s.hasAnyTag() && s.len > sp * 3);
-  const vlines = pg.segs.filter((s) => s.isV && !s.hasAnyTag() && s.len > sp * 0.8 && s.len < sp * 3);
+  // 竖钩**不限长**：书上的钩有长有短（实测 p172 那条从横线一直垂到谱表顶，7.9 格），
+  // 原先卡在三格以内，那几首的房号一个都认不出来。上限只用来挡掉小节线之类的长竖线。
+  const vlines = pg.segs.filter((s) => s.isV && !s.hasAnyTag() && s.len > sp * 0.8 && s.len < sp * 10);
   for (const hl of hlines) {
-    // 只看谱表上方的横线
-    const stf = pg.staves.find((st) => hl.cy < st.box.top && st.box.top - hl.cy < sp * 5);
-    if (!stf) continue;
     // 左端下垂的竖钩：与横线左端同 x、从横线往下伸
     const hook = vlines.find((v) => Math.abs(v.cx - hl.left) < sp * 0.6 && Math.abs(v.top - hl.cy) < sp * 0.6);
     if (!hook) continue;
+    // 这一房罩着的那行谱：**钩底贴着谱表顶**——这比「横线离谱表多远」结实得多
+    // （横线的高度取决于这一行上方还有没有歌词/和弦，能差出两倍谱表高）。
+    const stf = pg.staves.find((st) => hook.bottom <= st.box.top + sp && st.box.top - hook.bottom < sp * 2);
+    if (!stf) continue;
     // 钩右边、横线下方紧挨着的数字
     const num = pg.objs.find((o) => {
       if (!o.run || o.hasAnyTag()) return false;

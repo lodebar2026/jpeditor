@@ -7,7 +7,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   openPdf, eachPage, loadCli, ZMZQ_PDF, ZMZQ_GT_DIR,
-  xmlStaffNotes, xmlStaffTypes, xmlTitles, xmlLyricVerses, xmlSlurMarks, xmlStaffPitches, xmlMeasureCount, gtRepeats,
+  xmlStaffNotes, xmlStaffTypes, xmlTitles, xmlLyricVerses, xmlSlurMarks, xmlStaffPitches, xmlMeasureCount, gtRepeats, gtKeyTime,
 } from "./node-harness.mjs";
 
 /** 在 `hay` 的前若干音里找与 `needle` 最像的一个等长窗口，返回相似度。
@@ -68,7 +68,7 @@ export async function alignSongs(opts = {}) {
   for (const f of gtFiles) {
     const xml = await readFile(join(ZMZQ_GT_DIR, f), "utf8");
     const t = xmlTitles(xml);
-    songs.push({ file: f, id: f.split(".")[0], ...t, notes: xmlStaffNotes(xml), types: xmlStaffTypes(xml), verses: xmlLyricVerses(xml), slurs: xmlSlurMarks(xml), pitches: xmlStaffPitches(xml), measures: xmlMeasureCount(xml), repeats: gtRepeats(xml) });
+    songs.push({ file: f, id: f.split(".")[0], ...t, notes: xmlStaffNotes(xml), types: xmlStaffTypes(xml), verses: xmlLyricVerses(xml), slurs: xmlSlurMarks(xml), pitches: xmlStaffPitches(xml), measures: xmlMeasureCount(xml), repeats: gtRepeats(xml), keyFifths: gtKeyTime(xml).fifths });
   }
   log(`GT ${songs.length} 首`);
 
@@ -162,6 +162,10 @@ export async function alignSongs(opts = {}) {
         0,
       ),
       octaves: r.octaves.length,
+      // 本页的调号（升号计正、降号计负），取第一个系统顶行的那一份。
+      // 对拍要用：**这本书印的调常与 GT 不同**（实测 272 首谱面 G 大调、GT E 大调），
+      // 整首差一个纯音程不是读错，与「整首差一个八度」是同一类事，得分开记。
+      fifths: pageFifths(r),
     });
   });
   log(`识别 ${doc.numPages} 页 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
@@ -278,6 +282,16 @@ export async function alignSongs(opts = {}) {
       .sort((a, b) => order.get(a.staff) - order.get(b.staff) || a.x - b.x);
   }
 
+  /** 这一页的调号：第一个系统顶行的调号记号，升号计正、降号计负。 */
+  function pageFifths(r) {
+    const st = r.page.systems[0]?.top ?? r.page.staves[0];
+    if (!st) return null;
+    const key = r.ctx.get(st)?.key ?? [];
+    const sharps = key.filter((k) => k.code === "accidentalSharp").length;
+    const flats = key.filter((k) => k.code === "accidentalFlat").length;
+    return sharps - flats;
+  }
+
   function durType(n) {
     const map = [[2, "breve"], [1, "whole"], [1 / 2, "half"], [1 / 4, "quarter"], [1 / 8, "eighth"], [1 / 16, "16th"], [1 / 32, "32nd"], [1 / 64, "64th"]];
     let best = "quarter";
@@ -342,10 +356,11 @@ export async function alignSongs(opts = {}) {
       for (const [v, a] of Object.entries(pageOf.get(p)?.lyricGlyphs ?? {})) (lyricGlyphs[v] ??= []).push(...a);
       for (const [v, t] of Object.entries(pageOf.get(p)?.verses ?? {})) verses[v] = (verses[v] ?? "") + t;
     }
+    const fifths = pageOf.get(page)?.fifths ?? null;
     const titleHit = (pageOf.get(page)?.titles ?? [])
       .map((t) => index.get(/[\u4e00-\u9fff]/.test(t.text) ? "zh:" + normZh(t.text) : "en:" + normEn(t.text)))
       .find(Boolean);
-    return { from: page, to: end, notes, types, slurs, pitches, measures, repeats, barStyles, endings, octaves, verses, lyricGlyphs, titleGlyphs: pageOf.get(page)?.titleGlyphs ?? [], titleHit };
+    return { from: page, to: end, notes, types, slurs, pitches, measures, repeats, barStyles, endings, octaves, fifths, verses, lyricGlyphs, titleGlyphs: pageOf.get(page)?.titleGlyphs ?? [], titleHit };
   });
 
 
@@ -432,7 +447,7 @@ export async function alignSongs(opts = {}) {
     usedSpan.add(i);
     usedSong.add(j);
     const sp = spans[i];
-    results.push({ song: songs[j], from: sp.from, to: sp.to, cjkRatio: sp.cjkRatio, notes: sp.notes, types: sp.types, slurs: sp.slurs, pitches: sp.pitches, measures: sp.measures, repeats: sp.repeats, barStyles: sp.barStyles, endings: sp.endings, octaves: sp.octaves, verses: sp.verses, lyricGlyphs: sp.lyricGlyphs, titleGlyphs: sp.titleGlyphs });
+    results.push({ song: songs[j], from: sp.from, to: sp.to, cjkRatio: sp.cjkRatio, notes: sp.notes, types: sp.types, slurs: sp.slurs, pitches: sp.pitches, measures: sp.measures, repeats: sp.repeats, barStyles: sp.barStyles, endings: sp.endings, octaves: sp.octaves, fifths: sp.fifths, verses: sp.verses, lyricGlyphs: sp.lyricGlyphs, titleGlyphs: sp.titleGlyphs });
   }
   results.sort((a, b) => a.from - b.from);
   log(`对上 ${results.length}/${songs.length} 首（其中标题直接命中 ${spans.filter((s) => s.titleHit).length} 个首页）`);

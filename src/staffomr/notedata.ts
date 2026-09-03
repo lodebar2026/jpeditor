@@ -466,8 +466,21 @@ function beamConnect(b: BeamShape, st: StemInfo, sp: number): BeamHit {
   if (x < b.x0 - sp * 0.2) return "none";
   if (x > b.x1 + sp * 0.2) return "none";
   const y = beamY(b, x);
-  // 符干的**某一端**要落在符杠附近（符杠总在符干的远端）
-  if (Math.abs(st.seg.top - y) >= sp && Math.abs(st.seg.bottom - y) >= sp) return "none";
+  // 符干的**某一端**要落在符杠附近（符杠总在符干的远端）。
+  //
+  // 光有这一条不够：**第二、三条符杠是往符头方向叠上去的**（每条约四分之三格），
+  // 离符干末端一格开外，整条接不上符干 → 层数只剩一层 → 十六分读成八分
+  // （实测这是全书时值的头号错误，一条判据吃掉 158 处）。
+  // 所以再补一个窗口：从符干**离符头远的那一端**朝符头量，两格以内都算接上
+  // （三条符杠正好一格半）。反方向不放宽——那一侧不该有符杠。
+  const near = Math.abs(st.seg.top - y) < sp || Math.abs(st.seg.bottom - y) < sp;
+  if (!near) {
+    const noteY = st.notes.reduce((a, n) => a + (n.box.top + n.box.bottom) / 2, 0) / st.notes.length;
+    const far = Math.abs(st.seg.top - noteY) > Math.abs(st.seg.bottom - noteY) ? st.seg.top : st.seg.bottom;
+    const toward = Math.sign(noteY - far) || 1;
+    const d = (y - far) * toward;
+    if (d < 0 || d > sp * 2) return "none";
+  }
   if (Math.abs(x - b.x0) < sp / 5) return "begin";
   if (Math.abs(x - b.x1) < sp / 5) return "end";
   return "middle";
