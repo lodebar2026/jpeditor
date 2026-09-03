@@ -44,6 +44,16 @@ const shiftOct = (a, n) =>
   });
 
 const LETTERS = ["C", "D", "E", "F", "G", "A", "B"];
+/** 五度圈上升降号落在哪个音名（音名序号 C=0…B=6）：升 F C G D A E B、降 B E A D G C F。 */
+const SHARP_ORDER = [3, 0, 4, 1, 5, 2, 6];
+const FLAT_ORDER = [6, 2, 5, 1, 4, 0, 3];
+/** 这个调号给这个音名的升降（+1/0/−1）。 */
+function keyAlterOf(fifths, letterIdx) {
+  if (!fifths) return 0;
+  return fifths > 0
+    ? (SHARP_ORDER.slice(0, fifths).includes(letterIdx) ? 1 : 0)
+    : (FLAT_ORDER.slice(0, -fifths).includes(letterIdx) ? -1 : 0);
+}
 /** 整首平移 n 个**音级**（全音阶级数，7 = 一个八度）。升降号原样带着——
  *  移调版的谱面升降号本来就跟着调号走，逐音的临时记号在这一档不参与判断。 */
 const shiftStep = (a, n) => {
@@ -56,6 +66,32 @@ const shiftStep = (a, n) => {
     return LETTERS[((idx % 7) + 7) % 7] + m[2] + (Math.floor(idx / 7) - 1);
   });
 };
+/**
+ * 含升降的音高整首移调。**不能像 `shiftStep` 那样把升降号原样带着**：
+ * 移调之后调号变了，同一个音级在新调里该带的升降也跟着变——
+ * G 大调的 `F♯` 移到 E 大调是 `A♮`，原样带过去就成了 `A♯`。
+ * 保持不变的是「**相对调号的偏离**」（临时记号），所以
+ * 新升降 = 原升降 − 原调给原音名的升降 + 新调给新音名的升降。
+ *
+ * 不这么算的话，272《耶和华尼西》（谱面 1 个升号、GT 4 个）的音高档只有 46.2%，
+ * 而音符档是 96.5%——那不是读错，是口径没跟着移调。
+ */
+const shiftPitch = (a, n, gotFifths, gtFifths) => {
+  if (!n) return a;
+  return a.map((t) => {
+    if (t === "R") return "R";
+    const m = /^([A-G])([+-]*)(-?\d+)$/.exec(t);
+    if (!m) return t;
+    const oldIdx = LETTERS.indexOf(m[1]);
+    const alter = (m[2].match(/\+/g) || []).length - (m[2].match(/-/g) || []).length;
+    const idx = (Number(m[3]) + 1) * 7 + oldIdx - n;
+    const newIdx = ((idx % 7) + 7) % 7;
+    const na = alter - keyAlterOf(gotFifths, oldIdx) + keyAlterOf(gtFifths, newIdx);
+    const mark = na > 0 ? "+".repeat(na) : na < 0 ? "-".repeat(-na) : "";
+    return LETTERS[newIdx] + mark + (Math.floor(idx / 7) - 1);
+  });
+};
+
 /**
  * **书上印的调与 GT 不同**时，整首的音名会齐刷刷差一个音程。
  *
@@ -95,7 +131,7 @@ for (const r of results) {
   // 调号差蕴含的整首移调：先把谱面这一侧平移回 GT 的调，再按老规矩比。
   const ks = keyShift(r.fifths, r.song.keyFifths);
   const rNotes = shiftStep(r.notes, ks);
-  const rPitches = shiftStep(r.pitches, ks);
+  const rPitches = shiftPitch(r.pitches, ks, r.fifths, r.song.keyFifths);
   let an = acc(rNotes, r.song.notes);
   let oct = 0;
   for (const n of [-1, 1]) {
@@ -158,6 +194,23 @@ const avg = (a, k) => (a.length ? (a.reduce((x, r) => x + r[k], 0) / a.length) *
 const withV = rows.filter((r) => r.av !== null);
 console.log(`\n【数目相当】${sized.length} 首：音符 ${avg(sized, "an").toFixed(1)}%  音级 ${avg(sized, "al").toFixed(1)}%  ` +
   `音高（含升降）${avg(sized, "ap").toFixed(1)}%  时值 ${avg(sized, "at").toFixed(1)}%`);
+/**
+ * **「同一版」这一档才回答「给一份新谱能读到多准」**。
+ *
+ * 「数目相当」只保证两边长度接近，里头还混着**版本不同**的曲子：这本书有一批只印了
+ * 英文歌词版，而 GT 是中文版，两版的编配本来就有出入（多一段间奏、尾句写法不同），
+ * 那些差异不是识别错。分辨办法是**歌词**：谱面与 GT 同为中文、且歌词对得上八成以上，
+ * 基本可以断定是同一份谱，剩下的差异才是识别的账。
+ * 实测两档差得很清楚：同一版 61 首音符 98.6%，无中文歌词那 20 首只有 94.6%。
+ */
+const sameEd = sized.filter((r) => r.av !== null && !r.scriptMismatch && r.av >= 0.8);
+const noZh = sized.filter((r) => r.scriptMismatch);
+console.log(`【同一版】${sameEd.length} 首（谱面与 GT 同为中文、歌词 ≥80%）：` +
+  `音符 ${avg(sameEd, "an").toFixed(1)}%  音级 ${avg(sameEd, "al").toFixed(1)}%  ` +
+  `音高 ${avg(sameEd, "ap").toFixed(1)}%  时值 ${avg(sameEd, "at").toFixed(1)}%  ` +
+  `弧线 ${avg(sameEd, "as").toFixed(1)}%（音符全对 ${sameEd.filter((r) => r.an === 1).length} 首）`);
+console.log(`　　对照：谱面没有中文歌词的 ${noZh.length} 首（英文版 / 伴奏谱，版本存疑）` +
+  `音符 ${avg(noZh, "an").toFixed(1)}%  时值 ${avg(noZh, "at").toFixed(1)}%`);
 const mOk = sized.filter((r) => r.gotM === r.gtM).length;
 console.log(`小节数：对上 ${mOk}/${sized.length} 首（GT 合计 ${sized.reduce((a, r) => a + r.gtM, 0)} / 识别 ${sized.reduce((a, r) => a + r.gotM, 0)}）`);
 console.log(`反复记号：GT 合计 ${sized.reduce((a, r) => a + r.gtRep, 0)} / 识别 ${sized.reduce((a, r) => a + r.gotRep, 0)}；` +
@@ -201,6 +254,12 @@ const now = {
   slurAcc: +avg(sized, "as").toFixed(2),
   pitchAcc: +avg(sized, "ap").toFixed(2),
   lyricAcc: +(nV ? (sumV / nV) * 100 : 0).toFixed(2),
+  // 「同一版」那一档（见上）：这几个数才是「给一份新谱能读到多准」的答案
+  sameEd: sameEd.length,
+  sameNoteAcc: +avg(sameEd, "an").toFixed(2),
+  sameTypeAcc: +avg(sameEd, "at").toFixed(2),
+  sameSlurAcc: +avg(sameEd, "as").toFixed(2),
+  samePitchAcc: +avg(sameEd, "ap").toFixed(2),
   // 小节数与反复只记**合计**，不进「不许变差」的门槛：
   // 逐首完全相同的只有个位数，噪声比信号大（见文档「现状与待办」）。
 };
