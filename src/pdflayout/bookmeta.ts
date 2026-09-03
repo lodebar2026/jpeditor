@@ -1,8 +1,8 @@
 // 书级元数据：原书上那些 musicxml 装不下的内容。
 //
 // 出处与去处：
-//   page-report.mjs → pdf-layout.json（666 个 PageSpec）→ **本文件** → 校对.db
-//   → rebuild.mjs（B 路重排）照着排回去
+//   scripts/page-report.mjs → pdf-layout.json（666 个 PageSpec）→ **本文件** → 校对.db
+//   → scripts/rebuild.mjs（B 路重排）照着排回去
 //
 // 装不下的是哪些：调号拍号原文（`1=♭B 4/4 (1=A)`，musicxml 只有 fifths/beats，
 // 而且拍号在原书是上下叠排）、段落词（副歌/间奏）、花边框里的圣诗故事与经文注解、
@@ -444,7 +444,7 @@ function hbarAsYi(items: TextRun["chars"], ov?: CharOverride): TextRun["chars"] 
   if (!em) return items;
   return items.map((c) => {
     // `ov` 给出真字就轮不到这条规则。**`□` 不算真字**——那是对比册
-    //（`gen-annocheck.mjs`）给读不出的位置画的占位符，正路那边是留空的，
+    //（`scripts/gen-annocheck.mjs`）给读不出的位置画的占位符，正路那边是留空的，
     // 不认它的话对比册里这些「一」会全部显示成缺字。
     const cur = ov?.(c.key, c.ch);
     if (c.ch !== UNREAD || (cur && cur !== "□")) return c;

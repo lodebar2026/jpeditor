@@ -242,11 +242,11 @@ note 子元素顺序：`(pitch|rest), duration, tie*, voice?, type?, dot*, time-
 
 ```bash
 npm run build
-node xml-roundtrip.mjs [曲名子串]   # 14 首 .jpwabc + 1 组 ABC 底本，R/P/L 三组断言
-node omr-export-check.mjs [曲名子串] # 真跑一遍 OMR，用识别原文当底本走完整导出链路
+node scripts/xml-roundtrip.mjs [曲名子串]   # 14 首 .jpwabc + 1 组 ABC 底本，R/P/L 三组断言
+node scripts/omr-export-check.mjs [曲名子串] # 真跑一遍 OMR，用识别原文当底本走完整导出链路
 ```
 
-`xml-roundtrip.mjs`：
+`scripts/xml-roundtrip.mjs`：
 
 - **R 组** 全量序列化往返。定点性从**第二轮**起算（第一轮 jpw→XML 会被导入端归一：
   `findRefrain` 把尾段歌词折成 chorus、首小节 `<attributes>` 让 `keyChange` 变 true、
@@ -264,7 +264,7 @@ node omr-export-check.mjs [曲名子串] # 真跑一遍 OMR，用识别原文当
   注入前后音乐内容（不含 newSystem/newPage）完全相同。
 - **ABC 底本组**：`abcToMusicXml` 的产物当底本，另验「底本自带 `<defaults>` 时注入不覆盖」。
 
-`omr-export-check.mjs` 跑真实识别，验 `App.importUnchanged`、patch 保全底本节点、分行照底本，
+`scripts/omr-export-check.mjs` 跑真实识别，验 `App.importUnchanged`、patch 保全底本节点、分行照底本，
 以及**弧线配对**与**符杠合法性**（底本与 patch 后各查一次：slur/tie 是否都闭合、有无孤立
 stop、tie 两端音高是否相同、休止符有没有沾上 beam/slur/tie、beam 各层是否成对）。14 首全过（其中《基督更美》走合成分行）。
 

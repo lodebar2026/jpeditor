@@ -1,6 +1,6 @@
 // CJK 标点的分类与「标点挤压」（CLREQ 3.1.6）。
 //
-// **无 DOM 依赖**——Node CLI（scripts/textmetrics.mjs、line-check.mjs）要 import 它，
+// **无 DOM 依赖**——Node CLI（scripts/textmetrics.mjs、scripts/line-check.mjs）要 import 它，
 // 约束同 src/omr/vector.ts。度量一律由调用方传进来（`advanceOf`），这里只管规则。
 //
 // 挤压的道理：全角标点占一个字宽，但墨只占其中半格——句读点号与收尾类的右半是空的，
@@ -224,5 +224,5 @@ export const MIXED_PUNCT = "「」（），。！；：、“”？｡";
 /** 折行禁则：不许出现在行首的收尾标点（`bookparts.ts::wrapText`）。 */
 export const NO_LINE_START = /[，。、；：！？」』）〉》…·%,.;:!?)\]}]/;
 
-/** 行末可悬挂出版心的标点（`line-check.mjs` 的 V3）。 */
+/** 行末可悬挂出版心的标点（`scripts/line-check.mjs` 的 V3）。 */
 export const HANG_PUNCT = /[，。、；：！？…”’）」』】》｡､｣,.;:!?)\]}]/u;

@@ -36,7 +36,7 @@
     `[topY,botY]` 由数字核算出不含下划线/八度点，补高安全）；② **空心环校验**（`midbandInk`）——简谱「0」是空心环、
     从不带斜线，糊死的「3」中间横笔连成穿心斜线被读成「内含斜线的 0」；测中央横带前景占比（真 0 各图 ≤0.47、糊 3
     恒 ≥0.7），>0.65 判"读成 0 却中带占满"= 实为糊 3，走既有 `rankDigits` 取首个非零复原。两修复后 6 曲音符 **100%**、
-    slur/tie 不再受连带（0=休止会丢闭合圆滑线）影响。回归/分析：`node gen-song-analysis.mjs <歌谱名>`（单曲全流程
+    slur/tie 不再受连带（0=休止会丢闭合圆滑线）影响。回归/分析：`node scripts/gen-song-analysis.mjs <歌谱名>`（单曲全流程
     HTML：原图/二值 → 逐格数字与 GT 自动对齐标红 → 歌词条含「祂/他」绿框）。
 
 已修复初版几处 bug：连音(下划线相连)数字粘连不切分、增时线后 MusicXML `type/duration` 不一致、
@@ -280,8 +280,8 @@ w/h≥4**——弧越长越扁（7.3），段落方框（"Chorus" 带框 w98 h36
   「世上所有的民族」少复原一个被误读成 0 的音。提前判定只用于**收集和弦**，不动歌词那条路。
 
 **和弦 GT 的载体是 `testdata/<曲名>/gt.tomato.pu`** —— 一份对着原图人工核对过的番茄文本谱原文
-（`.jpwabc` 装不下和弦，只能另置载体）。底稿用 `node gen-pu-gt.mjs [曲名子串…]` 生成，
-**必须逐项核对再当 GT 用**，否则等于拿识别结果给自己打分。`measure-all.mjs` 的「和弦」档比对
+（`.jpwabc` 装不下和弦，只能另置载体）。底稿用 `node scripts/gen-pu-gt.mjs [曲名子串…]` 生成，
+**必须逐项核对再当 GT 用**，否则等于拿识别结果给自己打分。`scripts/measure-all.mjs` 的「和弦」档比对
 `"hx:X"` 序列。
 
 **和弦基线**（12 首计分，平均 **98.9%**）：世上所有的民族 58/58、脚步 25/25、为基督赢得城市 14/14、
@@ -290,29 +290,29 @@ w/h≥4**——弧越长越扁（7.3），段落方框（"Chorus" 带框 w98 h36
 谱子作**负样本**（GT 与识别都是 0 个，验证不误检）。再次将我更新 38/38 全对，但该曲无 `.jpwabc` GT，
 不进 `measure-all`。
 
-**两首不计分**（`measure-all.mjs` 的 `CHORD_GT_SKIP`）：「立定心志」「爱是不保留」的谱面印了
+**两首不计分**（`scripts/measure-all.mjs` 的 `CHORD_GT_SKIP`）：「立定心志」「爱是不保留」的谱面印了
 **两套并行编配**（括号里另一套，前者页眉写明「括号里和弦是灵栖清泉编配」），同一个音符要挂两个
 和弦——`JpNum.chord` 与番茄文本谱都只能挂一个，GT 载体表达不了真值，拿它算准确率没有意义。
 识别在这两首上会把两套并成一串、同名的那几个被「同名不顺延」去重（40→37、45→42），属预期行为。
 
-回归还有 `node omr-pu-check.mjs`（逐音符和弦往返无损，两方言各跑一遍）与
-`node omr-export-check.mjs`（`<harmony>` 列入 patch 保全清单——和弦只活在底本里，patch 顺手删掉它，
+回归还有 `node scripts/omr-pu-check.mjs`（逐音符和弦往返无损，两方言各跑一遍）与
+`node scripts/omr-export-check.mjs`（`<harmony>` 列入 patch 保全清单——和弦只活在底本里，patch 顺手删掉它，
 jpwabc 那边看不出任何异样）。
 
 仅 PaddleOCR 后端(`recognizeTexts`)支持，`nullOcr` 跳过歌词。自然区域分块 rec 实测 W1 98.9%/W2 96.5%
-（早期逐字/拼接 rec 仅 ~85%，差在破坏自然排版+细笔画字漏检）——回归 `node bench-lyrics.mjs`。
+（早期逐字/拼接 rec 仅 ~85%，差在破坏自然排版+细笔画字漏检）——回归 `node scripts/bench-lyrics.mjs`。
 **当前基线（14 首全 GT）**：音符 / 八度 / 附点 / 小节 / 对位 / 标题 / 词曲 **全 100%**，
 slur-tie **99.8%**、歌词 **99.5%**。只剩两个已知缺口：世上所有的民族漏 1 组 slur（96.6）、
 从前所珍爱歌词 94.2（含标点；忽略标点 99.3）。补齐 5 首 GT（因有主同在/脚步/立定心志/
 爱是不保留/沧海一声笑）后修掉的四类缺陷，见下面各处「附点」「隐含 tie」「后缀式著作者」
 「孤立的一」注释。（历史：tesseract 初版完整 token 仅 ~25%。）
-回归：`node measure-all.mjs`(音符/八度/附点/小节/slur-tie/歌词/标题/词曲，全 7 档、CSV 逐曲+平均) +
-`node bench-lyrics.mjs`(歌词)。
-回归脚本：`node measure-all.mjs`（自动扫 `testdata/` 每个歌谱文件夹，需本地 Edge；用 `window.__omr` 跑真实管线；
-可加子串参数只测部分曲，如 `node measure-all.mjs 从前`）。**每首之间重载页面**——App/Score 在同一 page 里
+回归：`node scripts/measure-all.mjs`(音符/八度/附点/小节/slur-tie/歌词/标题/词曲，全 7 档、CSV 逐曲+平均) +
+`node scripts/bench-lyrics.mjs`(歌词)。
+回归脚本：`node scripts/measure-all.mjs`（自动扫 `testdata/` 每个歌谱文件夹，需本地 Edge；用 `window.__omr` 跑真实管线；
+可加子串参数只测部分曲，如 `node scripts/measure-all.mjs 从前`）。**每首之间重载页面**——App/Score 在同一 page 里
 复用会串味（「爱是不保留」单跑 slur/歌词 100%，跟在别的歌谱后面跑掉到 60%/42%），基线因此不可复现。
 `testdata/` 14 首**都已有人工核对过的 `.jpwabc` GT**（UTF-16LE + BOM，**必须 LF**：`.Words` 解析按 `\n`
-切行，CRLF 会把 `\r` 当歌词字符、每行报一次 `unsupported char?`）。GT 用 `node check-gt.mjs [子串]` 校验
+切行，CRLF 会把 `\r` 当歌词字符、每行报一次 `unsupported char?`）。GT 用 `node scripts/check-gt.mjs [子串]` 校验
 （逐个 setText，报页数/排版行数/控制台错误）。GT 的小节线口径：曲末终止线写 `|]`，段落双纵线仍写 `|`
 ——`voiceTokens` 把 `||` 数成两个小节线 token，写了就与识别端不可比。
 **页眉识别**（`header.ts`，标题/作词作曲/调号/速度）：首选 **DBNet 文本检测(det)整片识别**——
@@ -329,7 +329,7 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 ① 名字组要**非贪婪** + 职能组锚 `$`，否则「卢永亨词曲」的「词」被名字吃掉、只剩「曲」→ `作曲：卢永亨词`；
 ② 职能词之间的分隔符要**可选**，「词曲」是连写的，强求分隔符则职能组只吃得下一个字、又被名字回溯吞掉。
 另要求**不是最大字号行**，免得短标题被当著作者、连标题一起丢掉。改后 14 首词曲 71.4→**100%**。
-回归 `node measure-all.mjs` 的「标题」「词曲」两档。
+回归 `node scripts/measure-all.mjs` 的「标题」「词曲」两档。
 
 ## 输出格式：jpwabc / 番茄简谱 / 诗歌本文本谱
 
@@ -373,7 +373,7 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 - 头部字段要保证 `sniffDialect` 判得回本方言（番茄靠 `V:`/`D:`/`P:`，诗歌本靠 `T:`/`1=`），
   否则用户存盘再打开就成了另一种方言。
 
-回归 `node omr-pu-check.mjs`：15 首 GT 曲目 × 2 方言，逐条断言方言嗅探、诊断（error 级一条不许有，
+回归 `node scripts/omr-pu-check.mjs`：15 首 GT 曲目 × 2 方言，逐条断言方言嗅探、诊断（error 级一条不许有，
 `orphan-annotation` 等几类 warning 同样不许有）、调号拍号、音符序列（数字/八度/时值/附点/增时线）、
 逐段歌词、弧线条数（跨行的只数起头那条）、段落标记个数、无空小节、无两条挨着的小节线、
 歌词行不被读成联合括号，以及 `noteRanges` 切出来的子串确是音符 token。

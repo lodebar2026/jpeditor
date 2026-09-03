@@ -1,5 +1,5 @@
 {
-  "_": "人工确认的字形标注。生成流程：node gen-staffglyphs.mjs → staff-out/undone.html 截图看图 → 在这里补一条。按 family + unicode + 宽高(容差0.02) 匹配，见 staffglyphs.ts::applyManual。Anastasia（Sibelius 手写体）musicpp 全仓没有映射表，整档都靠这里。",
+  "_": "人工确认的字形标注。生成流程：node scripts/gen-staffglyphs.mjs → staff-out/undone.html 截图看图 → 在这里补一条。按 family + unicode + 宽高(容差0.02) 匹配，见 staffglyphs.ts::applyManual。Anastasia（Sibelius 手写体）musicpp 全仓没有映射表，整档都靠这里。",
   "rules": [
     { "family": "Anastasia", "uni": 61, "w": 1.011, "h": 1.018, "smufl": "staff5Lines", "note": "一个 em 的五线块，横向平铺成谱行；Anastasia 那 115 页没有任何长横路径，谱线全是它" },
     { "family": "Anastasia", "uni": 187, "w": 0.018, "h": 0.259, "smufl": "stem", "note": "一个线距高的竖段，同 x 上下堆成符干（实测 p21 x=343 处 y 连成一串）" },

@@ -44,7 +44,7 @@ export interface TextGlyphDict {
    *
    * 这本书把造字区的汉字（禰 一类）当 JBIG2 位图贴进内容流，不走文字层
    * （见 `omr/vectext.ts::maskRun`）。它们没有轮廓、没有码位，只能按位图指纹查。
-   * 全书 277 处、归成 22 类，由 `gen-staffmasks.mjs` 拿 GT 的歌词投票定案。
+   * 全书 277 处、归成 22 类，由 `scripts/gen-staffmasks.mjs` 拿 GT 的歌词投票定案。
    */
   masks?: Record<string, string>;
 }
@@ -176,7 +176,7 @@ export class TextGlyphLookup {
   private map = new Map<string, string>();
   private masks = new Map<string, string>();
   /** 字典里没有的贴图字读成什么。默认空串（= 不吐字）；
-   *  建库那一路（`gen-staffmasks.mjs`）传一个占位汉字，好让它在歌词行里占住位子去对 GT。 */
+   *  建库那一路（`scripts/gen-staffmasks.mjs`）传一个占位汉字，好让它在歌词行里占住位子去对 GT。 */
   private maskPlaceholder: string;
   constructor(dict: TextGlyphDict, maskPlaceholder = "") {
     for (const c of dict.classes) if (c.char) this.map.set(textClassId(c.font, c.key), c.char);
@@ -200,7 +200,7 @@ export class TextGlyphLookup {
  *
  * 为什么需要：同一个字印小一号，`shapeKey`（按高度归一 + 量化的精确哈希）就变了，
  * 于是同一个字在书里落成好几个类，只有其中一两个被 GT 投到票。
- * 500 首那本也有这一步（`gen-glyphfuzzy.mjs`），是覆盖率涨得最便宜的一招。
+ * 500 首那本也有这一步（`scripts/gen-glyphfuzzy.mjs`），是覆盖率涨得最便宜的一招。
  *
  * 两道闸，缺一不可：
  *   · **同一字体**才比——不同字体的同一个字笔形差得远，跨字体匹配会张冠李戴；
