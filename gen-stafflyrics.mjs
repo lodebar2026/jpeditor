@@ -55,9 +55,11 @@ for (let round = 1; round <= ROUNDS; round++) {
   let voted = 0, used = 0, skipped = 0, titles = 0;
   for (const r of results) {
     // 先把这一首用到的字形都登记进累积器（没登记的类投不了票）
+    // **逐字形**登记（`metas`）：一个音节里每个字形各带各的签名与墨迹尺寸，
+    // 不能都记成首字形那一份（理由见 staff-align.mjs::versesGlyphs 的注释）。
     for (const arr of Object.values(r.lyricGlyphs ?? {}))
       for (const syl of arr)
-        for (const id of syl.ids) builder.ensure(id, { sig: syl.sig, w: syl.w, h: syl.h, uni: syl.uni });
+        for (const m of syl.metas ?? []) builder.ensure(m.id, m);
     for (const v of r.song.verses) {
       const gt = [...s2t(norm(v.chars))];
       const seq = r.lyricGlyphs?.[v.verse] ?? [];

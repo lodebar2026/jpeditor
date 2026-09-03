@@ -238,6 +238,20 @@ export async function alignSongs(opts = {}) {
         arr.push({
           text: syl.text,
           ids: syl.glyphs.map((g) => cli.glyphClassKey(syl.font, g)).filter(Boolean),
+          // **逐字形**的签名与墨迹尺寸。建库登记类的时候必须一个字形一份：
+          // 从前整个音节只带 `glyphs[0]` 那一份，多字形音节里后面那些字形
+          // 就被登记成了首字形的签名，**形近补字照着错签名匹配**——
+          // 整字大小的「祢」（它的 ToUnicode 是 `!`）拿到了窄竖条的签名，
+          // 被补成「1」，再被当成数字整个丢掉，全书的「祢」就此不见。
+          metas: syl.glyphs
+            .map((g) => ({
+              id: cli.glyphClassKey(syl.font, g),
+              sig: cli.glyphSig(g),
+              uni: g.unicode,
+              w: syl.sizeDev > 0 ? g.bbox.w / syl.sizeDev : 0,
+              h: syl.sizeDev > 0 ? g.bbox.h / syl.sizeDev : 0,
+            }))
+            .filter((m) => m.id),
           // 形近补字要用的签名（只带首个字形的：投票也只投单字形音节）
           sig: g0 ? cli.glyphSig(g0) : undefined,
           uni: g0?.unicode ?? "",

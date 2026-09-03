@@ -117,6 +117,52 @@ export function analyzeText(pg: SPage): TextAnalysis {
     if (cys.some((y) => between(t.box.top, t.box.bottom, y))) kind.set(t, "lyric");
   }
 
+  // ── 中文歌词行的补锚（本仓新加） ──────────────────────────────────────────
+  //
+  // 上面那两个锚点都是**西文**的：带连字符的音节、音节之间的延长线。
+  // 这本书的中文歌词逐字一个音节、字与字之间既不连字也不拉线，
+  // 一整行下来一个锚点都没有——整行歌词就此丢掉
+  // （实测 p27 第一行谱下的「田中的白鷺鷥無欠缺什麼」，那一首歌词只剩后五行）。
+  //
+  // 补的这一道是**自校准**的：拿这一页已经认定的歌词学出「字体 + 字号 + 离谱表底多远」，
+  // 同字体同字号、落在同一条带里的未定文本也算歌词。不写绝对几何——
+  // 那会把版权行、段落词、表情记号一并收进来。
+  const known = texts.filter((t) => kind.get(t) === "lyric" && t.run);
+  if (known.length) {
+    /** 这段文本上方最近的那行谱（没有就是 null）。 */
+    const staffAbove = (t: PObj): Staff | null => {
+      let best: Staff | null = null;
+      for (const st of pg.staves) {
+        if (st.box.bottom > (t.box.top + t.box.bottom) / 2) continue;
+        if (!best || st.box.bottom > best.box.bottom) best = st;
+      }
+      return best;
+    };
+    const fonts = new Set(known.map((t) => t.run!.font));
+    const sizes = known.map((t) => t.run!.sizeDev).sort((a, b) => a - b);
+    const size = sizes[sizes.length >> 1];
+    let maxOff = 0;
+    for (const t of known) {
+      const st = staffAbove(t);
+      if (st) maxOff = Math.max(maxOff, t.box.top - st.box.bottom);
+    }
+    if (maxOff > 0) {
+      for (const t of texts) {
+        if (kind.has(t) || !t.run) continue;
+        if (!fonts.has(t.run.font)) continue;
+        if (Math.abs(t.run.sizeDev - size) > size * 0.05) continue;
+        const st = staffAbove(t);
+        if (!st) continue;
+        const off = t.box.top - st.box.bottom;
+        // 落在已知歌词那条带里（宽一格的余量），且没越过下一行谱
+        if (off < 0 || off > maxOff + sp) continue;
+        const next = pg.staves.find((q) => q.box.top > st.box.bottom && q.box.top < t.box.bottom);
+        if (next) continue;
+        kind.set(t, "lyric");
+      }
+    }
+  }
+
   // ── markHarmony ───────────────────────────────────────────────────────────
   // 判据照原文：含 `/`（转位和弦）；或整段就是一个大写音名；或 `X Y` 两个音名夹一个空格。
   for (const t of texts) {
@@ -338,6 +384,17 @@ export function splitSyllables(o: PObj, dict?: TextGlyphLookup): Syllable[] {
     // 只能带着坏 ToUnicode 的乱码漏出来——实测占了中文歌词错字的一大半。
     // 吐一个乱码字比不吐更糟：不吐至少不会把后面的字顶偏。
     if (c && !isKnownChar(c) && g.bbox.w < em * 0.5 && g.bbox.h < em * 0.5) {
+      flush(false);
+      continue;
+    }
+    // **整字见方的墨迹，却只读出一个 ASCII 字符：那是这套字体的全角空格。**
+    // 这本书的歌词逐字一个文本对象，每个字后面跟一个这样的字形（全书 1754 个），
+    // 它的 ToUnicode 是 `!`、轮廓是个空的字身框，量出来正好一个 em 见方。
+    // 真的 ASCII 字母不会填满一个 em 见方，汉字则由字形字典给出汉字——
+    // 所以这一条只会打中它。从前是靠形近补字歪打正着把它标成「1」、
+    // 再被「纯数字不是歌词」那条剔掉的，字典一重建就露馅（歌词里冒出一串 `!`）。
+    // `bboxEstimated` 的不算数：那是没有轮廓、按 advance 估的盒，量不出真墨迹。
+    if (!g.bboxEstimated && g.bbox.w >= em * 0.8 && g.bbox.h >= em * 0.8 && c && /^[\x20-\x7e]$/.test(c)) {
       flush(false);
       continue;
     }
