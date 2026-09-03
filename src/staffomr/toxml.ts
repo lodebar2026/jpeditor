@@ -100,7 +100,7 @@ export function toMusicXml(lines: StaffLineResult[], opts: StaffXmlOptions = {})
       body += `<measure number="${measureNo}">`;
       if (attrs) body += `<attributes>${attrs}</attributes>`;
       // 正向反复（`|:`）挂在小节的**左端**
-      body += barlineXml("left", { repeat: bar.leftRepeat, ending: bar.endingStart ? bar.endingNumber : null });
+      body += barlineXml("left", { style: bar.leftStyle, repeat: bar.leftRepeat, ending: bar.endingStart ? bar.endingNumber : null });
       // 一行谱上写两个声部时要分开写，中间用 `<backup>` 把时间倒回小节头
       const voices = [...new Set(inBar.map((n) => n.voice))].sort();
       voices.forEach((v, vi) => {
@@ -327,6 +327,7 @@ export function scoreToMusicXml(
         if (attrs) body += `<attributes>${attrs}</attributes>`;
         if (bar0)
         body += barlineXml("left", {
+          style: bar0.leftStyle,
           repeat: bar0.leftRepeat,
           ending: bar0.endingStart ? bar0.endingNumber : null,
         });
