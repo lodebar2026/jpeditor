@@ -1,6 +1,6 @@
 // GT 字符序列 ↔ 页面字形序列的对齐。
 //
-// 出处：本来长在 gen-glyphdict.mjs 里（字形自举的核心），抽出来给 gen-backfill.mjs 共用——
+// 出处：本来长在 scripts/gen-glyphdict.mjs 里（字形自举的核心），抽出来给 scripts/gen-backfill.mjs 共用——
 // 两边必须是**同一套判据**，否则「建库时认的字」和「重排时补的字」会打架。
 //
 // 无 DOM 依赖。

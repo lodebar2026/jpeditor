@@ -25,23 +25,10 @@ pdf-out/
 staff-out/
 pptx-out/
 
-# OMR 测试数据（本地保留，不入库）
-testdata/*
-# 例外：字形种子标注是**肉眼判形**得来的，是矢量路可复现性的起点（丢了要重标一遍），
-# 只有 2.6KB，入库。pagemap.json / glyphdict.json 都能由它 + 语料重新生成，不入库。
-!testdata/500/
-testdata/500/*
-# 例外：成书重排的版面判据基线（line-check.mjs 的门槛值）。它是**测试的期望值**，
-# 不是语料，几百字节，入库。
-!testdata/500/line-check-baseline.json
-# 例外：成书重排的**断句方案快照**（line-check.mjs 逐行比对的期望值）。同上，是测试的
-# 期望值不是语料——那十几首是逐首核对过、认可了的排法，丢了就没法验「有没有排回去」。
-!testdata/500/line-snapshots.json
-!testdata/500/phrase-snapshots.json
-# 例外：五线谱对拍的基线（staff-diff.mjs 的门槛值）。同上，是测试的期望值不是语料。
-!testdata/赞美之泉/
-testdata/赞美之泉/*
-!testdata/赞美之泉/staff-baseline.json
+# 测试语料与基线（500 首 / 赞美之泉）一律**只留本地**，不入库：
+# 语料本身是版权材料，回归基线（line-check-baseline / line-snapshots /
+# phrase-snapshots / staff-baseline）与字形种子也随语料一起放在本机 testdata/ 下。
+testdata/
 
 # pdf.js 位图解码器 wasm：来自 pdfjs-dist 包，构建时从 node_modules 拷入（见 vite.config.ts），不入库
 public/redist/pdfjs
@@ -57,7 +44,7 @@ public/redist/pdfjs
 *.sln
 *.sw?
 
-# 乐句排版回归的 musicxml 缓存（phrase-lines.mjs）
+# 乐句排版回归的 musicxml 缓存（scripts/phrase-lines.mjs）
 .phrase-cache
 
 # 文本谱规范外写法笔记（本地保留，不入库）

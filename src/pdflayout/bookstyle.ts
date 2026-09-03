@@ -4,7 +4,7 @@
 //   A 路（relayout --mode=text，文字原位替换）  位置来自原件 PageSpec，样式来自这里
 //   B 路（rebuild，从 musicxml 数据重排）        位置由排版引擎算，样式也来自这里
 //
-// 值一律由 `stats.ts` 从原书 `pdf-layout.json` 统计**中位数**得来（见 gen-bookstyle.mjs），
+// 值一律由 `stats.ts` 从原书 `pdf-layout.json` 统计**中位数**得来（见 scripts/gen-bookstyle.mjs），
 // 不是拍脑袋的常量——「保留原书的字体与间距特征」就落在这里。
 //
 // 单位约定（**改字段前先看这条**）：
@@ -95,7 +95,7 @@ export interface RoleStyle {
   /** 字号（pt）：同类型字形高度的中位数。 */
   size: number;
   /** 基线修正（× size）：PageSpec 的 baselineY 是**字形下缘中位数**、不是真基线，
-   *  换字体后拉丁/数字行会整体错半个字。由 `relayout.mjs --calibrate` 标定一次写回。 */
+   *  换字体后拉丁/数字行会整体错半个字。由 `scripts/relayout.mjs --calibrate` 标定一次写回。 */
   baselineAdjust: number;
   align: AlignMode;
   color?: number;
@@ -202,7 +202,7 @@ export interface TitleBlock {
   keyMeterBaseline: number;
   creditFirstBaseline: number;
   creditLineGap: number;
-  /** 首页第一条谱行的音符墨迹上缘。内容整体按它对齐（见 rebuild.mjs）。 */
+  /** 首页第一条谱行的音符墨迹上缘。内容整体按它对齐（见 scripts/rebuild.mjs）。 */
   firstSystemTop: number;
   /** 续页第一条谱行的音符墨迹上缘。 */
   contSystemTop: number;
@@ -218,7 +218,7 @@ export interface BookLayoutOpts {
   linesPerPage: number;
   phrase: boolean;
   /** 乐句排版的目标行长（小节数）。**0 = 按版心容量折算**（`phrase.ts::targetMeasForCells`），
-   *  成书走这个：容量由版心宽 ÷ 音符步距实测（见 rebuild.mjs），除以本曲「每小节几格」
+   *  成书走这个：容量由版心宽 ÷ 音符步距实测（见 scripts/rebuild.mjs），除以本曲「每小节几格」
    *  就是一行该放几小节。给死一个小节数（原来是 4）就得靠「两两并短行」去凑满版心，
    *  而并行只能成对，段里落单的那一行并不进去——377《我宁愿有耶稣》副歌因此排成
    *  12 小节 + 6 小节两行。 */
@@ -471,14 +471,14 @@ export function defaultBookStyle(): BookStyle {
       phraseMidBreak: true,
       phraseMergeShort: true,
       // 断句那几个开关的默认值**要写在这儿**：`testdata/500/bookstyle.json` 是 gitignore 掉的
-      // 生成产物，只在里面调参的话，重新跑一次 gen-bookstyle.mjs 就全丢了（丢了之后
-      // `phraseEvenWeight` 会退回 rebuild.mjs 的 `?? 0`，等于把摊匀那一遍整个关掉）。
+      // 生成产物，只在里面调参的话，重新跑一次 scripts/gen-bookstyle.mjs 就全丢了（丢了之后
+      // `phraseEvenWeight` 会退回 scripts/rebuild.mjs 的 `?? 0`，等于把摊匀那一遍整个关掉）。
       phraseEvenWeight: 1,
       phraseTailWeight: 1,
       phraseContentOnly: true,
       phraseParallelWeight: 6,
       // 这三个是 2026-08-27/28 调好的成书口径，**同样只能写在这儿**（上面那段注释的
-      // 原话，可它们当时只落在了 JSON 里）：9 月 1 日重跑一次 gen-bookstyle.mjs 就全丢了
+      // 原话，可它们当时只落在了 JSON 里）：9 月 1 日重跑一次 scripts/gen-bookstyle.mjs 就全丢了
       // ——096《哈利路亚！感谢主》的四行塌回两行（补刀再切成三行）、全书 D8 9 → 12。
       phraseTailLongWeight: 3,
       phraseMoreRowsSlack: 4,

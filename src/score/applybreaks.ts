@@ -284,7 +284,7 @@ const value = (c: CutCandidate): number =>
  *    拆得参差：374《跟随救主》段 2 两行各 16 拍、都是段 1 的两倍，只拆一条就成了 16/8/8」。
  * 2. **只拆一轮**。拆完行长全变了，再判一次很容易把本来正常的行也判成过长
  *    （`splitLongest` 实测：142《圣灵请来》被连拆四轮成了 8 行）。真还超容量，
- *    交给 `rebuild.mjs` 的容量收敛循环下一轮。
+ *    交给 `scripts/rebuild.mjs` 的容量收敛循环下一轮。
  */
 export function applyCapacityCuts(part: Part, breaks: PhraseBreaks, cells: number,
                                   opt: { targetMeas?: number; useMidBreaks: boolean; avoidSpans: boolean; fit?: FitMetric }): void {
@@ -540,7 +540,7 @@ export interface LineInfo {
   to: number;
   /** 这一行的**行首**那个断点是不是**容量补刀**落的（`applyCapacityCuts`）。
    *  补刀是为了「这一行放不下」才在行内部落刀，落点由乐句凭据定，后半截的行首残小节
-   *  自然可能与本段其余行不一样长——那不是断句挑错了地方，`line-check.mjs` 的 D2
+   *  自然可能与本段其余行不一样长——那不是断句挑错了地方，`scripts/line-check.mjs` 的 D2
    *  据此豁免（用户口径：拆分导致的弱起不一致不算错误）。 */
   fromCut: boolean;
 }
@@ -552,7 +552,7 @@ const cellsOfChord = (c: Chord): number => Math.max(1, Math.floor(c.beats) || 1)
  * 按断点把 part 切成行，并把**判断版面好坏要用的事实**一并算出来
  * （行首残小节、行末歌词标点、格数、小节数）。
  *
- * `mergeShortLines` / `tidyLineHeads` / `rebuild.mjs` 的逐行报告共用这一份——
+ * `mergeShortLines` / `tidyLineHeads` / `scripts/rebuild.mjs` 的逐行报告共用这一份——
  * 各数各的就会出现「检查脚本说没问题、排出来还是难看」。
  */
 export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: boolean): LineInfo[] {
@@ -638,7 +638,7 @@ export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: bo
 /**
  * 逐行的**真实宽度**（自然坐标，未 justify）与版心宽度。
  *
- * 给 `rebuild.mjs` 的逐行事实用——`line-check.mjs` 判「这一行是不是太短 / 放不放得下」
+ * 给 `scripts/rebuild.mjs` 的逐行事实用——`scripts/line-check.mjs` 判「这一行是不是太短 / 放不放得下」
  * 也要按真实宽度，不能按格数（用户口径，见 `FitMetric`）。
  */
 export function measureLines(part: Part, lines: LineInfo[], fit?: FitMetric): { width: number; widths: number[] } {

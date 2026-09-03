@@ -39,7 +39,7 @@ export interface DrawText {
   songId?: string | null;
   /** 语义标记（`ending` / `section-word` / `key-change` / `chord`），**只给检查脚本用**，
    *  不参与任何度量或绘制。房号与段号同归 `verseNum` 角色、转调标记混在 lyric 里，
-   *  光看 `role` 分不开，line-check.mjs 的 L9~L12 靠这个认。 */
+   *  光看 `role` 分不开，scripts/line-check.mjs 的 L9~L12 靠这个认。 */
   cls?: string;
   /** 墨迹上缘相对基线的偏移（负 = 在基线上方）。**只有 SMuFL 字形写**：
    *  fermata 的墨迹高 0.3 个字号、重音只有 0.12，判据照字号估会差出好几个点
@@ -88,7 +88,7 @@ export interface DrawPage {
   meta: {
     kind: PageKind;
     /** 本页上的曲目。**一页可能两首**（半页起排），下游一律按 y 带归属，
-     *  别再假设 `songs[0]` 就是本页唯一那首（见 rebuild.mjs 的装箱器、line-check.mjs）。 */
+     *  别再假设 `songs[0]` 就是本页唯一那首（见 scripts/rebuild.mjs 的装箱器、scripts/line-check.mjs）。 */
     songs: {
       id: string | null;
       title: string | null;

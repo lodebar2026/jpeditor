@@ -1,6 +1,6 @@
 // 书级内容 → DrawList：把 bookmeta 提取到的东西排成页面元素。
 //
-//   校对.db（gen-bookmeta.mjs 写）→ **本文件** → DrawPage → scripts/pdfwrite.mjs
+//   校对.db（scripts/gen-bookmeta.mjs 写）→ **本文件** → DrawPage → scripts/pdfwrite.mjs
 //
 // 分工：`bookmeta.ts` 只管「原书上写着什么」，本文件只管「重排本里怎么摆」。
 // 位置一律来自 BookStyle（原书实测），不在这里拍常数——除了几处标注了实测出处的比例。
@@ -14,7 +14,7 @@ import { NO_LINE_START } from "../common/cjkpunct";
 
 export type Measure = (role: StyleRole, text: string, size: number) => number;
 
-/** 一段字（连排，左/右/居中对齐由 align 决定）。x 的含义与 rebuild.mjs::decorate 一致：
+/** 一段字（连排，左/右/居中对齐由 align 决定）。x 的含义与 scripts/rebuild.mjs::decorate 一致：
  *  align 为 left 时是左缘，right/center 时是参考点。 */
 export function textItem(text: string, role: StyleRole, size: number, x: number, y: number, align: DrawText["align"] = "left"): DrawText {
   return { t: "text", y, text, size, role, align, xs: [x], box: { x, w: 0 } };

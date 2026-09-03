@@ -141,7 +141,7 @@ export class JinpuPainter implements PagePainter {
   }
 
   /** 词曲署名拆成逐行的文本：一个字段里可能写了好几行（Finale 导出的样子），
-   *  没带「作词：」这类标签的按 `type` 补一个（rebuild.mjs::decorateSong 同一份规则）。 */
+   *  没带「作词：」这类标签的按 `type` 补一个（scripts/rebuild.mjs::decorateSong 同一份规则）。 */
   private creditLines(): string[] {
     const LABEL: Record<string, string> = {
       lyricist: "作词", poet: "作词", composer: "作曲", arranger: "编曲",
@@ -159,7 +159,7 @@ export class JinpuPainter implements PagePainter {
   }
 
   /**
-   * 「简谱」档纸顶那一块 —— **照 500 首重排的成书排版**（`rebuild.mjs::decorateSong`）：
+   * 「简谱」档纸顶那一块 —— **照 500 首重排的成书排版**（`scripts/rebuild.mjs::decorateSong`）：
    * 标题居中、**调号拍号排在左边**、**词曲署名右对齐逐行**。
    *
    * 原先这一块把词曲跟标题一样居中堆在标题底下，调号拍号则**根本没画**——

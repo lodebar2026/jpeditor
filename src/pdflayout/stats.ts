@@ -1,4 +1,4 @@
-// 从原书的版面规格（page-report.mjs 出的 pdf-layout.json）统计出 BookStyle。
+// 从原书的版面规格（scripts/page-report.mjs 出的 pdf-layout.json）统计出 BookStyle。
 //
 // **为什么统计的是中位数**：原件是排好版付印的，同一角色的字号/间距本该整齐，
 // 实测值的抖动来自轮廓量测（亚像素、笔画粗细、标点只占字格下部）。取中位数
@@ -536,7 +536,7 @@ export function inferBookStyle(
   fonts: Record<string, FontRef>,
   opt: SampleOptions & {
     id?: string;
-    /** page-report.mjs 顺带落下的逐类字高（tuplet/verseNum/sectionWord 这几个角色
+    /** scripts/page-report.mjs 顺带落下的逐类字高（tuplet/verseNum/sectionWord 这几个角色
      *  在 PageSpec 里没有独立字段，只能从归类结果拿）。 */
     classHeights?: Record<string, number[]>;
   } = {},

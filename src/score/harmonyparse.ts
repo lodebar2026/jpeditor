@@ -4,7 +4,7 @@
 // 两边的 kind 映射必须对得上，否则往返一趟和弦就变了样。
 //
 // 为什么要读进 Score：成书重排要把和弦排到谱面上，而 loadMusicXml 原本整个跳过 harmony
-//（CLAUDE.md 记的「.jpwabc/Score 装不下和弦」说的是 **jpwabc 那条路**，Score 这边只是一直没做）。
+//（docs/架构与实现.md 记的「.jpwabc/Score 装不下和弦」说的是 **jpwabc 那条路**，Score 这边只是一直没做）。
 // 导出侧的既定约束不变：musicxmlpatch 仍然不碰 harmony。
 //
 // 无 DOM 依赖之外的东西（用的是 Element，浏览器/DOMParser 环境下调用）。
