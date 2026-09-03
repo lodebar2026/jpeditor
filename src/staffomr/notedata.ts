@@ -665,7 +665,7 @@ export function buildNotes(
     }
 
     const stem = rest ? undefined : stemOf.get(s);
-    const stemUp = stem ? stem.up : null;
+    const stemUp = stem ? stem.up : s.compositeStemUp ?? null;
     // **层数取符尾条数，或这根符干上最高的那一层符杠**——不是「数穿过符干几条」：
     // 十六分的第二条常常只是半截钩，盖住的符干比第一条少（见 calcBeamLevels 的注释）。
     // **层数 = 这根符干上「有几个不同的层」**，不是「最高的那一层」。
@@ -683,9 +683,22 @@ export function buildNotes(
       : 0;
 
     let base: number;
-    if (rest) {
+    if (s.compositeBase !== undefined) {
+      // 复合音符字形（`page.ts::adoptCompositeNotes`）：没有单独的符干可数，
+      // 时值由字形本身给出，符干一律朝上。
+      base = s.compositeBase;
+    } else if (rest) {
       base = restDuration(s.code);
       if (base < 0) base = 1; // restHBar：整小节休止，先按全音符，`toxml` 再按拍号改
+      // **全休止与半休止在字体里是同一个方块**，只有落在第几线上不同：
+      // 半休止**坐在中线上**（墨迹底贴中线），全休止**吊在上面一线下**（底比中线高一格）。
+      // 字形字典分不开它们（轮廓逐位相同，一律标成了 `restHalf`），只能按几何判——
+      // 不判的话整小节的全休止全读成半休止，小节时值自检与 GT 的时值档都跟着错。
+      if (s.code === "restHalf" || s.code === "restWhole") {
+        const space = (stf.stepDistance() || 0) * 2 || sp;
+        const mid = (stf.box.top + stf.box.bottom) / 2;
+        base = mid - s.box.bottom > space * 0.5 ? 1 : 1 / 2;
+      }
     } else if (s.code === "noteheadWhole" || s.code === "noteheadDoubleWhole") {
       base = s.code === "noteheadDoubleWhole" ? 2 : 1;
     } else if (s.code === "noteheadHalf") {

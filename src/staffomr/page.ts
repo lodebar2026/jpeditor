@@ -27,6 +27,7 @@ import {
   sortByTop,
 } from "./model";
 import { isFlag, isNoteHead, isRest } from "./glyphs";
+import { shapeSig } from "../omr/glyphdict";
 import { isWhite, subPaths, thinRectAxis } from "./vecgeom";
 import { classifyBarlines, tagRepeatDots } from "./barlines";
 
@@ -396,11 +397,84 @@ export function findNoteheads(pg: SPage): boolean {
     ...pg.segs.filter((s) => s.isH && !s.hasAnyTag() && s.len >= space * 0.8 && s.len <= space * 6),
     ...glyphLegers(pg),
   ];
+  adoptCompositeNotes(pg);
   for (const s of pg.symbols) {
     if (!isNoteHead(s.code)) continue;
     findStaffForNote(pg, s, hlines);
   }
   return true;
+}
+
+/**
+ * 复合音符字形的**符干朝向**，从字形轮廓自己看出来，不靠码位表的名字
+ * （表里把朝上朝下都标成了 `…Up`，全书三个形状类里有两个其实是朝下的）。
+ *
+ * 办法：拿现成的 32×32 形状签名（`shapeSig`），逐行数墨迹，**最粗的那一行就是符头**
+ * ——符干与符尾都只有一两格宽，符头是个实心椭圆。
+ * **签名的行号是字形坐标、y 向上**（行 0 = 页面上的下沿），所以行号小 = 符头在下 = 符干朝上。
+ * 拿不到轮廓时按「朝上」办（这本书里朝上的那类最常见）。
+ */
+function compositeStemUp(g: { outline: Float32Array | null }): boolean {
+  if (!g.outline || !g.outline.length) return true;
+  const sig = shapeSig(g.outline);
+  const n = Math.round(Math.sqrt(sig.length));
+  let bestRow = 0;
+  let best = -1;
+  for (let r = 0; r < n; r++) {
+    let c = 0;
+    for (let x = 0; x < n; x++) if (sig[r * n + x]) c++;
+    if (c > best) {
+      best = c;
+      bestRow = r;
+    }
+  }
+  return bestRow < n / 2;
+}
+
+/** 复合音符字形 → 时值（全音符为 1）。 */
+const COMPOSITE_NOTES: Readonly<Record<string, number>> = {
+  metNoteWhole: 1,
+  metNoteHalfUp: 1 / 2,
+  metNoteQuarterUp: 1 / 4,
+  metNote8thUp: 1 / 8,
+  metNote16thUp: 1 / 16,
+};
+
+/**
+ * **把「符头+符干+符尾」画成一个字形的音符收编进来。**
+ *
+ * Anastasia 偶尔这么画（码位映到 SMuFL 里本属速度记号的 `metNote8thUp` 一族）。
+ * 这种字形不在 `HEADS` 里，于是整枚被跳过——**谱面上那个音就此消失**。
+ * 实测 093《黑暗中的光芒》缺的三个音全是它（p110 的 x=307/463/345），
+ * 全书 29 处（`metNote8thUp` 12 + `metNoteQuarterUp` 17）。
+ *
+ * 两条判据：
+ *  - **只收落在谱表里的**（含上下各半格，与 `findStaffForNote` 直接归属那条同口径）。
+ *    谱表外的是真的速度记号 `♩= 72`——全书 133 个 `metNoteQuarterUp` 里 116 个是那一类。
+ *  - **盒要收窄到符头**：符干朝上，符头在左下角，宽约一个符头、高约一个线距。
+ *    音高判的是墨迹中心，拿整枚字形的中心去判会高出两三级。
+ */
+function adoptCompositeNotes(pg: SPage): void {
+  for (const s of pg.symbols) {
+    const base = COMPOSITE_NOTES[s.code];
+    if (base === undefined || s.hasAnyTag()) continue;
+    const stf = pg.staves.find((q) => {
+      const sp = q.stepDistance() || (pg.normalStaffSpace || pg.space) / 2;
+      return s.py > q.box.top - sp && s.py < q.box.bottom + sp;
+    });
+    if (!stf) continue;
+    const space = (stf.stepDistance() || 0) * 2 || pg.normalStaffSpace || pg.space;
+    const up = compositeStemUp(s.glyph);
+    s.compositeBase = base;
+    s.compositeStemUp = up;
+    // 符干朝上 → 符头在**左下**（符尾往右上甩）；朝下 → 符头在**右上**（符干贴左边往下）。
+    s.useHeadBox(
+      up
+        ? { left: s.box.left, right: Math.min(s.box.right, s.box.left + space * 1.15), top: s.box.bottom - space, bottom: s.box.bottom }
+        : { left: Math.max(s.box.left, s.box.right - space * 1.15), right: s.box.right, top: s.box.top, bottom: s.box.top + space },
+    );
+    s.code = "noteheadBlack" as typeof s.code;
+  }
 }
 
 /** `Page::findStaffForNote`。落在谱表纵向范围内（含上下各半格）的直接归属；

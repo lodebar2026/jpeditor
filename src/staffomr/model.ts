@@ -226,9 +226,20 @@ export class Sym {
   readonly parent: PObj;
   readonly index: number;
   readonly glyph: VecGlyph;
-  readonly box: Box;
+  /** 墨迹盒。复合音符字形要收窄到符头那一块（`useHeadBox`），所以不是 readonly。 */
+  box: Box;
   /** SMuFL 语义名。 */
   code: SmuflName;
+  /**
+   * **复合音符字形**自带的时值（全音符为 1）；普通符头为 `undefined`。
+   *
+   * Anastasia（Sibelius 手写体）偶尔把「符头 + 符干 + 符尾」画成**一个**字形
+   * （码位映到 SMuFL 的 `metNote8thUp`/`metNoteQuarterUp`，本是速度记号 `♩= 72` 用的）。
+   * 那种音符没有单独的符干可数，时值只能由字形本身给出。见 `page.ts::adoptCompositeNotes`。
+   */
+  compositeBase?: number;
+  /** 复合音符字形的符干朝向（`true` = 朝上、符头在下）。见 `page.ts::adoptCompositeNotes`。 */
+  compositeStemUp?: boolean;
   /** 基线原点的 x（musicpp 的 `Symbol::pos.x`）。 */
   readonly px: number;
   /**
@@ -240,7 +251,7 @@ export class Sym {
    * 符头也整体偏一个 em，照基线算音高会整首低八度。
    * 墨迹中心不依赖任何字体的原点约定——符头是个椭圆，中心就是它骑的那条线/间。
    */
-  readonly py: number;
+  py: number;
   /** 基线原点的 y（musicpp 的 `Symbol::pos.y`）。留着排查用。 */
   readonly baseY: number;
   ownerStaff: Staff | null = null;
@@ -255,6 +266,16 @@ export class Sym {
     this.px = glyph.ox;
     this.baseY = glyph.oy;
     this.py = (this.box.top + this.box.bottom) / 2;
+  }
+
+  /**
+   * 把墨迹盒收窄到**符头**那一块（复合音符字形专用）。
+   * 音高判的是墨迹中心，整枚字形（含符干符尾）的中心比符头高一个多线距——
+   * 不收窄的话音会读高两三级。
+   */
+  useHeadBox(b: Box): void {
+    this.box = b;
+    this.py = (b.top + b.bottom) / 2;
   }
 
   hasTag(t: Tag): boolean {
