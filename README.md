@@ -8,7 +8,13 @@
 ![Platform](https://img.shields.io/badge/platform-Web%20%7C%20macOS%20%7C%20Windows-555)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**🌐 在线试用 / Live demo：<https://lodebar2026.github.io/jpeditor/>**
+## 快速入口 / Quick start
+
+| | 入口 | 说明 |
+| :-: | --- | --- |
+| 🌐 | **[在线使用 / Live demo](https://lodebar2026.github.io/jpeditor/)** | 免安装，浏览器直接打开 |
+| 🍎 | **[macOS 版下载](https://github.com/lodebar2026/jpeditor/releases/latest)**（`.dmg`，Apple Silicon） | 首次打开提示“已损坏”见 [macOS 打不开](docs/macOS-打不开.md) |
+| 🪟 | **[Windows 版下载](https://github.com/lodebar2026/jpeditor/releases/latest)**（`x64-setup.exe`） | 安装包，Windows 10/11 x64 |
 
 简谱（JP-Word / `.jpwabc`）与**文本谱**（番茄简谱 / 诗歌本动态谱）排版与编辑器。
 
@@ -35,7 +41,8 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
 (no install) and as a lightweight **Windows / macOS desktop app** (Tauri 2).
 
 - 🌐 Live demo: <https://lodebar2026.github.io/jpeditor/>
-- ⬇️ Desktop downloads: [Releases](https://github.com/lodebar2026/jpeditor/releases)
+- 🍎 macOS (Apple Silicon, `.dmg`): [latest release](https://github.com/lodebar2026/jpeditor/releases/latest)
+- 🪟 Windows (x64 installer, `.exe`): [latest release](https://github.com/lodebar2026/jpeditor/releases/latest)
 
 ## 特性
 
@@ -69,7 +76,10 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
 ## 安装与使用
 
 - **浏览器在线版**（免安装）：<https://lodebar2026.github.io/jpeditor/>
-- **桌面版下载**：[Releases](https://github.com/lodebar2026/jpeditor/releases)
+- **macOS 版**（Apple Silicon，`jpeditor_<版本>_aarch64.dmg`）：
+  [最新 Release](https://github.com/lodebar2026/jpeditor/releases/latest)
+- **Windows 版**（x64，`jpeditor_<版本>_x64-setup.exe`）：
+  [最新 Release](https://github.com/lodebar2026/jpeditor/releases/latest)
 - macOS 首次打开提示“已损坏”或“无法验证开发者”？见
   [docs/macOS-打不开.md](docs/macOS-打不开.md)（应用未签名，属正常现象，一条命令即可解决）。
 
