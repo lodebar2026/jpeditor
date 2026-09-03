@@ -520,10 +520,15 @@ export function xmlStaffNotes(musicxml) {
   return out;
 }
 
-/** MusicXML → 小节数（第一个 part 的 `<measure>` 个数）。 */
+/** MusicXML → 小节数（第一个 part 的 `<measure>` 个数）。
+ *
+ * 注：`<measure[ >]` 不能写成 `<measure\b`，`<part[ >]` 同理——`\b` 在 `<measure-numbering>`
+ * （`<print>` 里的）与 `<part-list>` 前面也成立。前者让每首歌白白多出一个小节
+ * （**全书 64/77 首的「小节数差 −1」全是这一条**，识别侧根本没错），
+ * 后者让 part 段从曲目表开始截。 */
 export function xmlMeasureCount(musicxml) {
-  const part = /<part\b[\s\S]*?<\/part>/.exec(musicxml)?.[0] ?? musicxml;
-  return (part.match(/<measure\b/g) || []).length;
+  const part = /<part[ >][\s\S]*?<\/part>/.exec(musicxml)?.[0] ?? musicxml;
+  return (part.match(/<measure[ >]/g) || []).length;
 }
 
 /**
@@ -579,7 +584,10 @@ export function xmlStaffTypes(musicxml) {
   for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
     const seg = m[0];
     if (/<grace\s*\/?>/.test(seg)) continue;
-    const t = /<type>([a-z0-9\-]+)<\/type>/.exec(seg)?.[1] ?? "?";
+    // 整小节休止（`<rest measure="yes"/>`）在 GT 里**没有 `<type>`**（全书 24 处）。
+    // 识别侧照样会给它一个时值（读到的是全休止 → `whole`），
+    // 记成 `?` 就凭空多出 24 处时值差异。按整小节休止的常规写法补成 `whole`。
+    const t = /<type>([a-z0-9\-]+)<\/type>/.exec(seg)?.[1] ?? (/<rest[ /]/.test(seg) ? "whole" : "?");
     const dots = (seg.match(/<dot\s*\/?>/g) || []).length;
     out.push(t + ".".repeat(dots));
   }

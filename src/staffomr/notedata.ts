@@ -607,6 +607,15 @@ export interface StaffNote {
   dynamic?: string;
   /** 连音（三连音之类）：`actual` 个音占 `normal` 个音的时值。 */
   tuplet?: { actual: number; normal: number };
+  /**
+   * **斜杠符头**（`noteheadSlash*`）：不是有音高的音符，而是「照这个节奏弹和弦」的记号。
+   *
+   * 这本书的前奏、间奏常常整行写斜杠 + 和弦名（实测 088/094/102 三首各有 16~19 个），
+   * 它们全落在谱表第三线上，按符头算就成了一串 B4 四分音符——**全书「多出来的音符」
+   * 里最大的一类就是它**。有音高的那些字段（`step`/`octave`/`diatonic`）对它没有意义，
+   * MusicXML 那边出成 `<notehead>slash</notehead>`。
+   */
+  slash?: boolean;
   /** 圆滑线/连音线的起讫（见 `slur.ts`）。一个音符可以同时是上一条的收尾与下一条的起头。 */
   slurStart?: boolean;
   slurStop?: boolean;
@@ -697,7 +706,7 @@ export function buildNotes(
       break;
     }
 
-    out.push({ sym: s, staff: stf, rest, diatonic, step, octave, alter: 0, accidental, duration: base, base, dots: 0, stemUp, beams: nb, x: s.px, voice: 1 });
+    out.push({ sym: s, staff: stf, rest, diatonic, step, octave, alter: 0, accidental, duration: base, base, dots: 0, stemUp, beams: nb, x: s.px, voice: 1, slash: s.code.startsWith("noteheadSlash") || undefined });
   }
   // **先按谱行、再按 x**。只按 x 排会把一页里几行谱的音符横向交织在一起
   // ——顺序一乱，与 GT 的逐音比对就全废（实测准确率卡在两成半）。

@@ -127,7 +127,14 @@ for (const r of results) {
   }
   // **分两档记**：谱面这一段的歌词是英文（这本书每首印两遍，中文版与英文版），
   // 而 GT 的歌词是中文——那是「谱面与 GT 不是同一版」，不是读错。
-  const scriptMismatch = av !== null && r.cjkRatio < 0.2;
+  //
+  // 光看汉字占比不够：钢琴伴奏谱那几首（232 p683-688、234 p715-722）整段**一句歌词都没有**，
+  // 页面上仅有的汉字是标题与版权行，占比却过了两成，于是以 0~3% 混进歌词分母、
+  // 一首就把平均压掉两个点。再加一条：谱面这一段的中文**长度不到 GT 的四成**，
+  // 那就不是「中文歌词版」——是伴奏谱或英文版，同样另记。
+  // （真读坏的曲子不会掉到这一档：缺字最多的一档也有九成长度，见文档「歌词」一节。）
+  const gotLen = [...gotV].length;
+  const scriptMismatch = av !== null && (r.cjkRatio < 0.2 || gotLen < gtV.length * 0.4);
   if (av !== null && !scriptMismatch) { sumV += av; nV++; }
   if (scriptMismatch) nMismatch++;
   sumN += an; sumT += at; sumL += al; sumS += as; sumP += ap;
@@ -159,7 +166,7 @@ console.log(`房号：GT 合计 ${sized.reduce((a, r) => a + r.gtEnd, 0)} / 识�
 console.log(`弧线（逐音的起讫标记）：${avg(sized, "as").toFixed(1)}%；` +
   `GT 合计 ${rows.reduce((a, r) => a + r.gtSlur, 0)} 条 / 识别 ${rows.reduce((a, r) => a + r.gotSlur, 0)} 条`);
 console.log(`歌词：${(nV ? (sumV / nV) * 100 : 0).toFixed(1)}%（${nV} 首，谱面与 GT 同为中文）；` +
-  `另有 ${nMismatch} 首谱面是**英文歌词版**（这本书每首印两遍），与中文 GT 不是同一版，不入分母；` +
+  `另有 ${nMismatch} 首谱面没有对应的中文歌词（英文版 / 钢琴伴奏谱），与中文 GT 不是同一版，不入分母；` +
   `真读不出来的（< 20%）${withV.filter((r) => !r.scriptMismatch && r.av < 0.2).length} 首`);
 console.log(`【表述或结构不一致】${structural.length} 首（谱面用反复记号 / 页范围切错 / 编配不同），另记不入分母`);
 

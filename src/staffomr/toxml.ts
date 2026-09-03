@@ -179,9 +179,13 @@ function noteXml(n: StaffNote, dur: number, staffNo = 0, withVoice = false): str
     : "";
   // `<tie>` 是发声用的（与 `<tied>` 的图形标记分开写，MusicXML 两者都要）
   const tie = (n.tieStop ? `<tie type="stop"/>` : "") + (n.tieStart ? `<tie type="start"/>` : "");
+  // 斜杠符头（前奏/间奏的「照这个节奏弹和弦」）：音高留着（它就画在第三线上），
+  // 但要把符头形状写出来，不然回读时会变成一串真的 B4。`<notehead>` 排在 `<stem>` 之后、
+  // `<staff>` 之前——MusicXML 的子元素次序是有规定的。
+  const head = n.slash ? `<notehead>slash</notehead>` : "";
   return (
     `<note>${chord}<pitch><step>${escapeXml(n.step)}</step>${alter}<octave>${n.octave}</octave></pitch>` +
-    `<duration>${dur}</duration>${tie}${voiceEl}<type>${type}</type>${dots}${acc}${timeMod}${stem}${staffEl}${notations}${lyric}</note>`
+    `<duration>${dur}</duration>${tie}${voiceEl}<type>${type}</type>${dots}${acc}${timeMod}${stem}${head}${staffEl}${notations}${lyric}</note>`
   );
 }
 

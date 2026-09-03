@@ -291,8 +291,10 @@ export async function alignSongs(opts = {}) {
     const order = new Map(r.page.systems.map((s, i) => [s.top, i]));
     return r.notes
       // 和弦里的附加音不算旋律（引子的柱状和弦、双音都靠它剔掉）；
-      // 一行谱写了两个声部时只取第一声部（GT 是单声部主旋律）
-      .filter((n) => tops.has(n.staff) && !n.chordExtra && n.voice === 1)
+      // 一行谱写了两个声部时只取第一声部（GT 是单声部主旋律）；
+      // **斜杠符头也不算**——那是前奏「照这个节奏弹和弦」的记号，画在第三线上，
+      // 当成音符就是一串 B4 四分（实测 088/094/102 三首各混进 16~19 个）。
+      .filter((n) => tops.has(n.staff) && !n.chordExtra && n.voice === 1 && !n.slash)
       .sort((a, b) => order.get(a.staff) - order.get(b.staff) || a.x - b.x);
   }
 
@@ -332,10 +334,15 @@ export async function alignSongs(opts = {}) {
   const normEn = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
   const normZh = (s) => t2s(s).replace(/[\s\u3000·．.,，、:：]/g, "");
 
+  // **一个标题可能指向好几首 GT**（全书有三组同名：075/135 耶稣爱你、062/197 耶稣恩友、
+  // 110/162/212 主祷文）。索引里只留一首的话，另一首**永远配不上**——
+  // `score()` 里「标题已经指名别人就不许改判」那条会把它一票否决。所以存成数组，
+  // 由音符相似度在这几个同名的里面挑。
   const index = new Map();
+  const put = (k, s) => { const a = index.get(k); if (a) a.push(s); else index.set(k, [s]); };
   for (const s of songs) {
-    if (s.en) index.set("en:" + normEn(s.en), s);
-    if (s.zh) index.set("zh:" + normZh(s.zh), s);
+    if (s.en) put("en:" + normEn(s.en), s);
+    if (s.zh) put("zh:" + normZh(s.zh), s);
   }
 
   const startPages = pageInfo.filter((p) => p.songStart).map((p) => p.pn);
@@ -373,7 +380,7 @@ export async function alignSongs(opts = {}) {
     const fifths = pageOf.get(page)?.fifths ?? null;
     const titleHit = (pageOf.get(page)?.titles ?? [])
       .map((t) => index.get(/[\u4e00-\u9fff]/.test(t.text) ? "zh:" + normZh(t.text) : "en:" + normEn(t.text)))
-      .find(Boolean);
+      .find(Boolean); // 命中的是**候选数组**（同名曲目不止一首）
     return { from: page, to: end, notes, types, slurs, pitches, measures, repeats, barStyles, endings, octaves, fifths, verses, lyricGlyphs, titleGlyphs: pageOf.get(page)?.titleGlyphs ?? [], titleHit };
   });
 
@@ -420,10 +427,12 @@ export async function alignSongs(opts = {}) {
   const CJK_BONUS = 0;
 
   const score = (span, song) => {
-    if (span.titleHit && span.titleHit !== song) return 0; // 标题已经指名别人，不许改判
+    if (span.titleHit && !span.titleHit.includes(song)) return 0; // 标题已经指名别人，不许改判
     let base;
-    if (span.titleHit === song) {
-      base = 1;
+    if (span.titleHit?.includes(song)) {
+      // 同名的只有一首就直接认；有好几首就让开头的音符相似度在它们中间挑，
+      // 但整体仍压过所有非标题配对（0.9 起）。
+      base = span.titleHit.length === 1 ? 1 : 0.9 + 0.1 * bestWindow(span.notes, headOf(song.notes));
     } else {
       // 音符数差一倍以上的一律不配：开头三十几个音撞上是有可能的（同调同起句），
       // 但整首长度差一倍就不是同一首。
@@ -440,31 +449,140 @@ export async function alignSongs(opts = {}) {
   // 谱面这一段的歌词里汉字占比（对拍那边要用来分「英文版」与「真读错」）
   for (const sp of spans) sp.cjkRatio = cjkRatio(sp);
 
+  /** 繁→简 + 只留汉字。配对与否决共用这一份口径。 */
+  const cjkOnly = (t) => t2s(t).replace(/[^\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g, "");
+
   // **全局贪心配对**（不加单调约束）。
   // 本以为可以按顺序对齐——GT 曲号跟着成书顺序，书里另有 GT 没收的曲子。
   // 实测不成立：这本 PDF 是几本册子拼起来的「全系列」，后半段不按曲号走
   // （152 首在 p281、010 首在 p467）。加了单调约束会把不同册的曲子整批丢掉。
   // 所以按分数从高到低贪心，一首 GT、一个首页各只用一次。
+  // ── 歌词那一路 ──────────────────────────────────────────────────────────────
+  //
+  // **音符不是唯一的凭据**。光靠「开头 32 个音」配，全书只对上 108 首：
+  // 谱面比 GT 多一段引子、编配改了前奏、或者头一行读坏，开头就对不上，
+  // 整首随之落空——可歌词照样读得出来，而且**歌词几乎不会撞**
+  // （同调的赞美诗旋律会像，歌词不会）。于是给中文歌词另开一条配对通道。
+  //
+  // 全对全比太贵（464 段 × 222 首的编辑距离），所以两步：
+  // 先按**字集 Jaccard** 粗筛（O(n)，只看用到哪些字，不看顺序），每段留前 8 首，
+  // 再对这几首算编辑距离。粗筛不会漏：真配对的字集重合本来就高。
+  const spanCjk = spans.map((sp) => {
+    let best = "";
+    for (const t of Object.values(sp.verses ?? {})) {
+      const c = cjkOnly(t);
+      if (c.length > best.length) best = c;
+    }
+    return best;
+  });
+  const songCjk = songs.map((sg) => cjkOnly(sg.verses?.find((v) => v.verse === 1)?.chars ?? ""));
+  const setOf = (t) => new Set(t);
+  const spanSet = spanCjk.map(setOf);
+  const songSet = songCjk.map(setOf);
+  const jaccard = (a, b) => {
+    if (!a.size || !b.size) return 0;
+    let inter = 0;
+    for (const ch of a) if (b.has(ch)) inter++;
+    return inter / (a.size + b.size - inter);
+  };
+  /** 谱面这一段与这首 GT 的歌词相似度（0~1，按 GT 归一）。两侧都要够长才算。 */
+  const lyricSim = (i, j) => {
+    const a = spanCjk[i], b = songCjk[j];
+    if (a.length < 10 || b.length < 10) return 0;
+    return Math.max(0, 1 - lev([...a], [...b]) / b.length);
+  };
+  // 歌词通道的接受线。已配对的那些真配对实测最低 62%、错配最高 6%，
+  // 中间留出的余量很大；取 0.45 —— 比否决线（0.3）高一档，
+  // 又低到能收下歌词读得不太好的那些（字形字典对某些字体还差一截）。
+  const LYRIC_MIN = 0.45;
+  const lyricPairs = new Map(); // "i:j" → sim
+  for (let i = 0; i < spans.length; i++) {
+    if (spanCjk[i].length < 10) continue;
+    const cand = [];
+    for (let j = 0; j < songs.length; j++) {
+      if (songCjk[j].length < 10) continue;
+      const jc = jaccard(spanSet[i], songSet[j]);
+      if (jc > 0.2) cand.push([jc, j]);
+    }
+    cand.sort((a, b) => b[0] - a[0]);
+    for (const [, j] of cand.slice(0, 8)) {
+      const v = lyricSim(i, j);
+      if (v >= LYRIC_MIN) lyricPairs.set(i + ":" + j, v);
+    }
+  }
+
   const pairs = [];
   for (let i = 0; i < spans.length; i++) {
     for (let j = 0; j < songs.length; j++) {
       const sc = score(spans[i], songs[j]);
-      if (sc >= MATCH_MIN) pairs.push([sc, i, j]);
+      // 歌词够像就照收，**不必再过音符那道门槛**：谱面与 GT 的编配可以差很多
+      // （多一段引子、少一遍副歌），歌词却是同一首歌的身份证。
+      // 但标题已经指名别人的那一段仍然不许改判（`score` 返回 0 就是这个意思）。
+      const ly = lyricPairs.get(i + ":" + j) ?? 0;
+      const best = span0(sc, ly, spans[i], songs[j]);
+      // **歌词对上的那一段优先**。这本书每首印两遍（中文歌词版 + 英文歌词版），
+      // 两版的标题都能对上 GT、音符也都像，光看这两样是平手，贪心随便挑一个——
+      // 挑到英文版就麻烦了：那一版的编配与 GT 常常不是一回事（多一段间奏、
+      // 尾句写法不同），音符档白白掉十几个点，歌词档更是直接判成「不是同一版」。
+      // 加分要**小**（0.05），只在平手时起作用，压不过分数本身的高低。
+      // （从前试过按「歌词里有汉字」加分，没赚到——那只是「这一段有中文」，
+      //   不是「这一段的中文与这首 GT 对得上」；前者会把曲子推给别的中文段。）
+      if (best >= MATCH_MIN) pairs.push([best + (ly >= LYRIC_MIN ? 0.05 : 0), i, j]);
     }
   }
+  /** 音符那一路与歌词那一路取较大者；标题否决（`sc === 0` 且标题指名别人）优先。 */
+  function span0(sc, ly, span, song) {
+    if (span.titleHit && !span.titleHit.includes(song)) return 0;
+    return Math.max(sc, ly);
+  }
+  /**
+   * **中文歌词是配对的仲裁**。
+   *
+   * 光靠音符会配错：同调的赞美诗开头三十几个音本来就像，标题也能撞
+   * （谱面印「阿爸天父」、GT 里只有另一首「阿爸父」，两者的音符开头相似度过了门槛）。
+   * 实测把「谱面与 GT 同为中文」的那些配对按歌词相似度排开，**分档极干净**：
+   * 真配对最低 62%，错配最高 6%（152 阿爸父 0%、234 秋雨之福 3%、135 耶稣爱你 6%）。
+   * 于是取 0.3 当否决线——只在**两侧都确实是中文歌词**时才判，英文歌词版那一路
+   * （这本书每首印两遍）根本不进这道闸。
+   *
+   * 否决是「跳过这一对」，不是「作废这一段」：谱面那一段与那首 GT 都还留在池子里，
+   * 让别的配对去认领——p85 的《耶稣爱你》就是这么从 135 改判到 075 的。
+   */
+  const LYRIC_VETO = 0.3;
+  function lyricVeto(span, song) {
+    const gt = cjkOnly(song.verses?.find((v) => v.verse === 1)?.chars ?? "");
+    if (gt.length < 10) return false; // GT 没有中文歌词，这道闸不管
+    // 谱面这一段得**确实是中文歌词版**才判。按「汉字够多」一条不够：
+    // 英文版那一页也有标题与版权行的几个汉字，凑够十个就被这道闸误伤
+    // （006《新造的人》p533 英文版本来配得好好的，音符 99%，却被判掉）。
+    // 所以再要求汉字**占比**过三成——那正是对拍那边分「英文版」与「真读错」的同一条线。
+    if (span.cjkRatio < 0.3) return false;
+    let best = 0;
+    let any = false;
+    for (const t of Object.values(span.verses ?? {})) {
+      const cand = cjkOnly(t);
+      if (cand.length < 10) continue;
+      any = true;
+      best = Math.max(best, 1 - lev([...cand], [...gt]) / gt.length);
+    }
+    return any && best < LYRIC_VETO;
+  }
+
   pairs.sort((a, b) => b[0] - a[0]);
   const usedSpan = new Set();
   const usedSong = new Set();
   const results = [];
+  let vetoed = 0;
   for (const [, i, j] of pairs) {
     if (usedSpan.has(i) || usedSong.has(j)) continue;
+    if (lyricVeto(spans[i], songs[j])) { vetoed++; continue; }
     usedSpan.add(i);
     usedSong.add(j);
     const sp = spans[i];
     results.push({ song: songs[j], from: sp.from, to: sp.to, cjkRatio: sp.cjkRatio, notes: sp.notes, types: sp.types, slurs: sp.slurs, pitches: sp.pitches, measures: sp.measures, repeats: sp.repeats, barStyles: sp.barStyles, endings: sp.endings, octaves: sp.octaves, fifths: sp.fifths, verses: sp.verses, lyricGlyphs: sp.lyricGlyphs, titleGlyphs: sp.titleGlyphs });
   }
   results.sort((a, b) => a.from - b.from);
-  log(`对上 ${results.length}/${songs.length} 首（其中标题直接命中 ${spans.filter((s) => s.titleHit).length} 个首页）`);
+  log(`对上 ${results.length}/${songs.length} 首（其中标题直接命中 ${spans.filter((s) => s.titleHit).length} 个首页；歌词否决 ${vetoed} 对）`);
 
 
   return { cli, doc, OPS, songs, pageInfo, spans, results, t2s, normEn, normZh, textLookup };
