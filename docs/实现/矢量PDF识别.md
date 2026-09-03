@@ -24,21 +24,21 @@ PDF → extractVectorPage      src/omr/vector.ts       路径对象 + ctm + clip
     → detectProfile          src/omr/bookprofile.ts  字号族 / 版心 / 页眉页脚带
     → classifyPage           src/omr/inventory.ts    每个对象归一个语义类，列出归不掉的
     → shapeKey + 字典        src/omr/glyphdict.ts    形状 → 字符
-    → 与 GT 逐项对比          pdf-diff.mjs            差异清单 + 准确率矩阵
+    → 与 GT 逐项对比          scripts/pdf-diff.mjs            差异清单 + 准确率矩阵
 ```
 
-命令（全部纯 Node，只有 `vector-shot.mjs` 因为要像素比对才起浏览器）：
+命令（全部纯 Node，只有 `scripts/vector-shot.mjs` 因为要像素比对才起浏览器）：
 
 ```bash
 npm run build:cli                  # 把 src/ 打成 dist-cli/index.js 供 .mjs import
-node vector-shot.mjs 60            # 矢量重绘 vs pdfjs 光栅渲染，逐像素核对抽取正确性
-node gen-pagemap.mjs               # 页 → 曲 映射 → testdata/500/pagemap.json
-node gen-glyphdict.mjs             # 字形字典自举 → testdata/500/glyphdict.json
-node pdf-diff.mjs                  # 全书对比 → pdf-diff.csv + pdf-diff/<曲号>.txt
-node gen-glyphocr.mjs              # 字典的 OCR 兜底（唯一要起浏览器的建库步骤）
-node page-report.mjs               # 逐页排版信息 → pdf-layout.json + pdf-pages.csv + pdf-pages/
-node relayout.mjs --mode=outline   # 保真复现 + 对象级核对（验收）
-node relayout.mjs --mode=text      # 出 666 页文字版 PDF（可选中/可搜索）
+node scripts/vector-shot.mjs 60            # 矢量重绘 vs pdfjs 光栅渲染，逐像素核对抽取正确性
+node scripts/gen-pagemap.mjs               # 页 → 曲 映射 → testdata/500/pagemap.json
+node scripts/gen-glyphdict.mjs             # 字形字典自举 → testdata/500/glyphdict.json
+node scripts/pdf-diff.mjs                  # 全书对比 → pdf-diff.csv + pdf-diff/<曲号>.txt
+node scripts/gen-glyphocr.mjs              # 字典的 OCR 兜底（唯一要起浏览器的建库步骤）
+node scripts/page-report.mjs               # 逐页排版信息 → pdf-layout.json + pdf-pages.csv + pdf-pages/
+node scripts/relayout.mjs --mode=outline   # 保真复现 + 对象级核对（验收）
+node scripts/relayout.mjs --mode=text      # 出 666 页文字版 PDF（可选中/可搜索）
 ```
 
 ## pdfjs 的路径编码
@@ -59,7 +59,7 @@ paintOp 为 endPath 时这条路径只用于裁剪，不落墨
 - **clip 必须真的施加。** 不裁剪就会把原件上根本不可见的内容当成对象收进来
   （p36/p39 会凭空多出方框和黑块）。
 
-`vector-shot.mjs` 就是守这两条的：把抽出的对象重绘成 SVG，与 pdfjs 自己渲染的位图逐像素比。
+`scripts/vector-shot.mjs` 就是守这两条的：把抽出的对象重绘成 SVG，与 pdfjs 自己渲染的位图逐像素比。
 纯路径页平均差异 ~1%（都是 SVG 与 canvas 的抗锯齿差，不是结构差）。
 封面（渐变）、p6（整页内嵌位图）、p358/p359（**未转曲的真实文字层**）另行单列。
 
@@ -175,7 +175,7 @@ path 对象**——「≥7 片」的判据根本看不见它，那条边就落�
 补角之后 box 按所有件的并集重算（角片会外突一点）。全书 427 个角片，补完剩 0 个流进正文；
 注解首行是垃圾的框 **73 → 4**（剩下 4 个是真缺字，不是花边）。
 
-## 页 → 曲 映射（`gen-pagemap.mjs`）
+## 页 → 曲 映射（`scripts/gen-pagemap.mjs`）
 
 - **起始页必须印着曲号。** 只看「有没有标题」会把扉页里的大字当成一首（p4 吃掉了 001，
   其后整本错位一格）。
@@ -187,7 +187,7 @@ path 对象**——「≥7 片」的判据根本看不见它，那条边就落�
 
 结果：637 个乐谱页，**568/568 曲目全部映射**，一条告警（p358，该页有真实文字层）。
 
-## 字形字典自举（`glyphdict.ts` + `gen-glyphdict.mjs`）
+## 字形字典自举（`glyphdict.ts` + `scripts/gen-glyphdict.mjs`）
 
 形状键：轮廓按 **bbox 高度**归一（不能宽高各自归一，那会把「一」和「口」压成同一形状）、
 坐标量化到 50 格后哈希。量化粒度 50 是实测选的：再细会把同字的坐标抖动拆成不同类，
@@ -213,7 +213,7 @@ path 对象**——「≥7 片」的判据根本看不见它，那条边就落�
 
 结果：4~5 轮收敛，**6186 个形状类定出 4343 个，覆盖 96.97% 的字形实例**。
 
-## 逐页排版信息（`src/pdflayout/spec.ts` + `page-report.mjs`）
+## 逐页排版信息（`src/pdflayout/spec.ts` + `scripts/page-report.mjs`）
 
 把每一页整理成「足以照着排回去」的结构化描述：页型 / 曲目落位（曲号、标题、署名、逐谱行的
 小节线 x 与逐音符 x、和弦行、逐段歌词行）/ 页眉 / 页脚 / 花边文字框 / 线框 / 其它文本行。
@@ -247,7 +247,7 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 判定页型时**不能只看读出来的文字**：目录页的字有相当一部分还读不出（见下），
 拿「行尾是不是页码」判会因为读不出而失效，得叠加 `tocEntry` / `leader` 的几何计数。
 
-### OCR 兜底（`gen-glyphocr.mjs`）
+### OCR 兜底（`scripts/gen-glyphocr.mjs`）
 
 自举只能标出 GT 里出现过的字。目录页的曲名、首句索引、花边框里的注解正文都没有 GT，
 字典盖不到。这些类**每类送一次 OCR**：两万个实例只要跑两千多次推理，全书 11795 个未定类
@@ -261,7 +261,7 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 
 ### 整行合成的 path：OCR 按**整行**送，收多字符结果
 
-`gen-glyphocr.mjs` 原本一律把字形挤进 48×48、只收「恰好一个字符」的结果——
+`scripts/gen-glyphocr.mjs` 原本一律把字形挤进 48×48、只收「恰好一个字符」的结果——
 整行文字送进去就是一团黑，两千多类全被「多字符丢弃」扔掉了。改成两种形状分开送：
 
 - **单字**（宽高比 <3）：照旧，48×48，只收一个字符。
@@ -344,7 +344,7 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 - **归行要用参照汉字的下缘**。「一」只有一横、悬在字格中部，自己的下缘比同行汉字高四五个点，
   按自身下缘聚行会被分到别的行去（这一条没做时，歌词只有 79.4%；做了立刻回到 91.4%）。
 
-## 重排（`relayout.mjs`）
+## 重排（`scripts/relayout.mjs`）
 
 从版面规格把 PDF 排回去，两种模式：
 
@@ -378,9 +378,9 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 歌词/标题/署名/和弦/页眉页脚/音符数字都落成真实文字对象，
 减时线/增时线/小节线/圆滑线/八度点/花边纹样仍画矢量图形。
 
-与另一条路（`rebuild.mjs`，从数据重排）共用两样东西：
+与另一条路（`scripts/rebuild.mjs`，从数据重排）共用两样东西：
 **书籍样式 `BookStyle`**（字体·字号·间距，见下节）与**中间格式 `DrawList`**。
-`relayout.mjs` 的活因此只剩「PageSpec → DrawList」这一步（`src/pdflayout/drawlist.ts::specToDrawPage`），
+`scripts/relayout.mjs` 的活因此只剩「PageSpec → DrawList」这一步（`src/pdflayout/drawlist.ts::specToDrawPage`），
 写 PDF 的事全在 `scripts/pdfwrite.mjs`。
 
 **用 pdf-lib 直接写 PDF，不经浏览器。** 先试过 Chromium 打印（把 SVG 的 `<text>` 打成 PDF），
@@ -399,9 +399,9 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 
 读不出的那 8,140 个字里，乐谱页 6,938、目录 1,015，其余在前言与索引。
 按角色看：歌词 3,685、注解正文 1,262、调号拍号 845、目录行 867、页眉 563、署名 691。
-**GT 回填帮不上大忙**（`gen-backfill.mjs` 只补回 19 个字）：这些字多半落在 GT 覆盖不到的地方
+**GT 回填帮不上大忙**（`scripts/gen-backfill.mjs` 只补回 19 个字）：这些字多半落在 GT 覆盖不到的地方
 ——调号拍号、段落词、目录索引、花边框正文本来就不在 musicxml 里。
-剩下的走人工：`relayout.mjs --db` 把它们按形状键落进 `校对.db` 的 `unread_glyph` 表，
+剩下的走人工：`scripts/relayout.mjs --db` 把它们按形状键落进 `校对.db` 的 `unread_glyph` 表，
 **补 1,188 个字就能全清**。
 
 写 PDF 这一步的四处要害（都在 `scripts/pdfwrite.mjs`）：
@@ -421,11 +421,11 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 （直接喂会报 `Unsupported OpenType signature ttcf`）。`scripts/ttc.mjs` 负责从 ttc 里
 按名字抽出一个独立 sfnt——**不能整段切**，ttc 的各子字体常共享同一份表数据，得按表记录重新拼。
 
-## 书籍样式（`src/pdflayout/bookstyle.ts` + `gen-bookstyle.mjs`）
+## 书籍样式（`src/pdflayout/bookstyle.ts` + `scripts/gen-bookstyle.mjs`）
 
 两条重排路唯一共享的东西：这本书「长什么样」的完整参数集——页面/版心、各角色的字体与字号、各处间距。
 值全部由 `src/pdflayout/stats.ts` 从 `pdf-layout.json` 统计**中位数**得来
-（`node gen-bookstyle.mjs` → `testdata/500/bookstyle.json` + `bookstyle-report.md`）。
+（`node scripts/gen-bookstyle.mjs` → `testdata/500/bookstyle.json` + `bookstyle-report.md`）。
 
 **角色判定用 PageSpec 的字段位置**，不是 `BookProfile.families[].role`（那个字段全书恒为 `"unknown"`，
 没有任何回填方），也不重跑 `classifyPage`——spec 的具名字段本身就是归类判据的产物。
@@ -452,7 +452,7 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 `metrics` 里 `*Em` 后缀的随字号缩放（基准是音符墨迹高），其余为 pt；
 `titleBlock` 存的是页内绝对 y（原书整本一套版式，实测离散度 0.002）。
 
-## 数据重排版（`rebuild.mjs`）
+## 数据重排版（`scripts/rebuild.mjs`）
 
 **从 musicxml / 文本谱 / .jpwabc 重新排一本书**，乐句优先、页数由排版决定。
 
@@ -569,7 +569,7 @@ Node 侧照着画，两端不必共享字体度量。**不用 SVG 字符串**—
      否则在已经够短的行上再补一刀——005 那种一条小节末断点都没有的谱，等于整曲被当成一行。
      光看格数会漏掉「九小节一行」——增时线在乐句分析里按 0.7 折算、排版器却是整格
      （006《颂赞归与耶稣圣名》的主歌就是这样，排版器随后硬折，甩出一行只剩 "3 2 1--"）。
-  2. `rebuild.mjs` 排完数一遍谱行数（`countStaffRows`），多出来就再排一轮，**收紧的格数取
+  2. `scripts/rebuild.mjs` 排完数一遍谱行数（`countStaffRows`），多出来就再排一轮，**收紧的格数取
      「折完之后最长的那条行」**（`browser.ts::maxStaffRowCells`）——那才是这一首真的放得下多少。
      原来是按 `cells × expect / rows` 的比例收，但**一条行只要溢出一格也会折成两行**，
      比例立刻变成 2 倍：022《凡有气息当赞美》因此从 30 格一步收到 15 格、排成 10 行
@@ -595,7 +595,7 @@ Node 侧照着画，两端不必共享字体度量。**不用 SVG 字符串**—
 
 ### 和弦
 
-`loadMusicXml` 原本整个跳过 `<harmony>`（CLAUDE.md 记的「Score 装不下和弦」说的是 **jpwabc 那条路**，
+`loadMusicXml` 原本整个跳过 `<harmony>`（docs/架构与实现.md 记的「Score 装不下和弦」说的是 **jpwabc 那条路**，
 Score 这边只是一直没做）。现在 `src/score/harmonyparse.ts` 把它读成 `Chord.harmony`，
 `NoteEntry.addHarmony` 排到音符正上方，富文本分段复用 `layout/harmony.ts`（与五线谱、文本谱同一套）。
 导出侧的既定约束不变：`musicxmlpatch` 仍然不碰 harmony。
@@ -851,7 +851,7 @@ accidentalFlat 的墨迹在基线上方 0.448em、下方 0.168em（高 0.616em�
 以及 `MIN_CELLS` / `MIN_MEAS` 那一路「行太稀」的罚——等于让版心宽度替作曲家决定乐句断在哪儿。
 
 开关是 `PhraseOptions.contentOnly`（`bookstyle.layout.phraseContentOnly`，成书默认开）。
-**编辑器那条路一字不动**（`phrase-lines.mjs` 的 15 首基线逐行比对过）。
+**编辑器那条路一字不动**（`scripts/phrase-lines.mjs` 的 15 首基线逐行比对过）。
 
 #### DP 里留下什么
 
@@ -1005,7 +1005,7 @@ accidentalFlat 的墨迹在基线上方 0.448em、下方 0.168em（高 0.616em�
   `doLineBreak` 之前跑），所以整首量一次就够；`browser.ts::measureChordSpans` 把它连同
   版心宽度包成 `applybreaks.ts::FitMetric`，断句/选档/补刀/合并全用它。
   格数是近似——同样 30 格，歌词字多的行、带八度点与附点的行都更宽；照它判，排版器会在
-  断点之外又折一刀，`rebuild.mjs` 的容量收敛循环再把容量越收越小（064《啊！圣善夜》本来
+  断点之外又折一刀，`scripts/rebuild.mjs` 的容量收敛循环再把容量越收越小（064《啊！圣善夜》本来
   7 行的方案被一路收成 9 行 13 格）。**接上真实坐标之后那个循环基本停摆**：要重排的从
   80 首降到 4~5 首。
 
@@ -1042,11 +1042,11 @@ accidentalFlat 的墨迹在基线上方 0.448em、下方 0.168em（高 0.616em�
 
 全书 568 首：`phrase` 550 / `pairs` 13 / `even` 5，一小节碎行 **0**。
 
-#### 常驻断言 `line-check.mjs`
+#### 常驻断言 `scripts/line-check.mjs`
 
-`rebuild.mjs` 顺带把逐行事实（`applybreaks.ts::describeLines`：格数、小节数、行首残小节、
+`scripts/rebuild.mjs` 顺带把逐行事实（`applybreaks.ts::describeLines`：格数、小节数、行首残小节、
 行首歌词与旋律指纹、行末歌词标点、是否段界）写进 `pdf-out/rebuild-lines.json`，
-`line-check.mjs` 读它 + `rebuild-drawlist.json`（**不起浏览器**）判两族十九档。
+`scripts/line-check.mjs` 读它 + `rebuild-drawlist.json`（**不起浏览器**）判两族十九档。
 
 **档号分两族**（用户口径：检查要区分断句问题与非断句问题）：**D = 断句**
 （断点落在哪儿、行长匀不匀，`applybreaks.ts` / `phrase.ts` 的事，按「行首 → 行末 → 行长 →
@@ -1304,7 +1304,7 @@ accidentalFlat 的墨迹在基线上方 0.448em、下方 0.168em（高 0.616em�
   原书那一首末行只有 3 小节、上一行 6 小节，新的排法方向反倒与原书一致，待确认后改断言。
 - **断句那几个开关的默认值一律写在 `bookstyle.ts::inferBookStyle` 里**（2026-09-01 补回）。
   `testdata/500/bookstyle.json` 是 gitignore 掉的生成产物，只在 JSON 里调参的话，
-  下一次 `gen-bookstyle.mjs` 就把它们全抹了——`phraseTailLongWeight`（3）、
+  下一次 `scripts/gen-bookstyle.mjs` 就把它们全抹了——`phraseTailLongWeight`（3）、
   `phraseMoreRowsSlack`（4）、`phraseFitSlack`（0）三个当时只落在 JSON 里，
   9 月 1 日重跑一次就没了，rebuild 那边是 `?? 0` 读的，于是整层静悄悄地关掉：
   096《哈利路亚！感谢主》的四行塌回两行（补刀再切成三行 214/192/235 宽）、
@@ -1339,7 +1339,7 @@ accidentalFlat 的墨迹在基线上方 0.448em、下方 0.168em（高 0.616em�
 #### 断句方案快照
 
 档位断言判通例、定点断言判「这一首该长什么样」的几条要点，两者都留了余地；
-**快照**（`testdata/500/line-snapshots.json`，`node line-check.mjs --write-snapshots` 重写）
+**快照**（`testdata/500/line-snapshots.json`，`node scripts/line-check.mjs --write-snapshots` 重写）
 把整套断句钉死：逐首逐行记**这一句收在哪个字上**与**这一行有多少拍**，一处对不上就报。
 改断句算法时这是最硬的那道门槛。
 
@@ -1458,10 +1458,10 @@ musicxml 那侧给的是 `B♭` 那种字母在前的写法）。
 ### 段落词（「（副歌）」）
 
 **音符数据区的东西不在整本那一层落位**：段落词挂在 `Chord.sectionWord` 上（与 `Chord.harmony` 并列），
-`rebuild.mjs` 只负责按 `校对.db::section_word` 的 `note_ordinal` 注入，排版全交给
+`scripts/rebuild.mjs` 只负责按 `校对.db::section_word` 的 `note_ordinal` 注入，排版全交给
 `Line.addSectionWords` + `Line.spreadForSectionWords`。
 
-锚点（`rebuild.mjs`）：
+锚点（`scripts/rebuild.mjs`）：
 
 - 含「副歌」的**优先挂到第一个带 `refrain` 标记的和弦**。`note_ordinal` 是按原书音符序号记的，
   重排后（断行不同、反复展开方式不同）常差几个音——023 首就落在了副歌前一个音上。
@@ -1561,14 +1561,14 @@ V11 也只遍历 `midStarts`，**整页独占的曲子从不过闸**。实测全
 
 ### 成书骨架
 
-曲号 / 标题 / 词曲署名 / 调号拍号 / 页眉 / 页码不经排版引擎，由 `rebuild.mjs` 在整本那一层按
+曲号 / 标题 / 词曲署名 / 调号拍号 / 页眉 / 页码不经排版引擎，由 `scripts/rebuild.mjs` 在整本那一层按
 `style.titleBlock` 的绝对 y 摆（`LayoutOptions.pageFurniture = "none"` 关掉引擎自带的「本曲第 i/n 页」）。
 **对开页镜像**：奇数书页页眉靠装订侧（左）、曲号靠切口侧（右），偶数页反过来——实测原书就是这样。
 
 首页要给标题块让位，做法是**在页内平移**（`pageItemsToDrawPage` 的 `offset`）：
 先排一遍量出首行音符的墨迹上缘，再整页挪到原书那条线上。事后去改 DrawList 不行，路径的坐标已经烘进 `d` 里了。
 
-### 装箱：半页起排 + 正反面（`rebuild.mjs` 的 `packMid` / `packAlone`）
+### 装箱：半页起排 + 正反面（`scripts/rebuild.mjs` 的 `packMid` / `packAlone`）
 
 原书**一页印得下不止一首**（实测 25 处半页起排、11 页放了 2 首以上），而且
 **两页曲一律起于偶数页**（66 首里只有 1 首例外）——后一条是刻意的：物理页 `p` 与 `p+1`
@@ -1605,10 +1605,10 @@ V11 也只遍历 `midStarts`，**整页独占的曲子从不过闸**。实测全
 （不等的话全书正反面整体错一页）。
 
 一页两首之后，**下游一律按 y 带归属**：`DrawPage.meta.songs[]` 的每条带 `yFrom` / `yTo`
-（`line-check.mjs::songAt` 靠它把违例记到正确那一首上），首句索引也改成从本首自己的
+（`scripts/line-check.mjs::songAt` 靠它把违例记到正确那一首上），首句索引也改成从本首自己的
 `ownItems` 里捞（照页取会捞到上一首的歌词）。
 
-判据由 `line-check.mjs` 的两档守着：**V10**（一首歌跨了同一张纸的正反面；页数 ≥ 3 的
+判据由 `scripts/line-check.mjs` 的两档守着：**V10**（一首歌跨了同一张纸的正反面；页数 ≥ 3 的
 豁免并单列——那种怎么排都躲不开）、**V11**（半页起排压住上一首、或越出版心下界）。
 全书都必须是 0。
 
@@ -1620,12 +1620,12 @@ V11 也只遍历 `midStarts`，**整页独占的曲子从不过闸**。实测全
 
 平移只能在**页号定下来之后**做（装订前不知道一页是奇是偶），而那时路径坐标已经烘进 `d` 里了，
 所以 `drawlist.ts::shiftDrawPageX` 连 `d` 一起搬：`d` 的数字是 x/y 交替的（`M`/`L` 两个、`C` 六个），
-逐个数按下标奇偶决定加不加。调用点在 `rebuild.mjs` 的装订段，**在 `decorate` 之前**。
+逐个数按下标奇偶决定加不加。调用点在 `scripts/rebuild.mjs` 的装订段，**在 `decorate` 之前**。
 
 ### 字体
 
 **字体配置在两处，改了要一起改**：代码里的 `bookstyle.ts::defaultFonts()` 与
-实测产物 `testdata/500/bookstyle.json` 的 `fonts` —— `rebuild.mjs` 跑的是后者，
+实测产物 `testdata/500/bookstyle.json` 的 `fonts` —— `scripts/rebuild.mjs` 跑的是后者，
 只改代码不改 JSON 等于没改。歌词正文与词曲署名用 GBK 版（`方正报宋_GBK` /
 `方正楷体_GBK`，21992 字），简体版只有 8098 字、连「祂」都没有。
 
@@ -1687,7 +1687,7 @@ V11 也只遍历 `midStarts`，**整页独占的曲子从不过闸**。实测全
 
 B 路一开始只排得出 musicxml 装得下的东西，原书上另外那一半全丢了：
 调号拍号原文、目录、首句索引、花边框里的圣诗故事与经文注解、扉页前言、段落词。
-这些内容 `page-report.mjs` 早就抽出来躺在 `pdf-layout.json` 里，只是没人消费。
+这些内容 `scripts/page-report.mjs` 早就抽出来躺在 `pdf-layout.json` 里，只是没人消费。
 现在 `bookmeta.ts` 把它们提成结构化数据落进 `校对.db`，`bookparts.ts` 再排回去。
 
 ### 提取判据（每条都是拿具体页换来的）
@@ -1747,9 +1747,9 @@ B 路一开始只排得出 musicxml 装得下的东西，原书上另外那一�
 `annotationBlock` 照着它 `split("\n")` 再各自折行，每行就只有原书那么长，右边空掉一大截
 （037 的故事框只排到半幅宽）。要先把软换行抹平、整段重新折。
 
-### 补字：整行 OCR（`gen-storyocr.mjs`）+ 人工确认表（`gen-glyphsheet.mjs`）
+### 补字：整行 OCR（`scripts/gen-storyocr.mjs`）+ 人工确认表（`scripts/gen-glyphsheet.mjs`）
 
-`gen-glyphocr.mjs` 是**逐类**送识别，花边框正文与目录剩下的 1188 类正是它啃不动的残渣
+`scripts/gen-glyphocr.mjs` 是**逐类**送识别，花边框正文与目录剩下的 1188 类正是它啃不动的残渣
 ——单字孤立送识别，宋体小字的「日/曰」「未/末」分不开。改成**整行送**：
 一行的字形按原位摆进一张长条（高 48）送行识别，已知元素当**锚点**在结果里定位，
 锚点之间的残余文本分给那一段里的未知元素。
@@ -1908,7 +1908,7 @@ u 就跟着缩，验收照样过。p54 那行的行首「“」被 OCR 读成「
 标成 ignored 从待补表里退场。**`--from=layout`** 让待确认的字形直接从 `pdf-layout.json` 取
 ——花边框正文的缺字进不了 `unread_glyph`（那张表是重排那条路落的），可它们正是最该人看的。
 
-### 形近补字（`gen-glyphfuzzy.mjs`）
+### 形近补字（`scripts/gen-glyphfuzzy.mjs`）
 
 `shapeKey` 把轮廓按高度归一到 50 格再取整，**同一个字印小一号键就变了**。注解正文是
 6.5~10.5pt（谱面歌词 10.4pt），于是同一个「(」在注解里拿到的键与歌词里的不同，
@@ -1950,11 +1950,11 @@ u 就跟着缩，验收照样过。p54 那行的行首「“」被 OCR 读成「
 `pdf-diff` 各档一字不差（音符 99.96%、八度 99.53%、歌词 99.32%、标题 99.66%、
 和弦 99.16%、弧线 96.90%），`rebuild` + `line-check` 定点断言全过、全书基线持平。
 
-#### 注解对比册（`gen-annocheck.mjs`）
+#### 注解对比册（`scripts/gen-annocheck.mjs`）
 
 挑错要看原件。这个脚本把每一条注解出成一块：上半是**原件**——从原 PDF 里
 把这一框的矩形区域整块嵌进来（`pdf-lib` 的 `embedPage` 带 boundingBox，矢量、不栅格化）；
-下半是**重排出来的样子**，框和字都走 `bookparts.ts::annotationBlock`，与 `rebuild.mjs`
+下半是**重排出来的样子**，框和字都走 `bookparts.ts::annotationBlock`，与 `scripts/rebuild.mjs`
 同一个实现、同一份度量，花边母题按 `frame_style` 取这一框那八片，**框宽照原件**
 （`left/right` 给原书那一框的左右缘），上下对齐着看。
 **读不出的字画成 `□`**（正路那边是留空——绝不写问号，那会跟着排进成品）。
@@ -2073,17 +2073,17 @@ PP-OCR **各有各的短板，正好互补**，所以默认两个都跑，票投
 「代上 16:23」里 16 与 23 之间只隔 0.58 个字身，装不下一个全角。
 只好在 `runText` 出文本时按上下文分——两侧都是西文数字/字母的写半角。
 
-### 排回去（`bookparts.ts` + `rebuild.mjs`）
+### 排回去（`bookparts.ts` + `scripts/rebuild.mjs`）
 
 - **调号拍号**的各处比例基准是**墨迹高**（`roles.keyMeter.size`），不是字号。
   两者差一个「墨迹占 em 的比例」——Times 的数字只占 0.66em，拿字号去乘，
   分数线会长出一半、分母被线压住（005 首实测）。
-- **段落词**按音符序号锚在 `Chord.sectionWord` 上（`rebuild.mjs` 只管注入），
+- **段落词**按音符序号锚在 `Chord.sectionWord` 上（`scripts/rebuild.mjs` 只管注入），
   落位与撑开都在排版引擎里（见上面「段落词」一节）——原书是排版时人工避开和弦的，
   重排的断行不一样，撞不撞只能现算。
 - **注解的字号全书统一**，落位按空间调度（用户口径）。库里 `annotation.size` 与逐框行距
   是**原书的实测值**（同一批花边框 6.5~10.5 都有，那是当年人工挤版挤出来的），
-  只留给 A 路 `relayout.mjs` 保真复现用，**B 路不读**：一律 `roles.story.size`（9.8pt）、
+  只留给 A 路 `scripts/relayout.mjs` 保真复现用，**B 路不读**：一律 `roles.story.size`（9.8pt）、
   行距 `size × annGapRatio`。老的「缩字号 9.8→6.0 / 缩行距」两级阶梯**已撤掉**——
   放不下就换个地方，不靠压字。
   候选页按「离本曲多近」排，第一个放得下的就用：
@@ -2129,14 +2129,14 @@ PP-OCR **各有各的短板，正好互补**，所以默认两个都跑，票投
 ### 产物
 
 ```
-node gen-bookstyle.mjs                       # 统计 → testdata/500/bookstyle.json + bookstyle-report.md
-node gen-backfill.mjs                        # GT 回填未读字形 → testdata/500/backfill.json
-node gen-storyocr.mjs [--dry] [--pages=..]   # 整行 OCR 补字 → glyph_fix + pdf-out/storyocr-report.json
-node gen-glyphsheet.mjs [--apply=x.tsv]      # 人工确认表 → pdf-out/glyphsheet-*.svg + .tsv
-node gen-annocheck.mjs [--issues] [--one=..]  # 注解对比册 → pdf-out/注解对比.pdf
-node gen-bookmeta.mjs [--check]              # 书级元数据 → 校对.db + pdf-out/bookmeta-report.json
-node relayout.mjs --mode=text [--db]         # A 路 → pdf-out/诗歌500首-文字版.pdf + relayout.csv/-report.json
-node rebuild.mjs [--one=028] [--parts] [--db]  # B 路 → pdf-out/诗歌500首-重排版.pdf + rebuild.csv + rebuild-drawlist.json
+node scripts/gen-bookstyle.mjs                       # 统计 → testdata/500/bookstyle.json + bookstyle-report.md
+node scripts/gen-backfill.mjs                        # GT 回填未读字形 → testdata/500/backfill.json
+node scripts/gen-storyocr.mjs [--dry] [--pages=..]   # 整行 OCR 补字 → glyph_fix + pdf-out/storyocr-report.json
+node scripts/gen-glyphsheet.mjs [--apply=x.tsv]      # 人工确认表 → pdf-out/glyphsheet-*.svg + .tsv
+node scripts/gen-annocheck.mjs [--issues] [--one=..]  # 注解对比册 → pdf-out/注解对比.pdf
+node scripts/gen-bookmeta.mjs [--check]              # 书级元数据 → 校对.db + pdf-out/bookmeta-report.json
+node scripts/relayout.mjs --mode=text [--db]         # A 路 → pdf-out/诗歌500首-文字版.pdf + relayout.csv/-report.json
+node scripts/rebuild.mjs [--one=028] [--parts] [--db]  # B 路 → pdf-out/诗歌500首-重排版.pdf + rebuild.csv + rebuild-drawlist.json
 ```
 
 `--one` 单曲试排默认不出前置页与索引（那几十页会把要看的那一页埋掉），要一起看加 `--parts`。
@@ -2144,7 +2144,7 @@ node rebuild.mjs [--one=028] [--parts] [--db]  # B 路 → pdf-out/诗歌500首-
 `校对.db`（`scripts/checkdb.mjs`，用 `node:sqlite`，不引新依赖）：
 `run` / `run_metric` / `diff` / `unread_glyph` / `glyph_fix` 五张表 + `pending_diff` 视图，
 外加书级元数据八张表 `song_meta` / `section_word` / `annotation` / `toc_row` / `index_row` /
-`front_page` / `page_label` / `ornament_tile`（`gen-bookmeta.mjs` 整表覆盖写）。
+`front_page` / `page_label` / `ornament_tile`（`scripts/gen-bookmeta.mjs` 整表覆盖写）。
 表名字段名一律英文；库里原有的中文列名 `check` 表是人工校对表，不动它，按曲号 join。
 
 **改表结构要显式迁移。** `CREATE TABLE IF NOT EXISTS` 遇上已存在的旧表什么也不做，
@@ -2154,7 +2154,7 @@ PDF 掉 5MB 那次就是这么来的）。加列走 `ensureColumns`（`PRAGMA ta
 （全书两片）改成 `(style_id, slot)` 主键（逐框八片）就走的这条路，里头存的是可以
 重新提取的派生数据，不必搬运。
 
-## 对比（`pdf-diff.mjs`）
+## 对比（`scripts/pdf-diff.mjs`）
 
 **目标是找出 GT 与 PDF 的真实数据差异**（音符录错、歌词录错），
 排版层面的不同要记下来但不能混进去。所以报告按三类分节：
@@ -2236,14 +2236,14 @@ PDF 掉 5MB 那次就是这么来的）。加列走 `ensureColumns`（`PRAGMA ta
 - **必须排在「标记重复描边」之后**。那之前每个字都有 fill/stroke 两份几乎重合的对象，
   它们的横向间距是负的，会被当成偏旁并掉。
 
-## 差异标记版 PDF（`pdf-mark.mjs`）
+## 差异标记版 PDF（`scripts/pdf-mark.mjs`）
 
 把每一处差异盖回**原件**上，供人工核对：
 
 ```
-node pdf-diff.mjs && node pdf-mark.mjs      # → pdf-out/diff-marked.pdf（只出有标记的页）
-node pdf-mark.mjs 279 135                   # 只出这几首所在的页
-node pdf-mark.mjs --all                     # 全书 666 页
+node scripts/pdf-diff.mjs && node scripts/pdf-mark.mjs      # → pdf-out/diff-marked.pdf（只出有标记的页）
+node scripts/pdf-mark.mjs 279 135                   # 只出这几首所在的页
+node scripts/pdf-mark.mjs --all                     # 全书 666 页
 ```
 
 - **红** —— 页面上这个对象与 GT 不符（录错，或页面多出 GT 没有的）。做法是把该对象的轮廓
@@ -2273,7 +2273,7 @@ pdf-lib 的原点在左下、y 朝上，页面坐标是 SVG 那套，故 `drawSv
 - **`<creator>` 要按「先词后曲」排**：全书 485 首把两行塞在一个 `type="composer"` 里，
   个别几首拆成 composer + lyricist 两条，顺序与谱面相反。
 
-## 与 GT 的口径对齐（`pdf-diff.mjs`）
+## 与 GT 的口径对齐（`scripts/pdf-diff.mjs`）
 
 这些不是识别错误，是两边表述方式不同，必须先对齐口径才比得准：
 
@@ -2288,7 +2288,7 @@ pdf-lib 的原点在左下、y 朝上，页面坐标是 SVG 那套，故 `drawSv
 - `.Voice` 里 `{(3}` 是三连音标记，**没有右括号**——正则写成 `\{\([^)]*\)?\}?` 会让 `[^)]*`
   一路吃到远处圆滑线的 `)`，把整段音符吞掉（272 首因此只解析出 17 个音符，实际有 50+）。
 
-## 当前成绩（`node pdf-diff.mjs`，568 首）
+## 当前成绩（`node scripts/pdf-diff.mjs`，568 首）
 
 | | |
 |---|---|
@@ -2378,7 +2378,7 @@ pdf-lib 的原点在左下、y 朝上，页面坐标是 SVG 那套，故 `drawSv
 | 完全没事可说的曲子**不出报告文件**；全量跑先清空 `pdf-diff/` | 202 首一处要核对的都没有（568→366 个文件），留着只会让人在几百个文件里翻找哪几个是有事的；不清空的话上一轮留下的旧报告会一直残着。**「版面」那一节不算数**——它自己就写着「记录，不算差异」：剔掉几个非歌词对象、花边框多少字、反复房号数量对不上（识别侧只有几何，判据本来就粗），都不是要人去核对的东西（272 首整个文件只有一行「房号 GT 0 / PDF 14」）。例外是里头那两条确实是问题的：有歌词行一个汉字都读不出、段数对不上 |
 | 标点差异改成**逐段比**，标记版 PDF 上单出一色（蓝）、**默认不画**（`--punct` 才画） | 拼成一整串比，某一段多一个逗号后面所有段就全错位。颜色要单列：标点跟着排版走，属「表述或结构不一致」，混进红色里会把真正的录错淹掉；七百多处铺满大半本书，页数从 148 涨到 310、体积翻倍，故默认关掉，明细照旧进报告 |
 | 标点**拿整段原文（汉字 + 标点）对齐，再挑出与标点有关的编辑**，不拿标点串对齐 | 一段里五六个「，」一模一样，DP 把插入摆在哪个位置距离都一样，落点全凭回溯先后——007 首每段真正少的是句末那个「；」，按标点串比却指到段首那个「，」，标记版 PDF 也跟着标错字。汉字把标点钉死在原位，落点才对得上；顺带**位置差异也报得出来了**（按标点串比时两个「，」直接对上，根本看不见） |
-| **形状类按 32×32 签名归并**，**放在自举之前**（`gen-glyphdict.mjs`；`gen-glyphmerge.mjs` 是 OCR 之后的补刀） | `shapeKey` 把轮廓按高度归一到 50 格再取整，一个汉字上千个坐标，页面上同一个字印在不同位置时坐标差着零点零几点——单看每个坐标都不影响取整，上千个里总有一两个正好卡在 .5 上翻过去，键就变了。全书 16234 个类按签名只剩 10019 组，**近四千个类是同一字形的分身**。分身各学各的字就会打架：011 首「晨光著现」印两遍，两个字的路径 501 段只差末位四舍五入、32×32 签名逐位相同，却一个被投成「着」一个「著」，同一段里前后不一。归并后全书歌词差异 589→561、标题 16→15 |
+| **形状类按 32×32 签名归并**，**放在自举之前**（`scripts/gen-glyphdict.mjs`；`scripts/gen-glyphmerge.mjs` 是 OCR 之后的补刀） | `shapeKey` 把轮廓按高度归一到 50 格再取整，一个汉字上千个坐标，页面上同一个字印在不同位置时坐标差着零点零几点——单看每个坐标都不影响取整，上千个里总有一两个正好卡在 .5 上翻过去，键就变了。全书 16234 个类按签名只剩 10019 组，**近四千个类是同一字形的分身**。分身各学各的字就会打架：011 首「晨光著现」印两遍，两个字的路径 501 段只差末位四舍五入、32×32 签名逐位相同，却一个被投成「着」一个「著」，同一段里前后不一。归并后全书歌词差异 589→561、标题 16→15 |
 | 归并要**挡住细长条**（`min/max < 0.25` 不参与），组内还要**尺寸相近**（±12%） | 签名按 `max(w,h)` 等比缩放，「一」（10.4×0.4）、目录引导点行、注解框的「十」字纹样边压扁之后都是同一条横带，不挡的话 81 个类会错并成一组；等比缩放也让大一号的同形字（标题字）签名相同，按尺寸再分一道 |
 | **「一」不受「宽扁形状不收单字」那条闸的限制** | 那条闸是拦「短圆滑线、减时线被投成某个字」的，`一` 本来就扁（标题里 16.2×3.9）。挡住它，标题里的「一」就只剩 OCR 一条路，而扁横条送行识别多半读成 `1`——22 首标题因此把「一」读成了「1」（标题 98.91%→99.66%） |
 | 归并放在自举**之前**（旧做法是事后 `gen-glyphmerge` 补救） | 票攒到一处再投，冲突从 26 组降到 0 组；顺带多认出一批字。**建库三步走**：`gen-glyphdict`（自举，内含归并，写 `g` 字段记代表键）→ `gen-glyphocr`（未定类送 OCR，靠 `g` 一组只送一次、结果发给全组，省三成推理）→ `gen-glyphmerge`（收尾对齐，拿 `g` 跑不必再扫全书） |
@@ -2401,7 +2401,7 @@ pdf-lib 的原点在左下、y 朝上，页面坐标是 SVG 那套，故 `drawSv
 全书这样的形状类有 2427 个（乐谱页上 3050 处对象，169 页）。**这一类才轮得到 OCR**，
 已经做了（见下节）。
 
-**归类一改就要重跑一次 `gen-glyphdict.mjs`**（再把上一版的 OCR 标注并回未定类）：
+**归类一改就要重跑一次 `scripts/gen-glyphdict.mjs`**（再把上一版的 OCR 标注并回未定类）：
 字形自举是拿 GT 序列与页面序列对齐投票的，归类错位时学到的字符也跟着错
 （标题里的「心」曾被学成「）」）。这一步在标题那项上单独值 2 个百分点。
 
@@ -2433,6 +2433,6 @@ pdf-lib 的原点在左下、y 朝上，页面坐标是 SVG 那套，故 `drawSv
 - 矢量路只在 `isVectorPdf` 为真时启用（文字层为空 + 路径占算子绝大多数），否则原样退回
   `decode.ts` 的光栅路。
 - `src/omr/` 的老文件**一行未改**，光栅路 14 首基线零退化
-  （`node measure-all.mjs`：音符 100.0 / 对位 100.0 / 歌词 99.5 / 标题 100 / 词曲 100）。
+  （`node scripts/measure-all.mjs`：音符 100.0 / 对位 100.0 / 歌词 99.5 / 标题 100 / 词曲 100）。
 - `src/omr/vector.ts` 及其 import 链**不得触碰 canvas / OffscreenCanvas / document**——
   Node CLI 要在没有浏览器的情况下 import 它。需要位图时另走 `decode.ts`（浏览器专属）。

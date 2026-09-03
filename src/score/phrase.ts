@@ -12,7 +12,7 @@ import { Fraction } from "../common/fraction";
  *
  * 用户口径：**「不要算格数，真实坐标排一遍，放不下再补刀」**。格数（`LineInfo.cells`）
  * 是近似——同样 30 格，歌词字多的行、带八度点与附点的行都更宽；照它判，排版器会在我们的
- * 断点之外**又折一刀**，而 `rebuild.mjs` 的容量收敛循环随后把容量越收越小
+ * 断点之外**又折一刀**，而 `scripts/rebuild.mjs` 的容量收敛循环随后把容量越收越小
  * （064《啊！圣善夜》本来 7 行的方案被一路收成 9 行 13 格）。
  *
  * `spans` 与排版器折行用的是同一把尺子（`layout.ts::Line.naturalSpans`），
@@ -83,7 +83,7 @@ export interface PhraseBreaks {
   cuts: CutCandidate[];
   /** **容量补刀落下的断点**（`applybreaks.ts::applyCapacityCuts` 写，两种键与
    *  `measureBreaks` / `midBreaks` 同义）。断句本身不产生它们——它们是「这一行放不下」
-   *  才切出来的。`describeLines` 据此给 `LineInfo.fromCut` 打记号，`line-check.mjs`
+   *  才切出来的。`describeLines` 据此给 `LineInfo.fromCut` 打记号，`scripts/line-check.mjs`
    *  的 D2 据此豁免（拆分导致的弱起不一致不算错误）。 */
   capacityCuts: Set<Chord | number>;
   /** **不许删的断点**（小节下标，语义同 `measureBreaks`）：跳转记号（Fine / D.C. / D.S. /
@@ -236,7 +236,7 @@ function measureFp(chords: Chord[]): string {
 }
 
 /** 行长参数。默认值是拿具体曲子调出来的（见上面各常量的注释），**别随手改默认**；
- *  成书排版要更均匀的行长时按需收紧上限（见 rebuild.mjs）。 */
+ *  成书排版要更均匀的行长时按需收紧上限（见 scripts/rebuild.mjs）。 */
 export interface PhraseOptions {
   targetMeas?: number;
   minMeas?: number;

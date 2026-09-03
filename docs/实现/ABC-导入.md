@@ -19,8 +19,8 @@
   dict.get 默认值、可变默认参数、`re.sub` 函数替换、`(?<!\\)` 负向后顾。**注意 Write 工具会把某些
   字面空格 `" "` 写成 NUL**——落文件后 `file src/abc/abc2xml.ts` 应报 UTF-8 而非 data。
 
-**验证**：`node abc-check.mjs` 经浏览器 bundle（`window.__abc2musicxml`）转 3 组 fixture 做**规范化 token
+**验证**：`node scripts/abc-check.mjs` 经浏览器 bundle（`window.__abc2musicxml`）转 3 组 fixture 做**规范化 token
 diff**——zanmeigepu（含 page credits）比**已发布的 `zanmeigepu_score.xml`**（=abc2xml+后处理，9288 token/
 53 小节）、合成用例（无作者前缀 → 不加 credit）比本机 `python3 abc2xml.py`，均实测**逐字节一致**（覆盖
-多声部/连奏/重复/volta/和弦/装饰/broken-rhythm/调号变更 等）。`node abc-shot.mjs <abc> out.png`
+多声部/连奏/重复/volta/和弦/装饰/broken-rhythm/调号变更 等）。`node scripts/abc-shot.mjs <abc> out.png`
 经 `window.__app.importBytes` 走 `.abc` 全链路渲染核对。回归 musicxml/eltree/pyparsing 后跑这两个脚本。

@@ -7,7 +7,7 @@
 // 对象边界就是天然的分割。速度也差两个数量级（全书 666 页抽取 ~8s，无需 OCR 推理）。
 //
 // **本文件及其 import 链不得触碰 canvas / OffscreenCanvas / document**——
-// Node CLI（page-report.mjs / pdf-diff.mjs）要在没有浏览器的情况下 import 它。
+// Node CLI（scripts/page-report.mjs / scripts/pdf-diff.mjs）要在没有浏览器的情况下 import 它。
 // 需要位图时另走 decode.ts（那边是浏览器专属）。
 //
 // pdfjs 的路径编码（node_modules/pdfjs-dist/**/pdf.mjs 的 DrawOPS / makePathFromDrawOPS）：

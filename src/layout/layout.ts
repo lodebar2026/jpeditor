@@ -3497,7 +3497,7 @@ export class LayoutOptions {
   /** 右边距。默认与 marginLeft 相同（原来左右共用一个值）；成书排版要对开页镜像时分开给。 */
   marginRight = 50;
   /** 页面装饰：`song` = 每页底部印「曲名 + 第 i/n 页」（编辑器/单曲预览的老行为）；
-   *  `none` = 什么都不印，页眉页脚由整本合成那一层统一加（见 rebuild.mjs）。 */
+   *  `none` = 什么都不印，页眉页脚由整本合成那一层统一加（见 scripts/rebuild.mjs）。 */
   pageFurniture: "song" | "none" = "song";
   maxLineDist!: number;
   maxHorizontalScale = 2.0;

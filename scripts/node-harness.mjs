@@ -3,7 +3,7 @@
 //   node-harness.mjs —— **不起浏览器**的脚本用（矢量抽取 / 归类 / 字形字典 / 版面规格 / 对比）
 // 断言与业务逻辑一律留在各脚本里，这里只放引导。
 //
-// 用法：import { openPdf, eachPage, parsePageRange, loadCorpus, cliOut } from "./scripts/node-harness.mjs";
+// 用法：import { openPdf, eachPage, parsePageRange, loadCorpus, cliOut } from "./node-harness.mjs";
 import { readFile, readdir, mkdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, extname, basename } from "node:path";
@@ -494,7 +494,7 @@ export function isCreditWordGlyph(b) {
   return true;
 }
 
-/** 音名字母 → 音阶序号。简谱数字按**拼写**算（见 CLAUDE.md 里 jpToStep 那条刻意背离）。 */
+/** 音名字母 → 音阶序号。简谱数字按**拼写**算（见 docs/架构与实现.md 里 jpToStep 那条刻意背离）。 */
 const STEP_IDX = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
 
 /**

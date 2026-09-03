@@ -2,7 +2,7 @@
 // 遍历 testdata 夹具 + 读 GT」，MIME 表一度有 5 个互不相同的版本（缺 .wasm/.onnx 就 404）。
 // 这里只放引导，**断言逻辑留在各脚本里**——那才是每个脚本真正的内容。
 //
-// 用法：import { serveDist, launchPage, loadApp, findSongFixtures, imageArg } from "./scripts/harness.mjs";
+// 用法：import { serveDist, launchPage, loadApp, findSongFixtures, imageArg } from "./harness.mjs";
 import { createServer } from "node:http";
 import { readFile, readdir } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";

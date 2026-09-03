@@ -1,7 +1,7 @@
 // B 路（从乐谱数据重排）的浏览器侧：样式注入 + 页面树 → DrawList。
 //
 // **这是唯一碰 measure/DOM 的重排件**，所以不能进 dist-cli（见 src/cli/index.ts 的头注释）。
-// Node 侧的 rebuild.mjs 通过 window.__book 调它，拿回纯数据的 DrawPage[]，再交
+// Node 侧的 scripts/rebuild.mjs 通过 window.__book 调它，拿回纯数据的 DrawPage[]，再交
 // scripts/pdfwrite.mjs 出 PDF。
 //
 // 为什么导出 DrawList 而不是 SVG 字符串：SVG 要在 Node 侧反解嵌套 transform 与字体度量，
@@ -68,7 +68,7 @@ function roleOfItem(it: TextFrame, opt: LayoutOptions): StyleRole {
   // countStaffRows / measureCellsPerLine 数「占一格的音符」时会把 "1." 当成音符，
   // 一个房号就凭空多出一条谱行（010 曾因此每轮都判成折行、迭代六轮都收不住）。
   if (it.classes.has("ending")) return "verseNum";
-  // 段落词（「（副歌）」）：字体与 lyric 同源，但**要认得出来**——line-check.mjs 靠这个角色
+  // 段落词（「（副歌）」）：字体与 lyric 同源，但**要认得出来**——scripts/line-check.mjs 靠这个角色
   // 检查它有没有挂出版心，混在 lyric 里就找不着了。
   if (it.classes.has("section-word")) return "sectionWord";
   if (it instanceof SmuflText) return "smufl";
@@ -137,7 +137,7 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
       // 只在**画的时候**补这一下——排版度量（entry 高度、纵向栅格、行容量）不能动，
       // 那是「简谱纵向栅格」那把统一的尺子。
       const role0 = roleOfItem(it, o.options);
-      // 语义标记：**只给 line-check.mjs 用**，不参与度量。房号与段号同归 verseNum、
+      // 语义标记：**只给 scripts/line-check.mjs 用**，不参与度量。房号与段号同归 verseNum、
       // 转调标记混在 lyric 里，光看 role 分不开（见 DrawText.cls）。
       const cls = CLS_TAGS.find((c) => it.classes.has(c));
       const dy = role0 === "note" && (it.text === "-" || it.text === "\u2013") ? dashInkShift(o.options) : 0;
@@ -384,7 +384,7 @@ export function maxStaffRowCells(pages: DrawPage[]): number {
 /**
  * 成书这一路的排版器构造：字号取 lyric 那一档、灌进 BookStyle、注入 SMuFL 元数据。
  *
- * 三个调用点（`measureChordSpans` / `measureCellsPerLine` / rebuild.mjs 的 `renderPages`）
+ * 三个调用点（`measureChordSpans` / `measureCellsPerLine` / scripts/rebuild.mjs 的 `renderPages`）
  * 原来各抄了一份这三行，改一处就得记得改另外两处。`smuflMeta` 不注入的话，
  * layout 会在延长号/跳转记号上抛 "no smufl bbox"。
  */
