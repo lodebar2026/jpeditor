@@ -193,10 +193,21 @@ function arcOf(o: PObj): SlurArc | null {
  *
  * @param isEnd 这一端是弧的**终点**（挂到音符左缘）；否则是起点（挂到右缘）
  */
+/**
+ * 弧的一端离符头墨迹**纵向**能有多远（格数）。
+ *
+ * 原文是一格。本书不行：朝上的弧画在**符杠之上**、朝下的弧画在符干末端之下，
+ * 离符头两三格是常事，一格的窗口把那些端点全判掉，弧只剩一头挂着。
+ * 实测（`staff-diff.mjs` 的弧线档 / 识别出的条数，GT 413 条）：
+ * 1 格 93.4% / 353 条，2 格 93.9% / 382 条，**3 格 94.1% / 402 条**，4 格 94.0% / 418 条
+ * ——再放就开始乱挂了。
+ */
+const SLUR_REACH = 3;
+
 function validateSlurNote(isEnd: boolean, nt: Box, px: number, py: number, sp: number, above: boolean): number | null {
   // y 向下：`nt.top` 是视觉上沿。原文比的是 y 向上的 top/bottom，这里整段翻过来。
-  if (py < nt.top - sp) return null;
-  if (py > nt.bottom + sp) return null;
+  if (py < nt.top - sp * SLUR_REACH) return null;
+  if (py > nt.bottom + sp * SLUR_REACH) return null;
   let dy: number;
   if (py < nt.top) {
     dy = nt.top - py;
