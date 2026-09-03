@@ -23,6 +23,7 @@ pdf-pages/
 pdf-layout.json
 pdf-out/
 staff-out/
+pptx-out/
 
 # OMR 测试数据（本地保留，不入库）
 testdata/*

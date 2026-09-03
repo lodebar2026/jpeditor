@@ -11,7 +11,7 @@ import { Font } from "./font";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 import { chordTextSegs, layoutHarmonySegs } from "./harmony";
 import { BandItem, bandTop, stackUpperBand } from "./upperband";
-import { GraceMetrics, graceAdvance, graceGeometry } from "../common/gracenote";
+import { GraceMetrics, graceAdvance, graceBottom, graceGeometry } from "../common/gracenote";
 import * as S from "../score/score";
 
 function getOrNull<T>(arr: T[], i: number): T | null {
@@ -330,6 +330,10 @@ export class SmuflText extends TextFrame {
  */
 export class JpOctaveDot extends GraphicPath {
   readonly radius: number;
+  /** 这个圆是**附点**的话，记下它挂在哪个数字上、是第几个。
+   *  只有 `editor/pptx.ts` 用得着：那边要按目标字体的数字宽把附点重新摆一遍
+   *  （八度点锚在 `JpNumber.cx` 上，本来就跟着走，不需要）。 */
+  aug: { num: JpNumber; index: number } | null = null;
   constructor(r: number, color: number) {
     super();
     this.selectable = true;
@@ -757,13 +761,26 @@ export class TimeSig extends Entry {
       // 引擎默认的 1.5 是按屏幕上 fontSize≈28 调的，缩到成书字号就成了一道黑杠。
       ruleWidth: opt.timeSigRuleWidth > 0 ? opt.timeSigRuleWidth : 1.5,
       color: opt.color,
-      font: opt.numberFont.withBold(),
+      // **与音符同一份字体**（用户口径）。原先 `withBold()`：同一个字族但字重不同，
+      // 导出到 .pptx 里就是 YaHei Bold 对 YaHei Regular，一眼看得出拍号比音符黑一档。
+      font: opt.numberFont,
       // 0 = 让 jpTimeSigItems 用它自己的默认比例（编辑器/成书两条路不变）。
       // 竖向不在这里给：它只认拍值字号（jpglyph.ts::TIME_SIG_GAP_EM）。
       digitRatio: opt.timeSigDigitRatio > 0 ? opt.timeSigDigitRatio : undefined,
       ruleLengthRatio: opt.timeSigRuleLenRatio > 0 ? opt.timeSigRuleLenRatio : undefined,
     });
-    this.width = r.width;
+    // **前后各留一格**（用户口径：「拍号前后要有间距」）。`r.width` 只是分数线的长度，
+    // 两个数字本身还比它宽出一点点，于是曲中转拍号紧贴着前一条小节线
+    //（144《求圣灵吹我》实测净距 1.75pt）。
+    //
+    // 前面那一格走 `Entry.leadSpace`（`Line.calcXPos` 在定位之前先加它），**不能靠
+    // 把图元整体右移**：`Group.update()` 会把组原点归到子级包围盒的左上角，右移多少
+    // 就被吃掉多少。后面那一格加进 `entryWidth()` 即可。
+    // 从前 `calcXPos` 里那句 `if (e instanceof TimeSig) curX += it!.height / 5` 恒等于 0
+    //——拍号的 `entryItem()` 是**分数线**，横线的 height 就是 0。
+    const pad = opt.numberSize / 4;
+    this.leadSpace = pad;
+    this.width = r.width + pad;
     this.hline = r.rule;
     for (const it of r.items) this.group.add(it);
   }
@@ -915,14 +932,35 @@ export class NoteEntry extends Entry {
     const oct = this.chord.notes[0].jpOctave;
     const bnd = opt.numberBound("1");
     if (opt.jpGridLegacy) {
-      // 旧式：高音点按 1.5 倍点高步进且带半格偏移，整摞再退 numberSize/8——
+      // 旧式：高音点那一摞按 `jpLegacyDotCenter` 排，整摞再退 numberSize/8——
       // 那个 1/8 就是当年的「gap」，所以 legacy 下 slurRung 不再额外退（见下）。
-      let y = bnd.top;
-      if (oct > 0) y -= (oct + 0.5) * opt.numberBound(".").height * 1.5;
-      return y - opt.numberSize / 8;
+      // **没有高音点时不按 `bnd.top` 退**，直接取量自成品的那一格（见 jpLegacyBandTop）：
+      // `bnd.top` 是拿排版字体（PingFang）量的，比目标字体的数字矮 0.055 em，
+      // 照它退出来的弧与 fermata 在 .pptx 里贴着数字。
+      if (oct > 0) {
+        return opt.jpLegacyDotCenter(oct - 1, 0, true) - opt.jpDotRadius - opt.numberSize / 8;
+      }
+      return opt.jpLegacyBandTop;
     }
     if (oct <= 0) return bnd.top;
     return bnd.top - oct * opt.jpDotRung;
+  }
+  /**
+   * 数字**加它上面那摞八度点**的墨迹顶——不含上方那一带的空档。
+   *
+   * 与 `entryTop` 的分别：旧式档（PPT）的 `entryTop` 返回的是「上方那一带的底」
+   * （`jpLegacyBandTop`，比墨迹顶还高出一格，弧与 fermata 落在那儿）。倚音要**贴着音符**
+   * 摆（用户口径：「倚音底部对齐正常音符顶部」），用的是这一份。
+   */
+  stackInkTop(opt: LayoutOptions): number {
+    const oct = this.chord.notes[0].jpOctave;
+    if (opt.jpGridLegacy) {
+      return oct > 0
+        ? opt.jpLegacyDotCenter(oct - 1, 0, true) - opt.jpDotRadius
+        : opt.jpLegacyDigitInkTop;
+    }
+    const bnd = opt.numberBound("1");
+    return oct <= 0 ? bnd.top : bnd.top - oct * opt.jpDotRung;
   }
   /** Where a slur/tie sits: one `jpStackGap` above whatever the note already
    * stacks — the same gap that separates the digit from its first octave dot,
@@ -995,13 +1033,9 @@ export class NoteEntry extends Entry {
       // 栅格是**墨迹到墨迹**量的。圆的局部包围盒就是墨迹本身（(0,0)–(2r,2r)），
       // 所以直接按上/下缘落位——不必再像字形那样倒扣 `.` 自己的基线偏移。
       if (options.jpGridLegacy) {
-        // 旧式落位。当年八度点是字体的 `.` 字形、按**基线**摆，今天是矢量圆、按**墨迹顶**摆，
-        // 所以把老的基线 y 加上 `.` 自己的墨迹上缘 `dotBnd.top` 才落回同一处。
-        const dotBnd = options.numberBound(".");
-        const baseY = oct >= 0
-          ? numBound.top - (d + 0.5) * dotBnd.height * 1.5
-          : options.numberSize * (d * 0.175 + 0.25) + ch.beams * options.jpBeamDist;
-        tf.y = baseY + dotBnd.top;
+        // 旧式落位（PPT 档）：阶梯以**基线**为准，见 `LayoutOptions.jpLegacyDotCenter`。
+        // 那里记的是**墨迹中心**，圆的局部原点在墨迹顶，所以退一个半径。
+        tf.y = options.jpLegacyDotCenter(d, ch.beams, oct >= 0) - r;
       } else if (oct >= 0) {
         const inkBottom = numBound.top - options.jpStackGap - d * options.jpDotRung;
         tf.y = inkBottom - 2 * r;
@@ -1061,14 +1095,17 @@ export class NoteEntry extends Entry {
     const gm = graceMetricsOf(options);
     const size = options.numberFont.size * gm.scale;
     const font = options.numberFont.makeWithSize(size);
-    // 公共几何按「主音数字的墨迹中心 x、基线 y」定位；这里先摆在原点，稍后整体右移
-    // 倚音挂在这个音符的**墨迹栈顶**之上（高音点已经算在 `entryTop` 里）——
-    // 原书实测倚音中心在主音中心上方 1.13~1.77 个音符高，差的那一截正是有没有高音点。
-    const centerY = ent.entryTop(options) - options.jpStackGap * 1.4 - (gm.ink * gm.scale) / 2;
-    const geom = graceGeometry(
-      ch.graceNotes.map((g) => ({ digit: g.number, octave: g.jpOctave, duration: 8 })),
-      gm, 0, 0, -1, options.numberFont.size, centerY,
-    );
+    // 公共几何按「主音数字的墨迹中心 x、基线 y」定位；这里先摆在原点，稍后整体右移。
+    //
+    // **倚音整组的底缘贴着主音的墨迹顶**（用户口径：「倚音底部对齐正常音符顶部」）。
+    // 最低的那一笔不一定是数字——减时线在数字之下，连接钩还要再往下垂一截，
+    // 有低音点时低音点更低。所以先按 `centerY = 0` 排一遍量出底缘，再回填真正的 centerY。
+    // 摆的基准是 `stackInkTop`（数字加高音点那一摞的墨迹顶），不是 `entryTop`：
+    // 后者在旧式档里是「上方那一带的底」，比墨迹顶还高出一格。
+    const notes = ch.graceNotes.map((g) => ({ digit: g.number, octave: g.jpOctave, duration: 8 }));
+    const probe = graceGeometry(notes, gm, 0, 0, -1, options.numberFont.size, 0);
+    const centerY = ent.stackInkTop(options) - graceBottom(probe, gm);
+    const geom = graceGeometry(notes, gm, 0, 0, -1, options.numberFont.size, centerY);
     const lead = graceAdvance(ch.graceNotes.length, gm);
     // 主音符右移，给倚音腾地方；游标也要跟着推（不然倚音会压上一个音符）
     main.x += lead;
@@ -1199,6 +1236,7 @@ export class NoteEntry extends Entry {
       const dot = new JpOctaveDot(r, opt.color);
       dot.x = start + adv * d;
       dot.y = cy - r;
+      dot.aug = { num, index: d };
       ent.group.add(dot);
     }
     num.augDotAdvance = adv * dots;
@@ -1329,7 +1367,10 @@ export class Barline extends Entry {
     this.group.height -= dy;
   }
   entryItem(): PageItem | null {
-    return this.group.children[0];
+    // **可能一个子级都没有**：`<bar-style>none</bar-style>` 的小节线什么也不画
+    //（见 jpglyph.ts::jpBarlineWidths），`children[0]` 就是 undefined——
+    // 不收成 null 的话 `calcXPos` 里那句 `if (it !== null) x = it.x` 会直接崩。
+    return this.group.children[0] ?? null;
   }
 }
 
@@ -1793,11 +1834,11 @@ export class Line {
       curX += e.leadSpace; // 倚音那串小号数字（见 Entry.leadSpace）
       if (it !== null) x = it.x;
       w = e.entryWidth();
-      if (e instanceof Barline) {
+      if (e instanceof Barline && it) {
         const next = getOrNull(this.entries, idx + 1);
-        if (!(next instanceof TimeSig)) curX += it!.height / 5;
+        if (!(next instanceof TimeSig)) curX += it.height / 5;
       }
-      if (e instanceof TimeSig) curX += it!.height / 5;
+      // 拍号前后那一格由 `TimeSig` 自己给（leadSpace + entryWidth，见 TimeSig.layout）。
       e.group.x = curX - x;
       curX += w;
     });
@@ -2683,15 +2724,17 @@ export class Line {
   // tiedTop/slurTop sit on the octave-dot ladder (NoteEntry.slurRung), plus one
   // more rung per element that has to pass underneath.
   private tiedTop(ent: NoteEntry, opt: LayoutOptions, left: boolean): number {
-    let res = ent.slurRung(opt);
+    const res = ent.slurRung(opt);
     const nt = ent.chord.notes[0];
-    // 旧式栅格里三连音让 numberSize/2、tie 让 numberSize/8，与点的步长各不相干。
-    const rung = opt.jpGridLegacy ? opt.numberSize / 2 : opt.jpDotRung;
-    if (left) {
-      if (nt.tupletBegin) res -= rung;
-    } else {
-      if (nt.tupletEnd) res -= rung;
-    }
+    // **旧式档（PPT）不在这里为三连音让位**：括线与弧同属上方带 layer 0，谁在下面
+    // 由跨度定（`Line.stackAbove`）。这里再预先抬半个 em，就抬了两回——158《一件礼物》
+    // 第二个三连音底下那条弧因此离基线 41pt（该是 27pt），括线跟着又被顶高一截
+    //（用户口径：「三连音在 slur 之上，不应该抬高 slur」）。
+    // 新式栅格照旧（成书那条路的观感不动）。
+    if (opt.jpGridLegacy) return res;
+    const rung = opt.jpDotRung;
+    if (left && nt.tupletBegin) return res - rung;
+    if (!left && nt.tupletEnd) return res - rung;
     return res;
   }
   private slurTop(ent: NoteEntry, opt: LayoutOptions, left: boolean): number {
@@ -2703,10 +2746,9 @@ export class Line {
     } else {
       if (nt.tieEnd) res -= rung;
     }
-    // 旧式还要为三连音再退半个 em（新式由上方带按跨度分层，见 Line.stackAbove）
-    if (opt.jpGridLegacy && (nt.tupletEnd || nt.tupletBegin)) res -= opt.numberSize / 2;
-    // 三连音括线不在这里避了：它与弧同属上方带 layer 0，谁在下面由跨度定
-    // （范围小的在下），见 Line.stackAbove。
+    // 三连音括线不在这里避了（**两个栅格都是**）：它与弧同属上方带 layer 0，
+    // 谁在下面由跨度定（范围小的在下），见 Line.stackAbove。旧式档从前在这里
+    // 先退半个 em，与堆叠叠加就抬了两回，见 tiedTop 那儿的注释。
     return res;
   }
   private addSlur(opt: LayoutOptions): void {
@@ -3527,6 +3569,49 @@ export class LayoutOptions {
   /** 低音点那一摞的步距：一个点加它上面那道空（口径同 `jpDotRung`，只是用向下那个 gap）。 */
   get jpLowDotRung(): number {
     return this.jpBelowGap + 2 * this.jpDotRadius;
+  }
+
+  /**
+   * 旧式（PPT 档）数字的**墨迹顶**——按**目标字体**（Microsoft YaHei，`.pptx` 里真正
+   * 渲染的那一份）算，不是拿排版字体量的 `numberBound("1").top`。
+   *
+   * 两者差了 0.0585 em（PingFang 的 "1" 墨迹高 0.714 em、YaHei 的 0.7725）——28pt 上
+   * 1.64pt。凡是「贴着数字顶」的东西（倚音）照排版字体量，导到 .pptx 里就压进数字里
+   * （用户口径：「倚音底部还是没有对齐正常音符的顶部，要求做到墨迹对齐」）。
+   * 这一档的其它落点（`jpLegacyBandTop` / `jpLegacyDotCenter`）本来就是从成品 .pptx
+   * 量回来的、已经是目标字体的口径，这里补齐最后一处。
+   */
+  get jpLegacyDigitInkTop(): number {
+    return -this.numberSize * 0.7725;
+  }
+
+  /**
+   * 旧式（PPT 档，`jpGridLegacy`）八度点阶梯：第 `d` 级（0 = 离数字最近）那个点的
+   * **墨迹中心**离基线多远，`up` 为真是高音点（返回负值）。
+   *
+   * 两个系数是从 2019 年那批成品 .pptx（`ppt500/`，原桌面版在 Windows 上导的）
+   * 量回来的：28pt 上高音点的 `.` 基线在 −26.13、低音点在 +7.47，各自再补上
+   * Microsoft YaHei 那个 `.` 的墨迹半高（0.0506 em）就是墨迹中心，
+   * 也就是 −0.9839 em 与 +0.2161 em。逐级、以及低音点让开减时线的那几格，
+   * 一律走 `jpBeamDist`（同一批成品里量到 3.267pt @28pt，见 `pptxstyle.ts`）。
+   */
+  /**
+   * 旧式（PPT 档）音符**上方那一带的底**：弧 / fermata / 三连音括线 / 和弦 / 房号
+   * 都落在它上面（`NoteEntry.entryTop` 在没有高音点时直接返回它）。
+   *
+   * 同样量自 2019 年那批成品（`ppt500/`）：28pt 上圆滑线外弧的两端（也就是弧的下缘）
+   * 恒在基线上方 27.07、fermata 的下缘在 26.04，取前者 → −0.967 em。
+   * **不按 `numberBound("1").top` 往上退**：那是拿排版字体量的，PingFang 的数字比
+   * 目标字体（YaHei，0.769 em）矮 0.055 em，照它退出来的弧在 .pptx 里贴着数字。
+   */
+  get jpLegacyBandTop(): number {
+    return -this.numberSize * 0.967;
+  }
+
+  jpLegacyDotCenter(d: number, beams: number, up: boolean): number {
+    return up
+      ? -(this.numberSize * 0.9839 + d * this.jpBeamDist)
+      : this.numberSize * 0.2161 + (d + beams) * this.jpBeamDist;
   }
 
   /** Bottom edge of the lowest of `n` beams, or the digit baseline if n = 0.

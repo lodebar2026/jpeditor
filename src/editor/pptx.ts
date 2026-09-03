@@ -7,9 +7,12 @@ import { zipSync, type Zippable } from "fflate";
 import * as opentype from "opentype.js";
 import { asset } from "../common/asset";
 import {
+  BeamLine,
   GraphicLine,
   GraphicPath,
   Group,
+  JpNumber,
+  JpOctaveDot,
   PageItem,
   SmuflText,
   TextFrame,
@@ -34,6 +37,8 @@ interface TextShape {
   kind: "text";
   x: number; y: number; w: number; h: number;
   text: string; size: number; colorHex: string; bold: boolean; family: string;
+  /** 段落对齐。默认左对齐；音符数字走居中（见 TARGET_ADVANCE 那一段）。 */
+  align?: "l" | "ctr";
 }
 interface GeomShape {
   kind: "geom";
@@ -42,6 +47,95 @@ interface GeomShape {
   fillHex: string | null; strokeHex: string | null; strokeW: number;
 }
 type Shape = TextShape | GeomShape;
+
+// ---------------- 目标字体（.pptx 里真正会用来渲染的那一份）的度量 ----------------
+//
+// 排版是拿浏览器里的 **PingFang SC** 量的（`common/measure.ts`，「在哪测量就在哪绘制」），
+// 但这份 .pptx 里写进去的字体是 **Microsoft YaHei**（见 `pptTypeface`——投影机与 Windows
+// 上真正会用的那一份，也是 2019 年那批成品 .pptx `ppt500/` 用的）。两套字度量不同：
+//
+//   · descent：PingFang 0.357 em，YaHei 536/2048 = 0.2617 em。文本框是 `anchor="b"`，
+//     descent 拿错了整页文字就整体下沉（28pt 上 1.3pt），而减时线/八度点/小节线是矢量、
+//     坐标是绝对的——于是**文字与谱面记号整体错开**，减时线看着贴在数字底下。
+//   · 数字宽：YaHei 是**等宽数字**（一律 1201/2048 = 0.5864 em），PingFang 是比例数字
+//     （"1" 只有 0.401 em）。所以 "1" 的八度点与减时线偏得最厉害。
+//
+// 于是这里按目标字体重新落位：竖向拿 YaHei 的 descent 定框底，横向把音符数字**居中**
+// 到目标宽度的框里、框心落在排版的墨迹中心 `JpNumber.cx` 上——八度点、附点、弧、
+// 三连音括线、和弦全都锚在那个 cx 上，数字回到那儿，所有装饰就一起对齐了。
+// 数字取自 msyh.ttf 的 hmtx/hhea，与 `ppt500/` 里量到的完全一致。
+const TARGET_UPM = 2048;
+const TARGET_DESCENT = 536 / TARGET_UPM;
+/** 目标字体里这几个字的 advance（em 比例）。**表外的字一律照排版量到的宽度走**：
+ *  汉字两套字都是 1 em，本来就对得上，只有西文数字/连字符这类比例字形对不上。 */
+const TARGET_ADVANCE: Record<string, number> = {
+  "-": 886 / TARGET_UPM,
+  ".": 493 / TARGET_UPM,
+  "\u00b7": 493 / TARGET_UPM,
+  ...Object.fromEntries([..."0123456789"].map((d) => [d, 1201 / TARGET_UPM])),
+};
+
+/** 目标字体里数字的**墨迹右缘**（em 比例，advance 的起点算 0）。0–9 落在
+ *  0.512~0.551 之间（YaHei 是等宽数字），取中间值——附点要按它摆，见 augDotX。 */
+const TARGET_DIGIT_INK_RIGHT = 0.532;
+
+/** 目标字体里这一串字有多宽（pt）。**整串都在表里才认**，否则返回 null = 照旧。 */
+function targetWidth(text: string, size: number): number | null {
+  let w = 0;
+  for (const ch of text) {
+    const a = TARGET_ADVANCE[ch];
+    if (a === undefined) return null;
+    w += a;
+  }
+  return w * size;
+}
+
+/** 这个音符数字在 .pptx 里的横向占位：以排版的墨迹中心 `cx` 为心、目标字体的宽度
+ *  `tw` 为宽。**只认单字**（`cx` 记的是首字的墨迹中心），多字的 `tw` 为 null、
+ *  半宽退回排版量到的 advance。 */
+function numberSpan(num: JpNumber): { cx: number; half: number; tw: number | null } {
+  const size = num.font.size * num.matrix.scaleY;
+  const tw = [...num.text].length === 1 ? targetWidth(num.text, size) : null;
+  return { cx: num.pos(null).x + num.cx, half: (tw ?? num.numberPos) / 2, tw };
+}
+
+/** 收尾类标点（跟在字后面的那些）→ 目标字体里的**半角形**。
+ *
+ * 为什么要换字符：DrawingML 一个 run 只能整串连排，所以带逐字笔位（`TextFrame.charXs`，
+ * 标点挤压的产物）的歌词要拆成逐字文本框才落得回排版量好的坐标。可**标点单独成一个框**
+ * 在 .pptx 里就散了——目标字体（Microsoft YaHei）的全角逗号墨迹在字身**正中**
+ * （0.40~0.55 em），摆进半角格里正好顶到下一个字，看着像挂在后一个字头上（用户口径：
+ * 「逗号展示有问题」）。
+ *
+ * 办法照 2019 年那批成品（`ppt500/`）：**标点并进前一个字的 run、并换成半角形**
+ * （那批片子里就是 `主,`、`祢｡`、`亚!`）。一个 run 连排出来，标点正好落在排版
+ * 给它的那半格里，且与前一个字咬合。**只管收尾类**：开头类（`（`、`「`）跟的是
+ * 后一个字，并进去会把那个字往左拉 0.26 em、与音符对不上，全书也只有十来处，照旧单独成框。
+ *
+ * 排版那一端不做这种事（`common/cjkpunct.ts` 的「换字符」老做法早退休了，SVG 逐字笔位
+ * 摆得准）——这里换只是**目标字体的适配**，与 TARGET_ADVANCE 那一层同一个道理。
+ */
+const TRAIL_PUNCT: Record<string, string> = {
+  "\uff0c": ",", "\u3002": "\uff61", "\uff1b": ";", "\uff1a": ":",
+  "\uff01": "!", "\uff1f": "?", "\u3001": "\uff64",
+  "\uff09": ")", "\u300d": "\uff63", "\u300f": "\uff63",
+};
+
+/** 附点的横向落点（圆的**左缘**，绝对坐标，口径同 `JpOctaveDot.x`）。
+ *
+ * 排版把附点摆在「数字**墨迹**右缘 → 条目右缘」的正中（`layout.ts::addAugDots` 的口径），
+ * 可那两头都是拿 PingFang 量的：PingFang 的 "1" 又窄又靠左、`·` 的 advance 又比 YaHei 宽
+ * 一倍，换成 YaHei 渲染后 "1." 只剩 3.1pt 而 "5." 有 6.6pt，一眼看得出不匀。
+ * .pptx 这一端索性照 2019 年那批成品来：**离数字墨迹右缘固定 0.165 em**，各数字一样宽
+ * （成品里量到 28pt 上 4.7pt）；多个附点之间按目标字体 `.` 的 advance 排。
+ */
+const TARGET_AUG_GAP = 0.165;
+function augDotX(num: JpNumber, index: number): number {
+  const size = num.font.size * num.matrix.scaleY;
+  const { cx, half } = numberSpan(num);
+  const inkRight = cx - half + TARGET_DIGIT_INK_RIGHT * size;
+  return inkRight + TARGET_AUG_GAP * size + TARGET_ADVANCE["."] * size * index;
+}
 
 let bravuraFont: opentype.Font | null = null;
 async function loadBravura(): Promise<opentype.Font> {
@@ -86,8 +180,16 @@ function shapeVisitor(font: opentype.Font, out: Shape[]): ItemVisitor<void> {
       !(item instanceof GraphicLine || item instanceof GraphicPath || item instanceof TextFrame),
     line: (item) => {
       const pp = item.pos(null);
-      const x0 = item.p0.x + pp.x, y0 = item.p0.y + pp.y;
-      const x1 = item.p1.x + pp.x, y1 = item.p1.y + pp.y;
+      let x0 = item.p0.x + pp.x, x1 = item.p1.x + pp.x;
+      const y0 = item.p0.y + pp.y, y1 = item.p1.y + pp.y;
+      // 减时线：排版给的两端是**排版字体**的数字 advance 边缘，可 .pptx 里画出来的
+      // 数字是目标字体的宽度（见 TARGET_ADVANCE）。按目标宽度把两端接回数字盒，
+      // 否则 "1" 底下那道线短一截、还整体偏左。
+      if (item instanceof BeamLine && item.left?.number && item.right?.number) {
+        const l = numberSpan(item.left.number), r = numberSpan(item.right.number);
+        x0 = l.cx - l.half;
+        x1 = r.cx + r.half;
+      }
       const ox = Math.min(x0, x1), oy = Math.min(y0, y1);
       out.push({
         kind: "geom", x: ox, y: oy, w: Math.max(Math.abs(x1 - x0), 0.01), h: Math.max(Math.abs(y1 - y0), 0.01),
@@ -97,8 +199,11 @@ function shapeVisitor(font: opentype.Font, out: Shape[]): ItemVisitor<void> {
     },
     path: (item) => {
       const pp = item.pos(null);
+      const x = item instanceof JpOctaveDot && item.aug
+        ? augDotX(item.aug.num, item.aug.index)
+        : pp.x;
       out.push({
-        kind: "geom", x: pp.x, y: pp.y, w: Math.max(item.width, 0.01), h: Math.max(item.height, 0.01),
+        kind: "geom", x, y: pp.y, w: Math.max(item.width, 0.01), h: Math.max(item.height, 0.01),
         segs: item.segs,
         fillHex: item.fill ? hex(item.fillColor) : null,
         strokeHex: item.stroke ? hex(item.strokeColor) : null,
@@ -132,12 +237,22 @@ function shapeVisitor(font: opentype.Font, out: Shape[]): ItemVisitor<void> {
       const fm = item.font.metrics;
       const height = fm.descent - fm.ascent;
       const sz = item.font.size * item.matrix.scaleY;
-      const y = pp.y + fm.descent - height - sz / 20;
-      const mk = (text: string, x: number, w: number): TextShape => ({
+      // `TextFrame.y` 是**基线**；框是 `anchor="b"`，所以框底 = 基线 + **目标字体**的
+      // descent（不是浏览器量到的那个，见 TARGET_DESCENT）。框高只影响框顶，随便给。
+      const y = pp.y + TARGET_DESCENT * sz - height;
+      const mk = (text: string, x: number, w: number, align?: "l" | "ctr"): TextShape => ({
         kind: "text", x, y, w: Math.max(w, 1), h: height,
         text, size: sz, colorHex: hex(item.color),
-        bold: item.font.bold, family: item.font.family,
+        bold: item.font.bold, family: item.font.family, align,
       });
+      // 音符数字：按目标字体的宽度给框并**居中**，框心落在排版的墨迹中心上。
+      if (item instanceof JpNumber) {
+        const { cx, half, tw } = numberSpan(item);
+        if (tw !== null) {
+          out.push(mk(item.text, cx - half, tw, "ctr"));
+          return;
+        }
+      }
       // **逐字笔位**（标点挤压的产物，见 layout.ts::TextFrame.charXs）：DrawingML 的
       // 一个 run 只能整串连排，字距没法逐字给，所以带 charXs 的文本要**拆成逐字文本框**
       // 才落得回排版量好的那串坐标。不拆的话挤压在 PPT 里整个失效——歌词的标点回到全角，
@@ -146,9 +261,20 @@ function shapeVisitor(font: opentype.Font, out: Shape[]): ItemVisitor<void> {
       const chars = [...item.text];
       if (item.charXs && item.charXs.length === chars.length && chars.length > 1) {
         const xs = item.charXs;
+        // 逐字成框，但**收尾标点并进前一个字**并换半角形（见 TRAIL_PUNCT）。
+        const groups: { at: number; text: string }[] = [];
         for (let i = 0; i < chars.length; i++) {
-          const next = i + 1 < chars.length ? xs[i + 1] : item.width;
-          out.push(mk(chars[i], pp.x + xs[i], next - xs[i]));
+          const half = TRAIL_PUNCT[chars[i]];
+          if (half !== undefined && groups.length > 0) {
+            groups[groups.length - 1].text += half;
+          } else {
+            groups.push({ at: i, text: chars[i] });
+          }
+        }
+        for (let g = 0; g < groups.length; g++) {
+          const x = xs[groups[g].at];
+          const next = g + 1 < groups.length ? xs[groups[g + 1].at] : item.width;
+          out.push(mk(groups[g].text, pp.x + x, next - x));
         }
         return;
       }
@@ -191,7 +317,7 @@ function textXml(s: TextShape, id: number): string {
     `<p:spPr><a:xfrm><a:off x="${EMU(s.x)}" y="${EMU(s.y)}"/><a:ext cx="${EMU(s.w)}" cy="${EMU(s.h)}"/></a:xfrm>` +
     `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>` +
     `<p:txBody><a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" anchor="b" horzOverflow="overflow" vertOverflow="overflow"><a:noAutofit/></a:bodyPr><a:lstStyle/>` +
-    `<a:p><a:pPr algn="l"/><a:r><a:rPr lang="zh-CN" sz="${sz}"${b}><a:solidFill><a:srgbClr val="${s.colorHex}"/></a:solidFill>` +
+    `<a:p><a:pPr algn="${s.align ?? "l"}"/><a:r><a:rPr lang="zh-CN" sz="${sz}"${b}><a:solidFill><a:srgbClr val="${s.colorHex}"/></a:solidFill>` +
     `<a:latin typeface="${xml(family)}"/><a:ea typeface="${xml(family)}"/></a:rPr><a:t>${xml(s.text)}</a:t></a:r></a:p></p:txBody></p:sp>`;
 }
 

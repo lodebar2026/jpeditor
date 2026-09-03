@@ -9,7 +9,8 @@ import {
   Part,
   Score,
 } from "./score";
-import { computePhraseBreaks, type PhraseBreaks } from "./phrase";
+import { computePhraseBreaks, type FitMetric, type PhraseBreaks } from "./phrase";
+import { chooseLineLayout } from "./applybreaks";
 
 function escape(s: string): string {
   return s.replace(/\n/g, "\\n");
@@ -192,12 +193,12 @@ class JpScore {
   private _breaks: PhraseBreaks | null = null;  // 乐句模式的断行，makeVoiceData / makeWordData 共用
   private _pageLines = new Set<number>(); // 乐句模式：段末（主歌/副歌分界）的乐句行号，1 基
 
-  constructor(private phrase = false) {}
+  constructor(private phrase = false, private fit: FitMetric | null = null) {}
 
   fromMusicXml(scr: Score): void {
     this.lines.push("// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************");
     this.makeMetaData(scr);
-    this._breaks = this.phrase ? computePhraseBreaks(scr.parts[0], { pageLines: PAGE_LINES }) : null;
+    this._breaks = this.phrase ? this.makeBreaks(scr) : null;
     this.makeVoiceData(scr.parts[0]);
     this.makeWordData(scr.parts[0]);
     this.makeRepeatData(scr);
@@ -288,6 +289,27 @@ class JpScore {
 
   private makeNotations(ch: Chord): string {
     return ch.fermata ? "{YanYin}" : "";
+  }
+
+  /** 倚音：`{` 一串音高 `}`，排在主音之前（文法 `Note` 里 Grace 就在 Pitch 之前）。
+   *  与转调转拍号同理——文法早有这个产生式（`fragment Grace : '{' Pitch+ '}'`），
+   *  只是从前生成端不写、解析端不认，musicxml 导进来的倚音在 `.jpwabc` 往返里丢了
+   *  （全书只有 260《感恩的泪》5 颗、264《陶我成器》2 颗，导出的 .pptx 里一颗都没有）。
+   *  倚音不带时值：排版那一端固定按八分音符画（`layout.ts::addGraceNotes`）。 */
+  private graceVoice(ch: Chord): string {
+    if (!ch.graceNotes.length) return "";
+    let str = "";
+    for (const g of ch.graceNotes) {
+      switch (g.jpAlter) {
+        case "n": str += "#b"; break;
+        case "b": case "#": str += g.jpAlter; break;
+        default: break;
+      }
+      str += g.number;
+      for (let i = 0; i < g.jpOctave; i++) str += "'";
+      for (let i = 0; i < -g.jpOctave; i++) str += ",";
+    }
+    return `{${str}}`;
   }
 
   private chordVoice(ch: Chord): string {
@@ -402,6 +424,21 @@ class JpScore {
           else throw new Error("multi-ending");
         }
       }
+      // **曲中转拍号 / 转调**：写在这一小节的音符之前。拍号用文法里现成的 TimeSig
+      // （`4/4`），调号借 STRING（`"1=A"`）——两个都是 Jpwabc.g4 已有的 token
+      //（`entry: … | text | timesig | …`），不动语法、不必重生成解析器。
+      // 原版 JP-Word 与 2019 年那批成品 .pptx 都不记这两样（019《拥戴祂为王》后半段
+      // 直接换数字写、不印 `1=A`），可排版引擎本来就画得出来
+      //（`layout.ts::Line.load` 认 `Measure.timeChange` / `keyChange`）——
+      // 不写进文本，musicxml 导进来的转调转拍号就在 `.jpwabc` 往返里丢了。
+      // 只在**真的变了**的时候写：有些 musicxml 每个系统都重申一遍 `<attributes>`，
+      // 照 `timeChange` 直接写会平白多出一堆拍号。
+      const prevM = mid > 0 ? part.measures[mid - 1] : null;
+      if (prevM && m.timeChange
+        && (m.time.beats !== prevM.time.beats || m.time.beatType !== prevM.time.beatType)) {
+        l += `${m.time.beats}/${m.time.beatType} `;
+      }
+      if (prevM && m.keyChange && m.key.fifths !== prevM.key.fifths) l += `"1=${m.key.name}" `;
       let hasBarline = false;
       m.entries.forEach((ch, idx) => {
         if (ch instanceof LineBreak) {
@@ -423,6 +460,7 @@ class JpScore {
           if (ch.slurStart) l += "(";
           if (nt.tupletBegin) l += "{(3}";
           l += this.makeNotations(ch);
+          l += this.graceVoice(ch); // 倚音排在主音之前，不算进下面那个 token 区间
           // 记录本音符 token 区间（仅 chordVoice 段：数字+修饰，不含前后括号/记号/空格）。
           const colStart = l.length;
           l += this.chordVoice(ch);
@@ -443,7 +481,11 @@ class JpScore {
             const next = part.measures[mid + 1];
             if (next?.repeatForward) {
               /* leading repeat handles its own barline */
-            } else if (m.barline !== BarStyle.NONE) {
+            } else {
+              // **不画线的小节线（`[|]`）也要写出来**：它是出版社把一个小节拆到两行时
+              // 用的分隔，谱面上不印，但少写一根，重新解析时两个小节就并成一个，
+              // 后面 `.Repeat` 里按原编号写的段落全部错位、还会越界（见 jpglyph.ts
+              // 的 BarStyle.NONE 那一支）。画不画的事归排版管，不归这里。
               l += bl;
             }
             hasBarline = true;
@@ -467,6 +509,25 @@ class JpScore {
     if (breaks) this.balanceVoicePages(voiceStart);
   }
 
+  /**
+   * 断句 + **整首的排版模式阶梯**。
+   *
+   * 断句本身照旧（一句一行，`computePhraseBreaks` 的默认权重，15 首编辑器基线不动）；
+   * 给了 `fit`（真实坐标）时再走一遍 `chooseLineLayout`——**能放得下两句就一行两句，
+   * 放不下就一句一行**（用户口径），与成书那条路同一套代码、同一条判据：
+   * 只在「一句一行明显太稀」（中位行长不到版心六成）时才并，并完还要真实排一遍验一次。
+   *
+   * 从前这里是拿 `targetMeas` 顶行长目标去逼它并行，那是错的招：目标一大，DP 就按
+   * 「凑够这么多小节」断，350《主耶稣我羡慕活在祢面前》第 3 行因此断在
+   * 「当世上正没有什｜么可鼓舞」句子中间、第 4 行 33 个音符明显超宽。
+   */
+  private makeBreaks(scr: Score): PhraseBreaks {
+    const part = scr.parts[0];
+    const breaks = computePhraseBreaks(part, { pageLines: PAGE_LINES });
+    if (this.fit) chooseLineLayout(part, breaks, 0, { fit: this.fit });
+    return breaks;
+  }
+
   get code(): string {
     return this.lines.join("\n");
   }
@@ -474,13 +535,16 @@ class JpScore {
 
 /** MusicXML-derived Score -> .jpwabc text.
  *  opts.phrase=true 时按乐句分析重新断行（覆盖源自带换行）；默认保留原始排版。 */
-export function scoreToJpwabc(score: Score, opts?: { phrase?: boolean }): string {
+export function scoreToJpwabc(score: Score, opts?: { phrase?: boolean; fit?: FitMetric | null }): string {
   return scoreToJpwabcWithMeta(score, opts).text;
 }
 
 /** 同 scoreToJpwabc，但额外产出「识别对象 → 代码区间」映射（OMR 识别模式点选定位用）。 */
-export function scoreToJpwabcWithMeta(score: Score, opts?: { phrase?: boolean }): { text: string; meta: JpwMeta } {
-  const jp = new JpScore(opts?.phrase ?? false);
+export function scoreToJpwabcWithMeta(
+  score: Score,
+  opts?: { phrase?: boolean; fit?: FitMetric | null },
+): { text: string; meta: JpwMeta } {
+  const jp = new JpScore(opts?.phrase ?? false, opts?.fit ?? null);
   jp.fromMusicXml(score);
   return { text: jp.code, meta: jp.computeMeta() };
 }

@@ -1,9 +1,11 @@
 // 「简谱」/「PPT」两档版面的回归。
 //
-// PPT 档原本是 2a8aa85（观感大改 29ae9dd 的父提交）的**逐点复刻**，如今有两处**刻意背离**
+// PPT 档原本是 2a8aa85（观感大改 29ae9dd 的父提交）的**逐点复刻**，如今有三处**刻意背离**
 // （用户口径，见 src/layout/pptxstyle.ts）：小节线的上下缘改用简谱档那一份（老档矮三分之一，
 // 投影上看不出是小节线；拍号比例跟着回默认，画出来仍与老档等大），
-// 以及附点/高音点/低音点三种点统一成同一个半径（附点从字形改成矢量圆）。
+// 附点/高音点/低音点三种点统一成同一个半径（附点从字形改成矢量圆），
+// 以及减时线的第一道与层间步距改照 2019 年那批成品 .pptx（`ppt500/`）量回来的值
+// ——老档减时线贴着数字。八度点的旧式阶梯跟着走同一批实测值。
 // 其余笔画（小节线宽、减时线、弧、旧式纵向栅格）仍按 2a8aa85 的实测值写死在 EXPECT 里。
 //
 // 简谱档这边是另一套观感（不是 PPT 档的「前身」）：多段歌词**叠排**在同一条谱行下
@@ -28,13 +30,17 @@ const EXPECT = {
   jpStaffBottom: 9.333,
   barlineWidth: 1.5,
   finalBarlineWidth: 3.5,
-  jpBeamWidth: 1.25,
-  jpBeamTop: 3.5,
+  jpBeamWidth: 1.4,
+  // 减时线的第一道与层间步距**改照 2019 年那批成品 .pptx**（ppt500/）：
+  // 4.667 = em/6、3.267 = em·7/60。老档两者都取 jpBeamDist = em/8 = 3.5，
+  // 减时线贴着数字（见 src/layout/pptxstyle.ts）。
+  jpBeamTop: 4.667,
+  jpBeamDist: 3.267,
   slurTieThickness: 4,
   slurOutlineWidth: 0,
   // 竖线（小节线）与横线（减时线）各自的线宽直方图，取第 2 页
   barlineStrokes: { 1.5: 16, 3.5: 0 },
-  beamStrokes: { 1.25: 4 },
+  beamStrokes: { 1.4: 4 },
   // 页脚：曲名 + 页码。这两样**新旧本来就一致**，这里是防它被改坏。
   footerSize: 22.4,
   footerTitleX: 390.398,
@@ -70,7 +76,7 @@ const probe = async () =>
       opt: {
         jpStaffTop: r3(o.jpStaffTop), jpStaffBottom: r3(o.jpStaffBottom),
         barlineWidth: o.barlineWidth, finalBarlineWidth: o.finalBarlineWidth,
-        jpBeamWidth: o.jpBeamWidth, jpBeamTop: r3(o.jpBeamTop),
+        jpBeamWidth: o.jpBeamWidth, jpBeamTop: r3(o.jpBeamTop), jpBeamDist: r3(o.jpBeamDist),
         slurTieThickness: o.slurTieThickness, slurOutlineWidth: o.slurOutlineWidth,
         jpGridLegacy: o.jpGridLegacy,
       },
@@ -113,7 +119,7 @@ const hist = (pred) => {
 };
 const vert = hist((e) => !e.horiz), horiz = hist((e) => e.horiz);
 eq(vert[1.5] ?? 0, EXPECT.barlineStrokes[1.5], "第2页小节线（1.5pt）条数");
-eq(horiz[1.25] ?? 0, EXPECT.beamStrokes[1.25], "第2页减时线（1.25pt）条数");
+eq(horiz[1.4] ?? 0, EXPECT.beamStrokes[1.4], "第2页减时线（1.4pt）条数");
 
 // 页脚：两档都得与老版一致
 console.log("【页脚】曲名 + 页码（只有 PPT 档有；简谱档是连续长纸，没有页眉页脚）");

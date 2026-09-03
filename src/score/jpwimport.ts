@@ -32,6 +32,10 @@ import { applyJpPitch, type JpKeyState } from "./jppitch";
 
 class JpState implements JpKeyState {
   inTuplet = false;
+  /** **前面的音符**留下的、还没配对的 `(` 有几个。
+   *  `.jpwabc` 里圆滑线/延音线的收尾与三连音的收尾都写作 `)`，只能靠它分：
+   *  手上还欠着一个前面开的 `(` 就先还那个，欠完了才轮到三连音（见 makeChord 的 `)` 分支）。 */
+  slurDepth = 0;
   alter: Record<string, number> = {};
   basePitch = 0;
   fifths = 0;
@@ -55,12 +59,33 @@ function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
     stat.inTuplet = true;
     txt = txt.replace(tupletText, "");
   }
+  // 倚音 `{6,}` / `{57}`（Jpwabc.g4 的 `fragment Grace : '{' Pitch+ '}'`）。
+  // **必须排在三连音 `{(3}` 剥掉之后**，否则那个 3 会被当成倚音；演奏记号
+  // `{DunYin}` 那几个名字里有大写字母，落不进下面的字符类，先后无所谓。
+  // 倚音不带时值，排版按八分音符画（layout.ts::addGraceNotes）。
+  const graceMatch = txt.match(/\{([#b0-7',gd]+)\}/);
+  if (graceMatch) {
+    for (const g of graceMatch[1].matchAll(/(#b|#|b)?([0-7])([',gd]*)/g)) {
+      const gn = new Note(res);
+      gn.number = g[2];
+      if (g[1] === "#b") gn.jpAlter = "n";
+      else if (g[1] === "#" || g[1] === "b") gn.jpAlter = g[1];
+      for (const c of g[3]) {
+        if (c === ",") gn.jpOctave -= 1;
+        else if (c === "'") gn.jpOctave += 1;
+      }
+      applyJpPitch(stat, gn); // 倚音在主音之前唱，音高也先算（临时记号照样落进 stat.alter）
+      res.graceNotes.push(gn);
+    }
+    txt = txt.replace(graceMatch[0], "");
+  }
   // 演奏记号 {DunYin|BoYin|YanYin|ZhongYin}（Jpwabc.g4 Articulation）。目前仅渲染延音(fermata)。
   const artMatch = txt.match(/\{(?:DunYin|BoYin|YanYin|ZhongYin)(?:,(?:DunYin|BoYin|YanYin|ZhongYin))*\}/);
   if (artMatch) {
     if (artMatch[0].includes("YanYin")) res.fermata = true;
     txt = txt.replace(artMatch[0], "");
   }
+  let opened = 0;
   for (const ch of txt) {
     if (ch >= "0" && ch <= "9") {
       nt.number = ch;
@@ -79,9 +104,20 @@ function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
       case ".": res.dot++; break;
       case "#":
       case "b": acc += ch; break;
-      case "(": res.slurStart = true; break;
+      case "(":
+        res.slurStart = true;
+        // **本音符自己开的 `(` 不算数**（要到下一个音符才轮到它配对）：
+        // `(6,_)` 是「这里起一条延音线」+「三连音收尾」，不是一条只罩自己的弧。
+        opened++;
+        break;
       case ")":
-        if (stat.inTuplet) {
+        // 前面还欠着 `(` 就先收弧；欠完了、又正在三连音里，这个 `)` 才是三连音的收尾。
+        // 158《一件礼物》m3 是 `({(3}2_ 1_) (6,_) 6,)`——中间那个音符收的是弧，
+        // 老规矩（inTuplet 就一律当三连音收尾）会把括线提前一个音符停掉。
+        if (stat.slurDepth > 0) {
+          stat.slurDepth--;
+          res.slurEnd = true;
+        } else if (stat.inTuplet) {
           stat.inTuplet = false;
           nt.tupletEnd = true;
         } else {
@@ -91,6 +127,7 @@ function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
       default: console.log(ch);
     }
   }
+  stat.slurDepth += opened;
   applyJpPitch(stat, nt);
   let dur = new Fraction(res.beats);
   if (res.dot > 0) {
@@ -154,16 +191,37 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
   const tupNotes: Note[] = [];
   let mid = 0;
 
+  // **曲中转拍号 / 转调**：文法里现成的两个 token（`entry: … | text | timesig | …`），
+  // 原版 JP-Word 与本仓从前都当没看见。读到就记下来，落到**下一个**开出来的小节上。
+  let pendingTime: Time | null = null;
+  let pendingKey: Key | null = null;
+
   for (const e of data.entry_list()) {
     const noteCtx = e.note();
     const barlineCtx = e.barline();
     const linebreakCtx = e.linebreak();
+    const timesigCtx = e.timesig();
+    const textCtx = e.text();
     if (noteCtx) {
       if (mea === null || newMeasure) {
         mea = new Measure(mid);
         mid++;
         res.measures.push(mea);
         newMeasure = false;
+        if (pendingTime !== null) {
+          mea.time = pendingTime;
+          mea.timeChange = true;
+          pendingTime = null;
+        }
+        if (pendingKey !== null) {
+          mea.key = pendingKey;
+          mea.keyChange = true;
+          // 换调之后的数字要按**新调**折算成音高，否则转调后半首的 MIDI/MusicXML 全是错的。
+          stat.basePitch = MusicCommon.getBasePitchOfKey(pendingKey);
+          stat.fifths = pendingKey.fifths;
+          stat.alter = {};
+          pendingKey = null;
+        }
       }
       const chord = makeChord(noteCtx, mea, stat);
       const nt = chord.notes[0];
@@ -176,7 +234,18 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
       }
       mea.entries.push(chord);
     } else if (barlineCtx) {
-      const ent = new BarlineEntry(mea!);
+      // **曲子最开头就写小节线**（`|:3_ …`，全曲一上来就是反复开始记号）：此刻还没有
+      // 任何小节，`mea` 是 null。开一个小节把它收进去，并且**不置 newMeasure**——
+      // 后面的音符仍进这一小节，小节线就落在第一个音符**之前**。
+      // 不能另开一个只装小节线的空小节：`assignLrcSeg` 是按小节序号 `mid` 找歌词落点的，
+      // 多一个空小节，整首歌词会整体错后一小节（D01《万王之王》、J14《你们要专心》）。
+      if (mea === null) {
+        mea = new Measure(mid);
+        mid++;
+        res.measures.push(mea);
+        newMeasure = false;
+      }
+      const ent = new BarlineEntry(mea);
       const txt = barlineCtx.Barline().getText();
       switch (txt) {
         case "|": ent.style = BarStyle.REGULAR; break;
@@ -188,9 +257,21 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
         case ":|": ent.style = BarStyle.LIGHT_HEAVY; ent.repeat = "backward"; break;
         default: throw new Error(`bad barline: ${txt}`);
       }
-      mea!.entries.push(ent);
-      newMeasure = true;
+      mea.entries.push(ent);
+      // 开头那根线不算「这一小节到此为止」（上面刚开的小节还空着，音符还没进来）
+      newMeasure = mea.entries.length > 1;
       stat.alter = {};
+    } else if (timesigCtx) {
+      const m2 = /^(\d+)\/(\d+)/.exec(timesigCtx.TimeSig().getText());
+      if (m2) pendingTime = new Time(parseInt(m2[1], 10), parseInt(m2[2], 10));
+    } else if (textCtx) {
+      // 调号借 STRING 记：`"1=A"`。别的 STRING（文法里本来就允许的注文）一概不理。
+      const m2 = /^"1=([#b]?[A-G])"$/.exec(textCtx.STRING().getText());
+      if (m2) {
+        const k = new Key();
+        k.fifths = MusicCommon.keyNameToFifth(m2[1]);
+        pendingKey = k;
+      }
     } else if (linebreakCtx) {
       const ret = linebreakCtx.Return().getText();
       const args = substringBefore(substringAfter(ret, "("), ")").split(",");
@@ -206,9 +287,15 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
   // 调号与拍号都要写进小节：原先只写了 `time`，`Measure.key` 一直是默认的 C，
   // 于是「排版 → 简谱」纸顶那块调号（painter.ts::keyMeter）永远印成 `1=C`。
   // `keyChange` 不动——那是曲中转调的标志，首调不该冒出一个「转1=X」。
+  // 没有标记的小节沿用**上一次**的调号/拍号（原先一律盖成首调首拍号，
+  // 曲中转调转拍号刚记上就被抹掉）。
+  let curTime = ts;
+  let curKey = key;
   for (const m of res.measures) {
-    m.time = ts;
-    m.key = key;
+    if (m.timeChange) curTime = m.time;
+    else m.time = curTime;
+    if (m.keyChange) curKey = m.key;
+    else m.key = curKey;
   }
   return res;
 }

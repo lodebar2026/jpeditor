@@ -19,6 +19,7 @@ import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../lay
 import { Point } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";
+import type { FitMetric } from "../score/phrase";
 import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
@@ -827,13 +828,33 @@ export class App implements OmrHost, PlaybackHost {
     } else {
       try {
         const score = loadMusicXml(this.mixedXmlText);
-        this.setText(scoreToJpwabc(score, { phrase: true }));
+        this.setText(scoreToJpwabc(score, { phrase: true, fit: this._phraseFit(score) }));
         this._phraseOn = true;
         this._setPhraseActive(true);
       } catch (e) {
         console.error("phrase relayout failed", e);
       }
     }
+  }
+
+  /**
+   * 乐句排版的**真实坐标尺子**：空排一遍，量出版心宽与每个和弦的自然横向区间。
+   *
+   * 行长目标与「这一行放不放得下」都按它算（`phrase.ts::targetMeasForFit` / `FitMetric`），
+   * 一个拍脑袋的常数都不留——从前是固定「4 小节」加「25 格」，那两个数是按 4/4、
+   * 每小节 4 个音调出来的：3/4 的谱一小节才 3 个音，一行明明还放得下一句却被硬断开
+   * （350《主耶稣我羡慕活在祢面前》一遍因此排两页）。换纸、换字号，它自己跟着重算。
+   *
+   * **另起一个 painter 来量，且要 `lyricStack > 0`**：PPT 档的 `buildLine` 走 `playData`
+   * 的完整展开序列（反复与多段各排一遍），同一个 Chord 在多遍里各出现一次，而 spans 是
+   * 以 Chord 为键的 Map、只留最后一遍，按小节取 min/max 就成了整首的跨度。
+   */
+  private _phraseFit(score: Score): FitMetric {
+    const p = new JinpuPainter(this.fontSize);
+    p.layout.options.smuflMeta = this.painter.layout.options.smuflMeta;
+    p.layout.options.lyricStack = this.fontSize; // 只要 > 0：不展开反复，一遍就够量
+    score.clearSystemBreak();
+    return p.layout.measureNatural(score, this.pageW);
   }
 
   /** 注册工具栏「简繁」按钮，供转换期间切换加载中状态。 */

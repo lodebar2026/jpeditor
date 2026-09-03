@@ -55,6 +55,12 @@ export interface BarlineStyle {
 /** 一条小节线的粗细组合（左→右）。分出来单独可测，也给 `isPlain` 用。 */
 export function jpBarlineWidths(spec: BarlineSpec, final: boolean, light: number, heavy: number): number[] {
   const st = spec.style ?? null;
+  // **不画线的小节线**（MusicXML `<bar-style>none</bar-style>`）：出版社把一个小节拆到
+  // 两行/两页时用它分隔，谱面上什么也不印。原先没有这一支，落到最后的 `else` 里当普通
+  // 细线画了出来——正因为「画出来会多一条线」，`jpscore.ts` 干脆不把它写进 `.jpwabc`，
+  // 于是重新解析时两个小节并成一个，`.Repeat` 里按原编号写的段落就越界
+  // （094《哈利路亚，祂已复活》等 4 首整份 .pptx 排不出来）。认了它，两头都对得上。
+  if (st === S.BarStyle.NONE && !spec.repeatBackward && !spec.repeatForward) return [];
   let widths: number[];
   // **前后反复背靠背**（`:‖:`）：上一小节收尾的 `:‖` 与本小节起头的 `‖:` 合成一条，
   // 五线谱的画法是「细 粗 细」+ 两侧各两点，而不是两根粗线并排。
@@ -117,7 +123,7 @@ export function jpBarlineItems(
     items,
     lines,
     width: xpos,
-    isPlain: widths.length === 1 && !spec.repeatBackward && !spec.repeatForward,
+    isPlain: widths.length <= 1 && !spec.repeatBackward && !spec.repeatForward,
   };
 }
 

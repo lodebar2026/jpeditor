@@ -31,6 +31,8 @@ cd src-tauri && cargo check   # 仅检查 Rust 侧
 # 无头渲染/交互校验（用本地 Edge，免下载 chromium）：
 npm run build && node shot.mjs /tmp/out.png            # 截 #score-pane + 诊断
 npm run build && node pptx-check.mjs                   # 两档版面：简谱档叠排多段 + PPT 档笔画
+npm run build && node pptx-ref-check.mjs               # 导出的 .pptx 成品几何 ↔ ppt500 那批成品
+npm run build && node pptx-export.mjs [--out= --one= --limit=]  # 500 首 musicxml → 逐首 .pptx
 npm run build && node zoom-check.mjs                    # 纸张宽度四档一致 + 双指缩放/平移
 npm run build && node abc-check.mjs                    # ABC→MusicXML 移植回归（见 docs/实现/ABC-导入.md）
 npm run build && node xml-roundtrip.mjs                # MusicXML 导出回归（序列化往返 / 增量 patch / 版面）
@@ -132,7 +134,39 @@ npm run build && node staff-ui-check.mjs [页号]        # 五线谱：编辑器
   调号拍号的基线与最后一行署名齐。首调与首拍号从前**根本没画**（编辑器那一路只画
   曲中的转调/转拍号），`.jpwabc` 的调号也一直没写进 `Measure.key`（一律读成 C）。
   PPT 档的笔画见 `layout/pptxstyle.ts`（底子是 2026-08 重构前的观感，另有几处刻意背离：
-  小节线高度用简谱档那一份、附点/高音点/低音点三种点同一半径）；回归 `node pptx-check.mjs`。
+  小节线高度用简谱档那一份、附点/高音点/低音点三种点同一半径，以及**减时线与旧式八度点
+  阶梯改照 2019 年那批成品 .pptx**（`~/Documents/诗歌/500首/ppt500/`，原桌面版在 Windows 上导的）
+  ——第一道减时线 em/6、层间步距 em·7/60、线宽 em/20，八度点阶梯见
+  `LayoutOptions.jpLegacyDotCenter`，音符**上方那一带的底**（弧 / fermata / 三连音括线 /
+  和弦都落在它上面）见 `LayoutOptions.jpLegacyBandTop` = −0.967 em；老档减时线三样都取 em/8、
+  上带按 `numberBound("1").top` 往上退 em/8，减时线与弧都贴着数字）；回归 `node pptx-check.mjs`。
+  **导出那一端还有一层字体度量修正**（`editor/pptx.ts` 的 `TARGET_ADVANCE`/`TARGET_DESCENT`）：
+  排版是拿浏览器里的 PingFang SC 量的，可 .pptx 里写的字体是 Microsoft YaHei
+  （`pptTypeface`，投影机与 Windows 上真正会用的那一份）。两套字的 descent（0.357 vs 0.2617 em）
+  与数字宽（PingFang 的 "1" 只有 0.401 em，YaHei 是等宽的 0.5864 em）都不同，
+  不修正的话文字整体下沉一格、"1" 的八度点与减时线明显偏左偏短。修正的做法是
+  **按目标字体的 descent 定文本框底、把音符数字居中到目标宽度的框里**（框心落在排版的
+  墨迹中心 `JpNumber.cx` 上——八度点/附点/弧/三连音括线/和弦全锚在那儿），
+  减时线两端也按目标宽度接回数字盒。**歌词的收尾标点并进前一个字并换半角形**
+  （`TRAIL_PUNCT`，`主,`／`祢｡`／`亚!`，与成品一致）——YaHei 的全角逗号墨迹在字身正中，
+  单独成框会顶到下一个字。**倚音底缘按目标字体的墨迹顶对齐**（`jpLegacyDigitInkTop`
+  = −0.7725 em；PingFang 的 "1" 墨迹高只有 0.714 em，照它对齐会压进数字里）。
+  成品几何的回归是 `node pptx-ref-check.mjs`（直接拆开导出的 .pptx 量，与 ppt500 同一套判据）；
+  批量转出用 `node pptx-export.mjs`。
+
+  **PPT 档的其余几处落点也一律是从成品量回来的目标字体口径**（都在 `layout.ts`）：
+  上方那一带的底 `jpLegacyBandTop` = −0.967 em（弧 / fermata / 三连音括线 / 和弦落在这儿；
+  旧式档从前还在 `slurTop`/`tiedTop` 里为三连音再退半个 em，与 `stackAbove` 的堆叠叠加
+  就抬了两回）、八度点阶梯 `jpLegacyDotCenter`、数字墨迹顶 `jpLegacyDigitInkTop`。
+  曲中**转拍号**的前后各留 `numberSize/4`（前面那格走 `Entry.leadSpace`——**不能靠平移图元**，
+  `Group.update()` 会把组原点归到子级包围盒左上角），字体与音符同一份（不加粗）。
+
+  **乐句排版的「一行几句」走成书那套模式阶梯**（`applybreaks.ts::chooseLineLayout`，
+  B 每 2 句一行 → A 一句一行 → C 均匀）：断句本身照旧，`App._phraseFit` 量出真实坐标
+  （**另起一个 `lyricStack > 0` 的 painter**——PPT 档的 `buildLine` 走 playData 的完整展开，
+  同一个 Chord 在多遍里各出现一次，spans 只留最后一遍）交给它判「放不放得下」。
+  别拿 `targetMeas` 去顶行长目标逼它并行：目标是连续量，逼不出「整句」这种离散结构，
+  350《主耶稣我羡慕活在祢面前》会断在「当世上正没有什｜么可鼓舞」句子中间。
   **数字 ↓ 减时线 ↓ 低音点**这条向下的阶梯走自己的 `jpBelowGap`（1/9 em，按 PPT 档实测的
   距离定），三档墨迹净距相等；上方那一带仍是 `jpStackGap`（1/6 em，要给弧留手）。
   混排的简谱层同口径（`mixed/render.ts`），成书仍用原书量到的 `stackGapEm`。
@@ -152,6 +186,24 @@ npm run build && node staff-ui-check.mjs [页号]        # 五线谱：编辑器
 `layout.kt→layout/layout.ts`、`draw.kt→layout/painter.ts`、`score.kt→score/score.ts`、
 `jpw.kt→score/jpwimport.ts`、`jpwfile.kt→jpword/jpwfile.ts`、`skia.kt→common/geom.ts`。
 Skija 值类型不可变（offset/inset/union 返回新对象）——TS 端保持同样语义。
+
+**`.jpwabc` 里 `)` 是个二义符号**（`score/jpwimport.ts::makeChord`）：圆滑线/延音线的收尾
+与三连音的收尾都写作 `)`。判据是「**前面的音符还欠着 `(` 就先收弧，欠完了才轮到三连音**」
+（`JpState.slurDepth`，本音符自己开的 `(` 不算数）——老规矩「正在三连音里就一律当三连音收尾」
+会把括线提前停掉：158《一件礼物》的 `({(3}2_ 1_) (6,_) 6,)` 里中间那个 `)` 收的是弧，
+括线该罩住 `2 1 6` 三个音符却只罩了两个。全书 26 首 73 组三连音的跨度可用
+`musicxml` 的 `<tuplet>` 对拍。
+
+**`.jpwabc` 往返从前丢掉的三样**，如今都用**文法里已有的产生式**接上了（不动 `.g4`、
+不重生成解析器，原版 JP-Word 读到会忽略、不报错）：曲中**转拍号**写 `4/4`（`TimeSig`）、
+**转调**写 `"1=G"`（`STRING`）、**倚音**写 `{6,}`（`fragment Grace`）。三者原版 JP-Word 与
+2019 年那批成品都不记，但排版引擎本来就画得出来（`Line.load` 认 `Measure.timeChange`/
+`keyChange`，`addGraceNotes` 认 `Chord.graceNotes`）——不写进文本，musicxml 导进来的
+这三样就在往返里没了。转调还要同步更新 `stat.basePitch/fifths`，否则转调后半首的音高全错。
+另外 `<bar-style>none</bar-style>` 的**不可见小节线**照常写出（`[|]`）、排版端不画它
+（`jpBarlineWidths` 的 NONE 一支返回空）——少写一根，重解析时两个小节会并成一个、
+`.Repeat` 里按原编号写的段落越界（094/160/250/344/497 整份 .pptx 排不出）。
+注意 `Entry.entryItem()` 因此可能**一个子级都没有**，要收成 null。
 
 **已知的一处刻意背离**：`MusicCommon.jpToStep`（简谱数字 → 音名字母）不再照 Kotlin 按
 `basePitch % 12` 查表，改按调号**拼写**（`fifths → keys[]` 取主音字母）。同音高的升/降两种
