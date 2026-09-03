@@ -58,6 +58,8 @@ export interface VecGlyph {
   advance: number;
   /** 字形轮廓（DrawOPS 扁平流，**字形坐标系** em=1、y 向上）；取不到为 null。 */
   outline: Float32Array | null;
+  /** **贴图字**（JBIG2 位图当字用）的归一化指纹；普通字形没有。见 `maskRun`。 */
+  maskSig?: string;
 }
 
 /** 一次 showText（PDF 的一个 Tj/TJ）。musicpp 的一个 `fpdf::TextObj` 对应它。 */
@@ -444,8 +446,107 @@ export async function extractTextPage(
         }
         break;
       }
+      // **贴图字**：这本书把造字区的字（禰 之类）当 JBIG2 位图贴进内容流。
+      // 详见下面 `maskRun` 的注释。
+      case "paintImageMaskXObject":
+      case "paintImageMaskXObjectGroup":
+      case "paintImageMaskXObjectRepeat": {
+        const items = Array.isArray(args[0]) ? args[0] : [args[0]];
+        for (const it of items) {
+          const r = maskRun(page, it, st, id, applyClip ? pageRect : null);
+          if (r) {
+            out.push(r);
+            id++;
+          }
+        }
+        break;
+      }
       default:
         break;
+    }
+  }
+  return out;
+}
+
+/** 贴图字用的假字体名。下游按字体名分流时（`/Maestro|Opus|…/` 那些判据）不会误伤。 */
+export const MASK_FONT = "#mask";
+
+/**
+ * **一张图像蒙版 → 一个「字」**。
+ *
+ * 赞美之泉那本把**造字区的汉字**（禰、祂 一类，Big5 之外）不是当文字排，
+ * 而是当 **JBIG2 位图**贴进内容流（`/Im2 Do`，全书 277 处、54 页）。
+ * 它们在文字层、路径层、`getTextContent`、poppler 的 `pdftotext` 里**通通看不见**
+ * ——一度被当成「底本自己缺字」。要拿到它们，`getDocument` 必须给 `wasmUrl`
+ * （否则 pdfjs 解不开 JBIG2，会整个丢掉那个 XObject）。
+ *
+ * 这里把每张蒙版包成一个**只有一个字形的文本 run**，字形的 `unicode` 先留空、
+ * `maskSig` 带上归一化的位图指纹，由 `staffomr/textglyphs.ts` 的字典定案成汉字。
+ * 包成 run 之后，归行、断音节、挂到音符上这几步全都照常走，不必另开一条路。
+ *
+ * **蒙版的 0 是墨**（PDF 的 stencil mask 默认 `Decode [0 1]`，0 才落笔）。
+ */
+function maskRun(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  item: any,
+  st: TState,
+  id: number,
+  pageRect: Rect | null,
+): VecTextRun | null {
+  const objId = typeof item === "string" ? item : item?.data;
+  if (typeof objId !== "string") return null;
+  let o: { data?: Uint8Array; width?: number; height?: number } | null = null;
+  try {
+    o = page.objs.has?.(objId) === false ? null : page.objs.get(objId);
+  } catch {
+    o = null;
+  }
+  if (!o?.data || !o.width || !o.height) return null;
+  // 图像的单位方块经 ctm 落到设备坐标：ctm 把 [0,1]² 映到那一块
+  const box = boxThrough(st.ctm, 0, 0, 1, 1);
+  if (pageRect && (box.x + box.w < 0 || box.y + box.h < 0 || box.x > pageRect.w || box.y > pageRect.h)) return null;
+  const bbox: Rect = { x: box.x, y: box.y, w: box.w, h: box.h };
+  const glyph: VecGlyph = {
+    code: 0,
+    fontChar: "",
+    unicode: "",
+    bbox,
+    bboxEstimated: false,
+    ox: box.x,
+    oy: box.y + box.h,
+    ctm: [...st.ctm] as Mat,
+    advance: box.w,
+    outline: null,
+    maskSig: maskSignature(o.data as Uint8Array, o.width, o.height),
+  };
+  return {
+    id,
+    font: MASK_FONT,
+    fontRaw: MASK_FONT,
+    loadedName: MASK_FONT,
+    size: box.h,
+    // 贴图只占**墨迹**那么大，等效字号按墨迹的长边估（汉字满一个 em 见方）
+    sizeDev: Math.max(box.w, box.h),
+    glyphs: [glyph],
+    bbox,
+    renderMode: 0,
+    fill: st.fill,
+    clip: st.clip,
+  };
+}
+
+/** 蒙版位图 → 归一化指纹（`SIG` × `SIG` 的 0/1 串，1 = 墨）。同一个字不同尺寸也能对上。 */
+const MASK_SIG_N = 24;
+export function maskSignature(data: Uint8Array, w: number, h: number): string {
+  const stride = (w + 7) >> 3;
+  let out = "";
+  for (let y = 0; y < MASK_SIG_N; y++) {
+    for (let x = 0; x < MASK_SIG_N; x++) {
+      const sx = Math.min(w - 1, Math.floor((x * w) / MASK_SIG_N));
+      const sy = Math.min(h - 1, Math.floor((y * h) / MASK_SIG_N));
+      out += ((data[sy * stride + (sx >> 3)] >> (7 - (sx & 7))) & 1) ? "0" : "1";
     }
   }
   return out;
