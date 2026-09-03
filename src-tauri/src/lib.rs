@@ -3,7 +3,7 @@ use lopdf::{Document, Object, ObjectId};
 use tauri::Manager;
 
 /// Build usvg options with system fonts + bundled Bravura.otf embedded.
-fn build_usvg_options(app_handle: &tauri::AppHandle) -> usvg::Options {
+fn build_usvg_options(app_handle: &tauri::AppHandle) -> usvg::Options<'_> {
     let mut options = usvg::Options::default();
     options.fontdb_mut().load_system_fonts();
     // Load bundled Bravura.otf from Tauri resources
@@ -17,7 +17,7 @@ fn build_usvg_options(app_handle: &tauri::AppHandle) -> usvg::Options {
 }
 
 /// Convert a single SVG string to a single-page PDF (bytes).
-fn svg_to_pdf_bytes(svg_str: &str, options: &usvg::Options) -> Result<Vec<u8>, String> {
+fn svg_to_pdf_bytes(svg_str: &str, options: &usvg::Options<'_>) -> Result<Vec<u8>, String> {
     let tree = usvg::Tree::from_str(svg_str, options)
         .map_err(|e| format!("usvg: {e}"))?;
     svg2pdf::to_pdf(&tree, ConversionOptions::default(), PageOptions::default())
