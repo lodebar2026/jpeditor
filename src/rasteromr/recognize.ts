@@ -76,7 +76,8 @@ export async function recognizeRasterPage(
   if (!groups.length) return empty(blank, raster, unit, opts.carryTime);
 
   const nl = removeStaffLines(raster.bin, lines.map((l) => l.y), unit);
-  const prims = findPrimitives(nl, unit, lines.map((l) => l.y));
+  const staffLefts = groups.map((g) => Math.max(...g.lines.map((l) => l.left)));
+  const prims = findPrimitives(nl, unit, lines.map((l) => l.y), staffLefts);
   const blobs = findBlobs(nl, prims, unit);
 
   // 符头按性质判（填充率 + 有没有符干），不查字典；其余的块查字典。
