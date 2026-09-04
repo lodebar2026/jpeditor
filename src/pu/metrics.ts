@@ -13,6 +13,8 @@
 
 import type { Dialect } from "./dialect";
 import { SlurTieBase, type SlurStyle } from "../layout/layout";
+import type { GraceMetrics, GraceNote } from "../common/gracenote";
+import type { NoteElement } from "./ast";
 
 /** 版面预设：print 忠实原版 A4；slide 是投影用的 16:9。 */
 export type PageProfileName = "print" | "slide";
@@ -474,4 +476,28 @@ export function puSlurStyle(m: PuMetrics, color: number): SlurStyle {
 /** 弧线实际占的头顶高度（纵向预留用），与 puSlurStyle 同源。 */
 export function puSlurRise(m: PuMetrics): number {
   return SlurTieBase.arcHeight(Infinity, puSlurStyle(m, 0)) * 0.75;
+}
+
+/** 文本谱这一路折算给公共倚音几何的度量（见 `src/common/gracenote.ts`）。
+ *  painter 画倚音、layout 给倚音留位，用的必须是同一份。 */
+export function puGraceMetrics(m: PuMetrics): GraceMetrics {
+  return {
+    ink: m.digitInkHeight,
+    scale: m.graceScale,
+    octaveUpY: m.octaveUpY,
+    octaveDownY: m.octaveDownY,
+    octaveDotGap: m.octaveDotGap,
+    octaveDotRadius: m.octaveDotRadius,
+    underlineGap: m.underlineGap,
+  };
+}
+
+/** pu 的音符元素 → 公共倚音几何要的那几个字段。 */
+export function puGraceNotes(els: readonly NoteElement[]): GraceNote[] {
+  return els.map((gn) => ({
+    digit: String(gn.pitch),
+    octave: gn.octave,
+    duration: gn.duration,
+    ...(gn.accidental ? { alter: gn.accidental } : {}),
+  }));
 }
