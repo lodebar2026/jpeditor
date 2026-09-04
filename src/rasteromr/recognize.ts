@@ -17,7 +17,7 @@ import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamSha
 import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
-import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
+import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
 import { findRasterHeads } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
@@ -121,6 +121,10 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
   }
   return out;
 }
+
+/** 升降号「并回竖笔」之后与模板的签名距离上限。比通用的 90 松一点：
+ *  并回来的盒是块的包围盒 + 竖段的中心线拼出来的，边界不如原块齐整。 */
+const ACCID_TEMPLATE_DIST = 120;
 
 /** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
 const TIME_TEMPLATE_DIST = 180;
@@ -260,6 +264,67 @@ export async function recognizeRasterPage(
     syms.push({ box, code });
   }
 
+  // ── 升降号：把**被抽走的那道竖笔**并回来 ─────────────────────────────────
+  //
+  // 降号是「一根细长的竖笔 + 底下一个小肚子」。竖笔沿途两侧都空着，
+  // `isolated` 判它是原语、`findPrimitives` 把它抽成竖段，`blobImage` 随后照段抹墨
+  // ——剩下的只有那个 0.58×1.05 格的小肚子，字典当然认不出
+  //（实测破碎 p4 y=314 那行的调号降号就是这么丢的：竖段 x=113 y[285,324]，
+  // 块只剩 [117,304]）。升号与还原号同理，只是它们有两道竖笔、丢得没这么彻底。
+  //
+  // 这一条是升降号的**主要漏因**：破碎 105 行谱有 31 行的调号一个升降号都没认出来，
+  // 全谱升降号块 148 个，而调号加临时记号至少要 200 个。
+  //
+  // 修法照「碎块并回再查」那一条，只是这回要并的是**竖段**：块的左右紧挨着一条
+  // 竖段、竖段又比块高，就把两者的盒并起来重查一次字典。
+  // 并完要把那条竖段**从 `vSegs` 里摘掉**——留着的话 `findStems` 会把它当符干，
+  // `findBarlines` 会把它当小节线。
+  const usedSegs = new Set<LineSeg>();
+  for (const c of blobs) {
+    if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
+    const b = c.bbox;
+    const bw = b.w / unit.space;
+    const bh = b.h / unit.space;
+    // 只对「小肚子」大小的块试：太大的是符头，太小的是噪点
+    if (bw < 0.3 || bw > 1.2 || bh < 0.5 || bh > 1.6) continue;
+    for (const v of prims.vSegs) {
+      if (usedSegs.has(v)) continue;
+      const vx = (v.x0 + v.x1) / 2;
+      const vTop = Math.min(v.y0, v.y1);
+      const vBot = Math.max(v.y0, v.y1);
+      // 竖笔要贴着块（左缘一带）、要比块高、上端要探到块的上方
+      if (vx < b.x - unit.space * 0.4 || vx > b.x + b.w * 0.6) continue;
+      if (vBot < b.y || vTop > b.y + b.h) continue;
+      if (vTop > b.y - unit.space * 0.3) continue;
+      const x0 = Math.min(b.x, Math.round(vx - v.maxLw / 2));
+      const y0 = Math.min(b.y, Math.round(vTop));
+      const box = {
+        x: x0,
+        y: y0,
+        w: Math.max(b.x + b.w, Math.round(vx + v.maxLw / 2)) - x0,
+        h: Math.max(b.y + b.h, Math.round(vBot)) - y0,
+      };
+      const w1 = box.w / unit.space;
+      const h1 = box.h / unit.space;
+      if (w1 > 1.6 || h1 < 1.5 || h1 > 3.6) continue;
+      const sig = binSig(nl, box);
+      let code = look.lookup(sig, w1, h1);
+      if (code !== "accidentalFlat") {
+        // 字典不认就拿模板验。**只收降号**：它才是「一根竖笔 + 一个小肚子」、
+        // 竖笔一被抽走就什么都不剩的那一种；升号与还原号各有两道竖笔，
+        // 丢不干净，靠这条路补反而是过检（实测放开三种，破碎的还原号
+        // 从 17 个涨到 70 个，而 GT 只有 24 个）。
+        const m = matchTemplate(sig, w1, h1, look.templates ?? [], ACCID_TEMPLATE_DIST);
+        code = m && m.smufl === "accidentalFlat" ? m.smufl : null;
+      }
+      if (!code) continue;
+      syms.push({ box, code });
+      merged.add(c.id);
+      usedSegs.add(v);
+      break;
+    }
+  }
+
   // ── 拍号：位置自举 + 模板验 ────────────────────────────────────────────────
   //
   // 字典里**一个拍号类都没有**（`rasterglyphs.json` 4144 个类未定名，拍号一个没定），
@@ -358,7 +423,12 @@ export async function recognizeRasterPage(
     // 符干要**续到符头里**才与符头纵向相交（`findStems` / `buildStems` 的硬判据）。
     // 续过的段只进 `SPage`，不回写 `prims`——`findBlobs` 那边仍按原段抹墨，
     // 免得把符头啃掉（见 `extendVSegs` 的说明）。
-    vSegs: extendVSegs(nl, prims.vSegs, Math.round(unit.space * 0.35)),
+    // 被并进升降号的竖段要摘掉（留着会被当成符干或小节线）
+    vSegs: extendVSegs(
+      nl,
+      prims.vSegs.filter((v) => !usedSegs.has(v)),
+      Math.round(unit.space * 0.35),
+    ),
     syms,
     braces: findBraces(nl, prims, unit, staffLefts, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y }))).map((c) => c.bbox),
   });
