@@ -22,6 +22,39 @@ export const ZMZQ_PDF = join(ZMZQ_ROOT, "赞美之泉pdf谱全系列.pdf");
 /** GT：222 份 Finale v25 导出的 musicxml（同目录还有 .musx 原件，不读）。 */
 export const ZMZQ_GT_DIR = join(ZMZQ_ROOT, "赞美之泉zq");
 
+/** 合唱谱语料（**位图**五线谱那条路的底本）。用 env `CHORUS` 覆盖。
+ *  一曲一个子目录，里面是 PDF，有的还有同名 `.musicxml`（GT）与 `.musx`（不读）。
+ *
+ *  与赞美之泉那本的根本区别：**整页乐谱是一张 1-bit CCITT 位图**贴进页面
+ *  （PageMaker 6.5C 排版、Distiller 输出），文字层只剩页眉页脚，
+ *  音乐符号一个字形都没有——走 `src/rasteromr/`，不走 `src/omr/vectext.ts`。
+ *  同目录里也混着矢量谱（我的产业是 Maestro 真字体），那些照旧走矢量路。 */
+export const CHORUS_ROOT = process.env.CHORUS ?? "/Users/jonah/Documents/诗歌/合唱谱";
+
+/** 合唱谱语料：逐曲扫出 `{ name, pdfs, gt }`（`gt` 没有就是 null）。
+ *
+ *  **一曲可能有好几份 PDF**：破碎那一曲既有新心出的电子版 `S014320OC.pdf`，
+ *  也有一份 Fuji Xerox 扫的 `破碎.pdf`。这里全都吐出来，
+ *  「这份是干净位图还是真扫描件」留给脚本自己量（见 `chorus-report.mjs`）——
+ *  引导只管找文件，判据不写在这儿。 */
+export async function loadChorus(root = CHORUS_ROOT) {
+  const out = [];
+  for (const name of (await readdir(root)).sort()) {
+    if (name.startsWith(".")) continue;
+    let files;
+    try {
+      files = await readdir(join(root, name));
+    } catch {
+      continue; // 不是目录
+    }
+    const pdfs = files.filter((f) => f.toLowerCase().endsWith(".pdf")).sort().map((f) => join(root, name, f));
+    if (!pdfs.length) continue;
+    const gt = files.find((f) => f.toLowerCase().endsWith(".musicxml"));
+    out.push({ name, pdfs, gt: gt ? join(root, name, gt) : null });
+  }
+  return out;
+}
+
 /** dist-cli 产物（`npm run build:cli`）。 */
 export async function loadCli() {
   const p = join(process.cwd(), "dist-cli", "index.js");
