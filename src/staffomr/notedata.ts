@@ -616,6 +616,10 @@ export interface StaffNote {
    * MusicXML 那边出成 `<notehead>slash</notehead>`。
    */
   slash?: boolean;
+  /** 所属和弦（`initChords` 填）。声部与小节内起点都记在和弦上，见 `StaffChord`。 */
+  group?: StaffChord;
+  /** 倚音：不占拍子，MusicXML 里出 `<grace/>` 且**不写 `<duration>`**。见 `checkFull` 的 `ignoreSmall`。 */
+  grace?: boolean;
   /** 圆滑线/连音线的起讫（见 `slur.ts`）。一个音符可以同时是上一条的收尾与下一条的起头。 */
   slurStart?: boolean;
   slurStop?: boolean;
@@ -725,8 +729,9 @@ export function buildNotes(
   // ——顺序一乱，与 GT 的逐音比对就全废（实测准确率卡在两成半）。
   out.sort((a, b) => a.staff.box.top - b.staff.box.top || a.x - b.x);
   attachDots(out, dots, sp);
-  markChords(out, sp);
-  assignVoices(pg, ctx, out);
+  // 和弦归拢要在这里做（符干还在手里）；**声部与小节内起点留到 `checkBars`**——
+  // 三连音（`findTuplets`）在 `buildNotes` 之后才改时值，早算的 offset 会是错的。
+  initChords(out, stems, sp);
   calcAlters(pg, ctx, out);
   return out;
 }
@@ -769,43 +774,316 @@ function attachDots(notes: StaffNote[], dots: Sym[], sp: number): void {
   }
 }
 
+// ── 和弦层：`Chord` / `initChords` / `checkFull` / `splitVoice` ──────────────
+//
+// 逐条对应 musicpp `qtomr/NoteData.cpp` 的 `Bar::initChords` :1376、
+// `Bar::checkFull` :1117、`Bar::splitVoice` :1014、`Chord::guessDur` :1292。
+//
+// 为什么要这一层：**时值与声部是同一件事**。一个小节里写两个声部时，
+// 光看「音符时值加起来是不是拍号」永远对不上（两个声部各自凑满，合起来是两倍）；
+// 而要分声部，先得知道每个音**从第几拍起**——那正是 `checkFull` 算出来的 `offset`。
+// 原来那版按符干方向分声部（`assignVoices`）绕开了 offset，代价是 SATB 那一路
+// （Opus 68 页）小节自检只有 60%，全书最低。
+//
+// `guessDur` 在本仓不用另写：`buildNotes` 早就把符头形状、符尾/符杠层数、附点、
+// 三连音一并算进了 `StaffNote.duration`，那就是原文 `Chord::guessDur(true,true)`
+// 的结果。**别再照原文抄一份**——那些判据（半休止 vs 全休止按第几线判、
+// 层数数「不同的层」而不是「最高的层」）都是拿具体页换来的，抄第二份必然走样。
+
+/** 一个和弦 = 共用一根符干的一撮符头（或一个无符干符头 / 一个休止）。musicpp 的 `omr::Chord`。 */
+export interface StaffChord {
+  staff: Staff;
+  /** `[0]` 是主音（最高的那个），其余在 MusicXML 里带 `<chord/>`。 */
+  notes: StaffNote[];
+  stem: StemInfo | null;
+  left: number;
+  right: number;
+  top: number;
+  /** 小节内的起点（全音符 = 1）。`checkFull` 成功才有意义。 */
+  offset: number;
+  /** 时值（全音符 = 1）。`checkFull` 成功后写回。 */
+  dur: number;
+  /** 倚音（`checkFull` 的 `ignoreSmall` 那一趟剔出来的小字号音）。 */
+  grace: boolean;
+  /** `checkFull` 凑满了这一小节，`offset`/`dur` 可信。没凑满时两者都是 0，
+   *  `toxml` 要退回按顺序累加时值（见那边的 `emitVoices`）。 */
+  timed: boolean;
+  voice: number;
+}
+
+/** `Chord::guessDur(true, true)`：本仓的时值早在 `buildNotes` 里算好了，取主音的即可。 */
+const guessDur = (ch: StaffChord): number => ch.notes[0].duration;
+
+/** 这个音的符头有多大（相对线距）。`ignoreSmall` 判倚音用，代替原文的 `Note::fontSize()`。 */
+const headSize = (n: StaffNote): number => n.sym.box.bottom - n.sym.box.top;
+
 /**
- * `Bar::splitVoice` 的**通行判据版**：一行谱上写两个声部时按**符干方向**分。
+ * `Bar::initChords`：把符头归拢成和弦。
  *
- * musicpp 那一版是拿时值凑（把小节里的和弦按时值分组、逐组试到凑满拍号为止），
- * 依赖 `guessDur`/`ChordGroup` 一整套；本书用不到那么重的做法——
- * SATB 把女高女低挤在一行时，刻谱的通行约定就是**上声部符干朝上、下声部朝下**。
+ * 原文只按符干归（无符干的符头各自成和弦，靠 `checkFull` 的时间列再并到一起）。
+ * 本仓多一步：**无符干的符头按盒相交再归一次**，因为本仓要出 `<chord/>`
+ * ——领唱谱的前奏常是柱状全音符和弦，不归的话导出成先后几个音、时值全乱。
  *
- * **只在单声部凑不满时才拆**（照 musicpp 的用法：`checkFull` 失败才 `splitVoice`），
- * 而且拆完要验一遍——拆出来的两个声部至少有一个要正好凑满拍号，否则退回单声部。
- * 无条件按符干方向拆是不行的：普通旋律一小节里本来就上下都有符干，
- * 实测那样全书小节自检从 80.1% 掉到 73.4%。
+ * 按符干归顺带修掉老 `markChords` 的两处漏：
+ *   - **二度和弦**的两个符头错开画在符干两侧，x 差整整一个符头宽，
+ *     「x 差不到半个符头宽」判不出来；按符干归没这问题。
+ *   - 一根符干上的符头无论差几度都是一个和弦，不必再猜。
  */
-function assignVoices(pg: SPage, ctx: Map<Staff, StaffContext>, notes: StaffNote[]): void {
-  let cur = { beats: 4, beatType: 4 };
-  for (const stf of pg.staves) {
-    const changes = timeSignatures(ctx.get(stf)?.time ?? [], pg.normalStaffSpace || pg.space);
-    let ci = 0;
-    stf.bars.forEach((bar) => {
-      while (ci < changes.length && changes[ci].x < bar.right) {
-        cur = { beats: changes[ci].beats, beatType: changes[ci].beatType };
-        ci++;
+function initChords(notes: StaffNote[], stems: StemInfo[], sp: number): StaffChord[] {
+  const byNote = new Map<StaffNote, StaffChord>();
+  const out: StaffChord[] = [];
+  const bySym = new Map<Sym, StaffNote>();
+  for (const n of notes) if (!bySym.has(n.sym)) bySym.set(n.sym, n);
+
+  const make = (ns: StaffNote[], stem: StemInfo | null): StaffChord => {
+    // 主音取最高的那个（MusicXML 里 `<chord/>` 挂在其余音上）
+    ns.sort((a, b) => b.diatonic - a.diatonic);
+    const ch: StaffChord = {
+      staff: ns[0].staff,
+      notes: ns,
+      stem,
+      left: Math.min(...ns.map((n) => n.sym.box.left)),
+      right: Math.max(...ns.map((n) => n.sym.box.right)),
+      top: Math.min(...ns.map((n) => n.sym.box.top)),
+      offset: 0,
+      dur: 0,
+      grace: false,
+      timed: false,
+      voice: 1,
+    };
+    for (let i = 0; i < ns.length; i++) {
+      ns[i].group = ch;
+      ns[i].chordExtra = i > 0 || undefined;
+      byNote.set(ns[i], ch);
+    }
+    out.push(ch);
+    return ch;
+  };
+
+  for (const st of stems) {
+    const ns: StaffNote[] = [];
+    for (const sym of st.notes) {
+      const n = bySym.get(sym);
+      if (n && !byNote.has(n)) ns.push(n);
+    }
+    if (ns.length) make(ns, st);
+  }
+
+  // 剩下的：无符干的符头按**盒相交**归（全音符符头宽约两个线距，
+  // 先后两个音之间的间隙远大于这个容差），休止各自成和弦。
+  const rest = notes.filter((n) => !byNote.has(n));
+  rest.sort((a, b) => a.staff.box.top - b.staff.box.top || a.sym.box.left - b.sym.box.left);
+  let i = 0;
+  while (i < rest.length) {
+    const head = rest[i];
+    let j = i + 1;
+    const grp = [head];
+    if (!head.rest) {
+      while (j < rest.length && rest[j].staff === head.staff && !rest[j].rest) {
+        const gap = rest[j].sym.box.left - Math.max(...grp.map((g) => g.sym.box.right));
+        if (gap > sp * 0.3) break;
+        grp.push(rest[j]);
+        j++;
       }
-      const expect = cur.beats / cur.beatType;
-      const arr = notes.filter((n) => n.staff === stf && !n.chordExtra && n.x >= bar.left && n.x < bar.right);
-      if (arr.length < 4) return;
-      const sum = arr.reduce((a, n) => a + (n.sym.code === "restHBar" ? expect : n.duration), 0);
-      if (sum <= expect + 1e-6) return; // 单声部凑得下，不拆
-      const up = arr.filter((n) => n.stemUp === true);
-      const down = arr.filter((n) => n.stemUp === false);
-      if (up.length < 2 || down.length < 2) return;
-      const sumOf = (a: StaffNote[]) => a.reduce((x, n) => x + (n.sym.code === "restHBar" ? expect : n.duration), 0);
-      // **两个声部都要正好凑满**才认这次拆分。
-      // 只要求一个凑满的话，另一个多半是被硬切出来的，与 GT 逐音比对反而变差
-      // （实测音符准确率 93.42% → 93.21%）。
-      if (Math.abs(sumOf(up) - expect) >= 1e-6 || Math.abs(sumOf(down) - expect) >= 1e-6) return;
-      for (const n of down) n.voice = 2;
-    });
+    }
+    make(grp, null);
+    i = j;
+  }
+  out.sort((a, b) => a.staff.box.top - b.staff.box.top || a.left - b.left);
+  return out;
+}
+
+/** 两个和弦的符头盒横向是否相交（`checkFull` 分时间列用）。 */
+const chordOverlapX = (a: StaffChord, b: StaffChord): boolean => !(a.left > b.right || b.left > a.right);
+
+/**
+ * `Bar::checkFull`：一个小节里的和弦能不能凑满拍号；能就把 `offset`/`dur` 写回去。
+ *
+ * 做法（照原文 :1117）：
+ *   1. 整小节休止（`restHBar`）与「本身就够一小节」的和弦单独收着，不进时间列；
+ *   2. 其余按 x 从左到右分**时间列**——与上一列的首和弦横向不相交就开新列，
+ *      但两根符干的间隙不到半个线距时仍算同一列（两个声部的符干挨在一起）；
+ *   3. 每一列的时值取**列内最小**的那个（长音跨过后面几列），累加成 offset；
+ *   4. 总和正好等于拍号才提交，否则整小节判失败。
+ *
+ * `ignoreSmall`：先不带它试一遍，失败再带它试一遍（原文 :1477-1480）。
+ * 它把「单音、且符头明显比别人小」的和弦当**倚音**剔出去——倚音不占拍子，
+ * 算进去这一小节永远凑不满。
+ */
+function checkFull(chords: StaffChord[], expect: number, sp: number, ignoreSmall: boolean): boolean {
+  if (!chords.length) return false;
+  const EPS = 1e-6;
+  let chs = chords;
+  const small: StaffChord[] = [];
+  if (ignoreSmall) {
+    const sizes = chords.flatMap((c) => c.notes.map(headSize));
+    const mid = Math.max(...sizes);
+    chs = [];
+    for (const c of chords) {
+      if (c.notes.length === 1 && headSize(c.notes[0]) < mid * 0.7) {
+        small.push(c);
+        continue;
+      }
+      chs.push(c);
+    }
+    if (!chs.length) return false;
+  }
+  chs = [...chs].sort((a, b) => a.left - b.left);
+
+  const grps: { chords: StaffChord[]; offset: number }[] = [];
+  const measureRest: StaffChord[] = [];
+  const full: StaffChord[] = [];
+  for (const it of chs) {
+    if (it.notes[0].sym.code === "restHBar") {
+      it.dur = expect;
+      it.offset = 0;
+      measureRest.push(it);
+      continue;
+    }
+    if (Math.abs(guessDur(it) - expect) < EPS) {
+      it.dur = expect;
+      it.offset = 0;
+      full.push(it);
+      continue;
+    }
+    let newGrp = !grps.length;
+    if (!newGrp) {
+      const cha = grps[grps.length - 1].chords[0];
+      if (!chordOverlapX(cha, it)) {
+        newGrp = true;
+        const sa = cha.stem?.seg;
+        const sb = it.stem?.seg;
+        if (sa && sb && Math.abs(sa.cx - sb.cx) < sp / 2) newGrp = false;
+      }
+    }
+    if (newGrp) grps.push({ chords: [it], offset: 0 });
+    else grps[grps.length - 1].chords.push(it);
+  }
+  if (!grps.length) {
+    if (!measureRest.length && !full.length) return false;
+    for (const ch of measureRest) ch.timed = true;
+    for (const ch of full) ch.timed = true;
+    return true;
+  }
+
+  let res = 0;
+  for (const g of grps) {
+    g.offset = res;
+    let d = Infinity;
+    for (const ch of g.chords) d = Math.min(d, guessDur(ch));
+    if (!isFinite(d) || d <= 0) return false;
+    res += d;
+  }
+  if (Math.abs(res - expect) >= EPS) return false;
+  for (const g of grps)
+    for (const ch of g.chords) {
+      ch.offset = g.offset;
+      ch.dur = guessDur(ch);
+      ch.timed = true;
+    }
+  for (const ch of measureRest) ch.timed = true;
+  for (const ch of full) ch.timed = true;
+  for (const ch of small) {
+    ch.grace = true;
+    for (const n of ch.notes) n.grace = true;
+  }
+  return true;
+}
+
+/**
+ * `Bar::splitVoice`：按 (offset, dur) **贪心分层**，层号即声部号。
+ *
+ * 只在 `checkFull` 成功之后调（原文 :1481）——没有 offset 就无从分层。
+ *
+ * 两个前置动作照原文：
+ *   - 无符干、且时值正好一小节的和弦**先并成一个**（SATB 的柱状全音符，
+ *     四个声部各一个全音符，谱面上是一撮同 x 的符头，本该是一个和弦）；
+ *   - 之后按 (offset, 盒顶) 排序。原文比的是 y 向上的 `top`（大的在前），
+ *     本仓 y 向下，**翻过来**：`top` 小的（视觉上方）在前。
+ */
+function splitVoice(chords: StaffChord[], expect: number): void {
+  const EPS = 1e-6;
+  const res: StaffChord[] = [];
+  const full: StaffChord[] = [];
+  for (const ch of chords) {
+    const first = ch.notes[0];
+    if (ch.stem || first.rest) {
+      res.push(ch);
+      continue;
+    }
+    if (Math.abs(ch.dur - expect) < EPS) full.push(ch);
+    else res.push(ch);
+  }
+  if (full.length) {
+    const first = full[0];
+    for (let i = 1; i < full.length; i++) {
+      for (const n of full[i].notes) {
+        n.group = first;
+        first.notes.push(n);
+      }
+    }
+    first.notes.sort((a, b) => b.diatonic - a.diatonic);
+    first.notes.forEach((n, i) => (n.chordExtra = i > 0 || undefined));
+    res.push(first);
+  }
+  res.sort((a, b) => a.offset - b.offset || a.top - b.top);
+
+  const done = new Set<StaffChord>();
+  const layers: StaffChord[][] = [];
+  let guard = res.length + 1;
+  while (done.size < res.length && guard-- > 0) {
+    for (let i = 0; i < res.length; i++) {
+      const ch = res[i];
+      if (ch.grace) {
+        done.add(ch);
+        continue;
+      }
+      if (done.has(ch)) continue;
+      const grp = [ch];
+      done.add(ch);
+      let now = ch.offset + ch.dur;
+      for (let j = i + 1; j < res.length; j++) {
+        const c1 = res[j];
+        if (done.has(c1) || c1.grace) continue;
+        if (c1.offset < now - EPS) continue;
+        grp.push(c1);
+        done.add(c1);
+        now = c1.offset + c1.dur;
+      }
+      layers.push(grp);
+    }
+  }
+  layers.forEach((grp, i) => {
+    for (const ch of grp) {
+      ch.voice = i + 1;
+      for (const n of ch.notes) n.voice = i + 1;
+    }
+  });
+}
+
+/**
+ * `splitVoice` 的**兜底版**：`checkFull` 两趟都没凑满时，按**符干方向**分声部。
+ *
+ * `checkFull` 凑不满就没有 offset，贪心分层无从谈起；但 SATB 把女高女低挤在一行时，
+ * 刻谱的通行约定是**上声部符干朝上、下声部朝下**，据此还能救回一部分。
+ *
+ * 拆完要验一遍——**两个声部都要正好凑满拍号**才认这次拆分。
+ * 只要求一个凑满的话，另一个多半是被硬切出来的，与 GT 逐音比对反而变差
+ * （实测音符准确率 93.42% → 93.21%）；无条件按符干方向拆更糟，
+ * 普通旋律一小节里本来就上下都有符干，实测全书小节自检从 80.1% 掉到 73.4%。
+ */
+function assignVoicesInBar(inBar: StaffNote[], expect: number): void {
+  const arr = inBar.filter((n) => !n.chordExtra && !n.grace);
+  if (arr.length < 4) return;
+  const sumOf = (a: StaffNote[]) => a.reduce((x, n) => x + (n.sym.code === "restHBar" ? expect : n.duration), 0);
+  if (sumOf(arr) <= expect + 1e-6) return; // 单声部凑得下，不拆
+  const up = arr.filter((n) => n.stemUp === true);
+  const down = arr.filter((n) => n.stemUp === false);
+  if (up.length < 2 || down.length < 2) return;
+  if (Math.abs(sumOf(up) - expect) >= 1e-6 || Math.abs(sumOf(down) - expect) >= 1e-6) return;
+  for (const n of down) {
+    n.voice = 2;
+    if (n.group) n.group.voice = 2;
   }
 }
 
@@ -861,30 +1139,6 @@ export function calcAlters(pg: SPage, ctx: Map<Staff, StaffContext>, notes: Staf
 }
 
 
-/**
- * 同一行谱上 x 相同的一撮音是**一个和弦**：留最高的那个当主音，其余标 `chordExtra`。
- *
- * 判据是 x 差不到半个符头宽——真正先后相邻的两个音至少隔一个符头。
- */
-function markChords(notes: StaffNote[], sp: number): void {
-  const tol = sp * 0.5;
-  let i = 0;
-  while (i < notes.length) {
-    let j = i + 1;
-    while (j < notes.length && notes[j].staff === notes[i].staff && notes[j].x - notes[i].x < tol) j++;
-    if (j - i > 1) {
-      const grp = notes.slice(i, j);
-      // 休止不参与（休止与音符同 x 是排版上的两个声部，不是和弦）
-      const pitched = grp.filter((n) => !n.rest);
-      if (pitched.length > 1) {
-        const top = pitched.reduce((a, b) => (b.diatonic > a.diatonic ? b : a));
-        for (const n of pitched) if (n !== top) n.chordExtra = true;
-      }
-    }
-    i = j;
-  }
-}
-
 // ── 小节自检 ────────────────────────────────────────────────────────────────
 
 /** 一个小节的时值核对结果。 */
@@ -902,12 +1156,16 @@ export interface BarCheck {
 }
 
 /**
- * `Bar::checkFull` 的**单声部子集**：小节里的时值加起来对不对得上拍号。
+ * `Bar::checkFull` + `Bar::splitVoice`：逐小节把和弦凑成拍子、分出声部，顺带出自检。
  *
- * musicpp 那一版顺带做多声部拆分（`splitVoice`）与「忽略小字号的倚音」两档；
- * 本书是单声部领唱谱，用不上那两档，故只留核对。
+ * 调用顺序照原文 `Score::analyzeBarData` :1474-1483：
+ * `initChords`（已在 `buildNotes` 里做）→ `checkFull(false)` → 失败再 `checkFull(true)`
+ * → 成功才 `splitVoice`。两趟都失败的小节退回按**符干方向**分声部那一版（`assignVoices`）。
  *
- * 这是**不靠 GT 的自检**：对不上就说明这一小节里有音符读错了（时值、漏音、多音）。
+ * 放在这一步而不是 `buildNotes` 里，是因为三连音（`findTuplets`）在 `buildNotes`
+ * **之后**才按比例改时值——早算的 offset 会是错的。这里也才拿得到跨页继承的拍号。
+ *
+ * 自检本身是**不靠 GT 的**：对不上就说明这一小节里有音符读错了（时值、漏音、多音）。
  * 全书都能用，不限于对上 GT 的那 98 首。
  *
  * 三处天然对不上、不算错：整小节休止（`restHBar` 按拍号算满）、
@@ -921,11 +1179,12 @@ export function checkBars(
   carry?: { beats: number; beatType: number },
 ): BarCheck[] {
   const out: BarCheck[] = [];
+  const sp = pg.normalStaffSpace || pg.space;
   let cur = { beats: carry?.beats ?? 4, beatType: carry?.beatType ?? 4 };
   for (const stf of pg.staves) {
     // **逐小节**取当时生效的拍号：一行谱上可能变拍好几次
     // （实测 Opus 那本 p663 的第三行里 4/4 → 2/4 → 4/4，按整行取最左那处会全错）
-    const changes = timeSignatures(ctx.get(stf)?.time ?? [], pg.normalStaffSpace || pg.space);
+    const changes = timeSignatures(ctx.get(stf)?.time ?? [], sp);
     let ci = 0;
     stf.bars.forEach((bar, i) => {
       while (ci < changes.length && changes[ci].x < bar.right) {
@@ -933,18 +1192,25 @@ export function checkBars(
         ci++;
       }
       const expect = cur.beats / cur.beatType;
-      const inBar = notes.filter((n) => n.staff === stf && !n.chordExtra && n.x >= bar.left && n.x < bar.right);
+      const inBar = notes.filter((n) => n.staff === stf && n.x >= bar.left && n.x < bar.right);
       if (!inBar.length) return;
-      // **逐声部核对**：一行谱上写两个声部时，每个声部各自要凑满拍号
-      const voices = [...new Set(inBar.map((n) => n.voice))].sort();
-      let sum = 0;
-      let full = true;
-      for (const v of voices) {
-        let vs = 0;
-        for (const n of inBar) if (n.voice === v) vs += n.sym.code === "restHBar" ? expect : n.duration;
-        if (v === voices[0]) sum = vs;
-        if (Math.abs(vs - expect) >= 1e-6) full = false;
+      // 这一小节里的和弦（`initChords` 已归好，去重即可）
+      const chords: StaffChord[] = [];
+      const seen = new Set<StaffChord>();
+      for (const n of inBar) {
+        const g = n.group;
+        if (!g || seen.has(g)) continue;
+        seen.add(g);
+        chords.push(g);
       }
+      let full = checkFull(chords, expect, sp, false);
+      if (!full) full = checkFull(chords, expect, sp, true);
+      if (full) splitVoice(chords, expect);
+      else assignVoicesInBar(inBar, expect);
+      const heads = inBar.filter((n) => !n.chordExtra && !n.grace);
+      const sum = heads
+        .filter((n) => n.voice === (heads[0]?.voice ?? 1))
+        .reduce((a, n) => a + (n.sym.code === "restHBar" ? expect : n.duration), 0);
       out.push({ staff: stf, index: i, sum, expect, count: inBar.length, full });
     });
   }
