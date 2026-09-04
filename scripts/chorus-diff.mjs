@@ -22,6 +22,28 @@ const argOf = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length +
 const verbose = args.includes("--v");
 const only = argOf("one");
 const BASE = "testdata/合唱谱/raster-baseline.json";
+const MAP = "testdata/合唱谱/staffmap.json";
+
+/**
+ * **人工的「印谱行 ↔ GT 谱表」映射**（`--genmap` 出草稿，再手改）。
+ *
+ * 为什么要人工：跨系统连接（`buildScore`）与识别是两件事，混在一个数里
+ * 谁涨谁跌都看不清；而这份映射一首曲子只有几行，代价比反复调 `sameToken` 小得多。
+ * 有映射时**不再贪心配对**，逐 staff 直比。
+ *
+ * 形状（键是「曲名/文件名」）：
+ *   { "破碎/S014320OC.pdf": {
+ *       "byRowCount": { "7": ["P1.1","P2.1",…], "5": […], "2": [null,null] },
+ *       "systems":    { "12": [ … ] }        // 可选：按系统序号（0 起）覆盖
+ *   } }
+ * `null` = 这一行谱不入分母（伴奏行、GT 里没有的行）。
+ */
+let staffMap = null;
+try {
+  staffMap = JSON.parse(await readFile(MAP, "utf8"));
+} catch {
+  /* 没有映射表就走旧的贪心配对 */
+}
 
 const cli = await loadCli();
 const look = new cli.RasterGlyphLookup(JSON.parse(await readFile("src/rasteromr/rasterglyphs.json", "utf8")));
@@ -142,6 +164,67 @@ function gotParts(entries) {
   return out;
 }
 
+/**
+ * 识别结果 → **逐系统逐行**的序列，不经 `buildScore`。
+ *
+ * 与 `gotParts` 的分别：那边的一条序列是「跨系统连起来的一条谱表」，连错了
+ * 准确率就跟着塌；这边只交出「第几个系统的第几行」，怎么连起来交给人工映射
+ * ——把**识别**与**跨系统连接**两件事拆开量。
+ */
+function gotRows(entries) {
+  const byStaff = new Map();
+  for (const e of entries) for (const n of e.notes) {
+    const a = byStaff.get(n.staff) ?? [];
+    a.push(n);
+    byStaff.set(n.staff, a);
+  }
+  const out = [];
+  for (const e of entries)
+    for (const sys of [...e.page.systems].sort((a, b) => a.box.top - b.box.top)) {
+      const rows = [...sys.staves].sort((a, b) => a.box.top - b.box.top).map((stf) => {
+        const seq = [];
+        let lyric = "";
+        for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === minVoice(stf, byStaff))) {
+          seq.push(n.rest ? "R" : n.step + n.octave);
+          for (const l of n.lyrics ?? []) if (l.verse === 1) lyric += l.text;
+        }
+        return { seq, lyric };
+      });
+      out.push({ rows });
+    }
+  return out;
+}
+
+/**
+ * 人工映射 → 逐 GT 谱表的序列。返回 `{ byId, unmapped }`，
+ * `unmapped` 是没落到任何 GT 谱表上的音（系统没配映射、或那一行标了 `null`），
+ * 记进「含游离」那一档的分母。
+ */
+function applyStaffMap(systems, mapOf) {
+  const byId = new Map();
+  let unmapped = 0;
+  systems.forEach((sys, si) => {
+    const ids = mapOf.systems?.[String(si)] ?? mapOf.byRowCount?.[String(sys.rows.length)] ?? null;
+    sys.rows.forEach((r, k) => {
+      const cell = ids?.[k] ?? null;
+      if (!cell) {
+        unmapped += r.seq.length;
+        return;
+      }
+      // 一行谱可以罩着**好几个 GT 谱表**（破碎那三个女高在五行系统里合印成一行 "Soprano"）。
+      // 写成 `"P1.1|P2.1|P3.1"`：那一行的序列同时算给这几个谱表。
+      // 这不是拿度量蒙分——谱面上就只印了这一行，识别再准也只能交出这一条。
+      for (const id of String(cell).split("|")) {
+        const cur = byId.get(id) ?? { id, seq: [], lyric: "" };
+        cur.seq.push(...r.seq);
+        cur.lyric += r.lyric;
+        byId.set(id, cur);
+      }
+    });
+  });
+  return { byId, unmapped };
+}
+
 /** 这行谱上最小的声部号（`splitVoice` 从 1 起编，没拆过的就都是 1）。 */
 function minVoice(stf, byStaff) {
   const a = byStaff.get(stf) ?? [];
@@ -205,6 +288,47 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     if (!entries.length) continue;
     const got = gotParts(entries);
     const nParts = scoreParts(entries);
+    // ── 按 staff 对比（人工映射）────────────────────────────────────────
+    const systems = gotRows(entries);
+    const mapOf = staffMap?.[`${song.name}/${file}`] ?? null;
+    let sm = null;
+    if (args.includes("--genmap")) {
+      console.log(`"${song.name}/${file}": ${JSON.stringify(draftMap(systems, gt), null, 2)},`);
+    }
+    if (mapOf) {
+      const { byId, unmapped } = applyStaffMap(systems, mapOf);
+      let n = 0, l = 0, d = 0, y = 0, yd = 0;
+      const miss = [];
+      for (const g of gt) {
+        const r = byId.get(g.id);
+        if (!r) {
+          miss.push(g.id);
+          continue; // 映射里没提到的 GT 谱表：不入分母，另行报数
+        }
+        let a = acc(r.seq, g.seq, 24, true);
+        for (const k of [-1, 1]) a = Math.max(a, acc(shiftOct(r.seq, k), g.seq, 24, true));
+        n += a * g.seq.length;
+        l += acc(letters(r.seq), letters(g.seq), 24, true) * g.seq.length;
+        d += g.seq.length;
+        if ((g.lyric ?? "").length >= 8) {
+          y += acc([...cjk(r.lyric ?? "")], [...g.lyric]) * g.lyric.length;
+          yd += g.lyric.length;
+        }
+        if (verbose) {
+          const t = errKinds(r.seq, g.seq);
+          console.log(`  [staff] ${g.id}(GT ${g.seq.length} / 识别 ${r.seq.length})  音符 ${(a * 100).toFixed(1)}%  ` +
+            `错型 读错${t.sub} 漏${t.del} 多${t.ins}` +
+            ((g.lyric ?? "").length >= 8 ? `  歌词 ${(acc([...cjk(r.lyric ?? "")], [...g.lyric]) * 100).toFixed(1)}%` : ""));
+        }
+      }
+      sm = {
+        noteAcc: d ? (n / d) * 100 : 0,
+        letterAcc: d ? (l / d) * 100 : 0,
+        noteAccAll: d + unmapped ? (n / (d + unmapped)) * 100 : 0,
+        lyricAcc: yd && lyricOcr ? (y / yd) * 100 : null,
+        lyricChars: yd, unmapped, miss,
+      };
+    }
     const pairs = pair(got, gt);
     const gtTotal = gt.reduce((a, p) => a + p.seq.length, 0);
     const gotTotal = got.reduce((a, p) => a + p.seq.length, 0);
@@ -255,12 +379,23 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       barFull: bars ? (full / bars) * 100 : 0, bars, unknown,
       lyricAcc: wyd && lyricOcr ? (wy / wyd) * 100 : null,
       lyricChars: wyd,
+      // 按 staff（人工映射）那一档：没有映射表时为 null
+      smNoteAcc: sm ? sm.noteAcc : null,
+      smLetterAcc: sm ? sm.letterAcc : null,
+      smNoteAccAll: sm ? sm.noteAccAll : null,
+      smLyricAcc: sm ? sm.lyricAcc : null,
+      smUnmapped: sm ? sm.unmapped : null,
+      smMiss: sm ? sm.miss.length : null,
     };
     rows.push(row);
     console.log(`${row.clean ? "[干净]" : "[扫描]"} ${song.name}/${file}  谱行${staves} 声部 ${got.length}↔${gt.length}(配上${pairs.length}，buildScore ${nParts})  ` +
       `音符 ${gotTotal}/${gtTotal}  准确率 ${row.noteAcc.toFixed(1)}%（含游离 ${row.noteAccAll.toFixed(1)}%，游离 ${strayNotes}）  音级 ${row.letterAcc.toFixed(1)}%  ` +
       `小节自检 ${row.barFull.toFixed(1)}%（${bars} 小节）` +
       (row.lyricAcc != null ? `  歌词 ${row.lyricAcc.toFixed(1)}%（GT ${row.lyricChars} 字）` : ""));
+    if (sm)
+      console.log(`         └ 按 staff（人工映射）：音符 ${sm.noteAcc.toFixed(1)}%（含未映射 ${sm.noteAccAll.toFixed(1)}%，未映射 ${sm.unmapped} 音）  ` +
+        `音级 ${sm.letterAcc.toFixed(1)}%` + (sm.lyricAcc != null ? `  歌词 ${sm.lyricAcc.toFixed(1)}%（GT ${sm.lyricChars} 字）` : "") +
+        (sm.miss.length ? `  ——映射里没提到的 GT 谱表：${sm.miss.join(",")}` : ""));
   }
 }
 
@@ -309,8 +444,23 @@ const summary = {
   barFull: avg(clean, "barFull"),
   lyricAcc: avg(clean.filter((r) => r.lyricAcc != null), "lyricAcc"),
 };
+// 按 staff（人工映射）那一档：只在**每一份都配了映射**时进汇总，
+// 否则平均值里混着口径不同的份，涨跌看不出来。
+const smClean = clean.filter((r) => r.smNoteAcc != null);
+const smSummary = smClean.length
+  ? {
+      smNoteAcc: avg(smClean, "smNoteAcc"),
+      smNoteAccAll: avg(smClean, "smNoteAccAll"),
+      smLetterAcc: avg(smClean, "smLetterAcc"),
+      smLyricAcc: avg(smClean.filter((r) => r.smLyricAcc != null), "smLyricAcc"),
+    }
+  : null;
+if (smSummary) Object.assign(summary, smSummary);
 console.log(`\n【干净位图】${clean.length} 份（有 GT ${withGt.length} 份）：音符 ${summary.noteAcc}%（含游离 ${summary.noteAccAll}%）、音级 ${summary.letterAcc}%；小节自检 ${summary.barFull}%` +
   (summary.lyricAcc ? `；歌词 ${summary.lyricAcc}%` : ""));
+if (smSummary)
+  console.log(`【按 staff·人工映射】${smClean.length} 份：音符 ${smSummary.smNoteAcc}%（含未映射 ${smSummary.smNoteAccAll}%）、音级 ${smSummary.smLetterAcc}%` +
+    (smSummary.smLyricAcc ? `；歌词 ${smSummary.smLyricAcc}%` : ""));
 if (scan.length) {
   const sg = scan.filter((r) => r.noteAcc !== null);
   console.log(`【真扫描件】${scan.length} 份（有 GT ${sg.length} 份）：音符 ${avg(sg, "noteAcc")}%、音级 ${avg(sg, "letterAcc")}%；小节自检 ${avg(scan, "barFull")}%　——另记，不入基线`);
@@ -335,6 +485,47 @@ if (args.includes("--bless")) {
       process.exitCode = 1;
     } else console.log("✓ 各档不低于基线");
   }
+}
+
+/**
+ * `--genmap`：出一份人工映射的**草稿**。
+ *
+ * 按「系统的谱行数」分类——同一首曲子里，人声陆续进来，系统的行数会从 2 变到 7，
+ * 而**行数一样的系统，各行的身份也一样**（实测破碎、宁静都成立）。
+ * 每一类里把「第 k 行」跨系统连起来，再与 GT 谱表贪心配一次，配出来的就是草稿。
+ *
+ * **草稿只是起点，必须人工过一遍**：一行谱写着两个 GT 声部的地方（破碎的 "Men"
+ * 一行罩着 GT 的男高与男低），机器只能挑一个，另一个要人手标 `null` 或改掉。
+ */
+function draftMap(systems, gt) {
+  const byCount = new Map();
+  for (const sys of systems) {
+    const a = byCount.get(sys.rows.length) ?? [];
+    a.push(sys);
+    byCount.set(sys.rows.length, a);
+  }
+  const out = {};
+  for (const [cnt, list] of [...byCount.entries()].sort((a, b) => a[0] - b[0])) {
+    const cols = Array.from({ length: cnt }, (_, k) => list.flatMap((sys) => sys.rows[k].seq));
+    const cand = [];
+    for (let k = 0; k < cnt; k++)
+      for (let j = 0; j < gt.length; j++) {
+        let a = acc(cols[k], gt[j].seq, 24, true);
+        for (const o of [-1, 1]) a = Math.max(a, acc(shiftOct(cols[k], o), gt[j].seq, 24, true));
+        cand.push({ k, j, a });
+      }
+    cand.sort((x, y) => y.a - x.a);
+    const ids = new Array(cnt).fill(null);
+    const usedK = new Set(), usedJ = new Set();
+    for (const c of cand) {
+      if (usedK.has(c.k) || usedJ.has(c.j) || c.a < 0.15) continue;
+      usedK.add(c.k);
+      usedJ.add(c.j);
+      ids[c.k] = gt[c.j].id;
+    }
+    out[cnt] = ids;
+  }
+  return { byRowCount: out };
 }
 
 /** 逐音对齐的可读串（排查用，`--v --dump`）。`[a→b]` 读错、`(多 a)` 多出、`(缺 b)` 漏掉。 */
