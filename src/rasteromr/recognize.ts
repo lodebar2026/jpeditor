@@ -88,7 +88,13 @@ export async function recognizeRasterPage(
   for (const c of blobs) {
     if (claimed.has(c.id)) continue;
     const code = look.lookup(binSig(nl, c.bbox), c.bbox.w / unit.space, c.bbox.h / unit.space);
-    if (code) syms.push({ box: c.bbox, code });
+    if (!code) continue;
+    // **半/全休止要按位置验一道**：它的字形是个 1.27×0.51 格的小实心矩形，
+    // 位图上这种碎块一大把（符杠断头、粗横笔的一截），实测宁静一首认出 43 个
+    // 全部被采纳，而谱面上根本没那么多。它有一条硬位置：
+    // 半休止**坐在中线上**、全休止**吊在上面一线下**——不贴着这两条线的不是它。
+    if ((code === "restHalf" || code === "restWhole") && !nearRestLine(c.bbox, lines, unit)) continue;
+    syms.push({ box: c.bbox, code });
   }
 
   // **谱号兜底**：字典查不到的谱行，按位置补一个。
@@ -151,3 +157,19 @@ export async function recognizeRasterPage(
 
 /** 排查用：把一页的二值图取出来（识别坐标 = 像素坐标）。 */
 export type { Binary };
+
+/**
+ * 半/全休止的位置闸：块的纵向中心要贴着某行谱的**第二线或第三线**（自上而下数）。
+ *
+ * 全休止吊在第二线下方、半休止坐在第三线上方，两者的墨迹都紧贴那条线，
+ * 中心离线不超过半格。`buildNotes` 随后再按「在线上还是线下」分全与半
+ * （那两个字形逐位相同，只能按几何判）。
+ */
+function nearRestLine(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
+  const cy = box.y + box.h / 2;
+  const ys = [...lines].map((l) => l.y).sort((a, b) => a - b);
+  for (let i = 0; i + 4 < ys.length; i += 5) {
+    for (const k of [1, 2]) if (Math.abs(cy - ys[i + k]) <= unit.space * 0.6) return true;
+  }
+  return false;
+}
