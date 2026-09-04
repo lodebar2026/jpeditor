@@ -9,6 +9,7 @@ export * from "../omr/vector";
 export * from "../omr/vectext";
 export * from "../staffomr/index";
 export * from "../rasteromr/index";
+export { connectedComponents } from "../omr/ccl";
 export * from "../omr/bookprofile";
 export * from "../omr/inventory";
 export * from "../omr/glyphdict";
