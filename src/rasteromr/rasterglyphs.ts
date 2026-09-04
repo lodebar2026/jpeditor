@@ -373,13 +373,20 @@ export const TEMPLATE_DIST = 90;
  * 位图上下多一两个像素就是 0.1 格；符点那种半格的，同样的绝对误差就是一倍。
  * 一刀切的绝对容差两头都不合适。
  */
-export function matchTemplate(sig: Uint8Array, w: number, h: number, tpl: OutlineTemplate[]): { smufl: SmuflName; dist: number } | null {
+export function matchTemplate(
+  sig: Uint8Array,
+  w: number,
+  h: number,
+  tpl: OutlineTemplate[],
+  /** 距离上限。默认 `TEMPLATE_DIST`；拍号那一路放宽（见 `recognize.ts` 的说明）。 */
+  maxDist = TEMPLATE_DIST,
+): { smufl: SmuflName; dist: number } | null {
   let best: { smufl: SmuflName; dist: number } | null = null;
   for (const t of tpl) {
     const tol = 0.2 + 0.12 * Math.max(t.w, t.h);
     if (Math.abs(t.w - w) > tol || Math.abs(t.h - h) > tol) continue;
     const d = sigDistance(t.sig, sig);
-    if (d > TEMPLATE_DIST) continue;
+    if (d > maxDist) continue;
     if (!best || d < best.dist) best = { smufl: t.smufl, dist: d };
   }
   return best;

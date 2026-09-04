@@ -12,6 +12,7 @@ import type { Binary } from "../omr/types";
 import type { Box } from "../staffomr/model";
 import type { Rect } from "../omr/types";
 import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars, makeSystems, unknownObjs } from "../staffomr/page";
+import { isAccidental, isClef, timeSigDigit } from "../staffomr/glyphs";
 import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
 import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
@@ -120,6 +121,9 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
   }
   return out;
 }
+
+/** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
+const TIME_TEMPLATE_DIST = 180;
 
 /** 符尾窗口的墨占比门槛。实测没有符杠的音符要么 0（真四分）、要么 0.35 以上，中间没人。 */
 const FLAG_INK = 0.25;
@@ -254,6 +258,93 @@ export async function recognizeRasterPage(
     if (!code) continue;
     for (const id of group) merged.add(id);
     syms.push({ box, code });
+  }
+
+  // ── 拍号：位置自举 + 模板验 ────────────────────────────────────────────────
+  //
+  // 字典里**一个拍号类都没有**（`rasterglyphs.json` 4144 个类未定名，拍号一个没定），
+  // 所以拍号的识别率是 0——全语料一个都没认出来。这批曲子恰好都是 4/4、
+  // 下游按缺省当 4/4 办，所以没露馅；换一首 3/4 的就整首错。
+  //
+  // 拍号数字还被自己的笔画切开（「4」的竖笔横向游程短，被当竖笔画抽走），
+  // 按连通块查必然是碎的——实测宁静 p1 那个 4/4 切成 1.60×2.76 与 1.60×1.71
+  // 两个**互相重叠**的盒。所以照谱号那条路走：先按位置圈出候选、
+  // 把碎块并回上下两个盒，再拿模板签名验。
+  for (const g of groups) {
+    const left = Math.max(...g.lines.map((l) => l.left));
+    const mid = g.lines[2].y;
+    const top = g.lines[0].y;
+    const bottom = g.lines[4].y;
+    // 行首那一段：谱号 + 调号之后、第一个音符之前。放到十四格——
+    // 七个升降号的调号就占了八格多。
+    // **字典认走的也进来**（谱号与调号升降号除外）：C 拍号与字典里那个
+    // `csymParensRightTall`（大括号）形状相近，认错了照样要能被拍号盖过。
+    const cands = blobs.filter((c) => {
+      const b = c.bbox;
+      if (claimed.has(c.id) || merged.has(c.id)) return false;
+      const dc = dictClaimed.has(c.id) ? look.lookup(binSig(nl, b), b.w / unit.space, b.h / unit.space) : null;
+      if (dc && (isClef(dc) || isAccidental(dc))) return false;
+      if (b.x < left || b.x > left + unit.space * 14) return false;
+      return b.y + b.h > top - unit.space * 0.5 && b.y < bottom + unit.space * 0.5;
+    });
+    if (!cands.length) continue;
+    // 按 x 聚成**若干列**，逐列去试。
+    //
+    // 只试最左那一列不行：行首除了拍号还有谱号被切下来的碎块、调号里字典没认出的
+    // 升降号，最左那一列往往是它们（实测你要等候 p2 最左是谱号的下半截，
+    // 真正的 C 拍号在它右边两列开外）。
+    //
+    // 容一点缝（0.4 格）：C 拍号被自己的笔画切成好几块，块与块之间差几个像素
+    //（实测破碎 p2 那个 C 切成 0.76×2.16 / 0.64×0.93 / 0.58×0.12 / 0.41×0.58）。
+    cands.sort((a, b) => a.bbox.x - b.bbox.x);
+    const cols: { box: Rect; ids: number[] }[] = [];
+    for (const c of cands) {
+      const b = c.bbox;
+      const last = cols[cols.length - 1];
+      if (last && b.x <= last.box.x + last.box.w + unit.space * 0.4) {
+        const x0 = Math.min(last.box.x, b.x);
+        const y0 = Math.min(last.box.y, b.y);
+        last.box = { x: x0, y: y0, w: Math.max(last.box.x + last.box.w, b.x + b.w) - x0, h: Math.max(last.box.y + last.box.h, b.y + b.h) - y0 };
+        last.ids.push(c.id);
+      } else cols.push({ box: { ...b }, ids: [c.id] });
+    }
+    for (const col of cols) {
+      const box = col.box;
+      if (box.w > unit.space * 2.5 || box.w < unit.space * 0.8) continue;
+      // 距离上限比通用的 `TEMPLATE_DIST`（90）松：拍号被**五条谱线横穿**，
+      // 去线在它身上切了好几道口子，退化比谱号重（实测宁静那个 4/4 上下两半
+      // 到 `timeSig4` 是 104 与 95，破碎那个 C 到 `timeSigCommon` 是 168）。
+      // 松得起，是因为位置先验很硬：行首那一列、骑在中线上、高约两格或四格。
+      const tpl = look.templates ?? [];
+      const hits: RasterSym[] = [];
+      if (box.h < unit.space * 3) {
+        // **C 拍号**（`timeSigCommon` / `timeSigCutCommon`）是一个块、骑在中线上
+        if (Math.abs(box.y + box.h / 2 - mid) > unit.space * 0.8) continue;
+        const m = matchTemplate(binSig(nl, box), box.w / unit.space, box.h / unit.space, tpl, TIME_TEMPLATE_DIST);
+        if (m && (m.smufl === "timeSigCommon" || m.smufl === "timeSigCutCommon")) hits.push({ box, code: m.smufl });
+      } else {
+        // **两个数字摞起来**：按中线几何切开，不按碎块自己的位置分上下半
+        // ——碎块的盒互相重叠（实测上半那块高 2.76 格、已经探进下半的地界）。
+        // 拍号的版式是死的：上面那个坐在第五线到第三线之间、下面那个第三线到第一线。
+        const up: Rect = { x: box.x, y: box.y, w: box.w, h: Math.round(mid) - box.y };
+        const dn: Rect = { x: box.x, y: Math.round(mid), w: box.w, h: box.y + box.h - Math.round(mid) };
+        if (up.h < unit.space || dn.h < unit.space) continue;
+        const two = [up, dn].map((b) => {
+          const m = matchTemplate(binSig(nl, b), b.w / unit.space, b.h / unit.space, tpl, TIME_TEMPLATE_DIST);
+          return m && timeSigDigit(m.smufl) >= 0 ? { box: b, code: m.smufl } : null;
+        });
+        if (two[0] && two[1]) hits.push(two[0], two[1]);
+      }
+      if (!hits.length) continue;
+      // 拍号**盖过字典**（与谱号同一条）：落在它盒里的字典结果作废，那是被切开的碎块
+      for (let k = syms.length - 1; k >= 0; k--) {
+        const s0 = syms[k].box;
+        if (s0.x >= box.x - 1 && s0.x + s0.w <= box.x + box.w + 1 && s0.y >= box.y - 1 && s0.y + s0.h <= box.y + box.h + 1) syms.splice(k, 1);
+      }
+      syms.push(...hits);
+      for (const id of col.ids) merged.add(id);
+      break; // 一行谱只有一个拍号
+    }
   }
 
   const pg = buildRasterPage({
