@@ -122,9 +122,13 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
   return out;
 }
 
+/** 降号的肚子从盒顶往下第几成开始。取 0.45：盒高 2.36 格时中心正好下移 0.53 格，
+ *  与实测的 0.55 格偏差吻合。 */
+const FLAT_BOWL_TOP = 0.45;
+
 /** 升降号「并回竖笔」之后与模板的签名距离上限。比通用的 90 松一点：
  *  并回来的盒是块的包围盒 + 竖段的中心线拼出来的，边界不如原块齐整。 */
-const ACCID_TEMPLATE_DIST = 120;
+const ACCID_TEMPLATE_DIST = 90;
 
 /** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
 const TIME_TEMPLATE_DIST = 180;
@@ -275,8 +279,11 @@ export async function recognizeRasterPage(
   // 这一条是升降号的**主要漏因**：破碎 105 行谱有 31 行的调号一个升降号都没认出来，
   // 全谱升降号块 148 个，而调号加临时记号至少要 200 个。
   //
-  // 修法照「碎块并回再查」那一条，只是这回要并的是**竖段**：块的左右紧挨着一条
-  // 竖段、竖段又比块高，就把两者的盒并起来重查一次字典。
+  // 还原号同理，只是它有**两道**竖笔：左边那道与横笔连成块、右边那道被抽走
+  //（实测破碎 p10 那个还原号剩下 [582,1005] 0.53×2.34 格的块 + 竖段 x=593）。
+  //
+  // 修法照「碎块并回再查」那一条，只是这回要并的是**竖段**：块的左边或右边紧挨着
+  // 一条纵向搭得上的竖段，就把两者的盒并起来重查一次字典。
   // 并完要把那条竖段**从 `vSegs` 里摘掉**——留着的话 `findStems` 会把它当符干，
   // `findBarlines` 会把它当小节线。
   const usedSegs = new Set<LineSeg>();
@@ -285,17 +292,16 @@ export async function recognizeRasterPage(
     const b = c.bbox;
     const bw = b.w / unit.space;
     const bh = b.h / unit.space;
-    // 只对「小肚子」大小的块试：太大的是符头，太小的是噪点
-    if (bw < 0.3 || bw > 1.2 || bh < 0.5 || bh > 1.6) continue;
+    // 窄块才试：太宽的是符头或别的东西，太小的是噪点
+    if (bw < 0.25 || bw > 1.3 || bh < 0.4 || bh > 3.4) continue;
     for (const v of prims.vSegs) {
       if (usedSegs.has(v)) continue;
       const vx = (v.x0 + v.x1) / 2;
       const vTop = Math.min(v.y0, v.y1);
       const vBot = Math.max(v.y0, v.y1);
-      // 竖笔要贴着块（左缘一带）、要比块高、上端要探到块的上方
-      if (vx < b.x - unit.space * 0.4 || vx > b.x + b.w * 0.6) continue;
+      // 竖笔要**紧贴着块**（左边或右边都算）、纵向要与块搭上
+      if (vx < b.x - unit.space * 0.5 || vx > b.x + b.w + unit.space * 0.5) continue;
       if (vBot < b.y || vTop > b.y + b.h) continue;
-      if (vTop > b.y - unit.space * 0.3) continue;
       const x0 = Math.min(b.x, Math.round(vx - v.maxLw / 2));
       const y0 = Math.min(b.y, Math.round(vTop));
       const box = {
@@ -306,16 +312,16 @@ export async function recognizeRasterPage(
       };
       const w1 = box.w / unit.space;
       const h1 = box.h / unit.space;
-      if (w1 > 1.6 || h1 < 1.5 || h1 > 3.6) continue;
+      if (w1 < 0.4 || w1 > 1.7 || h1 < 1.5 || h1 > 3.6) continue;
       const sig = binSig(nl, box);
       let code = look.lookup(sig, w1, h1);
-      if (code !== "accidentalFlat") {
+      if (!code || !isAccidental(code)) {
         // 字典不认就拿模板验。**只收降号**：它才是「一根竖笔 + 一个小肚子」、
         // 竖笔一被抽走就什么都不剩的那一种；升号与还原号各有两道竖笔，
         // 丢不干净，靠这条路补反而是过检（实测放开三种，破碎的还原号
         // 从 17 个涨到 70 个，而 GT 只有 24 个）。
         const m = matchTemplate(sig, w1, h1, look.templates ?? [], ACCID_TEMPLATE_DIST);
-        code = m && m.smufl === "accidentalFlat" ? m.smufl : null;
+        code = m && isAccidental(m.smufl) ? m.smufl : null;
       }
       if (!code) continue;
       syms.push({ box, code });
@@ -410,6 +416,23 @@ export async function recognizeRasterPage(
       for (const id of col.ids) merged.add(id);
       break; // 一行谱只有一个拍号
     }
+  }
+
+  // ── 降号的盒要收到**下面那个肚子**上 ─────────────────────────────────────
+  //
+  // 降号的音高位置是肚子，不是盒中心：它的字形是「一根竖笔往上伸 + 底下一个肚子」，
+  // Maestro 模板 0.84×2.36 格，肚子只占下面一格左右。而 `analyzeAccidental`
+  // 判「这个记号是不是那个符头的」用的是**盒中心与符头中心同高**（容差四分之一格）
+  // ——实测降号的盒中心比符头中心**高 0.55 格**，16 个里**一个都过不了**那道闸
+  //（升号与还原号上下对称，中位数 0.03 格，33/36 与 10/11 都过）。
+  //
+  // 位图这边的 `Sym.py` 是从盒算的（`adapt.ts` 造的是假字形），所以在这里把盒
+  // 收到肚子上最省事：`py` 跟着落到肚子中心，`overlapY` 与 x 上的判据都不受影响。
+  // **不动 `staffomr`**——那边的 `py` 从真字形来，两条路的成因不是一回事。
+  for (const s of syms) {
+    if (s.code !== "accidentalFlat") continue;
+    const cut = Math.round(s.box.h * FLAT_BOWL_TOP);
+    s.box = { x: s.box.x, y: s.box.y + cut, w: s.box.w, h: s.box.h - cut };
   }
 
   const pg = buildRasterPage({
