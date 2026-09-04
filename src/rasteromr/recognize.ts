@@ -10,14 +10,15 @@
 //   - 文本层：矢量路读文字对象；位图路要 OCR（尚未接，故歌词/力度/速度暂缺）。
 import type { Binary } from "../omr/types";
 import type { Box } from "../staffomr/model";
+import type { Rect } from "../omr/types";
 import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars, makeSystems, unknownObjs } from "../staffomr/page";
 import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
 import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
 import { buildRasterPage, makeTextObj, type RasterSym } from "./adapt";
-import { binSig, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
+import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
 import { findRasterHeads } from "./notehead";
-import { bootstrapClefs, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
+import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
 import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
@@ -98,7 +99,14 @@ export async function recognizeRasterPage(
 
   // 符头按性质判（填充率 + 有没有符干），不查字典；其余的块查字典。
   const onGrid = ledgerGrid(lines.map((l) => l.y), unit);
-  const heads = findRasterHeads(nl, blobs, prims.vSegs, unit, onGrid);
+  // 空心符头要卡在谱表带里（见 `findRasterHeads` 的说明）：上下各让一格，
+  // 谱表内的空心符头连带被去线切掉的那一档都在这个范围里。
+  const inBand = (y: number) =>
+    groups.some((g) => y > g.lines[0].y - unit.space && y < g.lines[4].y + unit.space);
+  const matchHollow = look.templates
+    ? (box: Rect) => matchTemplate(binSig(nl, box), box.w / unit.space, box.h / unit.space, look.templates!)
+    : null;
+  const heads = findRasterHeads(nl, blobs, prims.vSegs, unit, onGrid, inBand, matchHollow);
   const claimed = new Set(heads.map((h) => h.comp.id));
   const syms: RasterSym[] = heads.map((h) => ({ box: h.box, code: h.code }));
   const dictClaimed = new Set<number>();
@@ -184,7 +192,10 @@ export async function recognizeRasterPage(
     staffLines: lines,
     // 符头剪出来的加线要一并推进去，`findLegers` 才有得判
     hSegs: [...prims.hSegs, ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l)],
-    vSegs: prims.vSegs,
+    // 符干要**续到符头里**才与符头纵向相交（`findStems` / `buildStems` 的硬判据）。
+    // 续过的段只进 `SPage`，不回写 `prims`——`findBlobs` 那边仍按原段抹墨，
+    // 免得把符头啃掉（见 `extendVSegs` 的说明）。
+    vSegs: extendVSegs(nl, prims.vSegs, Math.round(unit.space * 0.35)),
     syms,
     braces: findBraces(nl, prims, unit, staffLefts, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y }))).map((c) => c.bbox),
   });
