@@ -210,7 +210,7 @@ function isolated(bin: Binary, s: LineSeg, vertical: boolean): boolean {
  * 加线是谱表的延长：只可能出现在第一线**上方**或第五线**下方**整数个线距处。
  * 容差取四分之一线距（谱线本身实测偏差不到 0.2px，位图上加线也贴着网格画）。
  */
-function ledgerGrid(lineYs: number[], unit: RasterUnit): (y: number) => boolean {
+export function ledgerGrid(lineYs: number[], unit: RasterUnit): (y: number) => boolean {
   if (lineYs.length < 5) return () => false;
   // 逐行谱取它的第一线与第五线（`lineYs` 是全页的线，五条一组）
   const anchors: number[] = [];
@@ -263,7 +263,15 @@ export function findPrimitives(bin: Binary, unit: RasterUnit, staffLineYs: numbe
   const hMask = close1d(hMask0, w, h, Math.round(unit.space * 0.6), true);
   const hSegs: LineSeg[] = [];
   for (const c of comps(hMask, w, h, Math.max(3, unit.lineThick * 2))) {
-    if (c.bbox.w < unit.space) continue; // 比一个线距还短的横笔画：噪点、点、标点
+    // 长度下限：一个线距。**落在谱线网格上的放宽到三分之一格**——
+    // 加线被压在它上面的符头从中间切断（符头的纵向游程粗，不在横笔画的掩模里），
+    // 剩下左右两截各只有 0.4 格，照一个线距的闸两截都被滤掉，
+    // 于是「谱表外一条加线」的音符（高音谱表下面的 C4）整批收不进来
+    // ——实测宁静一首的人声行开头 `C4 C4 B3 C4` 只认出 B3。
+    // 试过把水平闭运算的半径从 0.6 格放到 1.0/1.5 格把两截接起来，**更差**
+    //（音符 28.5% → 25.2% / 21.8%）：半径一大，别处不相干的横笔画也被连成一条。
+    const cy = c.bbox.y + c.bbox.h / 2;
+    if (c.bbox.w < (onGrid(cy) ? unit.space / 3 : unit.space)) continue;
     if (c.bbox.h > thin * 2) continue; // 太厚：不是单条横线（是几条粘在一起或别的东西）
     const seg = centerLine(hMask, w, c, true);
     // **加线免检**：加线总有个符头压在上面，孤立性判据一律判它「属于某个符号」，
@@ -361,6 +369,11 @@ export function findBlobs(bin: Binary, prims: RasterPrims, unit: RasterUnit): Co
       for (let x = Math.max(0, Math.round(x0)); x <= Math.min(w - 1, Math.round(x1)); x++) rest[y * w + x] = 0;
   };
   for (const s of [...prims.vSegs, ...prims.hSegs]) {
+    // **短横段只抽不抹**：那是被符头切断的加线残段（见 `findPrimitives` 里的说明），
+    // 它就压在符头边上，照抹会把符头啃掉一块——填充率与尺寸一变，
+    // `findRasterHeads` 就认不出它了（实测这么抹音符从 28.5% 掉到 27.0%）。
+    // 抽出来交给 `findLegers` 判「谱表外的音符有没有加线撑着」，别动像素。
+    if (Math.abs(s.x1 - s.x0) >= Math.abs(s.y1 - s.y0) && Math.hypot(s.x1 - s.x0, s.y1 - s.y0) < unit.space) continue;
     const pad = s.maxLw / 2 + 1;
     // 段是直的（`adapt.ts` 会把它们摆正），照包围盒抹即可
     clear(Math.min(s.x0, s.x1) - pad, Math.min(s.y0, s.y1) - pad, Math.max(s.x0, s.x1) + pad, Math.max(s.y0, s.y1) + pad);

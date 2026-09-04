@@ -12,7 +12,7 @@
 //     （全音符本来就不带符干），空心且有符干的是二分音符。
 //
 // 这三条与字体无关，换一本书也成立——而形状签名是跟着字体走的。
-import type { Component } from "../omr/types";
+import type { Binary, Component, Rect } from "../omr/types";
 import type { SmuflName } from "../staffomr/glyphs";
 import type { LineSeg } from "./prims";
 import type { RasterUnit } from "./staffline";
@@ -20,11 +20,22 @@ import type { RasterUnit } from "./staffline";
 /** 认出来的符头。 */
 export interface RasterHead {
   comp: Component;
+  /** 剪掉加线之后的符头盒（判音高、量尺寸都用它）。 */
+  box: Rect;
   code: SmuflName;
   /** 墨迹占包围盒的比例，排查用。 */
   fill: number;
   /** 挂在它左右缘的符干（没有为 null）。 */
   stem: LineSeg | null;
+  /**
+   * 剪出来的**加线**（符头两侧那截细横笔；没有为 null）。
+   *
+   * 非补这一条不可：加线的外露部分只有三四个像素（其余被符头盖住，
+   * 那里的纵向游程是整个符头的高度、不算细笔画），过不了 `findPrimitives`
+   * 的长度闸，于是 `findLegers` 手里一条加线都没有，谱表外的音符全被判否。
+   * 而 `trimLedger` 恰好知道剪掉了哪几列——那就是加线，顺手补出来。
+   */
+  ledger: LineSeg | null;
 }
 
 /** 符头宽度的上下限（线距的倍数）。实心符头约 1.3 格宽、1.0 格高。 */
@@ -51,30 +62,83 @@ const FILL_SOLID = 0.62;
  * 符干贴在符头的**一侧**，不穿过中心，所以比的是符头的左缘或右缘
  * （与矢量路 `page.ts::findStems` 同一条判据）。
  */
-export function findRasterHeads(blobs: Component[], stems: LineSeg[], unit: RasterUnit): RasterHead[] {
+export function findRasterHeads(
+  bin: Binary,
+  blobs: Component[],
+  stems: LineSeg[],
+  unit: RasterUnit,
+  /** 「这个 y 落在谱线网格的延长线上吗」——判剪出来的细横笔是不是加线。 */
+  onLedgerGrid: (y: number) => boolean = () => false,
+): RasterHead[] {
   const sp = unit.space;
   const out: RasterHead[] = [];
   for (const c of blobs) {
-    const b = c.bbox;
+    const t = trimLedger(bin, c.bbox, unit);
+    const b = t.box;
     const w = b.w / sp;
     const h = b.h / sp;
     if (w < W_MIN || w > W_MAX || h < H_MIN || h > H_MAX) continue;
     // 太扁太长的不是符头（是横段残渣、连线）
     if (b.w > b.h * 2.2) continue;
-    const fill = c.area / Math.max(1, b.w * b.h);
+    const fill = t.area / Math.max(1, b.w * b.h);
     if (fill < 0.3) continue; // 太空：是弧线的一段、方框
-    const stem = stemOf(c, stems, unit);
+    const stem = stemOf(b, stems, unit);
+    // 剪掉了列，且高度落在谱线网格的延长线上 → 那两截细横笔是加线
+    const ledger: LineSeg | null =
+      t.trimmed && onLedgerGrid(b.y + b.h / 2)
+        ? { x0: c.bbox.x, y0: b.y + b.h / 2, x1: c.bbox.x + c.bbox.w - 1, y1: b.y + b.h / 2, lw: unit.lineThick, maxLw: unit.lineThick }
+        : null;
     let code: SmuflName;
     if (fill >= FILL_SOLID) code = "noteheadBlack";
     else code = stem ? "noteheadHalf" : "noteheadWhole";
-    out.push({ comp: c, code, fill, stem });
+    out.push({ comp: c, box: b, code, fill, stem, ledger });
   }
   return out;
 }
 
+/**
+ * **剪掉加线**：从左右两侧削掉「只有加线那么高」的列。
+ *
+ * 加线是抹不掉的——它压在符头底下，照 `findPrimitives` 抽出来的段去抹会把符头
+ * 一起啃掉（填充率与尺寸一变就认不出符头了，实测音符 28.5% → 27.0%）。
+ * 但不剪也不行：符头连着加线之后宽度从 1.3 格涨到 **1.71 格**（刚越过上限）、
+ * 填充率被稀释到 0.59（掉出实心那一档），于是高音谱表下面那些带一条加线的
+ * C4 整批认不出来——实测宁静人声行开头 `C4 C4 B3 C4` 只认出 B3。
+ *
+ * 剪的判据：那一列的墨迹高度不超过两倍线宽，就是加线自己的列。
+ * 符头那几列有一整个椭圆的高度，剪不掉。
+ */
+function trimLedger(bin: Binary, b: Rect, unit: RasterUnit): { box: Rect; area: number; trimmed: boolean } {
+  const thin = Math.max(2, unit.lineThick * 2);
+  const colH = new Int32Array(b.w);
+  for (let x = 0; x < b.w; x++) {
+    let n = 0;
+    for (let y = 0; y < b.h; y++) if (bin.data[(b.y + y) * bin.w + b.x + x]) n++;
+    colH[x] = n;
+  }
+  let l = 0;
+  while (l < b.w && colH[l] > 0 && colH[l] <= thin) l++;
+  let r = b.w - 1;
+  while (r > l && colH[r] > 0 && colH[r] <= thin) r--;
+  if (l >= r) return { box: b, area: colH.reduce((a, v) => a + v, 0), trimmed: false };
+  // 纵向也收一收：剪完之后重算上下沿
+  let top = b.h;
+  let bottom = -1;
+  let area = 0;
+  for (let x = l; x <= r; x++)
+    for (let y = 0; y < b.h; y++)
+      if (bin.data[(b.y + y) * bin.w + b.x + x]) {
+        area++;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+  const trimmed = l > 0 || r < b.w - 1;
+  if (bottom < top) return { box: b, area, trimmed };
+  return { box: { x: b.x + l, y: b.y + top, w: r - l + 1, h: bottom - top + 1 }, area, trimmed };
+}
+
 /** 贴在这个符头左缘或右缘、且纵向相交的竖段。 */
-function stemOf(c: Component, stems: LineSeg[], unit: RasterUnit): LineSeg | null {
-  const b = c.bbox;
+function stemOf(b: Rect, stems: LineSeg[], unit: RasterUnit): LineSeg | null {
   const tol = Math.max(unit.lineThick * 2, unit.space * 0.25);
   for (const s of stems) {
     const x = (s.x0 + s.x1) / 2;
