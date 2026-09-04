@@ -15,7 +15,7 @@ import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars
 import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
 import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
-import { buildRasterPage, makeTextObj, type RasterSym } from "./adapt";
+import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
 import { findRasterHeads } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
@@ -53,6 +53,78 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   lyricLines: [],
   carryTime,
 });
+
+/**
+ * **符尾按位置自举**（不查字典）。
+ *
+ * 字典对符尾几乎没用：`rasterglyphs.json` 里 4144 个类**没定名**，符尾只有 8 个类有名字
+ * ——实测全书只认出 1 个 `flag8thUp`。更要命的是符尾在位图上**根本不成为独立的块**：
+ * 它上半截是根粗竖笔，横向游程短，`findPrimitives` 把它当竖笔画抽走了；
+ * 剩下的钩尾细而弯，落在窗口里的残块高度中位数只有 0.53 格（真符尾有一格半）。
+ *
+ * 所以改从**原始像素**上量，绕开原语划分：符尾一定长在符干**远离符头的那一端**、
+ * 一定在符干**右侧**（刻谱通例，朝上朝下都在右）。量那个窗口里的墨占比，
+ * 实测分得很开——没有符杠的音符里，占比要么是 0（真四分），要么在 0.35 以上
+ *（破碎前三页 121 个里 27 个），中间几乎没有。
+ *
+ * **有符杠的符干不看**：符杠也横在这个窗口里，一量必中；而符杠那一路
+ * 已经把层数算进时值了（`calcBeamLevels`），再补个符尾反而把十六分压回八分
+ *（`buildStems` 里「有符尾的符干不接符杠」）。
+ */
+function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterUnit): RasterSym[] {
+  const sp = unit.space;
+  const out: RasterSym[] = [];
+  // **只看实心符头**：空心符头（二分/全音符）本来就不带符尾，
+  // 给它安一个会把二分读成八分。
+  const heads = pg.symbols.filter((s) => s.hasTag("Note") && s.code === "noteheadBlack");
+  for (const st of pg.segsWithTag("Stem")) {
+    const nt = heads.find(
+      (s) => (Math.abs(s.box.left - st.cx) < sp / 3 || Math.abs(s.box.right - st.cx) < sp / 3) && s.box.top < st.bottom && st.top < s.box.bottom,
+    );
+    if (!nt) continue;
+    const hy = (nt.box.top + nt.box.bottom) / 2;
+    const far = Math.abs(st.top - hy) > Math.abs(st.bottom - hy) ? st.top : st.bottom;
+    // 符杠横在这个窗口里的，不看（理由见上）
+    // 符杠斜着搭在符干中段的也算（不只远端那一小截）
+    if (beams.some((b) => b.x0 - sp * 0.5 <= st.cx && st.cx <= b.x1 + sp * 0.5 && st.top - sp * 0.5 < (b.y0 + b.y1) / 2 && (b.y0 + b.y1) / 2 < st.bottom + sp * 0.5)) continue;
+    const toward = Math.sign(hy - far) || 1;
+    const frac = (d0: number, d1: number) => {
+      const x0 = Math.round(st.cx + sp * 0.2);
+      const x1 = Math.round(st.cx + sp * 1.5);
+      let ink = 0;
+      let tot = 0;
+      for (let dy = sp * d0; dy < sp * d1; dy++) {
+        const y = Math.round(far + toward * dy);
+        if (y < 0 || y >= bin.h) continue;
+        for (let x = x0; x < x1; x++) {
+          if (x < 0 || x >= bin.w) continue;
+          tot++;
+          ink += bin.data[y * bin.w + x];
+        }
+      }
+      return tot ? ink / tot : 0;
+    };
+    if (frac(0, 1.5) < FLAG_INK) continue;
+    // **符尾从符干尖端长出来**：贴着远端那一小截、紧挨符干右侧必须有墨。
+    // 没这一条，从符干旁边路过的连音线、下一个音的符头都会把窗口填满
+    // （实测只看整窗占比，小节自检 33.2% → 31.9%）。
+    if (frac(0, 0.35) < FLAG_INK) continue;
+    const up = far < hy;
+    // **第二个钩**：十六分的两道钩沿符干错开约一格。只认出第一道的话
+    // 十六分整批读成八分（实测补上第一道之后 `16th→eighth` 一下涨到 171 处）。
+    const two = frac(1.0, 2.2) >= FLAG_INK2;
+    const code = two ? (up ? "flag16thUp" : "flag16thDown") : up ? "flag8thUp" : "flag8thDown";
+    const h = sp * (two ? 2.2 : 1.5);
+    const y0 = toward > 0 ? far : far - h;
+    out.push({ box: { x: Math.round(st.cx), y: Math.round(y0), w: Math.round(sp * 1.5), h: Math.round(h) }, code });
+  }
+  return out;
+}
+
+/** 符尾窗口的墨占比门槛。实测没有符杠的音符要么 0（真四分）、要么 0.35 以上，中间没人。 */
+const FLAG_INK = 0.25;
+/** 第二道钩（十六分）的门槛。比第一道**严**：那一段窗口里还可能扫到下一个音的符干或符头。 */
+const FLAG_INK2 = 0.3;
 
 /** 位图符杠 → 矢量路的 `BeamShape`（`buildNotes` / `findTuplets` 吃这个）。 */
 function toBeamShapes(beams: BeamQuad[]): BeamShape[] {
@@ -203,6 +275,12 @@ export async function recognizeRasterPage(
 
   findNoteheads(pg);
   findStems(pg);
+  // 符尾**按位置自举**，不查字典（见 `bootstrapFlags`）
+  for (const f of bootstrapFlags(nl, pg, prims.beams, unit)) {
+    const { obj, sym } = makeSymObj(pg.objs.length + pg.segs.length + 1, f, unit.height);
+    pg.objs.push(obj);
+    pg.symbols.push(sym);
+  }
   findTails(pg);
   findBarlines(pg);
   const ctx = findClefKeyTime(pg);

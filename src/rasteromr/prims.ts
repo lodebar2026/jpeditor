@@ -359,15 +359,21 @@ export function findPrimitives(
   const bLo = unit.space * 0.25;
   const bHi = unit.space * 1.1;
   for (let i = 0; i < bMask.length; i++) if (vr[i] >= bLo && vr[i] <= bHi && hr[i] >= unit.space) bMask[i] = 1;
+  // **沿 x 闭一道**，与横笔画同一个道理：符干穿过符杠的那几列横向游程很短，
+  // 出了「横向游程 ≥ 一个线距」这道闸，符杠于是被每根符干切成小段
+  //（实测你要等候 p2 一条符杠碎成 1.33~1.65 格的六截，`w ≥ 1.5 格` 那道闸挡掉大半，
+  // 整页 199 个符头只认出 44 条符杠——音符排得密的谱子尤其吃亏）。
+  // 半径取两个线宽：符干就这么粗，再大会把相邻两组的符杠连成一条。
+  const bMaskC = close1d(bMask, w, h, Math.round(unit.lineThick * 2), true);
   const beams: BeamQuad[] = [];
-  for (const c of comps(bMask, w, h, Math.round(unit.space * unit.space * 0.2))) {
+  for (const c of comps(bMaskC, w, h, Math.round(unit.space * unit.space * 0.2))) {
     if (c.bbox.w < unit.space * 1.5) continue; // 太短的不是符杠（照矢量路 findBeams 的 0.8 格，位图放宽到 1.5）
     if (c.bbox.h > unit.space * 3) continue; // 太高：是实心块、方框
     // **要够扁**。光靠上面两条拦不住符头：实心符头约 1.3×1.0 个线距，
     // 纵向游程（18px）落在符杠区间里、横向游程也过线，宽度还差一点点就够。
     // 符杠是 3:1 往上的长条，符头是 1.3:1 的椭圆，长宽比一刀分得开。
     if (c.bbox.w < c.bbox.h * 2.5) continue;
-    const line = centerLine(bMask, w, c, true);
+    const line = centerLine(bMaskC, w, c, true);
     beams.push({ ...line, box: c.bbox });
   }
   return { hSegs, vSegs, beams };
