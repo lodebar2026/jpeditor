@@ -15,19 +15,37 @@ import { lev } from "./staff-align.mjs";
  * **允许谱面开头多出一段**（引子／前奏 GT 里没有，实测 p205 头一行是柱状和弦的前奏）：
  * 在谱面序列的前若干音里找起点最好的那个再比。不这么做的话，有引子的曲子
  * 整条序列错位，准确率会掉到五成以下——那不是读错，是两边起点不同。
+ *
+ * **也允许 GT 开头多出一段休止**（`skipLeadRests`）。合唱谱的 GT 是**全谱**：
+ * 每个声部从第一小节就在，不出声的地方写休止；而谱面是**分谱**，声部没进来时
+ * 那一行谱根本不印。实测破碎的男低声部 GT 开头有五十个休止，谱面上一个都没有
+ * ——不放宽的话整条序列错位五十格，准确率只剩两成。
+ * 只跳**开头连续的休止**，中间的休止照旧计入（那是真的信息）；
+ * 跳掉之后**分母只算剩下那一段**——那几十个休止在谱面上根本没印，
+ * 记成「漏掉」是罚了格式差异，不是罚识别。
+ * 一道闸防止空识别蹭分：识别侧的长度至少要有剩下那一段的一半。
  */
-export const acc = (a, b, maxSkip = 24) => {
+export const acc = (a, b, maxSkip = 24, skipLeadRests = false) => {
   if (!b.length) return 0;
   let best = 0;
   for (let s = 0; s <= Math.min(maxSkip, Math.max(0, a.length - 1)); s++) {
-    const v = Math.max(0, 1 - lev(a.slice(s), b) / b.length);
-    if (v > best) best = v;
-    if (best === 1) break;
+    best = Math.max(best, 1 - lev(a.slice(s), b) / b.length);
+  }
+  if (skipLeadRests) {
+    let k = 0;
+    while (k < b.length && b[k] === "R") k++;
+    if (k > 0) {
+      const cut = b.slice(k);
+      if (cut.length && a.length >= cut.length * 0.5) {
+        for (let s = 0; s <= Math.min(maxSkip, Math.max(0, a.length - 1)); s++) {
+          best = Math.max(best, 1 - lev(a.slice(s), cut) / cut.length);
+        }
+      }
+    }
   }
   return best;
 };
 
-/** 整首平移 n 个八度。记号形如 `F+4`（音名 + 升降 + 八度），只动末尾那个八度数。 */
 export const shiftOct = (a, n) =>
   a.map((t) => {
     if (t === "R") return "R";

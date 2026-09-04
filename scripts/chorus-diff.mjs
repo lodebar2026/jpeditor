@@ -163,8 +163,8 @@ function pair(got, gt) {
   const cand = [];
   for (let i = 0; i < got.length; i++)
     for (let j = 0; j < gt.length; j++) {
-      let a = acc(got[i].seq, gt[j].seq);
-      for (const k of [-1, 1]) a = Math.max(a, acc(shiftOct(got[i].seq, k), gt[j].seq));
+      let a = acc(got[i].seq, gt[j].seq, 24, true);
+      for (const k of [-1, 1]) a = Math.max(a, acc(shiftOct(got[i].seq, k), gt[j].seq, 24, true));
       cand.push({ i, j, a });
     }
   cand.sort((x, y) => y.a - x.a);
@@ -211,7 +211,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     for (const p of pairs) {
       const g = gt[p.j].seq;
       wn += p.a * g.length;
-      wl += acc(letters(got[p.i].seq), letters(g)) * g.length;
+      wl += acc(letters(got[p.i].seq), letters(g), 24, true) * g.length;
       wd += g.length;
       // 歌词：逐声部比，按 GT 的字数加权。识别侧的歌词是 `attachLyrics` 挂在音符上的，
       // 与音符走同一条谱表，所以配对现成。字数太少的谱表（钢琴行）不入分母。
@@ -227,7 +227,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
         const seg = [];
         for (let t = 0; t < 4; t++) {
           const n = Math.ceil(g.length / 4);
-          seg.push((acc(got[p.i].seq.slice(t * n, (t + 1) * n), g.slice(t * n, (t + 1) * n)) * 100).toFixed(0) + "%");
+          seg.push((acc(got[p.i].seq.slice(t * n, (t + 1) * n), g.slice(t * n, (t + 1) * n), 24, true) * 100).toFixed(0) + "%");
         }
         console.log(`    四等分: ${seg.join(" ")}`);
       }
