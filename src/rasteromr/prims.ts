@@ -13,6 +13,7 @@
 //   - 两个方向都粗的 → 符杠、符头、字。
 // 分完再各自做连通域，笔画就散开了。
 import type { Binary, Component, Rect } from "../omr/types";
+import { SIG_N } from "../omr/glyphdict";
 import { connectedComponents } from "../omr/ccl";
 import type { RasterUnit } from "./staffline";
 
@@ -22,8 +23,12 @@ export interface LineSeg {
   y0: number;
   x1: number;
   y1: number;
-  /** 线宽（横段取厚度、竖段取宽度）。 */
+  /** 线宽（横段取厚度、竖段取宽度），**取平均**——几何判据要的是视觉线宽。 */
   lw: number;
+  /** 连通块的**最大**厚度。抹笔画时用它，不能用平均：
+   *  符干的两头常常粗一点（与符头相接处），照平均抹会在符头边上留一条 0.17 格的残渣
+   *  ——实测宁静一首里这种残渣有五百多个，全都混进了符号块。 */
+  maxLw: number;
 }
 
 /** 一条符杠：拟合出来的中心线加包围盒。 */
@@ -135,7 +140,7 @@ function centerLine(mask: Uint8Array, w: number, c: Component, horizontal: boole
           }
       return n ? s / n : b.y + b.h / 2;
     };
-    return { x0: b.x, y0: meanY(b.x, b.x + q), x1: b.x + b.w - 1, y1: meanY(b.x + b.w - q, b.x + b.w), lw: c.area / Math.max(b.w, 1) };
+    return { x0: b.x, y0: meanY(b.x, b.x + q), x1: b.x + b.w - 1, y1: meanY(b.x + b.w - q, b.x + b.w), lw: c.area / Math.max(b.w, 1), maxLw: b.h };
   }
   const q = Math.max(1, Math.round(b.h / 4));
   const meanX = (y0: number, y1: number) => {
@@ -149,7 +154,7 @@ function centerLine(mask: Uint8Array, w: number, c: Component, horizontal: boole
         }
     return n ? s / n : b.x + b.w / 2;
   };
-  return { x0: meanX(b.y, b.y + q), y0: b.y, x1: meanX(b.y + b.h - q, b.y + b.h), y1: b.y + b.h - 1, lw: c.area / Math.max(b.h, 1) };
+  return { x0: meanX(b.y, b.y + q), y0: b.y, x1: meanX(b.y + b.h - q, b.y + b.h), y1: b.y + b.h - 1, lw: c.area / Math.max(b.h, 1), maxLw: b.w };
 }
 
 /**
@@ -204,6 +209,10 @@ export function findPrimitives(bin: Binary, unit: RasterUnit): RasterPrims {
   for (const c of comps(bMask, w, h, Math.round(unit.space * unit.space * 0.2))) {
     if (c.bbox.w < unit.space * 1.5) continue; // 太短的不是符杠（照矢量路 findBeams 的 0.8 格，位图放宽到 1.5）
     if (c.bbox.h > unit.space * 3) continue; // 太高：是实心块、方框
+    // **要够扁**。光靠上面两条拦不住符头：实心符头约 1.3×1.0 个线距，
+    // 纵向游程（18px）落在符杠区间里、横向游程也过线，宽度还差一点点就够。
+    // 符杠是 3:1 往上的长条，符头是 1.3:1 的椭圆，长宽比一刀分得开。
+    if (c.bbox.w < c.bbox.h * 2.5) continue;
     const line = centerLine(bMask, w, c, true);
     beams.push({ ...line, box: c.bbox });
   }
@@ -233,4 +242,82 @@ export function removeStaffLines(bin: Binary, lineYs: number[], unit: RasterUnit
       }
   }
   return out;
+}
+
+/**
+ * 符号块：去掉谱线、竖笔画、符杠、横段之后剩下的连通块。
+ *
+ * 剩下的就是**要查字典的那些**：符头、谱号、调号、拍号数字、休止符、
+ * 升降号、附点、演奏法记号、力度字母、歌词字。
+ *
+ * 为什么先减笔画再连通：符头与符干是连着的，符干又骑在谱线上，
+ * 不减的话半页连成一块。减完之后符头是个孤立的椭圆，谱号是个孤立的字形。
+ *
+ * 减的时候要**按线宽外扩一点**（`lw / 2 + 1`）：中心线是拟合出来的，
+ * 直接照中心线抹只抹掉一像素宽，笔画的两侧还留着，连通关系照旧。
+ */
+export function findBlobs(bin: Binary, prims: RasterPrims, unit: RasterUnit): Component[] {
+  const { w, h } = bin;
+  const rest = new Uint8Array(bin.data);
+  const clear = (x0: number, y0: number, x1: number, y1: number) => {
+    for (let y = Math.max(0, Math.round(y0)); y <= Math.min(h - 1, Math.round(y1)); y++)
+      for (let x = Math.max(0, Math.round(x0)); x <= Math.min(w - 1, Math.round(x1)); x++) rest[y * w + x] = 0;
+  };
+  for (const s of [...prims.vSegs, ...prims.hSegs]) {
+    const pad = s.maxLw / 2 + 1;
+    // 段是直的（`adapt.ts` 会把它们摆正），照包围盒抹即可
+    clear(Math.min(s.x0, s.x1) - pad, Math.min(s.y0, s.y1) - pad, Math.max(s.x0, s.x1) + pad, Math.max(s.y0, s.y1) + pad);
+  }
+  for (const b of prims.beams) clear(b.box.x, b.box.y, b.box.x + b.box.w - 1, b.box.y + b.box.h - 1);
+
+  const minSide = unit.space * 0.25;
+  const maxSide = unit.space * 6;
+  return connectedComponents({ w, h, data: rest }, Math.round(minSide * minSide)).filter((c) => {
+    const b = c.bbox;
+    if (b.w > maxSide || b.h > maxSide) return false;
+    if (b.w < minSide && b.h < minSide) return false;
+    return true;
+  });
+}
+
+/**
+ * 位图块 → 32×32 形状签名。**与 `glyphdict.ts::shapeSig` 同一套归一**
+ * （长边缩到 30、居中摆进 32×32），两边算出来的签名才比得了距离。
+ *
+ * **必须反向映射**：符头只有 23×18 px，缩到 30 px 是**放大**，
+ * 正向遍历源像素时大半目标格一个源像素都摊不到，签名会变成棋盘格
+ * （实测符头的签名一半是洞，聚类全散）。逐个目标格去源图取那一小片、
+ * 按面积平均再过半，放大缩小都对。
+ */
+export function binSig(bin: Binary, box: Rect): Uint8Array {
+  const sig = new Uint8Array(SIG_N * SIG_N);
+  const sc = (SIG_N - 2) / Math.max(box.w, box.h);
+  const ox = (SIG_N - box.w * sc) / 2;
+  const oy = (SIG_N - box.h * sc) / 2;
+  for (let sy = 0; sy < SIG_N; sy++) {
+    // 这一格对应源图的 y 区间（反解 `y * sc + oy`）
+    const y0 = (sy - oy) / sc;
+    const y1 = (sy + 1 - oy) / sc;
+    const ya = Math.max(0, Math.floor(y0));
+    const yb = Math.min(box.h - 1, Math.ceil(y1) - 1);
+    if (ya > yb) continue;
+    for (let sx = 0; sx < SIG_N; sx++) {
+      const x0 = (sx - ox) / sc;
+      const x1 = (sx + 1 - ox) / sc;
+      const xa = Math.max(0, Math.floor(x0));
+      const xb = Math.min(box.w - 1, Math.ceil(x1) - 1);
+      if (xa > xb) continue;
+      let hit = 0;
+      let tot = 0;
+      for (let y = ya; y <= yb; y++) {
+        const row = (box.y + y) * bin.w + box.x;
+        for (let x = xa; x <= xb; x++) {
+          tot++;
+          hit += bin.data[row + x];
+        }
+      }
+      if (tot > 0 && hit * 2 >= tot) sig[sy * SIG_N + sx] = 1;
+    }
+  }
+  return sig;
 }

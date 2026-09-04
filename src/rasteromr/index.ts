@@ -11,3 +11,5 @@ export * from "./rasterpage";
 export * from "./staffline";
 export * from "./prims";
 export * from "./adapt";
+export * from "./rasterglyphs";
+export * from "./notehead";
