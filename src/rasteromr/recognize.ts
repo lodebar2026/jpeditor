@@ -133,6 +133,9 @@ const ACCID_TEMPLATE_DIST = 90;
 /** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
 const TIME_TEMPLATE_DIST = 180;
 
+/** 空心符头允许离谱表多远（线距的倍数）。见 `inBand` 那段的说明。 */
+const HOLLOW_BAND = 3.0;
+
 /** 符尾窗口的墨占比门槛。实测没有符杠的音符要么 0（真四分）、要么 0.35 以上，中间没人。 */
 const FLAG_INK = 0.25;
 /** 第二道钩（十六分）的门槛。比第一道**严**：那一段窗口里还可能扫到下一个音的符干或符头。 */
@@ -221,10 +224,18 @@ export async function recognizeRasterPage(
 
   // 符头按性质判（填充率 + 有没有符干），不查字典；其余的块查字典。
   const onGrid = ledgerGrid(lines.map((l) => l.y), unit);
-  // 空心符头要卡在谱表带里（见 `findRasterHeads` 的说明）：上下各让一格，
-  // 谱表内的空心符头连带被去线切掉的那一档都在这个范围里。
+  // 空心符头要卡在谱表带里（见 `findRasterHeads` 的说明）。
+  //
+  // **上下各让三格**，不是一格：一格只罩得住谱表之内，可**谱表外一两格的空心符头
+  // 是常态**（间里的、带一两条加线的）——实测宁静 p1 那行叠置的空心和弦，
+  // 有一个头的中心只比「一格」的边界多出半个像素就被拒了，整行五个小节只剩一个音。
+  // 门槛扫过 1 / 1.5 / 2 / 2.5 / 3 / 4 / 5 格：
+  // 音符 67.68 / 67.72 / 67.96 / 68.08 / **68.10** / 68.08 / 68.08，
+  // 小节自检 37.7 / 38.2 / 39.5 / 39.9 / **40.1** / 40.1 / 40.1，
+  // 而**歌词在四格以上开始垮**（50.0 → 46.8 → 45.1，歌词带里的字被收成空心符头）。
+  // 三格是拐点。
   const inBand = (y: number) =>
-    groups.some((g) => y > g.lines[0].y - unit.space && y < g.lines[4].y + unit.space);
+    groups.some((g) => y > g.lines[0].y - unit.space * HOLLOW_BAND && y < g.lines[4].y + unit.space * HOLLOW_BAND);
   const matchHollow = look.templates
     ? (box: Rect) => matchTemplate(binSig(nl, box), box.w / unit.space, box.h / unit.space, look.templates!)
     : null;
