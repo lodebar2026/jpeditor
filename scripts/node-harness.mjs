@@ -512,13 +512,21 @@ const STEP_IDX = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
  * 与 `xmlNoteDigits`（简谱口径，只出 1-7 的音级）不是一回事，别混用：
  * 那边比的是「相对主音的级数」，这边比的是绝对音高的**拼写**。
  * 升降号不进这一档——谱面上它是另一个对象，两边都单列（见 `xmlStaffAlters`）。
- * `<chord/>` 的附加音**照收**（本书 GT 里只占 2%，但漏了就对不齐）。
+ *
+ * **`<chord/>` 的附加音不进这一档**（四个逐音序列函数一致）：识别侧一直是
+ * 只取主音的（`staff-align.mjs` 的 `!n.chordExtra`），GT 侧照收就成了单边多算
+ * ——两边比的不是同一件事。这个不对称原来被 `markChords` 漏认和弦掩盖着：
+ * 它判「x 差不到半个符头宽」，认不出**二度和弦**（两个符头错开一个符头宽
+ * 画在符干两侧）。和弦层（`notedata.ts::initChords`）改成按符干归之后，
+ * 二度和弦一并认出来了，这个口径差立刻现形（实测 071 一首就差 12 个音）。
+ * **两边一律只比主音序列。**
  */
 export function xmlStaffNotes(musicxml) {
   const out = [];
   for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
     const seg = m[0];
     if (/<grace\s*\/?>/.test(seg)) continue; // 倚音不占格
+    if (/<chord\s*\/?>/.test(seg)) continue; // 和弦附音只算一个（见 `xmlStaffNotes` 的说明）
     if (/<rest\s*\/?>/.test(seg)) {
       out.push("R");
       continue;
@@ -558,6 +566,7 @@ export function xmlStaffPitches(musicxml) {
   for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
     const seg = m[0];
     if (/<grace\s*\/?>/.test(seg)) continue;
+    if (/<chord\s*\/?>/.test(seg)) continue; // 和弦附音只算一个（见 `xmlStaffNotes` 的说明）
     if (/<rest\s*\/?>/.test(seg)) {
       out.push("R");
       continue;
@@ -583,6 +592,7 @@ export function xmlSlurMarks(musicxml) {
   for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
     const seg = m[0];
     if (/<grace\s*\/?>/.test(seg)) continue;
+    if (/<chord\s*\/?>/.test(seg)) continue; // 和弦附音只算一个（见 `xmlStaffNotes` 的说明）
     let t = "";
     if (/<slur\b[^>]*type="start"/.test(seg)) t += "s";
     if (/<slur\b[^>]*type="stop"/.test(seg)) t += "S";
@@ -599,6 +609,7 @@ export function xmlStaffTypes(musicxml) {
   for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
     const seg = m[0];
     if (/<grace\s*\/?>/.test(seg)) continue;
+    if (/<chord\s*\/?>/.test(seg)) continue; // 和弦附音只算一个（见 `xmlStaffNotes` 的说明）
     // 整小节休止（`<rest measure="yes"/>`）在 GT 里**没有 `<type>`**（全书 24 处）。
     // 识别侧照样会给它一个时值（读到的是全休止 → `whole`），
     // 记成 `?` 就凭空多出 24 处时值差异。按整小节休止的常规写法补成 `whole`。

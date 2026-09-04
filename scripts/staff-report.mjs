@@ -18,6 +18,9 @@ const pages = parsePageRange(argOf("pages"), doc.numPages);
 let noStaff = 0, unknown = 0, staves = 0, notes = 0, bars = 0, stems = 0, barlines = 0, uSeg = 0, segs = 0;
 let barChecked = 0, barFull = 0;
 let grandPages = 0, exportFail = 0, notesTop = 0;
+// 按刻谱软件分档看自检：三家的谱面习惯差得远（Opus 那一路是 SATB 大谱表，
+// 全书最低的一档就在这里），一锅平均看不出改动打在哪一路上。
+const byFam = new Map(); // family → { checked, full, pages }
 // 拍号跨页继承：续页不再印拍号
 let carryTime;
 const worst = [];
@@ -34,6 +37,16 @@ await eachPage(doc, pages, async (page, pn) => {
   staves += pg.staves.length; notes += n; bars += b; unknown += r.unknown; stems += st; barlines += bl;
   uSeg += cli.unknownSegs(pg).length; segs += pg.segs.length;
   barChecked += r.bars.length; barFull += r.bars.filter((b) => b.full).length;
+  // 这一页的刻谱软件：取音乐字体 run 的字形数最多的那家
+  const famCnt = new Map();
+  for (const o of pg.objs) {
+    const fam = o.run ? cli.musicFamily(o.run.font) : null;
+    if (fam) famCnt.set(fam, (famCnt.get(fam) ?? 0) + o.run.glyphs.length);
+  }
+  const fam = [...famCnt.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "?";
+  const fs = byFam.get(fam) ?? { checked: 0, full: 0, pages: 0 };
+  fs.checked += r.bars.length; fs.full += r.bars.filter((b) => b.full).length; fs.pages++;
+  byFam.set(fam, fs);
   // 声部结构 + 导出冒烟：整本书都要能跑通，出一次错就是判据崩了
   const byStaff = new Map();
   for (const n of r.notes) { const a = byStaff.get(n.staff) ?? []; a.push(n); byStaff.set(n.staff, a); }
@@ -57,6 +70,8 @@ console.log(`大谱表页 ${grandPages}；导出出错 ${exportFail} 页；` +
   `只取顶行会漏掉的音符 ${notes - notesTop}/${notes}（${(((notes - notesTop) / Math.max(notes, 1)) * 100).toFixed(1)}%，` +
   `这些是钢琴/SATB 的伴奏行，接上声部结构之前整批丢掉）`);
 console.log(`小节时值自检：对得上 ${barFull}/${barChecked}（${((barFull / Math.max(barChecked, 1)) * 100).toFixed(1)}%）`);
+console.log("  按刻谱软件分：" + [...byFam.entries()].sort((a, b) => b[1].checked - a[1].checked)
+  .map(([f, v]) => `${f} ${((v.full / Math.max(v.checked, 1)) * 100).toFixed(1)}%（${v.full}/${v.checked}，${v.pages}页）`).join("  "));
 worst.sort((a, b) => b[1] - a[1]);
 console.log("未归属最多的页:", worst.slice(0, 12).map(([p, u, s, n]) => `p${p}:${u}(谱行${s} 音符${n})`).join(" "));
 const noNote = worst.filter((w) => w[3] === 0);

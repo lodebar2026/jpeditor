@@ -102,19 +102,7 @@ export function toMusicXml(lines: StaffLineResult[], opts: StaffXmlOptions = {})
       // 正向反复（`|:`）挂在小节的**左端**
       body += barlineXml("left", { style: bar.leftStyle, repeat: bar.leftRepeat, ending: bar.endingStart ? bar.endingNumber : null });
       // 一行谱上写两个声部时要分开写，中间用 `<backup>` 把时间倒回小节头
-      const voices = [...new Set(inBar.map((n) => n.voice))].sort();
-      voices.forEach((v, vi) => {
-        let used = 0;
-        for (const n of inBar) {
-          if (n.voice !== v) continue;
-          // `<harmony>` 与 `<direction>` 都排在它们所属的 `<note>` **之前**（MusicXML 规定）
-          if (n.chord) body += harmonyXml(n.chord);
-          if (n.dynamic) body += `<direction placement="below"><direction-type><dynamics><${n.dynamic}/></dynamics></direction-type></direction>`;
-          body += noteXml(n, ticks(n.duration), 0, voices.length > 1);
-          if (!n.chordExtra) used += ticks(n.duration);
-        }
-        if (vi < voices.length - 1 && used > 0) body += `<backup><duration>${used}</duration></backup>`;
-      });
+      body += emitVoices(inBar, ticks, 0);
       // 终止线/复纵线/反向反复（`:|`）挂在小节的**右端**
       body += barlineXml("right", {
         style: bar.rightStyle,
@@ -132,6 +120,69 @@ export function toMusicXml(lines: StaffLineResult[], opts: StaffXmlOptions = {})
   });
 }
 
+/**
+ * 一个小节里的音符 → `<note>` 串，按声部分开写。
+ *
+ * 两种写法，看 `checkFull` 凑没凑满这一小节（`StaffChord.timed`）：
+ *
+ * 1. **凑满了**：按和弦的 `offset` 出。声部的第一个音不在小节头时先补 `<forward>`，
+ *    中间有空档同样补——多声部的谱面上，第二声部常常从第二拍才起唱，
+ *    不补的话它整段前移一拍，回读出来两个声部对不齐。
+ * 2. **没凑满**：退回按顺序累加时值（老写法）。没有 offset 可用，只能假定音符
+ *    首尾相接；这一小节本来就有音读错了，位置对不齐是次要的。
+ *
+ * 声部之间用 `<backup>` 把时间倒回小节头（MusicXML 的规矩）。
+ */
+function emitVoices(inBar: StaffNote[], ticks: (d: number) => number, staffNo: number): string {
+  // **起点不能用 `ticks`**：那个函数有 `Math.max(1, …)` 的下限（时值再短也得占一格），
+  // 拿它换算 offset=0 会得到 1，于是每个从小节头起的声部都白白多出一个 1 格的 `<forward>`。
+  const at = (dur: number) => Math.round(ticks(1) * dur);
+  let body = "";
+  const voices = [...new Set(inBar.map((n) => n.voice))].sort((a, b) => a - b);
+  const withVoice = voices.length > 1;
+  const timed = inBar.every((n) => n.group?.timed);
+  voices.forEach((v, vi) => {
+    const vn = inBar.filter((n) => n.voice === v);
+    // 按 offset 出时要按 offset 排：`splitVoice` 之后同一声部的和弦在数组里
+    // 未必还是从左到右（贪心分层是跨着挑的）。
+    if (timed) vn.sort((a, b) => (a.group!.offset - b.group!.offset) || (b.diatonic - a.diatonic));
+    let cur = 0;
+    for (const n of vn) {
+      if (timed && !n.chordExtra && !n.grace) {
+        const off = at(n.group!.offset);
+        if (off > cur) {
+          body += `<forward><duration>${off - cur}</duration></forward>`;
+          cur = off;
+        }
+      }
+      // `<harmony>` 与 `<direction>` 都排在它们所属的 `<note>` **之前**（MusicXML 规定）
+      if (n.chord) body += harmonyXml(n.chord);
+      if (n.dynamic)
+        body += `<direction placement="below"><direction-type><dynamics><${n.dynamic}/></dynamics></direction-type></direction>`;
+      body += noteXml(n, ticks(n.duration), staffNo, withVoice);
+      if (!n.chordExtra && !n.grace) cur += ticks(n.duration);
+    }
+    if (vi < voices.length - 1 && cur > 0) body += `<backup><duration>${cur}</duration></backup>`;
+  });
+  return body;
+}
+
+/** `emitVoices` 用掉的时长（大谱表换行时要照它倒回小节头）。 */
+function voiceTicks(inBar: StaffNote[], ticks: (d: number) => number): number {
+  const timed = inBar.every((n) => n.group?.timed);
+  const at = (dur: number) => Math.round(ticks(1) * dur);
+  let used = 0;
+  for (const v of new Set(inBar.map((n) => n.voice))) {
+    const vn = inBar.filter((n) => n.voice === v && !n.chordExtra && !n.grace);
+    if (timed) {
+      let m = 0;
+      for (const n of vn) m = Math.max(m, at(n.group!.offset) + ticks(n.duration));
+      used = Math.max(used, m);
+    } else used = Math.max(used, vn.reduce((a, n) => a + ticks(n.duration), 0));
+  }
+  return used;
+}
+
 function noteXml(n: StaffNote, dur: number, staffNo = 0, withVoice = false): string {
   const type = noteType(n.base);
   const dots = "<dot/>".repeat(n.dots);
@@ -141,7 +192,11 @@ function noteXml(n: StaffNote, dur: number, staffNo = 0, withVoice = false): str
   const voiceEl = withVoice ? `<voice>${n.voice}</voice>` : "";
   if (n.rest)
     return `<note><rest/><duration>${dur}</duration>${voiceEl}<type>${type}</type>${dots}${staffEl}</note>`;
-  // `<chord/>` 必须是 `<note>` 的**第一个**子元素
+  // **倚音不占拍子**：MusicXML 的 `<grace/>` 排在最前（`<chord/>` 之前），
+  // 而且这种音**不许写 `<duration>`**——写了小节就超时长，回读的软件多半直接报错。
+  const grace = n.grace ? "<grace/>" : "";
+  const durEl = n.grace ? "" : `<duration>${dur}</duration>`;
+  // `<chord/>` 紧跟在 `<grace/>` 之后（没有倚音时它就是第一个子元素）
   const chord = n.chordExtra ? "<chord/>" : "";
   // `<alter>` 是**发声**的升降（含调号），`<accidental>` 是谱面上**印出来**的那个记号。
   // 两者不是一回事：G 调里一个没印记号的 F 也要写 `<alter>1</alter>`。
@@ -184,8 +239,8 @@ function noteXml(n: StaffNote, dur: number, staffNo = 0, withVoice = false): str
   // `<staff>` 之前——MusicXML 的子元素次序是有规定的。
   const head = n.slash ? `<notehead>slash</notehead>` : "";
   return (
-    `<note>${chord}<pitch><step>${escapeXml(n.step)}</step>${alter}<octave>${n.octave}</octave></pitch>` +
-    `<duration>${dur}</duration>${tie}${voiceEl}<type>${type}</type>${dots}${acc}${timeMod}${stem}${head}${staffEl}${notations}${lyric}</note>`
+    `<note>${grace}${chord}<pitch><step>${escapeXml(n.step)}</step>${alter}<octave>${n.octave}</octave></pitch>` +
+    `${durEl}${tie}${voiceEl}<type>${type}</type>${dots}${acc}${timeMod}${stem}${head}${staffEl}${notations}${lyric}</note>`
   );
 }
 
@@ -337,21 +392,8 @@ export function scoreToMusicXml(
           const bar = st.bars[bi];
           if (!bar) return;
           const inBar = notesOf(st).filter((n) => n.x >= bar.left && n.x < bar.right);
-          const voices = [...new Set(inBar.map((n) => n.voice))].sort();
-          let used = 0;
-          voices.forEach((v, vi) => {
-            let vUsed = 0;
-            for (const n of inBar) {
-              if (n.voice !== v) continue;
-              if (n.chord) body += harmonyXml(n.chord);
-              if (n.dynamic)
-                body += `<direction placement="below"><direction-type><dynamics><${n.dynamic}/></dynamics></direction-type></direction>`;
-              body += noteXml(n, ticks(n.duration), staves.length > 1 ? k + 1 : 0, voices.length > 1);
-              if (!n.chordExtra) vUsed += ticks(n.duration);
-            }
-            if (vi < voices.length - 1 && vUsed > 0) body += `<backup><duration>${vUsed}</duration></backup>`;
-            used = Math.max(used, vUsed);
-          });
+          body += emitVoices(inBar, ticks, staves.length > 1 ? k + 1 : 0);
+          const used = voiceTicks(inBar, ticks);
           // 换到下一行谱之前要把时间**倒回**小节头（MusicXML 的 `<backup>`）
           if (k < staves.length - 1 && used > 0) body += `<backup><duration>${used}</duration></backup>`;
         });

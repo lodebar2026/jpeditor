@@ -297,7 +297,8 @@ export async function alignSongs(opts = {}) {
       // 一行谱写了两个声部时只取第一声部（GT 是单声部主旋律）；
       // **斜杠符头也不算**——那是前奏「照这个节奏弹和弦」的记号，画在第三线上，
       // 当成音符就是一串 B4 四分（实测 088/094/102 三首各混进 16~19 个）。
-      .filter((n) => tops.has(n.staff) && !n.chordExtra && n.voice === 1 && !n.slash)
+      // 与 GT 那侧的口径对齐（`xmlStaffNotes`）：和弦附音只算主音、**倚音不占格**。
+      .filter((n) => tops.has(n.staff) && !n.chordExtra && !n.grace && n.voice === 1 && !n.slash)
       .sort((a, b) => order.get(a.staff) - order.get(b.staff) || a.x - b.x);
   }
 
