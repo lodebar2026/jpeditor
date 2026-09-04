@@ -151,6 +151,8 @@ export interface AdaptInput {
   vSegs: LineSeg[];
   /** 认出来的音乐符号（符头、谱号、休止、升降、拍号数字、符尾…）。 */
   syms?: RasterSym[];
+  /** 花括号 / 系统括号的包围盒。`score.ts::tokenOf` 靠它分开钢琴行与人声行。 */
+  braces?: Rect[];
 }
 
 /**
@@ -179,6 +181,13 @@ export function buildRasterPage(inp: AdaptInput): SPage {
   for (const s of inp.vSegs) {
     const x = (s.x0 + s.x1) / 2;
     pushSeg(pg, id++, { ...s, x0: x, x1: x });
+  }
+  for (const b of inp.braces ?? []) {
+    // 造一个占位的路径对象打上 `Bracket`——`tokenOf` 只读它的盒
+    const o = new PObj(id, fakePath(id, b.x, b.y, b.w, b.h, 1), null);
+    id++;
+    o.addTag("Bracket");
+    pg.objs.push(o);
   }
   for (const s of inp.syms ?? []) {
     const glyph = fakeGlyph(s.box);

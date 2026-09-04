@@ -15,7 +15,7 @@ import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamSha
 import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
 import { buildRasterPage, makeTextObj, type RasterSym } from "./adapt";
-import { binSig, findBlobs, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
+import { binSig, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
 import { findRasterHeads } from "./notehead";
 import { bootstrapClefs, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
@@ -145,6 +145,7 @@ export async function recognizeRasterPage(
     hSegs: [...prims.hSegs, ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l)],
     vSegs: prims.vSegs,
     syms,
+    braces: findBraces(nl, prims, unit, staffLefts, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y }))).map((c) => c.bbox),
   });
   if (!findStaves(pg)) return empty(pg, raster, unit, opts.carryTime);
 
