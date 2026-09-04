@@ -80,6 +80,20 @@ const W_WHOLE = 1.5;
 const W_HOLLOW_MIN = 1.0;
 
 /**
+ * **空心符头**另设的宽高比下限。
+ *
+ * 真符头是**横椭圆**：`glyphmap.json` 的 Maestro 模板给出全音符 1.70×1.06（比值 1.60）、
+ * 二分 1.32×1.10（1.20）。而谱表上方的声部标签（"Women"/"Men"）与曲名里的
+ * `o`/`e`/`D` 是**接近正方**的空心块，宽度又正好在 1.0~1.7 格这一档里
+ * ——实测宁静 p2 的 "Women" 里那个 `o` 被收成上加一线的 A5 全音符。
+ *
+ * 假全音符不只是多出一个音：**它恰好占满一小节**，`checkFull` 于是把整小节判成
+ * 「一个全音符 + 另一路旋律」，`splitVoice` 把真旋律整条推到第二声部去
+ * （逐声部对拍只取声部号最小的那一路，那一行的音就全落在分母外了）。
+ */
+const R_HOLLOW_MIN = 1.05;
+
+/**
  * 从连通块里挑出符头并定它的 SMuFL 名。
  *
  * 名字与矢量路的 `page.ts::findNoteheads` 岔开（那边是「给符头找它属于哪一行谱」，
@@ -96,6 +110,22 @@ export function findRasterHeads(
   unit: RasterUnit,
   /** 「这个 y 落在谱线网格的延长线上吗」——判剪出来的细横笔是不是加线。 */
   onLedgerGrid: (y: number) => boolean = () => false,
+  /**
+   * 「这个 y 在某行谱的五条线之内吗」（含上下各一格）。**只用来卡空心符头**：
+   * 谱表上方的声部标签（"Women"/"Men"）、曲名里的 `o`/`e`/`D` 是接近正方的空心块，
+   * 尺寸正好落在符头那一档里，`findStaffForNote` 又会拿文字自己的横笔当加线放行
+   * （实测宁静 p2 的 "Women" 里那个 `o` 成了上加一线的 A5 **全音符**）。
+   * 实心符头不受这一条限制——谱表外带加线的黑符头是常态。
+   */
+  inStaffBand: (y: number) => boolean = () => true,
+  /**
+   * **空心符头拿模板再验一道**（`rasterglyphs.ts::matchTemplate`，Maestro 的
+   * `noteheadWhole` / `noteheadHalf`）。空心块是位图上最容易认错的一档：
+   * 尺寸落在符头那一档、又不实心的东西满页都是（文字里的 `o`/`e`/`D`、
+   * 弧线的一段、和弦图的方框）。填充率与宽高比只是粗判据，
+   * **形状**才分得开——而且模板顺带把全音符与二分音符分开了（不必再拿宽度猜）。
+   */
+  matchHollow: ((box: Rect) => { smufl: SmuflName; dist: number } | null) | null = null,
 ): RasterHead[] {
   const sp = unit.space;
   const out: RasterHead[] = [];
@@ -119,10 +149,20 @@ export function findRasterHeads(
     if (fill >= FILL_SOLID) code = "noteheadBlack";
     else {
       if (w < W_HOLLOW_MIN) continue;
-      // 两条线索都要：全音符**又宽又没有符干**。单看宽度，带符干残根的二分音符
-      // 会被顶到 1.5 格以上；单看符干，空心符头的右侧笔画与符干在竖笔画掩模里
-      // 连成一块、抽不出独立的符干段（304 个空心块里容差放到两格也只有 98 个找得到）。
-      code = w >= W_WHOLE && !stem ? "noteheadWhole" : "noteheadHalf";
+      // **模板当附加证据，不当硬闸。** 只拿模板收（距离 ≤ `TEMPLATE_DIST`）实测更差
+      //（音符 65.57% → 64.70%、小节自检 33.2% → 27.1%）：位图上的空心符头被去线
+      // 切过一道、又与符干残根连着，签名与 Maestro 那份干净模板差得过闸的不到一半。
+      // 反过来，模板**认得出**的就很可信，那时连全/二分也不必再拿宽度猜。
+      const m = matchHollow?.(b) ?? null;
+      if (m && (m.smufl === "noteheadWhole" || m.smufl === "noteheadHalf")) code = m.smufl;
+      else {
+        if (w / h < R_HOLLOW_MIN) continue;
+        if (!inStaffBand(b.y + b.h / 2)) continue;
+        // 两条线索都要：全音符**又宽又没有符干**。单看宽度，带符干残根的二分音符
+        // 会被顶到 1.5 格以上；单看符干，空心符头的右侧笔画与符干在竖笔画掩模里
+        // 连成一块、抽不出独立的符干段（304 个空心块里容差放到两格也只有 98 个找得到）。
+        code = w >= W_WHOLE && !stem ? "noteheadWhole" : "noteheadHalf";
+      }
     }
     out.push({ comp: c, box: b, code, fill, stem, ledger });
   }

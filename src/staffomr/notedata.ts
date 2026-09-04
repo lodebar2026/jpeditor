@@ -1092,12 +1092,31 @@ function splitVoice(chords: StaffChord[], expect: number): void {
       layers.push(grp);
     }
   }
-  layers.forEach((grp, i) => {
+  // **孤零零一个「填满整小节」的和弦，不算一个声部。**
+  //
+  // 位图路上误检出来的全音符与全休止恰好占满一小节（假全音符来自谱表上方的文字、
+  // 假全休止来自符杠断头那类小实心块），`checkFull` 于是把整小节读成
+  // 「一个长音 + 另一路旋律」，贪心分层把那个假符号排成**第一声部**（它在最上面），
+  // 真旋律整条被推到第二声部去——逐声部对拍只取声部号最小的那一路，
+  // 那一行的音就全落在分母外了（实测宁静一首因此掉 1.8 个百分点）。
+  //
+  // 真正的「一个声部整小节长音」当然存在，但那时另一层也不会是孤例；
+  // 这里只剔**层里只有一个和弦、且它自己就占满一小节**的那种，并回第一声部。
+  const solo = (grp: StaffChord[]) => grp.length === 1 && Math.abs(grp[0].dur - expect) < EPS;
+  const real = layers.filter((grp) => !solo(grp));
+  const merged = real.length && real.length < layers.length ? real : layers;
+  const extra = merged === layers ? [] : layers.filter((grp) => solo(grp));
+  merged.forEach((grp, i) => {
     for (const ch of grp) {
       ch.voice = i + 1;
       for (const n of ch.notes) n.voice = i + 1;
     }
   });
+  for (const grp of extra)
+    for (const ch of grp) {
+      ch.voice = 1;
+      for (const n of ch.notes) n.voice = 1;
+    }
 }
 
 /**
