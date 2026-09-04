@@ -110,13 +110,21 @@ export class RasterGlyphBuilder {
     return best;
   }
 
-  finish(): RasterGlyphDict {
-    const classes = this.cls
-      .slice()
-      .sort((a, b) => b.count - a.count)
+  /**
+   * 出字典。类按实例数降序**重新编号**——建库脚本要按这个序出人工确认表。
+   *
+   * `origin[新 id]` = 这个类在建库过程里的下标（`add` 的返回值）。
+   * 脚本按 `add` 的返回值存代表实例，重编号之后要靠它把两边对回去
+   * ——不给这张映射的话接触表画的是**另一个类**的样子，定名全标错。
+   */
+  finish(): RasterGlyphDict & { origin: number[] } {
+    const order = this.cls.map((c, i) => ({ c, i })).sort((a, b) => b.c.count - a.c.count);
+    const classes = order.map(({ c }, i) => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      .map(({ sigBits, ws, hs, ...c }, i) => ({ ...c, id: i }));
-    return { classes };
+      const { sigBits, ws, hs, ...rest } = c;
+      return { ...rest, id: i };
+    });
+    return { classes, origin: order.map((o) => o.i) };
   }
 }
 

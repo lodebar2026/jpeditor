@@ -29,7 +29,8 @@ try {
 const prevLook = prev.classes.filter((c) => c.smufl);
 
 const builder = new cli.RasterGlyphBuilder();
-/** 每个类留一个代表实例的原始像素，接触表画它——签名只有 32×32，看不清细节。 */
+/** 每个类留一个代表实例的**原始像素**，接触表画它。
+ *  签名只有 32×32，休止符与升降号在那个尺度上糊成一团，定名会标错。 */
 const sample = new Map();
 let blobTotal = 0;
 const t0 = Date.now();
@@ -55,20 +56,37 @@ for (const song of await loadChorus()) {
       clean++;
       const nl = cli.removeStaffLines(r.bin, lines.map((l) => l.y), unit);
       const prims = cli.findPrimitives(nl, unit);
-      for (const c of cli.findBlobs(nl, prims, unit)) {
+      const blobs = cli.findBlobs(nl, prims, unit);
+      // **符头不进字典**：它按性质判（填充率 + 有没有符干，见 `notehead.ts`），
+      // 形状签名反而不稳。不剔掉的话前二十个大类全是符头的残缺变体，
+      // 真正要查字典的谱号/休止/升降/拍号被埋在下面。
+      const heads = new Set(cli.findRasterHeads(blobs, prims.vSegs, unit).map((h) => h.comp.id));
+      for (const c of blobs) {
+        if (heads.has(c.id)) continue;
         const sig = cli.binSig(nl, c.bbox);
         const w = c.bbox.w / unit.space;
         const h = c.bbox.h / unit.space;
         const i = builder.add(sig, w, h, pn);
         blobTotal++;
-        if (!sample.has(i)) sample.set(i, { sig: cli.encodeSig(sig), w, h, song: song.name, page: pn });
+        if (!sample.has(i)) {
+          // 原分辨率裁一小块（PNG 编码不划算，直接存 0/1 行）
+          const px = [];
+          for (let y = 0; y < c.bbox.h; y++) {
+            let row = "";
+            for (let x = 0; x < c.bbox.w; x++) row += nl.data[(c.bbox.y + y) * nl.w + c.bbox.x + x] ? "1" : "0";
+            px.push(row);
+          }
+          sample.set(i, { px, w, h, song: song.name, page: pn });
+        }
       }
     });
     console.log(`${song.name}/${file}  干净位图页 ${clean}`);
   }
 }
 
-const dict = builder.finish();
+const { origin, ...dict } = builder.finish();
+// `sample` 是按建库下标存的，`finish` 重编了 id，靠 origin 对回去
+const sampleOf = (c) => sample.get(origin[c.id]);
 // 把上一轮的定案按签名贴回来
 let kept = 0;
 for (const c of dict.classes) {
@@ -95,10 +113,11 @@ console.log(`→ ${DICT}\n→ staff-out/rasterglyphsheet.html`);
 /** 人工确认表：每个类一格，画它的签名，标出 id / 实例数 / 尺寸 / 已定的名。 */
 function sheet(dict, big) {
   const cell = (c) => {
-    const s = sample.get(c.id) ?? { sig: c.sig };
-    const d = cli.sigToPath(cli.decodeSig(s.sig ?? c.sig));
+    const s = sampleOf(c);
+    const d = s ? pxPath(s.px) : cli.sigToPath(cli.decodeSig(c.sig));
+    const vb = s ? `0 0 ${s.px[0]?.length ?? 1} ${s.px.length}` : "0 0 32 32";
     return `<figure${c.smufl ? ' class="done"' : ""}>` +
-      `<svg viewBox="0 0 32 32"><path d="${d}"/></svg>` +
+      `<svg viewBox="${vb}"><path d="${d}"/></svg>` +
       `<figcaption>#${c.id} ×${c.count}<br>${c.w.toFixed(2)}×${c.h.toFixed(2)}` +
       `${c.smufl ? `<br><b>${c.smufl}</b>` : ""}</figcaption></figure>`;
   };
@@ -114,4 +133,41 @@ function sheet(dict, big) {
 </style>
 <h1>位图符号形状类：共 ${dict.classes.length} 类，实例 ≥${MIN} 的 ${big.length} 类（按实例数降序）</h1>
 <div class="grid">${big.map(cell).join("")}</div>`;
+}
+
+/** 0/1 行 → SVG 的 `d`（逐行合并连续的墨迹格）。 */
+function pxPath(px) {
+  const out = [];
+  px.forEach((row, y) => {
+    let x = 0;
+    while (x < row.length) {
+      if (row[x] !== "1") { x++; continue; }
+      let x2 = x;
+      while (x2 + 1 < row.length && row[x2 + 1] === "1") x2++;
+      out.push(`M${x} ${y}h${x2 - x + 1}v1h${-(x2 - x + 1)}z`);
+      x = x2 + 1;
+    }
+  });
+  return out.join("");
+}
+
+// 排查用：把代表实例按原分辨率拼成一张 PGM（`--pgm=路径`，配合 `--min`）。
+const pgmOut = argOf("pgm");
+if (pgmOut) {
+  const cs = big.slice(0, Number(argOf("n") ?? 60));
+  const CW = 64, CH = 112, cols = 12;
+  const rows = Math.ceil(cs.length / cols);
+  const W = cols * CW, H = rows * CH;
+  const sheet = { w: W, h: H, data: new Uint8Array(W * H) };
+  cs.forEach((c, i) => {
+    const s = sampleOf(c);
+    if (!s) return;
+    const ox = (i % cols) * CW + 2, oy = ((i / cols) | 0) * CH + 2;
+    s.px.forEach((row, y) => {
+      if (y >= CH - 4) return;
+      for (let x = 0; x < row.length && x < CW - 4; x++) if (row[x] === "1") sheet.data[(oy + y) * W + ox + x] = 1;
+    });
+  });
+  await writeFile(pgmOut, cli.binToPgm(sheet));
+  console.log(`→ ${pgmOut}（${cs.length} 类，12 列，行内顺序即上面列出的顺序）`);
 }

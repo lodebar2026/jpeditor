@@ -222,24 +222,34 @@ export function findPrimitives(bin: Binary, unit: RasterUnit): RasterPrims {
 /**
  * 去谱线：把属于谱线的像素抹掉，留下符头/符干/符杠/字。
  *
- * 判据照经典做法：**只抹「纵向游程短、且正压在某条谱线上」的像素**。
- * 光看游程短会把符杠的上下边缘、字的横笔画一起抹掉；光看压在谱线上会把
- * 穿过谱线的符干、盖在谱线上的符头一起抹掉。两条一起才对。
+ * 判据是**上下都没有墨才抹**（经典的「保符号去线」做法）：
+ * 谱线那一带的某一列，如果紧邻的上方与下方都是白的，那这一段就是**孤立的谱线**，
+ * 抹掉；只要有一侧连着墨，它就是某个符号穿过谱线的那一截，留着。
+ *
+ * 一度只判「纵向游程短」，那会把**骑在谱线上的细笔画一起抹断**：
+ * 拍号数字、休止符、谱号都压在谱线上，笔画细的地方游程正好短，一抹就断成两截，
+ * 于是同一个符号按断法不同散成好几个形状类（实测四分休止散成四类、
+ * 拍号数字散成一堆认不出的碎块）。上下有没有墨这一条不看粗细，只看连不连着。
  */
 export function removeStaffLines(bin: Binary, lineYs: number[], unit: RasterUnit): Binary {
   const { w, h, data } = bin;
-  const vr = vRuns(bin);
   const out: Binary = { w, h, data: new Uint8Array(data) };
-  const thin = Math.max(unit.lineThick * 2, 2);
   const half = unit.lineThick / 2 + 1;
+  // 往外看多远算「紧邻」：一个线宽足矣。看太远会把间距里的符头也算成「连着」，
+  // 谱线就抹不掉了。
+  const look = Math.max(1, Math.round(unit.lineThick));
   for (const cy of lineYs) {
     const y0 = Math.max(0, Math.floor(cy - half));
     const y1 = Math.min(h - 1, Math.ceil(cy + half));
-    for (let y = y0; y <= y1; y++)
-      for (let x = 0; x < w; x++) {
-        const i = y * w + x;
-        if (data[i] && vr[i] <= thin) out.data[i] = 0;
-      }
+    for (let x = 0; x < w; x++) {
+      let up = 0;
+      for (let y = Math.max(0, y0 - look); y < y0; y++) up |= data[y * w + x];
+      if (up) continue;
+      let down = 0;
+      for (let y = y1 + 1; y <= Math.min(h - 1, y1 + look); y++) down |= data[y * w + x];
+      if (down) continue;
+      for (let y = y0; y <= y1; y++) out.data[y * w + x] = 0;
+    }
   }
   return out;
 }
