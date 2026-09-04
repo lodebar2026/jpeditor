@@ -15,7 +15,7 @@ import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamSha
 import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
 import { buildRasterPage, type RasterSym } from "./adapt";
-import { binSig, findBlobs, findPrimitives, removeStaffLines, type BeamQuad } from "./prims";
+import { binSig, findBlobs, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
 import { findRasterHeads } from "./notehead";
 import { RasterGlyphLookup } from "./rasterglyphs";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
@@ -79,9 +79,10 @@ export async function recognizeRasterPage(
   const blobs = findBlobs(nl, prims, unit);
 
   // 符头按性质判（填充率 + 有没有符干），不查字典；其余的块查字典。
-  const heads = findRasterHeads(blobs, prims.vSegs, unit);
+  const onGrid = ledgerGrid(lines.map((l) => l.y), unit);
+  const heads = findRasterHeads(nl, blobs, prims.vSegs, unit, onGrid);
   const claimed = new Set(heads.map((h) => h.comp.id));
-  const syms: RasterSym[] = heads.map((h) => ({ box: h.comp.bbox, code: h.code }));
+  const syms: RasterSym[] = heads.map((h) => ({ box: h.box, code: h.code }));
   for (const c of blobs) {
     if (claimed.has(c.id)) continue;
     const code = look.lookup(binSig(nl, c.bbox), c.bbox.w / unit.space, c.bbox.h / unit.space);
@@ -94,7 +95,8 @@ export async function recognizeRasterPage(
     height: raster.bin.h,
     unit,
     staffLines: lines,
-    hSegs: prims.hSegs,
+    // 符头剪出来的加线要一并推进去，`findLegers` 才有得判
+    hSegs: [...prims.hSegs, ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l)],
     vSegs: prims.vSegs,
     syms,
   });
