@@ -128,10 +128,17 @@ export async function recognizeRasterPage(
     lineYs: g.lines.map((l) => l.y),
   }));
   const boxes = blobs.map((c) => ({ x: c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h }));
-  const claimedBox = new Set(syms.map((s) => `${s.box.x},${s.box.y}`));
-  for (const h of bootstrapClefs(boxes, bootStaves, unit.space)) {
-    const b = blobs[h.index].bbox;
-    if (claimedBox.has(`${b.x},${b.y}`)) continue; // 字典已经认出来了，别添一份
+  // 谱号**盖过字典**：字典按连通块查，谱号被自己的笔画切开时它只看到半截，
+  // 尺寸恰好像另一种谱号（宁静 p7 的高音谱号上半截 2.76×2.65 与 Maestro 的
+  // fClef 模板 2.84×3.34 只差一点），认成 fClef 比认不出来更糟。
+  // 自举那一路先把 x 上重叠的碎块并回一个盒，再拿模板签名比——那才是完整的谱号。
+  for (const h of bootstrapClefs(boxes, bootStaves, unit.space, look.templates ? { tpl: look.templates, sigOf: (b) => binSig(nl, b) } : undefined)) {
+    const b = h.box ?? blobs[h.index].bbox;
+    // 落在这个盒里的字典结果作废（那是被切开的半截）
+    for (let i = syms.length - 1; i >= 0; i--) {
+      const s0 = syms[i].box;
+      if (s0.x >= b.x - 1 && s0.x + s0.w <= b.x + b.w + 1 && s0.y >= b.y - 1 && s0.y + s0.h <= b.y + b.h + 1) syms.splice(i, 1);
+    }
     syms.push({ box: b, code: h.code });
   }
 
