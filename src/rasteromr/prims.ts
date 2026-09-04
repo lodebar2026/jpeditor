@@ -158,16 +158,19 @@ function centerLine(mask: Uint8Array, w: number, c: Component, horizontal: boole
 }
 
 /**
- * 这条笔画是不是**孤立**的——两侧（横段则上下）大体空着。
+ * 这条笔画是不是**孤立**的——两侧（横段则上下）**都**空着。
  *
  * 非有这一条不可：谱号的中央竖笔、升号的两道竖笔、拍号「4」的竖笔，
  * 横向游程都很短，一律被当成竖笔画抽走，于是**符号被自己的笔画切开**
  * （实测高音谱号被切成上下两半，`bootstrapClefs` 取到的「谱号」一多半是它的上半截，
  * 高度不到 3.8 格，整批误判成低音谱号：你要等候 76 行谱认出 69 个「低音谱号」）。
  *
- * 真符干、真小节线两侧是空的（只在符头、符杠那一小截有邻墨）；
- * glyph 内部的笔画两侧总有同一个符号的其它部分。沿笔画取样，
- * 邻墨超过一半就判它属于某个符号，不当原语。
+ * 沿笔画取样，两侧合计的邻墨超过取样行数就判它属于某个符号。
+ * 真符干、真小节线两侧是空的，只在符头、符杠那一小截有邻墨。
+ *
+ * **试过分左右两侧、两侧都被挨着才算「属于符号」**（想放行被花括号贴着的系统线），
+ * 更差：这么一放，谱号的中央竖笔也过了闸，低音谱号又被切开
+ * （破碎 p7/p8 整页的谱号变成未知）。系统线另走**位置豁免**，见 `sysLeft`。
  */
 function isolated(bin: Binary, s: LineSeg, vertical: boolean): boolean {
   const { w, h, data } = bin;
@@ -175,7 +178,7 @@ function isolated(bin: Binary, s: LineSeg, vertical: boolean): boolean {
   const near = half + 1;
   const far = half + Math.max(2, Math.round(s.maxLw * 2));
   let n = 0;
-  let touched = 0;
+  let a = 0; // 两侧任一侧有邻墨的行数
   if (vertical) {
     const cx = Math.round((s.x0 + s.x1) / 2);
     for (let y = Math.round(Math.min(s.y0, s.y1)); y <= Math.round(Math.max(s.y0, s.y1)); y++) {
@@ -186,7 +189,7 @@ function isolated(bin: Binary, s: LineSeg, vertical: boolean): boolean {
         if (cx - d >= 0) hit |= data[y * w + cx - d];
         if (cx + d < w) hit |= data[y * w + cx + d];
       }
-      touched += hit;
+      a += hit;
     }
   } else {
     const cy = Math.round((s.y0 + s.y1) / 2);
@@ -198,10 +201,10 @@ function isolated(bin: Binary, s: LineSeg, vertical: boolean): boolean {
         if (cy - d >= 0) hit |= data[(cy - d) * w + x];
         if (cy + d < h) hit |= data[(cy + d) * w + x];
       }
-      touched += hit;
+      a += hit;
     }
   }
-  return n === 0 || touched < n * 0.5;
+  return n === 0 || a < n * 0.5;
 }
 
 /**
@@ -245,9 +248,19 @@ export function ledgerGrid(lineYs: number[], unit: RasterUnit): (y: number) => b
  *     下限把谱线滤掉，上限把符头（约一个线距高、但横向游程只有一个符头宽）与
  *     实心块滤掉；横向那道再滤掉竖直的粗笔画。
  */
-export function findPrimitives(bin: Binary, unit: RasterUnit, staffLineYs: number[] = []): RasterPrims {
+export function findPrimitives(
+  bin: Binary,
+  unit: RasterUnit,
+  staffLineYs: number[] = [],
+  /** 各谱行的左缘 x。**系统线按位置豁免孤立性判据**——它就画在谱行左缘，
+   *  紧贴它的花括号会让「两侧有没有邻墨」判它属于某个符号，
+   *  于是整页的系统线一条都抽不出来，十行谱碎成十个系统
+   *  （实测破碎 p5 起就是这样，`buildScore` 随之把一个声部拆成好几条）。 */
+  staffLefts: number[] = [],
+): RasterPrims {
   const { w, h } = bin;
   const onGrid = ledgerGrid(staffLineYs, unit);
+  const atStaffLeft = (x: number) => staffLefts.some((l) => Math.abs(x - l) <= Math.max(3, unit.lineThick * 2));
   const vr = vRuns(bin);
   const hr = hRuns(bin);
   // 「细」的上限**要卡在谱线与符杠之间**：谱线约 0.15 个线距厚，符杠约 0.5 个。
@@ -291,7 +304,8 @@ export function findPrimitives(bin: Binary, unit: RasterUnit, staffLineYs: numbe
     if (c.bbox.h < unit.space) continue;
     if (c.bbox.w > thin * 2) continue;
     const seg = centerLine(vMask, w, c, false);
-    if (!isolated(bin, seg, true)) continue; // 谱号的中央竖笔、升号的竖笔不是原语
+    // 谱行左缘那条（系统线）免检，其余要判孤立性——谱号的中央竖笔、升号的竖笔不是原语
+    if (!atStaffLeft((seg.x0 + seg.x1) / 2) && !isolated(bin, seg, true)) continue;
     vSegs.push(seg);
   }
 

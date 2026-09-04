@@ -57,7 +57,7 @@ for (const song of await loadChorus()) {
       if (lines.length - groups.length * 5 > groups.length) return;
       clean++;
       const nl = cli.removeStaffLines(r.bin, lines.map((l) => l.y), unit);
-      const prims = cli.findPrimitives(nl, unit, lines.map((l) => l.y));
+      const prims = cli.findPrimitives(nl, unit, lines.map((l) => l.y), groups.map((g) => Math.max(...g.lines.map((l) => l.left))));
       const blobs = cli.findBlobs(nl, prims, unit);
       // **符头不进字典**：它按性质判（填充率 + 有没有符干，见 `notehead.ts`），
       // 形状签名反而不稳。不剔掉的话前二十个大类全是符头的残缺变体，
