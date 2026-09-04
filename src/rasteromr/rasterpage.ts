@@ -71,8 +71,113 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   for (let i = 0; i < bin.data.length; i++) ink += bin.data[i];
   if (ink > w * h * INK_FLIP_RATIO) for (let i = 0; i < bin.data.length; i++) bin.data[i] ^= 1;
 
+  deskew(bin);
+
   const vp = page.getViewport({ scale: 1 });
   return { bin, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
+}
+
+/** 去倾斜时试的最大斜率（dy/dx）。1900 px 宽的页面上相当于两端差 ±19 px。 */
+const MAX_SLOPE = 0.01;
+/** 斜率的步长。1900 px 宽上相当于两端差 1 px——比谱线本身还细，够用了。 */
+const SLOPE_STEP = 0.0005;
+/** 候选斜率的档数（`±STEPS × SLOPE_STEP`）。 */
+const STEPS = Math.round(MAX_SLOPE / SLOPE_STEP);
+/**
+ * 判「这一行像不像谱线」的墨占比（分母是抽稀后的列数）。
+ *
+ * **必须取高**（0.75），不能照搬 `staffline.ts` 那边的 0.3：门槛一低，
+ * 曲线是**反的**——谱线越糊、过闸的行反而越多。实测宁静 p2 在 0.3 门槛下
+ * s=0 处只有 145 行过闸，而歪到 ±0.004 时有 341/349 行过闸（歌词行被算进来了），
+ * 于是「最优角度」指向了歪的那一边。0.75 门槛下只有真谱线过得了闸，
+ * s=0 处 145、歪一点就掉到个位数，峰又尖又正。
+ */
+const LINE_INK_RATIO_SKEW = 0.75;
+/** 比「不动」好这么多倍才真的切。防止在谱线本来就找不齐的页面上被噪声牵着走。 */
+const SKEW_GAIN = 1.15;
+/** 小于这个斜率就不动图（免得为半个像素重排一遍所有像素）。 */
+const MIN_SLOPE = 0.0004;
+
+/**
+ * **去倾斜**：逐斜率看行投影有多陡，取最陡的那个，再按列错切回来。
+ *
+ * 后面每一步都建立在「谱线是一整行几乎全是墨的横带」上（`staffline.ts`），
+ * 页面一斜，横带就抹平了：实测真扫描件倾斜 3~4 px，`findStaffLines` 找不齐谱线，
+ * 整条链跟着废（音符准确率只有干净档的三成）。
+ *
+ * 判据是 OMR 里的老办法（也是文献与 Audiveris 的做法）：谱线与扫描行平行时，
+ * 行投影在谱线处形成又高又窄的尖峰；拿**平方和**当陡峭度，最大的那个角度就是正的。
+ *
+ * 做法上只对**墨点**做直方图，不对每个候选角度重排整幅图：
+ * 一页的墨约一成，逐斜率算一遍直方图是几十万次加法，几十个候选也就千万级。
+ * 列再抽稀一半（谱线横跨整页，抽稀不影响峰形），实测一页几十毫秒。
+ *
+ * **按列整像素错切**，不做旋转也不插值：位图是 1-bit 的，插值只会把谱线糊宽；
+ * 而错切与旋转在这个角度上（正切值 0.01 以内）差别不到一个像素。
+ */
+export function deskew(bin: Binary): number {
+  const { w, h, data } = bin;
+  // 墨点坐标（列抽稀一半）
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x += 2)
+      if (data[row + x]) {
+        xs.push(x - (w >> 1));
+        ys.push(y);
+      }
+  }
+  if (xs.length < 1000) return 0;
+  const hist = new Int32Array(h + 2 * Math.ceil(MAX_SLOPE * w) + 4);
+  const off = Math.ceil(MAX_SLOPE * w) + 2;
+  // **判据就是「这个角度下能看到几条谱线」**，与 `findStaffLines` 同一条墨占比闸。
+  //
+  // 一度用行投影的**平方和**当陡峭度（文献与 Audiveris 的老办法），在这批扫描件上
+  // 会被**歌词行**带偏：歌词的行数远多于谱线，把它们对齐也能把平方和顶上去
+  // ——实测破碎那份扫描件的两页直接顶到量程 ±0.01，谱线从 60 条掉到 4 条、14 条。
+  // 数「过闸的行数」就不会：歌词行再多也过不了「一整行三成以上是墨」那道闸。
+  const need = (w / 2) * LINE_INK_RATIO_SKEW;
+  let best = 0;
+  let bestLines = -1;
+  let bestSharp = -1;
+  let zeroLines = 0;
+  for (let k = -STEPS; k <= STEPS; k++) {
+    const s = k * SLOPE_STEP;
+    hist.fill(0);
+    for (let i = 0; i < xs.length; i++) hist[(ys[i] + Math.round(s * xs[i]) + off) | 0]++;
+    let lines = 0;
+    let sharp = 0;
+    for (let i = 0; i < hist.length; i++) {
+      if (hist[i] >= need) lines++;
+      sharp += hist[i] * hist[i];
+    }
+    // 谱线条数优先，同数再比陡峭度；再平局取**最小的斜率**（别为半个像素动图）
+    if (k === 0) zeroLines = lines;
+    if (lines > bestLines || (lines === bestLines && (sharp > bestSharp || (sharp === bestSharp && Math.abs(s) < Math.abs(best))))) {
+      bestLines = lines;
+      bestSharp = sharp;
+      best = s;
+    }
+  }
+  if (Math.abs(best) < MIN_SLOPE) return 0;
+  // 没有明显好过「不动」就不动：谱线本来就找不齐的页面（封面、纯文字页）上，
+  // 这条曲线全是噪声，跟着它切只会把图切坏。
+  if (bestLines < zeroLines * SKEW_GAIN) return 0;
+  // 按列错切。**方向别弄反**：估计器里像素 (x, y) 记在直方图的 `y + s·x` 行，
+  // 所以校正后的图应当满足 `out[y] = data[y − s·x]`——反过来写是把倾斜加倍
+  // （实测那样扫描件的谱行从 63 掉到 40）。
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    const dy = Math.round(best * (x - (w >> 1)));
+    for (let y = 0; y < h; y++) {
+      const sy = y - dy;
+      if (sy < 0 || sy >= h) continue;
+      out[y * w + x] = data[sy * w + x];
+    }
+  }
+  data.set(out);
+  return best;
 }
 
 /**
