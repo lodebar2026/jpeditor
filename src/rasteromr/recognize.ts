@@ -17,7 +17,7 @@ import type { SPage, Staff } from "../staffomr/model";
 import { buildRasterPage, type RasterSym } from "./adapt";
 import { binSig, findBlobs, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
 import { findRasterHeads } from "./notehead";
-import { RasterGlyphLookup } from "./rasterglyphs";
+import { bootstrapClefs, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
 import { rasterizePage, type RasterPage } from "./rasterpage";
 
@@ -72,7 +72,8 @@ export async function recognizeRasterPage(
   const unit = estimateUnit(raster.bin);
   if (!unit) return empty(blank, raster, null, opts.carryTime);
   const lines = findStaffLines(raster.bin);
-  if (!groupStaves(lines).length) return empty(blank, raster, unit, opts.carryTime);
+  const groups = groupStaves(lines);
+  if (!groups.length) return empty(blank, raster, unit, opts.carryTime);
 
   const nl = removeStaffLines(raster.bin, lines.map((l) => l.y), unit);
   const prims = findPrimitives(nl, unit, lines.map((l) => l.y));
@@ -87,6 +88,26 @@ export async function recognizeRasterPage(
     if (claimed.has(c.id)) continue;
     const code = look.lookup(binSig(nl, c.bbox), c.bbox.w / unit.space, c.bbox.h / unit.space);
     if (code) syms.push({ box: c.bbox, code });
+  }
+
+  // **谱号兜底**：字典查不到的谱行，按位置补一个。
+  //
+  // 谱号是音高的基准，缺一行整行的音高就错；而它还是 `buildScore` 连跨系统谱行的
+  // 主要凭据（`StaffToken` 的第一项就是行首谱号），缺了那一行会另起一个声部，
+  // 一个声部因此碎成好几条——实测宁静一首 GT 5 条谱表、识别出 9 条，
+  // 六成的音落在没配上的那几条里，准确率逐段漂到 0。
+  // 字典能查到 85/100 行，位置自举能到 91/100，两者并起来才够。
+  const bootStaves: BootStaff[] = groups.map((g) => ({
+    left: Math.max(...g.lines.map((l) => l.left)),
+    right: Math.min(...g.lines.map((l) => l.right)),
+    lineYs: g.lines.map((l) => l.y),
+  }));
+  const boxes = blobs.map((c) => ({ x: c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h }));
+  const claimedBox = new Set(syms.map((s) => `${s.box.x},${s.box.y}`));
+  for (const h of bootstrapClefs(boxes, bootStaves, unit.space)) {
+    const b = blobs[h.index].bbox;
+    if (claimedBox.has(`${b.x},${b.y}`)) continue; // 字典已经认出来了，别添一份
+    syms.push({ box: b, code: h.code });
   }
 
   const pg = buildRasterPage({
