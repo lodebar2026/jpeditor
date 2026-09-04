@@ -376,6 +376,67 @@ export function removeStaffLines(bin: Binary, lineYs: number[], unit: RasterUnit
  * 直接照中心线抹只抹掉一像素宽，笔画的两侧还留着，连通关系照旧。
  */
 export function findBlobs(bin: Binary, prims: RasterPrims, unit: RasterUnit): Component[] {
+  const rest = blobImage(bin, prims, unit);
+  // 宽高**分别**设限，不能共用一个数：高音谱号窄而高，实测 2.8 × **7.5** 个线距
+  //（连着尾巴那一圈），共用「六个线距」的上限会把整页的谱号挡在外面
+  // ——`bootstrapClefs` 因此在宁静一首上一个高音谱号都取不到。
+  // 花括号（18×283px = 1 × 15.6 格）与页边框仍然被高度那一档挡住，
+  // 另由 `findBraces` 收（`StaffToken` 要靠它分开人声行与钢琴行）。
+  const minSide = unit.space * 0.25;
+  const maxW = unit.space * 6;
+  const maxH = unit.space * 9;
+  return connectedComponents(rest, Math.round(minSide * minSide)).filter((c) => {
+    const b = c.bbox;
+    if (b.w > maxW || b.h > maxH) return false;
+    if (b.w < minSide && b.h < minSide) return false;
+    return true;
+  });
+}
+
+/**
+ * **花括号 / 系统括号**：页面左端那个又高又窄的东西。
+ *
+ * `StaffToken`（`score.ts`）靠 `topOfBrace`/`bottomOfBrace` 分开「钢琴的上下两行」
+ * 与「人声行」——不认花括号的话，同一个系统里所有 G 谱号行的签名完全相同，
+ * `buildScore` 的 LCS 只能靠顺序分；系统行数一变（这本合唱谱从 2 行长到 7 行）
+ * 就会把声部接错，一个声部碎成好几条。
+ *
+ * 判据：
+ *   - 在**所有谱行左缘之左**（系统线正在左缘上，不算）；
+ *   - 高度至少一个半谱表高（只盖住一行的不构成「把两行括起来」）；
+ *   - 宽度不到两个线距（再宽的是别的东西）。
+ */
+export function findBraces(
+  bin: Binary,
+  prims: RasterPrims,
+  unit: RasterUnit,
+  staffLefts: number[],
+  /** 各谱行的纵向范围。**只留恰好罩住两行的**，见下。 */
+  staffSpans: { top: number; bottom: number }[] = [],
+): Component[] {
+  if (!staffLefts.length) return [];
+  const rest = blobImage(bin, prims, unit);
+  const leftMost = Math.min(...staffLefts);
+  const staffH = unit.space * 4;
+  return connectedComponents(rest, Math.round(unit.space * unit.space * 0.5)).filter((c) => {
+    const b = c.bbox;
+    if (b.x + b.w > leftMost) return false;
+    if (b.h < staffH * 1.5) return false;
+    if (b.w > unit.space * 2) return false;
+    // **只留恰好罩住两行谱的**。页面左端还有一个把整个系统括起来的大括号，
+    // 收进来的话这个系统里每一行都「在括号里」，`topOfBrace`/`bottomOfBrace`
+    // 就分不开人声行与钢琴行了（实测破碎 p7 五行谱全被标成在括号里）。
+    // 钢琴大谱表的花括号恰好罩两行——那正是这两个字段的本意。
+    if (staffSpans.length) {
+      const n = staffSpans.filter((s) => s.top < b.y + b.h && b.y < s.bottom).length;
+      if (n !== 2) return false;
+    }
+    return true;
+  });
+}
+
+/** 抹掉笔画之后剩下的墨——`findBlobs` 与 `findBraces` 都从它出发。 */
+function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit): Binary {
   const { w, h } = bin;
   const rest = new Uint8Array(bin.data);
   const clear = (x0: number, y0: number, x1: number, y1: number) => {
@@ -393,20 +454,7 @@ export function findBlobs(bin: Binary, prims: RasterPrims, unit: RasterUnit): Co
     clear(Math.min(s.x0, s.x1) - pad, Math.min(s.y0, s.y1) - pad, Math.max(s.x0, s.x1) + pad, Math.max(s.y0, s.y1) + pad);
   }
   for (const b of prims.beams) clear(b.box.x, b.box.y, b.box.x + b.box.w - 1, b.box.y + b.box.h - 1);
-
-  // 宽高**分别**设限，不能共用一个数：高音谱号窄而高，实测 2.8 × **7.5** 个线距
-  //（连着尾巴那一圈），共用「六个线距」的上限会把整页的谱号挡在外面
-  // ——`bootstrapClefs` 因此在宁静一首上一个高音谱号都取不到。
-  // 花括号（18×283px = 1 × 15.6 格）与页边框仍然被高度那一档挡住。
-  const minSide = unit.space * 0.25;
-  const maxW = unit.space * 6;
-  const maxH = unit.space * 9;
-  return connectedComponents({ w, h, data: rest }, Math.round(minSide * minSide)).filter((c) => {
-    const b = c.bbox;
-    if (b.w > maxW || b.h > maxH) return false;
-    if (b.w < minSide && b.h < minSide) return false;
-    return true;
-  });
+  return { w, h, data: rest };
 }
 
 /**
