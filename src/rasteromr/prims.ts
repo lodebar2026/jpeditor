@@ -239,6 +239,51 @@ export function ledgerGrid(lineYs: number[], unit: RasterUnit): (y: number) => b
 }
 
 /**
+ * 竖段的端点**沿着墨往里续**，至多 `cap` 个像素。返回续过的副本。
+ *
+ * 为什么要续：符干在与符头相接处横向游程一下子变成整个符头的宽度，出了「细」的那道闸，
+ * 竖笔画就在符头**边界前一两个像素**断掉（实测缺口中位数只有 0.06 格）。
+ * 而 `findStems` / `buildStems` 要的是符干与符头**纵向相交**，差一个像素就不成立
+ * ——实测破碎 2218 个符头里只有 642 个（28.9%）配得上符干，其余全读成四分音符，
+ * 符杠也因此接不上符干（层号 0 的占 304/1042）。
+ *
+ * 为什么只对竖段做：横段（谱线、加线）本来就该在符号处断开——那正是
+ * 「上下都没墨才抹」判据的依据；竖段断在符头边上则是纯粹的**假边界**。
+ *
+ * **只给 `adapt.ts` 用，不回写 `prims`**：`blobImage` 按段的包围盒抹墨，
+ * 续进符头的段会把符头啃掉一条，符头就认不出来了
+ * （实测直接在 `findPrimitives` 里续，小节自检 27.4% → 31.4% 但音符 65.1% → 62.5%）。
+ *
+ * 续的时候看中心线左右各一列（符干只有一两个像素宽，中心线是拟合出来的，
+ * 只看一列会被半像素的偏差卡住）。碰到白就停——不跨空隙，所以续不出别的符号。
+ */
+export function extendVSegs(bin: Binary, segs: LineSeg[], cap: number): LineSeg[] {
+  return segs.map((s) => {
+    const out = { ...s };
+    extendIntoInk(bin, out, cap);
+    return out;
+  });
+}
+
+function extendIntoInk(bin: Binary, seg: LineSeg, cap: number): void {
+  const { w, h, data } = bin;
+  const ink = (x: number, y: number) => {
+    if (y < 0 || y >= h) return false;
+    for (let dx = -1; dx <= 1; dx++) {
+      const xx = Math.round(x) + dx;
+      if (xx >= 0 && xx < w && data[y * w + xx]) return true;
+    }
+    return false;
+  };
+  let up = 0;
+  while (up < cap && ink(seg.x0, Math.round(seg.y0) - up - 1)) up++;
+  let down = 0;
+  while (down < cap && ink(seg.x1, Math.round(seg.y1) + down + 1)) down++;
+  seg.y0 -= up;
+  seg.y1 += down;
+}
+
+/**
  * 抽出全部几何原语。
  *
  * 三道门槛都按线距 `space` 写（与矢量路同口径，不写绝对像素）：
