@@ -156,6 +156,23 @@ export interface AdaptInput {
 }
 
 /**
+ * 一个认出来的符号 → `PObj` + `Sym`（造一个假字形与假文本串装着它）。
+ *
+ * `buildRasterPage` 装配时用，识别过程中**补认**出来的符号也走这里
+ * （`recognize.ts::bootstrapFlags` 的符尾就是），两条路造出来的对象要一模一样。
+ */
+export function makeSymObj(id: number, s: RasterSym, staffHeight: number): { obj: PObj; sym: Sym } {
+  const glyph = fakeGlyph(s.box);
+  const run = fakeRun(id, s.box, staffHeight);
+  run.glyphs.push(glyph);
+  const obj = new PObj(id, null, run);
+  const sym = new Sym(obj, 0, glyph, s.code);
+  obj.symbols.push(sym);
+  obj.addTag("Symbol");
+  return { obj, sym };
+}
+
+/**
  * 装配 `SPage`。
  *
  * `barlineHeight` 取**四个线距**——矢量路那边是「音乐字体的字号中位数」
@@ -190,14 +207,8 @@ export function buildRasterPage(inp: AdaptInput): SPage {
     pg.objs.push(o);
   }
   for (const s of inp.syms ?? []) {
-    const glyph = fakeGlyph(s.box);
-    const run = fakeRun(id, s.box, inp.unit.height);
-    run.glyphs.push(glyph);
-    const o = new PObj(id++, null, run);
-    const sym = new Sym(o, 0, glyph, s.code);
-    o.symbols.push(sym);
-    o.addTag("Symbol");
-    pg.objs.push(o);
+    const { obj, sym } = makeSymObj(id++, s, inp.unit.height);
+    pg.objs.push(obj);
     pg.symbols.push(sym);
   }
   return pg;
