@@ -46,16 +46,25 @@ function gtParts(xml) {
       const seg = n[0];
       if (/<grace\s*\/?>/.test(seg) || /<chord\s*\/?>/.test(seg)) continue;
       const k = /<staff>(\d+)<\/staff>/.exec(seg)?.[1] ?? "1";
-      const seq = byStaff.get(k) ?? [];
+      const v = /<voice>(\d+)<\/voice>/.exec(seg)?.[1] ?? "1";
+      const key = k + "/" + v;
+      const seq = byStaff.get(key) ?? [];
       if (/<rest\s*\/?>/.test(seg)) seq.push("R");
       else {
         const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
         const oct = /<octave>(-?\d+)<\/octave>/.exec(seg)?.[1];
         if (step && oct !== undefined) seq.push(step + oct);
       }
-      byStaff.set(k, seq);
+      byStaff.set(key, seq);
     }
-    for (const [k, seq] of [...byStaff.entries()].sort()) if (seq.length) out.push({ id: `${m[1]}.${k}`, seq });
+    // 每行谱只留**声部号最小**的那一路（与识别侧同口径，见 `gotParts`）
+    const best = new Map();
+    for (const [key, seq] of byStaff) {
+      const [st, v] = key.split("/");
+      const cur = best.get(st);
+      if (!cur || Number(v) < Number(cur.v)) best.set(st, { v, seq });
+    }
+    for (const [st, { seq }] of [...best.entries()].sort()) if (seq.length) out.push({ id: `${m[1]}.${st}`, seq });
   }
   return out;
 }
@@ -81,10 +90,14 @@ function gotParts(entries) {
   const out = [];
   score.parts.forEach((p, i) => {
     p.scoreStaves.forEach((ss, k) => {
+      // **两边都只取第一声部**。一行谱上写两个声部时，MusicXML 是
+      // 「本小节第一声部、`<backup>`、本小节第二声部」写的，而识别侧的音符是按 x 排的
+      // ——把两个声部都收进来，两边的序列就交织成不同的样子，比出来的是排列差异
+      // 不是识别差异（实测这么做音符从 28.6% 掉到 22.2%）。
       const seq = [];
       for (const stf of ss.staves) {
         if (!stf) continue;
-        for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === 1)) {
+        for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === minVoice(stf, byStaff))) {
           seq.push(n.rest ? "R" : n.step + n.octave);
         }
       }
@@ -92,6 +105,12 @@ function gotParts(entries) {
     });
   });
   return out;
+}
+
+/** 这行谱上最小的声部号（`splitVoice` 从 1 起编，没拆过的就都是 1）。 */
+function minVoice(stf, byStaff) {
+  const a = byStaff.get(stf) ?? [];
+  return a.length ? Math.min(...a.map((n) => n.voice)) : 1;
 }
 
 /** `buildScore` 分出来的声部数——跨系统连接的指标，与准确率量的不是一回事。 */
@@ -157,7 +176,10 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       wn += p.a * g.length;
       wl += acc(letters(got[p.i].seq), letters(g)) * g.length;
       wd += g.length;
-      if (verbose) console.log(`  ${got[p.i].id}(${got[p.i].seq.length}) ↔ ${gt[p.j].id}(${g.length})  音符 ${(p.a * 100).toFixed(1)}%`);
+      if (verbose) {
+        console.log(`  ${got[p.i].id}(${got[p.i].seq.length}) ↔ ${gt[p.j].id}(${g.length})  音符 ${(p.a * 100).toFixed(1)}%`);
+        if (args.includes("--dump")) console.log("    " + alignText(got[p.i].seq, g, 80));
+      }
     }
     const row = {
       song: song.name, file, staves, gtParts: gt.length, gotParts: got.length, scoreParts: nParts, paired: pairs.length,
@@ -226,4 +248,26 @@ if (args.includes("--bless")) {
       process.exitCode = 1;
     } else console.log("✓ 各档不低于基线");
   }
+}
+
+/** 逐音对齐的可读串（排查用，`--v --dump`）。`[a→b]` 读错、`(多 a)` 多出、`(缺 b)` 漏掉。 */
+function alignText(A, B, n) {
+  const a = A.slice(0, n), b = B.slice(0, n);
+  const d = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  const op = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(""));
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++) {
+      const c = [[d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1), "m"], [d[i - 1][j] + 1, "d"], [d[i][j - 1] + 1, "i"]].sort((x, y) => x[0] - y[0])[0];
+      d[i][j] = c[0];
+      op[i][j] = c[1];
+    }
+  let i = a.length, j = b.length;
+  const out = [];
+  while (i > 0 || j > 0) {
+    const o = i > 0 && j > 0 ? op[i][j] : i > 0 ? "d" : "i";
+    if (o === "m") { out.push(a[i - 1] === b[j - 1] ? a[i - 1] : `[${a[i - 1]}→${b[j - 1]}]`); i--; j--; }
+    else if (o === "d") { out.push(`(多${a[i - 1]})`); i--; }
+    else { out.push(`(缺${b[j - 1]})`); j--; }
+  }
+  return out.reverse().join(" ");
 }

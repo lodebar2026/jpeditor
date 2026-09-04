@@ -62,7 +62,7 @@ for (const song of await loadChorus()) {
       // **符头不进字典**：它按性质判（填充率 + 有没有符干，见 `notehead.ts`），
       // 形状签名反而不稳。不剔掉的话前二十个大类全是符头的残缺变体，
       // 真正要查字典的谱号/休止/升降/拍号被埋在下面。
-      const heads = new Set(cli.findRasterHeads(blobs, prims.vSegs, unit).map((h) => h.comp.id));
+      const heads = new Set(cli.findRasterHeads(nl, blobs, prims.vSegs, unit).map((h) => h.comp.id));
       // ── 位置自举：谱号、调号升降号 ───────────────────────────────────────
       // 与矢量路 `bootstrapByTable` 同一个用意，线索换成**位置**
       //（谱号、调号、拍号在谱行开头的次序是刻谱的铁律）。
