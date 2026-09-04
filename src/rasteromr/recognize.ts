@@ -18,7 +18,7 @@ import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
-import { findRasterHeads } from "./notehead";
+import { findRasterHeads, type RasterHead } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
 import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
@@ -137,6 +137,44 @@ const TIME_TEMPLATE_DIST = 180;
 const FLAG_INK = 0.25;
 /** 第二道钩（十六分）的门槛。比第一道**严**：那一段窗口里还可能扫到下一个音的符干或符头。 */
 const FLAG_INK2 = 0.3;
+
+/**
+ * **几个音共用的那条长加线，要按符头切成短段补进去。**
+ *
+ * 相邻几个音落在同一条加线上时，谱面上画的是**一条通长的横线**
+ *（实测破碎 p4 两个音共用的那条 x[616,723]、长 **6.25 格**）。
+ * 而下游有两道长度闸都是按「一个符头的加线」定的：
+ * `findNoteheads` 只收 ≤ 6 格的横段、`findLegers` 还要求不超过符头宽的三倍。
+ * 通长的那条两道都过不了，于是这些音**一条加线都找不到**
+ *（实测未认领的符头里「需要 1 条、找到 0 条」占 155/259，这是头号成因）。
+ *
+ * 不去动那两道闸——它们防的是「和弦图的格线被当成加线」，是拿具体页换来的。
+ * 改成在位图这边**按符头把长线切成短段**补进去：加线本来就是给符头垫的，
+ * 一个符头配一小段，长度取符头宽的一倍半，语义与「剪出来的加线」那一路一致。
+ *
+ * 只切**落在谱线网格延长线上**的横段（`ledgerGrid`），那是加线的硬判据。
+ */
+function sharedLegers(hSegs: LineSeg[], heads: RasterHead[], onGrid: (y: number) => boolean, unit: RasterUnit): LineSeg[] {
+  const out: LineSeg[] = [];
+  for (const seg of hSegs) {
+    const y = (seg.y0 + seg.y1) / 2;
+    if (Math.abs(seg.x1 - seg.x0) <= unit.space * 3) continue; // 短的下游本来就收得下
+    if (!onGrid(y)) continue;
+    const left = Math.min(seg.x0, seg.x1);
+    const right = Math.max(seg.x0, seg.x1);
+    for (const h of heads) {
+      const cx = h.box.x + h.box.w / 2;
+      if (cx < left || cx > right) continue;
+      // 窗口要放到三格：谱表外两三格的音，**里面那几条加线上并没有符头**
+      //（实测「需要 2 条、找到 1 条」占 66 处，缺的就是里侧那条）。
+      // 放宽不怕误收——`findLegers` 自己还要判「加线落在符头与谱表之间」。
+      if (Math.abs(y - (h.box.y + h.box.h / 2)) > unit.space * 3.2) continue;
+      const half = h.box.w * 0.8;
+      out.push({ x0: Math.max(left, cx - half), y0: y, x1: Math.min(right, cx + half), y1: y, lw: seg.lw, maxLw: seg.maxLw });
+    }
+  }
+  return out;
+}
 
 /** 位图符杠 → 矢量路的 `BeamShape`（`buildNotes` / `findTuplets` 吃这个）。 */
 function toBeamShapes(beams: BeamQuad[]): BeamShape[] {
@@ -442,7 +480,7 @@ export async function recognizeRasterPage(
     unit,
     staffLines: lines,
     // 符头剪出来的加线要一并推进去，`findLegers` 才有得判
-    hSegs: [...prims.hSegs, ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l)],
+    hSegs: [...prims.hSegs, ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l), ...sharedLegers(prims.hSegs, heads, onGrid, unit)],
     // 符干要**续到符头里**才与符头纵向相交（`findStems` / `buildStems` 的硬判据）。
     // 续过的段只进 `SPage`，不回写 `prims`——`findBlobs` 那边仍按原段抹墨，
     // 免得把符头啃掉（见 `extendVSegs` 的说明）。

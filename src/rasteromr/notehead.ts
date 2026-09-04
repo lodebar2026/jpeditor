@@ -142,8 +142,8 @@ export function findRasterHeads(
     const stem = stemOf(b, stems, unit);
     // 剪掉了列，且高度落在谱线网格的延长线上 → 那两截细横笔是加线
     const ledger: LineSeg | null =
-      t.trimmed && onLedgerGrid(b.y + b.h / 2)
-        ? { x0: c.bbox.x, y0: b.y + b.h / 2, x1: c.bbox.x + c.bbox.w - 1, y1: b.y + b.h / 2, lw: unit.lineThick, maxLw: unit.lineThick }
+      t.trimmed && t.ledgerY != null && onLedgerGrid(t.ledgerY)
+        ? { x0: c.bbox.x, y0: t.ledgerY, x1: c.bbox.x + c.bbox.w - 1, y1: t.ledgerY, lw: unit.lineThick, maxLw: unit.lineThick }
         : null;
     let code: SmuflName;
     if (fill >= FILL_SOLID) code = "noteheadBlack";
@@ -181,7 +181,7 @@ export function findRasterHeads(
  * 剪的判据：那一列的墨迹高度不超过两倍线宽，就是加线自己的列。
  * 符头那几列有一整个椭圆的高度，剪不掉。
  */
-function trimLedger(bin: Binary, b: Rect, unit: RasterUnit): { box: Rect; area: number; trimmed: boolean } {
+function trimLedger(bin: Binary, b: Rect, unit: RasterUnit): { box: Rect; area: number; trimmed: boolean; ledgerY: number | null } {
   const thin = Math.max(2, unit.lineThick * 2);
   const colH = new Int32Array(b.w);
   for (let x = 0; x < b.w; x++) {
@@ -193,7 +193,7 @@ function trimLedger(bin: Binary, b: Rect, unit: RasterUnit): { box: Rect; area: 
   while (l < b.w && colH[l] > 0 && colH[l] <= thin) l++;
   let r = b.w - 1;
   while (r > l && colH[r] > 0 && colH[r] <= thin) r--;
-  if (l >= r) return { box: b, area: colH.reduce((a, v) => a + v, 0), trimmed: false };
+  if (l >= r) return { box: b, area: colH.reduce((a, v) => a + v, 0), trimmed: false, ledgerY: null };
   // 纵向也收一收：剪完之后重算上下沿
   let top = b.h;
   let bottom = -1;
@@ -206,8 +206,23 @@ function trimLedger(bin: Binary, b: Rect, unit: RasterUnit): { box: Rect; area: 
         if (y > bottom) bottom = y;
       }
   const trimmed = l > 0 || r < b.w - 1;
-  if (bottom < top) return { box: b, area, trimmed };
-  return { box: { x: b.x + l, y: b.y + top, w: r - l + 1, h: bottom - top + 1 }, area, trimmed };
+  // **剪掉那几列的墨的 y 就是加线的 y。** 不能拿符头中心代替：
+  // 符头骑在加线上时两者的确差不多，但符头落在加线**上方那一间**时差半格，
+  // `ledgerGrid` 的四分之一格容差一卡，加线就被丢掉——而这正是最常见的一档
+  //（实测未认领的符头里「需要 1 条加线、找到 0 条」占 159/259）。
+  let ly = 0;
+  let ln = 0;
+  for (let x = 0; x < b.w; x++) {
+    if (x >= l && x <= r) continue;
+    for (let y = 0; y < b.h; y++)
+      if (bin.data[(b.y + y) * bin.w + b.x + x]) {
+        ly += b.y + y;
+        ln++;
+      }
+  }
+  const ledgerY = ln ? ly / ln : null;
+  if (bottom < top) return { box: b, area, trimmed, ledgerY };
+  return { box: { x: b.x + l, y: b.y + top, w: r - l + 1, h: bottom - top + 1 }, area, trimmed, ledgerY };
 }
 
 /** 贴在这个符头左缘或右缘、且纵向相交的竖段。 */
