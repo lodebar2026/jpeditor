@@ -22,7 +22,14 @@ export interface StaffToken {
 
 /** 两个签名算不算同一行谱（`StaffToken::operator==`）。 */
 export function sameToken(a: StaffToken, b: StaffToken): boolean {
-  return a.clef === b.clef && a.size === b.size && a.topOfBrace === b.topOfBrace && a.bottomOfBrace === b.bottomOfBrace;
+  if (a.size !== b.size) return false;
+  // 谱号**没认出来**的行不拿谱号否决：认不出是识别的事，不该逼出一条新谱表
+  //（实测宁静 100 行里有 3 行认不出，那三行把一条谱表劈成了两条）。
+  if (a.clef && b.clef && a.clef !== b.clef) return false;
+  const na = !a.topOfBrace && !a.bottomOfBrace;
+  const nb = !b.topOfBrace && !b.bottomOfBrace;
+  if (na || nb) return true;
+  return a.topOfBrace === b.topOfBrace && a.bottomOfBrace === b.bottomOfBrace;
 }
 
 /** 给一行谱做签名。 */

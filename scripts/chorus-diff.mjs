@@ -237,18 +237,28 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
         console.log(`    错型: 读错 ${t.sub}  漏掉 ${t.del}  多出 ${t.ins}  （对上 ${t.eq}）`);
       }
     }
+    // **游离音符**：没配上任何 GT 谱表的那些识别谱表里的音。
+    //
+    // 只看 `noteAcc` 会**奖励碎片化**：跨系统连接一断，一条谱表碎成好几条，
+    // 贪心配对给每个 GT 谱表挑一段最像的，剩下那些碎片一个音都不付代价
+    // ——实测破碎碎成 13 条时 64.2%，正确连成 8 条反而 58.8%。
+    // 把游离的音记进分母，「碎着蒙分」这条路就堵死了：
+    // 一份好的输出应当**每个音都在，且都在对的那一路上**。
+    const pairedGot = new Set(pairs.map((p) => p.i));
+    const strayNotes = got.reduce((a, p, i) => a + (pairedGot.has(i) ? 0 : p.seq.length), 0);
     const row = {
       song: song.name, file, staves, clean: cleanPages >= allPages * 0.8,
       gtParts: gt.length, gotParts: got.length, scoreParts: nParts, paired: pairs.length,
-      gtNotes: gtTotal, gotNotes: gotTotal,
+      gtNotes: gtTotal, gotNotes: gotTotal, strayNotes,
       noteAcc: wd ? (wn / wd) * 100 : 0, letterAcc: wd ? (wl / wd) * 100 : 0,
+      noteAccAll: wd + strayNotes ? (wn / (wd + strayNotes)) * 100 : 0,
       barFull: bars ? (full / bars) * 100 : 0, bars, unknown,
       lyricAcc: wyd && lyricOcr ? (wy / wyd) * 100 : null,
       lyricChars: wyd,
     };
     rows.push(row);
     console.log(`${row.clean ? "[干净]" : "[扫描]"} ${song.name}/${file}  谱行${staves} 声部 ${got.length}↔${gt.length}(配上${pairs.length}，buildScore ${nParts})  ` +
-      `音符 ${gotTotal}/${gtTotal}  准确率 ${row.noteAcc.toFixed(1)}%  音级 ${row.letterAcc.toFixed(1)}%  ` +
+      `音符 ${gotTotal}/${gtTotal}  准确率 ${row.noteAcc.toFixed(1)}%（含游离 ${row.noteAccAll.toFixed(1)}%，游离 ${strayNotes}）  音级 ${row.letterAcc.toFixed(1)}%  ` +
       `小节自检 ${row.barFull.toFixed(1)}%（${bars} 小节）` +
       (row.lyricAcc != null ? `  歌词 ${row.lyricAcc.toFixed(1)}%（GT ${row.lyricChars} 字）` : ""));
   }
@@ -292,11 +302,14 @@ const withGt = clean.filter((r) => r.noteAcc !== null);
 const summary = {
   clean: clean.length,
   noteAcc: avg(withGt, "noteAcc"),
+  // **把游离音符记进分母的那一档**：跨系统连接对不对，看这个数，别看 `noteAcc`
+  // ——后者会奖励碎片化（见 `strayNotes` 那段说明）。
+  noteAccAll: avg(withGt, "noteAccAll"),
   letterAcc: avg(withGt, "letterAcc"),
   barFull: avg(clean, "barFull"),
   lyricAcc: avg(clean.filter((r) => r.lyricAcc != null), "lyricAcc"),
 };
-console.log(`\n【干净位图】${clean.length} 份（有 GT ${withGt.length} 份）：音符 ${summary.noteAcc}%、音级 ${summary.letterAcc}%；小节自检 ${summary.barFull}%` +
+console.log(`\n【干净位图】${clean.length} 份（有 GT ${withGt.length} 份）：音符 ${summary.noteAcc}%（含游离 ${summary.noteAccAll}%）、音级 ${summary.letterAcc}%；小节自检 ${summary.barFull}%` +
   (summary.lyricAcc ? `；歌词 ${summary.lyricAcc}%` : ""));
 if (scan.length) {
   const sg = scan.filter((r) => r.noteAcc !== null);
