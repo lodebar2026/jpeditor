@@ -2,7 +2,7 @@
 //
 // musicpp 到「打标」为止就结束了（它的 toxml.cpp 不导出这些）；
 // 「挂到音符上、写进 MusicXML」是本仓新加的。
-import { SPage, Sym } from "./model";
+import { SPage, Seg, Sym } from "./model";
 import type { BeamShape, StaffNote, StemInfo } from "./notedata";
 import { objText } from "./textanalyze";
 
@@ -104,39 +104,137 @@ export function findTuplets(pg: SPage, beams: BeamShape[], stems: StemInfo[], no
   }
   if (!nums.length) return 0;
 
+  // 每条符杠盖住的那撮音符，以及它们的**包围盒**——判「这个数字属于哪一组」要用它。
+  const groupOf = new Map<BeamShape, { notes: Set<StaffNote>; top: number; bottom: number }>();
+  for (const st of stems) {
+    for (const b of st.beams) {
+      let g = groupOf.get(b);
+      if (!g) {
+        g = { notes: new Set(), top: Infinity, bottom: -Infinity };
+        groupOf.set(b, g);
+      }
+      for (const s of st.notes) {
+        const n = notes.find((x) => x.sym === s);
+        if (!n) continue;
+        g.notes.add(n);
+        g.top = Math.min(g.top, n.sym.box.top);
+        g.bottom = Math.max(g.bottom, n.sym.box.bottom);
+      }
+    }
+  }
+  const sp = pg.normalStaffSpace || pg.space;
+
   let found = 0;
   for (const num of nums) {
     let best: BeamShape | undefined;
     let bd = Infinity;
     for (const b of beams) {
       if (num.cx < b.x0 - num.w || num.cx > b.x1 + num.w) continue;
-      const cy = (b.box.top + b.box.bottom) / 2;
-      const dy = Math.abs(num.cy - cy);
-      if (dy > num.h * 2) continue;
+      const g = groupOf.get(b);
+      if (!g || !g.notes.size) continue;
+      // **量到这一组符头的盒，不是量到符杠中心线**。
+      //
+      // 连音数字印在符头的**另一侧**：符干朝下时符杠在下、数字在上，
+      // 中间隔着整个谱表加两截符干——实测 Opus 那本 p726 是 5.5~9.8 格，
+      // 原来那道 `dy > num.h * 2`（约 2.7 格）把它们全挡掉了，
+      // 一页 34 个三连音只收进 8 个，剩下的时值全按普通八分算，
+      // 整小节自然凑不满（差额恰好是三连音的修正量）。
+      //
+      // 换成量到符头盒还顺带治好另一种误配：x 区间重叠、但在**别的谱行**上的符杠
+      // （同一页上下两行的 x 范围本来就一样），那种 dy 是 39~48 格，照样出局。
+      // 量到「**符头盒 ∪ 符杠盒**」这个并集，容差一格半。
+      //
+      // 连音数字总是贴在这一组的**外缘**，但贴哪一边看符干朝向：
+      // 符干朝上时符杠在上、数字压在符杠上方；符干朝下时符杠在下、数字在符头上方。
+      // 只量到符杠中心线，后一种就差着整个谱表加两截符干（实测 Opus p726 是
+      // 5.5~9.8 格），34 个三连音只收进 8 个；只量到符头盒，前一种又差着一截符干
+      // （实测 p132 原本收到的 7 组全丢）。取两者的**较小值**也不行——那等于把两个
+      // 宽门槛并起来，假连音跟着涌进来（实测 Maestro 一下掉 60 个小节）。
+      // 量到并集才既覆盖两种摆法、又不放宽：数字无论贴哪一边，离并集都只有一格半。
+      // 容差扫过 1.5 / 2 / 2.5 格，**1.5 格最好**（全书 91.4% / 91.1% / 90.7%）——
+      // 再放宽收到的 Opus 那十来个小节，抵不过 Maestro 涌进来的假连音。
+      const top = Math.min(g.top, b.box.top);
+      const bottom = Math.max(g.bottom, b.box.bottom);
+      const dy = num.cy < top ? top - num.cy : num.cy > bottom ? num.cy - bottom : 0;
+      if (dy > sp * 1.5) continue;
       if (dy < bd) {
         bd = dy;
         best = b;
       }
     }
-    if (!best) continue;
+    if (!best) {
+      // **没有符杠的连音**：四分音符以上的连音不打符杠，改画一条**方括号**
+      // （一条横线、两端各一截朝符头的短竖，中间被数字断开）。
+      // 实测 p30/p31/p132/p133/p172 整页的三连音都是这一种，靠符杠一个也收不到。
+      const grp = bracketGroup(pg, num, notes, sp);
+      if (!grp) continue;
+      found++;
+      applyTuplet(grp, num.n);
+      continue;
+    }
     found++;
     // 该符杠盖住的那些符干上的音符，全算进这一组连音
-    const marked = new Set<StaffNote>();
-    for (const st of stems) {
-      if (!st.beams.includes(best)) continue;
-      for (const s of st.notes) {
-        const n = notes.find((x) => x.sym === s);
-        if (n) marked.add(n);
-      }
-    }
-    // 三连音是「n 个音占 n-1 个音的时值」（3:2、6:4），按 musicxml 的惯例取最近的二次幂
-    const normal = num.n === 3 ? 2 : num.n === 6 ? 4 : num.n === 5 ? 4 : num.n === 7 ? 4 : num.n - 1;
-    for (const n of marked) {
-      n.tuplet = { actual: num.n, normal };
-      n.duration = (n.duration * normal) / num.n;
-    }
+    const marked = new Set<StaffNote>(groupOf.get(best)!.notes);
+    applyTuplet(marked, num.n);
   }
   return found;
+}
+
+/** 三连音是「n 个音占 n-1 个音的时值」（3:2、6:4），按 musicxml 的惯例取最近的二次幂。 */
+function applyTuplet(marked: Iterable<StaffNote>, n: number): void {
+  const normal = n === 3 ? 2 : n === 6 ? 4 : n === 5 ? 4 : n === 7 ? 4 : n - 1;
+  for (const x of marked) {
+    x.tuplet = { actual: n, normal };
+    x.duration = (x.duration * normal) / n;
+  }
+}
+
+/**
+ * 连音**方括号**那一路：数字左右各有一截横线，两截同高、在数字两侧。
+ *
+ * 判据（都按线距 `sp` 量，别写绝对点值）：
+ *   - 两截横线的 y 差不到半格（同一条括号被数字断成两截）；
+ *   - 它们的 y 与数字中心差不到一格半（数字是嵌在括号里的）；
+ *   - 一截在数字左、一截在数字右，间隙都不超过两格。
+ *
+ * 括号跨度定出音符范围之后，取**跨度内、离数字最近的那一行谱**上的音符。
+ * 只有正好 `n` 个才认——多了少了都说明括号找错了，宁可不认（不认只是这一组
+ * 时值偏长，认错会把邻组的时值一起改坏）。
+ */
+function bracketGroup(pg: SPage, num: { n: number; cx: number; cy: number; w: number; h: number }, notes: StaffNote[], sp: number): StaffNote[] | null {
+  let left: Seg | null = null;
+  let right: Seg | null = null;
+  for (const g of pg.segs) {
+    if (g.hasAnyTag() || !g.isH) continue;
+    if (Math.abs(g.cy - num.cy) > sp * 1.5) continue;
+    if (g.right <= num.cx && num.cx - g.right < sp * 2) {
+      if (!left || g.right > left.right) left = g;
+    } else if (g.left >= num.cx && g.left - num.cx < sp * 2) {
+      if (!right || g.left < right.left) right = g;
+    }
+  }
+  if (!left || !right) return null;
+  if (Math.abs(left.cy - right.cy) > sp * 0.5) return null;
+  const x0 = left.left;
+  const x1 = right.right;
+  // 括号下（或上）方那一行谱：取跨度内音符最多的那行
+  const inSpan = notes.filter((n) => n.x >= x0 - sp && n.x <= x1 + sp);
+  if (!inSpan.length) return null;
+  const cnt = new Map<StaffNote["staff"], StaffNote[]>();
+  for (const n of inSpan) {
+    const a = cnt.get(n.staff) ?? [];
+    a.push(n);
+    cnt.set(n.staff, a);
+  }
+  let best: StaffNote[] | null = null;
+  for (const [stf, arr] of cnt) {
+    if (arr.length !== num.n) continue;
+    // 数字要在这行谱的上下一个谱表高之内（跨行的同 x 括号不能算）
+    const h = stf.box.bottom - stf.box.top;
+    if (num.cy < stf.box.top - h || num.cy > stf.box.bottom + h) continue;
+    if (!best || arr.length < best.length) best = arr;
+  }
+  return best;
 }
 
 /** SMuFL 力度名 → MusicXML `<dynamics>` 的子元素名。 */
