@@ -36,8 +36,16 @@ export interface LyricStaff {
 const CHAR_MIN = 0.7;
 const CHAR_MAX = 2.4;
 
+/** 断行的空白：相邻两个块的纵向中心差过这么多（相对线距）才算换了一行。
+ *  扫过 0.45 / 0.6 / 0.75 / 0.9 / 1.1 / 1.4：歌词 71.14 / 71.19 / 71.34 / 71.34 /
+ *  71.34 / 71.39%——0.75 往上是一整片平台，取中间的 0.9。
+ *  再往上会把相邻两段词并成一行（两段的中心差约 1.5 格），平台就到头了。 */
+const ROW_GAP = 0.9;
+
 /** 一行歌词至少要有几个字格才算数（少于这个多半是力度记号、小节号一类）。 */
 const MIN_CELLS = 3;
+
+const median = (a: number[]) => (a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : 0);
 
 const rbottom = (r: Rect) => r.y + r.h;
 const rright = (r: Rect) => r.x + r.w;
@@ -51,6 +59,8 @@ const rright = (r: Rect) => r.x + r.w;
  */
 export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: RasterUnit): LyricRow[] {
   const out: LyricRow[] = [];
+  /** 先按几何切一遍，**全页的字宽要等切完才量得出来**，剔假字格是第二遍的事。 */
+  const raw: LyricRow[] = [];
   const sp = unit.space;
   for (let i = 0; i < staves.length; i++) {
     const st = staves[i];
@@ -66,13 +76,31 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
     });
     if (band.length < MIN_CELLS) continue;
     for (const row of splitRows(band, sp)) {
-      // 这一行的字号：块高的中位数×一个经验放大（偏旁比整字矮）
-      const hs = row.map((c) => c.bbox.h).sort((a, b) => a - b);
-      const charH = Math.max(hs[hs.length >> 1], sp * CHAR_MIN);
+      // 这一行的字号：块高的中位数（偏旁比整字矮，所以只是个初值，下面还要按字格改）
+      const charH = Math.max(median(row.map((c) => c.bbox.h)), sp * CHAR_MIN);
       const cells = mergeToChars(row, charH).filter((r) => r.h >= sp * CHAR_MIN * 0.5);
       if (cells.length < MIN_CELLS) continue;
-      out.push({ staffIndex: i, verse: 0, cells, charH });
+      raw.push({ staffIndex: i, verse: 0, cells, charH });
     }
+  }
+
+  // ── 字号按**全页字宽**重算 ────────────────────────────────────────────────
+  //
+  // 逐行那个初值是**偏旁块高**的中位数，偏小（偏旁比整字矮）。汉字是等宽的，
+  // 所以先量出全页的字宽，再只拿「宽度接近一个字」的那些格去量字高
+  // ——照简谱那条路 `src/omr/lyrics.ts` 的 `charW` / `candH`。
+  //
+  // > **拿这个字宽去剔假字格，试过两条，都是净亏。**
+  // > ① 宽度闸（丢掉 `w` 不在 0.55~1.7 字宽的格）：歌词 71.2% → **67.2%**；
+  // > ② 中心 y 对齐闸（丢掉偏离行中位数超过 0.35 字高的格）：71.2% → **65.6%**。
+  // > 原因是同一个字的偏旁**并不总能并成一格**（实测一行里既有 5px 的碎片
+  // > 也有 37px 的两字连体），按宽度或对齐去砍，砍掉的多是真字的一半。
+  // > 整行送 OCR 时那些碎片有上下文兜着，反而认得回来。
+  const charW = median(raw.flatMap((r) => r.cells.map((c) => c.w)));
+  for (const r of raw) {
+    const near = r.cells.filter((c) => c.w >= charW * 0.7 && c.w <= charW * 1.3);
+    const charH = Math.max(median(near.map((c) => c.h)), sp * CHAR_MIN);
+    out.push({ ...r, charH });
   }
   // 同一个谱行下面的几行按 y 编 verse 号
   const byStaff = new Map<number, LyricRow[]>();
@@ -91,26 +119,27 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
 /**
  * 把一条带里的块按 y 分成若干行。
  *
- * 判据：块的**纵向中心**落在同一条 0.9 个字高的窗口里算同一行。
+ * 判据：按块的**纵向中心**排序，**相邻两个中心之间拉开一段空白**才断行。
  * 不能按包围盒重叠判——「一」那种只有一横的字与相邻字纵向不重叠，会被分到别的行去。
+ *
+ * **不能用「离本行第一个块不超过 0.9 格」那种定宽窗口**（原来那一版）：一行歌词里
+ * 各块的中心本来就散得开——「宀」的头在上、「，」在下、「一」在中间，字高又常有
+ * 1.2 格，整行的中心跨度轻松超过 0.9 格。于是同一行歌词被劈成两行，两边各拿到
+ * 半拉偏旁，OCR 出来是同一句词的两个残本（实测宁静 p3 那行「平安的夜已深」
+ * 被切成 13 格与 12 格两条，都挂上了谱行 #9），字格宽度也全成了碎片。
  */
 function splitRows(band: Component[], sp: number): Component[][] {
   const sorted = [...band].sort((a, b) => a.cy - b.cy);
   const rows: Component[][] = [];
   let cur: Component[] = [];
-  let base = 0;
+  let prev = 0;
   for (const c of sorted) {
-    if (!cur.length) {
-      cur = [c];
-      base = c.cy;
-      continue;
-    }
-    if (c.cy - base <= sp * 0.9) cur.push(c);
-    else {
+    if (cur.length && c.cy - prev > sp * ROW_GAP) {
       rows.push(cur);
-      cur = [c];
-      base = c.cy;
+      cur = [];
     }
+    cur.push(c);
+    prev = c.cy;
   }
   if (cur.length) rows.push(cur);
   return rows.filter((r) => r.length >= MIN_CELLS);
