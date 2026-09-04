@@ -107,6 +107,36 @@ export interface RasterSym {
   code: SmuflName;
 }
 
+/** 位图 OCR 出来的一行文本（歌词）：逐字格的盒 + 字符。 */
+export interface RasterText {
+  cells: { box: Rect; ch: string }[];
+  /** 字号（字格高的中位数）。`analyzeText` 与 `splitSyllables` 都读它。 */
+  sizeDev: number;
+}
+
+/**
+ * 合成一个文本对象。字体名用 `RASTER_TEXT_FONT`（`musicFamily` 认不出它，
+ * `findSymbols` 不会来碰），`unicode` 就是 OCR 出来的字。
+ *
+ * 查不到字的格**留空**（`unicode: ""`），不编造——与矢量路那条同一个规矩
+ * （`splitSyllables` 会把空音节丢掉）。
+ */
+export const RASTER_TEXT_FONT = "#ocr";
+
+export function makeTextObj(id: number, t: RasterText): PObj {
+  const left = Math.min(...t.cells.map((c) => c.box.x));
+  const right = Math.max(...t.cells.map((c) => c.box.x + c.box.w));
+  const top = Math.min(...t.cells.map((c) => c.box.y));
+  const bottom = Math.max(...t.cells.map((c) => c.box.y + c.box.h));
+  const run = fakeRun(id, { x: left, y: top, w: right - left, h: bottom - top }, t.sizeDev, RASTER_TEXT_FONT);
+  for (const c of t.cells) {
+    const g = fakeGlyph(c.box);
+    g.unicode = c.ch;
+    run.glyphs.push(g);
+  }
+  return new PObj(id, null, run);
+}
+
 export interface AdaptInput {
   index: number;
   width: number;
