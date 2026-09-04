@@ -152,11 +152,15 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     const file = pdf.split("/").pop();
     const { doc, OPS } = await openPdf(pdf);
     const entries = [];
-    let carry, bars = 0, full = 0, unknown = 0, staves = 0;
+    let carry, bars = 0, full = 0, unknown = 0, staves = 0, cleanPages = 0, allPages = 0;
     await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (page, pn) => {
       const r = await cli.recognizeRasterPage(page, OPS, look, pn, { carryTime: carry });
       carry = r.carryTime;
       if (!r.hasStaff) return;
+      allPages++;
+      // **分档**：干净位图（排版软件贴的图）线宽不到线距的两成；真扫描件（Xerox/手机拍）
+      // 线更粗、还带倾斜。判据与 `gen-rasterglyphs.mjs` 建库那道闸同口径。
+      if (r.unit && r.unit.lineThick <= r.unit.space * 0.2) cleanPages++;
       entries.push({ page: r.page, ctx: r.ctx, notes: r.notes });
       bars += r.bars.length;
       full += r.bars.filter((b) => b.full).length;
@@ -179,16 +183,24 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       if (verbose) {
         console.log(`  ${got[p.i].id}(${got[p.i].seq.length}) ↔ ${gt[p.j].id}(${g.length})  音符 ${(p.a * 100).toFixed(1)}%`);
         if (args.includes("--dump")) console.log("    " + alignText(got[p.i].seq, g, 80));
+        // 分段看：准确率是开头就低，还是越往后越漂
+        const seg = [];
+        for (let t = 0; t < 4; t++) {
+          const n = Math.ceil(g.length / 4);
+          seg.push((acc(got[p.i].seq.slice(t * n, (t + 1) * n), g.slice(t * n, (t + 1) * n)) * 100).toFixed(0) + "%");
+        }
+        console.log(`    四等分: ${seg.join(" ")}`);
       }
     }
     const row = {
-      song: song.name, file, staves, gtParts: gt.length, gotParts: got.length, scoreParts: nParts, paired: pairs.length,
+      song: song.name, file, staves, clean: cleanPages >= allPages * 0.8,
+      gtParts: gt.length, gotParts: got.length, scoreParts: nParts, paired: pairs.length,
       gtNotes: gtTotal, gotNotes: gotTotal,
       noteAcc: wd ? (wn / wd) * 100 : 0, letterAcc: wd ? (wl / wd) * 100 : 0,
       barFull: bars ? (full / bars) * 100 : 0, bars, unknown,
     };
     rows.push(row);
-    console.log(`${song.name}/${file}  谱行${staves} 声部 ${got.length}↔${gt.length}(配上${pairs.length}，buildScore ${nParts})  ` +
+    console.log(`${row.clean ? "[干净]" : "[扫描]"} ${song.name}/${file}  谱行${staves} 声部 ${got.length}↔${gt.length}(配上${pairs.length}，buildScore ${nParts})  ` +
       `音符 ${gotTotal}/${gtTotal}  准确率 ${row.noteAcc.toFixed(1)}%  音级 ${row.letterAcc.toFixed(1)}%  ` +
       `小节自检 ${row.barFull.toFixed(1)}%（${bars} 小节）`);
   }
@@ -199,11 +211,13 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
   if (song.gt) continue;
   for (const pdf of song.pdfs) {
     const { doc, OPS } = await openPdf(pdf);
-    let carry, notes = 0, bars = 0, full = 0, staves = 0, unknown = 0;
+    let carry, notes = 0, bars = 0, full = 0, staves = 0, unknown = 0, cleanPages = 0, allPages = 0;
     await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (page, pn) => {
       const r = await cli.recognizeRasterPage(page, OPS, look, pn, { carryTime: carry });
       carry = r.carryTime;
       if (!r.hasStaff) return;
+      allPages++;
+      if (r.unit && r.unit.lineThick <= r.unit.space * 0.2) cleanPages++;
       notes += r.notes.length;
       bars += r.bars.length;
       full += r.bars.filter((b) => b.full).length;
@@ -211,8 +225,8 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       unknown += r.unknown;
     });
     if (!bars) continue;
-    rows.push({ song: song.name, file: pdf.split("/").pop(), staves, gtParts: 0, gotParts: 0, paired: 0, gtNotes: 0, gotNotes: notes, noteAcc: null, letterAcc: null, barFull: (full / bars) * 100, bars, unknown });
-    console.log(`${song.name}/${pdf.split("/").pop()}  谱行${staves} 音符${notes} 小节自检 ${((full / bars) * 100).toFixed(1)}%（${bars} 小节）  无 GT`);
+    rows.push({ song: song.name, file: pdf.split("/").pop(), staves, clean: cleanPages >= allPages * 0.8, gtParts: 0, gotParts: 0, paired: 0, gtNotes: 0, gotNotes: notes, noteAcc: null, letterAcc: null, barFull: (full / bars) * 100, bars, unknown });
+    console.log(`${cleanPages >= allPages * 0.8 ? "[干净]" : "[扫描]"} ${song.name}/${pdf.split("/").pop()}  谱行${staves} 音符${notes} 小节自检 ${((full / bars) * 100).toFixed(1)}%（${bars} 小节）  无 GT`);
   }
 }
 
@@ -220,14 +234,24 @@ await mkdir("staff-out", { recursive: true });
 await writeFile("staff-out/chorus-diff.json", JSON.stringify(rows, null, 1));
 
 // ── 基线守门 ────────────────────────────────────────────────────────────────
-const withGt = rows.filter((r) => r.noteAcc !== null);
+// **分档汇总**：基线只守**干净位图**那一档（排版软件贴的图，本轮的目标）。
+// 真扫描件（破碎.pdf 是 Xerox 300dpi、主，差遣我是 JPEG 200dpi）倾斜三四个像素、
+// 谱线找不齐，混进平均会把干净那一档的涨跌淹掉——它们另记，不入基线。
+const clean = rows.filter((r) => r.clean);
+const scan = rows.filter((r) => !r.clean);
+const avg = (a, k) => (a.length ? +(a.reduce((x, r) => x + r[k], 0) / a.length).toFixed(2) : 0);
+const withGt = clean.filter((r) => r.noteAcc !== null);
 const summary = {
-  songs: rows.length,
-  noteAcc: +(withGt.reduce((a, r) => a + r.noteAcc, 0) / Math.max(withGt.length, 1)).toFixed(2),
-  letterAcc: +(withGt.reduce((a, r) => a + r.letterAcc, 0) / Math.max(withGt.length, 1)).toFixed(2),
-  barFull: +(rows.reduce((a, r) => a + r.barFull, 0) / Math.max(rows.length, 1)).toFixed(2),
+  clean: clean.length,
+  noteAcc: avg(withGt, "noteAcc"),
+  letterAcc: avg(withGt, "letterAcc"),
+  barFull: avg(clean, "barFull"),
 };
-console.log(`\n合计：有 GT ${withGt.length} 份，音符 ${summary.noteAcc}%、音级 ${summary.letterAcc}%；小节自检（全部 ${rows.length} 份）${summary.barFull}%`);
+console.log(`\n【干净位图】${clean.length} 份（有 GT ${withGt.length} 份）：音符 ${summary.noteAcc}%、音级 ${summary.letterAcc}%；小节自检 ${summary.barFull}%`);
+if (scan.length) {
+  const sg = scan.filter((r) => r.noteAcc !== null);
+  console.log(`【真扫描件】${scan.length} 份（有 GT ${sg.length} 份）：音符 ${avg(sg, "noteAcc")}%、音级 ${avg(sg, "letterAcc")}%；小节自检 ${avg(scan, "barFull")}%　——另记，不入基线`);
+}
 
 if (args.includes("--bless")) {
   await mkdir("testdata/合唱谱", { recursive: true });
@@ -241,7 +265,7 @@ if (args.includes("--bless")) {
     console.log("（还没有基线，`--bless` 立一个）");
   }
   if (base) {
-    const worse = Object.keys(summary).filter((k) => k !== "songs" && summary[k] < base[k] - 0.005);
+    const worse = Object.keys(summary).filter((k) => k !== "clean" && k !== "songs" && summary[k] < base[k] - 0.005);
     console.log(`基线：${Object.entries(base).map(([k, v]) => `${k}=${v}`).join(" ")}`);
     if (worse.length) {
       console.log(`✗ 比基线差的档：${worse.map((k) => `${k} ${base[k]}→${summary[k]}`).join("，")}`);
