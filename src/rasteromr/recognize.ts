@@ -14,10 +14,12 @@ import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars
 import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
 import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
-import { buildRasterPage, type RasterSym } from "./adapt";
+import { buildRasterPage, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, findBlobs, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad } from "./prims";
 import { findRasterHeads } from "./notehead";
 import { bootstrapClefs, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
+import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
+import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
 import { rasterizePage, type RasterPage } from "./rasterpage";
 
@@ -32,6 +34,8 @@ export interface RasterPageResult {
   beams: BeamShape[];
   notes: StaffNote[];
   bars: BarCheck[];
+  /** 认出来的歌词行（没接 OCR 字典时为空）。 */
+  lyricLines: LyricLine[];
   carryTime?: { beats: number; beatType: number };
 }
 
@@ -45,6 +49,7 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   beams: [],
   notes: [],
   bars: [],
+  lyricLines: [],
   carryTime,
 });
 
@@ -64,7 +69,18 @@ export async function recognizeRasterPage(
   OPS: any,
   look: RasterGlyphLookup,
   index: number,
-  opts: { carryTime?: { beats: number; beatType: number } } = {},
+  opts: {
+    carryTime?: { beats: number; beatType: number };
+    /**
+     * 歌词条的 OCR 结果，**按条的内容指纹寻址**（`stripKey`）。
+     *
+     * 直接用 OCR 的文本，不做形状聚类——聚类那一版实测把四成多的字格丢在
+     * 「类里投不出过半票」上（覆盖 52%，歌词 35%）。
+     * 缓存由 `scripts/gen-rasterlyrics.mjs` 生成：起一次浏览器把全语料的条跑完落盘，
+     * 之后识别命中缓存，仍然不起浏览器。
+     */
+    lyricOcr?: Map<string, OcrChar[]>;
+  } = {},
 ): Promise<RasterPageResult> {
   const raster = await rasterizePage(pdfPage, OPS);
   const blank = buildRasterPage({ index, width: raster?.bin.w ?? 1, height: raster?.bin.h ?? 1, unit: { lineThick: 1, space: 1, height: 4 }, staffLines: [], hSegs: [], vSegs: [] });
@@ -85,10 +101,12 @@ export async function recognizeRasterPage(
   const heads = findRasterHeads(nl, blobs, prims.vSegs, unit, onGrid);
   const claimed = new Set(heads.map((h) => h.comp.id));
   const syms: RasterSym[] = heads.map((h) => ({ box: h.box, code: h.code }));
+  const dictClaimed = new Set<number>();
   for (const c of blobs) {
     if (claimed.has(c.id)) continue;
     const code = look.lookup(binSig(nl, c.bbox), c.bbox.w / unit.space, c.bbox.h / unit.space);
     if (!code) continue;
+    dictClaimed.add(c.id);
     // **半/全休止要按位置验一道**：它的字形是个 1.27×0.51 格的小实心矩形，
     // 位图上这种碎块一大把（符杠断头、粗横笔的一截），实测宁静一首认出 43 个
     // 全部被采纳，而谱面上根本没那么多。它有一条硬位置：
@@ -141,6 +159,37 @@ export async function recognizeRasterPage(
   const stems: StemInfo[] = [];
   const notes = buildNotes(pg, ctx, beams, stems);
   findTuplets(pg, beams, stems, notes);
+
+  // ── 歌词 ────────────────────────────────────────────────────────────────
+  //
+  // **不走 `analyzeText`**：那一步靠「带连字符的音节」「音节间的延长线」当锚点
+  // 把文本认成歌词，中文逐字一个音节、既不连字也不拉线，一整行一个锚点都没有。
+  // 位图这边本来就是**按位置**切出歌词带的（谱行下方那条带），身份已经确定，
+  // 直接造成文本对象交给 `buildLyricLines` / `attachLyrics`——那两步原样跑。
+  const lyricLines: LyricLine[] = [];
+  if (opts.lyricOcr) {
+    const rows = findLyricRows(
+      blobs.filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id)),
+      pg.staves.map((st) => ({ top: st.box.top, bottom: st.box.bottom, left: st.box.left, right: st.box.right })),
+      unit,
+    );
+    const objs = [];
+    for (const row of rows) {
+      const strip = stripOf(nl, row);
+      if (!strip) continue;
+      const chars = opts.lyricOcr.get(stripKey(strip));
+      if (!chars) continue; // 缓存没命中：这一条没跑过 OCR，宁可留空不编造
+      const cells = mapCharsToCells(strip, chars);
+      if (!cells.some((c) => c.ch)) continue;
+      const o = makeTextObj(pg.objs.length + objs.length, { cells, sizeDev: strip.charH });
+      o.addTag("Lyric");
+      objs.push(o);
+    }
+    pg.objs.push(...objs);
+    lyricLines.push(...buildLyricLines(pg, objs));
+    attachLyrics(notes, lyricLines);
+  }
+
   return {
     page: pg,
     hasStaff: true,
@@ -151,6 +200,7 @@ export async function recognizeRasterPage(
     beams,
     notes,
     bars: checkBars(pg, ctx, notes, opts.carryTime),
+    lyricLines,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
 }

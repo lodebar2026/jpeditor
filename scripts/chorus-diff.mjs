@@ -15,6 +15,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { openPdf, eachPage, loadCli, loadChorus } from "./node-harness.mjs";
 import { acc, shiftOct, letters } from "./staff-metrics.mjs";
+import { loadT2S } from "./staff-align.mjs";
 
 const args = process.argv.slice(2);
 const argOf = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
@@ -24,6 +25,29 @@ const BASE = "testdata/合唱谱/raster-baseline.json";
 
 const cli = await loadCli();
 const look = new cli.RasterGlyphLookup(JSON.parse(await readFile("src/rasteromr/rasterglyphs.json", "utf8")));
+/** 歌词条的 OCR 缓存（`gen-rasterlyrics.mjs` 的产物）。没有就跳过歌词那一档。 */
+let lyricOcr = null;
+try {
+  lyricOcr = new Map(Object.entries(JSON.parse(await readFile("src/rasteromr/rasterlyrics.json", "utf8"))));
+} catch {
+  console.log("（没有 src/rasteromr/rasterlyrics.json，歌词档跳过——先跑 gen-rasterlyrics.mjs）");
+}
+
+/** 繁→简 + 只留汉字。**谱面是繁体、GT 是简体**，不归一逐字比全是差异
+ *  （实测「寧靜的伯利恆」对「宁静的伯利恒」一个字都对不上）。 */
+const t2s = await loadT2S();
+const cjk = (s0) => t2s(s0).replace(/[^\u4e00-\u9fff]/g, "");
+
+/** GT musicxml → 第一段歌词的汉字串（旧口径，已不用）。 */
+function gtLyric(xml) {
+  const out = [];
+  for (const m of xml.matchAll(/<lyric\b[^>]*>[\s\S]*?<\/lyric>/g)) {
+    const num = /number="(\d+)"/.exec(m[0])?.[1] ?? "1";
+    if (num !== "1") continue;
+    for (const t of m[0].matchAll(/<text>([^<]*)<\/text>/g)) out.push(t[1]);
+  }
+  return out.join("").replace(/[^\u4e00-\u9fff]/g, "");
+}
 
 /**
  * GT musicxml → **逐谱表**的音符序列（`<part>` × `<staff>`）。
@@ -42,6 +66,7 @@ function gtParts(xml) {
   const out = [];
   for (const m of xml.matchAll(/<part\s+id="([^"]+)"[\s\S]*?<\/part>/g)) {
     const byStaff = new Map();
+    const lyrOf = new Map();
     for (const n of m[0].matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
       const seg = n[0];
       if (/<grace\s*\/?>/.test(seg) || /<chord\s*\/?>/.test(seg)) continue;
@@ -49,6 +74,11 @@ function gtParts(xml) {
       const v = /<voice>(\d+)<\/voice>/.exec(seg)?.[1] ?? "1";
       const key = k + "/" + v;
       const seq = byStaff.get(key) ?? [];
+      // 第一段歌词跟着这一路走（与识别侧同口径：歌词挂在音符上）
+      const ly = lyrOf.get(key) ?? [];
+      for (const t of seg.matchAll(/<lyric\b[^>]*number="1"[^>]*>[\s\S]*?<\/lyric>/g))
+        for (const x of t[0].matchAll(/<text>([^<]*)<\/text>/g)) ly.push(x[1]);
+      lyrOf.set(key, ly);
       if (/<rest\s*\/?>/.test(seg)) seq.push("R");
       else {
         const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
@@ -64,7 +94,8 @@ function gtParts(xml) {
       const cur = best.get(st);
       if (!cur || Number(v) < Number(cur.v)) best.set(st, { v, seq });
     }
-    for (const [st, { seq }] of [...best.entries()].sort()) if (seq.length) out.push({ id: `${m[1]}.${st}`, seq });
+    for (const [st, { v, seq }] of [...best.entries()].sort())
+      if (seq.length) out.push({ id: `${m[1]}.${st}`, seq, lyric: cjk((lyrOf.get(st + "/" + v) ?? []).join("")) });
   }
   return out;
 }
@@ -90,6 +121,7 @@ function gotParts(entries) {
   const out = [];
   score.parts.forEach((p, i) => {
     p.scoreStaves.forEach((ss, k) => {
+      let lyric = "";
       // **两边都只取第一声部**。一行谱上写两个声部时，MusicXML 是
       // 「本小节第一声部、`<backup>`、本小节第二声部」写的，而识别侧的音符是按 x 排的
       // ——把两个声部都收进来，两边的序列就交织成不同的样子，比出来的是排列差异
@@ -99,9 +131,10 @@ function gotParts(entries) {
         if (!stf) continue;
         for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === minVoice(stf, byStaff))) {
           seq.push(n.rest ? "R" : n.step + n.octave);
+          for (const l of n.lyrics ?? []) if (l.verse === 1) lyric += l.text;
         }
       }
-      if (seq.length) out.push({ id: `P${i + 1}.${k + 1}`, seq });
+      if (seq.length) out.push({ id: `P${i + 1}.${k + 1}`, seq, lyric: cjk(lyric) });
     });
   });
   return out;
@@ -154,7 +187,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     const entries = [];
     let carry, bars = 0, full = 0, unknown = 0, staves = 0, cleanPages = 0, allPages = 0;
     await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (page, pn) => {
-      const r = await cli.recognizeRasterPage(page, OPS, look, pn, { carryTime: carry });
+      const r = await cli.recognizeRasterPage(page, OPS, look, pn, { carryTime: carry, lyricOcr });
       carry = r.carryTime;
       if (!r.hasStaff) return;
       allPages++;
@@ -174,12 +207,19 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     const gtTotal = gt.reduce((a, p) => a + p.seq.length, 0);
     const gotTotal = got.reduce((a, p) => a + p.seq.length, 0);
     // 逐声部准确率，按 GT 的音符数加权
-    let wn = 0, wl = 0, wd = 0;
+    let wn = 0, wl = 0, wd = 0, wy = 0, wyd = 0;
     for (const p of pairs) {
       const g = gt[p.j].seq;
       wn += p.a * g.length;
       wl += acc(letters(got[p.i].seq), letters(g)) * g.length;
       wd += g.length;
+      // 歌词：逐声部比，按 GT 的字数加权。识别侧的歌词是 `attachLyrics` 挂在音符上的，
+      // 与音符走同一条谱表，所以配对现成。字数太少的谱表（钢琴行）不入分母。
+      const gy = gt[p.j].lyric ?? "";
+      if (gy.length >= 8) {
+        wy += acc([...(got[p.i].lyric ?? "")], [...gy]) * gy.length;
+        wyd += gy.length;
+      }
       if (verbose) {
         console.log(`  ${got[p.i].id}(${got[p.i].seq.length}) ↔ ${gt[p.j].id}(${g.length})  音符 ${(p.a * 100).toFixed(1)}%`);
         if (args.includes("--dump")) console.log("    " + alignText(got[p.i].seq, g, 80));
@@ -198,11 +238,14 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       gtNotes: gtTotal, gotNotes: gotTotal,
       noteAcc: wd ? (wn / wd) * 100 : 0, letterAcc: wd ? (wl / wd) * 100 : 0,
       barFull: bars ? (full / bars) * 100 : 0, bars, unknown,
+      lyricAcc: wyd && lyricOcr ? (wy / wyd) * 100 : null,
+      lyricChars: wyd,
     };
     rows.push(row);
     console.log(`${row.clean ? "[干净]" : "[扫描]"} ${song.name}/${file}  谱行${staves} 声部 ${got.length}↔${gt.length}(配上${pairs.length}，buildScore ${nParts})  ` +
       `音符 ${gotTotal}/${gtTotal}  准确率 ${row.noteAcc.toFixed(1)}%  音级 ${row.letterAcc.toFixed(1)}%  ` +
-      `小节自检 ${row.barFull.toFixed(1)}%（${bars} 小节）`);
+      `小节自检 ${row.barFull.toFixed(1)}%（${bars} 小节）` +
+      (row.lyricAcc != null ? `  歌词 ${row.lyricAcc.toFixed(1)}%（GT ${row.lyricChars} 字）` : ""));
   }
 }
 
@@ -246,8 +289,10 @@ const summary = {
   noteAcc: avg(withGt, "noteAcc"),
   letterAcc: avg(withGt, "letterAcc"),
   barFull: avg(clean, "barFull"),
+  lyricAcc: avg(clean.filter((r) => r.lyricAcc != null), "lyricAcc"),
 };
-console.log(`\n【干净位图】${clean.length} 份（有 GT ${withGt.length} 份）：音符 ${summary.noteAcc}%、音级 ${summary.letterAcc}%；小节自检 ${summary.barFull}%`);
+console.log(`\n【干净位图】${clean.length} 份（有 GT ${withGt.length} 份）：音符 ${summary.noteAcc}%、音级 ${summary.letterAcc}%；小节自检 ${summary.barFull}%` +
+  (summary.lyricAcc ? `；歌词 ${summary.lyricAcc}%` : ""));
 if (scan.length) {
   const sg = scan.filter((r) => r.noteAcc !== null);
   console.log(`【真扫描件】${scan.length} 份（有 GT ${sg.length} 份）：音符 ${avg(sg, "noteAcc")}%、音级 ${avg(sg, "letterAcc")}%；小节自检 ${avg(scan, "barFull")}%　——另记，不入基线`);
