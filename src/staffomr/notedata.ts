@@ -633,6 +633,39 @@ export interface StaffNote {
  * 时值来源，按 musicpp 的口径：符头形状定基本时值（全/二分/四分），
  * 再由**符尾条数**或**穿过符干的符杠条数**逐条减半，最后乘附点。
  */
+/**
+ * 这一行谱的谱号。本行没认出来的，**沿用上一个系统同一位置那行谱的**。
+ *
+ * musicpp 在 `Score::analyzeBarData` 里做同一件事（`middleStep = prev->middleStep`，
+ * `st->prev` 指的就是上一系统的同一行）。矢量路一直没补这一条，是因为那本书的谱号
+ * 几乎都认得出；位图路认不出的有一成半（实测宁静 100 行谱里 15 行），
+ * 不继承就退回 `middleStep = 41`（高音谱号的口径），低音谱行整行的音高全错。
+ *
+ * 只在**系统内的同一位置**之间继承：一个系统里第 k 行是同一个声部，
+ * 声部中途不会换谱号（真换谱号时那一行必然印出来，也就认得出）。
+ */
+function clefFor(pg: SPage, ctx: Map<Staff, StaffContext>, stf: Staff): Sym | null {
+  const own = ctx.get(stf)?.clef;
+  if (own) return own;
+  let si = -1;
+  let ki = -1;
+  for (let i = 0; i < pg.systems.length && si < 0; i++) {
+    const k = pg.systems[i].staves.indexOf(stf);
+    if (k >= 0) {
+      si = i;
+      ki = k;
+    }
+  }
+  if (si < 0) return null;
+  for (let i = si - 1; i >= 0; i--) {
+    const prev = pg.systems[i].staves[ki];
+    if (!prev) continue;
+    const c = ctx.get(prev)?.clef;
+    if (c) return c;
+  }
+  return null;
+}
+
 export function buildNotes(
   pg: SPage,
   ctx: Map<Staff, StaffContext>,
@@ -655,8 +688,8 @@ export function buildNotes(
     if (!s.hasTag("Note") || !s.ownerStaff) continue;
     const stf = s.ownerStaff;
     const rest = isRest(s.code);
-    const c = ctx.get(stf);
-    const mid = c?.clef ? clefMiddleStep(c.clef.code) ?? 41 : 41;
+    const clef = clefFor(pg, ctx, stf);
+    const mid = clef ? clefMiddleStep(clef.code) ?? 41 : 41;
 
     let diatonic = -1;
     let step = "";

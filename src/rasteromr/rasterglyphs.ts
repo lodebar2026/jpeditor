@@ -15,9 +15,10 @@ export interface RasterGlyphClass {
   id: number;
   /** 定案的 SMuFL 名；未定为 null。 */
   smufl: SmuflName | null;
-  /** 定案来源：`bravura` = 拿 Bravura 渲染的模板初标；`manual` = 人工表定的。
-   *  初标只当线索——底本是 Maestro 一系，与 Bravura 不同源，**不能当判据**。 */
-  source: "bravura" | "manual" | null;
+  /** 定案来源，可信度依次递增：
+   *  `template` = 拿矢量路 `glyphmap.json` 的已定案形状类比签名；
+   *  `position` = 按位置自举（谱行开头的次序）；`manual` = 人工表定的。 */
+  source: "template" | "position" | "manual" | null;
   /** 实例数。 */
   count: number;
   /** 宽高的中位数，**归一到线距**。 */
@@ -178,4 +179,170 @@ export function sigToPath(sig: Uint8Array): string {
     }
   }
   return out.join("");
+}
+
+// ── 位置自举 ────────────────────────────────────────────────────────────────
+//
+// 与矢量路 `staffglyphs.ts::bootstrapByTable` 同一个用意（先拿一条独立的线索
+// 给形状类打初标，再人工压尾），但线索不一样：那边有字体码位表可查，
+// 位图这边没有，改用**位置**——谱号、调号、拍号在谱行开头的次序是刻谱的铁律。
+
+/** 一行谱的几何（自举要用）。 */
+export interface BootStaff {
+  left: number;
+  right: number;
+  /** 五条线的 y，从上到下。 */
+  lineYs: number[];
+}
+
+/** 自举出来的一条线索：某个块是什么。 */
+export interface BootHint {
+  /** 块在调用方数组里的下标。 */
+  index: number;
+  code: SmuflName;
+}
+
+/**
+ * 谱行开头的**谱号**：每行谱最左边那个又高又靠前的块。
+ *
+ * 判据（都按线距写）：
+ *   - 横向落在谱行左端起**四个线距**以内——谱号总是紧贴谱行开头；
+ *   - 纵向与谱表相交；
+ *   - 高度至少 1.8 个线距（低音谱号最矮，约 2.2 个）。
+ * 同一行里取**最高**的那个：低音谱号旁边的两个点也满足前两条，但只有 0.3 格高。
+ *
+ * 高音谱号 vs 低音谱号按高度分：高音谱号从谱表下方一路探到上方，
+ * 实测 4.7~5.4 个线距；低音谱号只占上面两格半。门槛取 **3.8 个线距**，
+ * 中间那一段是空的（实测两类之间没有重叠）。
+ */
+export function bootstrapClefs(
+  blobs: { x: number; y: number; w: number; h: number }[],
+  staves: BootStaff[],
+  space: number,
+): BootHint[] {
+  const out: BootHint[] = [];
+  for (const st of staves) {
+    const top = st.lineYs[0];
+    const bottom = st.lineYs[st.lineYs.length - 1];
+    let best = -1;
+    let bestH = space * 1.8;
+    for (let i = 0; i < blobs.length; i++) {
+      const b = blobs[i];
+      if (b.x < st.left - space || b.x > st.left + space * 4) continue;
+      if (b.y > bottom || b.y + b.h < top) continue;
+      // **要够宽**。不加这条，谱行左端那条系统线与花括号（又高又窄）
+      // 每次都比谱号高，整页的「谱号」全是它们（实测取到 0.26×5.74 这种）。
+      if (b.w < space * 0.8) continue;
+      if (b.h <= bestH) continue;
+      bestH = b.h;
+      best = i;
+    }
+    if (best < 0) continue;
+    out.push({ index: best, code: blobs[best].h >= space * 3.8 ? "gClef" : "fClef" });
+  }
+  return out;
+}
+
+/**
+ * 谱号后面的**调号升降号**：紧跟谱号、又高又窄、纵向压在谱表上的那一串。
+ *
+ * 判据：
+ *   - 横向落在谱号右缘起**六个线距**以内（调号最多七个记号，但一个记号约 0.8 格宽，
+ *     六格足够罩住常见的四五个；再往右就是拍号了）；
+ *   - 高度 1.8~3.6 个线距（升号约 2.7、降号约 2.3、还原号约 2.6）；
+ *   - 宽度不到 1.5 个线距（谱号比这宽）。
+ *
+ * 升与降靠**墨迹重心的高度**分：降号是上面一根细竖、下面一个胖肚子，重心明显偏下
+ * （实测中位数 0.594）；升号上下对称，重心居中（0.490）。两者隔得很开，门槛取 **0.57**。
+ *
+ * **不自举还原号**：它与升号都重心居中，只剩宽高比可分（实测升号 0.36、
+ * 疑似还原号 0.276），那是一条连续谱、分不干净；而调号里本来就几乎不出现还原号
+ * （只在转调时用来取消，本语料一处都没有）。自举只该断言它分得清的事——
+ * 真有还原号会以「未定类」露出来，人工表补一条即可。
+ */
+export function bootstrapKeyAccidentals(
+  blobs: { x: number; y: number; w: number; h: number; cy: number }[],
+  staves: BootStaff[],
+  clefRight: number[],
+  space: number,
+): BootHint[] {
+  const out: BootHint[] = [];
+  staves.forEach((st, k) => {
+    const from = clefRight[k];
+    if (!(from > 0)) return;
+    const top = st.lineYs[0];
+    const bottom = st.lineYs[st.lineYs.length - 1];
+    for (let i = 0; i < blobs.length; i++) {
+      const b = blobs[i];
+      if (b.x < from || b.x > from + space * 6) continue;
+      if (b.y > bottom || b.y + b.h < top) continue;
+      if (b.h < space * 1.8 || b.h > space * 3.6) continue;
+      if (b.w > space * 1.5) continue;
+      const lowness = (b.cy - b.y) / b.h;
+      const code: SmuflName = lowness > 0.57 ? "accidentalFlat" : "accidentalSharp";
+      out.push({ index: i, code });
+    }
+  });
+  return out;
+}
+
+// ── 拿矢量路的字形字典当模板 ────────────────────────────────────────────────
+
+/** 一条模板：来自 `src/staffomr/glyphmap.json` 的一个已定案形状类。 */
+export interface OutlineTemplate {
+  smufl: SmuflName;
+  /** 宽高，**归一到线距**（`glyphmap.json` 存的是 em 的倍数，而 em = 谱表高度 = 四个线距）。 */
+  w: number;
+  h: number;
+  sig: Uint8Array;
+}
+
+/**
+ * `glyphmap.json` → 模板表。
+ *
+ * 为什么能这么用：合唱谱这批底本与赞美之泉那本是**同一系的乐谱字体**（Maestro 一族），
+ * 而那本的 176 个形状类**全部定案、未定 0**，并且存着 32×32 签名与 em 归一的宽高。
+ * 于是位图这边不必另起炉灶——把那份现成的定案当模板比一比就行。
+ * 实测尺寸逐项吻合：gClef 模板 2.75×7.45 格、位图实测 2.74×7.51。
+ *
+ * **签名要上下翻**：`shapeSig` 吃的是字形轮廓，那套坐标 **y 向上**，
+ * 归一时字形的底边落到签名的第 0 行；位图签名是 y 向下的。不翻的话
+ * gClef 的距离是 102（认成 `csymParensLeftTall`），翻过来是 **30**；
+ * 升号 80 → 46、降号 127 → 52。这一条不是可选项。
+ */
+export function outlineTemplates(
+  glyphmap: { classes: { smufl: string | null; family: string; w: number; h: number; sig: string }[] },
+  families = ["Maestro"],
+): OutlineTemplate[] {
+  const out: OutlineTemplate[] = [];
+  for (const c of glyphmap.classes) {
+    if (!c.smufl || !families.includes(c.family)) continue;
+    const src = decodeSig(c.sig);
+    const sig = new Uint8Array(SIG_N * SIG_N);
+    for (let y = 0; y < SIG_N; y++) for (let x = 0; x < SIG_N; x++) sig[(SIG_N - 1 - y) * SIG_N + x] = src[y * SIG_N + x];
+    out.push({ smufl: c.smufl as SmuflName, w: c.w * 4, h: c.h * 4, sig });
+  }
+  return out;
+}
+
+/** 模板匹配的签名距离上限（1024 格里差几格）。 */
+export const TEMPLATE_DIST = 90;
+
+/**
+ * 拿模板给一个形状类定名。尺寸先粗筛、再比签名，取最近的那个。
+ *
+ * 尺寸容差按**尺寸本身**放大（`0.2 + 0.12 × 长边`）：谱号那种七格高的，
+ * 位图上下多一两个像素就是 0.1 格；符点那种半格的，同样的绝对误差就是一倍。
+ * 一刀切的绝对容差两头都不合适。
+ */
+export function matchTemplate(sig: Uint8Array, w: number, h: number, tpl: OutlineTemplate[]): { smufl: SmuflName; dist: number } | null {
+  let best: { smufl: SmuflName; dist: number } | null = null;
+  for (const t of tpl) {
+    const tol = 0.2 + 0.12 * Math.max(t.w, t.h);
+    if (Math.abs(t.w - w) > tol || Math.abs(t.h - h) > tol) continue;
+    const d = sigDistance(t.sig, sig);
+    if (d > TEMPLATE_DIST) continue;
+    if (!best || d < best.dist) best = { smufl: t.smufl, dist: d };
+  }
+  return best;
 }

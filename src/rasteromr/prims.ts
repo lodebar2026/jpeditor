@@ -158,6 +158,84 @@ function centerLine(mask: Uint8Array, w: number, c: Component, horizontal: boole
 }
 
 /**
+ * 这条笔画是不是**孤立**的——两侧（横段则上下）大体空着。
+ *
+ * 非有这一条不可：谱号的中央竖笔、升号的两道竖笔、拍号「4」的竖笔，
+ * 横向游程都很短，一律被当成竖笔画抽走，于是**符号被自己的笔画切开**
+ * （实测高音谱号被切成上下两半，`bootstrapClefs` 取到的「谱号」一多半是它的上半截，
+ * 高度不到 3.8 格，整批误判成低音谱号：你要等候 76 行谱认出 69 个「低音谱号」）。
+ *
+ * 真符干、真小节线两侧是空的（只在符头、符杠那一小截有邻墨）；
+ * glyph 内部的笔画两侧总有同一个符号的其它部分。沿笔画取样，
+ * 邻墨超过一半就判它属于某个符号，不当原语。
+ */
+function isolated(bin: Binary, s: LineSeg, vertical: boolean): boolean {
+  const { w, h, data } = bin;
+  const half = Math.max(1, Math.ceil(s.maxLw / 2));
+  const near = half + 1;
+  const far = half + Math.max(2, Math.round(s.maxLw * 2));
+  let n = 0;
+  let touched = 0;
+  if (vertical) {
+    const cx = Math.round((s.x0 + s.x1) / 2);
+    for (let y = Math.round(Math.min(s.y0, s.y1)); y <= Math.round(Math.max(s.y0, s.y1)); y++) {
+      if (y < 0 || y >= h) continue;
+      n++;
+      let hit = 0;
+      for (let d = near; d <= far && !hit; d++) {
+        if (cx - d >= 0) hit |= data[y * w + cx - d];
+        if (cx + d < w) hit |= data[y * w + cx + d];
+      }
+      touched += hit;
+    }
+  } else {
+    const cy = Math.round((s.y0 + s.y1) / 2);
+    for (let x = Math.round(Math.min(s.x0, s.x1)); x <= Math.round(Math.max(s.x0, s.x1)); x++) {
+      if (x < 0 || x >= w) continue;
+      n++;
+      let hit = 0;
+      for (let d = near; d <= far && !hit; d++) {
+        if (cy - d >= 0) hit |= data[(cy - d) * w + x];
+        if (cy + d < h) hit |= data[(cy + d) * w + x];
+      }
+      touched += hit;
+    }
+  }
+  return n === 0 || touched < n * 0.5;
+}
+
+/**
+ * 「这个 y 落在谱线网格的延长线上吗」——判加线用。
+ *
+ * 加线是谱表的延长：只可能出现在第一线**上方**或第五线**下方**整数个线距处。
+ * 容差取四分之一线距（谱线本身实测偏差不到 0.2px，位图上加线也贴着网格画）。
+ */
+function ledgerGrid(lineYs: number[], unit: RasterUnit): (y: number) => boolean {
+  if (lineYs.length < 5) return () => false;
+  // 逐行谱取它的第一线与第五线（`lineYs` 是全页的线，五条一组）
+  const anchors: number[] = [];
+  const sorted = [...lineYs].sort((a, b) => a - b);
+  for (let i = 0; i + 4 < sorted.length; i += 5) {
+    anchors.push(sorted[i], sorted[i + 4]);
+  }
+  const tol = unit.space * 0.25;
+  return (y: number) => {
+    for (let i = 0; i < anchors.length; i += 2) {
+      const top = anchors[i];
+      const bottom = anchors[i + 1];
+      if (y < top) {
+        const k = Math.round((top - y) / unit.space);
+        if (k >= 1 && k <= 6 && Math.abs(top - k * unit.space - y) <= tol) return true;
+      } else if (y > bottom) {
+        const k = Math.round((y - bottom) / unit.space);
+        if (k >= 1 && k <= 6 && Math.abs(bottom + k * unit.space - y) <= tol) return true;
+      }
+    }
+    return false;
+  };
+}
+
+/**
  * 抽出全部几何原语。
  *
  * 三道门槛都按线距 `space` 写（与矢量路同口径，不写绝对像素）：
@@ -167,8 +245,9 @@ function centerLine(mask: Uint8Array, w: number, c: Component, horizontal: boole
  *     下限把谱线滤掉，上限把符头（约一个线距高、但横向游程只有一个符头宽）与
  *     实心块滤掉；横向那道再滤掉竖直的粗笔画。
  */
-export function findPrimitives(bin: Binary, unit: RasterUnit): RasterPrims {
+export function findPrimitives(bin: Binary, unit: RasterUnit, staffLineYs: number[] = []): RasterPrims {
   const { w, h } = bin;
+  const onGrid = ledgerGrid(staffLineYs, unit);
   const vr = vRuns(bin);
   const hr = hRuns(bin);
   // 「细」的上限**要卡在谱线与符杠之间**：谱线约 0.15 个线距厚，符杠约 0.5 个。
@@ -186,7 +265,13 @@ export function findPrimitives(bin: Binary, unit: RasterUnit): RasterPrims {
   for (const c of comps(hMask, w, h, Math.max(3, unit.lineThick * 2))) {
     if (c.bbox.w < unit.space) continue; // 比一个线距还短的横笔画：噪点、点、标点
     if (c.bbox.h > thin * 2) continue; // 太厚：不是单条横线（是几条粘在一起或别的东西）
-    hSegs.push(centerLine(hMask, w, c, true));
+    const seg = centerLine(hMask, w, c, true);
+    // **加线免检**：加线总有个符头压在上面，孤立性判据一律判它「属于某个符号」，
+    // 于是既抽不出来（`findLegers` 没得用）、也抹不掉（符头连着加线，
+    // 宽度从 1.3 格涨到 1.77 格，字典里凭空多出两个三百多实例的「符头」大类）。
+    // 加线有一条更硬的判据：它只出现在**谱线网格的延长线**上。
+    if (!onGrid((seg.y0 + seg.y1) / 2) && !isolated(bin, seg, false)) continue;
+    hSegs.push(seg);
   }
 
   // ── 竖笔画 ──
@@ -197,7 +282,9 @@ export function findPrimitives(bin: Binary, unit: RasterUnit): RasterPrims {
   for (const c of comps(vMask, w, h, Math.max(3, unit.lineThick * 2))) {
     if (c.bbox.h < unit.space) continue;
     if (c.bbox.w > thin * 2) continue;
-    vSegs.push(centerLine(vMask, w, c, false));
+    const seg = centerLine(vMask, w, c, false);
+    if (!isolated(bin, seg, true)) continue; // 谱号的中央竖笔、升号的竖笔不是原语
+    vSegs.push(seg);
   }
 
   // ── 符杠 ──
@@ -280,11 +367,16 @@ export function findBlobs(bin: Binary, prims: RasterPrims, unit: RasterUnit): Co
   }
   for (const b of prims.beams) clear(b.box.x, b.box.y, b.box.x + b.box.w - 1, b.box.y + b.box.h - 1);
 
+  // 宽高**分别**设限，不能共用一个数：高音谱号窄而高，实测 2.8 × **7.5** 个线距
+  //（连着尾巴那一圈），共用「六个线距」的上限会把整页的谱号挡在外面
+  // ——`bootstrapClefs` 因此在宁静一首上一个高音谱号都取不到。
+  // 花括号（18×283px = 1 × 15.6 格）与页边框仍然被高度那一档挡住。
   const minSide = unit.space * 0.25;
-  const maxSide = unit.space * 6;
+  const maxW = unit.space * 6;
+  const maxH = unit.space * 9;
   return connectedComponents({ w, h, data: rest }, Math.round(minSide * minSide)).filter((c) => {
     const b = c.bbox;
-    if (b.w > maxSide || b.h > maxSide) return false;
+    if (b.w > maxW || b.h > maxH) return false;
     if (b.w < minSide && b.h < minSide) return false;
     return true;
   });

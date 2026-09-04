@@ -32,6 +32,8 @@ const builder = new cli.RasterGlyphBuilder();
 /** 每个类留一个代表实例的**原始像素**，接触表画它。
  *  签名只有 32×32，休止符与升降号在那个尺度上糊成一团，定名会标错。 */
 const sample = new Map();
+/** 建库下标 → { SmuflName → 票数 }。位置自举的结果，按类投票定案。 */
+const votes = new Map();
 let blobTotal = 0;
 const t0 = Date.now();
 
@@ -55,19 +57,47 @@ for (const song of await loadChorus()) {
       if (lines.length - groups.length * 5 > groups.length) return;
       clean++;
       const nl = cli.removeStaffLines(r.bin, lines.map((l) => l.y), unit);
-      const prims = cli.findPrimitives(nl, unit);
+      const prims = cli.findPrimitives(nl, unit, lines.map((l) => l.y));
       const blobs = cli.findBlobs(nl, prims, unit);
       // **符头不进字典**：它按性质判（填充率 + 有没有符干，见 `notehead.ts`），
       // 形状签名反而不稳。不剔掉的话前二十个大类全是符头的残缺变体，
       // 真正要查字典的谱号/休止/升降/拍号被埋在下面。
       const heads = new Set(cli.findRasterHeads(blobs, prims.vSegs, unit).map((h) => h.comp.id));
-      for (const c of blobs) {
+      // ── 位置自举：谱号、调号升降号 ───────────────────────────────────────
+      // 与矢量路 `bootstrapByTable` 同一个用意，线索换成**位置**
+      //（谱号、调号、拍号在谱行开头的次序是刻谱的铁律）。
+      const boxes = blobs.map((c) => ({ x: c.bbox.x, y: c.bbox.y, w: c.bbox.w, h: c.bbox.h, cy: c.cy }));
+      const st = groups.map((g) => ({
+        left: Math.max(...g.lines.map((l) => l.left)),
+        right: Math.min(...g.lines.map((l) => l.right)),
+        lineYs: g.lines.map((l) => l.y),
+      }));
+      const hint = new Map(); // blob 下标 → SmuflName
+      const clefRight = st.map(() => 0);
+      for (const h of cli.bootstrapClefs(boxes, st, unit.space)) {
+        hint.set(h.index, h.code);
+        const b = boxes[h.index];
+        const k = st.findIndex((s0) => b.y <= s0.lineYs[4] && b.y + b.h >= s0.lineYs[0] && b.x <= s0.left + unit.space * 4);
+        if (k >= 0) clefRight[k] = Math.max(clefRight[k], b.x + b.w);
+      }
+      for (const h of cli.bootstrapKeyAccidentals(boxes, st, clefRight, unit.space)) hint.set(h.index, h.code);
+
+      for (let bi = 0; bi < blobs.length; bi++) {
+        const c = blobs[bi];
         if (heads.has(c.id)) continue;
         const sig = cli.binSig(nl, c.bbox);
         const w = c.bbox.w / unit.space;
         const h = c.bbox.h / unit.space;
         const i = builder.add(sig, w, h, pn);
         blobTotal++;
+        const v = hint.get(bi);
+        if (v) {
+          // **按类投票**：自举有噪声（谱号取不到时，最左那个高块可能是调号升号），
+          // 一个类里哪个名字得票最多才算数。
+          const box = votes.get(i) ?? new Map();
+          box.set(v, (box.get(v) ?? 0) + 1);
+          votes.set(i, box);
+        }
         if (!sample.has(i)) {
           // 原分辨率裁一小块（PNG 编码不划算，直接存 0/1 行）
           const px = [];
@@ -87,7 +117,37 @@ for (const song of await loadChorus()) {
 const { origin, ...dict } = builder.finish();
 // `sample` 是按建库下标存的，`finish` 重编了 id，靠 origin 对回去
 const sampleOf = (c) => sample.get(origin[c.id]);
-// 把上一轮的定案按签名贴回来
+// ── 定案，三层，可信度依次递增（后面的压前面的） ──────────────────────────
+// 1) 模板：拿矢量路 glyphmap.json 那 158 个**已全部定案**的形状类比签名。
+//    同一系的乐谱字体，尺寸逐项吻合（gClef 模板 2.75×7.45 格、位图实测 2.74×7.51）。
+const gm = JSON.parse(await readFile("src/staffomr/glyphmap.json", "utf8"));
+const tpl = cli.outlineTemplates(gm);
+let matched = 0;
+for (const c of dict.classes) {
+  const hit = cli.matchTemplate(cli.decodeSig(c.sig), c.w, c.h, tpl);
+  if (!hit) continue;
+  c.smufl = hit.smufl;
+  c.source = "template";
+  matched++;
+}
+console.log(`模板定案 ${matched} 类（覆盖 ${((dict.classes.filter((c) => c.smufl).reduce((a, c) => a + c.count, 0) / blobTotal) * 100).toFixed(1)}% 的块）`);
+
+// 2) 位置自举的票：得票最多的名字定案（票数不到三票的不算，噪声）
+let booted = 0;
+const disagree = [];
+dict.classes.forEach((c) => {
+  const box = votes.get(origin[c.id]);
+  if (!box) return;
+  const [name, n] = [...box.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (n < 3 || n < c.count * 0.4) return;
+  if (c.smufl && c.smufl !== name) disagree.push(`#${c.id}×${c.count} 模板=${c.smufl} 位置=${name}`);
+  c.smufl = name;
+  c.source = "position";
+  booted++;
+});
+console.log(`位置自举定案 ${booted} 类` + (disagree.length ? `，与模板不一致 ${disagree.length} 处：${disagree.slice(0, 6).join("；")}` : ""));
+
+// 把上一轮的定案按签名贴回来（**人工表优先**，压在自举之上）
 let kept = 0;
 for (const c of dict.classes) {
   const sig = cli.decodeSig(c.sig);
@@ -154,7 +214,9 @@ function pxPath(px) {
 // 排查用：把代表实例按原分辨率拼成一张 PGM（`--pgm=路径`，配合 `--min`）。
 const pgmOut = argOf("pgm");
 if (pgmOut) {
-  const cs = big.slice(0, Number(argOf("n") ?? 60));
+  // `--undone` 只列未定的类——自举定完之后，人工要看的就是这些
+  const pool = args.includes("--undone") ? big.filter((c) => !c.smufl) : big;
+  const cs = pool.slice(0, Number(argOf("n") ?? 60));
   const CW = 64, CH = 112, cols = 12;
   const rows = Math.ceil(cs.length / cols);
   const W = cols * CW, H = rows * CH;
@@ -169,5 +231,6 @@ if (pgmOut) {
     });
   });
   await writeFile(pgmOut, cli.binToPgm(sheet));
-  console.log(`→ ${pgmOut}（${cs.length} 类，12 列，行内顺序即上面列出的顺序）`);
+  console.log(`→ ${pgmOut}（${cs.length} 类，12 列）`);
+  console.log(cs.map((c, i) => `${i}:#${c.id}×${c.count} ${c.w.toFixed(2)}×${c.h.toFixed(2)}`).join("  "));
 }
