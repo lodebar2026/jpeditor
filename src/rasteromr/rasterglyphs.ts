@@ -132,6 +132,8 @@ export class RasterGlyphBuilder {
 /** 识别时用的查表器：块的签名 → SMuFL 名。 */
 export class RasterGlyphLookup {
   private cls: { sig: Uint8Array; w: number; h: number; smufl: SmuflName }[] = [];
+  /** 模板表（`outlineTemplates` 的结果）。给 `bootstrapClefs` 再验一道用；没有就为 null。 */
+  templates: OutlineTemplate[] | null = null;
   /** 查不到的块：按最近的类记一笔，跑完就知道还差哪些形状。 */
   readonly misses: { sig: string; w: number; h: number; n: number }[] = [];
 
@@ -197,48 +199,81 @@ export interface BootStaff {
 
 /** 自举出来的一条线索：某个块是什么。 */
 export interface BootHint {
-  /** 块在调用方数组里的下标。 */
+  /** 块在调用方数组里的下标（谱号是**种子块**的下标，真正的范围看 `box`）。 */
   index: number;
   code: SmuflName;
+  /** 合并碎块之后的盒（谱号专用；调号那一路就是块本身的盒）。 */
+  box?: { x: number; y: number; w: number; h: number };
 }
 
 /**
- * 谱行开头的**谱号**：每行谱最左边那个又高又靠前的块。
+ * 谱行开头的**谱号**。
  *
- * 判据（都按线距写）：
+ * ## 先把碎块并回一个盒，再判
+ *
+ * 谱号常被自己的笔画切开——中央那道竖笔横向游程短，孤立性判据拦不住时就被
+ * 当成竖笔画抽走（实测宁静 p7 的高音谱号断成上下两截：1.43×2.59 与 2.76×2.65）。
+ * 按连通块判必然错：剩下的上半截高度不到 3.8 格，整批误判成低音谱号，
+ * 而 2.76×2.65 与 Maestro 的 fClef 模板（2.84×3.34）尺寸还挺像，字典也跟着认错。
+ *
+ * 所以先**把 x 上重叠的块并回一个盒**：谱号的碎块彼此在 x 上重叠，
+ * 而后面的调号升降号在 x 上是分开的，并不进来。
+ *
+ * ## 判据（都按线距写）
+ *
  *   - 横向落在谱行左端起**四个线距**以内——谱号总是紧贴谱行开头；
  *   - 纵向与谱表相交；
- *   - 高度至少 1.8 个线距（低音谱号最矮，约 2.2 个）。
- * 同一行里取**最高**的那个：低音谱号旁边的两个点也满足前两条，但只有 0.3 格高。
+ *   - 并完之后高度至少 1.8 个线距、宽至少 0.8 个。宽度那一条不能省：
+ *     系统线与花括号又高又窄，每次都比谱号高（实测取到 0.26×5.74 那种）。
  *
- * 高音谱号 vs 低音谱号按高度分：高音谱号从谱表下方一路探到上方，
- * 实测 4.7~5.4 个线距；低音谱号只占上面两格半。门槛取 **3.8 个线距**，
- * 中间那一段是空的（实测两类之间没有重叠）。
+ * 高音谱号 vs 低音谱号：**先按模板签名比**（`tpl` 给了就比），比不出来再按高度分
+ * ——高音谱号从谱表下方一路探到上方，实测 4.7~7.5 个线距；低音谱号只占上面两格半。
  */
 export function bootstrapClefs(
   blobs: { x: number; y: number; w: number; h: number }[],
   staves: BootStaff[],
   space: number,
+  /** 可选：拿签名再验一道。`sigOf` 按合并后的盒取签名（调用方从位图上算）。 */
+  verify?: { tpl: OutlineTemplate[]; sigOf: (box: { x: number; y: number; w: number; h: number }) => Uint8Array },
 ): BootHint[] {
   const out: BootHint[] = [];
   for (const st of staves) {
     const top = st.lineYs[0];
     const bottom = st.lineYs[st.lineYs.length - 1];
-    let best = -1;
-    let bestH = space * 1.8;
+    // 候选：落在谱行开头、与谱表相交的块
+    const cand: number[] = [];
     for (let i = 0; i < blobs.length; i++) {
       const b = blobs[i];
       if (b.x < st.left - space || b.x > st.left + space * 4) continue;
       if (b.y > bottom || b.y + b.h < top) continue;
-      // **要够宽**。不加这条，谱行左端那条系统线与花括号（又高又窄）
-      // 每次都比谱号高，整页的「谱号」全是它们（实测取到 0.26×5.74 这种）。
-      if (b.w < space * 0.8) continue;
-      if (b.h <= bestH) continue;
-      bestH = b.h;
-      best = i;
+      cand.push(i);
     }
-    if (best < 0) continue;
-    out.push({ index: best, code: blobs[best].h >= space * 3.8 ? "gClef" : "fClef" });
+    if (!cand.length) continue;
+    // 取最高的那个当种子，再把 x 上与它重叠的并进来
+    let seed = cand[0];
+    for (const i of cand) if (blobs[i].h > blobs[seed].h) seed = i;
+    let box = { ...blobs[seed] };
+    const used = [seed];
+    for (let again = true; again; ) {
+      again = false;
+      for (const i of cand) {
+        if (used.includes(i)) continue;
+        const b = blobs[i];
+        if (b.x > box.x + box.w || b.x + b.w < box.x) continue; // x 不重叠：那是调号，不是谱号的碎块
+        const x0 = Math.min(box.x, b.x);
+        const y0 = Math.min(box.y, b.y);
+        box = { x: x0, y: y0, w: Math.max(box.x + box.w, b.x + b.w) - x0, h: Math.max(box.y + box.h, b.y + b.h) - y0 };
+        used.push(i);
+        again = true;
+      }
+    }
+    if (box.h < space * 1.8 || box.w < space * 0.8) continue;
+    let code: SmuflName | null = null;
+    if (verify) {
+      const hit = matchTemplate(verify.sigOf(box), box.w / space, box.h / space, verify.tpl.filter((t) => t.smufl === "gClef" || t.smufl === "fClef"));
+      if (hit) code = hit.smufl;
+    }
+    out.push({ index: seed, box, code: code ?? (box.h >= space * 3.8 ? "gClef" : "fClef") });
   }
   return out;
 }

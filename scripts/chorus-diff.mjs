@@ -25,6 +25,8 @@ const BASE = "testdata/合唱谱/raster-baseline.json";
 
 const cli = await loadCli();
 const look = new cli.RasterGlyphLookup(JSON.parse(await readFile("src/rasteromr/rasterglyphs.json", "utf8")));
+// 谱号要拿模板再验一道（`bootstrapClefs`）：模板表从矢量路的字形字典来
+look.templates = cli.outlineTemplates(JSON.parse(await readFile("src/staffomr/glyphmap.json", "utf8")));
 /** 歌词条的 OCR 缓存（`gen-rasterlyrics.mjs` 的产物）。没有就跳过歌词那一档。 */
 let lyricOcr = null;
 try {
@@ -230,6 +232,9 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
           seg.push((acc(got[p.i].seq.slice(t * n, (t + 1) * n), g.slice(t * n, (t + 1) * n), 24, true) * 100).toFixed(0) + "%");
         }
         console.log(`    四等分: ${seg.join(" ")}`);
+        // 错型：读错（替换）/ 漏掉（GT 有识别没有）/ 多出（识别有 GT 没有）
+        const t = errKinds(got[p.i].seq, g);
+        console.log(`    错型: 读错 ${t.sub}  漏掉 ${t.del}  多出 ${t.ins}  （对上 ${t.eq}）`);
       }
     }
     const row = {
@@ -339,4 +344,26 @@ function alignText(A, B, n) {
     else { out.push(`(缺${b[j - 1]})`); j--; }
   }
   return out.reverse().join(" ");
+}
+
+/** 逐音对齐后的错型统计。 */
+function errKinds(A, B) {
+  const a = A, b = B;
+  const d = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  const op = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(""));
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++) {
+      const c = [[d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1), "m"], [d[i - 1][j] + 1, "x"], [d[i][j - 1] + 1, "n"]].sort((p1, p2) => p1[0] - p2[0])[0];
+      d[i][j] = c[0];
+      op[i][j] = c[1];
+    }
+  let i = a.length, j = b.length;
+  const t = { eq: 0, sub: 0, del: 0, ins: 0 };
+  while (i > 0 || j > 0) {
+    const o = i > 0 && j > 0 ? op[i][j] : i > 0 ? "x" : "n";
+    if (o === "m") { if (a[i - 1] === b[j - 1]) t.eq++; else t.sub++; i--; j--; }
+    else if (o === "x") { t.ins++; i--; }
+    else { t.del++; j--; }
+  }
+  return t;
 }
