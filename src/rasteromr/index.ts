@@ -13,3 +13,4 @@ export * from "./prims";
 export * from "./adapt";
 export * from "./rasterglyphs";
 export * from "./notehead";
+export * from "./recognize";
