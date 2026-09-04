@@ -142,6 +142,40 @@ export async function recognizeRasterPage(
     syms.push({ box: b, code: h.code });
   }
 
+  // ── 碎块并起来再查一次字典 ────────────────────────────────────────────────
+  //
+  // 谱号那一路证明了这条：符号常被自己的笔画切开（中央竖笔、两道横笔被当成原语抽走），
+  // 按连通块查字典就只看到半截。休止符与升降号同理——它们也压在谱线上、也有细笔画。
+  // 把**x 上重叠、上下又贴着**的未识别块并起来（谱线间距的四成以内算贴着），
+  // 并完再查一次；查得到才认。x 分开的不并（那是相邻的两个符号）。
+  const unmatched = blobs.filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id));
+  const merged = new Set<number>();
+  for (const a of unmatched) {
+    if (merged.has(a.id)) continue;
+    let box = { ...a.bbox };
+    const group = [a.id];
+    for (let again = true; again; ) {
+      again = false;
+      for (const b of unmatched) {
+        if (group.includes(b.id) || merged.has(b.id)) continue;
+        const r = b.bbox;
+        if (r.x > box.x + box.w || r.x + r.w < box.x) continue; // x 不重叠
+        const gap = r.y > box.y ? r.y - (box.y + box.h) : box.y - (r.y + r.h);
+        if (gap > unit.space * 0.4) continue;
+        const x0 = Math.min(box.x, r.x);
+        const y0 = Math.min(box.y, r.y);
+        box = { x: x0, y: y0, w: Math.max(box.x + box.w, r.x + r.w) - x0, h: Math.max(box.y + box.h, r.y + r.h) - y0 };
+        group.push(b.id);
+        again = true;
+      }
+    }
+    if (group.length < 2) continue;
+    const code = look.lookup(binSig(nl, box), box.w / unit.space, box.h / unit.space);
+    if (!code) continue;
+    for (const id of group) merged.add(id);
+    syms.push({ box, code });
+  }
+
   const pg = buildRasterPage({
     index,
     width: raster.bin.w,
