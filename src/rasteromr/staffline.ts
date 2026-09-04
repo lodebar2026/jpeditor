@@ -86,19 +86,41 @@ export function findStaffLines(bin: Binary): StaffLineRun[] {
   const out: StaffLineRun[] = [];
   for (const [y0, y1] of bands) {
     if (y1 - y0 + 1 > maxThick) continue;
-    let left = -1;
-    let right = -1;
-    let gap = 0;
+    // 逐列有没有墨
+    const ink = new Uint8Array(w);
     for (let x = 0; x < w; x++) {
-      let ink = 0;
-      for (let y = y0; y <= y1; y++) ink |= data[y * w + x];
-      if (ink) {
-        if (left < 0) left = x;
-        right = x;
-        gap = 0;
-      } else if (left >= 0 && ++gap > maxGap) break; // 断得太开：右边那截多半是另一件东西
+      let v = 0;
+      for (let y = y0; y <= y1; y++) v |= data[y * w + x];
+      ink[x] = v;
+    }
+    // 端点要**连续有墨**才算，不能见到一个墨点就算起点：
+    // 系统的花括号、乐器名的笔画常常擦到谱线这一带，一擦谱行的左缘就跑到页边
+    // （实测宁静 p1 十行谱里六行的左缘被拉到 x=2，`makeSystems` 判系统线、
+    // `makeBars` 切小节全跟着偏）。要求连着 `runMin` 列有墨。
+    const runMin = Math.max(4, Math.round(maxGap / 4));
+    let left = -1;
+    for (let x = 0; x + runMin <= w; x++) {
+      let ok = true;
+      for (let k = 0; k < runMin; k++)
+        if (!ink[x + k]) {
+          ok = false;
+          x += k;
+          break;
+        }
+      if (ok) {
+        left = x;
+        break;
+      }
     }
     if (left < 0) continue;
+    let right = left;
+    let gap = 0;
+    for (let x = left; x < w; x++) {
+      if (ink[x]) {
+        right = x;
+        gap = 0;
+      } else if (++gap > maxGap) break; // 断得太开：右边那截多半是另一件东西
+    }
     out.push({ y: (y0 + y1) / 2, y0, y1, left, right });
   }
   return out;

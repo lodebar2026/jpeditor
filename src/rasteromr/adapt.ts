@@ -9,8 +9,11 @@
 // `staffomr` 全程按「小节线高度 H 的比例」写判据，与绝对尺度无关
 // （`SPage.barlineHeight` 就是那个 H）。所以位图路直接用像素当设备坐标，
 // 少一道换算、也少一次精度损失。要回到页面坐标时乘 `RasterPage.scale`。
-import { PObj, SPage, Seg } from "../staffomr/model";
+import { PObj, SPage, Seg, Sym } from "../staffomr/model";
 import type { VecObj } from "../omr/vector";
+import type { VecGlyph, VecTextRun } from "../omr/vectext";
+import type { SmuflName } from "../staffomr/glyphs";
+import type { Rect } from "../omr/types";
 import type { LineSeg } from "./prims";
 import type { RasterUnit, StaffLineRun } from "./staffline";
 
@@ -53,6 +56,57 @@ function pushSeg(pg: SPage, id: number, s: LineSeg): Seg {
   return seg;
 }
 
+/**
+ * 造一个占位的字形与文字对象，好把位图认出来的符号包成 `Sym`。
+ *
+ * `Sym` 的构造要 `(parent: PObj, index, glyph: VecGlyph, code)`，`PObj` 又要一个
+ * `VecTextRun`。位图这边没有文字层，就按块的包围盒造一个最小的。
+ * 下游真正读的只有 `Sym.box` / `Sym.px` / `Sym.py` / `Sym.code`
+ * （`page.ts:467` 的 `compositeStemUp` 会读 `glyph`，但那是 Anastasia 的复合音符字形，
+ * 位图路没有，走不到）。
+ *
+ * `font` 用 `#raster`：`musicFamily` 认不出它，于是 `findSymbols` 与
+ * `estimateBarlineHeight` 都不会去碰这些对象——那两处是给矢量路的文字层用的。
+ */
+export const RASTER_FONT = "#raster";
+
+function fakeGlyph(box: Rect): VecGlyph {
+  return {
+    code: 0,
+    fontChar: "",
+    unicode: "",
+    bbox: box,
+    bboxEstimated: false,
+    ox: box.x,
+    oy: box.y + box.h,
+    ctm: [1, 0, 0, 1, 0, 0],
+    advance: box.w,
+    outline: null,
+  };
+}
+
+function fakeRun(id: number, box: Rect, sizeDev: number, font = RASTER_FONT): VecTextRun {
+  return {
+    id,
+    font,
+    fontRaw: font,
+    loadedName: font,
+    size: sizeDev,
+    sizeDev,
+    glyphs: [],
+    bbox: box,
+    renderMode: 0,
+    fill: "#000",
+    clip: null,
+  };
+}
+
+/** 位图认出来的一个符号：包围盒 + SMuFL 名。 */
+export interface RasterSym {
+  box: Rect;
+  code: SmuflName;
+}
+
 export interface AdaptInput {
   index: number;
   width: number;
@@ -65,6 +119,8 @@ export interface AdaptInput {
   hSegs: LineSeg[];
   /** 竖段（符干、小节线、系统线）。 */
   vSegs: LineSeg[];
+  /** 认出来的音乐符号（符头、谱号、休止、升降、拍号数字、符尾…）。 */
+  syms?: RasterSym[];
 }
 
 /**
@@ -84,15 +140,26 @@ export function buildRasterPage(inp: AdaptInput): SPage {
   pg.barlineHeight = inp.unit.height;
   let id = 0;
   for (const l of inp.staffLines) {
-    pushSeg(pg, id++, { x0: l.left, y0: l.y, x1: l.right, y1: l.y, lw: l.y1 - l.y0 + 1 });
+    pushSeg(pg, id++, { x0: l.left, y0: l.y, x1: l.right, y1: l.y, lw: l.y1 - l.y0 + 1, maxLw: l.y1 - l.y0 + 1 });
   }
   for (const s of inp.hSegs) {
     const y = (s.y0 + s.y1) / 2;
-    pushSeg(pg, id++, { x0: s.x0, y0: y, x1: s.x1, y1: y, lw: s.lw });
+    pushSeg(pg, id++, { ...s, y0: y, y1: y });
   }
   for (const s of inp.vSegs) {
     const x = (s.x0 + s.x1) / 2;
-    pushSeg(pg, id++, { x0: x, y0: s.y0, x1: x, y1: s.y1, lw: s.lw });
+    pushSeg(pg, id++, { ...s, x0: x, x1: x });
+  }
+  for (const s of inp.syms ?? []) {
+    const glyph = fakeGlyph(s.box);
+    const run = fakeRun(id, s.box, inp.unit.height);
+    run.glyphs.push(glyph);
+    const o = new PObj(id++, null, run);
+    const sym = new Sym(o, 0, glyph, s.code);
+    o.symbols.push(sym);
+    o.addTag("Symbol");
+    pg.objs.push(o);
+    pg.symbols.push(sym);
   }
   return pg;
 }
