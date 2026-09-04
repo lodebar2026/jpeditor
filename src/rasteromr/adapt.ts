@@ -1,0 +1,98 @@
+// 适配层：位图抽出来的谱线/线段/符号 → `SPage`（`src/staffomr/model.ts` 的那个）。
+//
+// **这是位图路与矢量路唯一的接缝。** 装完之后 `page.ts` 往下那一整条
+// （`findStaves` → `findNoteheads` → `findStems` → `findBarlines` → `findClefKeyTime`
+// → `makeSystems` → `makeBars` → `buildNotes` → 和弦层 → `toxml`）一行不改。
+//
+// ## 坐标系：**像素**，不换算成 PDF 点
+//
+// `staffomr` 全程按「小节线高度 H 的比例」写判据，与绝对尺度无关
+// （`SPage.barlineHeight` 就是那个 H）。所以位图路直接用像素当设备坐标，
+// 少一道换算、也少一次精度损失。要回到页面坐标时乘 `RasterPage.scale`。
+import { PObj, SPage, Seg } from "../staffomr/model";
+import type { VecObj } from "../omr/vector";
+import type { LineSeg } from "./prims";
+import type { RasterUnit, StaffLineRun } from "./staffline";
+
+/**
+ * 造一个占位的路径对象。
+ *
+ * `Seg` 的构造要一个 `PObj`，`PObj` 又要一个 `VecObj` 或 `VecTextRun` 取包围盒。
+ * 位图这边没有真的路径对象，就按段的包围盒造一个最小的——
+ * 下游只用到 `PObj.box`、`PObj.path`（判「这是路径不是文字」）与标记，
+ * `data` / `ctm` 那些字段没人读。
+ */
+function fakePath(id: number, x: number, y: number, w: number, h: number, lw: number): VecObj {
+  return {
+    id,
+    data: new Float32Array(0),
+    ctm: [1, 0, 0, 1, 0, 0],
+    bbox: { x, y, w, h },
+    paint: "stroke",
+    curves: 0,
+    segs: 1,
+    lineWidth: lw,
+    dash: null,
+    dashPhase: 0,
+    fill: null,
+    stroke: "#000",
+    clip: null,
+  };
+}
+
+/** 一条线段 → 一个 `PObj` 加一个 `Seg`（一段一个对象，位图这边没有「一个对象里好几条线」的事）。 */
+function pushSeg(pg: SPage, id: number, s: LineSeg): Seg {
+  const left = Math.min(s.x0, s.x1);
+  const right = Math.max(s.x0, s.x1);
+  const top = Math.min(s.y0, s.y1);
+  const bottom = Math.max(s.y0, s.y1);
+  const o = new PObj(id, fakePath(id, left, top, right - left, bottom - top, s.lw), null);
+  pg.objs.push(o);
+  const seg = new Seg(o, s.x0, s.y0, s.x1, s.y1, s.lw);
+  pg.segs.push(seg);
+  return seg;
+}
+
+export interface AdaptInput {
+  index: number;
+  width: number;
+  height: number;
+  unit: RasterUnit;
+  /** 行投影找出来的谱线。**单独给**，不混在 `hSegs` 里——那是全页最长的横线，
+   *  `findStaves` 的「长度 ≥ 最长横线的 35%」那道闸靠它定分母。 */
+  staffLines: StaffLineRun[];
+  /** 去谱线之后抽出来的横段（加线、括号横杠、渐强线）。 */
+  hSegs: LineSeg[];
+  /** 竖段（符干、小节线、系统线）。 */
+  vSegs: LineSeg[];
+}
+
+/**
+ * 装配 `SPage`。
+ *
+ * `barlineHeight` 取**四个线距**——矢量路那边是「音乐字体的字号中位数」
+ * （Maestro/Opus 与 SMuFL 同源，em = 谱表高度），位图没有字号可取，
+ * 但两者本来就是同一个量：谱表高度。
+ *
+ * **谱线段一律水平**（`y0 === y1`）：`Seg.isH` 判的是两端 y 差小于 0.02，
+ * 像素坐标下量出来的中心 y 带小数，直接拿两端的实测值会两头不沾
+ * （既不是 `isH` 也不是 `isV`），整页的段全被后面每一步跳过。
+ * 倾斜校正是取图那一层的事，到这里应当已经摆平（合唱谱这批实测倾斜 ≤1.23px）。
+ */
+export function buildRasterPage(inp: AdaptInput): SPage {
+  const pg = new SPage(inp.index, inp.width, inp.height);
+  pg.barlineHeight = inp.unit.height;
+  let id = 0;
+  for (const l of inp.staffLines) {
+    pushSeg(pg, id++, { x0: l.left, y0: l.y, x1: l.right, y1: l.y, lw: l.y1 - l.y0 + 1 });
+  }
+  for (const s of inp.hSegs) {
+    const y = (s.y0 + s.y1) / 2;
+    pushSeg(pg, id++, { x0: s.x0, y0: y, x1: s.x1, y1: y, lw: s.lw });
+  }
+  for (const s of inp.vSegs) {
+    const x = (s.x0 + s.x1) / 2;
+    pushSeg(pg, id++, { x0: x, y0: s.y0, x1: x, y1: s.y1, lw: s.lw });
+  }
+  return pg;
+}

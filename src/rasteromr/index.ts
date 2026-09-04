@@ -8,3 +8,6 @@
 // 装进 `SPage` 之后一律交给 `src/staffomr/page.ts` 往下那一整条
 // （符头/符干/符杠/小节/时值/和弦/声部/弧线/MusicXML），**那边一行不改**。
 export * from "./rasterpage";
+export * from "./staffline";
+export * from "./prims";
+export * from "./adapt";
