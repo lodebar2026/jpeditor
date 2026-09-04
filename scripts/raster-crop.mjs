@@ -3,6 +3,7 @@
 //   npm run build:cli && node scripts/raster-crop.mjs 宁静 1 /tmp/a.pgm
 //   node scripts/raster-crop.mjs 宁静 1 /tmp/a.pgm --staff=3      # 只裁第 3 行谱
 //   node scripts/raster-crop.mjs 宁静 1 /tmp/a.pgm --box=150,320,1000,240
+//   node scripts/raster-crop.mjs 破碎 2 /tmp/a.pgm --pdf=1            # 第二份底本（扫描件）
 //
 // 画法（一律描边，不填，免得盖住原图）：
 //   符头 = 方框；谱线 = 左端一小截；加线 = 上下两条短横；小节线/符干 = 端点两横。
@@ -29,7 +30,8 @@ if (!song) {
   console.log("没有这首");
   process.exit(1);
 }
-const { doc, OPS } = await openPdf(song.pdfs[0]);
+// 一曲可能有好几份 PDF（干净位图 / 真扫描件），`--pdf=N` 选第几份，默认第一份
+const { doc, OPS } = await openPdf(song.pdfs[Number(argOf("pdf") ?? 0)] ?? song.pdfs[0]);
 await eachPage(doc, [pn], async (page) => {
   const r = await cli.recognizeRasterPage(page, OPS, look, pn, {});
   if (!r.raster) {
