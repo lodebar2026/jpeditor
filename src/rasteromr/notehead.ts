@@ -170,6 +170,33 @@ export function findRasterHeads(
 }
 
 /**
+ * 一个**已经并好的盒**像不像符头——判据与 `findRasterHeads` 同一套
+ * （尺寸 + 填充率 + 空心那几条），只是不再剪加线（盒是并出来的，不是连通块）。
+ *
+ * 给「碎块并回再查」那一路用：空心符头骑在谱线上时，去谱线会把它切成上下两截
+ * （谱线从它中间穿过，头的内腔上下都是白的，那一段线该抹也确实抹了），
+ * 于是两截都不成符头、字典也认不出——实测宁静 p3 那行「附点二分音符 + 四分休止」
+ * 只认出了休止，整行五个小节全成了「一个 0.25 的音」。
+ */
+export function judgeHeadBox(bin: Binary, box: Rect, unit: RasterUnit, stems: LineSeg[], inStaffBand: (y: number) => boolean): SmuflName | null {
+  const sp = unit.space;
+  const w = box.w / sp;
+  const h = box.h / sp;
+  if (w < W_MIN || w > W_MAX || h < H_MIN || h > H_MAX) return null;
+  if (box.w > box.h * 2.2) return null;
+  let area = 0;
+  for (let y = box.y; y < box.y + box.h; y++)
+    for (let x = box.x; x < box.x + box.w; x++)
+      if (x >= 0 && y >= 0 && x < bin.w && y < bin.h && bin.data[y * bin.w + x]) area++;
+  const fill = area / Math.max(1, box.w * box.h);
+  if (fill < 0.3) return null;
+  if (fill >= FILL_SOLID) return "noteheadBlack";
+  if (w < W_HOLLOW_MIN || w / h < R_HOLLOW_MIN) return null;
+  if (!inStaffBand(box.y + box.h / 2)) return null;
+  return w >= W_WHOLE && !stemOf(box, stems, unit) ? "noteheadWhole" : "noteheadHalf";
+}
+
+/**
  * **剪掉加线**：从左右两侧削掉「只有加线那么高」的列。
  *
  * 加线是抹不掉的——它压在符头底下，照 `findPrimitives` 抽出来的段去抹会把符头

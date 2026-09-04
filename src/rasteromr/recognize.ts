@@ -18,7 +18,7 @@ import { findTuplets } from "../staffomr/notations";
 import type { SPage, Staff } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
-import { findRasterHeads, type RasterHead } from "./notehead";
+import { findRasterHeads, judgeHeadBox, type RasterHead } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
 import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
@@ -300,7 +300,9 @@ export async function recognizeRasterPage(
       }
     }
     if (group.length < 2) continue;
-    const code = look.lookup(binSig(nl, box), box.w / unit.space, box.h / unit.space);
+    // 字典认不出就**按性质判一次符头**：空心符头骑在谱线上时会被去谱线切成两截，
+    // 两截都不成符头、字典里也没有二分符头的类（见 `judgeHeadBox`）。
+    const code = look.lookup(binSig(nl, box), box.w / unit.space, box.h / unit.space) ?? judgeHeadBox(nl, box, unit, prims.vSegs, inBand);
     if (!code) continue;
     for (const id of group) merged.add(id);
     syms.push({ box, code });
