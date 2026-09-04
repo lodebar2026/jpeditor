@@ -588,7 +588,7 @@ export interface StaffNote {
   /** 挂在这个音符上的和弦符号（归一后的原文，如 `Am`、`G/B`、`Dm7`）。 */
   chord?: string;
   /**
-   * 这是**和弦里的附加音**（同一根符干上、与另一个音同 x，且不是最高的那个）。
+   * 这是**和弦里的附加音**（同一根符干上、与另一个音同 x，且不是最低的那个）。
    *
    * 领唱谱的引子常常是柱状和弦（实测 p205 头一行），主旋律只取最高音；
    * MusicXML 那边这些音要带 `<chord/>`，不然会被当成先后两个音、时值全乱。
@@ -826,7 +826,7 @@ function attachDots(notes: StaffNote[], dots: Sym[], sp: number): void {
 /** 一个和弦 = 共用一根符干的一撮符头（或一个无符干符头 / 一个休止）。musicpp 的 `omr::Chord`。 */
 export interface StaffChord {
   staff: Staff;
-  /** `[0]` 是主音（最高的那个），其余在 MusicXML 里带 `<chord/>`。 */
+  /** `[0]` 是主音（**最低的那个**，见 `initChords`），其余在 MusicXML 里带 `<chord/>`。 */
   notes: StaffNote[];
   stem: StemInfo | null;
   left: number;
@@ -869,8 +869,14 @@ function initChords(notes: StaffNote[], stems: StemInfo[], sp: number): StaffCho
   for (const n of notes) if (!bySym.has(n.sym)) bySym.set(n.sym, n);
 
   const make = (ns: StaffNote[], stem: StemInfo | null): StaffChord => {
-    // 主音取最高的那个（MusicXML 里 `<chord/>` 挂在其余音上）
-    ns.sort((a, b) => b.diatonic - a.diatonic);
+    // **主音取最低的那个**，其余带 `<chord/>`。
+    //
+    // MusicXML 里一个和弦的第一个 `<note>` 不带 `<chord/>`，后面的带；
+    // 刻谱软件写和弦是**自下而上**的，所以不带 `<chord/>` 的那个是**最低音**。
+    // 一度取最高音（想着「主旋律在上面」），与 GT 的口径正好反着——
+    // 实测改成最低音之后矢量路音符 97.3% → 97.8%、音高 97.25% → 97.7%、
+    // 「同一版」全对的曲子 29 → 30 首；位图路音符 60.6% → 61.1%。
+    ns.sort((a, b) => a.diatonic - b.diatonic);
     const ch: StaffChord = {
       staff: ns[0].staff,
       notes: ns,
@@ -1055,7 +1061,7 @@ function splitVoice(chords: StaffChord[], expect: number): void {
         first.notes.push(n);
       }
     }
-    first.notes.sort((a, b) => b.diatonic - a.diatonic);
+    first.notes.sort((a, b) => a.diatonic - b.diatonic);
     first.notes.forEach((n, i) => (n.chordExtra = i > 0 || undefined));
     res.push(first);
   }
