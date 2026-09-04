@@ -312,6 +312,9 @@ export interface OutlineTemplate {
  */
 export function outlineTemplates(
   glyphmap: { classes: { smufl: string | null; family: string; w: number; h: number; sig: string }[] },
+  /** 只取 Maestro 一家。**试过放开到 Opus、Anastasia，更差**
+   *  （音符 57.88% → 56.76% / 56.81%）：那两家的同名字形形状差着一截，
+   *  放进来只是给最近邻搜索添了一批更像噪声的候选。 */
   families = ["Maestro"],
 ): OutlineTemplate[] {
   const out: OutlineTemplate[] = [];

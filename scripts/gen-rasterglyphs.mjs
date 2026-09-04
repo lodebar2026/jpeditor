@@ -121,7 +121,7 @@ const sampleOf = (c) => sample.get(origin[c.id]);
 // 1) 模板：拿矢量路 glyphmap.json 那 158 个**已全部定案**的形状类比签名。
 //    同一系的乐谱字体，尺寸逐项吻合（gClef 模板 2.75×7.45 格、位图实测 2.74×7.51）。
 const gm = JSON.parse(await readFile("src/staffomr/glyphmap.json", "utf8"));
-const tpl = cli.outlineTemplates(gm);
+const tpl = cli.outlineTemplates(gm, (argOf("families") ?? "Maestro").split(","));
 let matched = 0;
 for (const c of dict.classes) {
   const hit = cli.matchTemplate(cli.decodeSig(c.sig), c.w, c.h, tpl);
