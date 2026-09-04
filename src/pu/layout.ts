@@ -19,7 +19,8 @@ import type {
   SustainElement,
   VoiceGroup,
 } from "./ast";
-import { contentWidth, puSlurRise, type PuMetrics } from "./metrics";
+import { contentWidth, puGraceMetrics, puGraceNotes, puSlurRise, type PuMetrics } from "./metrics";
+import { graceAdvance } from "../common/gracenote";
 import { elementQuarters, takesLyric, tupletRatios } from "./ast";
 
 /** 一个占位的谱面符号（音符 / 增时线 / 小节线）。 */
@@ -227,11 +228,12 @@ function layoutVoiceLine(voice: ScoreLine, m: PuMetrics): { items: PlacedItem[];
     if (next?.kind === "note" && next.accidental !== undefined) advance += m.accidentalWidth;
     // 前倚音也排在数字左边，同样要让位——不让的话倚音会挤在前后两个音符正中间，
     // 看起来像挂在了左边那个音符上（原版给它让出的正是这么多）
+    // 宽度走公共那一份（带升降号的倚音要多占一截，不是「颗数 × 常数」）
     if (next?.kind === "note" && next.graceBefore.length > 0) {
-      advance += m.digitInkHeight * 0.45 * next.graceBefore.length;
+      advance += graceAdvance(puGraceNotes(next.graceBefore), puGraceMetrics(m));
     }
     if (el.kind === "note" && el.graceAfter.length > 0) {
-      advance += m.digitInkHeight * 0.45 * el.graceAfter.length;
+      advance += graceAdvance(puGraceNotes(el.graceAfter), puGraceMetrics(m));
     }
     if (splitEnd.has(i)) advance += m.digitInkHeight * 1.05;
     // 两个符号之间夹着并排块的话，中间要放得下一个花括号（原版给的间距比普通小节线宽 0.75）

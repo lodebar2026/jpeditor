@@ -33,7 +33,7 @@ import {
   type PlacedVoice,
 } from "./layout";
 import { BRACE_GLYPHS } from "./brace";
-import { applyDocOptions, contentWidth, metricsFor, puSlurStyle, type PageProfileName, type PuMetrics } from "./metrics";
+import { applyDocOptions, contentWidth, metricsFor, puGraceMetrics, puGraceNotes, puSlurStyle, type PageProfileName, type PuMetrics } from "./metrics";
 import { ACCOMP_BRACKET, ACCIDENTAL_GLYPH, BARLINE_MARKS, BRACKET, DYNAMICS, ORNAMENTS, TERMS } from "./glyph";
 
 const BLACK = 0xff1b1b1b;
@@ -967,16 +967,8 @@ export class PuPainter {
     const m = this.metrics;
     const font = new Font(m.fontFamily, this.digitFont.size * m.graceScale);
     const geom = graceGeometry(
-      notes.map((gn) => ({ digit: String(gn.pitch), octave: gn.octave, duration: gn.duration })),
-      {
-        ink: m.digitInkHeight,
-        scale: m.graceScale,
-        octaveUpY: m.octaveUpY,
-        octaveDownY: m.octaveDownY,
-        octaveDotGap: m.octaveDotGap,
-        octaveDotRadius: m.octaveDotRadius,
-        underlineGap: m.underlineGap,
-      },
+      puGraceNotes(notes),
+      puGraceMetrics(m),
       x, baseline, dir, this.digitFont.size,
     );
     for (const d of geom.digits) {
@@ -985,6 +977,18 @@ export class PuPainter {
       g.add(text(d.text, d.cx - (b.left + b.right) / 2, d.cy - (b.top + b.bottom) / 2, font, BLACK));
     }
     for (const o of geom.dots) g.add(dot(o.cx, o.cy, o.r));
+    // 升降号：与主音同一套画法（Bravura 的 SMuFL 字形、按墨迹定位），只是所有量
+    // 都由公共几何按倚音的墨迹给好——字号也是反推出来的，不能照主音那个字号缩。
+    for (const acc of geom.accidentals) {
+      const glyph = ACCIDENTAL_GLYPH[acc.alter];
+      if (!glyph) continue;
+      const probe = new Font("Bravura", 100);
+      const pb = probe.charBound(glyph);
+      const inkAt100 = Math.abs(pb.bottom - pb.top) || 68;
+      const accFont = new Font("Bravura", (acc.inkHeight * 100) / inkAt100);
+      const ab = accFont.charBound(glyph);
+      g.add(text(glyph, acc.inkRight - ab.right, acc.inkCy - (ab.top + ab.bottom) / 2, accFont, BLACK));
+    }
     for (const bm of geom.beams) g.add(rect(bm.x, bm.y, bm.w, bm.h));
     if (geom.hook) {
       const p = stroke(BLACK, geom.hook.width);

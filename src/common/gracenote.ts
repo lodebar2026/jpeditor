@@ -28,19 +28,35 @@ export interface GraceMetrics {
   underlineGap: number;
 }
 
+/** 一颗倚音占多宽（单位 = 主音墨迹高 `ink`）。 */
+const GRACE_STEP = 0.45;
+/** 带升降号的那一颗要额外多占这么一截，数字在格子里跟着右移同样多——
+ *  不让位的话升降号会骑到左边那颗倚音上。 */
+const GRACE_ACC_INSET = 0.32;
+
+/** 倚音的临时升降号。两条路的原始口径不一样（简谱是 `jpAlter` 的 `#/b/n`、
+ *  文本谱是 `NoteElement.accidental`），在这里统一成这一套名字。 */
+export type GraceAlter = "sharp" | "flat" | "natural" | "double-sharp" | "double-flat";
+
 /** 一颗倚音：数字、八度（正=高音点、负=低音点）、时值（4 = 四分，8 = 八分…）。 */
 export interface GraceNote {
   digit: string;
   octave: number;
   /** MusicXML 的 duration 口径：pu 那边是 `gn.duration`，4 = 四分。默认 8（八分）。 */
   duration?: number;
+  /** 临时升降号。带号的那一颗要多占 `GRACE_ACC_INSET` 一截（见 `graceAdvance`）。 */
+  alter?: GraceAlter;
 }
 
 export interface GraceGeom {
   /** 数字：按**墨迹中心**定位（调用方按自己的字体度量把中心换算成基线）。 */
   digits: { text: string; cx: number; cy: number; size: number }[];
   dots: { cx: number; cy: number; r: number }[];
-  /** 减时线（矩形）。 */
+  /** 升降号：**按墨迹定位**——两条路各自量自己的 SMuFL 字形，把墨迹右缘贴到 `inkRight`、
+   *  墨迹竖向中心对齐 `inkCy`、字号取到墨迹高等于 `inkHeight`。
+   *  给的不是字号是因为两边字体度量不同，靠固定偏移放会随字体漂（与 pu 主音那套同理）。 */
+  accidentals: { alter: GraceAlter; inkRight: number; inkCy: number; inkHeight: number }[];
+  /** 减时线（矩形）。**同一层里相邻的倚音连成一条通杠**，不是一颗一小段。 */
   beams: { x: number; y: number; w: number; h: number }[];
   /** 连接钩：一段三次贝塞尔（`m` 起点，`c` 两个控制点 + 终点），`width` 是线宽。 */
   hook: { m: [number, number]; c: [number, number, number, number, number, number]; width: number } | null;
@@ -65,27 +81,61 @@ export function graceGeometry(
    *  1.13~1.77 个音符高，差的那一截正是有没有高音点。 */
   centerY?: number,
 ): GraceGeom {
-  const out: GraceGeom = { digits: [], dots: [], beams: [], hook: null };
+  const out: GraceGeom = { digits: [], dots: [], accidentals: [], beams: [], hook: null };
   if (!notes.length) return out;
   const ink = m.ink;
   const size = fontSize * m.scale;
-  const step = ink * 0.45; // 多个倚音之间的中心距
   const nearest = x + dir * ink * 0.665; // 最靠近主音的那个
   const gy = centerY !== undefined ? centerY : baseline - ink * 0.94;
   const halfBeam = ink * 0.194;
+  // 横向：每颗占**自己那一格**（带升降号的宽一截），格子里数字居中偏右、升降号占前面
+  // 那一截。没有升降号时逐格宽度都是 `GRACE_STEP`，中心距回到从前那个常数 0.45 ink。
+  const centers: number[] = [];
+  let cursor = 0;
+  for (const gn of notes) {
+    const inset = gn.alter ? ink * GRACE_ACC_INSET : 0;
+    centers.push(cursor + inset + ink * (GRACE_STEP / 2));
+    cursor += inset + ink * GRACE_STEP;
+  }
+  // 贴着主音的那一颗定锚：前倚音是最后一颗，后倚音是第一颗（两种方向都保持读序）
+  const anchor = dir < 0 ? notes.length - 1 : 0;
+  const shift = nearest - centers[anchor]!;
+  const gxs = centers.map((c) => c + shift);
+  // 倚音默认八分：一条减时线；时值再短就多一层。比主音的细得多。
+  const lvCounts = notes.map((gn) => Math.max(1, Math.ceil(Math.log2((gn.duration ?? 8) / 4))));
+  const beamY = (lv: number): number => gy + ink * 0.36 + lv * m.underlineGap * 0.8;
+  // **同一层里相邻的倚音连成一条通杠**（`3_2_` 这种要画一条横线贯到底，不是两小段）。
+  // 层数不齐时按「这一层还有份的连续段」分别连，与主音符的符杠同一个道理。
+  const maxLv = Math.max(...lvCounts);
+  for (let lv = 0; lv < maxLv; lv++) {
+    let runStart = -1;
+    for (let i = 0; i <= notes.length; i++) {
+      const on = i < notes.length && lvCounts[i]! > lv;
+      if (on && runStart < 0) runStart = i;
+      if (!on && runStart >= 0) {
+        const x1 = gxs[runStart]! - halfBeam;
+        const x2 = gxs[i - 1]! + halfBeam;
+        out.beams.push({ x: x1, y: beamY(lv), w: x2 - x1, h: ink * 0.055 });
+        runStart = -1;
+      }
+    }
+  }
   let hookAt: { mid: number; y: number; low: boolean } | null = null;
   notes.forEach((gn, i) => {
-    // 前倚音：最后一个贴着主音，往左依次排开；后倚音镜像
-    const order = dir < 0 ? notes.length - 1 - i : i;
-    const gx = nearest + dir * order * step;
+    const gx = gxs[i]!;
     out.digits.push({ text: gn.digit, cx: gx, cy: gy, size });
-    // 倚音默认八分：一条减时线；时值再短就多一层。比主音的细得多。
-    const levels = Math.max(1, Math.log2((gn.duration ?? 8) / 4));
-    let lastY = gy + ink * 0.36;
-    for (let lv = 0; lv < levels; lv++) {
-      lastY = gy + ink * 0.36 + lv * m.underlineGap * 0.8;
-      out.beams.push({ x: gx - halfBeam, y: lastY, w: halfBeam * 2, h: ink * 0.055 });
+    // 升降号贴在这一颗数字墨迹的左缘。竖向照 pu 主音那一套（墨迹中心在墨迹底上方
+    // 0.34 个字高、降号再低 0.08），只是所有量都按倚音的墨迹高——也就是主音的一半。
+    if (gn.alter) {
+      const gInk = ink * 0.5; // 倚音墨迹高（这份文件里通篇的口径）
+      out.accidentals.push({
+        alter: gn.alter,
+        inkRight: gx - halfBeam - gInk * 0.1,
+        inkCy: gy + gInk * 0.5 - gInk * 0.34 + (gn.alter.includes("flat") ? gInk * 0.08 : 0),
+        inkHeight: gInk * 0.78,
+      });
     }
+    const lastY = beamY(lvCounts[i]! - 1);
     // 八度点**按倚音自己的墨迹边缘排**（上边缘往上、减时线下边缘往下），净距取
     // `ink * 0.11`——就是减时线离墨迹底那一截，与这一份里其它比例同一个口径。
     //
@@ -106,7 +156,7 @@ export function graceGeometry(
       out.dots.push({ cx: gx, cy: gy - ink * 0.25 - inkGap - rr - k * dotStep, r: rr });
     for (let k = 0; k < -gn.octave; k++)
       out.dots.push({ cx: gx, cy: lastY + ink * 0.055 + inkGap + rr + k * dotStep, r: rr });
-    if (order === 0) hookAt = { mid: gx, y: lastY, low: gn.octave < 0 };
+    if (i === anchor) hookAt = { mid: gx, y: lastY, low: gn.octave < 0 };
   });
   if (hookAt === null) return out;
   const { mid, y: uy, low } = hookAt as { mid: number; y: number; low: boolean };
@@ -147,7 +197,10 @@ export function graceBottom(g: GraceGeom, m: GraceMetrics): number {
   return low;
 }
 
-/** 一组倚音占多宽（主音之外的那一截）——排版要按它给音符前面留位。 */
-export function graceAdvance(count: number, m: GraceMetrics): number {
-  return count > 0 ? m.ink * 0.45 * count : 0;
+/** 一组倚音占多宽（主音之外的那一截）——排版要按它给音符前面留位。
+ *  带升降号的那几颗宽一截，所以按逐颗累加，不是「颗数 × 常数」。 */
+export function graceAdvance(notes: readonly GraceNote[], m: GraceMetrics): number {
+  let w = 0;
+  for (const gn of notes) w += m.ink * (GRACE_STEP + (gn.alter ? GRACE_ACC_INSET : 0));
+  return w;
 }

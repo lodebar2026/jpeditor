@@ -11,7 +11,7 @@ import { Font } from "./font";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 import { chordTextSegs, layoutHarmonySegs } from "./harmony";
 import { BandItem, bandTop, stackUpperBand } from "./upperband";
-import { GraceMetrics, graceAdvance, graceBottom, graceGeometry } from "../common/gracenote";
+import { GraceAlter, GraceMetrics, GraceNote, graceAdvance, graceBottom, graceGeometry } from "../common/gracenote";
 import * as S from "../score/score";
 
 function getOrNull<T>(arr: T[], i: number): T | null {
@@ -827,6 +827,22 @@ function normalizeEntryX(g: Group): void {
   g.x += left;
 }
 
+/** `Note.jpAlter` → 公共倚音几何的升降号名。空格（没有临时记号）不在表里。 */
+const GRACE_ALTER: Record<string, GraceAlter | undefined> = {
+  "#": "sharp",
+  b: "flat",
+  n: "natural",
+};
+
+/** 倚音升降号用的 SMuFL 字形，与主音那一套同源（`addAccidental`）。 */
+const GRACE_ALTER_GLYPH: Record<GraceAlter, string | undefined> = {
+  sharp: GlyphCodes.accidentalSharp,
+  flat: GlyphCodes.accidentalFlat,
+  natural: GlyphCodes.accidentalNatural,
+  "double-sharp": undefined,
+  "double-flat": undefined,
+};
+
 /** 简谱这一路的倚音度量——折算成公共几何要的那几个数（见 common/gracenote.ts）。 */
 function graceMetricsOf(opt: LayoutOptions): GraceMetrics {
   const bnd = opt.numberBound("1");
@@ -1102,11 +1118,16 @@ export class NoteEntry extends Entry {
     // 有低音点时低音点更低。所以先按 `centerY = 0` 排一遍量出底缘，再回填真正的 centerY。
     // 摆的基准是 `stackInkTop`（数字加高音点那一摞的墨迹顶），不是 `entryTop`：
     // 后者在旧式档里是「上方那一带的底」，比墨迹顶还高出一格。
-    const notes = ch.graceNotes.map((g) => ({ digit: g.number, octave: g.jpOctave, duration: 8 }));
+    const notes: GraceNote[] = ch.graceNotes.map((g) => ({
+      digit: g.number,
+      octave: g.jpOctave,
+      duration: 8,
+      ...(GRACE_ALTER[g.jpAlter] ? { alter: GRACE_ALTER[g.jpAlter]! } : {}),
+    }));
     const probe = graceGeometry(notes, gm, 0, 0, -1, options.numberFont.size, 0);
     const centerY = ent.stackInkTop(options) - graceBottom(probe, gm);
     const geom = graceGeometry(notes, gm, 0, 0, -1, options.numberFont.size, centerY);
-    const lead = graceAdvance(ch.graceNotes.length, gm);
+    const lead = graceAdvance(notes, gm);
     // 主音符右移，给倚音腾地方；游标也要跟着推（不然倚音会压上一个音符）
     main.x += lead;
     ent.leadSpace = lead;
@@ -1133,6 +1154,24 @@ export class NoteEntry extends Entry {
       dot.x = ox + o.cx - r;
       dot.y = o.cy - r;
       ent.group.add(dot);
+    }
+    // 升降号：与主音同一套 SMuFL 字形（`addAccidental`），但**按墨迹摆**——
+    // 公共几何给的是墨迹右缘、竖向中心与墨迹高，字号由墨迹高反推（主音那边用的是
+    // 固定的 0.8 缩放 + 常数偏移，倚音这么小，一点漂移就骑到左边那颗上）。
+    for (const acc of geom.accidentals) {
+      const smufl = GRACE_ALTER_GLYPH[acc.alter];
+      if (!smufl) continue;
+      const tf = new SmuflText(options);
+      tf.color = options.color;
+      if (options.smuflAsPath) tf.asPath = true;
+      tf.text = smufl;
+      const b0 = tf.bound;
+      const h0 = b0.bottom - b0.top;
+      if (h0 > 0) tf.font = options.smuflFont.makeWithSize(options.smuflFont.size * (acc.inkHeight / h0));
+      const b = tf.bound;
+      tf.x = ox + acc.inkRight - b.right;
+      tf.y = acc.inkCy - (b.top + b.bottom) / 2;
+      ent.group.add(tf);
     }
     for (const bm of geom.beams) {
       const ln = new GraphicLine();
