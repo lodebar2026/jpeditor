@@ -14,4 +14,6 @@ export * from "./adapt";
 export * from "./rasterglyphs";
 export * from "./notehead";
 export * from "./lyric";
+export * from "./contour";
+export * from "./ledger";
 export * from "./recognize";
