@@ -22,7 +22,7 @@ import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles } from 
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
-import { buildHeadMasks, splitHeadCluster } from "./headmask";
+import { buildHeadMasks, headFromStemBlock, splitHeadCluster } from "./headmask";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
 import { findRasterSlurs } from "./slur";
@@ -74,6 +74,8 @@ export interface RasterPageResult {
    * （不等就得按 `xFrac` 摊，而那是 CTC 估的位置，误差常有半个字）。
    */
   lyricStats: { rows: number; hit: number; parity: number };
+  /** 排查用（`opts.debug`）：连通块与「谁被认领了」。识别本身不看。 */
+  debugBlobs?: { id: number; box: Rect; area: number; claimed: boolean }[];
   carryTime?: { beats: number; beatType: number };
 }
 
@@ -325,6 +327,8 @@ export async function recognizeRasterPage(
      * 之后识别命中缓存，仍然不起浏览器。
      */
     lyricOcr?: Map<string, OcrChar[]>;
+    /** 排查用：把连通块与「谁被认领了」带出来（`debugBlobs` 字段）。识别判据一条不改。 */
+    debug?: boolean;
   } = {},
 ): Promise<RasterPageResult> {
   const raster = await rasterizePage(pdfPage, OPS);
@@ -732,6 +736,31 @@ export async function recognizeRasterPage(
     s.box = { x: s.box.x, y: s.box.y + cut, w: s.box.w, h: s.box.h - cut };
   }
 
+  // ── 符头 + 符干（+ 符尾）并成一块：把头摘出来 ────────────────────────────
+  //
+  // 符尾贴着符干走大半程，`isolated` 判那条符干「属于某个符号」，于是抽不成原语、
+  // `blobImage` 也不照它抹墨——头、干、尾连成一块（实测 1.99×3.91 格），
+  // 单头的尺寸闸一律判否。只有符干的那些同理（弧线蹭着符干时也过不了孤立性）。
+  // 判据见 `headmask.ts::headFromStemBlock`；**只吃谁都没认领的块**，
+  // 谱号、休止、升降号、拍号那几路已经先收过一遍。
+  const stemHeads: RasterSym[] = [];
+  /** 摘出来的头自带的符干（只进 `SPage`，不回写 `prims`——那边的墨已经抹过了）。 */
+  const stemSegs: LineSeg[] = [];
+  if (masks.length) {
+    for (const c of blobs) {
+      if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
+      // 已经被别的路（谱号自举、拍号自举）出成 sym 的块不碰
+      const b = c.bbox;
+      if (syms.some((s0) => overlapFrac(b, s0.box) > 0.5)) continue;
+      const r = headFromStemBlock(raster.bin, b, c.area, masks, unit, pitchGrid, onLineY);
+      if (!r) continue;
+      stemHeads.push({ box: r.head, code: "noteheadBlack" });
+      stemSegs.push({ x0: r.stemX, y0: r.stemY0, x1: r.stemX, y1: r.stemY1, lw: unit.lineThick, maxLw: unit.lineThick * 2 });
+      ledger.claim(r.head, "stemblock:noteheadBlack");
+    }
+    syms.push(...stemHeads);
+  }
+
   // **切加线要用最终认出来的全部符头**：除了 `findRasterHeads`，还有按内腔找的、
   // 拆块拆出来的、字典查出来的、碎块并回再判出来的——少算哪一路，那一路的符头
   // 就只能蹭邻居的加线，`findLegers` 判否、整批挂不上谱行。
@@ -777,7 +806,7 @@ export async function recognizeRasterPage(
     // 被并进升降号的竖段要摘掉（留着会被当成符干或小节线）
     vSegs: extendVSegs(
       nl,
-      prims.vSegs.filter((v) => !usedSegs.has(v)),
+      [...prims.vSegs.filter((v) => !usedSegs.has(v)), ...stemSegs],
       Math.round(unit.space * 0.35),
     ),
     syms,
@@ -907,8 +936,16 @@ export async function recognizeRasterPage(
     dynamics,
     slurs,
     lyricStats,
+    debugBlobs: opts.debug ? blobs.map((c) => ({ id: c.id, box: c.bbox, area: c.area, claimed: claimed.has(c.id) })) : undefined,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
+}
+
+/** 两个盒的交叠占 `a` 的比例。 */
+function overlapFrac(a: Rect, b: Rect): number {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? (w * h) / Math.max(1, a.w * a.h) : 0;
 }
 
 /** 排查用：把一页的二值图取出来（识别坐标 = 像素坐标）。 */
