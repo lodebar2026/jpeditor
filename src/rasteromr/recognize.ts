@@ -18,10 +18,10 @@ import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findT
 import type { SPage, Staff, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
-import { findRasterHeads, judgeHeadBox, type RasterHead } from "./notehead";
+import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles, type RasterHead } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
-import { traceContours, type ContourMap } from "./contour";
+import { findHoles, traceContours, type ContourMap } from "./contour";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
 import { findRasterSlurs } from "./slur";
@@ -294,8 +294,22 @@ export async function recognizeRasterPage(
     : null;
   const heads = findRasterHeads(nl, blobs, prims.vSegs, unit, onGrid, inBand, matchHollow);
   const claimed = new Set(heads.map((h) => h.comp.id));
-  const syms: RasterSym[] = heads.map((h) => ({ box: h.box, code: h.code }));
+
+  // ── 空心符头：按**内腔（洞）**再找一遍 ───────────────────────────────────
+  //
+  // 空心符头被去谱线切碎之后一块都判不成符头（实测宁静 p2 钢琴右手那个二分和弦
+  // 碎成四片），而它的**内腔**还在。所以在**去谱线之前**的图上取全页的孔，
+  // 尺寸像内腔的往外扩一圈就是符头；骑线的头内腔被谱线豁成两半，先并回去。
+  // 判据全在 `notehead.ts::hollowHeadsFromHoles`。
+  const holes = mergeHoles(findHoles(raster.bin, Math.max(4, Math.round(unit.space * unit.space * 0.06))), unit);
+  const takenBoxes = heads.map((h) => h.box);
+  // 带宽照 `HOLLOW_BAND`（±3 格）。扫过 ±1.5 / ±2 / ±3 格，三档一样
+  // ——这一路的过检不在带边上。
+  const stacked: RasterSym[] = hollowHeadsFromHoles(nl, holes, unit, prims.vSegs, inBand, takenBoxes);
+
+  const syms: RasterSym[] = [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked];
   for (const h of heads) ledger.claim(h.box, `head:${h.code}`);
+  for (const s0 of stacked) ledger.claim(s0.box, `stack:${s0.code}`);
   const dictClaimed = new Set<number>();
   for (const c of blobs) {
     if (claimed.has(c.id)) continue;

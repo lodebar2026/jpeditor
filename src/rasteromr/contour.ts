@@ -223,3 +223,76 @@ function placeOf(c: Component, staves: ContourStaff[], unit: RasterUnit): Contou
   const zone = c.cy < st.top ? "above" : c.cy > st.bottom ? "below" : "in";
   return { staff: best, zone, gap: bd / unit.space };
 }
+
+
+/**
+ * **全页的孔**：背景里够不着页边的连通团。空心符头的内腔就是它。
+ *
+ * 为什么值得单独跑一趟：空心符头在位图上最不稳——去谱线会把它的圈切断、
+ * 符干残根粘在旁边、叠置的和弦还会碎成四五片（实测宁静 p2 钢琴右手那个二分和弦
+ * 碎成 0.66×0.50 / 0.77×1.10 / 0.99×0.39 / 0.83×0.33 四块，一块都判不成符头）。
+ * 但**内腔一直在**：外圈再破，只要没破到透，中间那团白就还是围着的。
+ * 拿洞去找符头，比拿破碎的外圈去找稳得多。
+ *
+ * 在**去谱线之前**的图上跑：去谱线会把骑线符头的内腔豁开一道口子，洞就漏了。
+ */
+export function findHoles(bin: Binary, minArea = 4): Rect[] {
+  const { w, h, data } = bin;
+  const seen = new Uint8Array(w * h);
+  const stack: number[] = [];
+  // 先从四边把「通到页外」的背景全标掉
+  const push = (i: number) => {
+    if (!seen[i] && !data[i]) {
+      seen[i] = 1;
+      stack.push(i);
+    }
+  };
+  for (let x = 0; x < w; x++) {
+    push(x);
+    push((h - 1) * w + x);
+  }
+  for (let y = 0; y < h; y++) {
+    push(y * w);
+    push(y * w + w - 1);
+  }
+  while (stack.length) {
+    const cur = stack.pop()!;
+    const y = (cur / w) | 0;
+    const x = cur - y * w;
+    if (x > 0) push(cur - 1);
+    if (x + 1 < w) push(cur + 1);
+    if (y > 0) push(cur - w);
+    if (y + 1 < h) push(cur + w);
+  }
+  // 剩下的背景团就是孔
+  const out: Rect[] = [];
+  for (let y0 = 0; y0 < h; y0++)
+    for (let x0 = 0; x0 < w; x0++) {
+      const i = y0 * w + x0;
+      if (seen[i] || data[i]) continue;
+      let minX = x0;
+      let maxX = x0;
+      let minY = y0;
+      let maxY = y0;
+      let area = 0;
+      stack.length = 0;
+      seen[i] = 1;
+      stack.push(i);
+      while (stack.length) {
+        const cur = stack.pop()!;
+        const y = (cur / w) | 0;
+        const x = cur - y * w;
+        area++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        if (x > 0) push(cur - 1);
+        if (x + 1 < w) push(cur + 1);
+        if (y > 0) push(cur - w);
+        if (y + 1 < h) push(cur + w);
+      }
+      if (area >= minArea) out.push({ x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 });
+    }
+  return out;
+}
