@@ -390,7 +390,7 @@ function gotRows(entries) {
         }
         return { seq, chords, lyric };
       });
-      out.push({ rows });
+      out.push({ rows, pageNo: e.pageNo, top: sys.box.top });
     }
   return out;
 }
@@ -504,7 +504,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       // **分档按底本的数据形态**（`raster.kind`），不拿「线宽/线距」当代理量
       // ——那个比值随谱线判据一动就翻（见 `rasterpage.ts` 的说明）。
       if (r.raster?.kind === "mask") cleanPages++;
-      entries.push({ page: r.page, ctx: r.ctx, notes: r.notes });
+      entries.push({ page: r.page, ctx: r.ctx, notes: r.notes, pageNo: pn });
       bars += r.bars.length;
       full += r.bars.filter((b) => b.full).length;
       unknown += r.unknown;
@@ -599,6 +599,22 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
           cur.gtCh.push(...(e.chords ?? []));
           cur.lyricGt += e.lyric;
         }
+      // ── 逐系统下钻（`--secdump=P6.1`）：把某一行谱的错误定位到具体系统 ──
+      const secdump = argOf("secdump");
+      if (secdump) {
+        for (const { sys, sec: sc } of sp) {
+          const k = sc.staves.indexOf(secdump);
+          if (k < 0) continue;
+          const e = sc.seqOf.get(secdump);
+          if (!e) continue;
+          const A = sys.rows[k].seq, B = e.seq;
+          let a2 = acc(A, B, 24, true);
+          for (const kk of [-1, 1]) a2 = Math.max(a2, acc(shiftOct(A, kk), B, 24, true));
+          const t2 = errKinds(A, B.slice(B.findIndex((z) => z !== "R")));
+          console.log(`    [sec] p${sys.pageNo} top${sys.top.toFixed(0)} m${sc.m0}-${sc.m1} GT${B.length}/识别${A.length} ${(a2 * 100).toFixed(1)}% 读错${t2.sub}漏${t2.del}多${t2.ins}`);
+          if (args.includes("--dump")) console.log("      " + alignText(A, B, 60));
+        }
+      }
       let sn = 0, sl = 0, sd = 0, sy = 0, syd = 0;
       let chHit = 0, chGt = 0, chGot = 0, chExact = 0, chN = 0;
       const rows = [];

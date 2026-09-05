@@ -164,3 +164,95 @@ export function splitHeadCluster(
   const hh = Math.round(sp * 0.95);
   return picked.map((p) => ({ x: Math.round(p.x - hw / 2), y: Math.round(p.y - hh / 2), w: hw, h: hh }));
 }
+
+/** 「符头 + 符干（+ 符尾）并成一块」的尺寸闸（线距的倍数）。
+ *  单个八分音符的块实测 1.99×3.91 格（带符尾）、1.11×3.85 与 1.11×5.31 格（只有符干）。 */
+const STEM_W = [0.85, 2.6] as const;
+const STEM_H = [1.6, 6.5] as const;
+/** 填充率：一根符干加一个头，墨占不到包围盒的一半；太实的是黑块、太空的是弧线。 */
+const STEM_FILL = [0.18, 0.72] as const;
+/** 头只可能在符干的**某一端**，从端点往里找这么多格。 */
+const END_BAND = 1.3;
+/** 单头要的得分。比拆和弦那条严（那边块里必然有头，这边还要先确认「有没有」）。 */
+const STEM_SCORE_MIN = 0.45;
+
+/**
+ * 从「**符头 + 符干（+ 符尾）并成一块**」的块里把符头摘出来。
+ *
+ * 病因在 `prims.ts::isolated`：符尾贴着符干走了大半程，两侧邻墨过半，
+ * 那条符干于是**判不成原语**、`blobImage` 也就没照它抹墨——头、干、尾连成一块，
+ * 宽 2.0 高 3.9 格，单头的尺寸闸一律判否。实测破碎 p2 第一系统钢琴右手
+ * 六个带符尾的八分音符**一个都没认出来**（那一段 GT 42 音只出 30）。
+ *
+ * 与 `splitHeadCluster` 的分别：那边是「块太大、装着好几个头」，拆得出两个才算数；
+ * 这边是「块细长、一端有个头」，只摘**一个**。所以判据要严一档
+ * （得分闸更高、只在两端找），而且**只吃谁都没认领的块**——
+ * 谱号、休止、升降号的块都已经被字典/自举那几路收走了。
+ *
+ * @returns 摘出来的符头盒与符干那一段（都没有就是 null）。
+ */
+export function headFromStemBlock(
+  bin: Binary,
+  box: Rect,
+  area: number,
+  masks: HeadMask[],
+  unit: RasterUnit,
+  grid: (y: number) => number | null,
+  onLine: (y: number) => boolean,
+): { head: Rect; stemX: number; stemY0: number; stemY1: number } | null {
+  const sp = unit.space;
+  const w = box.w / sp;
+  const h = box.h / sp;
+  if (w < STEM_W[0] || w > STEM_W[1] || h < STEM_H[0] || h > STEM_H[1]) return null;
+  const fill = area / Math.max(1, box.w * box.h);
+  if (fill < STEM_FILL[0] || fill > STEM_FILL[1]) return null;
+  // 两端各留一条带，头只在里面找
+  const bands: [number, number][] = [
+    [box.y - sp * 0.2, box.y + sp * END_BAND],
+    [box.y + box.h - sp * END_BAND, box.y + box.h + sp * 0.2],
+  ];
+  let best: { x: number; y: number; s: number } | null = null;
+  const step = Math.max(1, Math.round(sp * 0.15));
+  for (const [ya, yb] of bands)
+    for (let x = box.x; x <= box.x + box.w; x += step) {
+      const ys = new Set<number>();
+      for (let y = ya; y <= yb; y += sp * 0.25) {
+        const g = grid(y);
+        if (g !== null && g >= ya - sp * 0.3 && g <= yb + sp * 0.3) ys.add(g);
+      }
+      for (const y of ys) {
+        const m = masks.find((k) => k.onLine === onLine(y)) ?? masks[0];
+        const s = scoreAt(bin, m, x, y);
+        if (s >= STEM_SCORE_MIN && (!best || s > best.s)) best = { x, y, s };
+      }
+    }
+  if (!best) return null;
+  const hw = Math.round(sp * 1.25);
+  const hh = Math.round(sp * 0.95);
+  const head = { x: Math.round(best.x - hw / 2), y: Math.round(best.y - hh / 2), w: hw, h: hh };
+  // 符干：头在上端就往下走，在下端就往上走。
+  // **要续到符头中心**——`findStems` 的硬判据是「符干与符头纵向相交」，
+  // 停在符头边缘上，`extendVSegs` 那 0.35 格续不进去，段就挂不上 `Stem` 标记，
+  // `bootstrapFlags` 只看挂上标记的段，符尾于是一个都补不出来（八分整批读成四分）。
+  const up = best.y - box.y < box.y + box.h - best.y; // 头在上端
+  const stemX = stemColumn(bin, box, up ? head.y + head.h : box.y, up ? box.y + box.h : head.y);
+  const stemY0 = up ? best.y : box.y;
+  const stemY1 = up ? box.y + box.h : best.y;
+  return { head, stemX, stemY0, stemY1 };
+}
+
+/** 块里 `[y0,y1)` 那一段最密的那一列（符干的 x）。 */
+function stemColumn(bin: Binary, box: Rect, y0: number, y1: number): number {
+  let bx = box.x + box.w / 2;
+  let bn = -1;
+  for (let x = box.x; x < box.x + box.w; x++) {
+    let n = 0;
+    for (let y = Math.max(0, Math.round(y0)); y < Math.min(bin.h, Math.round(y1)); y++)
+      if (x >= 0 && x < bin.w && bin.data[y * bin.w + x]) n++;
+    if (n > bn) {
+      bn = n;
+      bx = x;
+    }
+  }
+  return bx;
+}
