@@ -135,8 +135,8 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
     if (beams.some((b) => b.x0 - sp * 0.5 <= st.cx && st.cx <= b.x1 + sp * 0.5 && st.top - sp * 0.5 < (b.y0 + b.y1) / 2 && (b.y0 + b.y1) / 2 < st.bottom + sp * 0.5)) continue;
     const toward = Math.sign(hy - far) || 1;
     const frac = (d0: number, d1: number) => {
-      const x0 = Math.round(st.cx + sp * 0.2);
-      const x1 = Math.round(st.cx + sp * 1.5);
+      const x0 = Math.round(st.cx + sp * FLAG_X[0]);
+      const x1 = Math.round(st.cx + sp * FLAG_X[1]);
       let ink = 0;
       let tot = 0;
       for (let dy = sp * d0; dy < sp * d1; dy++) {
@@ -150,11 +150,11 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
       }
       return tot ? ink / tot : 0;
     };
-    if (frac(0, 1.5) < FLAG_INK) continue;
+    if (frac(0, FLAG_Y) < FLAG_INK) continue;
     // **符尾从符干尖端长出来**：贴着远端那一小截、紧挨符干右侧必须有墨。
     // 没这一条，从符干旁边路过的连音线、下一个音的符头都会把窗口填满
     // （实测只看整窗占比，小节自检 33.2% → 31.9%）。
-    if (frac(0, 0.35) < FLAG_INK) continue;
+    if (frac(0, 0.35) < FLAG_TIP) continue;
     const up = far < hy;
     // **第二个钩**：十六分的两道钩沿符干错开约一格。只认出第一道的话
     // 十六分整批读成八分（实测补上第一道之后 `16th→eighth` 一下涨到 171 处）。
@@ -218,8 +218,37 @@ const TIME_TEMPLATE_DIST = 180;
 /** 空心符头允许离谱表多远（线距的倍数）。见 `inBand` 那段的说明。 */
 const HOLLOW_BAND = 3.0;
 
-/** 符尾窗口的墨占比门槛。实测没有符杠的音符要么 0（真四分）、要么 0.35 以上，中间没人。 */
-const FLAG_INK = 0.25;
+/**
+ * 符尾窗口的墨占比门槛。
+ *
+ * 原来 0.25，收窄窗口之前是对的；收窄之后真符尾落在 **0.17~0.21**、
+ * 真四分仍是 0.00（中间还是没人，只是整条尺子往下挪了）。
+ * 扫过 0.10 / 0.14 / **0.16~0.18** / 0.20 / 0.22 / 0.25：
+ * 时值 91.9 / 92.0 / **92.1** / 92.0 / 91.0 / 89.4%。
+ */
+const FLAG_INK = 0.18;
+/**
+ * 符尾那个窗口的**横向范围**（线距的倍数，从符干中心往右算）。
+ *
+ * 原来放到 1.5 格，太宽：这套底本的八分符尾是**一条细弧**，
+ * 从符干尖端斜挂下来、横跨也只有 0.9 格（实测破碎 p2 x453 那个八分，
+ * 符尾占 x453~468、纵跨 2.7 格，每行只有两三个像素）。
+ * 窗口比符尾宽出一半，占比就被空白摊薄。
+ * 扫过 0.8 / **1.0** / 1.3：时值 92.1 / 92.1 / 90.9%。
+ */
+const FLAG_X = [0.15, 1.0] as const;
+/** 符尾窗口的**纵向长度**（线距的倍数，从符干尖端往符头方向）。
+ *  放到 2.5 格（罩住整条符尾）实测更差：符尾下半截是根细线，多罩进来的全是白的。 */
+const FLAG_Y = 1.5;
+/**
+ * 贴着符干尖端那一小截要的墨（`FLAG_INK` 的伙伴）。
+ *
+ * 这一档**比整窗那一档松得多**：符尾在尖端是**贴着符干**走的（实测破碎 p2 x453
+ * 那个八分，尖端往下 0.35 格里符尾只占符干右侧一两列，而窗口从 0.15 格外才开始数），
+ * 拿整窗的门槛卡这一截，真符尾一个都过不去。这条闸要的只是「符尾确实从尖端长出来」，
+ * 不是「这里墨很多」。
+ */
+const FLAG_TIP = 0.05;
 /** 第二道钩（十六分）的门槛。比第一道**严**：那一段窗口里还可能扫到下一个音的符干或符头。 */
 const FLAG_INK2 = 0.3;
 
