@@ -29,6 +29,7 @@ import { ContourLedger } from "./ledger";
 import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
 import { attachSlurs, markSlurNotes, reconnectSlurs, type SlurArc } from "../staffomr/slur";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
+import { completeStaffLines } from "./dewarp";
 import { rasterizePage, type RasterPage } from "./rasterpage";
 
 export interface RasterPageResult {
@@ -247,8 +248,10 @@ export async function recognizeRasterPage(
   if (!raster) return empty(blank, null, null, opts.carryTime);
   const unit = estimateUnit(raster.bin);
   if (!unit) return empty(blank, raster, null, opts.carryTime);
-  const lines = findStaffLines(raster.bin);
-  const groups = groupStaves(lines);
+  // 行投影找谱线；**明显不够的页面**（扫得糊、线细断）再拿逐列游程的轨迹补上
+  // ——判据与推平同一道闸，见 `dewarp.ts::completeStaffLines`。
+  const rowLines = findStaffLines(raster.bin);
+  const { lines, groups } = completeStaffLines(raster.bin, rowLines, groupStaves(rowLines));
   if (!groups.length) return empty(blank, raster, unit, opts.carryTime);
 
   const nl = removeStaffLines(raster.bin, lines.map((l) => l.y), unit);

@@ -16,6 +16,7 @@
 // > 众数落在 3~5 px）。这里不取众数，而是要求**五连等距**——
 // > 歌词笔画凑不出五段等距的黑白相间，噪声更凑不出。
 import type { Binary } from "../omr/types";
+import type { StaffGroup, StaffLineRun } from "./staffline";
 
 /** 逐列取样的步长（px）。谱线横跨整页，抽稀不影响；4 px 一页几十毫秒。 */
 const COL_STEP = 4;
@@ -43,12 +44,15 @@ export interface ColHit {
   cy: number;
   space: number;
   thick: number;
+  /** 这一列上五条线各自的中心 y（自上而下）。合成谱线要用它，见 `completeStaffLines`。 */
+  ys: number[];
 }
 
-/** 一条轨迹：同一行谱在各取样列上的中心 y。 */
+/** 一条轨迹：同一行谱在各取样列上的中心 y（`hits` 留着，合成谱线要逐条线的 y）。 */
 interface Track {
   xs: number[];
   ys: number[];
+  hits: ColHit[];
 }
 
 /**
@@ -90,6 +94,67 @@ export interface TrackCurve {
   mid: number;
   off: number[];
 }
+
+/**
+ * **行投影漏掉的谱行，拿逐列游程的轨迹补上。**
+ *
+ * 行投影要求「一整行几乎全是墨」，扫得糊、线又细的底本过不了那道闸
+ * ——实测主，差遣我 p4 印着 12 行谱只找出 7 行（200 dpi、线距 11.5 px、线断成一节一节）。
+ * 而逐列游程在同一页上明明看得见那几行（它只要求「这一列上五段黑夹四段白」）。
+ *
+ * **只在行投影明显不够时才补**（与 `dewarpPage` 同一道闸）：轨迹数比成组的谱行数多出
+ * 四成以上，才认为这一页的行投影废了。差不多的页面不补——合成的线是各列取中位数，
+ * 端点也只到轨迹的两头，不如行投影量得准。
+ *
+ * 一条轨迹合成五条线：逐条线的 y 取各列的中位数（页面这时已经推平），
+ * 上下沿按实测线厚，左右端取轨迹的首尾列。
+ */
+export function completeStaffLines(bin: Binary, lines: StaffLineRun[], groups: StaffGroup[]): { lines: StaffLineRun[]; groups: StaffGroup[] } {
+  const hits = columnHits(bin);
+  const cols = Math.ceil(bin.w / COL_STEP);
+  if (hits.length < 20) return { lines, groups };
+  const spaces = hits.map((h) => h.space).sort((a, b) => a - b);
+  const space = spaces[spaces.length >> 1];
+  const keep = hits.filter((h) => Math.abs(h.space - space) <= space * SPACE_TOL).sort((a, b) => a.cy - b.cy);
+  const need = Math.max(20, cols * BAND_SUPPORT);
+  const out = [...lines];
+  const outGroups = [...groups];
+  for (let i = 0; i < keep.length; ) {
+    let j = i;
+    while (j + 1 < keep.length && keep[j + 1].cy - keep[j].cy <= space * BAND_TOL) j++;
+    const band = keep.slice(i, j + 1);
+    i = j + 1;
+    // **支持要够多**：同一行谱在别的窗口上也会凑出「五段黑」（错开一条线的那种），
+    // 但那些只有十几列支持，而真谱行有几百列（实测干净页的假带 11~54 列、
+    // 真行 260~420 列；主，差遣我 p4 漏掉的五行也有 233~318 列）。
+    if (band.length < need) continue;
+    const cy = median(band.map((h) => h.cy));
+    // 已经被行投影找出来的谱行盖住了就跳过——干净位图那一档**全部**落在这里，
+    // 所以这条补线一个像素都不会动它（实测各档分毫不差）。
+    if (groups.some((g) => cy > g.lines[0].y - space && cy < g.lines[4].y + space)) continue;
+    const thick = Math.max(1, median(band.map((h) => h.thick)));
+    const left = Math.min(...band.map((h) => h.x));
+    const right = Math.max(...band.map((h) => h.x));
+    const five: StaffLineRun[] = [];
+    for (let k = 0; k < 5; k++) {
+      const y = median(band.map((h) => h.ys[k]));
+      five.push({ y, y0: y - thick / 2, y1: y + thick / 2, left, right });
+    }
+    out.push(...five);
+    // **谱行直接给出来，不再让 `groupStaves` 从一堆线里重新凑**：行投影在这种页面上
+    // 留下一地散线（实测主，差遣我 p4 有 52 条线却只凑出 7 行谱），
+    // 合成的五条线混进去会被那些散线搅得凑不成一组
+    // （实测补了 25 条线、谱行只从 7 涨到 8；直接给谱行才是 7 → 12）。
+    outGroups.push({ lines: five, space: (five[4].y - five[0].y) / 4 });
+  }
+  outGroups.sort((a, b) => a.lines[0].y - b.lines[0].y);
+  return { lines: out.sort((a, b) => a.y - b.y), groups: outGroups };
+}
+
+/** 同一条带里，各列命中的中心 y 允许差多少（线距的倍数）。 */
+const BAND_TOL = 0.4;
+/** 一条带要有几成的取样列支持才算一行谱。干净页上的假带只有一成出头，真行有六成以上。 */
+const BAND_SUPPORT = 0.25;
 
 /**
  * **排查用**：逐列黑白游程看得见几行谱（不管页面平不平）。
@@ -182,7 +247,7 @@ export function columnHits(bin: Binary): ColHit[] {
       // 「黑」要够薄：谱线约 0.1~0.3 个线距厚，符头、符杠厚得多
       for (let k = 0; k < 5 && ok; k++) if (lens[i + k] > avg * MAX_THICK) ok = false;
       if (!ok) continue;
-      out.push({ x, cy: (c[0] + c[4]) / 2, space: avg, thick: thick / 5 });
+      out.push({ x, cy: (c[0] + c[4]) / 2, space: avg, thick: thick / 5, ys: c.slice() });
       i += 4; // 一列上认出一行谱就跳过它这五段（免得错位再凑一个）
     }
   }
@@ -219,12 +284,13 @@ function buildTracks(hits: ColHit[], space: number, width: number): Track[] {
       used.add(best);
       o.t.xs.push(x);
       o.t.ys.push(best.cy);
+      o.t.hits.push(best);
       o.lastX = x;
       o.lastY = best.cy;
     }
     for (const h of byX.get(x)!) {
       if (used.has(h)) continue;
-      open.push({ t: { xs: [x], ys: [h.cy] }, lastX: x, lastY: h.cy });
+      open.push({ t: { xs: [x], ys: [h.cy], hits: [h] }, lastX: x, lastY: h.cy });
     }
     // 断掉太久的收工
     for (let i = open.length - 1; i >= 0; i--)

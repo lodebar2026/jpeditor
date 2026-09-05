@@ -28,7 +28,9 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (page, pn) => {
       const r = await cli.rasterizePage(page, OPS);
       if (!r) return;
-      const groups = cli.groupStaves(cli.findStaffLines(r.bin));
+      // 与识别同一条路：行投影 + 逐列游程补线（`completeStaffLines`）
+      const rowLines = cli.findStaffLines(r.bin);
+      const { groups } = cli.completeStaffLines(r.bin, rowLines, cli.groupStaves(rowLines));
       const hits = cli.columnHits(r.bin);
       if (!groups.length && hits.length < 20) return; // 封面 / 纯文字页
       np++;
