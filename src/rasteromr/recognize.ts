@@ -18,7 +18,7 @@ import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findT
 import type { SPage, Staff, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
-import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles, type RasterHead } from "./notehead";
+import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
@@ -237,7 +237,7 @@ const FLAG_INK2 = 0.3;
  *
  * 只切**落在谱线网格延长线上**的横段（`ledgerGrid`），那是加线的硬判据。
  */
-function sharedLegers(hSegs: LineSeg[], heads: RasterHead[], onGrid: (y: number) => boolean, unit: RasterUnit): LineSeg[] {
+function sharedLegers(hSegs: LineSeg[], heads: { box: Rect }[], onGrid: (y: number) => boolean, unit: RasterUnit): LineSeg[] {
   const out: LineSeg[] = [];
   for (const seg of hSegs) {
     const y = (seg.y0 + seg.y1) / 2;
@@ -254,6 +254,45 @@ function sharedLegers(hSegs: LineSeg[], heads: RasterHead[], onGrid: (y: number)
       if (Math.abs(y - (h.box.y + h.box.h / 2)) > unit.space * 3.2) continue;
       const half = h.box.w * 0.8;
       out.push({ x0: Math.max(left, cx - half), y0: y, x1: Math.min(right, cx + half), y1: y, lw: seg.lw, maxLw: seg.maxLw });
+    }
+  }
+  return out;
+}
+
+/**
+ * 骑在加线上的符头，按它自己的位置补一条加线（验过那一带确实有墨）。
+ *
+ * 判据：中心落在加线网格上（`ledgerGrid`）、且沿中心线左右各半个符头宽的范围内，
+ * 六成以上的列在 ±线宽 内有墨。补出来的段按符头宽的一倍二，与 `trimLedger` 那条同口径。
+ */
+function ownLegers(heads: { box: Rect }[], bin: Binary, onGrid: (y: number) => boolean, unit: RasterUnit): LineSeg[] {
+  const out: LineSeg[] = [];
+  const th = Math.max(1, Math.round(unit.lineThick));
+  for (const h of heads) {
+    const cy = h.box.y + h.box.h / 2;
+    const cx = h.box.x + h.box.w / 2;
+    const half = h.box.w * 0.6;
+    // 候选位置：符头**自己骑着的**那条网格线，以及**上下各半格**的那条
+    // ——符头落在加线上面/下面那一间时，压着它的那条加线同样抽不出来
+    //（那一带的纵向游程是「符头 + 线」的高度，出了「细」的那道闸），
+    // 而它正是 `findLegers` 要数的那一条。
+    for (const y of [cy, cy - unit.space / 2, cy + unit.space / 2]) {
+      if (!onGrid(y)) continue;
+      let ink = 0;
+      let n = 0;
+      for (let x = Math.round(cx - half); x <= Math.round(cx + half); x++) {
+        if (x < 0 || x >= bin.w) continue;
+        n++;
+        for (let d = -th; d <= th; d++) {
+          const yy = Math.round(y) + d;
+          if (yy >= 0 && yy < bin.h && bin.data[yy * bin.w + x]) {
+            ink++;
+            break;
+          }
+        }
+      }
+      if (!n || ink < n * 0.6) continue;
+      out.push({ x0: cx - half, y0: y, x1: cx + half, y1: y, lw: th, maxLw: th });
     }
   }
   return out;
@@ -693,6 +732,11 @@ export async function recognizeRasterPage(
     s.box = { x: s.box.x, y: s.box.y + cut, w: s.box.w, h: s.box.h - cut };
   }
 
+  // **切加线要用最终认出来的全部符头**：除了 `findRasterHeads`，还有按内腔找的、
+  // 拆块拆出来的、字典查出来的、碎块并回再判出来的——少算哪一路，那一路的符头
+  // 就只能蹭邻居的加线，`findLegers` 判否、整批挂不上谱行。
+  const headBoxes = syms.filter((s0) => /notehead/i.test(s0.code)).map((s0) => ({ box: s0.box }));
+
   const pg = buildRasterPage({
     index,
     width: raster.bin.w,
@@ -713,7 +757,19 @@ export async function recognizeRasterPage(
     hSegs: [
       ...prims.hSegs,
       ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l),
-      ...sharedLegers([...prims.hSegs, ...strayLines], heads, onGrid, unit),
+      // **所有认出来的符头都要参与切加线**，不只 `findRasterHeads` 那一批：
+      // 按内腔找出来的（`stacked`）、拆块拆出来的（`split`）也压在加线上。
+      // 少了它们，那些头的加线是按**邻居**切的、盖不住自己，`findLegers` 就判否
+      // ——实测宁静钢琴右手 663 个带内符头只归属 574 个，差的 89 个几乎全是
+      // 谱表上方一到两格、等着加线撑的那些。
+      ...sharedLegers([...prims.hSegs, ...strayLines], headBoxes, onGrid, unit),
+      // **骑在加线上的符头，自己那条加线要补出来。**
+      // 它压在符头底下，`findPrimitives` 抽不出来（那一带的纵向游程是整个符头的高度）；
+      // `trimLedger` 只给 `findRasterHeads` 那一批补，按内腔找出来的、拆块拆出来的都没有。
+      // 于是谱表外一到两格的音「符头认出来了却挂不上谱行」——实测宁静钢琴右手
+      // 120 个未归属的头里 89 个是这一类。
+      // **要验墨**：那一带真有一条横墨才补，不然等于把 `findLegers` 那道防线拆了。
+      ...ownLegers(headBoxes, raster.bin, onGrid, unit),
     ],
     // 符干要**续到符头里**才与符头纵向相交（`findStems` / `buildStems` 的硬判据）。
     // 续过的段只进 `SPage`，不回写 `prims`——`findBlobs` 那边仍按原段抹墨，
