@@ -125,6 +125,162 @@ function gtParts(xml) {
 }
 
 /**
+ * GT musicxml → **逐小节、逐谱表**的音符与歌词。`gtSections` 从它推分段。
+ */
+function gtMeasures(xml) {
+  const out = new Map(); // id -> Map(measure -> { seq, lyric, sounding })
+  for (const m of xml.matchAll(/<part\s+id="([^"]+)"[\s\S]*?<\/part>/g)) {
+    const pid = m[1];
+    for (const mm of m[0].matchAll(/<measure number="(\d+)"[^>]*>([\s\S]*?)<\/measure>/g)) {
+      const num = Number(mm[1]);
+      const byKey = new Map();
+      for (const n of mm[2].matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
+        const seg = n[0];
+        if (/<grace\s*\/?>/.test(seg) || /<chord\s*\/?>/.test(seg)) continue;
+        const st = /<staff>(\d+)<\/staff>/.exec(seg)?.[1] ?? "1";
+        const v = /<voice>(\d+)<\/voice>/.exec(seg)?.[1] ?? "1";
+        const key = st + "/" + v;
+        const e = byKey.get(key) ?? { seq: [], lyric: "", sounding: false };
+        if (/<rest\s*\/?>/.test(seg)) e.seq.push("R");
+        else {
+          const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
+          const oct = /<octave>(-?\d+)<\/octave>/.exec(seg)?.[1];
+          if (step && oct !== undefined) {
+            e.seq.push(step + oct);
+            e.sounding = true;
+          }
+        }
+        for (const t of seg.matchAll(/<lyric\b[^>]*number="1"[^>]*>[\s\S]*?<\/lyric>/g))
+          for (const x of t[0].matchAll(/<text>([^<]*)<\/text>/g)) e.lyric += x[1];
+        byKey.set(key, e);
+      }
+      // 每行谱只留声部号最小的那一路（与识别侧同口径）
+      const best = new Map();
+      for (const [key, e] of byKey) {
+        const [st, v] = key.split("/");
+        const cur = best.get(st);
+        if (!cur || Number(v) < Number(cur.v)) best.set(st, { v, e });
+      }
+      for (const [st, { e }] of best) {
+        const id = `${pid}.${st}`;
+        const byM = out.get(id) ?? new Map();
+        byM.set(num, e);
+        out.set(id, byM);
+      }
+    }
+  }
+  return out;
+}
+
+/** 一条谱表连着歇几小节以上，就当它**那一段没印**（合唱谱只在长段休止时才不印那一行）。 */
+const REST_GAP = 4;
+
+/**
+ * **从 GT 推分段**：每一段里「哪几行谱在响」，也就是谱面**该印几行**。
+ *
+ * 这一步取代人工映射。合唱谱的版式规矩是死的：一个声部长段不唱就不印那一行，
+ * 一唱就印；所以「谱面印几行」是 GT 自己算得出来的量。
+ * 分段 = 印的那一组谱表有变化的地方。
+ */
+function gtSections(xml) {
+  const byId = gtMeasures(xml);
+  const ids = [...byId.keys()].sort();
+  const last = Math.max(...ids.flatMap((id) => [...byId.get(id).keys()]));
+  // 逐谱表求「印着的小节」：有声的小节向两边各补 REST_GAP-1 小节，再并成区间
+  const printed = new Map();
+  for (const id of ids) {
+    const on = new Set();
+    for (const [m, e] of byId.get(id)) if (e.sounding) on.add(m);
+    const flag = [];
+    for (let m = 1; m <= last; m++) {
+      let near = false;
+      for (let k = -REST_GAP + 1; k <= REST_GAP - 1 && !near; k++) if (on.has(m + k)) near = true;
+      flag[m] = near;
+    }
+    printed.set(id, flag);
+  }
+  const sections = [];
+  for (let m = 1; m <= last; m++) {
+    const set = ids.filter((id) => printed.get(id)[m]);
+    const key = set.join(",");
+    const cur = sections[sections.length - 1];
+    if (cur && cur.key === key) cur.m1 = m;
+    else sections.push({ m0: m, m1: m, key, staves: set });
+  }
+  // 每段每谱表的序列与歌词
+  for (const sec of sections) {
+    sec.seqOf = new Map();
+    for (const id of sec.staves) {
+      const byM = byId.get(id);
+      let seq = [];
+      let lyric = "";
+      for (let m = sec.m0; m <= sec.m1; m++) {
+        const e = byM.get(m);
+        if (!e) continue;
+        seq = seq.concat(e.seq);
+        lyric += e.lyric;
+      }
+      sec.seqOf.set(id, { seq, lyric: cjk(lyric) });
+    }
+  }
+  return sections;
+}
+
+/**
+ * 我们的系统 ↔ GT 分段：**按行数做一趟 DP 对齐**（两边都按乐曲时间排好）。
+ *
+ * 一段可以罩好几个系统（行数一样就一直吃），也允许两边各自跳过对不上的
+ * （谱面上的前奏系统、GT 里没印出来的段）。贪心不行：一遇到行数对不上就前进，
+ * 后面同样行数的段再也回不去，实测破碎有 14 个系统对不上、只比得了三分之一的音。
+ */
+function alignSections(systems, sections) {
+  const N = systems.length;
+  const M = sections.length;
+  const best = Array.from({ length: N + 1 }, () => new Int32Array(M + 1).fill(-1));
+  const from = Array.from({ length: N + 1 }, () => new Array(M + 1).fill(null));
+  best[0][0] = 0;
+  for (let i = 0; i <= N; i++)
+    for (let j = 0; j <= M; j++) {
+      const cur = best[i][j];
+      if (cur < 0) continue;
+      // 跳过这个系统
+      if (i < N && cur > best[i + 1][j]) {
+        best[i + 1][j] = cur;
+        from[i + 1][j] = [i, j, null];
+      }
+      // 前进一段
+      if (j < M && cur > best[i][j + 1]) {
+        best[i][j + 1] = cur;
+        from[i][j + 1] = [i, j, null];
+      }
+      // 把这个系统归给第 j 段（段号从 0 起，j 指向「当前段」= j-1）
+      if (i < N && j > 0 && sections[j - 1].staves.length === systems[i].rows.length) {
+        const v = cur + systems[i].rows.reduce((a, r) => a + r.seq.length, 0);
+        if (v > best[i + 1][j]) {
+          best[i + 1][j] = v;
+          from[i + 1][j] = [i, j, j - 1];
+        }
+      }
+    }
+  let bj = 0;
+  for (let j = 0; j <= M; j++) if (best[N][j] > best[N][bj]) bj = j;
+  const pairs = [];
+  let i = N;
+  let j = bj;
+  let skipped = 0;
+  while (i > 0 || j > 0) {
+    const f = from[i][j];
+    if (!f) break;
+    if (f[2] !== null) pairs.push({ sys: systems[f[0]], sec: sections[f[2]] });
+    else if (f[0] !== i) skipped++;
+    i = f[0];
+    j = f[1];
+  }
+  pairs.reverse();
+  return { pairs, skipped };
+}
+
+/**
  * 识别结果 → **逐谱表**的音符序列，与 GT 那侧同口径。
  *
  * 谱表由 `buildScore` 的跨系统连接给出（`Part` → `ScoreStaff`，一个 `ScoreStaff`
@@ -336,6 +492,63 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
         lyricChars: yd, unmapped, miss,
       };
     }
+    // ── 按**GT 推出来的谱行**比（不用人工映射）──────────────────────────
+    //
+    // 合唱谱的版式规矩是死的：一个声部长段不唱就不印那一行，一唱就印
+    // ——所以「这一段谱面该印几行、哪几行」是 GT 自己算得出来的量（`gtSections`）。
+    // 我们的系统按**行数**与它对齐，第 k 行就对第 k 条在印的谱表。
+    //
+    // 这一档比人工映射硬：**没印出来的那些小节不进分母**（合唱谱的 GT 是全谱，
+    // 声部没进来时照写休止，而谱面上那一行根本不印），而人工映射只能整条谱表
+    // 记给某一行，写错了还看不出来——实测破碎那份的人工映射把五行系统的女高
+    // 写成了 P1，真身是 **P3**（限定小节区间比，相似度 92% 对 0%）。
+    let sec = null;
+    {
+      const sections = gtSections(await readFile(song.gt, "utf8"));
+      const { pairs: sp, skipped } = alignSections(systems, sections);
+      if (args.includes("--sections")) {
+        for (const sc of sections) console.log(`    段 m${sc.m0}-${sc.m1}（${sc.staves.length} 行）: ${sc.staves.join(" ")}`);
+        console.log(`    系统行数: ${systems.map((y) => y.rows.length).join(" ")}`);
+      }
+      const byIdSec = new Map(); // id -> { got: [], gt: [], lyricGot, lyricGt }
+      for (const { sys, sec: sc } of sp) {
+        sys.rows.forEach((r, k) => {
+          const id = sc.staves[k];
+          if (!id) return;
+          const cur = byIdSec.get(id) ?? { got: [], gt: [], lyricGot: "", lyricGt: "", secs: new Set() };
+          cur.got.push(...r.seq);
+          cur.lyricGot += r.lyric;
+          cur.secs.add(sc);
+          byIdSec.set(id, cur);
+        });
+      }
+      // GT 侧只取**对齐上的那些段**
+      for (const [id, cur] of byIdSec)
+        for (const sc of cur.secs) {
+          const e = sc.seqOf.get(id);
+          if (!e) continue;
+          cur.gt.push(...e.seq);
+          cur.lyricGt += e.lyric;
+        }
+      let sn = 0, sl = 0, sd = 0, sy = 0, syd = 0;
+      const rows = [];
+      for (const [id, cur] of [...byIdSec].sort()) {
+        if (!cur.gt.length) continue;
+        let a = acc(cur.got, cur.gt, 24, true);
+        for (const k of [-1, 1]) a = Math.max(a, acc(shiftOct(cur.got, k), cur.gt, 24, true));
+        sn += a * cur.gt.length;
+        sl += acc(letters(cur.got), letters(cur.gt), 24, true) * cur.gt.length;
+        sd += cur.gt.length;
+        const gl = cjk(cur.lyricGt);
+        if (gl.length >= 8) {
+          sy += acc([...cjk(cur.lyricGot)], [...gl]) * gl.length;
+          syd += gl.length;
+        }
+        rows.push(`${id}(GT ${cur.gt.length}/识别 ${cur.got.length}) ${(a * 100).toFixed(1)}%`);
+      }
+      sec = { noteAcc: sd ? (sn / sd) * 100 : 0, letterAcc: sd ? (sl / sd) * 100 : 0, lyricAcc: syd && lyricOcr ? (sy / syd) * 100 : null, notes: sd, skipped: skipped.length, rows };
+    }
+
     const pairs = pair(got, gt);
     const gtTotal = gt.reduce((a, p) => a + p.seq.length, 0);
     const gotTotal = got.reduce((a, p) => a + p.seq.length, 0);
@@ -393,12 +606,24 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       smLyricAcc: sm ? sm.lyricAcc : null,
       smUnmapped: sm ? sm.unmapped : null,
       smMiss: sm ? sm.miss.length : null,
+      // 按 GT 推出来的谱行那一档
+      secNoteAcc: sec ? sec.noteAcc : null,
+      secLetterAcc: sec ? sec.letterAcc : null,
+      secLyricAcc: sec ? sec.lyricAcc : null,
+      secNotes: sec ? sec.notes : null,
     };
     rows.push(row);
     console.log(`${row.clean ? "[干净]" : "[扫描]"} ${song.name}/${file}  谱行${staves} 声部 ${got.length}↔${gt.length}(配上${pairs.length}，buildScore ${nParts})  ` +
       `音符 ${gotTotal}/${gtTotal}  准确率 ${row.noteAcc.toFixed(1)}%（含游离 ${row.noteAccAll.toFixed(1)}%，游离 ${strayNotes}）  音级 ${row.letterAcc.toFixed(1)}%  ` +
       `小节自检 ${row.barFull.toFixed(1)}%（${bars} 小节）` +
       (row.lyricAcc != null ? `  歌词 ${row.lyricAcc.toFixed(1)}%（GT ${row.lyricChars} 字）` : ""));
+    // **校对档**：从 GT 自己推出「这一段该印几行、哪几行」，与人工映射对一对。
+    // 对齐还偏（宁静 61.5% 对人工映射的 86.1%），所以只在 `--v` 下出，不进汇总
+    // ——但它已经查出过一处真错：破碎五行系统的女高映射写成了 P1，真身是 P3。
+    if (sec && verbose)
+      console.log(`         └ 按谱行（GT 推导·校对档）：音符 ${sec.noteAcc.toFixed(1)}%  音级 ${sec.letterAcc.toFixed(1)}%` +
+        (sec.lyricAcc != null ? `  歌词 ${sec.lyricAcc.toFixed(1)}%` : "") + `  （GT ${sec.notes} 音）` +
+        (verbose ? `\n           ${sec.rows.join("  ")}` : ""));
     if (sm)
       console.log(`         └ 按 staff（人工映射）：音符 ${sm.noteAcc.toFixed(1)}%（含未映射 ${sm.noteAccAll.toFixed(1)}%，未映射 ${sm.unmapped} 音）  ` +
         `音级 ${sm.letterAcc.toFixed(1)}%` + (sm.lyricAcc != null ? `  歌词 ${sm.lyricAcc.toFixed(1)}%（GT ${sm.lyricChars} 字）` : "") +
@@ -467,6 +692,10 @@ const smSummary = smClean.length
 if (smSummary) Object.assign(summary, smSummary);
 console.log(`\n【干净位图】${clean.length} 份（有 GT ${withGt.length} 份）：音符 ${summary.noteAcc}%（含游离 ${summary.noteAccAll}%）、音级 ${summary.letterAcc}%；小节自检 ${summary.barFull}%` +
   (summary.lyricAcc ? `；歌词 ${summary.lyricAcc}%` : ""));
+const secClean = clean.filter((r) => r.secNoteAcc != null);
+if (secClean.length && verbose)
+  console.log(`【按谱行·GT 推导（校对档，不入基线）】${secClean.length} 份：音符 ${avg(secClean, "secNoteAcc")}%、音级 ${avg(secClean, "secLetterAcc")}%` +
+    (secClean.some((r) => r.secLyricAcc != null) ? `；歌词 ${avg(secClean.filter((r) => r.secLyricAcc != null), "secLyricAcc")}%` : ""));
 if (smSummary)
   console.log(`【按 staff·人工映射】${smClean.length} 份：音符 ${smSummary.smNoteAcc}%（含未映射 ${smSummary.smNoteAccAll}%）、音级 ${smSummary.smLetterAcc}%` +
     (smSummary.smLyricAcc ? `；歌词 ${smSummary.smLyricAcc}%` : ""));
