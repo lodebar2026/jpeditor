@@ -79,6 +79,26 @@ function gtParts(xml) {
       });
       byStaff.set(key, seq);
     }
+    // **`<direction>` 里的松叶与力度**（按 staff 收，`<staff>` 缺省是 1）。
+    // 只收起头的松叶（`crescendo`/`diminuendo`），`stop` 不进序列——识别侧的一条松叶
+    // 就是「一个记号」，两边要同一个口径。
+    const wedgeOf = new Map();
+    const dynOf = new Map();
+    for (const d of m[0].matchAll(/<direction[ >][\s\S]*?<\/direction>/g)) {
+      const st = /<staff>(\d+)<\/staff>/.exec(d[0])?.[1] ?? "1";
+      const wt = /<wedge[^>]*type="(crescendo|diminuendo)"/.exec(d[0])?.[1];
+      if (wt) {
+        const a = wedgeOf.get(st) ?? [];
+        a.push(wt);
+        wedgeOf.set(st, a);
+      }
+      const dy = /<dynamics[^>]*>\s*<([a-z-]+)\s*\/?>/.exec(d[0])?.[1];
+      if (dy) {
+        const a = dynOf.get(st) ?? [];
+        a.push(dy === "other-dynamics" ? "?" : dy);
+        dynOf.set(st, a);
+      }
+    }
     const best = new Map();
     for (const [key, seq] of byStaff) {
       const [st, v] = key.split("/");
@@ -86,7 +106,8 @@ function gtParts(xml) {
       if (!cur || Number(v) < Number(cur.v)) best.set(st, { v, seq });
     }
     for (const [st, { seq }] of [...best.entries()].sort())
-      if (seq.length) out.push({ id: `${m[1]}.${st}`, seq, clefs: clefOf.get(st) ?? [], times });
+      if (seq.length)
+        out.push({ id: `${m[1]}.${st}`, seq, clefs: clefOf.get(st) ?? [], times, wedges: wedgeOf.get(st) ?? [], dynamics: dynOf.get(st) ?? [] });
   }
   return out;
 }
@@ -109,14 +130,22 @@ function gotParts(entries) {
     p.scoreStaves.forEach((ss, k) => {
       const seq = [];
       const rows = [];
+      const wedges = [];
+      const dynamics = [];
       for (const stf of ss.staves) {
         if (!stf) continue;
         rows.push(ctxOf.get(stf) ?? null);
         const mv = minVoice(stf, byStaff);
         for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === mv))
           seq.push({ pitch: n.rest ? "R" : n.step + n.octave, rest: n.rest, base: n.base, dots: n.dots, accidental: n.accidental, beams: n.beams });
+        // 松叶与力度挂在音符上（`attachWedges` / `attachDynamicTexts`），按音符次序取出来。
+        // **只取起头的松叶**，与 GT 侧同口径。
+        for (const n of byStaff.get(stf) ?? []) {
+          if (n.wedgeStart) wedges.push(n.wedgeStart);
+          if (n.dynamic) dynamics.push(n.dynamic);
+        }
       }
-      if (seq.length) out.push({ id: `P${i + 1}.${k + 1}`, seq, rows });
+      if (seq.length) out.push({ id: `P${i + 1}.${k + 1}`, seq, rows, wedges, dynamics });
     });
   });
   return out;
@@ -176,7 +205,7 @@ function pairParts(got, gt) {
 /** SMuFL 谱号名 → GT 的 `<sign>`。 */
 const clefSign = (code) => (code?.startsWith("gClef") ? "G" : code?.startsWith("fClef") ? "F" : code?.startsWith("cClef") ? "C" : null);
 
-const tally = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, timeN: 0, timeOk: 0, dotsN: 0, dotsOk: 0 };
+const tally = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, timeN: 0, timeOk: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, wedgeAcc: 0, wedgeStaves: 0, dynN: 0, dynGot: 0, dynAcc: 0, dynStaves: 0 };
 const confuse = new Map();
 
 for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(only)) && s.gt)) {
@@ -203,7 +232,7 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
     const got = gotParts(entries);
     const pairs = pairParts(got, gt);
 
-    const sub = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, dotsN: 0, dotsOk: 0 };
+    const sub = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, dynN: 0, dynGot: 0 };
     for (const p of pairs) {
       const G = got[p.i];
       const T = gt[p.j];
@@ -216,6 +245,20 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
           if (!sign) sub.clefMiss++;
           else if (sign === want) sub.clefOk++;
         }
+      }
+      // 松叶与力度：位置不比（位图路的小节号本来就不可靠），比**出现的序列**
+      // ——与拍号那一档同一个口径。数量另记，那是检出率。
+      sub.wedgeN += T.wedges.length;
+      sub.wedgeGot += G.wedges.length;
+      if (T.wedges.length) {
+        tally.wedgeAcc += acc(G.wedges, T.wedges, 4);
+        tally.wedgeStaves++;
+      }
+      sub.dynN += T.dynamics.length;
+      sub.dynGot += G.dynamics.length;
+      if (T.dynamics.length) {
+        tally.dynAcc += acc(G.dynamics, T.dynamics, 4);
+        tally.dynStaves++;
       }
       // 时值 / 附点 / 临时升降：只在**音高对上的**位置比
       const pr = alignPairs(G.seq.map((x) => x.pitch), T.seq.map((x) => x.pitch));
@@ -259,9 +302,16 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
         `  谱号 ${pct(sub.clefOk, sub.clefN)}（${sub.clefOk}/${sub.clefN} 行，其中认不出 ${sub.clefMiss}）\n` +
         `  时值 ${pct(sub.durOk, sub.durN)}（${sub.durOk}/${sub.durN}，只在音高对上的位置比）  附点 ${pct(sub.dotsOk, sub.dotsN)}\n` +
         `  临时升降 ${pct(sub.accOk, sub.accN)}（GT ${sub.accN} 个）  凭空多出 ${sub.accFalse}\n` +
-        `  拍号 GT ${gtTime.join(" ") || "—"}  识别 ${[...gotAsTime].join(" ") || "—"}`,
+        `  拍号 GT ${gtTime.join(" ") || "—"}  识别 ${[...gotAsTime].join(" ") || "—"}\n` +
+        `  松叶 认出 ${sub.wedgeGot}（GT ${sub.wedgeN}）　力度 认出 ${sub.dynGot}（GT ${sub.dynN}）`,
     );
     if (verbose) {
+      for (const p of pairs) {
+        if (gt[p.j].dynamics.length || got[p.i].dynamics.length)
+          console.log(`    ${got[p.i].id}↔${gt[p.j].id} 力度 识别[${got[p.i].dynamics.join(" ")}] GT[${gt[p.j].dynamics.join(" ")}]`);
+        if (gt[p.j].wedges.length || got[p.i].wedges.length)
+          console.log(`    ${got[p.i].id}↔${gt[p.j].id} 松叶 识别[${got[p.i].wedges.map((w)=>w[0]).join("")}] GT[${gt[p.j].wedges.map((w)=>w[0]).join("")}]`);
+      }
       for (const p of pairs) console.log(`    ${got[p.i].id}(${got[p.i].seq.length}) ↔ ${gt[p.j].id}(${gt[p.j].seq.length}) 音高 ${(p.a * 100).toFixed(1)}%`);
     }
   }
@@ -272,5 +322,9 @@ console.log(
   `\n【干净位图合计】谱号 ${pct(tally.clefOk, tally.clefN)}（${tally.clefN} 行，认不出 ${tally.clefMiss}）　` +
     `时值 ${pct(tally.durOk, tally.durN)}（${tally.durN}）　附点 ${pct(tally.dotsOk, tally.dotsN)}　` +
     `临时升降 ${pct(tally.accOk, tally.accN)}（${tally.accN}，多出 ${tally.accFalse}）　拍号 ${pct(tally.timeOk, tally.timeN)}`,
+);
+console.log(
+  `　　松叶 检出 ${tally.wedgeGot}/${tally.wedgeN}（序列 ${tally.wedgeStaves ? ((tally.wedgeAcc / tally.wedgeStaves) * 100).toFixed(1) + "%" : "—"}）　` +
+    `力度 检出 ${tally.dynGot}/${tally.dynN}（序列 ${tally.dynStaves ? ((tally.dynAcc / tally.dynStaves) * 100).toFixed(1) + "%" : "—"}）`,
 );
 console.log("时值错法（GT→识别）前十：" + [...confuse.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${k} ${v}`).join("　"));
