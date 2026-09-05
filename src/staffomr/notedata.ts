@@ -912,6 +912,47 @@ function initChords(notes: StaffNote[], stems: StemInfo[], sp: number): StaffCho
     if (ns.length) make(ns, st);
   }
 
+  // ── 没挂上符干的符头，先试着**并回同一根符干的那枚和弦** ────────────────
+  //
+  // 和弦里的符头本该都挂在同一根符干上，可位图路里符干常常够不着最外那个头
+  //（符干段的两端被去墨啃掉、`extendVSegs` 那 0.35 格续不到；二度的头还错开
+  // 画在符干另一侧）。落单的头于是自成一枚**没有符干**的和弦，与真和弦
+  // **起点相同**——`splitVoice` 按 (offset, dur) 贪心分层，同起点的两枚只能分到
+  // 两层，落单那个就成了第二声部。而逐声部对拍**只取声部号最小的那一路**，
+  // 它整个落在分母外，谱面上的最低音也就没了：实测破碎钢琴右手的读错
+  // **一面倒地偏高**（识别比 GT 高 2~7 级，正好是和弦音程），
+  // p4 m33 那三枚二度和弦全是这么错的。
+  //
+  // 判据只认「本来就该是一枚」的那种：同一行谱、x 上与和弦的头**贴着**
+  // （错开画的二度也只差一个符头宽），纵向与和弦里最近的那个头不超过一格半
+  //（再远就是另一路旋律了，那才该分声部）。
+  const orphan = notes.filter((n) => !byNote.has(n) && !n.rest);
+  for (const n of orphan) {
+    let best: StaffChord | null = null;
+    let bd = Infinity;
+    for (const ch of out) {
+      if (ch.staff !== n.staff || !ch.stem) continue;
+      if (n.sym.box.left > ch.right + sp * 0.6 || n.sym.box.right < ch.left - sp * 0.6) continue;
+      const d = Math.min(...ch.notes.map((m) => Math.abs(m.diatonic - n.diatonic)));
+      if (d > 3 || d === 0) continue; // 三级以内才算同一枚；同高的是重复检出，别并
+      const dy = Math.min(...ch.notes.map((m) => Math.abs(m.sym.py - n.sym.py)));
+      if (dy > sp * 1.6) continue;
+      if (dy < bd) {
+        bd = dy;
+        best = ch;
+      }
+    }
+    if (!best) continue;
+    best.notes.push(n);
+    best.notes.sort((a, b) => a.diatonic - b.diatonic);
+    best.notes.forEach((m, i) => (m.chordExtra = i > 0 || undefined));
+    best.left = Math.min(best.left, n.sym.box.left);
+    best.right = Math.max(best.right, n.sym.box.right);
+    best.top = Math.min(best.top, n.sym.box.top);
+    n.group = best;
+    byNote.set(n, best);
+  }
+
   // 剩下的：无符干的符头按**盒相交**归（全音符符头宽约两个线距，
   // 先后两个音之间的间隙远大于这个容差），休止各自成和弦。
   const rest = notes.filter((n) => !byNote.has(n));

@@ -612,7 +612,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
           for (const kk of [-1, 1]) a2 = Math.max(a2, acc(shiftOct(A, kk), B, 24, true));
           const t2 = errKinds(A, B.slice(B.findIndex((z) => z !== "R")));
           console.log(`    [sec] p${sys.pageNo} top${sys.top.toFixed(0)} m${sc.m0}-${sc.m1} GT${B.length}/识别${A.length} ${(a2 * 100).toFixed(1)}% 读错${t2.sub}漏${t2.del}多${t2.ins}`);
-          if (args.includes("--dump")) console.log("      " + alignText(A, B, 60));
+          if (args.includes("--dump")) console.log("      " + alignText(A, B, 400));
         }
       }
       let sn = 0, sl = 0, sd = 0, sy = 0, syd = 0;
