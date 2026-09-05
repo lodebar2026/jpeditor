@@ -79,6 +79,8 @@ export interface RasterPageResult {
   /** 排查用（`opts.debug`）：去谱线图、以及抹掉原语之后送去找块的那张图。 */
   debugNl?: Binary;
   debugPrims?: RasterPrims;
+  /** 排查用（`opts.debug`）：分好组的谱行（`findStaves` 之前）。 */
+  debugGroups?: { top: number; bottom: number; space: number }[];
   debugRest?: Binary;
   carryTime?: { beats: number; beatType: number };
 }
@@ -998,6 +1000,7 @@ export async function recognizeRasterPage(
     debugBlobs: opts.debug ? blobs.map((c) => ({ id: c.id, box: c.bbox, area: c.area, claimed: claimed.has(c.id) })) : undefined,
     debugNl: opts.debug ? nl : undefined,
     debugPrims: opts.debug ? prims : undefined,
+    debugGroups: opts.debug ? groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y, space: g.space })) : undefined,
     debugRest: opts.debug ? blobImage(nl, prims, unit, onGrid) : undefined,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
