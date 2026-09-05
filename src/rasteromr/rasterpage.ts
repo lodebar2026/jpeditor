@@ -28,6 +28,15 @@ import { findStaffLines, groupStaves } from "./staffline";
 /** 一页取到的位图，连同它在页面坐标里的位置（识别坐标 ↔ 页面坐标要用）。 */
 export interface RasterPage {
   bin: Binary;
+  /**
+   * 这张图在 PDF 里是什么形态：`mask` = 1-bit ImageMask（排版软件贴进去的干净位图）、
+   * `gray1` = 1-bit 灰度（Xerox 那种扫描件）、`rgb` = 彩色/JPEG（手机拍、扫描）。
+   *
+   * **分档要用它**，别拿「线宽/线距」当代理量：那个比值随谱线判据一动就翻
+   * （实测主，差遣我 线距 11.5px、线宽 2.3px，正卡在 0.2 的门槛上，
+   * 改一条谱线判据就从扫描档跳进干净档，把干净档的平均从 71% 拖到 55%）。
+   */
+  kind: "mask" | "gray1" | "rgb";
   /** 位图像素 → PDF 页面点的缩放（页宽 / 位图宽）。 */
   scale: number;
   /** 页面尺寸（PDF 点）。 */
@@ -63,6 +72,8 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
 
   const w: number = best.width;
   const h: number = best.height;
+  const packed = Math.ceil(w / 8) * h;
+  const kind: RasterPage["kind"] = best.data.length === packed ? (best.kind === 1 ? "gray1" : "mask") : "rgb";
   const bin = decodeImage(best, w, h);
   if (!bin) return null;
 
@@ -83,7 +94,7 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   deskew(bin);
 
   const vp = page.getViewport({ scale: 1 });
-  return { bin, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
+  return { bin, kind, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
 }
 
 /** 行投影找出来的谱行数不到逐列游程看见的这个比例，才判这一页「弯得行投影已经废了」。 */
