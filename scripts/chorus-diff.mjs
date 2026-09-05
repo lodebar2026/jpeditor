@@ -566,7 +566,9 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
           sy += acc([...cjk(cur.lyricGot)], [...gl]) * gl.length;
           syd += gl.length;
         }
-        rows.push(`${id}(GT ${cur.gt.length}/识别 ${cur.got.length}) ${(a * 100).toFixed(1)}%`);
+        const t = errKinds(cur.got, cur.gt.slice(cur.gt.findIndex((z) => z !== "R")));
+        rows.push(`${id}(GT ${cur.gt.length}/识别 ${cur.got.length}) ${(a * 100).toFixed(1)}% 读错${t.sub}漏${t.del}多${t.ins}` +
+          (gl.length >= 8 ? ` 歌词${(acc([...cjk(cur.lyricGot)], [...gl]) * 100).toFixed(0)}%` : ""));
       }
       sec = { noteAcc: sd ? (sn / sd) * 100 : 0, letterAcc: sd ? (sl / sd) * 100 : 0, lyricAcc: syd && lyricOcr ? (sy / syd) * 100 : null, notes: sd, skipped: skipped.length, rows };
     }

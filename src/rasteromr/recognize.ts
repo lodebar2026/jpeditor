@@ -22,6 +22,7 @@ import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles, type R
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
+import { buildHeadMasks, splitHeadCluster } from "./headmask";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
 import { findRasterSlurs } from "./slur";
@@ -152,6 +153,32 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
     out.push({ box: { x: Math.round(st.cx), y: Math.round(y0), w: Math.round(sp * 1.5), h: Math.round(h) }, code });
   }
   return out;
+}
+
+/**
+ * 音高格：把一个 y 吸到最近的**线/间中心**（差半格音高就错一级）。
+ * 谱表之外也给（加线那一带），上下各放几格；离得太远返回 null。
+ */
+function makePitchGrid(groups: { lines: { y: number }[]; space: number }[], unit: RasterUnit): (y: number) => number | null {
+  const steps: number[] = [];
+  for (const g of groups) {
+    const top = g.lines[0].y;
+    const half = g.space / 2;
+    for (let k = -10; k <= 18; k++) steps.push(top + k * half);
+  }
+  steps.sort((a, b) => a - b);
+  return (y: number) => {
+    let best: number | null = null;
+    let bd = unit.space * 0.3;
+    for (const s of steps) {
+      const d = Math.abs(s - y);
+      if (d < bd) {
+        bd = d;
+        best = s;
+      }
+    }
+    return best;
+  };
 }
 
 /** 记账时算「这条段有主」的标记。见 `makeBars` 之后那一段。 */
@@ -349,9 +376,28 @@ export async function recognizeRasterPage(
   // ——这一路的过检不在带边上。
   const stacked: RasterSym[] = hollowHeadsFromHoles(nl, holes, unit, prims.vSegs, inBand, takenBoxes);
 
-  const syms: RasterSym[] = [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked, ...restSyms];
+  // ── 几个实心符头并成一块：按**谱内自举的 mask** 拆开 ─────────────────────
+  //
+  // 钢琴谱里二度、三度的和弦把两三个符头画得挨着（二度还错开在符干两侧），
+  // 位图上并成一块，单头的尺寸闸一律判否——逐谱行摊开，钢琴两行漏得最狠
+  //（宁静 P4.1 漏 122、破碎 P6.1 漏 213）。判据与搜索都限死在块内，见 `headmask.ts`。
+  const masks = buildHeadMasks(raster.bin, [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked], unit, lines.map((l) => l.y));
+  const pitchGrid = makePitchGrid(groups, unit);
+  const onLineY = (y: number) => lines.some((l) => Math.abs(l.y - y) <= unit.space * 0.25);
+  const split: RasterSym[] = [];
+  if (masks.length)
+    for (const c of blobs) {
+      if (claimed.has(c.id)) continue;
+      const parts = splitHeadCluster(raster.bin, c.bbox, c.area, masks, unit, pitchGrid, onLineY);
+      if (!parts.length) continue;
+      claimed.add(c.id);
+      for (const b of parts) split.push({ box: b, code: "noteheadBlack" });
+    }
+
+  const syms: RasterSym[] = [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked, ...split, ...restSyms];
   for (const h of heads) ledger.claim(h.box, `head:${h.code}`);
   for (const s0 of stacked) ledger.claim(s0.box, `stack:${s0.code}`);
+  for (const s0 of split) ledger.claim(s0.box, "cluster:noteheadBlack");
   for (const s0 of restSyms) ledger.claim(s0.box, "rest:restHBar");
   const dictClaimed = new Set<number>();
   for (const c of blobs) {
