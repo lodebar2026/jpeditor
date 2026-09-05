@@ -157,6 +157,14 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
 /** 记账时算「这条段有主」的标记。见 `makeBars` 之后那一段。 */
 const SEG_TAGS: Tag[] = ["Staff", "Leger", "Stem", "BarLine", "SysLine", "Tail", "Beam", "Bracket"];
 
+/** 整小节休止的形状闸（见 `restSyms` 那一段）。放松到 1.6/0.8/0.9 与 1.5/0.75/0.95
+ *  都**一个都不多认**——剩下的那些不在纸上（破碎三个女高合印一行，
+ *  GT 里 P1/P2 中段的全休止根本没印出来）。 */
+const REST_W = [0.9, 1.8] as const;
+const REST_H = 0.8;
+const REST_RATIO = 1.8;
+const REST_FILL = 0.85;
+
 /** 降号的肚子从盒顶往下第几成开始。取 0.45：盒高 2.36 格时中心正好下移 0.53 格，
  *  与实测的 0.55 格偏差吻合。 */
 const FLAT_BOWL_TOP = 0.45;
@@ -292,8 +300,32 @@ export async function recognizeRasterPage(
   const matchHollow = look.templates
     ? (box: Rect) => matchTemplate(binSig(nl, box), box.w / unit.space, box.h / unit.space, look.templates!)
     : null;
-  const heads = findRasterHeads(nl, blobs, prims.vSegs, unit, onGrid, inBand, matchHollow);
-  const claimed = new Set(heads.map((h) => h.comp.id));
+  // ── 整小节休止：**先摘出来，别让符头那一路吃掉** ─────────────────────
+  //
+  // 全休止是个 1.34×0.64 格、填充 0.92 的实心小矩形——**正好落在实心符头那一档里**
+  //（宽 0.85~1.85、高 ≥0.55、填充 ≥0.62），于是整批被判成 `noteheadBlack`：
+  // 实测破碎 GT 中段有 129 个全休止，我们只出 33 个休止，多出来的音符正是它们。
+  // 字典也指望不上（那三页 25 个休止大小的块只认出 11 个）。
+  //
+  // 判据是**形状 + 位置**：矩形（填充 ≥0.85）、扁（宽高比 ≥1.8，符头是 1.3 的椭圆）、
+  // 高不过 0.8 格，再过一道 `nearRestLine`（全休止吊在二线下、半休止坐在三线上）。
+  // 全/半由 `notedata.ts` 按几何再分。
+  const restIds = new Set<number>();
+  const restSyms: RasterSym[] = [];
+  for (const c of blobs) {
+    const b = c.bbox;
+    const w = b.w / unit.space;
+    const h = b.h / unit.space;
+    if (w < REST_W[0] || w > REST_W[1] || h < 0.3 || h > REST_H) continue;
+    if (b.w < b.h * REST_RATIO) continue;
+    if (c.area / Math.max(1, b.w * b.h) < REST_FILL) continue;
+    if (!nearRestLine(b, lines, unit)) continue;
+    restIds.add(c.id);
+    restSyms.push({ box: b, code: "restHBar" });
+  }
+
+  const heads = findRasterHeads(nl, blobs.filter((c) => !restIds.has(c.id)), prims.vSegs, unit, onGrid, inBand, matchHollow);
+  const claimed = new Set([...heads.map((h) => h.comp.id), ...restIds]);
 
   // ── 空心符头：按**内腔（洞）**再找一遍 ───────────────────────────────────
   //
@@ -307,9 +339,10 @@ export async function recognizeRasterPage(
   // ——这一路的过检不在带边上。
   const stacked: RasterSym[] = hollowHeadsFromHoles(nl, holes, unit, prims.vSegs, inBand, takenBoxes);
 
-  const syms: RasterSym[] = [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked];
+  const syms: RasterSym[] = [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked, ...restSyms];
   for (const h of heads) ledger.claim(h.box, `head:${h.code}`);
   for (const s0 of stacked) ledger.claim(s0.box, `stack:${s0.code}`);
+  for (const s0 of restSyms) ledger.claim(s0.box, "rest:restHBar");
   const dictClaimed = new Set<number>();
   for (const c of blobs) {
     if (claimed.has(c.id)) continue;
