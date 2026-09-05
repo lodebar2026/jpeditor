@@ -48,31 +48,15 @@ for (const song of await loadChorus()) {
     const { doc, OPS } = await openPdf(pdf);
     let n = 0;
     await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (page, pn) => {
-      const r = await cli.rasterizePage(page, OPS);
-      if (!r) return;
-      const unit = cli.estimateUnit(r.bin);
-      if (!unit) return;
-      const lines = cli.findStaffLines(r.bin);
-      const groups = cli.groupStaves(lines);
-      if (!groups.length) return;
-      // 只收干净位图那一档（同 gen-rasterglyphs.mjs 的闸）
-      if (unit.lineThick > unit.space * 0.2) return;
-      const nl = cli.removeStaffLines(r.bin, lines.map((l) => l.y), unit);
-      const prims = cli.findPrimitives(nl, unit, lines.map((l) => l.y), groups.map((g) => Math.max(...g.lines.map((l) => l.left))));
-      const blobs = cli.findBlobs(nl, prims, unit);
-      const heads = new Set(cli.findRasterHeads(nl, blobs, prims.vSegs, unit).map((h) => h.comp.id));
-      // 歌词带里不该有音乐符号：符头与查得到音乐字典的都剔掉
-      const rest = blobs.filter((c) => {
-        if (heads.has(c.id)) return false;
-        return !look.lookup(cli.binSig(nl, c.bbox), c.bbox.w / unit.space, c.bbox.h / unit.space);
-      });
-      const staves = groups.map((g) => ({
-        top: g.lines[0].y, bottom: g.lines[4].y,
-        left: Math.max(...g.lines.map((l) => l.left)), right: Math.min(...g.lines.map((l) => l.right)),
-      }));
-      for (const row of cli.findLyricRows(rest, staves, unit)) {
-        const strip = cli.stripOf(nl, row);
-        if (!strip) continue;
+      // **与识别走同一条路**：条子直接从 `recognizeRasterPage` 拿。
+      // 这里原来自己复制了一份流程（另一套 `findStaffLines`/`findBlobs`/`findLyricRows`），
+      // 识别那边一改判据两边就对不上、指纹全变、缓存整份落空
+      // ——实测歌词从 85.0% 掉到 42.7%，还查了半天。别再复制第二份。
+      const r = await cli.recognizeRasterPage(page, OPS, look, pn, {});
+      if (!r.hasStaff || !r.raster) return;
+      // 只收干净位图那一档（按底本形态，与 `chorus-diff` 同口径）
+      if (r.raster.kind !== "mask") return;
+      for (const strip of r.lyricStrips) {
         total++;
         const key = cli.stripKey(strip);
         if (cache[key] || seen.has(key)) continue;

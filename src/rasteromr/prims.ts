@@ -431,8 +431,8 @@ export function removeStaffLines(bin: Binary, lineYs: number[], unit: RasterUnit
  * 减的时候要**按线宽外扩一点**（`lw / 2 + 1`）：中心线是拟合出来的，
  * 直接照中心线抹只抹掉一像素宽，笔画的两侧还留着，连通关系照旧。
  */
-export function findBlobs(bin: Binary, prims: RasterPrims, unit: RasterUnit): Component[] {
-  const rest = blobImage(bin, prims, unit);
+export function findBlobs(bin: Binary, prims: RasterPrims, unit: RasterUnit, onGrid?: (y: number) => boolean): Component[] {
+  const rest = blobImage(bin, prims, unit, onGrid);
   // 宽高**分别**设限，不能共用一个数：高音谱号窄而高，实测 2.8 × **7.5** 个线距
   //（连着尾巴那一圈），共用「六个线距」的上限会把整页的谱号挡在外面
   // ——`bootstrapClefs` 因此在宁静一首上一个高音谱号都取不到。
@@ -493,7 +493,7 @@ export function findBraces(
 
 /** 抹掉笔画之后剩下的墨——`findBlobs` 与 `findBraces` 都从它出发。
  *  **对外**：叠置空心和弦要在这张图上数孔（原图上符干会把内腔连出去）。 */
-export function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit): Binary {
+export function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit, onGrid?: (y: number) => boolean): Binary {
   const { w, h } = bin;
   const rest = new Uint8Array(bin.data);
   const clear = (x0: number, y0: number, x1: number, y1: number) => {
@@ -505,7 +505,14 @@ export function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit): Bi
     // 它就压在符头边上，照抹会把符头啃掉一块——填充率与尺寸一变，
     // `findRasterHeads` 就认不出它了（实测这么抹音符从 28.5% 掉到 27.0%）。
     // 抽出来交给 `findLegers` 判「谱表外的音符有没有加线撑着」，别动像素。
-    if (Math.abs(s.x1 - s.x0) >= Math.abs(s.y1 - s.y0) && Math.hypot(s.x1 - s.x0, s.y1 - s.y0) < unit.space) continue;
+    const horiz = Math.abs(s.x1 - s.x0) >= Math.abs(s.y1 - s.y0);
+    const len = Math.hypot(s.x1 - s.x0, s.y1 - s.y0);
+    if (horiz && len < unit.space) continue;
+    // **落在加线网格上的短横段一律不抹**。加线就压在符头底下，长度约 1.6 格
+    //（符头 1.2 格 + 两头各探出一点），比「一个线距」的老门槛长——照抹会把符头
+    // **拦腰啃成两半**（实测破碎 p5 那个下加一线的音剩下 0.99×0.29 两片，判不成符头，
+    // 而它的墨还都算「有主」，无主报表里看不见）。上限放到三格：再长的是别的横线。
+    if (horiz && onGrid && len <= unit.space * 3 && onGrid((s.y0 + s.y1) / 2) && headOn(bin, s, unit)) continue;
     const pad = s.maxLw / 2 + 1;
     // 段是直的（`adapt.ts` 会把它们摆正），照包围盒抹即可
     clear(Math.min(s.x0, s.x1) - pad, Math.min(s.y0, s.y1) - pad, Math.max(s.x0, s.x1) + pad, Math.max(s.y0, s.y1) + pad);
@@ -526,6 +533,40 @@ export function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit): Bi
     }
   }
   return { w, h, data: rest };
+}
+
+/**
+ * 这条短横段上**压着符头**吗——加线不抹的前提。
+ *
+ * 光看「落在加线网格上」不够：**歌词带也落在网格里**（谱表下六格以内），
+ * 那里的横笔（「一」的笔画、破折号）会被一并留下混进字格
+ * ——实测歌词从 85.0% 垮到 42.7%。加线有一条硬区别：它是给符头垫的，
+ * 正上方或正下方紧挨着就是符头那团墨。
+ */
+function headOn(bin: Binary, s: LineSeg, unit: RasterUnit): boolean {
+  const cy = Math.round((s.y0 + s.y1) / 2);
+  const x0 = Math.round(Math.min(s.x0, s.x1));
+  const x1 = Math.round(Math.max(s.x0, s.x1));
+  const reach = Math.max(2, Math.round(unit.space * 0.6));
+  let up = 0;
+  let down = 0;
+  let n = 0;
+  for (let x = x0; x <= x1; x++) {
+    if (x < 0 || x >= bin.w) continue;
+    n++;
+    for (let d = 2; d <= reach; d++)
+      if (cy - d >= 0 && bin.data[(cy - d) * bin.w + x]) {
+        up++;
+        break;
+      }
+    for (let d = 2; d <= reach; d++)
+      if (cy + d < bin.h && bin.data[(cy + d) * bin.w + x]) {
+        down++;
+        break;
+      }
+  }
+  if (!n) return false;
+  return up > n * 0.5 || down > n * 0.5;
 }
 
 /**

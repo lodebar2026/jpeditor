@@ -20,7 +20,7 @@ import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adap
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
 import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles, type RasterHead } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
-import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
+import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
 import { buildHeadMasks, splitHeadCluster } from "./headmask";
 import { findRasterWedges, type RasterWedge } from "./wedge";
@@ -60,6 +60,15 @@ export interface RasterPageResult {
   /** 认出来的弧（圆滑线 / 连音线），见 `slur.ts`。 */
   slurs: SlurArc[];
   /**
+   * 这一页切出来的**歌词条**（`gen-rasterlyrics.mjs` 拿它送 OCR）。
+   *
+   * **生成器必须与识别走同一条路**：它原来自己复制了一份流程
+   *（另一套 `findStaffLines`/`findBlobs`/`findLyricRows`），识别这边一改判据就对不上，
+   * 指纹全变、缓存整份落空——实测歌词从 85.0% 掉到 42.7%，还查了半天。
+   * 现在条子从这里出，两边不可能再走样。
+   */
+  lyricStrips: LyricStrip[];
+  /**
    * 歌词切格的**结构指标**：切出几条、缓存命中几条、其中**字格数与 OCR 字数相等**的几条。
    * 最后那个数是切格好坏的直接尺子——相等才走得上「按序号一一对应」那条准路
    * （不等就得按 `xFrac` 摊，而那是 CTC 估的位置，误差常有半个字）。
@@ -84,6 +93,7 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   wedges: [],
   dynamics: [],
   slurs: [],
+  lyricStrips: [],
   lyricStats: { rows: 0, hit: 0, parity: 0 },
   carryTime,
 });
@@ -302,7 +312,7 @@ export async function recognizeRasterPage(
     .filter((l) => !groupedLines.has(l))
     .map((l) => ({ x0: l.left, y0: l.y, x1: l.right, y1: l.y, lw: l.y1 - l.y0 + 1, maxLw: l.y1 - l.y0 + 1 }));
   const prims = findPrimitives(nl, unit, gridYs, staffLefts);
-  const blobs = findBlobs(nl, prims, unit);
+  const blobs = findBlobs(nl, prims, unit, ledgerGrid(gridYs, unit));
 
   // ── contour 层与认领账本 ─────────────────────────────────────────────────
   //
@@ -399,7 +409,9 @@ export async function recognizeRasterPage(
   const pitchGrid = makePitchGrid(groups, unit);
   const onLineY = (y: number) => lines.some((l) => Math.abs(l.y - y) <= unit.space * 0.25);
   const split: RasterSym[] = [];
-  if (masks.length)
+  /** 已经被认成**单个**符头、但要作废的那些（块里其实装着两三个头）。 */
+  const dropHead = new Set<number>();
+  if (masks.length) {
     for (const c of blobs) {
       if (claimed.has(c.id)) continue;
       const parts = splitHeadCluster(raster.bin, c.bbox, c.area, masks, unit, pitchGrid, onLineY);
@@ -407,8 +419,27 @@ export async function recognizeRasterPage(
       claimed.add(c.id);
       for (const b of parts) split.push({ box: b, code: "noteheadBlack" });
     }
+    // **已经认成一个符头的块也要再看一眼**：漏掉的和弦成员多半就藏在这里
+    // ——块被认成「一个符头」，实际装着两个（三度上下贴着、二度错开），
+    // 而账本上它是「有主」的，无主报表里根本看不见（钢琴带内只剩碎点）。
+    // 实测破碎钢琴右手纸上 1188 个符头，只检出 911。
+    // 拆得出两个以上才作废原来那一个，拆不出就当没看过。
+    for (const h of heads) {
+      const b = h.comp.bbox;
+      if (b.h < unit.space * 1.5 && b.w < unit.space * 1.9) continue; // 单头装得下，不动
+      const parts = splitHeadCluster(raster.bin, b, h.comp.area, masks, unit, pitchGrid, onLineY);
+      if (parts.length < 2) continue;
+      dropHead.add(h.comp.id);
+      for (const p of parts) split.push({ box: p, code: h.code === "noteheadBlack" ? "noteheadBlack" : h.code });
+    }
+  }
 
-  const syms: RasterSym[] = [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked, ...split, ...restSyms];
+  const syms: RasterSym[] = [
+    ...heads.filter((h) => !dropHead.has(h.comp.id)).map((h) => ({ box: h.box, code: h.code })),
+    ...stacked,
+    ...split,
+    ...restSyms,
+  ];
   for (const h of heads) ledger.claim(h.box, `head:${h.code}`);
   for (const s0 of stacked) ledger.claim(s0.box, `stack:${s0.code}`);
   for (const s0 of split) ledger.claim(s0.box, "cluster:noteheadBlack");
@@ -744,6 +775,7 @@ export async function recognizeRasterPage(
   // 直接造成文本对象交给 `buildLyricLines` / `attachLyrics`——那两步原样跑。
   const lyricLines: LyricLine[] = [];
   const lyricStats = { rows: 0, hit: 0, parity: 0 };
+  const lyricStrips: LyricStrip[] = [];
   // 字格**不论有没有 OCR 缓存都要切**：切出来的字格是「这块墨是歌词」这一判断本身，
   // 与认不认得出那个字是两回事。账本按字格记一笔，无主表里才不会把整页歌词
   // 当成「从没看见的墨」（缓存没命中时曾经就是这样，覆盖率一下子低二十个点）。
@@ -757,9 +789,11 @@ export async function recognizeRasterPage(
     const objs = [];
     const ocr = opts.lyricOcr;
     lyricStats.rows = rows.length;
-    for (const row of ocr ? rows : []) {
+    for (const row of rows) {
       const strip = stripOf(nl, row);
-      if (!strip) continue;
+      if (strip) lyricStrips.push(strip);
+    }
+    for (const strip of ocr ? lyricStrips : []) {
       const chars = ocr!.get(stripKey(strip));
       if (!chars) continue; // 缓存没命中：这一条没跑过 OCR，宁可留空不编造
       lyricStats.hit++;
@@ -812,6 +846,7 @@ export async function recognizeRasterPage(
     lyricLines,
     contours: cmap,
     ledger,
+    lyricStrips,
     wedges,
     dynamics,
     slurs,
