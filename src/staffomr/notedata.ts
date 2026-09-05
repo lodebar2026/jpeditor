@@ -827,6 +827,16 @@ function attachDots(notes: StaffNote[], dots: Sym[], sp: number): void {
 // 的结果。**别再照原文抄一份**——那些判据（半休止 vs 全休止按第几线判、
 // 层数数「不同的层」而不是「最高的层」）都是拿具体页换来的，抄第二份必然走样。
 
+/** 同一根符干断成两段的判据：两条符干的 x 差（线距的倍数）。 */
+const STEM_JOIN_X = 0.3;
+/** 同上，两段之间允许的断口（线距的倍数）。 */
+const STEM_JOIN_GAP = 1.0;
+
+/** 落单的符头并回和弦时，与和弦里最近那个头的**音级差**上限（见 `initChords`）。 */
+const ORPHAN_STEP = 5;
+/** 同上，纵向距离上限（线距的倍数）。 */
+const ORPHAN_DY = 3.0;
+
 /** 一个和弦 = 共用一根符干的一撮符头（或一个无符干符头 / 一个休止）。musicpp 的 `omr::Chord`。 */
 export interface StaffChord {
   staff: Staff;
@@ -912,6 +922,42 @@ function initChords(notes: StaffNote[], stems: StemInfo[], sp: number): StaffCho
     if (ns.length) make(ns, st);
   }
 
+  // ── 同一根符干被切成两段的，两枚和弦要并回一枚 ──────────────────────────
+  //
+  // 位图路上一根长符干常常断成两段（去谱线、抹加线各啃一道），`findStems` 于是
+  // 给出两条符干，`initChords` 按符干归就归成**两枚和弦**——起点相同，
+  // `splitVoice` 只能把它们分到两层，下面那个成了第二声部，而逐声部对拍
+  // 只取声部号最小的那一路。钢琴左手的**八度**几乎全栽在这上面：
+  // 实测破碎 p3 m22 那个 C3/C2 八度，两个头各自「和弦 1 有干」，
+  // 逐音比下来就是「识别比 GT 高七级」。
+  //
+  // 判据：同一行谱、两条符干的 x 差不到半个线距（谱面上就是一根）、
+  // 纵向搭得上或只差一点点（断口不会超过一格）。
+  for (let a = 0; a < out.length; a++) {
+    const ca = out[a];
+    if (!ca.stem) continue;
+    for (let b = out.length - 1; b > a; b--) {
+      const cb = out[b];
+      if (!cb.stem || cb.staff !== ca.staff) continue;
+      const xa = (ca.stem.seg.box.left + ca.stem.seg.box.right) / 2;
+      const xb = (cb.stem.seg.box.left + cb.stem.seg.box.right) / 2;
+      if (Math.abs(xa - xb) > sp * STEM_JOIN_X) continue;
+      const gap = Math.max(ca.stem.seg.box.top, cb.stem.seg.box.top) - Math.min(ca.stem.seg.box.bottom, cb.stem.seg.box.bottom);
+      if (gap > sp * STEM_JOIN_GAP) continue;
+      for (const n of cb.notes) {
+        ca.notes.push(n);
+        n.group = ca;
+        byNote.set(n, ca);
+      }
+      ca.left = Math.min(ca.left, cb.left);
+      ca.right = Math.max(ca.right, cb.right);
+      ca.top = Math.min(ca.top, cb.top);
+      ca.notes.sort((m, n) => m.diatonic - n.diatonic);
+      ca.notes.forEach((n, i) => (n.chordExtra = i > 0 || undefined));
+      out.splice(b, 1);
+    }
+  }
+
   // ── 没挂上符干的符头，先试着**并回同一根符干的那枚和弦** ────────────────
   //
   // 和弦里的符头本该都挂在同一根符干上，可位图路里符干常常够不着最外那个头
@@ -934,9 +980,9 @@ function initChords(notes: StaffNote[], stems: StemInfo[], sp: number): StaffCho
       if (ch.staff !== n.staff || !ch.stem) continue;
       if (n.sym.box.left > ch.right + sp * 0.6 || n.sym.box.right < ch.left - sp * 0.6) continue;
       const d = Math.min(...ch.notes.map((m) => Math.abs(m.diatonic - n.diatonic)));
-      if (d > 3 || d === 0) continue; // 三级以内才算同一枚；同高的是重复检出，别并
+      if (d > ORPHAN_STEP || d === 0) continue; // 三级以内才算同一枚；同高的是重复检出，别并
       const dy = Math.min(...ch.notes.map((m) => Math.abs(m.sym.py - n.sym.py)));
-      if (dy > sp * 1.6) continue;
+      if (dy > sp * ORPHAN_DY) continue;
       if (dy < bd) {
         bd = dy;
         best = ch;
