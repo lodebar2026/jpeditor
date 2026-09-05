@@ -318,7 +318,21 @@ export async function recognizeRasterPage(
   // **段要等下游挂上标记再记**（`findStaves` / `findLegers` / `findStems` /
   // `findBarlines` 之后，见下面那一处）：`findPrimitives` 抽出来的横段里混着松叶的臂、
   // 连音线的一截——照抽出来就记，这些正是要找的东西反而成了「有主的」。
-  for (const b of prims.beams) ledger.claim(b.box, "beam");
+  // 符杠**按中心线那条带记账**，与 `blobImage` 抹墨的口径一致。
+  // 记包围盒会把贴着符杠的符头也算成「有主」——账本于是查不出钢琴行漏在哪
+  //（实测那一带无主 contour 只剩 8 个碎点，而那一行少了 9 个音）。
+  for (const b of prims.beams) {
+    const x0 = Math.min(b.x0, b.x1);
+    const x1 = Math.max(b.x0, b.x1);
+    const half = Math.max(1, b.lw / 2 + 2);
+    const steps = Math.max(1, Math.round((x1 - x0) / Math.max(1, unit.space / 2)));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = x0 + (x1 - x0) * t;
+      const cy = b.y0 + (b.y1 - b.y0) * t;
+      ledger.claim({ x, y: cy - half, w: Math.max(2, (x1 - x0) / steps), h: half * 2 }, "beam");
+    }
+  }
 
   // 符头按性质判（填充率 + 有没有符干），不查字典；其余的块查字典。
   const onGrid = ledgerGrid(gridYs, unit);

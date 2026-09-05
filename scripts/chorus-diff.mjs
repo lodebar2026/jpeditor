@@ -136,11 +136,23 @@ function gtMeasures(xml) {
       const byKey = new Map();
       for (const n of mm[2].matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
         const seg = n[0];
-        if (/<grace\s*\/?>/.test(seg) || /<chord\s*\/?>/.test(seg)) continue;
+        if (/<grace\s*\/?>/.test(seg)) continue;
         const st = /<staff>(\d+)<\/staff>/.exec(seg)?.[1] ?? "1";
         const v = /<voice>(\d+)<\/voice>/.exec(seg)?.[1] ?? "1";
         const key = st + "/" + v;
-        const e = byKey.get(key) ?? { seq: [], lyric: "", sounding: false };
+        const e = byKey.get(key) ?? { seq: [], lyric: "", sounding: false, chords: [] };
+        // **和弦成员**：`<chord/>` 的音跟在主音之后，并进上一个和弦；其余各自成一个和弦。
+        // 「只比最低音」的那条序列照旧（`seq`），和弦档另比一份（见 `chordTokens`）。
+        if (/<chord\s*\/?>/.test(seg)) {
+          const p = /<step>([A-G])<\/step>[\s\S]*?<octave>(-?\d+)<\/octave>/.exec(seg);
+          if (p && e.chords.length) e.chords[e.chords.length - 1].push(p[1] + p[2]);
+          byKey.set(key, e);
+          continue;
+        }
+        {
+          const p = /<step>([A-G])<\/step>[\s\S]*?<octave>(-?\d+)<\/octave>/.exec(seg);
+          e.chords.push(/<rest\s*\/?>/.test(seg) ? ["R"] : p ? [p[1] + p[2]] : []);
+        }
         if (/<rest\s*\/?>/.test(seg)) e.seq.push("R");
         else {
           const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
@@ -239,13 +251,15 @@ function gtSystems(xml) {
       const byM = byId.get(id);
       let seq = [];
       let lyric = "";
+      let chords = [];
       for (let m = m0; m <= m1; m++) {
         const e = byM?.get(m);
         if (!e) continue;
         seq = seq.concat(e.seq);
+        chords = chords.concat(e.chords ?? []);
         lyric += e.lyric;
       }
-      seqOf.set(id, { seq, lyric: cjk(lyric) });
+      seqOf.set(id, { seq, chords, lyric: cjk(lyric) });
     }
     out.push({ m0, m1, staves, seqOf });
   });
@@ -361,12 +375,20 @@ function gotRows(entries) {
     for (const sys of [...e.page.systems].sort((a, b) => a.box.top - b.box.top)) {
       const rows = [...sys.staves].sort((a, b) => a.box.top - b.box.top).map((stf) => {
         const seq = [];
+        const chords = [];
         let lyric = "";
-        for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === minVoice(stf, byStaff))) {
+        const mv = minVoice(stf, byStaff);
+        for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.grace && x.voice === mv)) {
+          // 和弦附加音并进上一个和弦；「只比最低音」那条序列照旧只收主音
+          if (n.chordExtra) {
+            if (chords.length && !n.rest) chords[chords.length - 1].push(n.step + n.octave);
+            continue;
+          }
           seq.push(n.rest ? "R" : n.step + n.octave);
+          chords.push(n.rest ? ["R"] : [n.step + n.octave]);
           for (const l of n.lyrics ?? []) if (l.verse === 1) lyric += l.text;
         }
-        return { seq, lyric };
+        return { seq, chords, lyric };
       });
       out.push({ rows });
     }
@@ -401,6 +423,29 @@ function applyStaffMap(systems, mapOf) {
     });
   });
   return { byId, unmapped };
+}
+
+/** 两条序列的对齐：返回配上的下标对（编辑距离最优路径里「相等」的那些位置）。
+ *  与 `chorus-symbols.mjs` 里那一份同一套——和弦档要在「音高对上的位置」上比成员。 */
+function alignPairs(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const d = Array.from({ length: n + 1 }, (_, i) => new Int32Array(m + 1).fill(0).map((_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  for (let i = 1; i <= n; i++)
+    for (let j = 1; j <= m; j++)
+      d[i][j] = Math.min(d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1), d[i - 1][j] + 1, d[i][j - 1] + 1);
+  const out = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    if (d[i][j] === d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)) {
+      if (a[i - 1] === b[j - 1]) out.push([i - 1, j - 1]);
+      i--;
+      j--;
+    } else if (d[i][j] === d[i - 1][j] + 1) i--;
+    else j--;
+  }
+  return out.reverse();
 }
 
 /** 这行谱上最小的声部号（`splitVoice` 从 1 起编，没拆过的就都是 1）。 */
@@ -537,8 +582,9 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
         sys.rows.forEach((r, k) => {
           const id = sc.staves[k];
           if (!id) return;
-          const cur = byIdSec.get(id) ?? { got: [], gt: [], lyricGot: "", lyricGt: "", secs: new Set() };
+          const cur = byIdSec.get(id) ?? { got: [], gt: [], gotCh: [], gtCh: [], lyricGot: "", lyricGt: "", secs: new Set() };
           cur.got.push(...r.seq);
+          cur.gotCh.push(...(r.chords ?? []));
           cur.lyricGot += r.lyric;
           cur.secs.add(sc);
           byIdSec.set(id, cur);
@@ -550,9 +596,11 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
           const e = sc.seqOf.get(id);
           if (!e) continue;
           cur.gt.push(...e.seq);
+          cur.gtCh.push(...(e.chords ?? []));
           cur.lyricGt += e.lyric;
         }
       let sn = 0, sl = 0, sd = 0, sy = 0, syd = 0;
+      let chHit = 0, chGt = 0, chGot = 0, chExact = 0, chN = 0;
       const rows = [];
       for (const [id, cur] of [...byIdSec].sort()) {
         if (!cur.gt.length) continue;
@@ -566,11 +614,34 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
           sy += acc([...cjk(cur.lyricGot)], [...gl]) * gl.length;
           syd += gl.length;
         }
+        // ── 和弦档：把和弦当**集合**比，不只比最低音 ──────────────────────
+        //
+        // 逐谱行摊开之后，钢琴两行是仅剩的大洞（75~80%），而钢琴几乎全是和弦。
+        // 只比最低音时，「和弦少认了一个成员」与「整个和弦没认出来」看不出区别，
+        // 「我们拆出来的最低音不是 GT 那个」也只显示成读错。
+        // 所以另比一份：先按最低音那条序列对齐（`alignPairs` 同一套），
+        // 再在**对上的位置**上比两个和弦的**成员集合**。
+        {
+          const A = cur.gotCh.map((c) => c[0] ?? "?");
+          const B = cur.gtCh.map((c) => c[0] ?? "?");
+          for (const [ai, bi] of alignPairs(A, B)) {
+            const a2 = new Set(cur.gotCh[ai].filter((x) => x !== "R"));
+            const b2 = new Set(cur.gtCh[bi].filter((x) => x !== "R"));
+            if (!b2.size && !a2.size) continue;
+            chN++;
+            chGt += b2.size;
+            chGot += a2.size;
+            let hit = 0;
+            for (const x of b2) if (a2.has(x)) hit++;
+            chHit += hit;
+            if (hit === b2.size && a2.size === b2.size) chExact++;
+          }
+        }
         const t = errKinds(cur.got, cur.gt.slice(cur.gt.findIndex((z) => z !== "R")));
         rows.push(`${id}(GT ${cur.gt.length}/识别 ${cur.got.length}) ${(a * 100).toFixed(1)}% 读错${t.sub}漏${t.del}多${t.ins}` +
           (gl.length >= 8 ? ` 歌词${(acc([...cjk(cur.lyricGot)], [...gl]) * 100).toFixed(0)}%` : ""));
       }
-      sec = { noteAcc: sd ? (sn / sd) * 100 : 0, letterAcc: sd ? (sl / sd) * 100 : 0, lyricAcc: syd && lyricOcr ? (sy / syd) * 100 : null, notes: sd, skipped: skipped.length, rows };
+      sec = { chord: { hit: chHit, gt: chGt, got: chGot, exact: chExact, n: chN }, noteAcc: sd ? (sn / sd) * 100 : 0, letterAcc: sd ? (sl / sd) * 100 : 0, lyricAcc: syd && lyricOcr ? (sy / syd) * 100 : null, notes: sd, skipped: skipped.length, rows };
     }
 
     const pairs = pair(got, gt);
@@ -648,6 +719,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     if (sec)
       console.log(`         └ 按谱行（GT 推导）：音符 ${sec.noteAcc.toFixed(1)}%  音级 ${sec.letterAcc.toFixed(1)}%` +
         (sec.lyricAcc != null ? `  歌词 ${sec.lyricAcc.toFixed(1)}%` : "") + `  （GT ${sec.notes} 音）` +
+        (sec.chord.gt ? `\n           和弦档：对上的 ${sec.chord.n} 处里，成员命中 ${sec.chord.hit}/${sec.chord.gt}（识别给出 ${sec.chord.got}），整枚全对 ${sec.chord.exact}` : "") +
         (verbose ? `\n           ${sec.rows.join("  ")}` : ""));
     if (sm)
       console.log(`         └ 按 staff（人工映射）：音符 ${sm.noteAcc.toFixed(1)}%（含未映射 ${sm.noteAccAll.toFixed(1)}%，未映射 ${sm.unmapped} 音）  ` +
