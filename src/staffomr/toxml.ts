@@ -159,6 +159,11 @@ function emitVoices(inBar: StaffNote[], ticks: (d: number) => number, staffNo: n
       if (n.chord) body += harmonyXml(n.chord);
       if (n.dynamic)
         body += `<direction placement="below"><direction-type><dynamics><${n.dynamic}/></dynamics></direction-type></direction>`;
+      // 松叶：**止排在起之前**——同一个音符上前一条松叶收尾、下一条起头是常事，
+      // 反过来写会让两条重叠（MusicXML 里同号的 wedge 不能套嵌）。
+      if (n.wedgeStop) body += `<direction placement="below"><direction-type><wedge number="1" type="stop"/></direction-type></direction>`;
+      if (n.wedgeStart)
+        body += `<direction placement="below"><direction-type><wedge number="1" type="${n.wedgeStart}"/></direction-type></direction>`;
       body += noteXml(n, ticks(n.duration), staffNo, withVoice);
       if (!n.chordExtra && !n.grace) cur += ticks(n.duration);
     }

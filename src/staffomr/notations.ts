@@ -261,10 +261,25 @@ export const DYNAMIC_NAME: Record<string, string> = {
  * 所以只按 x 找最近的音符，容差放到三格。
  */
 export function attachDynamics(pg: SPage, notes: StaffNote[], dynamics: Sym[]): void {
+  attachDynamicTexts(
+    pg,
+    notes,
+    dynamics.flatMap((d) => {
+      const text = DYNAMIC_NAME[d.code];
+      return text ? [{ px: d.px, py: d.py, text }] : [];
+    }),
+  );
+}
+
+/**
+ * 同上，只是力度**已经拼成字符串**了（`mp`/`mf`/`sfz`…）。
+ *
+ * 位图路认出来的是一个个字母块（`p`、`m`、`f` 各一个 contour），拼完才是一个力度记号，
+ * 给不出单个 SMuFL 名——判据只留这一份，`attachDynamics` 查完表委托过来。
+ */
+export function attachDynamicTexts(pg: SPage, notes: StaffNote[], items: { px: number; py: number; text: string }[]): void {
   const sp = pg.normalStaffSpace || pg.space;
-  for (const d of dynamics) {
-    const name = DYNAMIC_NAME[d.code];
-    if (!name) continue;
+  for (const d of items) {
     let best: StaffNote | undefined;
     let bd = Infinity;
     for (const n of notes) {
@@ -276,6 +291,45 @@ export function attachDynamics(pg: SPage, notes: StaffNote[], dynamics: Sym[]): 
         best = n;
       }
     }
-    if (best && bd < sp * 3) best.dynamic ??= name;
+    if (best && bd < sp * 3) best.dynamic ??= d.text;
+  }
+}
+
+/** 一条松叶：两端的 x 与纵向位置（谁挂给谁由 `attachWedges` 定）。 */
+export interface WedgeSpan {
+  type: "crescendo" | "diminuendo";
+  x0: number;
+  x1: number;
+  cy: number;
+}
+
+/**
+ * 松叶挂到音符上：起点挂给左端最近的音符、终点挂给右端最近的。
+ *
+ * 与力度同一套「按 x 找最近、纵向在谱表带外四格以内」的判据（那一条已经调过）。
+ * 两端落到同一个音符时**只留起点**——MusicXML 里同一处既起又止没有意义。
+ */
+export function attachWedges(pg: SPage, notes: StaffNote[], wedges: WedgeSpan[]): void {
+  const sp = pg.normalStaffSpace || pg.space;
+  for (const wg of wedges) {
+    const near = (x: number): StaffNote | undefined => {
+      let best: StaffNote | undefined;
+      let bd = Infinity;
+      for (const n of notes) {
+        const st = n.staff;
+        if (wg.cy < st.box.top - sp * 5 || wg.cy > st.box.bottom + sp * 5) continue;
+        const dx = Math.abs(n.sym.px - x);
+        if (dx < bd) {
+          bd = dx;
+          best = n;
+        }
+      }
+      return best && bd < sp * 4 ? best : undefined;
+    };
+    const a = near(wg.x0);
+    const b = near(wg.x1);
+    if (!a) continue;
+    a.wedgeStart ??= wg.type;
+    if (b && b !== a) b.wedgeStop = true;
   }
 }

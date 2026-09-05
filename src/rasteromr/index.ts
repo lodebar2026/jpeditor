@@ -16,4 +16,6 @@ export * from "./notehead";
 export * from "./lyric";
 export * from "./contour";
 export * from "./ledger";
+export * from "./wedge";
+export * from "./dynamics";
 export * from "./recognize";

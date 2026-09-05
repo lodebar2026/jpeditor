@@ -14,7 +14,7 @@ import type { Rect } from "../omr/types";
 import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars, makeSystems, unknownObjs } from "../staffomr/page";
 import { isAccidental, isClef, timeSigDigit } from "../staffomr/glyphs";
 import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
-import { findTuplets } from "../staffomr/notations";
+import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findTuplets } from "../staffomr/notations";
 import type { SPage, Staff, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
@@ -22,6 +22,8 @@ import { findRasterHeads, judgeHeadBox, type RasterHead } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
 import { traceContours, type ContourMap } from "./contour";
+import { findRasterWedges, type RasterWedge } from "./wedge";
+import { groupDynamics, type RasterDynamic } from "./dynamics";
 import { ContourLedger } from "./ledger";
 import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
@@ -47,6 +49,10 @@ export interface RasterPageResult {
    */
   contours: ContourMap | null;
   ledger: ContourLedger | null;
+  /** 认出来的松叶（渐强/渐弱），见 `wedge.ts`。 */
+  wedges: RasterWedge[];
+  /** 认出来的力度记号（拼好的文本），见 `dynamics.ts`。 */
+  dynamics: RasterDynamic[];
   carryTime?: { beats: number; beatType: number };
 }
 
@@ -63,6 +69,8 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   lyricLines: [],
   contours: null,
   ledger: null,
+  wedges: [],
+  dynamics: [],
   carryTime,
 });
 
@@ -569,6 +577,19 @@ export async function recognizeRasterPage(
   const notes = buildNotes(pg, ctx, beams, stems);
   findTuplets(pg, beams, stems, notes);
 
+  // ── 演奏法与力度 ─────────────────────────────────────────────────────────
+  //
+  // 这三步矢量路一直在跑（`staffomr/index.ts`），位图路**从来没调过**——所以力度
+  // 一个都没进过 MusicXML，而字典其实早就认得出：实测宁静 p2 那个 `f`
+  // 到 Maestro 的 `dynamicForte` 模板只有 19（字典里 `dynamicForte` 26 个实例、
+  // `dynamicMP` 8 个）。缺的只是这一句挂接。
+  const marks = findNotations(pg);
+  attachNotations(pg, notes, marks.marks);
+  // `mf` 印出来是**两个字母**，字典只认得出 `f`——先按版式把一串字母拼起来
+  // （`dynamics.ts`），再按力度文本挂接，不走 `attachDynamics` 那条按单个 SMuFL 名的路。
+  const dynamics = groupDynamics(marks.dynamics, cmap, unit);
+  attachDynamicTexts(pg, notes, dynamics);
+
   // ── 歌词 ────────────────────────────────────────────────────────────────
   //
   // **不走 `analyzeText`**：那一步靠「带连字符的音节」「音节间的延长线」当锚点
@@ -604,6 +625,16 @@ export async function recognizeRasterPage(
     attachLyrics(notes, lyricLines);
   }
 
+  // ── 松叶 ────────────────────────────────────────────────────────────────
+  //
+  // 只在**无主**的 contour 里找：认出来的符号不必再判一遍，而松叶从来没人认领。
+  const wedges = findRasterWedges(cmap, unit, ledger.unclaimed());
+  for (const wg of wedges) {
+    const c = cmap.byId.get(wg.contourId);
+    if (c) ledger.claim(c.bbox, `wedge:${wg.type}`);
+  }
+  attachWedges(pg, notes, wedges);
+
   return {
     page: pg,
     hasStaff: true,
@@ -617,6 +648,8 @@ export async function recognizeRasterPage(
     lyricLines,
     contours: cmap,
     ledger,
+    wedges,
+    dynamics,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
 }
