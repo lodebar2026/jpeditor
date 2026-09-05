@@ -486,8 +486,9 @@ export function findBraces(
   });
 }
 
-/** 抹掉笔画之后剩下的墨——`findBlobs` 与 `findBraces` 都从它出发。 */
-function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit): Binary {
+/** 抹掉笔画之后剩下的墨——`findBlobs` 与 `findBraces` 都从它出发。
+ *  **对外**：叠置空心和弦要在这张图上数孔（原图上符干会把内腔连出去）。 */
+export function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit): Binary {
   const { w, h } = bin;
   const rest = new Uint8Array(bin.data);
   const clear = (x0: number, y0: number, x1: number, y1: number) => {
