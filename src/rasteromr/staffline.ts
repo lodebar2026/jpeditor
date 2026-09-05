@@ -126,6 +126,9 @@ export function findStaffLines(bin: Binary): StaffLineRun[] {
   return out;
 }
 
+/** 同一行谱五条线的左缘允许差多少（线距的倍数）。 */
+const LEFT_SPREAD = 3;
+
 /** 一行谱：五条线加它们定出来的线距。 */
 export interface StaffGroup {
   lines: StaffLineRun[];
@@ -152,7 +155,13 @@ export function groupStaves(lines: StaffLineRun[]): StaffGroup[] {
     const left = Math.max(...five.map((l) => l.left));
     const right = Math.min(...five.map((l) => l.right));
     const shortest = Math.min(...five.map((l) => l.right - l.left));
-    if (even && right - left >= shortest * 0.8) {
+    // **五条线的左缘要一致**。密集的八度跑动会共用一条**通长的加线**（实测宁静 p5
+    // 那条 y=1004、x[244,1906]，比谱线只短一截），等距与 x 交集两道闸都拦不住它
+    // ——它顶掉了真正的第五线，整行谱因此上移一条线，**那一行的音高整段低两级**
+    //（GT `C5 C6 C5 C6…` 被读成 `A4 A5 A4 A5…`）。
+    // 真谱线从系统线起画，一个系统里五条的左缘几乎相同；加线从音符处才起。
+    const spread = Math.max(...five.map((l) => l.left)) - Math.min(...five.map((l) => l.left));
+    if (even && right - left >= shortest * 0.8 && spread <= avg * LEFT_SPREAD) {
       out.push({ lines: five, space: avg });
       i += 5;
     } else i++;
