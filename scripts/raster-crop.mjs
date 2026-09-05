@@ -18,7 +18,7 @@ const args = process.argv.slice(2);
 const argOf = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
 const [name, pnRaw, out] = args.filter((a) => !a.startsWith("--"));
 if (!name || !out) {
-  console.log("用法: node scripts/raster-crop.mjs <曲名串> <页号> <输出.pgm> [--staff=N | --box=x,y,w,h] [--marks=head,leger,bar,stem,beam,wedge,dyn]");
+  console.log("用法: node scripts/raster-crop.mjs <曲名串> <页号> <输出.pgm> [--staff=N | --box=x,y,w,h] [--marks=head,leger,bar,stem,beam,wedge,dyn,staff]");
   process.exit(1);
 }
 const pn = Number(pnRaw ?? 1);
@@ -52,6 +52,11 @@ await eachPage(doc, [pn], async (page) => {
     if (marks.has("head")) for (const s of r.page.symbols) {
       if (!s.ownerStaff) continue;
       rect(s.box.left - 2, s.box.top - 2, s.box.right + 2, s.box.bottom + 2);
+    }
+    // 谱线：左端画一小截（认出来的每一条），核对「有没有整行谱漏检」
+    if (marks.has("staff")) for (const st of r.page.staves) {
+      rect(st.box.left - 12, st.box.top, st.box.left - 4, st.box.bottom);
+      for (const l of r.page.segsWithTag("Staff")) rect(l.left, l.cy - 1, l.left + 24, l.cy + 1);
     }
     if (marks.has("leger")) for (const s of r.page.segs) {
       if (!s.hasTag("Leger")) continue;

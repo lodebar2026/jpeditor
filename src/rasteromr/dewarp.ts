@@ -38,7 +38,7 @@ const SMOOTH = 9;
 const MIN_SHIFT = 1;
 
 /** 一列上认出来的一行谱：中心 y 与线距。 */
-interface ColHit {
+export interface ColHit {
   x: number;
   cy: number;
   space: number;
@@ -92,6 +92,34 @@ export interface TrackCurve {
 }
 
 /**
+ * **排查用**：逐列黑白游程看得见几行谱（不管页面平不平）。
+ *
+ * 与行投影（`findStaffLines` + `groupStaves`）是两条独立的证据：那一路要求
+ * 「一整行几乎全是墨」，页面一弯就抹平；这一路逐列量，与斜弯无关。
+ * 两个数一比，就知道谱线还漏不漏——见 `scripts/chorus-report.mjs` 的「谱行」两列。
+ */
+export function columnStaffTracks(bin: Binary): { count: number; bands: number; space: number } {
+  const hits = columnHits(bin);
+  if (hits.length < 20) return { count: 0, bands: 0, space: 0 };
+  const spaces = hits.map((h) => h.space).sort((a, b) => a - b);
+  const space = spaces[spaces.length >> 1];
+  const keep = hits.filter((h) => Math.abs(h.space - space) <= space * SPACE_TOL);
+  // `count` = 串成轨迹的（推平要用的，闸严）；
+  // `bands` = **只按中心 y 聚一聚**（诊断用的宽松口径：轨迹会被符号打断，
+  // 干净页上 100 行谱只串得出 33 条，当不了「一页有几行谱」的标尺）。
+  const cys = keep.map((h) => h.cy).sort((a, b) => a - b);
+  let bands = 0;
+  let i = 0;
+  while (i < cys.length) {
+    let j = i;
+    while (j + 1 < cys.length && cys[j + 1] - cys[j] <= space * 0.5) j++;
+    if (j - i + 1 >= 10) bands++; // 至少十个取样列上看得见
+    i = j + 1;
+  }
+  return { count: buildTracks(keep, space, bin.w).length, bands, space };
+}
+
+/**
  * 逐列黑白游程 → 各行谱的偏移曲线。找不到（页面本来就是平的、或谱线找不齐）返回 null。
  */
 export function trackCurves(bin: Binary): TrackCurve[] | null {
@@ -118,8 +146,8 @@ export function trackCurves(bin: Binary): TrackCurve[] | null {
   return out;
 }
 
-/** 逐列找「五段黑、四段白等距」的地方。 */
-function columnHits(bin: Binary): ColHit[] {
+/** 逐列找「五段黑、四段白等距」的地方。**排查也用它**（见 `columnStaffTracks`）。 */
+export function columnHits(bin: Binary): ColHit[] {
   const { w, h, data } = bin;
   const out: ColHit[] = [];
   const starts: number[] = [];
