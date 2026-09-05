@@ -22,6 +22,8 @@
 // 过半就是翻了，整幅取反。
 import type { Binary } from "../omr/types";
 import { otsuThreshold } from "../omr/preprocess";
+import { applyTrackWarp, trackCurves } from "./dewarp";
+import { findStaffLines, groupStaves } from "./staffline";
 
 /** 一页取到的位图，连同它在页面坐标里的位置（识别坐标 ↔ 页面坐标要用）。 */
 export interface RasterPage {
@@ -71,10 +73,52 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   for (let i = 0; i < bin.data.length; i++) ink += bin.data[i];
   if (ink > w * h * INK_FLIP_RATIO) for (let i = 0; i < bin.data.length; i++) bin.data[i] ^= 1;
 
+  // **先按逐列的黑白游程把弯的谱线推平**（`dewarp.ts`），再让 `deskew` 收拾残余的整页倾斜。
+  //
+  // **推平之后要自己验一道**：照 `deskew` 那条「没有明显好过不动就不动」的规矩，
+  // 拿 `findStaffLines` 数一数谱线，没多出一成半就整幅还原。
+  // 不验的话干净位图那一档会被推坏（实测歌词 67.7% → 59.9%）——那一档本来就是平的，
+  // 逐列偏移量全是噪声。
+  dewarpPage(bin);
   deskew(bin);
 
   const vp = page.getViewport({ scale: 1 });
   return { bin, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
+}
+
+/** 行投影找出来的谱行数不到逐列游程看见的这个比例，才判这一页「弯得行投影已经废了」。 */
+const BROKEN_RATIO = 0.6;
+
+/** 推平之后谱行要多出这么多倍才认（与 `SKEW_GAIN` 同一条规矩）。 */
+const DEWARP_GAIN = 1.15;
+
+/**
+ * 弯曲扫描的拉直：逐列黑白游程找谱线 → 逐列位移 → 推平（判据全在 `dewarp.ts`）。
+ * **推平后自检**：谱线没多出来就还原。返回有没有真的动图。
+ */
+/** 自检的尺子：**成组的谱行数**（五条一组），不是散线条数。
+ *  下游要的是「一行谱」，散线多出来几条没有意义——实测按散线数判会采纳一批
+ *  「线更多、谱行没多」的推平，扫描件那一档反而降。 */
+function staffScore(bin: Binary): number {
+  return groupStaves(findStaffLines(bin)).length;
+}
+
+export function dewarpPage(bin: Binary): boolean {
+  const curves = trackCurves(bin);
+  if (!curves) return false;
+  const before = staffScore(bin);
+  // **只在行投影明显不够的时候才动图。**
+  // 逐列游程那一路看得见几条谱行（`curves.length`），行投影只找出成组的 `before` 行
+  // ——两者差得多，才说明这一页是**弯**的、横带被抹平了。差不多的页面（干净位图、
+  // 只是整页略斜的扫描件）交给 `deskew` 就够，动它只会把别处推歪
+  // （实测无条件推平：扫描件音符 29.95% → 29.67%，还把「干净/扫描」的分档搅乱了）。
+  if (before >= curves.length * BROKEN_RATIO) return false;
+  const keep = new Uint8Array(bin.data);
+  applyTrackWarp(bin, curves);
+  const after = staffScore(bin);
+  if (after >= before * DEWARP_GAIN) return true;
+  bin.data.set(keep);
+  return false;
 }
 
 /** 去倾斜时试的最大斜率（dy/dx）。1900 px 宽的页面上相当于两端差 ±19 px。 */
