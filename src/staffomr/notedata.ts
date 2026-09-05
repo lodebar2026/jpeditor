@@ -605,6 +605,10 @@ export interface StaffNote {
   octaveShift?: "up" | "down";
   /** 力度记号（`mp`/`f`…）。MusicXML 里出成 `<direction>`，排在这个音符之前。 */
   dynamic?: string;
+  /** 松叶从这个音符**起**（`<wedge type="crescendo|diminuendo">`）。见 `attachWedges`。 */
+  wedgeStart?: "crescendo" | "diminuendo";
+  /** 松叶到这个音符**止**（`<wedge type="stop">`）。 */
+  wedgeStop?: boolean;
   /** 连音（三连音之类）：`actual` 个音占 `normal` 个音的时值。 */
   tuplet?: { actual: number; normal: number };
   /**
