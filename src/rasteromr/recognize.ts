@@ -15,12 +15,14 @@ import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars
 import { isAccidental, isClef, timeSigDigit } from "../staffomr/glyphs";
 import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
 import { findTuplets } from "../staffomr/notations";
-import type { SPage, Staff } from "../staffomr/model";
+import type { SPage, Staff, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
 import { findRasterHeads, judgeHeadBox, type RasterHead } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
+import { traceContours, type ContourMap } from "./contour";
+import { ContourLedger } from "./ledger";
 import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
 import { rasterizePage, type RasterPage } from "./rasterpage";
@@ -38,6 +40,13 @@ export interface RasterPageResult {
   bars: BarCheck[];
   /** 认出来的歌词行（没接 OCR 字典时为空）。 */
   lyricLines: LyricLine[];
+  /**
+   * contour 层与**认领账本**（`contour.ts` / `ledger.ts`）：这一页的每一团墨、
+   * 以及谁认走了它。识别本身不看这两样，它们只回答「还有什么是我们从没看见的」
+   * ——`ledger.unclaimed()` 就是无主的那些，`scripts/raster-unclaimed.mjs` 拿它出表。
+   */
+  contours: ContourMap | null;
+  ledger: ContourLedger | null;
   carryTime?: { beats: number; beatType: number };
 }
 
@@ -52,6 +61,8 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   notes: [],
   bars: [],
   lyricLines: [],
+  contours: null,
+  ledger: null,
   carryTime,
 });
 
@@ -121,6 +132,9 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
   }
   return out;
 }
+
+/** 记账时算「这条段有主」的标记。见 `makeBars` 之后那一段。 */
+const SEG_TAGS: Tag[] = ["Staff", "Leger", "Stem", "BarLine", "SysLine", "Tail", "Beam", "Bracket"];
 
 /** 降号的肚子从盒顶往下第几成开始。取 0.45：盒高 2.36 格时中心正好下移 0.53 格，
  *  与实测的 0.55 格偏差吻合。 */
@@ -222,6 +236,22 @@ export async function recognizeRasterPage(
   const prims = findPrimitives(nl, unit, lines.map((l) => l.y), staffLefts);
   const blobs = findBlobs(nl, prims, unit);
 
+  // ── contour 层与认领账本 ─────────────────────────────────────────────────
+  //
+  // 在**去谱线图**上取轮廓（原图上五条谱线把整行谱连成一团），一团墨一个号；
+  // 下面每认出一样东西就按它的盒记一笔。识别判据一条不改——账本只记账。
+  const cmap = traceContours(nl, unit, groups.map((g) => ({
+    top: g.lines[0].y,
+    bottom: g.lines[4].y,
+    left: Math.max(...g.lines.map((l) => l.left)),
+    right: Math.min(...g.lines.map((l) => l.right)),
+  })));
+  const ledger = new ContourLedger(cmap);
+  // **段要等下游挂上标记再记**（`findStaves` / `findLegers` / `findStems` /
+  // `findBarlines` 之后，见下面那一处）：`findPrimitives` 抽出来的横段里混着松叶的臂、
+  // 连音线的一截——照抽出来就记，这些正是要找的东西反而成了「有主的」。
+  for (const b of prims.beams) ledger.claim(b.box, "beam");
+
   // 符头按性质判（填充率 + 有没有符干），不查字典；其余的块查字典。
   const onGrid = ledgerGrid(lines.map((l) => l.y), unit);
   // 空心符头要卡在谱表带里（见 `findRasterHeads` 的说明）。
@@ -242,6 +272,7 @@ export async function recognizeRasterPage(
   const heads = findRasterHeads(nl, blobs, prims.vSegs, unit, onGrid, inBand, matchHollow);
   const claimed = new Set(heads.map((h) => h.comp.id));
   const syms: RasterSym[] = heads.map((h) => ({ box: h.box, code: h.code }));
+  for (const h of heads) ledger.claim(h.box, `head:${h.code}`);
   const dictClaimed = new Set<number>();
   for (const c of blobs) {
     if (claimed.has(c.id)) continue;
@@ -254,6 +285,7 @@ export async function recognizeRasterPage(
     // 半休止**坐在中线上**、全休止**吊在上面一线下**——不贴着这两条线的不是它。
     if ((code === "restHalf" || code === "restWhole") && !nearRestLine(c.bbox, lines, unit)) continue;
     syms.push({ box: c.bbox, code });
+    ledger.claim(c.bbox, `dict:${code}`);
   }
 
   // **谱号兜底**：字典查不到的谱行，按位置补一个。
@@ -281,6 +313,7 @@ export async function recognizeRasterPage(
       if (s0.x >= b.x - 1 && s0.x + s0.w <= b.x + b.w + 1 && s0.y >= b.y - 1 && s0.y + s0.h <= b.y + b.h + 1) syms.splice(i, 1);
     }
     syms.push({ box: b, code: h.code });
+    ledger.claim(b, `clef:${h.code}`);
   }
 
   // ── 碎块并起来再查一次字典 ────────────────────────────────────────────────
@@ -317,6 +350,7 @@ export async function recognizeRasterPage(
     if (!code) continue;
     for (const id of group) merged.add(id);
     syms.push({ box, code });
+    ledger.claim(box, `merge:${code}`);
   }
 
   // ── 升降号：把**被抽走的那道竖笔**并回来 ─────────────────────────────────
@@ -376,6 +410,7 @@ export async function recognizeRasterPage(
       }
       if (!code) continue;
       syms.push({ box, code });
+      ledger.claim(box, `accid:${code}`);
       merged.add(c.id);
       usedSegs.add(v);
       break;
@@ -464,6 +499,7 @@ export async function recognizeRasterPage(
         if (s0.x >= box.x - 1 && s0.x + s0.w <= box.x + box.w + 1 && s0.y >= box.y - 1 && s0.y + s0.h <= box.y + box.h + 1) syms.splice(k, 1);
       }
       syms.push(...hits);
+      for (const hit of hits) ledger.claim(hit.box, `time:${hit.code}`);
       for (const id of col.ids) merged.add(id);
       break; // 一行谱只有一个拍号
     }
@@ -512,6 +548,7 @@ export async function recognizeRasterPage(
   findStems(pg);
   // 符尾**按位置自举**，不查字典（见 `bootstrapFlags`）
   for (const f of bootstrapFlags(nl, pg, prims.beams, unit)) {
+    ledger.claim(f.box, `flag:${f.code}`);
     const { obj, sym } = makeSymObj(pg.objs.length + pg.segs.length + 1, f, unit.height);
     pg.objs.push(obj);
     pg.symbols.push(sym);
@@ -521,6 +558,12 @@ export async function recognizeRasterPage(
   const ctx = findClefKeyTime(pg);
   makeSystems(pg);
   makeBars(pg);
+  // 段的认领：**只记挂上标记的**（谱线/加线/符干/小节线/系统线/符尾）。
+  // 没挂上标记的段是「抽出来了却没人要」的，留着当无主，那才是线索。
+  for (const sg of pg.segs) {
+    const tag = SEG_TAGS.find((t) => sg.hasTag(t));
+    if (tag) ledger.claim({ x: sg.box.left, y: sg.box.top, w: sg.box.right - sg.box.left, h: sg.box.bottom - sg.box.top }, `seg:${tag}`);
+  }
   const beams = toBeamShapes(prims.beams);
   const stems: StemInfo[] = [];
   const notes = buildNotes(pg, ctx, beams, stems);
@@ -533,17 +576,22 @@ export async function recognizeRasterPage(
   // 位图这边本来就是**按位置**切出歌词带的（谱行下方那条带），身份已经确定，
   // 直接造成文本对象交给 `buildLyricLines` / `attachLyrics`——那两步原样跑。
   const lyricLines: LyricLine[] = [];
-  if (opts.lyricOcr) {
+  // 字格**不论有没有 OCR 缓存都要切**：切出来的字格是「这块墨是歌词」这一判断本身，
+  // 与认不认得出那个字是两回事。账本按字格记一笔，无主表里才不会把整页歌词
+  // 当成「从没看见的墨」（缓存没命中时曾经就是这样，覆盖率一下子低二十个点）。
+  {
     const rows = findLyricRows(
       blobs.filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id)),
       pg.staves.map((st) => ({ top: st.box.top, bottom: st.box.bottom, left: st.box.left, right: st.box.right })),
       unit,
     );
+    for (const row of rows) for (const cell of row.cells) ledger.claim(cell, "lyric");
     const objs = [];
-    for (const row of rows) {
+    const ocr = opts.lyricOcr;
+    for (const row of ocr ? rows : []) {
       const strip = stripOf(nl, row);
       if (!strip) continue;
-      const chars = opts.lyricOcr.get(stripKey(strip));
+      const chars = ocr!.get(stripKey(strip));
       if (!chars) continue; // 缓存没命中：这一条没跑过 OCR，宁可留空不编造
       const cells = mapCharsToCells(strip, chars);
       if (!cells.some((c) => c.ch)) continue;
@@ -567,6 +615,8 @@ export async function recognizeRasterPage(
     notes,
     bars: checkBars(pg, ctx, notes, opts.carryTime),
     lyricLines,
+    contours: cmap,
+    ledger,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
 }

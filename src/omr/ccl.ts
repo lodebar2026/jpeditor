@@ -2,9 +2,15 @@
 // 对应 musicpp 用 cv::findContours 得到的 contour 包围盒；这里直接给连通块包围盒。
 import type { Binary, Component, Rect } from "./types";
 
-export function connectedComponents(bin: Binary, minArea = 4): Component[] {
+/**
+ * @param out 可选的**标号图**（长 `w*h`，0 = 背景）：传进来就把每个像素属于哪个块写进去。
+ *        `src/rasteromr/contour.ts` 要靠它做「像素 → 块」的查表；自己再 flood 一遍
+ *        容易与这里的分块不一致（面积不到 `minArea` 被丢掉的小块会把种子引偏）。
+ */
+export function connectedComponents(bin: Binary, minArea = 4, out?: Int32Array): Component[] {
   const { w, h, data } = bin;
-  const labels = new Int32Array(w * h).fill(0);
+  const labels = out ?? new Int32Array(w * h);
+  labels.fill(0);
   const comps: Component[] = [];
   let next = 1;
   const stack: number[] = [];
