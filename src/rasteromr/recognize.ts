@@ -264,7 +264,17 @@ export async function recognizeRasterPage(
 
   const nl = removeStaffLines(raster.bin, lines.map((l) => l.y), unit);
   const staffLefts = groups.map((g) => Math.max(...g.lines.map((l) => l.left)));
-  const prims = findPrimitives(nl, unit, lines.map((l) => l.y), staffLefts);
+  // **加线网格只认分好组的线**。`ledgerGrid` 按「五条一组」取锚点，
+  // 混进没成组的线（通长的加线、噪声横线）锚点就全错位，
+  // 于是加线判不出来——而谱表外的符头**要有加线撑着才归得了谱行**
+  // （实测宁静 p5 八度跑动上方那七个符头，认出来了却一个都没归属，窗口里一条横段都没有）。
+  const gridYs = groups.flatMap((g) => g.lines.map((l) => l.y));
+  // 没进任何一组的行投影线：多半是**通长的加线**（见 `staffLines` 那一处的说明）
+  const groupedLines = new Set(groups.flatMap((g) => g.lines));
+  const strayLines: LineSeg[] = lines
+    .filter((l) => !groupedLines.has(l))
+    .map((l) => ({ x0: l.left, y0: l.y, x1: l.right, y1: l.y, lw: l.y1 - l.y0 + 1, maxLw: l.y1 - l.y0 + 1 }));
+  const prims = findPrimitives(nl, unit, gridYs, staffLefts);
   const blobs = findBlobs(nl, prims, unit);
 
   // ── contour 层与认领账本 ─────────────────────────────────────────────────
@@ -284,7 +294,7 @@ export async function recognizeRasterPage(
   for (const b of prims.beams) ledger.claim(b.box, "beam");
 
   // 符头按性质判（填充率 + 有没有符干），不查字典；其余的块查字典。
-  const onGrid = ledgerGrid(lines.map((l) => l.y), unit);
+  const onGrid = ledgerGrid(gridYs, unit);
   // 空心符头要卡在谱表带里（见 `findRasterHeads` 的说明）。
   //
   // **上下各让三格**，不是一格：一格只罩得住谱表之内，可**谱表外一两格的空心符头
@@ -604,7 +614,16 @@ export async function recognizeRasterPage(
     // 这里就别再把它递下去。
     staffLines: groups.flatMap((g) => g.lines),
     // 符头剪出来的加线要一并推进去，`findLegers` 才有得判
-    hSegs: [...prims.hSegs, ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l), ...sharedLegers(prims.hSegs, heads, onGrid, unit)],
+    // **没成组的那些行投影线要当加线用**，不能整个丢掉：密集八度跑动上方那一排短加线
+    // 被行投影连成一条通长的线，它不是谱线（左缘对不上，见 `groupStaves`），
+    // 但确实是加线——丢了的话上方那些符头一条加线都没有、`findLegers` 全判否，
+    // 认出来的符头一个都归不了谱行（实测宁静 p5 那七个 C6 就是这样）。
+    // 交给 `sharedLegers` 按符头切成短段，长度才过得了 `findLegers` 那道闸。
+    hSegs: [
+      ...prims.hSegs,
+      ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l),
+      ...sharedLegers([...prims.hSegs, ...strayLines], heads, onGrid, unit),
+    ],
     // 符干要**续到符头里**才与符头纵向相交（`findStems` / `buildStems` 的硬判据）。
     // 续过的段只进 `SPage`，不回写 `prims`——`findBlobs` 那边仍按原段抹墨，
     // 免得把符头啃掉（见 `extendVSegs` 的说明）。
