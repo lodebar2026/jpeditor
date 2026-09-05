@@ -24,8 +24,10 @@ import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type
 import { traceContours, type ContourMap } from "./contour";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
+import { findRasterSlurs } from "./slur";
 import { ContourLedger } from "./ledger";
 import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
+import { attachSlurs, markSlurNotes, reconnectSlurs, type SlurArc } from "../staffomr/slur";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
 import { rasterizePage, type RasterPage } from "./rasterpage";
 
@@ -53,6 +55,8 @@ export interface RasterPageResult {
   wedges: RasterWedge[];
   /** 认出来的力度记号（拼好的文本），见 `dynamics.ts`。 */
   dynamics: RasterDynamic[];
+  /** 认出来的弧（圆滑线 / 连音线），见 `slur.ts`。 */
+  slurs: SlurArc[];
   /**
    * 歌词切格的**结构指标**：切出几条、缓存命中几条、其中**字格数与 OCR 字数相等**的几条。
    * 最后那个数是切格好坏的直接尺子——相等才走得上「按序号一一对应」那条准路
@@ -77,6 +81,7 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   ledger: null,
   wedges: [],
   dynamics: [],
+  slurs: [],
   lyricStats: { rows: 0, hit: 0, parity: 0 },
   carryTime,
 });
@@ -648,6 +653,18 @@ export async function recognizeRasterPage(
   }
   attachWedges(pg, notes, wedges);
 
+  // ── 弧线（圆滑线 / 连音线）────────────────────────────────────────────────
+  //
+  // 无主报表里最大的一类带外图形（GT 里宁静 283 条、破碎 326 条，位图路至今一条不认）。
+  // 认出来之后交给矢量路现成的那一套：挂两端 → 接回跨行的 → 落到音符上，
+  // `toxml` 出 `<slur>` / `<tied>`。判据与松叶正好相反（逐列一段墨、而且拱着），
+  // 所以要在松叶**之后**跑，把松叶认走的先剔掉。
+  const slurs = findRasterSlurs(cmap, unit, ledger.unclaimed(), pg.objs.length + pg.segs.length + 1000);
+  for (const sl of slurs) ledger.claim({ x: sl.obj.box.left, y: sl.obj.box.top, w: sl.obj.box.right - sl.obj.box.left, h: sl.obj.box.bottom - sl.obj.box.top }, "slur");
+  attachSlurs(slurs, notes, unit.space);
+  reconnectSlurs(pg, slurs);
+  markSlurNotes(slurs);
+
   return {
     page: pg,
     hasStaff: true,
@@ -663,6 +680,7 @@ export async function recognizeRasterPage(
     ledger,
     wedges,
     dynamics,
+    slurs,
     lyricStats,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
