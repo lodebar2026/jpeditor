@@ -315,7 +315,12 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
           yd += g.lyric.length;
         }
         if (verbose) {
-          const t = errKinds(r.seq, g.seq);
+          // **GT 开头连续的休止要先剔掉**，与准确率那一路（`skipLeadRests`）同口径：
+          // 合唱谱的 GT 是全谱，声部没进来时也写休止，而谱面上那一行谱根本不印
+          // （破碎的女低、男低各有 49 个）。不剔的话「漏掉」里会凭空多出几十个休止,
+          // 看上去像检出的锅——实测破碎因此把「休止漏检」误判成头号病灶（621 vs 真实 121）。
+          const gg = g.seq.slice(g.seq.findIndex((z) => z !== "R"));
+          const t = errKinds(r.seq, gg);
           console.log(`  [staff] ${g.id}(GT ${g.seq.length} / 识别 ${r.seq.length})  音符 ${(a * 100).toFixed(1)}%  ` +
             `错型 读错${t.sub} 漏${t.del} 多${t.ins}` +
             ((g.lyric ?? "").length >= 8 ? `  歌词 ${(acc([...cjk(r.lyric ?? "")], [...g.lyric]) * 100).toFixed(1)}%` : ""));
@@ -357,7 +362,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
         }
         console.log(`    四等分: ${seg.join(" ")}`);
         // 错型：读错（替换）/ 漏掉（GT 有识别没有）/ 多出（识别有 GT 没有）
-        const t = errKinds(got[p.i].seq, g);
+        const t = errKinds(got[p.i].seq, g.slice(g.findIndex((z) => z !== "R")));
         console.log(`    错型: 读错 ${t.sub}  漏掉 ${t.del}  多出 ${t.ins}  （对上 ${t.eq}）`);
       }
     }
