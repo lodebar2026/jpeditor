@@ -37,6 +37,19 @@ export interface LineSeg {
 const BEAM_PAD = 2;
 /** 抹笔画时按平均厚的几倍封顶（见 `blobImage`）。 */
 const PAD_LW = 2;
+/**
+ * 竖笔画的**长度**下限（线距的倍数）。
+ *
+ * 原来一格。太松：**四分休止的下半截**（细钩 + 一坨）只有 1.1 格高，
+ * 过得了这道闸，于是被抽成竖段、`blobImage` 照它抹墨把整个休止铲掉
+ * （实测破碎 p2 钢琴行的四分休止就是这么没的）。真符干至少一格半
+ * ——连桁里最短的那种也有两格。
+ * 扫过 1.0 / 1.1 / 1.2 / 1.3 / **1.4** / 1.45 / 1.5 / 1.6 格：
+ * 按谱行 92.31 / 92.31 / 92.33 / 92.46 / **92.59** / 92.59 / 92.33 / 91.99%，
+ * 真扫描件 29.63 / 29.66 / 29.91 / 30.99 / **30.99** / 31.03 / 31.03 / 31.03%
+ * ——**两档同向**，与「收竖笔画的宽度闸」那条正好相反。
+ */
+const VSEG_MIN_H = 1.4;
 
 /** 一条符杠：拟合出来的中心线加包围盒。 */
 export interface BeamQuad extends LineSeg {
@@ -353,7 +366,7 @@ export function findPrimitives(
   const vMask = close1d(vMask0, w, h, Math.round(unit.lineThick * 2), false);
   const vSegs: LineSeg[] = [];
   for (const c of comps(vMask, w, h, Math.max(3, unit.lineThick * 2))) {
-    if (c.bbox.h < unit.space) continue;
+    if (c.bbox.h < unit.space * VSEG_MIN_H) continue;
     if (c.bbox.w > thin * 2) continue;
     const seg = centerLine(vMask, w, c, false);
     // 谱行左缘那条（系统线）免检，其余要判孤立性——谱号的中央竖笔、升号的竖笔不是原语
