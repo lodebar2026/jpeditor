@@ -291,10 +291,16 @@ export function findStaves(pg: SPage): boolean {
       if (d > pg.barlineHeight * MAX_LINE_GAP_RATIO) break;
       const five = [cands[i], cands[k]];
       let ok = true;
+      // **线距要逐条重估**，不能一路拿第一段外推。低分辨率的扫描件上五条线并不匀
+      //（实测望十架 p1 那行是 10 / 10.5 / 10.5 / 11 px），照第一段推到第五条，
+      // 误差累到 2.0px 正好卡在 `d * 0.2` 的容差上——**差 0.02px 丢掉整行谱**
+      //（那一页 10 行只出 9 行，段落随之整体错位一节）。
+      // 改成拿「已经找到的那几条的平均间距」往下推，误差不再累积。
+      let dd0 = d;
       for (let n = 2; n <= 4; n++) {
-        const want = cands[i].cy + d * n;
+        const want = cands[i].cy + dd0 * n;
         let best: Seg | null = null;
-        let bestD = d * 0.2;
+        let bestD = dd0 * 0.2;
         for (const c of cands) {
           if (used.has(c) || five.includes(c)) continue;
           const dd = Math.abs(c.cy - want);
@@ -308,6 +314,7 @@ export function findStaves(pg: SPage): boolean {
           break;
         }
         five.push(best);
+        dd0 = (best.cy - cands[i].cy) / n;
       }
       if (!ok) continue;
       // x 区间要彼此大幅重叠（同一行谱的五条线跨度几乎相同）
