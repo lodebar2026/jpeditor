@@ -269,3 +269,120 @@ function stemOf(b: Rect, stems: LineSeg[], unit: RasterUnit): LineSeg | null {
   }
   return null;
 }
+
+
+// ── 空心符头：**按内腔（洞）找** ────────────────────────────────────────────
+//
+// 空心符头在位图上最不稳：去谱线把它的圈切断、符干残根粘在旁边、叠置的和弦还会
+// 碎成四五片——实测宁静 p2 钢琴右手那个二分和弦碎成 0.66×0.50 / 0.77×1.10 /
+// 0.99×0.39 / 0.83×0.33 四块，一块都判不成符头，整条右手序列只剩 8 个音
+// （那条谱表逐 staff 只有 56.2%，全曲最大的一个洞，GT 660 音）。
+//
+// 但**内腔一直在**：外圈再破，只要没破到透，中间那团白就还围着。
+// 所以反过来找：在**去谱线之前**的图上取全页的孔（`contour.ts::findHoles`），
+// 尺寸像符头内腔的，往外扩一圈就是符头。
+//
+// 骑在谱线上的头，内腔被谱线豁成上下两半（实测 0.77×0.28 两个），
+// 所以先把「x 上重叠、纵向挨着」的孔并回一个。
+
+/** 孔并回来之后，像不像符头的内腔（线距的倍数）。 */
+const HOLE_W = [0.45, 1.25] as const;
+const HOLE_H = [0.3, 1.0] as const;
+/** 两个孔并成一个内腔：x 上要重叠这么多（窄的那个的比例），纵向缝不超过这么多格。 */
+const HOLE_OVERLAP = 0.6;
+const HOLE_VGAP = 0.45;
+/** 内腔往外扩多少（线距）——空心符头的圈实测 0.15~0.25 格厚。 */
+const RING = 0.22;
+/** 扩出来的盒里墨占多少才算「一个圈」。扫过 0.18 / 0.25 / 0.30 / 0.35：
+ *  音符 67.61 / 69.57 / **69.60** / 69.41%。 */
+/** 内腔的宽高比下限：符头是**横椭圆**，字里的框、噪声的空隙多半接近方的。 */
+const HOLE_RATIO = 1.2;
+/** 二分符头一定带符干（全音符才不带，靠宽度分）。放开这一条实测音符 69.57% → 67.81%。 */
+const HOLE_NEED_STEM = true;
+const FILL_RING = [0.3, 0.75] as const;
+
+/** 把被谱线豁开的内腔并回一个。 */
+export function mergeHoles(holes: Rect[], unit: RasterUnit): Rect[] {
+  const sp = unit.space;
+  // **先按尺寸筛一道再并**。页面上最大的一批「孔」是**谱线之间被小节线围住的那些间**
+  // （实测 28×20 格一个），不筛就会顺着它们连锁并成整页一个盒（实测并完只剩 155 个、
+  // 全是巨块）。符头的内腔连被谱线豁开的半截算在内，不会超过 1.4×1.2 格。
+  const sorted = holes.filter((b) => b.w <= sp * 1.4 && b.h <= sp * 1.2).sort((a, b) => a.y - b.y);
+  const used = new Uint8Array(sorted.length);
+  const out: Rect[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    if (used[i]) continue;
+    let box = { ...sorted[i] };
+    for (let again = true; again; ) {
+      again = false;
+      for (let j = 0; j < sorted.length; j++) {
+        if (used[j] || sorted[j] === box) continue;
+        const r = sorted[j];
+        const ov = Math.min(box.x + box.w, r.x + r.w) - Math.max(box.x, r.x);
+        if (ov < Math.min(box.w, r.w) * HOLE_OVERLAP) continue;
+        const gap = r.y > box.y ? r.y - (box.y + box.h) : box.y - (r.y + r.h);
+        if (gap > sp * HOLE_VGAP) continue;
+        const x0 = Math.min(box.x, r.x);
+        const y0 = Math.min(box.y, r.y);
+        box = { x: x0, y: y0, w: Math.max(box.x + box.w, r.x + r.w) - x0, h: Math.max(box.y + box.h, r.y + r.h) - y0 };
+        used[j] = 1;
+        again = true;
+      }
+    }
+    used[i] = 1;
+    out.push(box);
+  }
+  return out;
+}
+
+/**
+ * 内腔 → 空心符头。返回还没被认出来的那些（与已认出的符头盒重叠的会跳过）。
+ *
+ * @param nl 去谱线之后的图（量填充率、判符干用它）。
+ * @param holes **去谱线之前**取的孔，已经并过（`mergeHoles`）。
+ */
+export function hollowHeadsFromHoles(
+  nl: Binary,
+  holes: Rect[],
+  unit: RasterUnit,
+  stems: LineSeg[],
+  inStaffBand: (y: number) => boolean,
+  taken: Rect[],
+): { box: Rect; code: SmuflName }[] {
+  const sp = unit.space;
+  const ring = Math.max(2, Math.round(sp * RING));
+  const out: { box: Rect; code: SmuflName }[] = [];
+  for (const hole of holes) {
+    const hw = hole.w / sp;
+    const hh = hole.h / sp;
+    if (hw < HOLE_W[0] || hw > HOLE_W[1] || hh < HOLE_H[0] || hh > HOLE_H[1]) continue;
+    if (hole.w / hole.h < HOLE_RATIO) continue; // 内腔是**横椭圆**：字里的框、噪声的空隙多半接近方的
+    const box: Rect = { x: hole.x - ring, y: hole.y - ring, w: hole.w + ring * 2, h: hole.h + ring * 2 };
+    const w = box.w / sp;
+    const h = box.h / sp;
+    if (w < W_HOLLOW_MIN || w > W_MAX || h < H_MIN || h > H_MAX) continue;
+    if (w / h < R_HOLLOW_MIN) continue;
+    if (!inStaffBand(box.y + box.h / 2)) continue;
+    // 圈要**围得住**：盒里的墨占三成到七成（全实心的是实心符头、太空的是别的东西的空隙）
+    let ink = 0;
+    for (let y = box.y; y < box.y + box.h; y++)
+      for (let x = box.x; x < box.x + box.w; x++)
+        if (x >= 0 && y >= 0 && x < nl.w && y < nl.h && nl.data[y * nl.w + x]) ink++;
+    const fill = ink / Math.max(1, box.w * box.h);
+    if (fill < FILL_RING[0] || fill > FILL_RING[1]) continue;
+    // 已经认出来的符头不重复收
+    if (taken.some((t) => overlaps(t, box, sp * 0.4))) continue;
+    const stem = stemOf(box, stems, unit);
+    // 二分符头一定带符干，全音符才不带（宽度那一档与 `judgeHeadBox` 共用 `W_WHOLE`）。
+    // 试过把全音符的宽度门槛单独抬到 1.65：时值 90.3% → 90.5%，但音符 69.60% → 69.52%，
+    // 不划算。
+    if (HOLE_NEED_STEM && !stem && w < W_WHOLE) continue;
+    out.push({ box, code: w >= W_WHOLE && !stem ? "noteheadWhole" : "noteheadHalf" });
+    taken.push(box);
+  }
+  return out;
+}
+
+function overlaps(a: Rect, b: Rect, tol: number): boolean {
+  return Math.abs(a.x + a.w / 2 - (b.x + b.w / 2)) < tol + (a.w + b.w) / 4 && Math.abs(a.y + a.h / 2 - (b.y + b.h / 2)) < tol + (a.h + b.h) / 4;
+}
