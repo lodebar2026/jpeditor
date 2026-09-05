@@ -35,6 +35,8 @@ export interface LineSeg {
  *  音符 70.83 / 71.53 / **71.59** / 71.46%——余量太小会留下符杠残渣混进符号块，
  *  太大又开始啃符头。 */
 const BEAM_PAD = 2;
+/** 抹笔画时按平均厚的几倍封顶（见 `blobImage`）。 */
+const PAD_LW = 2;
 
 /** 一条符杠：拟合出来的中心线加包围盒。 */
 export interface BeamQuad extends LineSeg {
@@ -513,7 +515,13 @@ export function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit, onG
     // **拦腰啃成两半**（实测破碎 p5 那个下加一线的音剩下 0.99×0.29 两片，判不成符头，
     // 而它的墨还都算「有主」，无主报表里看不见）。上限放到三格：再长的是别的横线。
     if (horiz && onGrid && len <= unit.space * 3 && onGrid((s.y0 + s.y1) / 2) && headOn(bin, s, unit)) continue;
-    const pad = s.maxLw / 2 + 1;
+    // **抹的宽度按平均厚度算，不按块的最大宽度。**
+    // `maxLw` 是这一块的**包围盒宽**：笔画中途鼓出来一段（四分休止那个钩、
+    // 谱号的弯），`maxLw` 就是那一段的宽度，照它抹等于把整个符号铲掉
+    // ——实测破碎 p2 钢琴行那个四分休止，下半截被抽成一条 lw 3.1 / maxLw **11**
+    // 的竖段，一抹连带把上半截也带走，整页四分休止只剩几个。
+    // 取平均厚的两倍封顶：真符干、真小节线两者差不多，鼓包的那些才卡得住。
+    const pad = Math.min(s.maxLw, Math.max(2, s.lw * PAD_LW)) / 2 + 1;
     // 段是直的（`adapt.ts` 会把它们摆正），照包围盒抹即可
     clear(Math.min(s.x0, s.x1) - pad, Math.min(s.y0, s.y1) - pad, Math.max(s.x0, s.x1) + pad, Math.max(s.y0, s.y1) + pad);
   }
