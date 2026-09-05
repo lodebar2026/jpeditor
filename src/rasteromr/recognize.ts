@@ -17,7 +17,7 @@ import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamSha
 import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findTuplets } from "../staffomr/notations";
 import type { SPage, Staff, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
-import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
+import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
 import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
@@ -76,6 +76,10 @@ export interface RasterPageResult {
   lyricStats: { rows: number; hit: number; parity: number };
   /** 排查用（`opts.debug`）：连通块与「谁被认领了」。识别本身不看。 */
   debugBlobs?: { id: number; box: Rect; area: number; claimed: boolean }[];
+  /** 排查用（`opts.debug`）：去谱线图、以及抹掉原语之后送去找块的那张图。 */
+  debugNl?: Binary;
+  debugPrims?: RasterPrims;
+  debugRest?: Binary;
   carryTime?: { beats: number; beatType: number };
 }
 
@@ -966,6 +970,9 @@ export async function recognizeRasterPage(
     slurs,
     lyricStats,
     debugBlobs: opts.debug ? blobs.map((c) => ({ id: c.id, box: c.bbox, area: c.area, claimed: claimed.has(c.id) })) : undefined,
+    debugNl: opts.debug ? nl : undefined,
+    debugPrims: opts.debug ? prims : undefined,
+    debugRest: opts.debug ? blobImage(nl, prims, unit, onGrid) : undefined,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
 }
