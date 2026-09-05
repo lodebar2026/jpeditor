@@ -82,6 +82,8 @@ export type Tag =
   | "SysLine"
   | "Staff"
   | "Bracket"
+  /** 把一个系统的几行谱括起来的大括号（`makeSystems` 分系统用，与 `Bracket` 分工见 `findSystemBrackets`）。 */
+  | "SysBracket"
   | "BarLine"
   | "Clef"
   | "Key"
