@@ -175,18 +175,25 @@ function gtMeasures(xml) {
 /**
  * **从 GT 的 `<print>` 与 `<staff-details print-object>` 推出谱面版式。**
  *
- * 不必猜：MusicXML 自己写着这两样——
- *   - `<print new-system="yes">` / `new-page="yes"`：**这一小节起是新系统**；
- *   - `<attributes><staff-details print-object="no"/>`：这个声部**从这一小节起不印**，
- *     再遇到 `yes` 才恢复（Finale/Sibelius 隐藏空谱行就是这么写的）。
+ * 语义**照渲染那边的一份**（`src/mixed/loader.ts::applyStaffVisibility`，
+ * 它移植自 musicpp `loader.cpp::processStaffDetails` + `updateSystemLayout` 的 `visPrev`）：
  *
- * 实测破碎：P1 印 m7-42、P2 印 m22-42、P3/P4/P5 从 m49 起、钢琴全程；
- * 换行在 m7/12/17/22/26/30/34/38/43/49/54/60…——与谱面数出来的
- * 「2 行 / 3 行 ×3 / 4 行 ×5 / 2 行 / 5 行 ×8 / 7 行 ×4」分毫不差
- * （包括中间 m43-48 那个只有钢琴的两行系统，靠休止猜的那一版把它猜丢了）。
+ *   - 初值**可见**；`<attributes><staff-details print-object="no|yes">` 按小节**累积**地改；
+ *   - `number="N"` 指的是**本声部的第 N 行谱**（钢琴可以只藏一行），缺省是第 1 行；
+ *   - 可见性在**每个系统的首小节**取快照——系统中途的改动从下一个系统才生效；
+ *   - `<print new-system="yes">` / `new-page="yes"`：这一小节起是新系统。
  *
- * 返回逐系统的 `{ m0, m1, staves, seqOf }`，`staves` 是**这个系统印出来的谱表**、
- * 自上而下（part 的次序就是谱面的次序，钢琴的两行按 `<staff>` 号）。
+ * 两处踩过的坑：
+ *
+ *   - **`<measure>` 的属性次序不固定**：首小节常写成 `<measure implicit="yes" number="1">`，
+ *     正则要求 `number` 紧跟 `<measure ` 就会漏掉那一小节里的 `print-object`
+ *     ——查了半天「为什么开头那个声部就印着」，就是这个。
+ *   - 一度自己拍了条「首个标志是 yes 就说明之前是隐藏的」的推断。**不需要**：
+ *     上面那个正则修好之后，开头的 `no` 本来就写在第一小节里；
+ *     照渲染那边的初值（可见）+ 累积改动即可，不必另立判据。
+ *
+ * 推出来的分段与谱面分毫不差（破碎 2/3/4/2/5/7/2 行、宁静 2/3/4/2/4/5 行）。
+ * 返回逐系统的 `{ m0, m1, staves, seqOf }`，`staves` 是**这个系统印出来的谱表**、自上而下。
  */
 function gtSystems(xml) {
   const byId = gtMeasures(xml);
@@ -195,24 +202,24 @@ function gtSystems(xml) {
   let last = 1;
   for (const pm of xml.matchAll(/<part\s+id="([^"]+)"([\s\S]*?)<\/part>/g)) {
     const pid = pm[1];
-    const vis = new Map(); // measure -> boolean（这一小节起印不印）
-    // **首个标志是 `yes` 就说明它之前是隐藏的。** Finale/Sibelius 只写**状态变化**：
-    // 「隐藏空谱行」是总谱级的设置，开头那一段的隐藏不落成 `print-object="no"`
-    //（实测宁静的 P1 descant 只有一条 `m89→yes`，而谱面上它到第 89 小节才出现；
-    // 不补这一条，宁静推出来的每个系统都是五行，与谱面的 2/3/4/5 行全对不上）。
-    const first = /<staff-details[^>]*print-object="(yes|no)"/.exec(pm[2]);
-    let cur = !(first && first[1] === "yes");
+    const staves = [...byId.keys()].filter((id) => id.startsWith(pid + ".")).sort();
+    // 逐小节的可见性快照（初值可见，按小节累积；`number` 指本声部第几行）
+    const vis = new Map(); // measure -> boolean[]（与 staves 同序）
+    const cur = staves.map(() => true);
     for (const mm of pm[2].matchAll(/<measure\b[^>]*number="(\d+)"[^>]*>([\s\S]*?)<\/measure>/g)) {
       const n = Number(mm[1]);
       last = Math.max(last, n);
       if (/<print[^>]*new-(?:system|page)="yes"/.test(mm[2])) breaks.add(n);
-      const d = /<staff-details[^>]*print-object="(yes|no)"/.exec(mm[2]);
-      if (d) cur = d[1] === "yes";
-      vis.set(n, cur);
+      for (const at of mm[2].matchAll(/<attributes>[\s\S]*?<\/attributes>/g))
+        for (const det of at[0].matchAll(/<staff-details\b([^>]*)\/?>/g)) {
+          const po = /print-object="(yes|no)"/.exec(det[1]);
+          if (!po) continue;
+          const k = Number(/number="(\d+)"/.exec(det[1])?.[1] ?? 1) - 1;
+          if (k >= 0 && k < cur.length) cur[k] = po[1] !== "no";
+        }
+      vis.set(n, cur.slice());
     }
-    // 这个 part 有几行谱（钢琴两行）
-    const staves = [...byId.keys()].filter((id) => id.startsWith(pid + ".")).sort();
-    parts.push({ pid, vis, staves });
+    parts.push({ pid, staves, vis });
   }
   const starts = [...breaks].sort((a, b) => a - b);
   const out = [];
@@ -220,10 +227,12 @@ function gtSystems(xml) {
     const m1 = i + 1 < starts.length ? starts[i + 1] - 1 : last;
     const staves = [];
     for (const p of parts) {
-      // 系统里只要有一小节印着就算印（隐藏是按系统整段生效的）
-      let on = false;
-      for (let m = m0; m <= m1 && !on; m++) if (p.vis.get(m)) on = true;
-      if (on) staves.push(...p.staves);
+      // **在系统的首小节取快照**（与渲染那边同一条：系统中途的改动下一个系统才生效）
+      let snap = p.vis.get(m0);
+      if (!snap) for (let m = m0; m >= 1 && !snap; m--) snap = p.vis.get(m);
+      p.staves.forEach((id, k) => {
+        if (!snap || snap[k]) staves.push(id);
+      });
     }
     const seqOf = new Map();
     for (const id of staves) {
