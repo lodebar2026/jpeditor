@@ -2,7 +2,7 @@
 //
 // musicpp 到「打标」为止就结束了（它的 toxml.cpp 不导出这些）；
 // 「挂到音符上、写进 MusicXML」是本仓新加的。
-import { SPage, Seg, Sym } from "./model";
+import { SPage, Seg, Sym, type Staff } from "./model";
 import type { BeamShape, StaffNote, StemInfo } from "./notedata";
 import { objText } from "./textanalyze";
 
@@ -280,19 +280,55 @@ export function attachDynamics(pg: SPage, notes: StaffNote[], dynamics: Sym[]): 
 export function attachDynamicTexts(pg: SPage, notes: StaffNote[], items: { px: number; py: number; text: string }[]): void {
   const sp = pg.normalStaffSpace || pg.space;
   for (const d of items) {
-    let best: StaffNote | undefined;
-    let bd = Infinity;
-    for (const n of notes) {
-      const st = n.staff;
-      if (d.py < st.box.top - sp * 4 || d.py > st.box.bottom + sp * 4) continue;
-      const dx = Math.abs(n.sym.px - d.px);
-      if (dx < bd) {
-        bd = dx;
-        best = n;
+    // 与松叶同一条：先定谱行（力度也印在它那行谱的下方），再在行内按 x 找最近的音符
+    const owner = ownerStaff(pg, d.py, sp);
+    for (const only of [true, false]) {
+      let best: StaffNote | undefined;
+      let bd = Infinity;
+      for (const n of notes) {
+        const st = n.staff;
+        if (only ? st !== owner : d.py < st.box.top - sp * 4 || d.py > st.box.bottom + sp * 4) continue;
+        const dx = Math.abs(n.sym.px - d.px);
+        if (dx < bd) {
+          bd = dx;
+          best = n;
+        }
+      }
+      if (best && bd < sp * 3) {
+        best.dynamic ??= d.text;
+        break;
       }
     }
-    if (best && bd < sp * 3) best.dynamic ??= d.text;
   }
+}
+
+/**
+ * 记号（松叶、力度）印在谱表下方时**属于上面那行谱**。
+ *
+ * 取「下缘在它上方、且最近」的那一行；上方没有（页面第一行谱之上）才退回下方最近的一行。
+ * 容差各五格与三格——谱表之间隔着歌词带，记号常印在带里。
+ */
+function ownerStaff(pg: SPage, cy: number, sp: number): Staff | null {
+  let best: Staff | null = null;
+  let bd = Infinity;
+  for (const st of pg.staves) {
+    const d = cy - st.box.bottom;
+    if (d < 0 || d > sp * 5) continue;
+    if (d < bd) {
+      bd = d;
+      best = st;
+    }
+  }
+  if (best) return best;
+  for (const st of pg.staves) {
+    const d = st.box.top - cy;
+    if (d < 0 || d > sp * 3) continue;
+    if (d < bd) {
+      bd = d;
+      best = st;
+    }
+  }
+  return best;
 }
 
 /** 一条松叶：两端的 x 与纵向位置（谁挂给谁由 `attachWedges` 定）。 */
@@ -312,19 +348,30 @@ export interface WedgeSpan {
 export function attachWedges(pg: SPage, notes: StaffNote[], wedges: WedgeSpan[]): void {
   const sp = pg.normalStaffSpace || pg.space;
   for (const wg of wedges) {
+    // **先定是哪一行谱，再在那一行里找音符。** 松叶印在它那行谱的**下方**
+    // （歌词带那一条里也常见），而下面一行谱的上缘往往比它自己那行的下缘还近
+    // ——不先定谱行，一条松叶会挂到下一行去，逐声部比出来的次序全乱。
+    const owner = ownerStaff(pg, wg.cy, sp);
     const near = (x: number): StaffNote | undefined => {
-      let best: StaffNote | undefined;
-      let bd = Infinity;
-      for (const n of notes) {
-        const st = n.staff;
-        if (wg.cy < st.box.top - sp * 5 || wg.cy > st.box.bottom + sp * 5) continue;
-        const dx = Math.abs(n.sym.px - x);
-        if (dx < bd) {
-          bd = dx;
-          best = n;
+      // 先在**它那行谱**里找；那一行在这个位置没有音符（人声休止、钢琴前奏一类）
+      // 才退回「所有纵向够得着的谱行里 x 最近的那个」。
+      // 只按 y 定谱行、找不到就丢，实测松叶从 38 掉到 14——那一行常常正好在休止。
+      for (const only of [true, false]) {
+        let best: StaffNote | undefined;
+        let bd = Infinity;
+        for (const n of notes) {
+          const st = n.staff;
+          if (only ? st !== owner : wg.cy < st.box.top - sp * 5 || wg.cy > st.box.bottom + sp * 5) continue;
+          const dx = Math.abs(n.sym.px - x);
+          if (dx < bd) {
+            bd = dx;
+            best = n;
+          }
         }
+        if (best && bd < sp * 4) return best;
+        if (only && !owner) continue;
       }
-      return best && bd < sp * 4 ? best : undefined;
+      return undefined;
     };
     const a = near(wg.x0);
     const b = near(wg.x1);

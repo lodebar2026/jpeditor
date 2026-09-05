@@ -641,8 +641,10 @@ export async function recognizeRasterPage(
   // 只在**无主**的 contour 里找：认出来的符号不必再判一遍，而松叶从来没人认领。
   const wedges = findRasterWedges(cmap, unit, ledger.unclaimed());
   for (const wg of wedges) {
-    const c = cmap.byId.get(wg.contourId);
-    if (c) ledger.claim(c.bbox, `wedge:${wg.type}`);
+    for (const id of [wg.contourId, wg.pairedId]) {
+      const c = id === undefined ? null : cmap.byId.get(id);
+      if (c) ledger.claim(c.bbox, `wedge:${wg.type}`);
+    }
   }
   attachWedges(pg, notes, wedges);
 
