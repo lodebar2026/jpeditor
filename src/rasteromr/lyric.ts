@@ -22,6 +22,8 @@ export interface LyricRow {
   cells: Rect[];
   /** 这一行的字号（字格高度的中位数）。 */
   charH: number;
+  /** 这一行的原始连通块（量全页字宽要用）。 */
+  blocks: Component[];
 }
 
 /** 谱行的纵向范围（切歌词带要用）。 */
@@ -80,7 +82,7 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
       const charH = Math.max(median(row.map((c) => c.bbox.h)), sp * CHAR_MIN);
       const cells = mergeToChars(row, charH).filter((r) => r.h >= sp * CHAR_MIN * 0.5);
       if (cells.length < MIN_CELLS) continue;
-      raw.push({ staffIndex: i, verse: 0, cells, charH });
+      raw.push({ staffIndex: i, verse: 0, cells, charH, blocks: row });
     }
   }
 
@@ -96,10 +98,19 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
   // > 原因是同一个字的偏旁**并不总能并成一格**（实测一行里既有 5px 的碎片
   // > 也有 37px 的两字连体），按宽度或对齐去砍，砍掉的多是真字的一半。
   // > 整行送 OCR 时那些碎片有上下文兜着，反而认得回来。
-  const charW = median(raw.flatMap((r) => r.cells.map((c) => c.w)));
+  // **字宽按块高的 85 分位数量，不拿字格宽度的中位数当尺子。**
+  // 字格是 `mergeToChars` 按「块高中位数」并出来的，而块高的中位数是**偏旁**的高度
+  // ——并出来的格多半只有半个字宽。汉字是**方**的，整字的高度就是字宽，
+  // 取全页块高的 85 分位数：那一档正是「一整个字的高度」，偏旁再多也压不下去。
+  // 这个字宽只用来挑「宽度接近一个字」的格去量字高（`charH`），不参与切格
+  // ——拿它去等分粘连字实测是净亏，见下面那条记账。
+  const heights = raw.flatMap((r) => r.blocks.map((c) => c.bbox.h)).sort((a, b) => a - b);
+  const charW = heights.length ? heights[Math.min(heights.length - 1, Math.floor(heights.length * 0.85))] : sp;
   for (const r of raw) {
     const near = r.cells.filter((c) => c.w >= charW * 0.7 && c.w <= charW * 1.3);
     const charH = Math.max(median(near.map((c) => c.h)), sp * CHAR_MIN);
+    // **字格按全页字宽重切**（见 `squareCells`）：汉字等宽，粘连的两字要切开、
+    // 尾随的标点要并回前一字。第一遍那个 `mergeToChars` 只是为了量出字宽。
     out.push({ ...r, charH });
   }
   // 同一个谱行下面的几行按 y 编 verse 号
@@ -202,6 +213,10 @@ export function stripKey(s: LyricStrip): string {
   return `${s.w}x${s.h}-${h1.toString(36)}`;
 }
 
+/** 丢一个字的代价（条宽的分数）。比「摊到最近的格」贵一点：
+ *  字多于格时多半是 OCR 多读了一个，宁可丢，也别把整句往后顶。 */
+const DROP_COST = 0.08;
+
 /** OCR 认出来的一个字符：字符 + 它在条内的 x（0~1 的分数）。 */
 export interface OcrChar {
   ch: string;
@@ -211,6 +226,37 @@ export interface OcrChar {
 /** 收得下的歌词字符：汉字与全角标点。PP-OCR 认不出时会吐拉丁字母或占位符，
  *  收进来就成了歌词里凭空多出的字（实测 `l` 一个就出现二十几次）。 */
 const LYRIC_CH = /[一-鿿，。、；：！？“”‘’（）—…]/;
+/** 贴在字**尾**的标点：并进前一个字，不另占一个字格（也就不占一个音符）。
+ *  与 `src/omr/lyrics.ts` 的 `LYRIC_PUNCT` 同一套，那边已经调熟。 */
+const TRAIL_PUNCT = /[，。、；：！？…—”’）]/;
+/** 领起下一个字的标点（开引号、开括号）。 */
+const LEAD_PUNCT = /[“‘（]/;
+
+/**
+ * **标点贴到相邻的字上**，不单独占一个位置。
+ *
+ * 字格那一侧已经把标点并进了相邻的格（`squareCells`），字符这一侧要同样并，
+ * 两边的个数才对得上——「字数相等按序号」是映射里唯一准的那条路。
+ * 一个字格于是拿到「字 + 尾随标点」（如「深，」），与简谱那条路的口径一致。
+ */
+export function foldLyricChars(chars: OcrChar[]): OcrChar[] {
+  chars = chars.filter((c) => LYRIC_CH.test(c.ch));
+  const out: OcrChar[] = [];
+  let lead = "";
+  for (const c of chars) {
+    if (LEAD_PUNCT.test(c.ch)) {
+      lead += c.ch;
+      continue;
+    }
+    if (TRAIL_PUNCT.test(c.ch) && out.length) {
+      out[out.length - 1].ch += c.ch;
+      continue;
+    }
+    out.push({ ch: lead + c.ch, xFrac: c.xFrac });
+    lead = "";
+  }
+  return out;
+}
 
 /**
  * OCR 的字符序列 → 逐字格的字符。
@@ -221,25 +267,58 @@ const LYRIC_CH = /[一-鿿，。、；：！？“”‘’（）—…]/;
  */
 export function mapCharsToCells(strip: LyricStrip, chars: OcrChar[]): { box: Rect; ch: string }[] {
   const out = strip.cells.map((c) => ({ box: c.box, ch: "" }));
-  const keep = chars.filter((c) => LYRIC_CH.test(c.ch));
+  const keep = foldLyricChars(chars);
   if (!keep.length) return out;
   if (keep.length === strip.cells.length) {
     keep.forEach((c, i) => (out[i].ch = c.ch));
     return out;
   }
-  for (const ch of keep) {
-    let best = -1;
-    let bd = Infinity;
-    strip.cells.forEach((c, i) => {
-      const d = Math.abs(ch.xFrac - (c.x0 + c.x1) / 2);
-      if (d < bd) {
-        bd = d;
-        best = i;
+  // **单调对齐**：字与格的次序是一样的（都是从左到右的一句词），
+  // 逐字各取最近的格会**乱序**——两个字抢同一格时后一个被丢掉，
+  // 而它本该落在下一格里。改成一趟 DP：保序地把字摊到格上，
+  // 允许跳过空格（字少于格）、也允许丢字（字多于格，多半是 OCR 多读了）。
+  const n = keep.length;
+  const m = strip.cells.length;
+  const center = strip.cells.map((c) => (c.x0 + c.x1) / 2);
+  const INF = 1e9;
+  const f: Float64Array[] = Array.from({ length: n + 1 }, () => new Float64Array(m + 1).fill(INF));
+  const from: Uint8Array[] = Array.from({ length: n + 1 }, () => new Uint8Array(m + 1));
+  f[0][0] = 0;
+  for (let j = 1; j <= m; j++) {
+    f[0][j] = 0; // 前面的格空着不要钱
+    from[0][j] = 1;
+  }
+  for (let i = 1; i <= n; i++)
+    for (let j = 0; j <= m; j++) {
+      // 丢掉这个字
+      let best = f[i - 1][j] + DROP_COST;
+      let how = 2;
+      if (j > 0) {
+        const skip = f[i][j - 1]; // 这一格空着
+        if (skip < best) {
+          best = skip;
+          how = 1;
+        }
+        const put = f[i - 1][j - 1] + Math.abs(keep[i - 1].xFrac - center[j - 1]);
+        if (put < best) {
+          best = put;
+          how = 3;
+        }
       }
-    });
-    if (best < 0 || bd > 0.06) continue;
-    // 同一个字格已经有字了就跳过（CTC 偶尔把两个字定位到同一处）
-    if (!out[best].ch) out[best].ch = ch.ch;
+      f[i][j] = best;
+      from[i][j] = how;
+    }
+  let i = n;
+  let j = m;
+  while (i > 0 || j > 0) {
+    const how = from[i][j];
+    if (how === 3) {
+      out[j - 1].ch = keep[i - 1].ch;
+      i--;
+      j--;
+    } else if (how === 1) j--;
+    else if (how === 2) i--;
+    else break;
   }
   return out;
 }

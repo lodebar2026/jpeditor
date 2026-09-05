@@ -6,7 +6,8 @@
 //   node scripts/raster-crop.mjs 破碎 2 /tmp/a.pgm --pdf=1            # 第二份底本（扫描件）
 //
 // 画法（一律描边，不填，免得盖住原图）：
-//   符头 = 方框；谱线 = 左端一小截；加线 = 上下两条短横；小节线/符干 = 端点两横。
+//   符头 = 方框；谱线 = 左端一小截；加线 = 上下两条短横；小节线/符干 = 端点两横；
+//   松叶 = 两端竖杠 + 一条底线（渐强画在下、渐弱画在上）；力度 = 方框。
 // 存 PGM（谁都打得开，不引图像库）；`--png` 需要外部工具，脚本不管。
 //
 // 比 `staff-crop.mjs` 简单：位图路不必起浏览器光栅化，图本来就在手上。
@@ -17,7 +18,7 @@ const args = process.argv.slice(2);
 const argOf = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
 const [name, pnRaw, out] = args.filter((a) => !a.startsWith("--"));
 if (!name || !out) {
-  console.log("用法: node scripts/raster-crop.mjs <曲名串> <页号> <输出.pgm> [--staff=N | --box=x,y,w,h] [--marks=head,leger,bar,stem,beam]");
+  console.log("用法: node scripts/raster-crop.mjs <曲名串> <页号> <输出.pgm> [--staff=N | --box=x,y,w,h] [--marks=head,leger,bar,stem,beam,wedge,dyn]");
   process.exit(1);
 }
 const pn = Number(pnRaw ?? 1);
@@ -59,6 +60,13 @@ await eachPage(doc, [pn], async (page) => {
     if (marks.has("bar")) for (const s of r.page.segsWithTag("BarLine")) rect(s.cx - 4, s.top, s.cx + 4, s.bottom);
     if (marks.has("stem")) for (const s of r.page.segsWithTag("Stem")) rect(s.cx - 3, s.top, s.cx + 3, s.bottom);
     if (marks.has("beam")) for (const b of r.beams) rect(b.box.left, b.box.top, b.box.right, b.box.bottom);
+    // 松叶画成两端的竖杠（`wedge.ts` 只给出 x 区间与纵向中心），力度画成方框
+    if (marks.has("wedge")) for (const w of r.wedges) {
+      rect(w.x0, w.cy - 10, w.x0 + 1, w.cy + 10);
+      rect(w.x1 - 1, w.cy - 10, w.x1, w.cy + 10);
+      for (let x = Math.round(w.x0); x <= Math.round(w.x1); x++) set(x, Math.round(w.cy + (w.type === "crescendo" ? 12 : -12)));
+    }
+    if (marks.has("dyn")) for (const d of r.dynamics) rect(d.px - 3, d.py - 14, d.px + 3 + d.text.length * 10, d.py + 14);
   }
   // 裁
   let box = { x: 0, y: 0, w: bin.w, h: bin.h };

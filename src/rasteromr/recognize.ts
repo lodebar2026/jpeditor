@@ -20,7 +20,7 @@ import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adap
 import { binSig, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg } from "./prims";
 import { findRasterHeads, judgeHeadBox, type RasterHead } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
-import { findLyricRows, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
+import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type OcrChar } from "./lyric";
 import { traceContours, type ContourMap } from "./contour";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
@@ -53,6 +53,12 @@ export interface RasterPageResult {
   wedges: RasterWedge[];
   /** 认出来的力度记号（拼好的文本），见 `dynamics.ts`。 */
   dynamics: RasterDynamic[];
+  /**
+   * 歌词切格的**结构指标**：切出几条、缓存命中几条、其中**字格数与 OCR 字数相等**的几条。
+   * 最后那个数是切格好坏的直接尺子——相等才走得上「按序号一一对应」那条准路
+   * （不等就得按 `xFrac` 摊，而那是 CTC 估的位置，误差常有半个字）。
+   */
+  lyricStats: { rows: number; hit: number; parity: number };
   carryTime?: { beats: number; beatType: number };
 }
 
@@ -71,6 +77,7 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   ledger: null,
   wedges: [],
   dynamics: [],
+  lyricStats: { rows: 0, hit: 0, parity: 0 },
   carryTime,
 });
 
@@ -597,6 +604,7 @@ export async function recognizeRasterPage(
   // 位图这边本来就是**按位置**切出歌词带的（谱行下方那条带），身份已经确定，
   // 直接造成文本对象交给 `buildLyricLines` / `attachLyrics`——那两步原样跑。
   const lyricLines: LyricLine[] = [];
+  const lyricStats = { rows: 0, hit: 0, parity: 0 };
   // 字格**不论有没有 OCR 缓存都要切**：切出来的字格是「这块墨是歌词」这一判断本身，
   // 与认不认得出那个字是两回事。账本按字格记一笔，无主表里才不会把整页歌词
   // 当成「从没看见的墨」（缓存没命中时曾经就是这样，覆盖率一下子低二十个点）。
@@ -609,12 +617,15 @@ export async function recognizeRasterPage(
     for (const row of rows) for (const cell of row.cells) ledger.claim(cell, "lyric");
     const objs = [];
     const ocr = opts.lyricOcr;
+    lyricStats.rows = rows.length;
     for (const row of ocr ? rows : []) {
       const strip = stripOf(nl, row);
       if (!strip) continue;
       const chars = ocr!.get(stripKey(strip));
       if (!chars) continue; // 缓存没命中：这一条没跑过 OCR，宁可留空不编造
+      lyricStats.hit++;
       const cells = mapCharsToCells(strip, chars);
+      if (foldLyricChars(chars).length === strip.cells.length) lyricStats.parity++;
       if (!cells.some((c) => c.ch)) continue;
       const o = makeTextObj(pg.objs.length + objs.length, { cells, sizeDev: strip.charH });
       o.addTag("Lyric");
@@ -650,6 +661,7 @@ export async function recognizeRasterPage(
     ledger,
     wedges,
     dynamics,
+    lyricStats,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
 }
