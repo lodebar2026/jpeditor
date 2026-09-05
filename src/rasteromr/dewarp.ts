@@ -102,9 +102,10 @@ export interface TrackCurve {
  * ——实测主，差遣我 p4 印着 12 行谱只找出 7 行（200 dpi、线距 11.5 px、线断成一节一节）。
  * 而逐列游程在同一页上明明看得见那几行（它只要求「这一列上五段黑夹四段白」）。
  *
- * **只在行投影明显不够时才补**（与 `dewarpPage` 同一道闸）：轨迹数比成组的谱行数多出
- * 四成以上，才认为这一页的行投影废了。差不多的页面不补——合成的线是各列取中位数，
- * 端点也只到轨迹的两头，不如行投影量得准。
+ * **不设「整页够不够坏」那道闸**：补哪一条只看「这条带有没有被已有的谱行盖住」，
+ * 那一条就够狠了（干净位图那一档每条带都被盖住，一条也不补）。
+ * 一度按「轨迹数比谱行数多四成」才补，结果是**该补的补不上**——一页十二行里只坏一行时
+ * 整页都不补（实测宁静 p5 那行钢琴谱因此整个丢掉）。
  *
  * 一条轨迹合成五条线：逐条线的 y 取各列的中位数（页面这时已经推平），
  * 上下沿按实测线厚，左右端取轨迹的首尾列。
@@ -147,8 +148,58 @@ export function completeStaffLines(bin: Binary, lines: StaffLineRun[], groups: S
     // （实测补了 25 条线、谱行只从 7 涨到 8；直接给谱行才是 7 → 12）。
     outGroups.push({ lines: five, space: (five[4].y - five[0].y) / 4 });
   }
+  // ── 四条等距、缺一条：**外推补上** ─────────────────────────────────────
+  //
+  // 有一档谱行行投影只找得出四条线：第五条被密集的符杠压着（实测宁静 p5 那行钢琴
+  // 右手，五线在 1023/1043/1063/1082/**1095**，最后那条盖在三层十六分符杠下）。
+  // 逐列游程也救不了它——符杠把「五段黑夹四段白」那个花样打断了。
+  // 但四条等距已经把第五条的位置定死了，照着外推、再验一验那儿有没有墨即可。
+  const grouped = new Set(outGroups.flatMap((g) => g.lines));
+  const rest = out.filter((l) => !grouped.has(l)).sort((a, b) => a.y - b.y);
+  for (let i = 0; i + 3 < rest.length; i++) {
+    const four = rest.slice(i, i + 4);
+    const ds = [1, 2, 3].map((k) => four[k].y - four[k - 1].y);
+    const avg = (ds[0] + ds[1] + ds[2]) / 3;
+    if (avg <= 0 || ds.some((d) => Math.abs(d - avg) > avg * 0.2)) continue;
+    if (Math.max(...four.map((l) => l.left)) - Math.min(...four.map((l) => l.left)) > avg * 3) continue;
+    const left = Math.max(...four.map((l) => l.left));
+    const right = Math.min(...four.map((l) => l.right));
+    if (right - left < bin.w * 0.2) continue;
+    for (const y of [four[0].y - avg, four[3].y + avg]) {
+      if (y < 0 || y >= bin.h) continue;
+      if (outGroups.some((g) => y > g.lines[0].y - avg && y < g.lines[4].y + avg)) continue;
+      if (inkAlong(bin, y, left, right) < LINE_INK) continue;
+      const add = { y, y0: y - 1, y1: y + 1, left, right };
+      const five = [...four, add].sort((a, b) => a.y - b.y);
+      out.push(add);
+      outGroups.push({ lines: five, space: avg });
+      for (const l of five) grouped.add(l);
+      i += 3;
+      break;
+    }
+  }
   outGroups.sort((a, b) => a.lines[0].y - b.lines[0].y);
   return { lines: out.sort((a, b) => a.y - b.y), groups: outGroups };
+}
+
+/** 外推出来的第五条线，那一带要有几成的列见到墨才认（符杠压着的地方本来就断）。 */
+const LINE_INK = 0.5;
+
+/** 一条横线上有墨的列占多少。 */
+function inkAlong(bin: Binary, y: number, left: number, right: number): number {
+  const y0 = Math.max(0, Math.round(y) - 1);
+  const y1 = Math.min(bin.h - 1, Math.round(y) + 1);
+  let n = 0;
+  let tot = 0;
+  for (let x = Math.max(0, left); x <= Math.min(bin.w - 1, right); x++) {
+    tot++;
+    for (let yy = y0; yy <= y1; yy++)
+      if (bin.data[yy * bin.w + x]) {
+        n++;
+        break;
+      }
+  }
+  return tot ? n / tot : 0;
 }
 
 /** 同一条带里，各列命中的中心 y 允许差多少（线距的倍数）。 */

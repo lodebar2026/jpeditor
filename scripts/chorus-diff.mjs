@@ -278,7 +278,9 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       allPages++;
       // **分档**：干净位图（排版软件贴的图）线宽不到线距的两成；真扫描件（Xerox/手机拍）
       // 线更粗、还带倾斜。判据与 `gen-rasterglyphs.mjs` 建库那道闸同口径。
-      if (r.unit && r.unit.lineThick <= r.unit.space * 0.2) cleanPages++;
+      // **分档按底本的数据形态**（`raster.kind`），不拿「线宽/线距」当代理量
+      // ——那个比值随谱线判据一动就翻（见 `rasterpage.ts` 的说明）。
+      if (r.raster?.kind === "mask") cleanPages++;
       entries.push({ page: r.page, ctx: r.ctx, notes: r.notes });
       bars += r.bars.length;
       full += r.bars.filter((b) => b.full).length;
@@ -415,7 +417,9 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       carry = r.carryTime;
       if (!r.hasStaff) return;
       allPages++;
-      if (r.unit && r.unit.lineThick <= r.unit.space * 0.2) cleanPages++;
+      // **分档按底本的数据形态**（`raster.kind`），不拿「线宽/线距」当代理量
+      // ——那个比值随谱线判据一动就翻（见 `rasterpage.ts` 的说明）。
+      if (r.raster?.kind === "mask") cleanPages++;
       notes += r.notes.length;
       bars += r.bars.length;
       full += r.bars.filter((b) => b.full).length;

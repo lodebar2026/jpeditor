@@ -597,7 +597,12 @@ export async function recognizeRasterPage(
     width: raster.bin.w,
     height: raster.bin.h,
     unit,
-    staffLines: lines,
+    // **只把分好组的那些线交下去**。`findStaves` 会拿 segs 自己再分一次组，
+    // 而没进组的线里混着**通长的加线**（八度跑动共用的那条，实测宁静 p5
+    // y=1004、x[244,1906]），它会顶掉真正的第五线、把整行谱上移一条线
+    // ——那一行的音高整段低两级。分组那一步已经按「五条线左缘要一致」把它挡掉了，
+    // 这里就别再把它递下去。
+    staffLines: groups.flatMap((g) => g.lines),
     // 符头剪出来的加线要一并推进去，`findLegers` 才有得判
     hSegs: [...prims.hSegs, ...heads.map((h) => h.ledger).filter((l): l is NonNullable<typeof l> => !!l), ...sharedLegers(prims.hSegs, heads, onGrid, unit)],
     // 符干要**续到符头里**才与符头纵向相交（`findStems` / `buildStems` 的硬判据）。

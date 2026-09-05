@@ -225,7 +225,9 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
       carry = r.carryTime;
       if (!r.hasStaff) return;
       allPages++;
-      if (r.unit && r.unit.lineThick <= r.unit.space * 0.2) cleanPages++;
+      // **分档按底本的数据形态**（`raster.kind`），不拿「线宽/线距」当代理量
+      // ——那个比值随谱线判据一动就翻（见 `rasterpage.ts` 的说明）。
+      if (r.raster?.kind === "mask") cleanPages++;
       entries.push({ page: r.page, ctx: r.ctx, notes: r.notes });
       for (const [, c] of r.ctx) if (c.time?.length) gotTimes.push(c.time.map((s) => s.code).join(","));
     });
