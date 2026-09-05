@@ -760,8 +760,15 @@ export function makeSystems(pg: SPage): void {
   const marks: Box[] = [
     ...pg.segsWithTag("SysLine").map((s) => s.box),
     ...pg.symbols.filter((s) => s.code === "bracket" || s.code === "brace").map((s) => s.box),
+    // 位图路的系统括号（`findSystemBrackets`）：方括号的上下衬线会把粗竖笔与
+    // 细系统线连成一块，那一块过不了竖笔画的宽度闸，`SysLine` 一条都抽不出来。
+    ...pg.objs.filter((o) => o.hasTag("SysBracket")).map((o) => o.box),
   ];
   const done = new Set<Staff>();
+  // **罩得多的先分**：同一个系统上既有罩全系统的方括号、也有罩钢琴两行的花括号，
+  // 先来后到会让花括号先把那两行占走，剩下的行各自成系统（实测望十架 p3
+  // 四行的系统因此裂成「2 + 1 + 1」）。
+  marks.sort((a, b) => pg.staves.filter((st) => overlapY(st.box, b)).length - pg.staves.filter((st) => overlapY(st.box, a)).length);
   for (const b of marks) {
     const arr = pg.staves.filter((st) => overlapY(st.box, b));
     if (arr.length < 2) continue; // 只盖住一行的左端线不构成「系统」，留给下面各自成系统

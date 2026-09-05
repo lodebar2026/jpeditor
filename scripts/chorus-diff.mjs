@@ -774,9 +774,13 @@ await mkdir("staff-out", { recursive: true });
 await writeFile("staff-out/chorus-diff.json", JSON.stringify(rows, null, 1));
 
 // ── 基线守门 ────────────────────────────────────────────────────────────────
-// **分档汇总**：基线只守**干净位图**那一档（排版软件贴的图，本轮的目标）。
-// 真扫描件（破碎.pdf 是 Xerox 300dpi、主，差遣我是 JPEG 200dpi）倾斜三四个像素、
-// 谱线找不齐，混进平均会把干净那一档的涨跌淹掉——它们另记，不入基线。
+// **分档汇总**：干净位图与真扫描件**各记各的**，但**两档都守**。
+//
+// 一度只守干净那一档（真扫描件倾斜三四个像素、谱线找不齐，混进同一个平均
+// 会把干净那一档的涨跌淹掉）。分档记账解决了「淹掉」，守门却一直没跟上
+// ——于是「干净档涨、扫描件塌」的改动可以一路绿灯过去（实测收竖笔画的宽度闸
+// 就是这样：干净 92.31% → 92.74%，扫描件 29.6% → 19.8%）。
+// 现在两档都进 `summary`（扫描件那几个键带 `scan` 前缀），任一档退步都拦下来。
 const clean = rows.filter((r) => r.clean);
 const scan = rows.filter((r) => !r.clean);
 const avg = (a, k) => (a.length ? +(a.reduce((x, r) => x + r[k], 0) / a.length).toFixed(2) : 0);
@@ -823,7 +827,14 @@ if (smSummary)
     (smSummary.smLyricAcc ? `；歌词 ${smSummary.smLyricAcc}%` : ""));
 if (scan.length) {
   const sg = scan.filter((r) => r.noteAcc !== null);
-  console.log(`【真扫描件】${scan.length} 份（有 GT ${sg.length} 份）：音符 ${avg(sg, "noteAcc")}%、音级 ${avg(sg, "letterAcc")}%；小节自检 ${avg(scan, "barFull")}%　——另记，不入基线`);
+  Object.assign(summary, {
+    scan: scan.length,
+    scanNoteAcc: avg(sg, "noteAcc"),
+    scanNoteAccAll: avg(sg, "noteAccAll"),
+    scanLetterAcc: avg(sg, "letterAcc"),
+    scanBarFull: avg(scan, "barFull"),
+  });
+  console.log(`【真扫描件】${scan.length} 份（有 GT ${sg.length} 份）：音符 ${summary.scanNoteAcc}%（含游离 ${summary.scanNoteAccAll}%）、音级 ${summary.scanLetterAcc}%；小节自检 ${summary.scanBarFull}%`);
 }
 
 if (args.includes("--bless")) {
@@ -838,7 +849,8 @@ if (args.includes("--bless")) {
     console.log("（还没有基线，`--bless` 立一个）");
   }
   if (base) {
-    const worse = Object.keys(summary).filter((k) => k !== "clean" && k !== "songs" && summary[k] < base[k] - 0.005);
+    // `clean` / `scan` 是**份数**，不是准确率，不参与比较（语料增删时它们会变）
+    const worse = Object.keys(summary).filter((k) => k !== "clean" && k !== "scan" && k !== "songs" && base[k] != null && summary[k] < base[k] - 0.005);
     console.log(`基线：${Object.entries(base).map(([k, v]) => `${k}=${v}`).join(" ")}`);
     if (worse.length) {
       console.log(`✗ 比基线差的档：${worse.map((k) => `${k} ${base[k]}→${summary[k]}`).join("，")}`);

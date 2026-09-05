@@ -17,7 +17,7 @@ import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamSha
 import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findTuplets } from "../staffomr/notations";
 import type { SPage, Staff, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
-import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
+import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, groupByLeftInk, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
 import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
@@ -869,6 +869,7 @@ export async function recognizeRasterPage(
     ),
     syms,
     braces: findBraces(nl, prims, unit, staffLefts, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y }))).map((c) => c.bbox),
+    sysBrackets: groupByLeftInk(raster.bin, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y, left: Math.max(...g.lines.map((l) => l.left)) })), unit),
   });
   if (!findStaves(pg)) return empty(pg, raster, unit, opts.carryTime);
 

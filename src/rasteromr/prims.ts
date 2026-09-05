@@ -37,6 +37,10 @@ export interface LineSeg {
 const BEAM_PAD = 2;
 /** 抹笔画时按平均厚的几倍封顶（见 `blobImage`）。 */
 const PAD_LW = 2;
+/** 左端系统线的窗口：谱行左缘往外几格、往里几格；连着要占缝里的几成行。见 `groupByLeftInk`。 */
+const LEFTINK_OUT = 2.0;
+const LEFTINK_IN = 0.5;
+const LEFTINK_FRAC = 0.9;
 /**
  * 竖笔画的**长度**下限（线距的倍数）。
  *
@@ -504,6 +508,56 @@ export function findBraces(
     }
     return true;
   });
+}
+
+/**
+ * **按左端系统线的墨分系统**：两行谱之间，左端那条竖线连着，就是同一个系统。
+ *
+ * 为什么不按连通块（`findSystemBrackets` 那条路）：括号会碎。方括号的粗竖笔、
+ * 上下衬线、细系统线连成一块又太宽（过不了竖笔画的宽度闸），拆开又各只罩两行
+ * ——实测望十架一份 99 行谱按连通块分出 49 个系统，正确是 25 个上下。
+ * 而**墨连不连着**这件事本身不受碎块影响：直接在两行谱之间的缝里逐行数
+ * 「左端那一小条窗口里有没有墨」，够九成就判连着。
+ *
+ * 窗口只开在谱行左缘那一小条（左边两格、右边半格）：歌词、力度记号都在更右边，
+ * 进不来；页边框在更左边，也进不来。
+ */
+export function groupByLeftInk(
+  bin: Binary,
+  staves: { top: number; bottom: number; left: number }[],
+  unit: RasterUnit,
+): { x: number; y: number; w: number; h: number }[] {
+  if (!staves.length) return [];
+  const ss = [...staves].sort((a, b) => a.top - b.top);
+  const groups: (typeof ss)[] = [[ss[0]]];
+  for (let i = 1; i < ss.length; i++) {
+    const a = ss[i - 1];
+    const b = ss[i];
+    const y0 = Math.round(a.bottom) + 1;
+    const y1 = Math.round(b.top) - 1;
+    const left = Math.min(a.left, b.left);
+    const x0 = Math.max(0, Math.round(left - unit.space * LEFTINK_OUT));
+    const x1 = Math.min(bin.w - 1, Math.round(left + unit.space * LEFTINK_IN));
+    let rows = 0;
+    let hit = 0;
+    for (let y = y0; y <= y1; y++) {
+      if (y < 0 || y >= bin.h) continue;
+      rows++;
+      for (let x = x0; x <= x1; x++)
+        if (bin.data[y * bin.w + x]) {
+          hit++;
+          break;
+        }
+    }
+    if (rows <= 0 || hit >= rows * LEFTINK_FRAC) groups[groups.length - 1].push(b);
+    else groups.push([b]);
+  }
+  return groups
+    .filter((g) => g.length >= 2)
+    .map((g) => {
+      const x = Math.min(...g.map((s) => s.left)) - unit.space * LEFTINK_OUT;
+      return { x, y: g[0].top, w: unit.space * (LEFTINK_OUT + LEFTINK_IN), h: g[g.length - 1].bottom - g[0].top };
+    });
 }
 
 /** 抹掉笔画之后剩下的墨——`findBlobs` 与 `findBraces` 都从它出发。
