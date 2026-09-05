@@ -664,6 +664,31 @@ export async function recognizeRasterPage(
     }
   }
 
+  // ── 四分休止：**位置 + 形状自举**，字典兜不住 ──────────────────────────
+  //
+  // 四分休止在位图上被切得五花八门（它压着三条谱线，去谱线之后每一段的断法
+  // 都不一样），签名于是散进一堆没定名的类里——实测全份只认出 90 个，
+  // 而它是序列里最常见的休止（逐音比下来「漏掉」里 P6.1 有 27 个、P6.2 有 20 个是休止）。
+  // 谱号与拍号走的是同一条路：**字典靠不住的那几类，改按位置 + 形状认**。
+  //
+  // 判据（都从认出来的那批量出来）：0.75~1.10 格宽、2.2~3.1 格高、填充 0.33~0.62，
+  // 再要求**盒的中心落在谱表中线附近**（四分休止是竖着写在谱表正中的）。
+  // 这三条合起来在谱面上几乎没有别的东西能同时满足：符干太窄、符头太矮、
+  // 连音线太空、升降号在 0.6 格上下。
+  for (const c of blobs) {
+    if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
+    const b = c.bbox;
+    const w = b.w / unit.space;
+    const h = b.h / unit.space;
+    if (w < QREST_W[0] || w > QREST_W[1] || h < QREST_H[0] || h > QREST_H[1]) continue;
+    const fill = c.area / Math.max(1, b.w * b.h);
+    if (fill < QREST_FILL[0] || fill > QREST_FILL[1]) continue;
+    if (!midOfStaff(b, lines, unit)) continue;
+    merged.add(c.id);
+    syms.push({ box: b, code: "restQuarter" });
+    ledger.claim(b, "qrest:restQuarter");
+  }
+
   // ── 拍号：位置自举 + 模板验 ────────────────────────────────────────────────
   //
   // 字典里**一个拍号类都没有**（`rasterglyphs.json` 4144 个类未定名，拍号一个没定），
@@ -994,6 +1019,19 @@ export type { Binary };
  * 中心离线不超过半格。`buildNotes` 随后再按「在线上还是线下」分全与半
  * （那两个字形逐位相同，只能按几何判）。
  */
+/** 四分休止的尺寸与填充率（从字典认出来的那批量出来的）。见 `bootstrapQuarterRest` 那一段。 */
+const QREST_W = [0.75, 1.1] as const;
+const QREST_H = [2.2, 3.1] as const;
+const QREST_FILL = [0.33, 0.62] as const;
+
+/** 盒的中心落在某行谱的**中线**附近吗——四分休止是竖着写在谱表正中的。 */
+function midOfStaff(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
+  const cy = box.y + box.h / 2;
+  const ys = [...lines].map((l) => l.y).sort((a, b) => a - b);
+  for (let i = 0; i + 4 < ys.length; i += 5) if (Math.abs(cy - ys[i + 2]) <= unit.space * 0.9) return true;
+  return false;
+}
+
 function nearRestLine(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
   const cy = box.y + box.h / 2;
   const ys = [...lines].map((l) => l.y).sort((a, b) => a - b);
