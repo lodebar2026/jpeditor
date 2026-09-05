@@ -53,6 +53,10 @@ const STAFF_ASPECT_MIN = 4;
 
 /** 谱线候选的长度门槛：整页最长横线的这个比例。符杠、加线都短得多。 */
 const STAFF_LINE_LEN_RATIO = 0.35;
+/** 凑第 n 条谱线时，离「按平均间距推出来的位置」允许差多少（相对间距）。 */
+const STAFF_LINE_TOL = 0.2;
+/** 兜底那一路「五条算不算等距」的容差（相对平均间距）。与 `groupStaves` 同一个数。 */
+const STAFF_EVEN_TOL = 0.2;
 
 /**
  * 量出这一页的小节线高度 H（见 `SPage.barlineHeight` 的注释）。
@@ -300,7 +304,7 @@ export function findStaves(pg: SPage): boolean {
       for (let n = 2; n <= 4; n++) {
         const want = cands[i].cy + dd0 * n;
         let best: Seg | null = null;
-        let bestD = dd0 * 0.2;
+        let bestD = dd0 * STAFF_LINE_TOL;
         for (const c of cands) {
           if (used.has(c) || five.includes(c)) continue;
           const dd = Math.abs(c.cy - want);
@@ -324,6 +328,35 @@ export function findStaves(pg: SPage): boolean {
       if (right - left < shortest * 0.8) continue;
       if (right - left < d * 4 * STAFF_ASPECT_MIN) continue;
       picked = five.sort((a, b) => a.cy - b.cy);
+    }
+    // ── 兜底：**连着的五条、按平均间距等距** ────────────────────────────────
+    //
+    // 上面那一路是「拿第一段间距往下推」，推之前先要**猜对第二线是哪一条**。
+    // 低分辨率的扫描件上五条线并不匀（实测望十架 p10 那行是 11 / 15 / 12 / 12 px），
+    // 第二线一取到 11 那条，第三线就推到 207、而真线在 211，差 4px 过不了容差；
+    // 再往后 d 一大又撞上「线距上限」的 break，整行谱就丢了。
+    // 而**按五条的平均间距判等距**（`staffline.ts::groupStaves` 那一套）分得出来：
+    // 平均 12.5，四段与它各差 1.5/2.5/0.5/0.5，都在两成以内。
+    // 所以这里补一条：紧挨着的五条候选，只要按平均间距算得上等距就收。
+    // 放松上面那条容差（0.2 → 0.3/0.4/0.5）实测更差（真扫描件 44.57% → 44.05%）
+    // ——多收进来的是别的东西，不是这一类。
+    if (!picked && i + 4 < cands.length) {
+      const five = cands.slice(i, i + 5);
+      if (!five.some((c) => used.has(c))) {
+        const ds = [1, 2, 3, 4].map((k) => five[k].cy - five[k - 1].cy);
+        const avg = ds.reduce((a, b) => a + b, 0) / 4;
+        const left = Math.max(...five.map((l) => l.left));
+        const right = Math.min(...five.map((l) => l.right));
+        const shortest = Math.min(...five.map((l) => l.len));
+        if (
+          avg >= pg.barlineHeight * MIN_LINE_GAP_RATIO &&
+          avg <= pg.barlineHeight * MAX_LINE_GAP_RATIO &&
+          ds.every((d) => Math.abs(d - avg) <= avg * STAFF_EVEN_TOL) &&
+          right - left >= shortest * 0.8 &&
+          right - left >= avg * 4 * STAFF_ASPECT_MIN
+        )
+          picked = five;
+      }
     }
     if (!picked) continue;
     const stf = new Staff();
