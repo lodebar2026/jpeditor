@@ -31,6 +31,11 @@ export interface LineSeg {
   maxLw: number;
 }
 
+/** 抹符杠时中心线两侧的余量（px）。扫过 0 / 1 / 2 / 3：
+ *  音符 70.83 / 71.53 / **71.59** / 71.46%——余量太小会留下符杠残渣混进符号块，
+ *  太大又开始啃符头。 */
+const BEAM_PAD = 2;
+
 /** 一条符杠：拟合出来的中心线加包围盒。 */
 export interface BeamQuad extends LineSeg {
   box: Rect;
@@ -505,7 +510,21 @@ export function blobImage(bin: Binary, prims: RasterPrims, unit: RasterUnit): Bi
     // 段是直的（`adapt.ts` 会把它们摆正），照包围盒抹即可
     clear(Math.min(s.x0, s.x1) - pad, Math.min(s.y0, s.y1) - pad, Math.max(s.x0, s.x1) + pad, Math.max(s.y0, s.y1) + pad);
   }
-  for (const b of prims.beams) clear(b.box.x, b.box.y, b.box.x + b.box.w - 1, b.box.y + b.box.h - 1);
+  // **符杠只抹它自己那条带，不抹包围盒。**
+  // 符杠是斜的、还常常两三条叠着，包围盒比它本身大得多——照盒抹会把**贴着符杠的符头
+  // 一起抹掉**（实测宁静 p8 那段十六分连桁，一半的符头因此认不出来）。
+  // 沿中心线逐列抹，厚度取这一块的平均厚（`lw`）再放一点余量。
+  for (const b of prims.beams) {
+    const x0 = Math.max(0, Math.round(Math.min(b.x0, b.x1)));
+    const x1 = Math.min(w - 1, Math.round(Math.max(b.x0, b.x1)));
+    const half = Math.max(1, b.lw / 2 + BEAM_PAD);
+    const dx = b.x1 - b.x0;
+    for (let x = x0; x <= x1; x++) {
+      const t = Math.abs(dx) < 1e-6 ? 0 : (x - b.x0) / dx;
+      const cy = b.y0 + (b.y1 - b.y0) * t;
+      clear(x, cy - half, x, cy + half);
+    }
+  }
   return { w, h, data: rest };
 }
 
