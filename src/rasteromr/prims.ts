@@ -380,7 +380,12 @@ export function findPrimitives(
 
   // ── 符杠 ──
   const bMask = new Uint8Array(w * h);
-  const bLo = unit.space * 0.25;
+  // 符杠必须比本页的谱线更厚。扫描件的粗加线也能超过四分之一格：
+  // 望十架 web 版 p2 的加线厚 5px、线距 18.125px，原来会被当成符杠；
+  // 加线连着符头时又把符头拉宽，过了长宽比闸，随后抹符杠把符头拦腰切断。
+  // 用实测线宽的一倍半兜底，在构造掩模时就排掉细横墨；留下的椭圆过不了
+  // 符杠长宽比闸。干净页仍由四分之一格定下限（正常的细符杠要保留）。
+  const bLo = Math.max(unit.space * 0.25, unit.lineThick * 1.5);
   const bHi = unit.space * 1.1;
   for (let i = 0; i < bMask.length; i++) if (vr[i] >= bLo && vr[i] <= bHi && hr[i] >= unit.space) bMask[i] = 1;
   // **沿 x 闭一道**，与横笔画同一个道理：符干穿过符杠的那几列横向游程很短，
