@@ -153,6 +153,8 @@ export interface AdaptInput {
   syms?: RasterSym[];
   /** 花括号 / 系统括号的包围盒。`score.ts::tokenOf` 靠它分开钢琴行与人声行。 */
   braces?: Rect[];
+  /** 系统括号（罩住整个系统的那个），打 `SysBracket`——`makeSystems` 分系统用。 */
+  sysBrackets?: Rect[];
 }
 
 /**
@@ -204,6 +206,12 @@ export function buildRasterPage(inp: AdaptInput): SPage {
     const o = new PObj(id, fakePath(id, b.x, b.y, b.w, b.h, 1), null);
     id++;
     o.addTag("Bracket");
+    pg.objs.push(o);
+  }
+  for (const b of inp.sysBrackets ?? []) {
+    const o = new PObj(id, fakePath(id, b.x, b.y, b.w, b.h, 1), null);
+    id++;
+    o.addTag("SysBracket");
     pg.objs.push(o);
   }
   for (const s of inp.syms ?? []) {
