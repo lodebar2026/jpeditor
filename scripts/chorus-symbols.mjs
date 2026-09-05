@@ -67,6 +67,7 @@ function gtParts(xml) {
       const dots = (seg.match(/<dot\s*\/?>/g) ?? []).length;
       const accid = /<accidental[^>]*>([^<]+)<\/accidental>/.exec(seg)?.[1];
       const rest = /<rest\s*\/?>/.test(seg);
+      const slurStart = /<slur[^>]*type="start"/.test(seg);
       const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
       const oct = /<octave>(-?\d+)<\/octave>/.exec(seg)?.[1];
       if (!rest && (!step || oct === undefined)) continue;
@@ -76,6 +77,7 @@ function gtParts(xml) {
         base: type && TYPE_DUR[type] !== undefined ? TYPE_DUR[type] : null,
         dots,
         accidental: accid && ACC_ALTER[accid] !== undefined ? ACC_ALTER[accid] : null,
+        slurStart,
       });
       byStaff.set(key, seq);
     }
@@ -137,7 +139,7 @@ function gotParts(entries) {
         rows.push(ctxOf.get(stf) ?? null);
         const mv = minVoice(stf, byStaff);
         for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === mv))
-          seq.push({ pitch: n.rest ? "R" : n.step + n.octave, rest: n.rest, base: n.base, dots: n.dots, accidental: n.accidental, beams: n.beams });
+          seq.push({ pitch: n.rest ? "R" : n.step + n.octave, rest: n.rest, base: n.base, dots: n.dots, accidental: n.accidental, beams: n.beams, slurStart: !!n.slurStart });
         // 松叶与力度挂在音符上（`attachWedges` / `attachDynamicTexts`），按音符次序取出来。
         // **只取起头的松叶**，与 GT 侧同口径。
         for (const n of byStaff.get(stf) ?? []) {
@@ -205,7 +207,7 @@ function pairParts(got, gt) {
 /** SMuFL 谱号名 → GT 的 `<sign>`。 */
 const clefSign = (code) => (code?.startsWith("gClef") ? "G" : code?.startsWith("fClef") ? "F" : code?.startsWith("cClef") ? "C" : null);
 
-const tally = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, timeN: 0, timeOk: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, wedgeAcc: 0, wedgeStaves: 0, dynN: 0, dynGot: 0, dynAcc: 0, dynStaves: 0 };
+const tally = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, timeN: 0, timeOk: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, wedgeAcc: 0, wedgeStaves: 0, dynN: 0, dynGot: 0, dynAcc: 0, dynStaves: 0, slurN: 0, slurOk: 0, slurFalse: 0 };
 const confuse = new Map();
 
 for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(only)) && s.gt)) {
@@ -232,7 +234,7 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
     const got = gotParts(entries);
     const pairs = pairParts(got, gt);
 
-    const sub = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, dynN: 0, dynGot: 0 };
+    const sub = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, dynN: 0, dynGot: 0, slurN: 0, slurOk: 0, slurFalse: 0 };
     for (const p of pairs) {
       const G = got[p.i];
       const T = gt[p.j];
@@ -275,6 +277,11 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
           sub.dotsN++;
           if ((a.dots ?? 0) === b.dots) sub.dotsOk++;
         }
+        // 圆滑线：只在音高对上的位置比（与时值同口径）。GT 说这里起一条，我们起了没有。
+        if (b.slurStart) {
+          sub.slurN++;
+          if (a.slurStart) sub.slurOk++;
+        } else if (a.slurStart) sub.slurFalse++;
         if (b.accidental != null) {
           sub.accN++;
           if (a.accidental === b.accidental) sub.accOk++;
@@ -303,7 +310,8 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
         `  时值 ${pct(sub.durOk, sub.durN)}（${sub.durOk}/${sub.durN}，只在音高对上的位置比）  附点 ${pct(sub.dotsOk, sub.dotsN)}\n` +
         `  临时升降 ${pct(sub.accOk, sub.accN)}（GT ${sub.accN} 个）  凭空多出 ${sub.accFalse}\n` +
         `  拍号 GT ${gtTime.join(" ") || "—"}  识别 ${[...gotAsTime].join(" ") || "—"}\n` +
-        `  松叶 认出 ${sub.wedgeGot}（GT ${sub.wedgeN}）　力度 认出 ${sub.dynGot}（GT ${sub.dynN}）`,
+        `  松叶 认出 ${sub.wedgeGot}（GT ${sub.wedgeN}）　力度 认出 ${sub.dynGot}（GT ${sub.dynN}）\n` +
+        `  圆滑线 ${pct(sub.slurOk, sub.slurN)}（GT ${sub.slurN} 起，凭空多出 ${sub.slurFalse}）`,
     );
     if (verbose) {
       for (const p of pairs) {
@@ -325,6 +333,7 @@ console.log(
 );
 console.log(
   `　　松叶 检出 ${tally.wedgeGot}/${tally.wedgeN}（序列 ${tally.wedgeStaves ? ((tally.wedgeAcc / tally.wedgeStaves) * 100).toFixed(1) + "%" : "—"}）　` +
-    `力度 检出 ${tally.dynGot}/${tally.dynN}（序列 ${tally.dynStaves ? ((tally.dynAcc / tally.dynStaves) * 100).toFixed(1) + "%" : "—"}）`,
+    `力度 检出 ${tally.dynGot}/${tally.dynN}（序列 ${tally.dynStaves ? ((tally.dynAcc / tally.dynStaves) * 100).toFixed(1) + "%" : "—"}）　` +
+    `圆滑线 ${tally.slurN ? ((tally.slurOk / tally.slurN) * 100).toFixed(1) + "%" : "—"}（${tally.slurN} 起，多出 ${tally.slurFalse}）`,
 );
 console.log("时值错法（GT→识别）前十：" + [...confuse.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${k} ${v}`).join("　"));
