@@ -682,6 +682,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
         // 错型：读错（替换）/ 漏掉（GT 有识别没有）/ 多出（识别有 GT 没有）
         const t = errKinds(got[p.i].seq, g.slice(g.findIndex((z) => z !== "R")));
         console.log(`    错型: 读错 ${t.sub}  漏掉 ${t.del}  多出 ${t.ins}  （对上 ${t.eq}）`);
+        if (t.sub) console.log(`    读错级差: ${[...t.steps.entries()].sort((x, y) => y[1] - x[1]).slice(0, 8).map(([k, v]) => `${typeof k === "number" && k > 0 ? "+" + k : k} ${v}`).join("　")}`);
       }
     }
     // **游离音符**：没配上任何 GT 谱表的那些识别谱表里的音。
@@ -935,10 +936,23 @@ function errKinds(A, B) {
       op[i][j] = c[1];
     }
   let i = a.length, j = b.length;
-  const t = { eq: 0, sub: 0, del: 0, ins: 0 };
+  // `steps`：读错的那些音**差几个音级**（GT → 识别，全音阶级差，休止另计）。
+  // 光看「读错多少个」看不出该改哪儿：整条差 +2 是谱号错，±1 是线间吸错格，
+  // ±7 是八度点/加线，散得没形状才是符头本身没找准。
+  const t = { eq: 0, sub: 0, del: 0, ins: 0, steps: new Map() };
+  const dia = (p) => (p === "R" ? null : "CDEFGAB".indexOf(p[0]) + 7 * Number(p.slice(1)));
   while (i > 0 || j > 0) {
     const o = i > 0 && j > 0 ? op[i][j] : i > 0 ? "x" : "n";
-    if (o === "m") { if (a[i - 1] === b[j - 1]) t.eq++; else t.sub++; i--; j--; }
+    if (o === "m") {
+      if (a[i - 1] === b[j - 1]) t.eq++;
+      else {
+        t.sub++;
+        const [g, e] = [dia(a[i - 1]), dia(b[j - 1])];
+        const k = g == null || e == null ? (a[i - 1] === "R" ? "音→休" : "休→音") : g - e;
+        t.steps.set(k, (t.steps.get(k) ?? 0) + 1);
+      }
+      i--; j--;
+    }
     else if (o === "x") { t.ins++; i--; }
     else { t.del++; j--; }
   }

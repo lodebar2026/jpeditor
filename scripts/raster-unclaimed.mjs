@@ -3,6 +3,7 @@
 //   npm run build:cli && node scripts/raster-unclaimed.mjs
 //   node scripts/raster-unclaimed.mjs --one=宁静 --v      # 逐页明细
 //   node scripts/raster-unclaimed.mjs --top=30            # 形状类排行取前几名
+//   node scripts/raster-unclaimed.mjs --scan              # 形状表改看真扫描件那一档
 //
 // 与 `chorus-symbols.mjs` 的分工：那边量「认出来的对不对」，这边量
 // **「有什么是我们从没看见的」**——松叶、力度、表情文字、段落记号至今一个不认，
@@ -13,7 +14,7 @@
 //   2. 无主 contour 按 **32×32 签名**聚类的排行（尺寸、孔数、典型位置、样本坐标）；
 //   3. 无主按**位置**分档（谱表带内 / 上方 / 下方 / 远处）。
 //
-// 只跑**干净位图**那一档（与基线同口径：线宽 ≤ 线距的两成）。
+// 形状表默认只收**干净位图**那一档；`--scan` 换成真扫描件（墨覆盖率两档都出）。
 import { readFile } from "node:fs/promises";
 import { openPdf, eachPage, loadCli, loadChorus } from "./node-harness.mjs";
 
@@ -22,6 +23,7 @@ const argOf = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length +
 const verbose = args.includes("--v");
 const only = argOf("one");
 const topN = Number(argOf("top") ?? 20);
+const scanOnly = args.includes("--scan");
 /** 签名聚类的汉明距离上限。与 `rasterglyphs.ts` 建库那一路同量级。 */
 const SIG_DIST = 60;
 
@@ -116,7 +118,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       `${clean ? "[干净]" : "[扫描]"} ${song.name}/${file}  墨覆盖 ${((acc.claimed / Math.max(1, acc.ink)) * 100).toFixed(1)}%  ` +
         `contour ${acc.contours}（无主 ${acc.unclaimed}，占墨 ${((acc.unclaimedInk / Math.max(1, acc.ink)) * 100).toFixed(1)}%）`,
     );
-    if (!clean) continue; // 形状表只收干净位图那一档
+    if (scanOnly ? clean : !clean) continue; // 形状表一次只收一档
     totals.ink += acc.ink;
     totals.claimed += acc.claimed;
     totals.contours += acc.contours;
@@ -132,7 +134,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
 
 const med = (a) => (a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : 0);
 console.log(
-  `\n【干净位图合计】墨覆盖 ${((totals.claimed / Math.max(1, totals.ink)) * 100).toFixed(1)}%　` +
+  `\n【${scanOnly ? "真扫描件" : "干净位图"}合计】墨覆盖 ${((totals.claimed / Math.max(1, totals.ink)) * 100).toFixed(1)}%　` +
     `contour ${totals.contours}，无主 ${totals.unclaimed}（占墨 ${((totals.unclaimedInk / Math.max(1, totals.ink)) * 100).toFixed(1)}%）`,
 );
 

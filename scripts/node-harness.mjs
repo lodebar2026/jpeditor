@@ -37,6 +37,18 @@ export const CHORUS_ROOT = process.env.CHORUS ?? "/Users/jonah/Documents/诗歌/
  *  也有一份 Fuji Xerox 扫的 `破碎.pdf`。这里全都吐出来，
  *  「这份是干净位图还是真扫描件」留给脚本自己量（见 `chorus-report.mjs`）——
  *  引导只管找文件，判据不写在这儿。 */
+/**
+ * **GT 不是全谱、不能拿来算准确率的曲子。**
+ *
+ * `主，差遣我`：PDF 是 SATB 加伴奏的全谱（识别侧 81 谱行、997 个音），
+ * 同目录的 musicxml 却只有 2 个 `<part>`、296 个音、85 小节——那是另一份摘录，
+ * 不是这份 PDF 的答案。拿它对拍会把识别出的伴奏与内声部全记成「游离音」
+ * （实测含游离音符档被压到 11.2%），既冤枉识别，也让扫描件平均值失真。
+ *
+ * 列在这里的曲子照旧参与「无 GT」那一档的事实统计，只是不进准确率。
+ */
+const GT_NOT_FULL_SCORE = new Set(["主，差遣我"]);
+
 export async function loadChorus(root = CHORUS_ROOT) {
   const out = [];
   for (const name of (await readdir(root)).sort()) {
@@ -49,7 +61,7 @@ export async function loadChorus(root = CHORUS_ROOT) {
     }
     const pdfs = files.filter((f) => f.toLowerCase().endsWith(".pdf")).sort().map((f) => join(root, name, f));
     if (!pdfs.length) continue;
-    const gt = files.find((f) => f.toLowerCase().endsWith(".musicxml"));
+    const gt = GT_NOT_FULL_SCORE.has(name) ? null : files.find((f) => f.toLowerCase().endsWith(".musicxml"));
     out.push({ name, pdfs, gt: gt ? join(root, name, gt) : null });
   }
   return out;
