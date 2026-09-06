@@ -134,7 +134,14 @@ export function findRasterHeads(
     const b = t.box;
     const w = b.w / sp;
     const h = b.h / sp;
-    if (w < W_MIN || w > W_MAX || h < H_MIN || h > H_MAX) continue;
+    // **高度上限要把粘着的谱线截扣掉**（与整小节休止那道闸同一个机理）。
+    // 去谱线的判据是「上下都没墨才抹」，符头压着的那一截线因此留了下来并进块里：
+    // 在间的符头上下各挨着半条线，块高多出一个线宽。线细时还挤得进闸门
+    //（干净档线宽 2.5px、线距 17.1px，1.0 格的符头量出来 1.29 格，勉强过 1.35），
+    // 线一粗就顶出去（破碎扫描件线宽 4.4px、线距 18.8px，量出来 1.23 格，
+    // 墨稍胀一点就超限）。下限仍按原样判——那道闸防的是被啃窄的残块。
+    const hFit = h - unit.lineThick / sp;
+    if (w < W_MIN || w > W_MAX || h < H_MIN || hFit > H_MAX) continue;
     // 太扁太长的不是符头（是横段残渣、连线）
     if (b.w > b.h * 2.2) continue;
     const fill = t.area / Math.max(1, b.w * b.h);
@@ -209,6 +216,11 @@ export function judgeHeadBox(bin: Binary, box: Rect, unit: RasterUnit, stems: Li
  * 符头那几列有一整个椭圆的高度，剪不掉。
  */
 function trimLedger(bin: Binary, b: Rect, unit: RasterUnit): { box: Rect; area: number; trimmed: boolean; ledgerY: number | null } {
+  // **别按线距给这个上限封顶**（试过 `min(lineThick*2, space*0.35 / 0.4)`）：
+  // 扫描件上少剪确实多认出符头——破碎按谱行音符 69.9% → 70.8%、扫描件 headline
+  // 51.95% → 52.2%——但多出来的那批里有相当一部分是假头，`attachLyrics` 把音节
+  // 挂了上去，**按谱行的歌词从 94.8% 掉到 88.8%**、扫描件歌词档 35.9% → 33.3%。
+  // 拿六个点的歌词换零点几个点的音符不划算。
   const thin = Math.max(2, unit.lineThick * 2);
   const colH = new Int32Array(b.w);
   for (let x = 0; x < b.w; x++) {
