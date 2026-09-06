@@ -212,7 +212,8 @@ const SEG_TAGS: Tag[] = ["Staff", "Leger", "Stem", "BarLine", "SysLine", "Tail",
 
 /** 整小节休止的形状闸（见 `restSyms` 那一段）。放松到 1.6/0.8/0.9 与 1.5/0.75/0.95
  *  都**一个都不多认**——剩下的那些不在纸上（破碎三个女高合印一行，
- *  GT 里 P1/P2 中段的全休止根本没印出来）。 */
+ *  GT 里 P1/P2 中段的全休止根本没印出来）。
+ *  这三个数量的是**休止本身**，量块之前要把粘着的谱线截扣掉，见那里的说明。 */
 const REST_W = [0.9, 1.8] as const;
 const REST_H = 0.8;
 const REST_RATIO = 1.8;
@@ -463,8 +464,16 @@ export async function recognizeRasterPage(
     const b = c.bbox;
     const w = b.w / unit.space;
     const h = b.h / unit.space;
-    if (w < REST_W[0] || w > REST_W[1] || h < 0.3 || h > REST_H) continue;
-    if (b.w < b.h * REST_RATIO) continue;
+    // **高度要把粘着的那截谱线扣掉**。全/半休止是贴着谱线画的（全休止吊在第二线下、
+    // 半休止坐在第三线上），去谱线时它底下/头上那一截「上方有墨」，照判据留了下来，
+    // 并进同一个块——块高于是多出一个线宽，宽高比也跟着掉。线细时还挤得进闸门，
+    // 线一粗就整批卡死：破碎扫描件线宽 4.4px、线距 18.8px，1.34×0.64 格的全休止
+    // 量出来是 **0.87 格高、宽高比 1.54**，`REST_H` 与 `REST_RATIO` 两道全过不去
+    // ——实测 GT 475 个休止只出 178 个，漏的那 300 个正是全休止（GT 里有 306 个）。
+    // 干净版也只是勉强擦边（0.79 格），所以两档一起受益。
+    const hRest = Math.max(0.1, h - unit.lineThick / unit.space);
+    if (w < REST_W[0] || w > REST_W[1] || hRest < 0.3 || hRest > REST_H) continue;
+    if (w < hRest * REST_RATIO) continue;
     if (c.area / Math.max(1, b.w * b.h) < REST_FILL) continue;
     if (!nearRestLine(b, lines, unit)) continue;
     restIds.add(c.id);
