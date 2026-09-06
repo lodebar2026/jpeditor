@@ -18,6 +18,18 @@ import { scoreAt, type HeadMask } from "./headmask";
 
 /** 特征维数（见 `features`）。 */
 const D = 7;
+/** 取特征的**标准窗**（线距的倍数）：一个符头大小。
+ *
+ * **训练与推理必须用同一种盒**。一度直接拿传进来的盒取特征，而正例是
+ * `findRasterHeads` 的自然块盒（尺寸各异）、推理时判的却是合成盒（尺寸固定），
+ * 于是「宽 / 高 / 宽高比」那几维等于在告诉模型「这是自然盒还是合成盒」
+ * ——模型学的是盒的出身，不是墨的形状。改成两边都在候选中心上取同一个标准窗，
+ * 那三维也就没有意义了，一并去掉。
+ *
+ * 窗口大小扫过 1.15×0.9 / **1.3×1.0** / 1.5×1.2 格：扫描件音符 66.93 / **66.97** / 66.84%
+ * ——正好一个符头最好。 */
+const WIN_W = 1.3;
+const WIN_H = 1.0;
 /** 梯度下降的轮数与步长；L2 正则。样本少的时候正则救命。 */
 const ITERS = 200;
 const LR = 0.5;
@@ -37,48 +49,65 @@ export interface HeadClassifier {
 }
 
 /**
- * 一个候选盒的特征。全部按线距归一，与分辨率无关。
+ * 一个候选的特征。**在候选中心上取一个符头大小的标准窗**，与传进来的盒的尺寸无关
+ * （见 `WIN_W`）。全部按线距归一，与分辨率无关。
  *
  *  0 模板得分（`headmask.ts::scoreAt`，骑线/在间各用各的模板）
- *  1 填充率
- *  2 宽（格）
- *  3 高（格）
- *  4 宽高比
- *  5 **左右墨量差**：符头是左右对称的椭圆；谱号、休止、升降号多半偏一侧
- *  6 **行墨的尖锐度**（最大行墨 / 平均行墨）：实心椭圆接近 1.3，
+ *  1 窗内填充率
+ *  2 **左右墨量差**：符头是左右对称的椭圆；谱号、休止、升降号多半偏一侧
+ *  3 **上下墨量差**：与上一维配对。符头上下也对称；符干、符尾偏一头
+ *  4 **行墨的尖锐度**（最大行墨 / 平均行墨）：实心椭圆接近 1.3，
  *    空心的圈、带细笔画的符号会顶得很高
+ *  5 **芯填充**：窗中央那个椭圆里墨占多少。实心符头接近 1，
+ *    谱号的弯、休止的钩只是**穿过**窗中央，占不满
+ *  6 **溢出**：椭圆之外、窗之内的墨占窗内全部墨的比例。符头几乎全在椭圆里，
+ *    带笔画的符号溢出多——这一维与上一维一起，直接量「像不像一个实心椭圆」
  */
 function features(bin: Binary, masks: HeadMask[], unit: RasterUnit, box: Rect, cy: number, onLine: boolean): Float64Array {
   const sp = unit.space;
   const f = new Float64Array(D);
   const m = masks.find((k) => k.onLine === onLine) ?? masks[0];
-  f[0] = m ? scoreAt(bin, m, box.x + box.w / 2, cy) : 0;
+  const cx = box.x + box.w / 2;
+  f[0] = m ? scoreAt(bin, m, cx, cy) : 0;
+  // 标准窗：以候选中心为心、一个符头大小
+  const ww = Math.max(3, Math.round(sp * WIN_W));
+  const wh = Math.max(3, Math.round(sp * WIN_H));
+  const x0 = Math.round(cx - ww / 2);
+  const y0 = Math.round(cy - wh / 2);
+  const rows = new Float64Array(wh);
   let ink = 0;
   let left = 0;
   let right = 0;
-  const rows = new Float64Array(Math.max(1, box.h));
-  const half = box.x + box.w / 2;
-  for (let y = 0; y < box.h; y++) {
-    const sy = box.y + y;
-    if (sy < 0 || sy >= bin.h) continue;
-    for (let x = 0; x < box.w; x++) {
-      const sx = box.x + x;
-      if (sx < 0 || sx >= bin.w || !bin.data[sy * bin.w + sx]) continue;
+  let inEll = 0;
+  let ellArea = 0;
+  for (let y = 0; y < wh; y++) {
+    const sy = y0 + y;
+    for (let x = 0; x < ww; x++) {
+      const inside = ((x + 0.5 - ww / 2) / (ww / 2)) ** 2 + ((y + 0.5 - wh / 2) / (wh / 2)) ** 2 <= 1;
+      if (inside) ellArea++;
+      const sx = x0 + x;
+      if (sy < 0 || sy >= bin.h || sx < 0 || sx >= bin.w || !bin.data[sy * bin.w + sx]) continue;
       ink++;
       rows[y]++;
-      if (sx < half) left++;
+      if (x < ww / 2) left++;
       else right++;
+      if (inside) inEll++;
     }
   }
-  const area = Math.max(1, box.w * box.h);
-  f[1] = ink / area;
-  f[2] = box.w / sp;
-  f[3] = box.h / sp;
-  f[4] = box.w / Math.max(1, box.h);
-  f[5] = ink ? Math.abs(left - right) / ink : 1;
+  f[1] = ink / Math.max(1, ww * wh);
+  f[2] = ink ? Math.abs(left - right) / ink : 1;
+  let top = 0;
+  let bot = 0;
   let mx = 0;
-  for (let y = 0; y < rows.length; y++) mx = Math.max(mx, rows[y]);
-  f[6] = ink ? mx / (ink / rows.length) : 0;
+  for (let y = 0; y < wh; y++) {
+    mx = Math.max(mx, rows[y]);
+    if (y < wh / 2) top += rows[y];
+    else bot += rows[y];
+  }
+  f[3] = ink ? Math.abs(top - bot) / ink : 1;
+  f[4] = ink ? mx / (ink / wh) : 0;
+  f[5] = ellArea ? inEll / ellArea : 0;
+  f[6] = ink ? (ink - inEll) / ink : 0;
   return f;
 }
 
