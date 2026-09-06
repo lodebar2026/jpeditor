@@ -91,7 +91,48 @@ for (let i = 0; i < strips.length; i += BATCH) {
       } catch {
         lines = [];
       }
-      out.push(lines.map((l) => ({ text: l.text, y: l.bbox.y + l.bbox.h / 2, x: l.bbox.x })));
+      window.__ocr ??= omr.paddleOcrBackend();
+      // **框右边的分部号要单独捡。** DBNet 按行框字，`Soprano 1` 的词距够宽时
+      // 那个孤立的窄 `1` 既进不了框、也不够它单独成一框（实测破碎 p9 顶行谱面
+      // 印着 `Soprano 1`，框只有 145px 宽、读出 `Soprano`，于是与第三行的
+      // `Soprano` 同名，两条声部就分不开）。而分部号正是分开它们的要害。
+      // 做法：在框右边一小段里找孤立的窄墨块，交给 `recognizeDigits`。
+      const digitOf = async (bb) => {
+        const x0 = Math.round(bb.x + bb.w);
+        const xEnd = Math.min(it.w, Math.round(x0 + bb.h * 3));
+        const yA = Math.max(0, Math.round(bb.y));
+        const yB = Math.min(it.h, Math.round(bb.y + bb.h));
+        const col = [];
+        for (let x = x0; x < xEnd; x++) {
+          let ink = 0;
+          for (let y = yA; y < yB; y++) if (bin.data[y * it.w + x]) ink++;
+          col.push(ink);
+        }
+        let a = col.findIndex((v) => v > 0);
+        if (a < 0) return "";
+        let b = a;
+        while (b + 1 < col.length && (col[b + 1] || col[b + 2])) b++;
+        const w = b - a + 1;
+        if (w < bb.h * 0.1 || w > bb.h * 0.8) return ""; // 不像一个数字
+        // **还要够高**：框右边常跟着逗号、连音点、力度的残笔，那些只占一两行
+        // （实测 `Men,` 后面那一小坨被读成了 `1`，整行成了 `M1`）。
+        let tall = 0;
+        for (let x = a; x <= b; x++) tall = Math.max(tall, col[x]);
+        if (tall < (yB - yA) * 0.4) return "";
+        const rect = { x: x0 + a - 1, y: yA, w: w + 2, h: yB - yA };
+        try {
+          const [d] = await window.__ocr.recognizeDigits(bin, [rect]);
+          return d >= 0 && d <= 9 ? String(d) : "";
+        } catch {
+          return "";
+        }
+      };
+      const withNum = [];
+      for (const l of lines) {
+        const d = /[0-9]\s*$/.test(l.text) ? "" : await digitOf(l.bbox);
+        withNum.push({ text: l.text + d, y: l.bbox.y + l.bbox.h / 2, x: l.bbox.x });
+      }
+      out.push(withNum);
     }
     return out;
   }, chunk);

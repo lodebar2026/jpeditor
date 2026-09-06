@@ -118,6 +118,7 @@ function lcsPairs(a: StaffToken[], b: StaffToken[]): [number, number][] {
  * 行落进槽位要**保序**（谱面上从上到下的次序不会变），所以是一维 DP。
  */
 function assignSlots(rows: StaffToken[][]): number[][] | null {
+  propagateLabels(rows);
   // ── 槽位数：行数最多的那一档（同样多取出现次数最多的） ──
   const byCount = new Map<number, StaffToken[][]>();
   for (const r of rows) {
@@ -204,7 +205,16 @@ function assignSlots(rows: StaffToken[][]): number[][] | null {
     let best: string | null = null;
     let bn = 0;
     for (const [lb, v] of votes) if (v > bn) [best, bn] = [lb, v];
-    labelOf[k] = best;
+    // **先认「行数最满」那一档系统的同位行**：槽位本来就是从它们定出来的。
+    // 投票会被**要挪走的那几行自己污染**——第一遍把 3 行系统的 `Soprano 1` 错放进
+    // 槽位 2，槽位 2 的票就成了 `S1` 三对一，第二遍反倒给这个错配加分（自我强化）。
+    // 那一档没读出标签时才退回投票。
+    const anchor = new Map<string, number>();
+    for (const r of full) if (r[k].label) anchor.set(r[k].label!, (anchor.get(r[k].label!) ?? 0) + 1);
+    let ab: string | null = null;
+    let an = 0;
+    for (const [lb, v] of anchor) if (v > an) [ab, an] = [lb, v];
+    labelOf[k] = ab ?? best;
   }
   // **标签少到区分不了任何东西时就别让它表态。** 标签只在声部进入处印，
   // 认出来的更少（实测全语料 59 条标签条只读出 8 个声部名）；只有一个槽位有名字、
@@ -212,6 +222,33 @@ function assignSlots(rows: StaffToken[][]): number[][] | null {
   //（实测无条件用：干净档音符 83.02% → 82.94%）。
   const named = labelOf.filter((v): v is string => v !== null);
   return new Set(named).size >= 2 ? assign() : first;
+}
+
+/**
+ * **同一档行数的系统之间，把标签传开。**
+ *
+ * 刻谱的版式规矩：一个声部长段不唱就不印那一行，一唱就印——所以「行数一样的系统，
+ * 各行的身份也一样」（`chorus-diff.mjs::draftMap` 与人工映射的 `byRowCount` 都靠这条）。
+ * 而标签**只在声部进入处印一次**：破碎那三个 3 行系统只有头一个印着 `Soprano 1`，
+ * 后两个什么也没有，于是只有头一个落回槽位 0、另两个照旧按音域落进槽位 2。
+ * 同一档里按行号取众数补齐，三个就一起对了。
+ *
+ * 只补**空着**的，不改已经读出来的——读出来的是纸上的字，比推出来的硬。
+ */
+function propagateLabels(rows: StaffToken[][]): void {
+  const byCount = new Map<number, StaffToken[][]>();
+  for (const r of rows) if (r.length) byCount.set(r.length, [...(byCount.get(r.length) ?? []), r]);
+  for (const [k, group] of byCount) {
+    if (group.length < 2) continue;
+    for (let i = 0; i < k; i++) {
+      const votes = new Map<string, number>();
+      for (const r of group) if (r[i].label) votes.set(r[i].label!, (votes.get(r[i].label!) ?? 0) + 1);
+      let best: string | null = null;
+      let bn = 0;
+      for (const [lb, v] of votes) if (v > bn) [best, bn] = [lb, v];
+      if (best) for (const r of group) if (!r[i].label) r[i].label = best;
+    }
+  }
 }
 
 /** 谱号对上 / 对不上的分。对不上要压得住音域那一项，谱号是硬证据。 */
