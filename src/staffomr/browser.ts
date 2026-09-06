@@ -105,7 +105,17 @@ export async function recognizeStaffPdf(
     page.cleanup?.();
     opts.onProgress?.(++done, list.length);
   }
-  const score = buildScore(entries);
+  // 内容剖面（有没有词、音域中位数）交给 `buildScore` 做全局指派，见 `score.ts::assignSlots`
+  const score = buildScore(entries, {
+    profileOf: (st) => {
+      const ns = notesByStaff.get(st) ?? [];
+      const ps = ns
+        .filter((n) => !n.rest && !n.grace && n.step)
+        .map((n) => "CDEFGAB".indexOf(n.step!) + 7 * n.octave!)
+        .sort((a, b) => a - b);
+      return { lyric: ns.some((n) => n.lyrics?.length), pitch: ps.length ? ps[ps.length >> 1] : null };
+    },
+  });
   const musicxml = scoreToMusicXml(score, (st) => notesByStaff.get(st) ?? [], { title: opts.title });
   let notes = 0;
   for (const v of notesByStaff.values()) notes += v.length;
