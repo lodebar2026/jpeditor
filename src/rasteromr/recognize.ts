@@ -23,6 +23,7 @@ import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from
 import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
 import { buildHeadMasks, headFromStemBlock, splitHeadCluster } from "./headmask";
+import { findStaffLabels, labelKey, normalizeLabel, type LabelStrip } from "./stafflabel";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
 import { findRasterSlurs } from "./slur";
@@ -69,6 +70,13 @@ export interface RasterPageResult {
    */
   lyricStrips: LyricStrip[];
   /**
+   * 这一页各谱行的**声部标签条**（`gen-rasterlabels.mjs` 拿它送 OCR）。
+   * 与歌词条同一套架构：这里只切条，认字靠离线缓存。见 `stafflabel.ts`。
+   */
+  labelStrips: LabelStrip[];
+  /** 谱行下标 → 规范化的声部名（`S1`/`A`/`P`…）。缓存里查得到才有。 */
+  staffLabels: Map<number, string>;
+  /**
    * 歌词切格的**结构指标**：切出几条、缓存命中几条、其中**字格数与 OCR 字数相等**的几条。
    * 最后那个数是切格好坏的直接尺子——相等才走得上「按序号一一对应」那条准路
    * （不等就得按 `xFrac` 摊，而那是 CTC 估的位置，误差常有半个字）。
@@ -102,6 +110,8 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   dynamics: [],
   slurs: [],
   lyricStrips: [],
+  labelStrips: [],
+  staffLabels: new Map(),
   lyricStats: { rows: 0, hit: 0, parity: 0 },
   carryTime,
 });
@@ -371,6 +381,8 @@ export async function recognizeRasterPage(
      * 之后识别命中缓存，仍然不起浏览器。
      */
     lyricOcr?: Map<string, OcrChar[]>;
+    /** 声部标签的 OCR 缓存（`scripts/gen-rasterlabels.mjs` 的产物）。见 `stafflabel.ts`。 */
+    labelOcr?: Map<string, string>;
     /** 排查用：把连通块与「谁被认领了」带出来（`debugBlobs` 字段）。识别判据一条不改。 */
     debug?: boolean;
   } = {},
@@ -930,6 +942,18 @@ export async function recognizeRasterPage(
   const dynamics = groupDynamics(marks.dynamics, cmap, unit);
   attachDynamicTexts(pg, notes, dynamics);
 
+  // ── 声部标签 ────────────────────────────────────────────────────────────
+  //
+  // 条子**不论有没有缓存都要切**（与歌词字格同一条道理：切出来这件事本身
+  // 就是「这块墨是标签」的判断）；认字靠 `labelOcr` 缓存，没缓存就只出条子。
+  const labelStrips = findStaffLabels(raster.bin, pg.staves, unit);
+  const staffLabels = new Map<number, string>();
+  for (const st of labelStrips) {
+    const txt = opts.labelOcr?.get(labelKey(st));
+    const name = txt ? normalizeLabel(txt) : null;
+    if (name) staffLabels.set(st.staff, name);
+  }
+
   // ── 歌词 ────────────────────────────────────────────────────────────────
   //
   // **不走 `analyzeText`**：那一步靠「带连字符的音节」「音节间的延长线」当锚点
@@ -1010,6 +1034,8 @@ export async function recognizeRasterPage(
     contours: cmap,
     ledger,
     lyricStrips,
+    labelStrips,
+    staffLabels,
     wedges,
     dynamics,
     slurs,
