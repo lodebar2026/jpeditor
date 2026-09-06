@@ -21,6 +21,8 @@ export interface StaffToken {
   lyric: boolean;
   /** 这一行谱的**音域中位数**（全音阶级数，`C4` = 28）；没有音符为 null。见 `assignSlots`。 */
   pitch: number | null;
+  /** 谱面印的**声部标签**（`S1`/`A`/`P`…，已归一）；没印或认不出为 null。见 `assignSlots`。 */
+  label: string | null;
   staff: Staff;
 }
 
@@ -28,6 +30,7 @@ export interface StaffToken {
 export interface StaffProfile {
   lyric: boolean;
   pitch: number | null;
+  label?: string | null;
 }
 
 /** 两个签名算不算同一行谱（`StaffToken::operator==`）。 */
@@ -47,7 +50,7 @@ export function tokenOf(
   pg: SPage,
   stf: Staff,
   ctx: Map<Staff, StaffContext>,
-  profileOf: (s: Staff) => StaffProfile = () => ({ lyric: false, pitch: null }),
+  profileOf: (s: Staff) => StaffProfile = () => ({ lyric: false, pitch: null, label: null }),
 ): StaffToken {
   const sp = pg.normalStaffSpace || pg.space;
   const sp1 = stf.stepDistance() * 2;
@@ -68,7 +71,7 @@ export function tokenOf(
     else topOfBrace = true;
   }
   const pf = profileOf(stf);
-  return { clef: ctx.get(stf)?.clef?.code ?? "", size, topOfBrace, bottomOfBrace, lyric: pf.lyric, pitch: pf.pitch, staff: stf };
+  return { clef: ctx.get(stf)?.clef?.code ?? "", size, topOfBrace, bottomOfBrace, lyric: pf.lyric, pitch: pf.pitch, label: pf.label ?? null, staff: stf };
 }
 
 /** 最长公共子序列的配对（用签名相等判）。`SystemConnector` 用 dtl 的 diff，这里手写一份。 */
@@ -139,15 +142,21 @@ function assignSlots(rows: StaffToken[][]): number[][] | null {
       pitch: ps.length ? ps.sort((a, b) => a - b)[ps.length >> 1] : null,
     };
   });
+  const labelOf: (string | null)[] = new Array(n).fill(null);
   const score = (t: StaffToken, k: number) => {
     const sl = slots[k];
     let v = 0;
     if (t.clef && sl.clef) v += t.clef === sl.clef ? CLEF_HIT : CLEF_MISS;
     v += t.lyric === sl.lyric ? LYRIC_HIT : -LYRIC_HIT;
     if (t.pitch !== null && sl.pitch !== null) v -= Math.min(PITCH_CAP, Math.abs(t.pitch - sl.pitch) * PITCH_W);
+    // **标签压过音域**：谱面写着 `Soprano 1` 就是女高一部，而音域跨段落会整体挪
+    // （破碎 3 行系统的女高唱 31~32、7 行系统里同一声部唱到 36，音域反而把它推走）。
+    // 只在两边都有标签时表态；标签是稀疏的（只在声部进入处印）。
+    if (t.label && labelOf[k]) v += t.label === labelOf[k] ? LABEL_HIT : LABEL_MISS;
     return v;
   };
   // ── 逐系统：保序地把 k 行放进 n 个槽位（DP） ──
+  const assign = (): number[][] | null => {
   const out: number[][] = [];
   for (const r of rows) {
     const k = r.length;
@@ -179,6 +188,30 @@ function assignSlots(rows: StaffToken[][]): number[][] | null {
     out.push(pick);
   }
   return out;
+  };
+  // **两遍**：头一遍没有槽位标签（`labelOf` 全 null，标签那一项不表态），
+  // 拿它的结果给每个槽位定一个标签（占多数的那个），第二遍标签才起作用。
+  // 标签只在声部进入处印，一个槽位往往只有一两行带标签，所以要先有个指派才归得起来。
+  const first = assign();
+  if (!first) return null;
+  for (let k = 0; k < n; k++) {
+    const votes = new Map<string, number>();
+    for (let si = 0; si < rows.length; si++) {
+      const ri = first[si].indexOf(k);
+      const lb = ri >= 0 ? rows[si][ri].label : null;
+      if (lb) votes.set(lb, (votes.get(lb) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let bn = 0;
+    for (const [lb, v] of votes) if (v > bn) [best, bn] = [lb, v];
+    labelOf[k] = best;
+  }
+  // **标签少到区分不了任何东西时就别让它表态。** 标签只在声部进入处印，
+  // 认出来的更少（实测全语料 59 条标签条只读出 8 个声部名）；只有一个槽位有名字、
+  // 或几个槽位重名时，这一项不带信息，只会扰动本来就对的指派
+  //（实测无条件用：干净档音符 83.02% → 82.94%）。
+  const named = labelOf.filter((v): v is string => v !== null);
+  return new Set(named).size >= 2 ? assign() : first;
 }
 
 /** 谱号对上 / 对不上的分。对不上要压得住音域那一项，谱号是硬证据。 */
@@ -186,6 +219,9 @@ const CLEF_HIT = 2;
 const CLEF_MISS = -6;
 /** 有没有词对上的分。单行漏认只丢这么多，不否决。 */
 const LYRIC_HIT = 1.5;
+/** 标签对上 / 对不上的分。要压得过音域那一项（谱面写着的比量出来的硬）。 */
+const LABEL_HIT = 4;
+const LABEL_MISS = -8;
 /** 音域每差一个音级扣多少、最多扣多少。 */
 const PITCH_W = 0.35;
 const PITCH_CAP = 4;

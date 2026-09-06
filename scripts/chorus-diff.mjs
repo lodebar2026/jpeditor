@@ -59,6 +59,14 @@ try {
 
 /** 繁→简 + 只留汉字。**谱面是繁体、GT 是简体**，不归一逐字比全是差异
  *  （实测「寧靜的伯利恆」对「宁静的伯利恒」一个字都对不上）。 */
+// 声部标签的 OCR 缓存（`gen-rasterlabels.mjs` 的产物）。没有就只是标签那一项不表态。
+let labelOcr = null;
+try {
+  labelOcr = new Map(Object.entries(JSON.parse(await readFile("src/rasteromr/rasterlabels.json", "utf8"))));
+} catch {
+  /* 还没生成 */
+}
+
 const t2s = await loadT2S();
 const cjk = (s0) => t2s(s0).replace(/[^\u4e00-\u9fff]/g, "");
 
@@ -317,14 +325,23 @@ function alignSections(systems, sections) {
  * 「第 k 行」在不同系统里根本不是同一个声部。
  */
 function gotParts(entries) {
-  // 内容剖面（有没有词、音域中位数）交给 `buildScore` 做全局指派，见 `score.ts::assignSlots`
+  // 内容剖面（有没有词、音域中位数、谱面印的声部标签）交给 `buildScore` 做全局指派，
+  // 见 `score.ts::assignSlots`
   const prof = new Map();
   for (const e of entries)
     for (const n of e.notes) {
-      const p = prof.get(n.staff) ?? { lyric: false, ps: [] };
+      const p = prof.get(n.staff) ?? { lyric: false, ps: [], label: null };
       if (n.lyrics?.length) p.lyric = true;
       if (!n.rest && !n.grace && n.step) p.ps.push("CDEFGAB".indexOf(n.step) + 7 * n.octave);
       prof.set(n.staff, p);
+    }
+  for (const e of entries)
+    for (const [idx, name] of e.labels ?? []) {
+      const st = e.page.staves[idx];
+      if (!st) continue;
+      const p = prof.get(st) ?? { lyric: false, ps: [], label: null };
+      p.label = name;
+      prof.set(st, p);
     }
   const score = cli.buildScore(
     entries.map((e) => ({ page: e.page, ctx: e.ctx })),
@@ -333,7 +350,7 @@ function gotParts(entries) {
         const p = prof.get(st);
         if (!p) return { lyric: false, pitch: null };
         const ps = p.ps.slice().sort((a, b) => a - b);
-        return { lyric: p.lyric, pitch: ps.length ? ps[ps.length >> 1] : null };
+        return { lyric: p.lyric, pitch: ps.length ? ps[ps.length >> 1] : null, label: p.label };
       },
     },
   );
@@ -505,7 +522,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     let carry, bars = 0, full = 0, unknown = 0, staves = 0, cleanPages = 0, allPages = 0;
     const lyricStats = { rows: 0, hit: 0, parity: 0 };
     await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (page, pn) => {
-      const r = await cli.recognizeRasterPage(page, OPS, look, pn, { carryTime: carry, lyricOcr });
+      const r = await cli.recognizeRasterPage(page, OPS, look, pn, { carryTime: carry, lyricOcr, labelOcr });
       carry = r.carryTime;
       if (!r.hasStaff) return;
       allPages++;
@@ -515,7 +532,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       // **分档按底本的数据形态**（`raster.kind`），不拿「线宽/线距」当代理量
       // ——那个比值随谱线判据一动就翻（见 `rasterpage.ts` 的说明）。
       if (r.raster?.kind === "mask") cleanPages++;
-      entries.push({ page: r.page, ctx: r.ctx, notes: r.notes, pageNo: pn });
+      entries.push({ page: r.page, ctx: r.ctx, notes: r.notes, labels: r.staffLabels, pageNo: pn });
       bars += r.bars.length;
       full += r.bars.filter((b) => b.full).length;
       unknown += r.unknown;

@@ -1,0 +1,168 @@
+// 谱行的**声部标签**（`Soprano 1` / `Alto` / `Women` …）：切条、算指纹。
+//
+// 为什么要它：跨系统连接改成全局指派之后（`staffomr/score.ts::assignSlots`），
+// 定谱行身份靠「谱号 + 有没有词 + 音域中位数」三样。前两样在合唱谱上分不开人声行
+// （SATB 同是常规大小的 G 谱号、都印歌词），全靠音域；而音域**跨段落会整体挪**
+// ——破碎那份 3 行/4 行系统里女高唱 31~32、7 行系统里同一个声部唱到 36，
+// 于是被判成另一条声部。谱面印的标签是唯一分得开的证据（人工映射也正是照它手改的）。
+//
+// **只切条、不认字。** 认字走歌词那条路的老规矩：离线跑一遍 PP-OCR、按**条的内容
+// 指纹**落盘（`gen-rasterlabels.mjs` → `rasterlabels.json`），识别时查缓存，不起浏览器。
+//
+// 试过「不认字、只比标签图」（32×32 签名聚类），**不成立**：
+// `Soprano` / `Soprano 1` / `Soprano 2` 尾部只差一两个字符，归一化之后聚成同一类
+//（汉明距离闸放到 55 仍全归一类），宽度 6.4~7.6 格也重叠。得真读出字来。
+import type { Binary, Rect } from "../omr/types";
+import { connectedComponents } from "../omr/ccl";
+import type { RasterUnit } from "./staffline";
+
+/** 一条标签条：裸像素 + 它在页面上的盒。 */
+export interface LabelStrip {
+  w: number;
+  h: number;
+  /** 逐像素 0/1，长 `w*h`，1 = 墨。 */
+  data: Uint8Array;
+  box: Rect;
+  /** 这条属于第几行谱（`SPage.staves` 的下标）。 */
+  staff: number;
+}
+
+/** 取条的窗口（线距的倍数）：顶线上方这一段、谱行左缘往右这一段。
+ *
+ *  上界不能再往上：**再往上是上一行谱的歌词**，一并框进来就成了三十格宽的一大块
+ *  （实测那么取的话全页的条聚成一类，什么也分不开）。
+ *  左界要躲开**小节号**——它就印在谱行左缘正上方。 */
+const BAND_TOP = 1.7;
+const BAND_BOTTOM = 0.2;
+const LEFT_SKIP = 1.2;
+const RIGHT_FRAC = 0.4;
+/** 「像字」的连通块：高在这个区间、宽不超过这么多（线距的倍数）。 */
+const CH_H = [0.35, 1.2] as const;
+const CH_W = 1.6;
+/** 同一串里相邻两块的横向缝隙上限（线距的倍数）。
+ *  **要容得下词间空格**：`Soprano 1` 里 `o` 与 `1` 之间空了一格多，
+ *  卡在 0.7 会把尾数切掉——而那个数正是分开 `Soprano 1` 与 `Soprano 2` 的要害。 */
+const GAP = 1.5;
+/** 一条标签至少这么宽，不然是零星的记号（保留记号、装饰音的残块）。 */
+const MIN_W = 1.2;
+
+/**
+ * 切出各谱行的标签条。`staves` 给每行谱的盒（页面坐标），次序即 `SPage.staves`。
+ *
+ * 做法：在窗口里做连通域，只留「像字」的块，按 x 排、缝隙不到 `GAP` 的连成一串，
+ * 取**最靠左的那一串**（标签靠左印；再往右是力度、表情文字）。
+ */
+export function findStaffLabels(
+  bin: Binary,
+  staves: { box: { left: number; right: number; top: number }; index: number }[],
+  unit: RasterUnit,
+): LabelStrip[] {
+  const sp = unit.space;
+  const out: LabelStrip[] = [];
+  for (const st of staves) {
+    const y0 = Math.max(0, Math.round(st.box.top - sp * BAND_TOP));
+    const y1 = Math.max(0, Math.round(st.box.top - sp * BAND_BOTTOM));
+    const x0 = Math.max(0, Math.round(st.box.left + sp * LEFT_SKIP));
+    const x1 = Math.min(bin.w, Math.round(st.box.left + (st.box.right - st.box.left) * RIGHT_FRAC));
+    if (y1 - y0 < 4 || x1 - x0 < 4) continue;
+    const sub: Binary = { w: x1 - x0, h: y1 - y0, data: new Uint8Array((x1 - x0) * (y1 - y0)) };
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) sub.data[(y - y0) * sub.w + (x - x0)] = bin.data[y * bin.w + x];
+    const all = connectedComponents(sub, 4).filter(
+      (c) => c.bbox.h >= sp * CH_H[0] && c.bbox.h <= sp * CH_H[1] && c.bbox.w <= sp * CH_W,
+    );
+    if (!all.length) continue;
+    // 试过「按 y 聚成文字行、取最靠下的那一行」（想躲开上一行谱的歌词），**更差**：
+    // 认得出声部名的条从 8 个掉到 1 个——离谱行最近的常常不是标签，
+    // 而是弧线的尾巴、符干的头。
+    const cs = all.slice().sort((a, b) => a.bbox.x - b.bbox.x);
+    const run = [cs[0]];
+    for (let i = 1; i < cs.length; i++) {
+      const prev = run[run.length - 1].bbox;
+      if (cs[i].bbox.x - (prev.x + prev.w) > sp * GAP) break;
+      run.push(cs[i]);
+    }
+    let lx = Infinity;
+    let rx = -Infinity;
+    let ty = Infinity;
+    let by = -Infinity;
+    for (const c of run) {
+      lx = Math.min(lx, c.bbox.x);
+      rx = Math.max(rx, c.bbox.x + c.bbox.w - 1);
+      ty = Math.min(ty, c.bbox.y);
+      by = Math.max(by, c.bbox.y + c.bbox.h - 1);
+    }
+    if (rx - lx < sp * MIN_W) continue;
+    const box = { x: x0 + lx, y: y0 + ty, w: rx - lx + 1, h: by - ty + 1 };
+    const data = new Uint8Array(box.w * box.h);
+    for (let y = 0; y < box.h; y++)
+      for (let x = 0; x < box.w; x++) data[y * box.w + x] = bin.data[(box.y + y) * bin.w + box.x + x];
+    out.push({ w: box.w, h: box.h, data, box, staff: st.index });
+  }
+  return out;
+}
+
+/** 条的**内容指纹**（与 `lyric.ts::stripKey` 同一套：尺寸 + FNV-1a）。
+ *  几何一动指纹就变，旧缓存自然失效——这正是要的。 */
+export function labelKey(s: LabelStrip): string {
+  let h1 = 0x811c9dc5;
+  for (let i = 0; i < s.data.length; i++) {
+    h1 ^= s.data[i];
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+  }
+  return `L${s.w}x${s.h}-${h1.toString(36)}`;
+}
+
+/**
+ * OCR 读出来的字串 → **规范化的声部名**。
+ *
+ * 只收得下这本书用得上的那几个（合唱谱的声部就这么几种），别的一律判否
+ * ——标签条里混进力度、表情文字是常事，收进来会把两条不同的声部判成同一条。
+ * 分部号（`1` / `2` / `Ⅰ` / `Ⅱ`）跟在名字后面，是区分 `Soprano 1` 与 `Soprano 2` 的要害。
+ */
+export function normalizeLabel(text: string): string | null {
+  const t = text.toLowerCase().replace(/[^a-z0-9一-鿿]/g, "");
+  if (!t) return null;
+  const num = /([0-9])$/.exec(t)?.[1] ?? "";
+  const body = num ? t.slice(0, -1) : t;
+  // 中文名直接判（PP-OCR 读中文准，不必模糊）
+  const CJK: [RegExp, string][] = [
+    [/女高/, "S"], [/女低|中音/, "A"], [/男高/, "T"], [/男低/, "B"],
+    [/女声/, "W"], [/男声/, "M"], [/齐唱|全体/, "U"], [/独唱|领唱/, "O"], [/钢琴|伴奏/, "P"],
+  ];
+  for (const [re, name] of CJK) if (re.test(body)) return name + num;
+  // 拉丁名**模糊比**：这几个字小、又印在符号堆里，OCR 常读成
+  // `Sopiamo` / `bopranO` / `oopruno`（实测破碎那份 5 个 Soprano 只有 2 个读对）。
+  // 编辑距离不超过词长的三成就算认出来。
+  const LATIN: [string, string][] = [
+    ["soprano", "S"], ["alto", "A"], ["tenor", "T"], ["bass", "B"], ["baritone", "B"],
+    ["women", "W"], ["men", "M"], ["unison", "U"], ["solo", "O"], ["piano", "P"], ["tutti", "U"],
+  ];
+  let best: string | null = null;
+  let bd = Infinity;
+  for (const [word, name] of LATIN) {
+    const d = editDistance(body, word);
+    if (d <= Math.floor(word.length * FUZZ) && d < bd) {
+      bd = d;
+      best = name;
+    }
+  }
+  return best === null ? null : best + num;
+}
+
+/** 拉丁名模糊比的容错：编辑距离不超过词长的这个比例。
+ *  三成：`soprano`(7) 容 2 个错、`men`(3) 容 0 个——短词本来就容易误收。 */
+const FUZZ = 0.3;
+
+function editDistance(a: string, b: string): number {
+  const prev = new Int32Array(b.length + 1);
+  const cur = new Int32Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= b.length; j++)
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev.set(cur);
+  }
+  return prev[b.length];
+}
