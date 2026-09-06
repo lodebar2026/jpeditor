@@ -87,8 +87,9 @@ for (let i = 0; i < strips.length; i += BATCH) {
     window.__ocr ??= omr.paddleOcrBackend();
     const canvases = list.map((it) => {
       // PP-OCR 的 rec 吃 48 高的图；白底黑字。
-      // 试过四周留白边（`PAD = 6`，想着 PP-OCR 的 rec 吃「字周围有空白」的图），
-      // **更差**：认得出声部名的条从 8 个掉到 4 个。照歌词那条路原样拉满。
+      // 两条试过都更差，照歌词那条路原样拉满最好（认得出声部名的条 8 个）：
+      //   - 四周留白边（`PAD = 6`，想着 rec 吃「字周围有空白」的图）→ 4 个；
+      //   - 送图前把笔画**加粗一像素**（想着 13px 高的字画细到看不见）→ 4 个。
       const H = 48;
       const s = H / it.h;
       const W = Math.max(8, Math.round(it.w * s));
