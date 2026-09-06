@@ -1020,18 +1020,18 @@ function errorList(A, B, src) {
       if (a[i - 1] !== b[j - 1]) {
         const [g, ex] = [dia(a[i - 1]), dia(b[j - 1])];
         const step = g == null || ex == null ? null : g - ex;
-        out.push({ kind: "读错", got: a[i - 1], gt: b[j - 1], step, why: whyStep(a[i - 1], b[j - 1], step), src: src?.[i - 1] ?? null });
+        out.push({ kind: "读错", got: a[i - 1], gt: b[j - 1], step, why: whyStep(a[i - 1], b[j - 1], step), at: j - 1, src: src?.[i - 1] ?? null });
       }
       i--; j--;
     } else if (o === "x") {
-      out.push({ kind: "多出", got: a[i - 1], gt: null, step: null, why: a[i - 1] === "R" ? "多出休止" : "多出音符", src: src?.[i - 1] ?? null });
+      out.push({ kind: "多出", got: a[i - 1], gt: null, step: null, why: a[i - 1] === "R" ? "多出休止" : "多出音符", at: j, src: src?.[i - 1] ?? null });
       i--;
     } else {
       // 漏掉的音没有盒，但它**夹在两个认出来的音之间**——把左右邻居的盒记下来，
       // 那一段页面就定位得到（`raster-gap.mjs` 拿它去问账本：那里的墨归了谁）。
       out.push({
         kind: "漏掉", got: null, gt: b[j - 1], step: null,
-        why: b[j - 1] === "R" ? "漏休止" : "漏音符", src: null,
+        why: b[j - 1] === "R" ? "漏休止" : "漏音符", at: j - 1, src: null,
         prev: src?.[i - 1] ?? null, next: src?.[i] ?? null,
       });
       j--;
