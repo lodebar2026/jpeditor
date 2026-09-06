@@ -23,6 +23,7 @@ import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from
 import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
 import { buildHeadMasks, headFromStemBlock, splitHeadCluster } from "./headmask";
+import { headProb, trainHeadClassifier } from "./headclass";
 import { findStaffLabels, labelKey, normalizeLabel, type LabelStrip } from "./stafflabel";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
@@ -219,6 +220,16 @@ function makePitchGrid(groups: { lines: { y: number }[]; space: number }[], unit
 
 /** 记账时算「这条段有主」的标记。见 `makeBars` 之后那一段。 */
 const SEG_TAGS: Tag[] = ["Staff", "Leger", "Stem", "BarLine", "SysLine", "Tail", "Beam", "Bracket"];
+
+/** 判别器只看这个尺寸包络内的块（线距的倍数）——比 `findRasterHeads` 的闸宽一圈，
+ *  正是要捞被啃窄、被粘宽的那一批；再宽就成了「拿模板去空地里找东西」。 */
+const CLF_W = [0.5, 2.2] as const;
+const CLF_H = [0.4, 1.6] as const;
+/** 判别器收下的概率门槛。扫过 0.6 / 0.7 / **0.8** / 0.9 / 0.95：
+ *  扫描件音符 65.45 / 65.16 / **65.46** / 65.06 / 64.95%，
+ *  干净档音符 84.89 / 84.94 / **84.94** / 84.94 / 84.94%——0.8 是扫描档见顶
+ *  且干净档一分不动的那一点（0.6 扫描相当但干净档掉 0.05）。 */
+const CLF_P = 0.8;
 
 /** 整小节休止的形状闸（见 `restSyms` 那一段）。放松到 1.6/0.8/0.9 与 1.5/0.75/0.95
  *  都**一个都不多认**——剩下的那些不在纸上（破碎三个女高合印一行，
@@ -848,6 +859,43 @@ export async function recognizeRasterPage(
       ledger.claim(r.head, "stemblock:noteheadBlack");
     }
     syms.push(...stemHeads);
+  }
+
+  // ── **被几何闸判否的块，交给页内自举的判别器再判一次** ────────────────────
+  //
+  // `findRasterHeads` 的尺寸 + 填充率是一把**没见过负例**的尺子：它只知道符头长什么样，
+  // 不知道「长得像符头但不是」的东西长什么样。扫描件上符头被擦线啃窄、被符干粘住，
+  // 尺寸一出闸就没人管了（实测破碎扫描版带内「够得上符头那一档」的块只有 42.7%
+  // 被认领，干净版 65.9%）；而闸一放宽假头就跟着进来——歌词那条探针每次都先报警。
+  //
+  // 这里现训一个**带负例**的逻辑回归（`headclass.ts`）：
+  // 正例是已经收下的实心符头；负例是**字典认成别的符号的那些块**
+  // ——谱号、休止、升降号、拍号，正是「长得像符头但不是」的那一批，
+  // 也正是那把没见过负例的尺子分不开的东西。
+  //（歌词字格是更靠后才切的，这里取不到；就近取字典那批已经够硬。）
+  const clfPos = heads.filter((h) => !dropHead.has(h.comp.id) && h.code === "noteheadBlack").map((h) => h.box);
+  const clfNeg: Rect[] = [];
+  for (const c of blobs) if (dictClaimed.has(c.id)) clfNeg.push(c.bbox);
+  const clf = masks.length ? trainHeadClassifier(raster.bin, masks, unit, onLineY, clfPos, clfNeg) : null;
+  const clfHeads: RasterSym[] = [];
+  if (clf) {
+    for (const c of blobs) {
+      if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
+      const b = c.bbox;
+      if (syms.some((s0) => overlapFrac(b, s0.box) > 0.5)) continue;
+      const w = b.w / unit.space;
+      const h = b.h / unit.space;
+      if (w < CLF_W[0] || w > CLF_W[1] || h < CLF_H[0] || h > CLF_H[1]) continue;
+      const gy = pitchGrid(b.y + b.h / 2);
+      if (gy === null) continue;
+      if (headProb(clf, raster.bin, masks, unit, b, gy, onLineY(gy)) < CLF_P) continue;
+      const hw = Math.round(unit.space * 1.25);
+      const hh = Math.round(unit.space * 0.95);
+      const box = { x: Math.round(b.x + b.w / 2 - hw / 2), y: Math.round(gy - hh / 2), w: hw, h: hh };
+      clfHeads.push({ box, code: "noteheadBlack" });
+      ledger.claim(box, "clf:noteheadBlack");
+    }
+    syms.push(...clfHeads);
   }
 
   // **切加线要用最终认出来的全部符头**：除了 `findRasterHeads`，还有按内腔找的、
