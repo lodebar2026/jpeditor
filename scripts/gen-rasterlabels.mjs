@@ -52,13 +52,7 @@ for (const song of await loadChorus()) {
         const key = cli.labelKey(strip);
         if (cache[key] || seen.has(key)) continue;
         seen.add(key);
-        const px = [];
-        for (let y = 0; y < strip.h; y++) {
-          let s0 = "";
-          for (let x = 0; x < strip.w; x++) s0 += strip.data[y * strip.w + x] ? "1" : "0";
-          px.push(s0);
-        }
-        strips.push({ key, w: strip.w, h: strip.h, px });
+        strips.push({ key, w: strip.w, h: strip.h, data: Array.from(strip.data) });
         n++;
       }
     });
@@ -78,46 +72,35 @@ await page.goto(`http://127.0.0.1:${port}/index.html`);
 await page.waitForFunction(() => !!window.__omr, null, { timeout: 60000 });
 
 const t1 = Date.now();
-const BATCH = 24;
+const BATCH = 8;
 let done = 0;
 for (let i = 0; i < strips.length; i += BATCH) {
   const chunk = strips.slice(i, i + BATCH);
   const got = await page.evaluate(async (list) => {
     const omr = await window.__omr;
     window.__ocr ??= omr.paddleOcrBackend();
-    const canvases = list.map((it) => {
-      // PP-OCR 的 rec 吃 48 高的图；白底黑字。
-      // 两条试过都更差，照歌词那条路原样拉满最好（认得出声部名的条 8 个）：
-      //   - 四周留白边（`PAD = 6`，想着 rec 吃「字周围有空白」的图）→ 4 个；
-      //   - 送图前把笔画**加粗一像素**（想着 13px 高的字画细到看不见）→ 4 个。
-      const H = 48;
-      const s = H / it.h;
-      const W = Math.max(8, Math.round(it.w * s));
-      const cv = new OffscreenCanvas(W, H);
-      const ctx = cv.getContext("2d");
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, W, H);
-      const src = new OffscreenCanvas(it.w, it.h);
-      const sc = src.getContext("2d");
-      const img = sc.createImageData(it.w, it.h);
-      for (let y = 0; y < it.h; y++) {
-        const row = it.px[y];
-        for (let x = 0; x < it.w; x++) {
-          const p = (y * it.w + x) * 4;
-          const v = row[x] === "1" ? 0 : 255;
-          img.data[p] = img.data[p + 1] = img.data[p + 2] = v;
-          img.data[p + 3] = 255;
-        }
+    const out = [];
+    for (const it of list) {
+      // **定位交给 DBNet**：带里除了标签还压着上一行谱的歌词、弧线、力度，
+      // 几何闸分不开（六种调法全试过，见 `stafflabel.ts` 的说明）。
+      // `recognizeRegion` 检测出各行文本框、逐框 rec，回来的是**带内坐标**。
+      const bin = { w: it.w, h: it.h, data: Uint8Array.from(it.data) };
+      let lines = [];
+      try {
+        lines = await window.__ocr.recognizeRegion(bin, { x: 0, y: 0, w: it.w, h: it.h });
+      } catch {
+        lines = [];
       }
-      sc.putImageData(img, 0, 0);
-      ctx.drawImage(src, 0, 0, W, H);
-      return cv;
-    });
-    return await window.__ocr.recognizeTextsPos(canvases);
+      out.push(lines.map((l) => ({ text: l.text, y: l.bbox.y + l.bbox.h / 2, x: l.bbox.x })));
+    }
+    return out;
   }, chunk);
-  got.forEach((chars, k) => {
-    // 标签只要**整串文本**（`normalizeLabel` 再归一），不必逐字的 x
-    cache[chunk[k].key] = chars.map((c) => c.ch).join("");
+  got.forEach((lines, k) => {
+    // **取最靠近谱行的那一行**（带的下沿就是谱行顶线）；同高的取最靠左的。
+    // 认不出声部名的行不存，免得把力度、表情文字当标签。
+    const named = lines.filter((l) => cli.normalizeLabel(l.text));
+    const pick = named.sort((a, b) => b.y - a.y || a.x - b.x)[0];
+    if (pick) cache[chunk[k].key] = pick.text;
     done++;
   });
   if ((i / BATCH) % 5 === 0) process.stdout.write(`\r  ${Math.min(i + BATCH, strips.length)}/${strips.length}…`);
@@ -128,5 +111,5 @@ await browser.close();
 close();
 
 await writeFile(DICT, JSON.stringify(cache));
-const named = Object.values(cache).filter((t) => cli.normalizeLabel(t)).length;
-console.log(`→ ${DICT}（共 ${Object.keys(cache).length} 条，其中认得出声部名的 ${named} 条）`);
+console.log(`→ ${DICT}（认得出声部名的 ${Object.keys(cache).length} 条：` +
+  `${[...new Set(Object.values(cache).map((t) => cli.normalizeLabel(t)))].sort().join(" ")}）`);
