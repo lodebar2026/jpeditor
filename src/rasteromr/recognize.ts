@@ -524,6 +524,16 @@ export async function recognizeRasterPage(
   // 位图上并成一块，单头的尺寸闸一律判否——逐谱行摊开，钢琴两行漏得最狠
   //（宁静 P4.1 漏 122、破碎 P6.1 漏 213）。判据与搜索都限死在块内，见 `headmask.ts`。
   const masks = buildHeadMasks(raster.bin, [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked], unit, lines.map((l) => l.y));
+  // **拆和弦另用一张「符杠已擦」的图**，模板也在这张图上自举。
+  //
+  // 病因是量出来的（`scripts/raster-gap.mjs`）：漏掉的音里 **63.6% 焊在一团
+  // 大于 4×3.2 格的墨里**——符杠 + 几根符干 + 几个头。在原图上给这种块打分，
+  // 模板窗口上下那片「该有白」正压着符杠，spill 一扣分就没了。
+  // 试过放松 spill（整体压到 0.5、或只算左右两侧）：**两次都把干净档打崩**
+  //（85.09% → 78.63% / 75.71%），那一项正是拆块不出假头的关键，动不得。
+  // 换图就两全：符杠不在图里，spill 照旧全额算。
+  const noBeam = blobImage(nl, prims, unit, onGrid);
+  const masksNB = buildHeadMasks(noBeam, [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked], unit, lines.map((l) => l.y));
   const pitchGrid = makePitchGrid(groups, unit);
   const onLineY = (y: number) => lines.some((l) => Math.abs(l.y - y) <= unit.space * 0.25);
   const split: RasterSym[] = [];
@@ -532,7 +542,7 @@ export async function recognizeRasterPage(
   if (masks.length) {
     for (const c of blobs) {
       if (claimed.has(c.id)) continue;
-      const parts = splitHeadCluster(raster.bin, c.bbox, c.area, masks, unit, pitchGrid, onLineY);
+      const parts = splitHeadCluster(noBeam, c.bbox, c.area, masksNB.length ? masksNB : masks, unit, pitchGrid, onLineY);
       if (!parts.length) continue;
       claimed.add(c.id);
       for (const b of parts) split.push({ box: b, code: "noteheadBlack" });
@@ -545,7 +555,7 @@ export async function recognizeRasterPage(
     for (const h of heads) {
       const b = h.comp.bbox;
       if (b.h < unit.space * 1.5 && b.w < unit.space * 1.9) continue; // 单头装得下，不动
-      const parts = splitHeadCluster(raster.bin, b, h.comp.area, masks, unit, pitchGrid, onLineY);
+      const parts = splitHeadCluster(noBeam, b, h.comp.area, masksNB.length ? masksNB : masks, unit, pitchGrid, onLineY);
       if (parts.length < 2) continue;
       dropHead.add(h.comp.id);
       for (const p of parts) split.push({ box: p, code: h.code === "noteheadBlack" ? "noteheadBlack" : h.code });

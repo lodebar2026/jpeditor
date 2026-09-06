@@ -402,6 +402,8 @@ function gotRows(entries) {
       const rows = [...sys.staves].sort((a, b) => a.box.top - b.box.top).map((stf) => {
         const seq = [];
         const chords = [];
+        // `src[i]` 与 `seq[i]` 一一对应：错误要落回页面坐标才谈得上查错因（`--errors`）
+        const src = [];
         let lyric = "";
         const mv = minVoice(stf, byStaff);
         for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.grace && x.voice === mv)) {
@@ -412,9 +414,10 @@ function gotRows(entries) {
           }
           seq.push(n.rest ? "R" : n.step + n.octave);
           chords.push(n.rest ? ["R"] : [n.step + n.octave]);
+          src.push({ page: e.pageNo, box: n.sym?.box ?? null, code: n.sym?.code ?? null, rest: !!n.rest, base: n.base, dots: n.dots });
           for (const l of n.lyrics ?? []) if (l.verse === 1) lyric += l.text;
         }
-        return { seq, chords, lyric };
+        return { seq, chords, src, lyric };
       });
       out.push({ rows, pageNo: e.pageNo, top: sys.box.top });
     }
@@ -512,6 +515,10 @@ function pair(got, gt) {
 }
 
 const rows = [];
+/** `--errors` 的逐条错误清单。 */
+const errorRows = [];
+/** 哪些 `曲名/文件` 是真扫描件（错因排行只看这一档）。 */
+const scanFiles = new Set();
 for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(only))) {
   if (!song.gt) continue;
   const gt = gtParts(await readFile(song.gt, "utf8"));
@@ -612,8 +619,9 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
         sys.rows.forEach((r, k) => {
           const id = sc.staves[k];
           if (!id) return;
-          const cur = byIdSec.get(id) ?? { got: [], gt: [], gotCh: [], gtCh: [], lyricGot: "", lyricGt: "", secs: new Set() };
+          const cur = byIdSec.get(id) ?? { got: [], gt: [], src: [], gotCh: [], gtCh: [], lyricGot: "", lyricGt: "", secs: new Set() };
           cur.got.push(...r.seq);
+          cur.src.push(...(r.src ?? []));
           cur.gotCh.push(...(r.chords ?? []));
           cur.lyricGot += r.lyric;
           cur.secs.add(sc);
@@ -645,6 +653,18 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
           if (args.includes("--dump")) console.log("      " + alignText(A, B, 400));
         }
       }
+      // ── `--errors`：把每一个错误落回页面坐标，按类型归因 ────────────────
+      //
+      // **不猜错因**：逐音对齐之后，读错的记下 GT→识别的级差与那个音的盒，
+      // 漏掉的记下它在哪一行谱的哪一段，多出的记下盒。级差本身就把大类分开了
+      // （±7/±14 是八度、±1 是吸错格、休↔音是休止误判），剩下的散着的才要人去看。
+      if (args.includes("--errors"))
+        for (const [id, cur] of byIdSec) {
+          if (!cur.gt.length) continue;
+          for (const e of errorList(cur.got, cur.gt, cur.src))
+            errorRows.push({ song: song.name, file, staff: id, ...e });
+        }
+
       let sn = 0, sl = 0, sd = 0, sy = 0, syd = 0;
       let chHit = 0, chGt = 0, chGot = 0, chExact = 0, chN = 0;
       const rows = [];
@@ -761,6 +781,7 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       secNotes: sec ? sec.notes : null,
     };
     rows.push(row);
+    if (!row.clean) scanFiles.add(`${song.name}/${file}`);
     console.log(`${row.clean ? "[干净]" : "[扫描]"} ${song.name}/${file}  谱行${staves} 声部 ${got.length}↔${gt.length}(配上${pairs.length}，buildScore ${nParts})  ` +
       `音符 ${gotTotal}/${gtTotal}  准确率 ${row.noteAcc.toFixed(1)}%（含游离 ${row.noteAccAll.toFixed(1)}%，游离 ${strayNotes}）  音级 ${row.letterAcc.toFixed(1)}%  ` +
       `小节自检 ${row.barFull.toFixed(1)}%（${bars} 小节）` +
@@ -877,6 +898,20 @@ if (scan.length) {
   console.log(`【真扫描件】${scan.length} 份（有 GT ${sg.length} 份）：音符 ${summary.scanNoteAcc}%（含游离 ${summary.scanNoteAccAll}%）、音级 ${summary.scanLetterAcc}%；小节自检 ${summary.scanBarFull}%；歌词 ${summary.scanLyricAcc}%（配对覆盖 ${lyrics.length}/${gtLyrics.length} 份有中文歌词 GT 的 PDF）`);
 }
 
+// ── `--errors` 汇总：按错因大类排行，并把逐条清单落盘（带页面坐标，可直接裁图） ──
+if (args.includes("--errors")) {
+  const scanRows = errorRows.filter((e) => scanFiles.has(`${e.song}/${e.file}`));
+  const tally = new Map();
+  for (const e of scanRows) tally.set(e.why, (tally.get(e.why) ?? 0) + 1);
+  const tot = scanRows.length;
+  console.log(`\n【扫描件错因排行】共 ${tot} 处（按谱行档，已剔掉未印出的小节）`);
+  for (const [why, n] of [...tally].sort((a, b) => b[1] - a[1]))
+    console.log(`  ${String(n).padStart(5)}  ${((100 * n) / Math.max(1, tot)).toFixed(1).padStart(5)}%  ${why}`);
+  await mkdir("staff-out", { recursive: true });
+  await writeFile("staff-out/chorus-errors.json", JSON.stringify(errorRows, null, 1));
+  console.log(`→ staff-out/chorus-errors.json（${errorRows.length} 条，带页码与盒）`);
+}
+
 if (args.includes("--bless")) {
   await mkdir("testdata/合唱谱", { recursive: true });
   await writeFile(BASE, JSON.stringify(summary, null, 1));
@@ -960,6 +995,61 @@ function alignText(A, B, n) {
     else { out.push(`(缺${b[j - 1]})`); j--; }
   }
   return out.reverse().join(" ");
+}
+
+/**
+ * 逐音对齐后**逐个错误**的清单（`--errors`）：类型、GT 与识别各是什么、
+ * 级差、以及那个音在页面上的盒。归因不靠猜——盒在手上，可以直接裁图核对。
+ */
+function errorList(A, B, src) {
+  const a = A, b = B;
+  const d = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  const op = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(""));
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++) {
+      const c = [[d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1), "m"], [d[i - 1][j] + 1, "x"], [d[i][j - 1] + 1, "n"]].sort((p1, p2) => p1[0] - p2[0])[0];
+      d[i][j] = c[0];
+      op[i][j] = c[1];
+    }
+  const dia = (p) => (p === "R" ? null : "CDEFGAB".indexOf(p[0]) + 7 * Number(p.slice(1)));
+  const out = [];
+  let i = a.length, j = b.length;
+  while (i > 0 || j > 0) {
+    const o = i > 0 && j > 0 ? op[i][j] : i > 0 ? "x" : "n";
+    if (o === "m") {
+      if (a[i - 1] !== b[j - 1]) {
+        const [g, ex] = [dia(a[i - 1]), dia(b[j - 1])];
+        const step = g == null || ex == null ? null : g - ex;
+        out.push({ kind: "读错", got: a[i - 1], gt: b[j - 1], step, why: whyStep(a[i - 1], b[j - 1], step), src: src?.[i - 1] ?? null });
+      }
+      i--; j--;
+    } else if (o === "x") {
+      out.push({ kind: "多出", got: a[i - 1], gt: null, step: null, why: a[i - 1] === "R" ? "多出休止" : "多出音符", src: src?.[i - 1] ?? null });
+      i--;
+    } else {
+      // 漏掉的音没有盒，但它**夹在两个认出来的音之间**——把左右邻居的盒记下来，
+      // 那一段页面就定位得到（`raster-gap.mjs` 拿它去问账本：那里的墨归了谁）。
+      out.push({
+        kind: "漏掉", got: null, gt: b[j - 1], step: null,
+        why: b[j - 1] === "R" ? "漏休止" : "漏音符", src: null,
+        prev: src?.[i - 1] ?? null, next: src?.[i] ?? null,
+      });
+      j--;
+    }
+  }
+  return out.reverse();
+}
+
+/** 级差 → 错因大类。散着的归「未分类」，那些才要人去裁图看。 */
+function whyStep(got, gt, step) {
+  if (got === "R") return "音→休（读成休止）";
+  if (gt === "R") return "休→音（休止读成音）";
+  if (step === null) return "未分类";
+  const s = Math.abs(step);
+  if (s % 7 === 0) return `八度错 ${step > 0 ? "+" : "-"}${s / 7}`;
+  if (s === 1) return "吸错一格";
+  if (s === 2) return "差一线（两格）";
+  return "未分类";
 }
 
 /** 逐音对齐后的错型统计。 */
