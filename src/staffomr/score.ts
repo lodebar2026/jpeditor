@@ -144,6 +144,14 @@ function assignSlots(rows: StaffToken[][]): number[][] | null {
     };
   });
   const labelOf: (string | null)[] = new Array(n).fill(null);
+  /**
+   * **不看 `size`。** `sameToken` 拿谱表大小当硬条件（小谱表是另一路声部），
+   * 这里却**故意不用**——试过当强判据（`+1 / −6`）与弱偏好（`+0.5 / −0.5`），
+   * 两种权重结果**完全相同**（其余判据在那几行上打平，大小项一票定输赢）：
+   * 扫描件音符 54.90% → 54.97%、**音级 56.79% → 56.37%**，干净档不变。
+   * 望十架 web 版每页有三行 14.7px 的小谱表（其余 18.1px），但它们多半是
+   * **同一批声部为了排版印小了**，不是另一路——按大小硬分反而把真声部劈开。
+   */
   const score = (t: StaffToken, k: number) => {
     const sl = slots[k];
     let v = 0;
