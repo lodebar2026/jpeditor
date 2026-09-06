@@ -21,7 +21,6 @@
 // 所以取完图按「墨迹占比」自检一次：整页乐谱的墨不可能过半（实测约一成），
 // 过半就是翻了，整幅取反。
 import type { Binary } from "../omr/types";
-import { otsuThreshold } from "../omr/preprocess";
 import { applyTrackWarp, completeStaffLines, trackCurves } from "./dewarp";
 import { findStaffLines, groupStaves } from "./staffline";
 
@@ -284,9 +283,57 @@ function decodeImage(obj: any, w: number, h: number): Binary | null {
     // Rec.601 luma（与 `src/omr/preprocess.ts::toGray` 同一口径）
     gray[i] = step === 1 ? src[p] : (src[p] * 0.299 + src[p + 1] * 0.587 + src[p + 2] * 0.114) | 0;
   }
-  const t = otsuThreshold(gray);
-  for (let i = 0; i < gray.length; i++) data[i] = gray[i] <= t ? 1 : 0; // 暗 = 墨
+  sauvola(gray, w, h, data);
   return { w, h, data };
+}
+
+/** Sauvola 局部阈值的窗口半径（占页宽的比例）与参数。
+ *  `k` 越大收得越紧（墨越细）。`R` 是标准差的量程，灰度图取 128。 */
+const SAUVOLA_WIN = 1 / 40;
+const SAUVOLA_K = 0.5;
+const SAUVOLA_R = 128;
+
+/**
+ * **Sauvola 局部阈值**（`T = m · (1 + k · (s/R − 1))`），用积分图 O(n) 算。
+ *
+ * 全局 Otsu 在这批扫描件上不够：一页里墨色深浅不匀（装订侧偏暗、页心偏淡），
+ * 一个阈值要么把淡处的细线切断、要么把暗处的笔画糊粗。望十架那份线距只有 11.5px，
+ * 符头才 8px 宽，粗一两个像素就并进谱线里。
+ *
+ * 只走 RGB / 灰度那一档——**位图路的干净底本是 1-bit 的 `mask` / `gray1`**，
+ * 那两档本来就没有灰度可分（`rasterizePage` 上面那两个分支直接取位）。
+ */
+function sauvola(gray: Uint8Array, w: number, h: number, out: Uint8Array): void {
+  const r = Math.max(8, Math.round(w * SAUVOLA_WIN));
+  // 积分图（多一行一列的零边，省去边界判断）
+  const S1 = new Float64Array((w + 1) * (h + 1));
+  const S2 = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let r1 = 0;
+    let r2 = 0;
+    for (let x = 0; x < w; x++) {
+      const v = gray[y * w + x];
+      r1 += v;
+      r2 += v * v;
+      S1[(y + 1) * (w + 1) + x + 1] = S1[y * (w + 1) + x + 1] + r1;
+      S2[(y + 1) * (w + 1) + x + 1] = S2[y * (w + 1) + x + 1] + r2;
+    }
+  }
+  const box = (S: Float64Array, x0: number, y0: number, x1: number, y1: number) =>
+    S[y1 * (w + 1) + x1] - S[y0 * (w + 1) + x1] - S[y1 * (w + 1) + x0] + S[y0 * (w + 1) + x0];
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - r);
+    const y1 = Math.min(h, y + r + 1);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - r);
+      const x1 = Math.min(w, x + r + 1);
+      const n = (x1 - x0) * (y1 - y0);
+      const m = box(S1, x0, y0, x1, y1) / n;
+      const v = Math.max(0, box(S2, x0, y0, x1, y1) / n - m * m);
+      const t = m * (1 + SAUVOLA_K * (Math.sqrt(v) / SAUVOLA_R - 1));
+      out[y * w + x] = gray[y * w + x] <= t ? 1 : 0; // 暗 = 墨
+    }
+  }
 }
 
 /** 墨迹占比。取完图自检、判「这一页是不是空页」都用它。 */
