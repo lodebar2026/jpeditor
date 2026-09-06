@@ -160,14 +160,22 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
     // **符尾从符干尖端长出来**：贴着远端那一小截、紧挨符干右侧必须有墨。
     // 没这一条，从符干旁边路过的连音线、下一个音的符头都会把窗口填满
     // （实测只看整窗占比，小节自检 33.2% → 31.9%）。
-    if (frac(0, 0.35) < FLAG_TIP) continue;
+    // 粗线扫描中符干可能伸出连接点几像素；在半格、两倍线宽以内找连接处。
+    // 细线页仍用原尖端，避免把附近的弧线误认成符尾。
+    let offset = 0;
+    const reach = unit.lineThick > sp * 0.2 ? Math.min(sp * 0.5, unit.lineThick * 2) : 0;
+    while (frac(offset, offset + 0.35) < FLAG_TIP && offset * sp < reach) offset += 1 / sp;
+    if (frac(offset, offset + 0.35) < FLAG_TIP || frac(offset, offset + FLAG_Y) < FLAG_INK) continue;
     const up = far < hy;
     // **第二个钩**：十六分的两道钩沿符干错开约一格。只认出第一道的话
     // 十六分整批读成八分（实测补上第一道之后 `16th→eighth` 一下涨到 171 处）。
-    const two = frac(1.0, 2.2) >= FLAG_INK2;
+    const two = frac(offset + 1.0, offset + 2.2) >= FLAG_INK2;
     const code = two ? (up ? "flag16thUp" : "flag16thDown") : up ? "flag8thUp" : "flag8thDown";
     const h = sp * (two ? 2.2 : 1.5);
-    const y0 = toward > 0 ? far : far - h;
+    // 出块也从**连接点**起算：`offset` 找到的才是符尾真正长出来的地方，
+    // 还按符干末端 `far` 出块的话，粗线扫描件上整块会偏出半格。
+    const anchor = far + toward * offset * sp;
+    const y0 = toward > 0 ? anchor : anchor - h;
     out.push({ box: { x: Math.round(st.cx), y: Math.round(y0), w: Math.round(sp * 1.5), h: Math.round(h) }, code });
   }
   return out;

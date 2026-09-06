@@ -409,16 +409,66 @@ export function findPrimitives(
 }
 
 /**
+ * 逐列估计谱线的局部中心。扫描件即使已推平，行首仍会偏离全行中心几像素，
+ * 固定高度擦线就会把残余谱线当成「上下相连的符号」，谱号连着长横线而认不出。
+ * 只用附近的短纵向游程定位，再取横跨两个线距的滑动中位数；至少半窗有证据，
+ * 且偏移超过 1px 才修正。符干、符头的长游程不参与估计，缺证据则沿用全行中心。
+ * 这里只定位，不擦像素；保护交叉符号仍由下面的上下邻墨检查负责。
+ */
+function localLineCenters(bin: Binary, runs: Uint16Array, cy: number, unit: RasterUnit): Float64Array {
+  const { w, h, data } = bin;
+  const radius = Math.max(2, Math.round(unit.space * 0.35));
+  const lo = Math.max(0, Math.floor(cy) - radius);
+  const hi = Math.min(h - 1, Math.ceil(cy) + radius);
+  const cap = Math.max(unit.lineThick * 2, unit.lineThick + 2);
+  const samples = new Int32Array(w).fill(-1);
+  for (let x = 0; x < w; x++) {
+    let dist = radius + 1;
+    for (let y = lo; y <= hi; y++) {
+      const len = runs[y * w + x];
+      if (!len || len > cap) continue;
+      let end = y + 1;
+      while (end < h && data[end * w + x]) end++;
+      const mid = end - (len + 1) / 2;
+      if (mid >= lo && mid <= hi && Math.abs(mid - cy) < dist) {
+        dist = Math.abs(mid - cy);
+        samples[x] = Math.round((mid - lo) * 2);
+      }
+      y = end - 1;
+    }
+  }
+  const centers = new Float64Array(w).fill(cy);
+  const hist = new Int32Array((hi - lo) * 2 + 1);
+  const window = Math.max(4, Math.round(unit.space));
+  let count = 0;
+  const add = (x: number, delta: number) => {
+    if (x < 0 || x >= w || samples[x] < 0) return;
+    hist[samples[x]] += delta;
+    count += delta;
+  };
+  for (let x = 0; x < window; x++) add(x, 1);
+  for (let x = 0; x < w; x++) {
+    add(x + window, 1);
+    add(x - window - 1, -1);
+    if (count < Math.max(4, window)) continue;
+    let n = 0;
+    for (let k = 0; k < hist.length; k++) {
+      n += hist[k];
+      if (n <= count / 2) continue;
+      const local = lo + k / 2;
+      if (Math.abs(local - cy) > 1) centers[x] = local;
+      break;
+    }
+  }
+  return centers;
+}
+
+/**
  * 去谱线：把属于谱线的像素抹掉，留下符头/符干/符杠/字。
  *
- * 判据是**上下都没有墨才抹**（经典的「保符号去线」做法）：
- * 谱线那一带的某一列，如果紧邻的上方与下方都是白的，那这一段就是**孤立的谱线**，
- * 抹掉；只要有一侧连着墨，它就是某个符号穿过谱线的那一截，留着。
- *
- * 一度只判「纵向游程短」，那会把**骑在谱线上的细笔画一起抹断**：
- * 拍号数字、休止符、谱号都压在谱线上，笔画细的地方游程正好短，一抹就断成两截，
- * 于是同一个符号按断法不同散成好几个形状类（实测四分休止散成四类、
- * 拍号数字散成一堆认不出的碎块）。上下有没有墨这一条不看粗细，只看连不连着。
+ * 判据是**上下都没有墨才抹**：谱线那一带的某一列，如果紧邻的上方与下方
+ * 都是白的，就抹掉；只要有一侧连着墨，就保留某个符号穿过谱线的那一截。
+ * 不能直接按「纵向游程短」擦像素，否则会抹断骑线的拍号数字、休止符和谱号。
  */
 export function removeStaffLines(bin: Binary, lineYs: number[], unit: RasterUnit): Binary {
   const { w, h, data } = bin;
@@ -427,10 +477,12 @@ export function removeStaffLines(bin: Binary, lineYs: number[], unit: RasterUnit
   // 往外看多远算「紧邻」：一个线宽足矣。看太远会把间距里的符头也算成「连着」，
   // 谱线就抹不掉了。
   const look = Math.max(1, Math.round(unit.lineThick));
+  const runs = vRuns(bin);
   for (const cy of lineYs) {
-    const y0 = Math.max(0, Math.floor(cy - half));
-    const y1 = Math.min(h - 1, Math.ceil(cy + half));
+    const centers = localLineCenters(bin, runs, cy, unit);
     for (let x = 0; x < w; x++) {
+      const y0 = Math.max(0, Math.floor(centers[x] - half));
+      const y1 = Math.min(h - 1, Math.ceil(centers[x] + half));
       let up = 0;
       for (let y = Math.max(0, y0 - look); y < y0; y++) up |= data[y * w + x];
       if (up) continue;
