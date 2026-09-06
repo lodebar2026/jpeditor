@@ -230,6 +230,11 @@ const CLF_H = [0.4, 1.6] as const;
  *  干净档音符 84.89 / 84.94 / **84.94** / 84.94 / 84.94%——0.8 是扫描档见顶
  *  且干净档一分不动的那一点（0.6 扫描相当但干净档掉 0.05）。 */
 const CLF_P = 0.8;
+/** 第二遍拆块的尺寸上限（线距的倍数）。取的正是 `findBlobs` 自己的上限
+ *  （宽 6 格、高 9 格）——**等于不再设限**，拆出来的头全交给判别器把关。
+ *  写成 9×5.5 / 12×7 / 16×9 实测结果完全相同，因为再大的块 `findBlobs` 根本不出。 */
+const BIG_W = 6;
+const BIG_H = 9;
 
 /** 整小节休止的形状闸（见 `restSyms` 那一段）。放松到 1.6/0.8/0.9 与 1.5/0.75/0.95
  *  都**一个都不多认**——剩下的那些不在纸上（破碎三个女高合印一行，
@@ -914,6 +919,34 @@ export async function recognizeRasterPage(
       const box = { x: Math.round(b.x + b.w / 2 - hw / 2), y: Math.round(gy - hh / 2), w: hw, h: hh };
       clfHeads.push({ box, code: "noteheadBlack" });
       ledger.claim(box, "clf:noteheadBlack");
+    }
+    // ── **大团再拆一遍，拆出来的每个头都要过判别器** ────────────────────────
+    //
+    // `splitHeadCluster` 的尺寸闸是 6×4 格，而 `raster-gap.mjs` 量出漏音里
+    // **53.8% 焊在更大的团里**。直接把闸放大试过：小节自检涨（真音确实捞回来了）
+    // 而音符不涨——大团里挑出来的头对错各半，没人验。
+    // 判别器（带负例、见 `headclass.ts`）恰好补上这一关，而它要等字典那一路跑完
+    // 才训得出来，所以放在这里做第二遍：**闸放大，但每个头都要过判别器**。
+    if (masks.length) {
+      for (const c of blobs) {
+        if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
+        const b = c.bbox;
+        if (syms.some((s0) => overlapFrac(b, s0.box) > 0.5)) continue;
+        const w = b.w / unit.space;
+        const h = b.h / unit.space;
+        if (w > BIG_W || h > BIG_H) continue; // 再大就不是一团连桁了
+        const parts = splitHeadCluster(noBeam, b, c.area, masksNB.length ? masksNB : masks, unit, pitchGrid, onLineY, true);
+        if (parts.length < 2) continue;
+        let took = 0;
+        for (const pb of parts) {
+          const gy = pb.y + pb.h / 2;
+          if (headProb(clf, raster.bin, masks, unit, pb, gy, onLineY(gy)) < CLF_P) continue;
+          clfHeads.push({ box: pb, code: "noteheadBlack" });
+          ledger.claim(pb, "clfsplit:noteheadBlack");
+          took++;
+        }
+        if (took) claimed.add(c.id);
+      }
     }
     syms.push(...clfHeads);
   }
