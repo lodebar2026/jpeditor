@@ -97,7 +97,11 @@ export function labelKey(s: LabelStrip): string {
 export function normalizeLabel(text: string): string | null {
   const t = text.toLowerCase().replace(/[^a-z0-9一-鿿]/g, "");
   if (!t) return null;
-  const num = /([0-9])$/.exec(t)?.[1] ?? "";
+  // 分部号常被 rec 读成形近的字母：`Soprano 1` → `Sopranol`（实测破碎扫描版）。
+  // 名字里没有以这些字母收尾的（`soprano`/`alto`/`men`/`bass`…），拿来当数字很安全。
+  const DIGITISH: Record<string, string> = { "1": "1", "2": "2", "3": "3", "4": "4", l: "1", i: "1", z: "2" };
+  const last = t.slice(-1);
+  const num = DIGITISH[last] ?? "";
   const body = num ? t.slice(0, -1) : t;
   // 中文名直接判（PP-OCR 读中文准，不必模糊）
   const CJK: [RegExp, string][] = [
