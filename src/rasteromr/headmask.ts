@@ -169,11 +169,14 @@ export function splitHeadCluster(
   unit: RasterUnit,
   grid: (y: number) => number | null,
   onLine: (y: number) => boolean,
+  /** 跳过尺寸闸（调用方自己把关，见 `recognize.ts` 里判别器那一遍）。 */
+  anySize = false,
 ): Rect[] {
   const sp = unit.space;
   const w = box.w / sp;
   const h = box.h / sp;
-  if (w < CLUSTER_W[0] || w > CLUSTER_W[1] || h < CLUSTER_H[0] || h > CLUSTER_H[1]) return [];
+  if (!anySize && (w < CLUSTER_W[0] || w > CLUSTER_W[1] || h < CLUSTER_H[0] || h > CLUSTER_H[1])) return [];
+  if (anySize && (w < CLUSTER_W[0] || h < CLUSTER_H[0])) return [];
   const fill = area / Math.max(1, box.w * box.h);
   if (fill < CLUSTER_FILL[0] || fill > CLUSTER_FILL[1]) return [];
   // ── **匹配追踪**：找到一个头就把它的墨从块里减掉，再重新打分找下一个 ────────
