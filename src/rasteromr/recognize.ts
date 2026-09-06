@@ -736,6 +736,16 @@ export async function recognizeRasterPage(
     const fill = c.area / Math.max(1, b.w * b.h);
     if (fill < QREST_FILL[0] || fill > QREST_FILL[1]) continue;
     if (!midOfStaff(b, lines, unit)) continue;
+    // **行首的谱号 + 调号那一段里没有四分休止。**
+    //
+    // 降号是「一根竖笔 + 一个小肚子」，在这套底本上与四分休止太像；
+    // 而降调的调号降号**正好落在中线上**，`midOfStaff` 这条位置判据非但拦不住它，
+    // 反而给它放行。升降号自举那一路认不出的（字典没中、模板也没过）就漏到这里，
+    // 被当成四分休止收走——实测破碎的 `restQuarter` 误检里裁图核对的三处**全是调号降号**
+    // （`chorus-diff --errors` 出的清单：多出休止 36/50、音→休 31/53 都是 `restQuarter`）。
+    //
+    // 谱面上行首那一段是死的：谱号 + 调号最多占几格，真正的休止在它右边。
+    if (nearStaffStart(b, groups, staffLefts, unit)) continue;
     merged.add(c.id);
     syms.push({ box: b, code: "restQuarter" });
     ledger.claim(b, "qrest:restQuarter");
@@ -1128,6 +1138,26 @@ export type { Binary };
 const QREST_W = [0.75, 1.1] as const;
 const QREST_H = [2.2, 3.1] as const;
 const QREST_FILL = [0.33, 0.62] as const;
+
+/** 行首「谱号 + 调号」那一段占几格（线距的倍数）。谱号约 2 格宽，
+ *  七个降号排开也就再占 4 格，留一点余量。 */
+const STAFF_START = 6;
+
+/** 盒落在某行谱的**行首那一段**里吗（谱号 + 调号的地盘）。见 `bootstrapQuarterRest` 那一段。 */
+function nearStaffStart(
+  box: { x: number; y: number; h: number },
+  groups: { lines: { y: number }[] }[],
+  lefts: number[],
+  unit: RasterUnit,
+): boolean {
+  const cy = box.y + box.h / 2;
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    if (cy < g.lines[0].y - unit.space || cy > g.lines[4].y + unit.space) continue;
+    if (box.x < lefts[i] + unit.space * STAFF_START) return true;
+  }
+  return false;
+}
 
 /** 盒的中心落在某行谱的**中线**附近吗——四分休止是竖着写在谱表正中的。 */
 function midOfStaff(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
