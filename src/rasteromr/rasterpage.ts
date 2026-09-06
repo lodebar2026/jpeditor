@@ -22,7 +22,7 @@
 // 过半就是翻了，整幅取反。
 import type { Binary } from "../omr/types";
 import { otsuThreshold } from "../omr/preprocess";
-import { applyTrackWarp, trackCurves } from "./dewarp";
+import { applyTrackWarp, completeStaffLines, trackCurves } from "./dewarp";
 import { findStaffLines, groupStaves } from "./staffline";
 
 /** 一页取到的位图，连同它在页面坐标里的位置（识别坐标 ↔ 页面坐标要用）。 */
@@ -114,6 +114,14 @@ function staffScore(bin: Binary): number {
   return groupStaves(findStaffLines(bin)).length;
 }
 
+/** 推平与不推平都要经过同一条后续去倾斜、补线流程，再比较有无丢行。 */
+function completedAfterDeskew(bin: Binary): number {
+  const straight = { ...bin, data: new Uint8Array(bin.data) };
+  deskew(straight);
+  const lines = findStaffLines(straight);
+  return completeStaffLines(straight, lines, groupStaves(lines)).groups.length;
+}
+
 export function dewarpPage(bin: Binary): boolean {
   const curves = trackCurves(bin);
   if (!curves) return false;
@@ -127,7 +135,13 @@ export function dewarpPage(bin: Binary): boolean {
   const keep = new Uint8Array(bin.data);
   applyTrackWarp(bin, curves);
   const after = staffScore(bin);
-  if (after >= before * DEWARP_GAIN) return true;
+  // before 为 0 时也必须有实际增益，不能把 0 → 0 当成达到 1.15 倍。
+  if (after > before && after >= before * DEWARP_GAIN) {
+    // 不能拿原图还没去倾斜时的残缺谱行数当底线：破碎扫描 p3 原图行投影是 0 行，
+    // 仅去倾斜就能找全 12 行；长轨迹推平后虽然行投影增加，最终却只剩 11 行。
+    // 这一验要走两遍 deskew + 补线，只在过了上面那道闸之后才做（`keep` 里就是原图）。
+    if (completedAfterDeskew(bin) >= completedAfterDeskew({ ...bin, data: keep })) return true;
+  }
   bin.data.set(keep);
   return false;
 }
