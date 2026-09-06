@@ -98,6 +98,11 @@ for (let i = 0; i < strips.length; i += BATCH) {
   got.forEach((lines, k) => {
     // **取最靠近谱行的那一行**（带的下沿就是谱行顶线）；同高的取最靠左的。
     // 认不出声部名的行不存，免得把力度、表情文字当标签。
+    //
+    // 试过**先把同一文字行的框按 x 拼起来**（DBNet 按行框字，`Soprano 1` 的词距够宽
+    // 时会切成两框）：各档指标一分不动，认得出的声部名反而从 24 个掉到 21 个
+    // （拼进了相邻的力度、表情文字，反倒认不出了）。破碎 p9 顶行那个读丢的 `1`
+    // 也不是切框切掉的——框里有它，是 rec 没读出来。
     const named = lines.filter((l) => cli.normalizeLabel(l.text));
     const pick = named.sort((a, b) => b.y - a.y || a.x - b.x)[0];
     if (pick) cache[chunk[k].key] = pick.text;
