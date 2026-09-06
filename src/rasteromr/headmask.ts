@@ -139,8 +139,11 @@ const CLUSTER_FILL = [0.35, 0.9] as const;
  *  再扫 0.42 / 0.48：干净 84.63 / 84.88%，扫描 54.65 / 54.51% —— 0.46 是拐点。
  *  （歌词两档各降 0.05 / 0.11 个点：多认出的符头把音节挂法挪了一两个字，量级在噪声里。） */
 const SCORE_MIN = 0.46;
-/** 匹配追踪最多找几个头（一块连桁团里的头不会比这更多）。 */
+/** 匹配追踪最多找几个头（一块连桁团里的头不会比这更多）。带判别器时要多留几轮，
+ *  被否掉的候选也占一轮。 */
 const MAX_HEADS = 8;
+/** 带判别器时 mask 得分的门槛：只用来排序与止步，收不收由判别器定。 */
+const VERIFY_SCORE_MIN = 0.2;
 /** 减墨时椭圆取符头的几成。扫过 0.7 / 0.85 / **1.0** / 1.15 / 1.3：
  *  扫描件音符 66.17 / 66.50 / **66.52** / 66.47 / 66.30%，
  *  小节自检 34.75 / 34.88 / 35.03 / 35.32 / 35.24%。正好一个符头最好——
@@ -171,6 +174,14 @@ export function splitHeadCluster(
   onLine: (y: number) => boolean,
   /** 跳过尺寸闸（调用方自己把关，见 `recognize.ts` 里判别器那一遍）。 */
   anySize = false,
+  /**
+   * 判别器（`headclass.ts`）。给了就**接进追踪循环里**：mask 得分只用来排序、
+   * 门槛放到 `VERIFY_SCORE_MIN`，收不收由判别器说了算。
+   *
+   * 只在事后筛不够——得分低于 `SCORE_MIN` 的候选在追踪阶段就被丢了，
+   * 事后再筛也筛不出它们；而扫描件上被啃过、被粘住的真符头，得分恰恰就低。
+   */
+  verify?: (box: Rect, cy: number) => boolean,
 ): Rect[] {
   const sp = unit.space;
   const w = box.w / sp;
@@ -218,10 +229,25 @@ export function splitHeadCluster(
         if (picked.some((p) => Math.abs(p.x - x) < sp * SEP_X && Math.abs(p.y - y) < sp * SEP_Y)) continue;
         const m = masks.find((k) => k.onLine === onLine(y)) ?? masks[0];
         const sc = scoreAt(work, m, x - ox, y - oy);
-        if (sc >= SCORE_MIN && (!best || sc > best.s)) best = { x, y, s: sc };
+        if (sc < (verify ? VERIFY_SCORE_MIN : SCORE_MIN)) continue;
+        if (!best || sc > best.s) best = { x, y, s: sc };
       }
     }
     if (!best) break;
+    if (verify) {
+      const bx = { x: Math.round(best.x - hw0 / 2), y: Math.round(best.y - hh0 / 2), w: Math.round(hw0), h: Math.round(hh0) };
+      if (!verify(bx, best.y)) {
+        // 判别器否了：把这一处的墨也减掉，免得下一轮又挑中它
+        const cx0 = best.x - ox;
+        const cy0 = best.y - oy;
+        const rx0 = (hw0 * ERASE_R) / 2;
+        const ry0 = (hh0 * ERASE_R) / 2;
+        for (let y = Math.max(0, Math.round(cy0 - ry0)); y <= Math.min(wy - 1, Math.round(cy0 + ry0)); y++)
+          for (let x = Math.max(0, Math.round(cx0 - rx0)); x <= Math.min(wx - 1, Math.round(cx0 + rx0)); x++)
+            if (((x - cx0) / rx0) ** 2 + ((y - cy0) / ry0) ** 2 <= 1) work.data[y * wx + x] = 0;
+        continue;
+      }
+    }
     picked.push({ x: best.x, y: best.y });
     // 把这个头的墨减掉（椭圆，比符头本身略小一圈，免得连邻居一起削）
     const cx = best.x - ox;

@@ -935,17 +935,15 @@ export async function recognizeRasterPage(
         const w = b.w / unit.space;
         const h = b.h / unit.space;
         if (w > BIG_W || h > BIG_H) continue; // 再大就不是一团连桁了
-        const parts = splitHeadCluster(noBeam, b, c.area, masksNB.length ? masksNB : masks, unit, pitchGrid, onLineY, true);
+        const parts = splitHeadCluster(noBeam, b, c.area, masksNB.length ? masksNB : masks, unit, pitchGrid, onLineY, true, (pb, gy) =>
+          headProb(clf, raster.bin, masks, unit, pb, gy, onLineY(gy)) >= CLF_P,
+        );
         if (parts.length < 2) continue;
-        let took = 0;
         for (const pb of parts) {
-          const gy = pb.y + pb.h / 2;
-          if (headProb(clf, raster.bin, masks, unit, pb, gy, onLineY(gy)) < CLF_P) continue;
           clfHeads.push({ box: pb, code: "noteheadBlack" });
           ledger.claim(pb, "clfsplit:noteheadBlack");
-          took++;
         }
-        if (took) claimed.add(c.id);
+        claimed.add(c.id);
       }
     }
     syms.push(...clfHeads);
