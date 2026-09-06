@@ -229,7 +229,26 @@ function assignSlots(rows: StaffToken[][]): number[][] | null {
   // 或几个槽位重名时，这一项不带信息，只会扰动本来就对的指派
   //（实测无条件用：干净档音符 83.02% → 82.94%）。
   const named = labelOf.filter((v): v is string => v !== null);
-  return new Set(named).size >= 2 ? assign() : first;
+  const second = new Set(named).size >= 2 ? assign() : first;
+  if (!second) return second;
+  // ── 第三遍：**拿第二遍的结果重估各槽位的音域**，再指派一次 ──────────────
+  //
+  // 槽位的音域基准原本只由「行数最满」那一档系统平均出来，而那一档往往是高潮段
+  //（破碎 7 行的系统只有 4 个，整体偏高一个三度）。第二遍靠标签把 3 行系统的
+  // `Soprano 1` 拉回槽位 0 之后，槽位 0 的基准就该把那几行也算进来——
+  // 基准一降，**谱面上没印标签的 4 行系统**才有可能跟着落回槽位 0/1。
+  //
+  // 无标签时这一遍是空转（试过，结果完全相同）：那时第二遍与第一遍同解，
+  // 重估出来的基准与原来一样。是标签先把解挪动了，重估才有东西可传。
+  for (let k = 0; k < n; k++) {
+    const ps: number[] = [];
+    for (let si = 0; si < rows.length; si++) {
+      const ri = second[si].indexOf(k);
+      if (ri >= 0 && rows[si][ri].pitch !== null) ps.push(rows[si][ri].pitch!);
+    }
+    if (ps.length) slots[k].pitch = ps.sort((a, b) => a - b)[ps.length >> 1];
+  }
+  return assign();
 }
 
 /**
