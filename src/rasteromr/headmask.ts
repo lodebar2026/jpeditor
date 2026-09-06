@@ -139,6 +139,17 @@ const CLUSTER_FILL = [0.35, 0.9] as const;
  *  再扫 0.42 / 0.48：干净 84.63 / 84.88%，扫描 54.65 / 54.51% —— 0.46 是拐点。
  *  （歌词两档各降 0.05 / 0.11 个点：多认出的符头把音节挂法挪了一两个字，量级在噪声里。） */
 const SCORE_MIN = 0.46;
+/** 匹配追踪最多找几个头（一块连桁团里的头不会比这更多）。 */
+const MAX_HEADS = 8;
+/** 减墨时椭圆取符头的几成。扫过 0.7 / 0.85 / **1.0** / 1.15 / 1.3：
+ *  扫描件音符 66.17 / 66.50 / **66.52** / 66.47 / 66.30%，
+ *  小节自检 34.75 / 34.88 / 35.03 / 35.32 / 35.24%。正好一个符头最好——
+ *  削小了残墨还在、继续抬高邻近候选，削大了把邻居的墨也啃掉。 */
+const ERASE_R = 1.0;
+/** 同一个 x 上不再找第二个头的间距（线距的倍数）。
+ *  **取 0**：减墨本身就防住了「同一处反复挑」，再加一条反而挡掉同 x 上真正的
+ *  和弦成员——实测取 0.15 时扫描件音符 66.50% → 66.05%、小节自检 34.88% → 33.89%。 */
+const SEP_X_MIN = 0;
 /** 两个头的中心至少要拉开这么远（线距）。二度和弦错开画，x 差约一个符头宽。 */
 const SEP_X = 0.7;
 /** 两个头的纵向最小间隔：三度是**半格**，所以不能卡到 0.5 以上。 */
@@ -165,25 +176,58 @@ export function splitHeadCluster(
   if (w < CLUSTER_W[0] || w > CLUSTER_W[1] || h < CLUSTER_H[0] || h > CLUSTER_H[1]) return [];
   const fill = area / Math.max(1, box.w * box.h);
   if (fill < CLUSTER_FILL[0] || fill > CLUSTER_FILL[1]) return [];
-  const cands: { x: number; y: number; s: number }[] = [];
-  const step = Math.max(1, Math.round(sp * 0.15));
-  for (let x = box.x; x <= box.x + box.w; x += step) {
-    const ys = new Set<number>();
-    for (let y = box.y - sp * 0.3; y <= box.y + box.h + sp * 0.3; y += sp * 0.25) {
-      const g = grid(y);
-      if (g !== null) ys.add(g);
-    }
-    for (const y of ys) {
-      const m = masks.find((k) => k.onLine === onLine(y)) ?? masks[0];
-      const s = scoreAt(bin, m, x, y);
-      if (s >= SCORE_MIN) cands.push({ x, y, s });
+  // ── **匹配追踪**：找到一个头就把它的墨从块里减掉，再重新打分找下一个 ────────
+  //
+  // 原来是「一次打分、按得分贪心挑、只用间距去重」。那么做有个毛病：
+  // **已经被解释掉的墨还在图里，继续抬高邻近候选的得分**——连桁团里符头挨着符头，
+  // 一个头的墨能把它左右各半格的位置也顶过门槛，于是要么多挑、要么靠间距硬压掉真头。
+  // 减掉再找就没这回事：第二轮的得分只看**还没解释的墨**。
+  //
+  // 在块的局部副本上做（外扩一个模板窗，免得减墨越界），不动原图。
+  const pad = Math.max(...masks.map((m) => Math.max(m.w, m.h)));
+  const wx = box.w + pad * 2;
+  const wy = box.h + pad * 2;
+  const ox = box.x - pad;
+  const oy = box.y - pad;
+  const work: Binary = { w: wx, h: wy, data: new Uint8Array(wx * wy) };
+  for (let y = 0; y < wy; y++) {
+    const sy = oy + y;
+    if (sy < 0 || sy >= bin.h) continue;
+    for (let x = 0; x < wx; x++) {
+      const sx = ox + x;
+      if (sx >= 0 && sx < bin.w) work.data[y * wx + x] = bin.data[sy * bin.w + sx];
     }
   }
-  cands.sort((a, b) => b.s - a.s);
+  const ys = new Set<number>();
+  for (let y = box.y - sp * 0.3; y <= box.y + box.h + sp * 0.3; y += sp * 0.25) {
+    const g = grid(y);
+    if (g !== null) ys.add(g);
+  }
+  const step = Math.max(1, Math.round(sp * 0.15));
   const picked: { x: number; y: number }[] = [];
-  for (const c of cands) {
-    if (picked.some((p) => Math.abs(p.x - c.x) < sp * SEP_X && Math.abs(p.y - c.y) < sp * SEP_Y)) continue;
-    picked.push(c);
+  const hw0 = sp * 1.25;
+  const hh0 = sp * 0.95;
+  for (let round = 0; round < MAX_HEADS; round++) {
+    let best: { x: number; y: number; s: number } | null = null;
+    for (let x = box.x; x <= box.x + box.w; x += step) {
+      if (picked.some((p) => Math.abs(p.x - x) < sp * SEP_X_MIN)) continue;
+      for (const y of ys) {
+        if (picked.some((p) => Math.abs(p.x - x) < sp * SEP_X && Math.abs(p.y - y) < sp * SEP_Y)) continue;
+        const m = masks.find((k) => k.onLine === onLine(y)) ?? masks[0];
+        const sc = scoreAt(work, m, x - ox, y - oy);
+        if (sc >= SCORE_MIN && (!best || sc > best.s)) best = { x, y, s: sc };
+      }
+    }
+    if (!best) break;
+    picked.push({ x: best.x, y: best.y });
+    // 把这个头的墨减掉（椭圆，比符头本身略小一圈，免得连邻居一起削）
+    const cx = best.x - ox;
+    const cy = best.y - oy;
+    const rx = hw0 * ERASE_R / 2;
+    const ry = hh0 * ERASE_R / 2;
+    for (let y = Math.max(0, Math.round(cy - ry)); y <= Math.min(wy - 1, Math.round(cy + ry)); y++)
+      for (let x = Math.max(0, Math.round(cx - rx)); x <= Math.min(wx - 1, Math.round(cx + rx)); x++)
+        if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1) work.data[y * wx + x] = 0;
   }
   // 只拆得出一个头的，交回原来那条路（尺寸闸自己会判）
   if (picked.length < 2) return [];
