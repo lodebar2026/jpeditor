@@ -317,7 +317,26 @@ function alignSections(systems, sections) {
  * 「第 k 行」在不同系统里根本不是同一个声部。
  */
 function gotParts(entries) {
-  const score = cli.buildScore(entries.map((e) => ({ page: e.page, ctx: e.ctx })));
+  // 内容剖面（有没有词、音域中位数）交给 `buildScore` 做全局指派，见 `score.ts::assignSlots`
+  const prof = new Map();
+  for (const e of entries)
+    for (const n of e.notes) {
+      const p = prof.get(n.staff) ?? { lyric: false, ps: [] };
+      if (n.lyrics?.length) p.lyric = true;
+      if (!n.rest && !n.grace && n.step) p.ps.push("CDEFGAB".indexOf(n.step) + 7 * n.octave);
+      prof.set(n.staff, p);
+    }
+  const score = cli.buildScore(
+    entries.map((e) => ({ page: e.page, ctx: e.ctx })),
+    {
+      profileOf: (st) => {
+        const p = prof.get(st);
+        if (!p) return { lyric: false, pitch: null };
+        const ps = p.ps.slice().sort((a, b) => a - b);
+        return { lyric: p.lyric, pitch: ps.length ? ps[ps.length >> 1] : null };
+      },
+    },
+  );
   const byStaff = new Map();
   for (const e of entries) for (const n of e.notes) {
     const a = byStaff.get(n.staff) ?? [];
