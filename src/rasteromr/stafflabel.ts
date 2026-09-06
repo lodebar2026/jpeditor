@@ -6,14 +6,19 @@
 // ——破碎那份 3 行/4 行系统里女高唱 31~32、7 行系统里同一个声部唱到 36，
 // 于是被判成另一条声部。谱面印的标签是唯一分得开的证据（人工映射也正是照它手改的）。
 //
-// **只切条、不认字。** 认字走歌词那条路的老规矩：离线跑一遍 PP-OCR、按**条的内容
-// 指纹**落盘（`gen-rasterlabels.mjs` → `rasterlabels.json`），识别时查缓存，不起浏览器。
+// **只按固定几何裁一条带，不猜哪块墨是标签。** 认字走歌词那条路的老规矩：
+// 离线跑一遍 PP-OCR、按**条的内容指纹**落盘（`gen-rasterlabels.mjs` →
+// `rasterlabels.json`），识别时查缓存，不起浏览器；定位交给生成器里的 **DBNet 文本检测**。
 //
-// 试过「不认字、只比标签图」（32×32 签名聚类），**不成立**：
-// `Soprano` / `Soprano 1` / `Soprano 2` 尾部只差一两个字符，归一化之后聚成同一类
-//（汉明距离闸放到 55 仍全归一类），宽度 6.4~7.6 格也重叠。得真读出字来。
+// 两条弯路，都撤了：
+//   - **「不认字、只比标签图」**（32×32 签名聚类）：`Soprano` / `Soprano 1` /
+//     `Soprano 2` 尾部只差一两个字符，归一化之后聚成同一类（汉明距离闸放到 55
+//     仍全归一类），宽度 6.4~7.6 格也重叠。得真读出字来。
+//   - **在带里做连通块、按「像字」的高宽筛、缝隙不到 0.7 格的连成一串**：
+//     带放宽就灌进上一行谱的歌词与弧线、收紧就漏掉标签，六种调法（取最靠下的文字行、
+//     加白边、笔画加粗、放宽块高、放宽串宽、放宽带高）**全都劣于原配置**，
+//     全语料认得出的声部名始终卡在 8 个。几何闸没有中间地带——定位这件事交给 DBNet。
 import type { Binary, Rect } from "../omr/types";
-import { connectedComponents } from "../omr/ccl";
 import type { RasterUnit } from "./staffline";
 
 /** 一条标签条：裸像素 + 它在页面上的盒。 */
@@ -27,32 +32,21 @@ export interface LabelStrip {
   staff: number;
 }
 
-/** 取条的窗口（线距的倍数）：顶线上方这一段、谱行左缘往右这一段。
+/** 带的窗口（线距的倍数）：顶线上方这一段、谱行左缘往右这一段。
  *
- *  上界不能再往上：**再往上是上一行谱的歌词**，一并框进来就成了三十格宽的一大块
- *  （实测那么取的话全页的条聚成一类，什么也分不开）。
- *  左界要躲开**小节号**——它就印在谱行左缘正上方。 */
-const BAND_TOP = 1.7;
-const BAND_BOTTOM = 0.2;
+ *  上界给 DBNet 留出高度（太薄它框不出行），带里混进上一行谱的歌词不要紧
+ *  ——检测会把它们分成各自的行框，取**最靠近谱行**的那一框即可。
+ *  左界要躲开**小节号**：它就印在谱行左缘正上方。 */
+const BAND_TOP = 3.0;
+const BAND_BOTTOM = 0.15;
 const LEFT_SKIP = 1.2;
-const RIGHT_FRAC = 0.4;
-/** 「像字」的连通块：高在这个区间、宽不超过这么多（线距的倍数）。
- *  **放宽会灌进噪声**：上限放到 1.7 格、最小串宽放到 0.9 格，条子从 59 涨到 347、
- *  认得出声部名的从 8 个掉到 **0** 个——弧线、符干头把串挤断了。 */
-const CH_H = [0.35, 1.2] as const;
-const CH_W = 1.6;
-/** 同一串里相邻两块的横向缝隙上限（线距的倍数）。
- *  **要容得下词间空格**：`Soprano 1` 里 `o` 与 `1` 之间空了一格多，
- *  卡在 0.7 会把尾数切掉——而那个数正是分开 `Soprano 1` 与 `Soprano 2` 的要害。 */
-const GAP = 1.5;
-/** 一条标签至少这么宽，不然是零星的记号（保留记号、装饰音的残块）。 */
-const MIN_W = 1.2;
+const RIGHT_FRAC = 0.45;
 
 /**
- * 切出各谱行的标签条。`staves` 给每行谱的盒（页面坐标），次序即 `SPage.staves`。
+ * 裁出各谱行的标签带。`staves` 给每行谱的盒（页面坐标），次序即 `SPage.staves`。
  *
- * 做法：在窗口里做连通域，只留「像字」的块，按 x 排、缝隙不到 `GAP` 的连成一串，
- * 取**最靠左的那一串**（标签靠左印；再往右是力度、表情文字）。
+ * **几何是死的**——同一页跑几次裁出来的带一模一样，指纹才稳得住。
+ * 带里有什么、哪一块是标签，是生成器那边 DBNet + rec 的事。
  */
 export function findStaffLabels(
   bin: Binary,
@@ -66,39 +60,17 @@ export function findStaffLabels(
     const y1 = Math.max(0, Math.round(st.box.top - sp * BAND_BOTTOM));
     const x0 = Math.max(0, Math.round(st.box.left + sp * LEFT_SKIP));
     const x1 = Math.min(bin.w, Math.round(st.box.left + (st.box.right - st.box.left) * RIGHT_FRAC));
-    if (y1 - y0 < 4 || x1 - x0 < 4) continue;
-    const sub: Binary = { w: x1 - x0, h: y1 - y0, data: new Uint8Array((x1 - x0) * (y1 - y0)) };
-    for (let y = y0; y < y1; y++)
-      for (let x = x0; x < x1; x++) sub.data[(y - y0) * sub.w + (x - x0)] = bin.data[y * bin.w + x];
-    const all = connectedComponents(sub, 4).filter(
-      (c) => c.bbox.h >= sp * CH_H[0] && c.bbox.h <= sp * CH_H[1] && c.bbox.w <= sp * CH_W,
-    );
-    if (!all.length) continue;
-    // 试过「按 y 聚成文字行、取最靠下的那一行」（想躲开上一行谱的歌词），**更差**：
-    // 认得出声部名的条从 8 个掉到 1 个——离谱行最近的常常不是标签，
-    // 而是弧线的尾巴、符干的头。
-    const cs = all.slice().sort((a, b) => a.bbox.x - b.bbox.x);
-    const run = [cs[0]];
-    for (let i = 1; i < cs.length; i++) {
-      const prev = run[run.length - 1].bbox;
-      if (cs[i].bbox.x - (prev.x + prev.w) > sp * GAP) break;
-      run.push(cs[i]);
-    }
-    let lx = Infinity;
-    let rx = -Infinity;
-    let ty = Infinity;
-    let by = -Infinity;
-    for (const c of run) {
-      lx = Math.min(lx, c.bbox.x);
-      rx = Math.max(rx, c.bbox.x + c.bbox.w - 1);
-      ty = Math.min(ty, c.bbox.y);
-      by = Math.max(by, c.bbox.y + c.bbox.h - 1);
-    }
-    if (rx - lx < sp * MIN_W) continue;
-    const box = { x: x0 + lx, y: y0 + ty, w: rx - lx + 1, h: by - ty + 1 };
+    if (y1 - y0 < 8 || x1 - x0 < 8) continue;
+    const box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     const data = new Uint8Array(box.w * box.h);
+    let ink = 0;
     for (let y = 0; y < box.h; y++)
-      for (let x = 0; x < box.w; x++) data[y * box.w + x] = bin.data[(box.y + y) * bin.w + box.x + x];
+      for (let x = 0; x < box.w; x++) {
+        const v = bin.data[(box.y + y) * bin.w + box.x + x];
+        data[y * box.w + x] = v;
+        ink += v;
+      }
+    if (!ink) continue; // 整条空白：这一行没印任何东西，不必送 OCR
     out.push({ w: box.w, h: box.h, data, box, staff: st.index });
   }
   return out;
