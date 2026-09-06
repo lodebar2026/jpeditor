@@ -2,6 +2,7 @@
 //
 //   npm run build:cli && node scripts/chorus-symbols.mjs
 //   node scripts/chorus-symbols.mjs --one=宁静 --v
+//   node scripts/chorus-symbols.mjs --scan       # 真扫描件的同口径逐符号评测
 //
 // 与 `chorus-diff.mjs` 的分工：那边量的是**音高序列**对不对（音符准确率、音级准确率），
 // 这边量**别的符号**。两边共用同一套声部配对（`buildScore` → 与 GT 的 `<part>`×`<staff>`
@@ -15,7 +16,7 @@
 //   - **拍号**逐**系统**比：GT 的 `<time>` 按小节号排出一条「从第几小节起是几几拍」，
 //     识别侧按谱行认出来的拍号数字排一条，比**出现的拍号本身**（不比小节号——
 //     位图路的小节号本来就不可靠）。
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { openPdf, eachPage, loadCli, loadChorus } from "./node-harness.mjs";
 import { acc, shiftOct } from "./staff-metrics.mjs";
 
@@ -23,6 +24,7 @@ const args = process.argv.slice(2);
 const argOf = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
 const verbose = args.includes("--v");
 const only = argOf("one");
+const scanOnly = args.includes("--scan");
 
 const cli = await loadCli();
 const look = new cli.RasterGlyphLookup(JSON.parse(await readFile("src/rasteromr/rasterglyphs.json", "utf8")));
@@ -139,7 +141,8 @@ function gotParts(entries) {
         rows.push(ctxOf.get(stf) ?? null);
         const mv = minVoice(stf, byStaff);
         for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === mv))
-          seq.push({ pitch: n.rest ? "R" : n.step + n.octave, rest: n.rest, base: n.base, dots: n.dots, accidental: n.accidental, beams: n.beams, slurStart: !!n.slurStart });
+          seq.push({ pitch: n.rest ? "R" : n.step + n.octave, rest: n.rest, base: n.base, dots: n.dots, accidental: n.accidental, beams: n.beams, slurStart: !!n.slurStart,
+            source: { page: stf.page?.index, box: n.sym.box, code: n.sym.code, stemUp: n.stemUp } });
         // 松叶与力度挂在音符上（`attachWedges` / `attachDynamicTexts`），按音符次序取出来。
         // **只取起头的松叶**，与 GT 侧同口径。
         for (const n of byStaff.get(stf) ?? []) {
@@ -209,6 +212,8 @@ const clefSign = (code) => (code?.startsWith("gClef") ? "G" : code?.startsWith("
 
 const tally = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, timeN: 0, timeOk: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, wedgeAcc: 0, wedgeStaves: 0, dynN: 0, dynGot: 0, dynAcc: 0, dynStaves: 0, slurN: 0, slurOk: 0, slurFalse: 0 };
 const confuse = new Map();
+const reports = [];
+const durationErrors = [];
 
 for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(only)) && s.gt)) {
   const gt = gtParts(await readFile(song.gt, "utf8"));
@@ -232,7 +237,8 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
       for (const [, c] of r.ctx) if (c.time?.length) gotTimes.push(c.time.map((s) => s.code).join(","));
     });
     if (!entries.length) continue;
-    if (cleanPages < allPages * 0.8) continue; // 只量干净位图那一档（与基线同口径）
+    const clean = cleanPages >= allPages * 0.8;
+    if (scanOnly ? clean : !clean) continue;
     const got = gotParts(entries);
     const pairs = pairParts(got, gt);
 
@@ -275,6 +281,7 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
           else {
             const k = `${durName(b.base)}→${a.base == null ? "?" : durName(a.base)}`;
             confuse.set(k, (confuse.get(k) ?? 0) + 1);
+            durationErrors.push({ song: song.name, file, expected: durName(b.base), actual: a.base == null ? "?" : durName(a.base), pitch: a.pitch, beams: a.beams, ...a.source });
           }
           sub.dotsN++;
           if ((a.dots ?? 0) === b.dots) sub.dotsOk++;
@@ -306,6 +313,7 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
 
     for (const k of Object.keys(sub)) tally[k] += sub[k];
     const pct = (a, b) => (b ? ((a / b) * 100).toFixed(1) + "%" : "—");
+    reports.push({ song: song.name, file, ...sub });
     console.log(
       `${song.name}/${file}\n` +
         `  谱号 ${pct(sub.clefOk, sub.clefN)}（${sub.clefOk}/${sub.clefN} 行，其中认不出 ${sub.clefMiss}）\n` +
@@ -329,7 +337,7 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
 
 const pct = (a, b) => (b ? ((a / b) * 100).toFixed(1) + "%" : "—");
 console.log(
-  `\n【干净位图合计】谱号 ${pct(tally.clefOk, tally.clefN)}（${tally.clefN} 行，认不出 ${tally.clefMiss}）　` +
+  `\n【${scanOnly ? "真扫描件" : "干净位图"}合计】谱号 ${pct(tally.clefOk, tally.clefN)}（${tally.clefN} 行，认不出 ${tally.clefMiss}）　` +
     `时值 ${pct(tally.durOk, tally.durN)}（${tally.durN}）　附点 ${pct(tally.dotsOk, tally.dotsN)}　` +
     `临时升降 ${pct(tally.accOk, tally.accN)}（${tally.accN}，多出 ${tally.accFalse}）　拍号 ${pct(tally.timeOk, tally.timeN)}`,
 );
@@ -339,3 +347,21 @@ console.log(
     `圆滑线 ${tally.slurN ? ((tally.slurOk / tally.slurN) * 100).toFixed(1) + "%" : "—"}（${tally.slurN} 起，多出 ${tally.slurFalse}）`,
 );
 console.log("时值错法（GT→识别）前十：" + [...confuse.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, v]) => `${k} ${v}`).join("　"));
+
+// 保留分子、分母及误检数，避免把条件准确率或没有 GT 的项目当成完整识别率。
+const rate = (ok, n) => n ? +(100 * ok / n).toFixed(2) : null;
+const summary = {
+  clefAcc: rate(tally.clefOk, tally.clefN),
+  durationAcc: rate(tally.durOk, tally.durN),
+  dotAcc: rate(tally.dotsOk, tally.dotsN),
+  accidentalAcc: rate(tally.accOk, tally.accN),
+  timeAcc: rate(tally.timeOk, tally.timeN),
+  wedgeAcc: rate(tally.wedgeAcc, tally.wedgeStaves),
+  dynamicAcc: rate(tally.dynAcc, tally.dynStaves),
+  slurAcc: rate(tally.slurOk, tally.slurN),
+};
+await mkdir("staff-out", { recursive: true });
+// `--one` 只跑一首，别拿它的结果盖掉整份语料的报表（另存一份带曲名的）。
+const output = `staff-out/chorus-symbols-${scanOnly ? "scan" : "clean"}${only ? "-" + only : ""}.json`;
+await writeFile(output, JSON.stringify({ summary, tally, reports, durationConfusions: Object.fromEntries(confuse), durationErrors }, null, 2));
+console.log(`→ ${output}`);

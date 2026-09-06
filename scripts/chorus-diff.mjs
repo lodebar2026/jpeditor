@@ -13,7 +13,7 @@
 //
 // 判据一律来自 `staff-metrics.mjs`（与矢量路共用一份），别在这里另写。
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { openPdf, eachPage, loadCli, loadChorus } from "./node-harness.mjs";
+import { openPdf, eachPage, loadCli, loadChorus, xmlLyricVerses } from "./node-harness.mjs";
 import { acc, shiftOct, letters } from "./staff-metrics.mjs";
 import { loadT2S } from "./staff-align.mjs";
 
@@ -62,16 +62,8 @@ try {
 const t2s = await loadT2S();
 const cjk = (s0) => t2s(s0).replace(/[^\u4e00-\u9fff]/g, "");
 
-/** GT musicxml → 第一段歌词的汉字串（旧口径，已不用）。 */
-function gtLyric(xml) {
-  const out = [];
-  for (const m of xml.matchAll(/<lyric\b[^>]*>[\s\S]*?<\/lyric>/g)) {
-    const num = /number="(\d+)"/.exec(m[0])?.[1] ?? "1";
-    if (num !== "1") continue;
-    for (const t of m[0].matchAll(/<text>([^<]*)<\/text>/g)) out.push(t[1]);
-  }
-  return out.join("").replace(/[^\u4e00-\u9fff]/g, "");
-}
+/** 与识别侧 verse 1 对拍，兼容数字、缺省和 Sibelius 的 partNverse1。 */
+const firstLyric = (note) => xmlLyricVerses(note).find((v) => v.verse === 1)?.chars ?? "";
 
 /**
  * GT musicxml → **逐谱表**的音符序列（`<part>` × `<staff>`）。
@@ -100,8 +92,7 @@ function gtParts(xml) {
       const seq = byStaff.get(key) ?? [];
       // 第一段歌词跟着这一路走（与识别侧同口径：歌词挂在音符上）
       const ly = lyrOf.get(key) ?? [];
-      for (const t of seg.matchAll(/<lyric\b[^>]*number="1"[^>]*>[\s\S]*?<\/lyric>/g))
-        for (const x of t[0].matchAll(/<text>([^<]*)<\/text>/g)) ly.push(x[1]);
+      ly.push(firstLyric(seg));
       lyrOf.set(key, ly);
       if (/<rest\s*\/?>/.test(seg)) seq.push("R");
       else {
@@ -162,8 +153,7 @@ function gtMeasures(xml) {
             e.sounding = true;
           }
         }
-        for (const t of seg.matchAll(/<lyric\b[^>]*number="1"[^>]*>[\s\S]*?<\/lyric>/g))
-          for (const x of t[0].matchAll(/<text>([^<]*)<\/text>/g)) e.lyric += x[1];
+        e.lyric += firstLyric(seg);
         byKey.set(key, e);
       }
       // 每行谱只留声部号最小的那一路（与识别侧同口径）
@@ -494,11 +484,13 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
     const { doc, OPS } = await openPdf(pdf);
     const entries = [];
     let carry, bars = 0, full = 0, unknown = 0, staves = 0, cleanPages = 0, allPages = 0;
+    const lyricStats = { rows: 0, hit: 0, parity: 0 };
     await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (page, pn) => {
       const r = await cli.recognizeRasterPage(page, OPS, look, pn, { carryTime: carry, lyricOcr });
       carry = r.carryTime;
       if (!r.hasStaff) return;
       allPages++;
+      for (const key of Object.keys(lyricStats)) lyricStats[key] += r.lyricStats[key];
       // **分档**：干净位图（排版软件贴的图）线宽不到线距的两成；真扫描件（Xerox/手机拍）
       // 线更粗、还带倾斜。判据与 `gen-rasterglyphs.mjs` 建库那道闸同口径。
       // **分档按底本的数据形态**（`raster.kind`），不拿「线宽/线距」当代理量
@@ -705,11 +697,17 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
       song: song.name, file, staves, clean: cleanPages >= allPages * 0.8,
       gtParts: gt.length, gotParts: got.length, scoreParts: nParts, paired: pairs.length,
       gtNotes: gtTotal, gotNotes: gotTotal, strayNotes,
+      pairedGtNotes: wd,
       noteAcc: wd ? (wn / wd) * 100 : 0, letterAcc: wd ? (wl / wd) * 100 : 0,
       noteAccAll: wd + strayNotes ? (wn / (wd + strayNotes)) * 100 : 0,
-      barFull: bars ? (full / bars) * 100 : 0, bars, unknown,
+      barFull: bars ? (full / bars) * 100 : 0, bars, unknown, lyricStats,
       lyricAcc: wyd && lyricOcr ? (wy / wyd) * 100 : null,
       lyricChars: wyd,
+      // **哪些谱表算「有中文歌词 GT」**：合唱谱的 GT 里，伴奏谱表常沾着一两个
+      // 表情字（`cjk` 之后剩下的），拿「非空」当闸会把它们也算成有词声部，
+      // 歌词覆盖率的分母就虚高。八个汉字大约是一个乐句，实测这批语料上
+      // 正好把伴奏谱表与真正的唱词谱表分开。
+      gtLyricChars: gt.reduce((n, p) => n + (p.lyric.length >= 8 ? p.lyric.length : 0), 0),
       // 按 staff（人工映射）那一档：没有映射表时为 null
       smNoteAcc: sm ? sm.noteAcc : null,
       smLetterAcc: sm ? sm.letterAcc : null,
@@ -833,8 +831,11 @@ if (scan.length) {
     scanNoteAccAll: avg(sg, "noteAccAll"),
     scanLetterAcc: avg(sg, "letterAcc"),
     scanBarFull: avg(scan, "barFull"),
+    scanLyricAcc: avg(sg.filter((r) => r.lyricAcc != null && r.lyricChars > 0), "lyricAcc"),
   });
-  console.log(`【真扫描件】${scan.length} 份（有 GT ${sg.length} 份）：音符 ${summary.scanNoteAcc}%（含游离 ${summary.scanNoteAccAll}%）、音级 ${summary.scanLetterAcc}%；小节自检 ${summary.scanBarFull}%`);
+  const lyrics = sg.filter((r) => r.lyricAcc != null && r.lyricChars > 0);
+  const gtLyrics = sg.filter((r) => r.gtLyricChars > 0);
+  console.log(`【真扫描件】${scan.length} 份（有 GT ${sg.length} 份）：音符 ${summary.scanNoteAcc}%（含游离 ${summary.scanNoteAccAll}%）、音级 ${summary.scanLetterAcc}%；小节自检 ${summary.scanBarFull}%；歌词 ${summary.scanLyricAcc}%（配对覆盖 ${lyrics.length}/${gtLyrics.length} 份有中文歌词 GT 的 PDF）`);
 }
 
 if (args.includes("--bless")) {

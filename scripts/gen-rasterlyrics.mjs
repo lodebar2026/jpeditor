@@ -2,6 +2,7 @@
 //
 //   npm run build && npm run build:cli && node scripts/gen-rasterlyrics.mjs
 //   node scripts/gen-rasterlyrics.mjs --one=宁静
+//   node scripts/gen-rasterlyrics.mjs --scan    # 补扫描件歌词（默认仍为干净位图）
 //
 // 产物：src/rasteromr/rasterlyrics.json（`{ 指纹: [{ch, xFrac}, …] }`）
 //
@@ -25,10 +26,13 @@ import { openPdf, eachPage, loadCli, loadChorus } from "./node-harness.mjs";
 const args = process.argv.slice(2);
 const argOf = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
 const only = argOf("one");
+const scanOnly = args.includes("--scan");
 const DICT = "src/rasteromr/rasterlyrics.json";
 
 const cli = await loadCli();
 const look = new cli.RasterGlyphLookup(JSON.parse(await readFile("src/rasteromr/rasterglyphs.json", "utf8")));
+// 与识别评测使用相同的谱号/符号模板，否则认领差异会改变歌词条指纹。
+look.templates = cli.outlineTemplates(JSON.parse(await readFile("src/staffomr/glyphmap.json", "utf8")));
 // 已有的缓存留住：重跑只补新出现的条（几何一动指纹就变，旧条自然失效）
 let cache = {};
 try {
@@ -54,8 +58,8 @@ for (const song of await loadChorus()) {
       // ——实测歌词从 85.0% 掉到 42.7%，还查了半天。别再复制第二份。
       const r = await cli.recognizeRasterPage(page, OPS, look, pn, {});
       if (!r.hasStaff || !r.raster) return;
-      // 只收干净位图那一档（按底本形态，与 `chorus-diff` 同口径）
-      if (r.raster.kind !== "mask") return;
+      // 按底本形态分档；扫描件此前从未进入 OCR，歌词档长期为空。
+      if (scanOnly ? r.raster.kind === "mask" : r.raster.kind !== "mask") return;
       for (const strip of r.lyricStrips) {
         total++;
         const key = cli.stripKey(strip);

@@ -761,15 +761,19 @@ export function xmlNoteOctaves(musicxml) {
 export function xmlLyricVerses(musicxml) {
   const byVerse = new Map();
   for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
-    for (const l of m[0].matchAll(/<lyric\b[^>]*number="(\d+)"[^>]*>([\s\S]*?)<\/lyric>/g)) {
-      const v = Number(l[1]);
-      const txt = [...l[2].matchAll(/<text>([^<]*)<\/text>/g)].map((x) => x[1]).join("");
+    for (const l of m[0].matchAll(/<lyric(?=\s|>)([^>]*?)>([\s\S]*?)<\/lyric>/g)) {
+      const id = /\bnumber\s*=\s*(["'])(.*?)\1/.exec(l[1])?.[2] ?? "1";
+      // Sibelius 用 part2verse1 标第一段；number 本来就允许非数字标识。
+      // 未知标识保留原值，不把第二段或自定义段号误归进第一段。
+      const numeric = /^(?:part\d+verse)?(\d+)$/.exec(id);
+      const v = numeric ? Number(numeric[1]) : id;
+      const txt = [...l[2].matchAll(/<text(?:\s[^>]*)?>([^<]*)<\/text>/g)].map((x) => x[1]).join("");
       byVerse.set(v, (byVerse.get(v) ?? "") + txt);
     }
   }
   // 行首段号「1.」谱面上每个谱行都重印一次、识别侧按几何剔掉了，GT 侧也剔
   return [...byVerse.entries()]
-    .sort((a, b) => a[0] - b[0])
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0]), "en", { numeric: true }))
     .map(([verse, text]) => ({ verse, chars: unescapeXml(text).replace(/^\s*\d+\s*[.．、]\s*/, "") }));
 }
 

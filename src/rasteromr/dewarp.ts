@@ -316,7 +316,10 @@ function buildTracks(hits: ColHit[], space: number, width: number): Track[] {
   const xs = [...byX.keys()].sort((a, b) => a - b);
   const open: { t: Track; lastX: number; lastY: number }[] = [];
   const done: Track[] = [];
-  const maxJump = COL_STEP * 6;
+  // 谱号、调号和密集符杠会遮住几格宽的五线花样；固定 24px 在高分辨率扫描件
+  // 上还不到两格，会把整行轨迹切成达不到 TRACK_SPAN 的碎片。纵向仍须在半格内，
+  // 延长的只是同一行谱可以跨过的横向遮挡。是否采纳推平另由 dewarpPage 验证。
+  const maxJump = Math.max(COL_STEP * 6, space * 4);
   for (const x of xs) {
     const used = new Set<ColHit>();
     for (const o of open) {
