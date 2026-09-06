@@ -894,13 +894,21 @@ export async function recognizeRasterPage(
   // 被认领，干净版 65.9%）；而闸一放宽假头就跟着进来——歌词那条探针每次都先报警。
   //
   // 这里现训一个**带负例**的逻辑回归（`headclass.ts`）：
-  // 正例是已经收下的实心符头；负例是**字典认成别的符号的那些块**
-  // ——谱号、休止、升降号、拍号，正是「长得像符头但不是」的那一批，
+  // **正例**：这一页**已经认出来的全部实心符头**——不只 `findRasterHeads` 那批，
+  // 还有拆块、按内腔、摘符干块捞回来的。只用「过了几何闸」的那批，样本会偏向
+  // 长得端正的那一档，而判别器要判的恰恰是被啃过、被粘住的那些。
+  //
+  // **负例**：这一页**认出来的全部非符头符号**——谱号、休止、升降号、拍号，
+  // 不论来自字典还是位置自举。正是「长得像符头但不是」的那一批，
   // 也正是那把没见过负例的尺子分不开的东西。
-  //（歌词字格是更靠后才切的，这里取不到；就近取字典那批已经够硬。）
-  const clfPos = heads.filter((h) => !dropHead.has(h.comp.id) && h.code === "noteheadBlack").map((h) => h.box);
-  const clfNeg: Rect[] = [];
-  for (const c of blobs) if (dictClaimed.has(c.id)) clfNeg.push(c.bbox);
+  //（歌词字格是更靠后才切的，这里取不到。）
+  const clfPos = [
+    ...heads.filter((h) => !dropHead.has(h.comp.id) && h.code === "noteheadBlack").map((h) => h.box),
+    ...split.filter((s0) => s0.code === "noteheadBlack").map((s0) => s0.box),
+    ...stemHeads.map((s0) => s0.box),
+    ...stacked.filter((s0) => s0.code === "noteheadBlack").map((s0) => s0.box),
+  ];
+  const clfNeg: Rect[] = syms.filter((s0) => !/notehead/i.test(s0.code)).map((s0) => s0.box);
   const clf = masks.length ? trainHeadClassifier(raster.bin, masks, unit, onLineY, clfPos, clfNeg) : null;
   const clfHeads: RasterSym[] = [];
   if (clf) {
