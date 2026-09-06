@@ -49,6 +49,20 @@ export const CHORUS_ROOT = process.env.CHORUS ?? "/Users/jonah/Documents/诗歌/
  */
 const GT_NOT_FULL_SCORE = new Set(["主，差遣我"]);
 
+/**
+ * **同一曲里，个别 PDF 不是全谱**——按文件名单独排除（同目录的其他份照用 GT）。
+ *
+ * `web-11-face-the-cross.pdf`：望十架的**网络试阅节选**，8 页里只有 4 页有谱、
+ * 共 46 谱行 129 小节；同一曲的 `望十架.pdf` 是 10 页 112 谱行 347 小节。
+ * `--v` 的四等分一眼看穿：六条声部分别是 `81/61/21/18`、`55/0/0/0`、`46/0/0/0`
+ * ——后半段全 0，**PDF 里根本没有那段音乐**。拿整份 GT 当分母，它的天花板
+ * 只有三成（实测 25.4%），平均值被它一份压掉十个点。
+ */
+const GT_PARTIAL_PDF = new Set(["web-11-face-the-cross.pdf"]);
+
+/** 这份 PDF 能不能拿同目录的 GT 对拍。 */
+export const gtUsable = (pdfPath) => !GT_PARTIAL_PDF.has(pdfPath.split("/").pop());
+
 export async function loadChorus(root = CHORUS_ROOT) {
   const out = [];
   for (const name of (await readdir(root)).sort()) {

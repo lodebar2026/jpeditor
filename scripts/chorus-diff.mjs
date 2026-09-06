@@ -13,7 +13,7 @@
 //
 // 判据一律来自 `staff-metrics.mjs`（与矢量路共用一份），别在这里另写。
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { openPdf, eachPage, loadCli, loadChorus, xmlLyricVerses } from "./node-harness.mjs";
+import { openPdf, eachPage, loadCli, loadChorus, gtUsable, xmlLyricVerses } from "./node-harness.mjs";
 import { acc, shiftOct, letters } from "./staff-metrics.mjs";
 import { loadT2S } from "./staff-align.mjs";
 
@@ -516,6 +516,8 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
   if (!song.gt) continue;
   const gt = gtParts(await readFile(song.gt, "utf8"));
   for (const pdf of song.pdfs) {
+    // 同一曲里个别 PDF 不是全谱（节选），不进准确率——见 `node-harness.mjs::GT_PARTIAL_PDF`
+    if (!gtUsable(pdf)) continue;
     const file = pdf.split("/").pop();
     const { doc, OPS } = await openPdf(pdf);
     const entries = [];
@@ -781,8 +783,8 @@ for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(o
 
 // 无 GT 的那几首只出不靠 GT 的自检
 for (const song of (await loadChorus()).filter((s) => !only || s.name.includes(only))) {
-  if (song.gt) continue;
   for (const pdf of song.pdfs) {
+    if (song.gt && gtUsable(pdf)) continue; // 有 GT 且能用的，上面那一段已经量过
     const { doc, OPS } = await openPdf(pdf);
     let carry, notes = 0, bars = 0, full = 0, staves = 0, unknown = 0, cleanPages = 0, allPages = 0;
     await eachPage(doc, Array.from({ length: doc.numPages }, (_, i) => i + 1), async (page, pn) => {
