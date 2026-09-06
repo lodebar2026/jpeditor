@@ -73,8 +73,9 @@ export function buildHeadMasks(bin: Binary, heads: { box: Rect; code: SmuflName 
   return out;
 }
 
-/** 比对得分：**该有墨的地方有多少墨**减去**不该有墨的地方漏出多少**。 */
-function scoreAt(bin: Binary, m: HeadMask, cx: number, cy: number): number {
+/** 比对得分：**该有墨的地方有多少墨**减去**不该有墨的地方漏出多少**。
+ *  `headclass.ts` 拿它当判别器的头一维特征。 */
+export function scoreAt(bin: Binary, m: HeadMask, cx: number, cy: number): number {
   const x0 = Math.round(cx - m.w / 2);
   const y0 = Math.round(cy - m.h / 2);
   let hit = 0;
