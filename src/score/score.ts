@@ -364,6 +364,9 @@ export class Measure {
   repeatForward = false;
   endingLeft = false;
   endingNum: Set<number> | null = null;
+  /** 房号原文（`<ending>` 的元素文本，如 "1.2.3."）。排版照原文画，保住 "1.-3." / "1., 2."
+   *  这类写法；为空时按 endingNum 拼。 */
+  endingText: string | null = null;
   endingRight: StartStopDiscontinue | null = null;
   /** 段落标记（Intro/Verse/Chorus/Coda…，来自 MusicXML `<rehearsal>`/段落词 `<words>`）。
    *  乐句排版据此在段首硬换行、并按段分别排行长（见 phrase.ts）。原 Kotlin 无此字段。 */

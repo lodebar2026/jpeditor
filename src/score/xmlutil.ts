@@ -45,6 +45,8 @@ export interface BarlineParts {
   ending?: string | null;
   /** `<ending type>`；left 侧恒为 "start"，right 侧可为 stop/discontinue。 */
   endingType?: string;
+  /** `<ending>` 的元素文本（给人看的房号，如 "1.2.3."）。空则写成自闭合元素。 */
+  endingText?: string | null;
   repeat?: boolean;
 }
 
@@ -56,7 +58,10 @@ export function barlineXml(location: "left" | "right", p: BarlineParts): string 
   const type = p.endingType ?? (location === "left" ? "start" : "stop");
   return `<barline location="${location}">` +
     (p.style ? `<bar-style>${p.style}</bar-style>` : "") +
-    (hasEnding ? `<ending number="${escapeAttr(p.ending!)}" type="${type}"/>` : "") +
+    (hasEnding
+      ? `<ending number="${escapeAttr(p.ending!)}" type="${type}"` +
+        (p.endingText ? `>${escapeXml(p.endingText)}</ending>` : "/>")
+      : "") +
     (p.repeat ? `<repeat direction="${location === "left" ? "forward" : "backward"}"/>` : "") +
     `</barline>`;
 }
