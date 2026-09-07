@@ -154,6 +154,11 @@ function noteToken(n: JpNum, dialect: Dialect): string {
   const d = dialectSpec(dialect);
   // digit 0 是休止；1–7 是唱名。识别不产出隐藏音符与节奏音符，故只有这两类。
   let s = String(n.digit);
+  // 临时升降号写在数字**后方**（两家都是），字符各按方言取：番茄 `#`/`$`/`=`、诗歌本 `#`/`b`/`♮`。
+  if (n.accidental) {
+    const ch = Object.entries(d.accidentals).find(([, sem]) => sem === n.accidental)?.[0];
+    if (ch) s += ch;
+  }
   const oct = n.octave > 0 ? d.octaveUp : d.octaveDown;
   s += oct.repeat(Math.abs(n.octave));
   s += "/".repeat(Math.max(0, n.div));
