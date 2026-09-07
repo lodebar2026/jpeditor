@@ -355,7 +355,10 @@ function partXml(
         for (const mk of volta) {
           const nums = (mk.caption ?? "").match(/\d+/g)?.join(",") ?? "1";
           if (mk.start === index) {
-            parts.push(`<ending number="${escapeAttr(nums)}" type="start"/>`);
+            // number 属性是机读的遍数列表（"1,2,3"），元素文本才是谱面上写的房号原文（"1.2.3."）。
+            const cap = (mk.caption ?? "").trim();
+            parts.push(`<ending number="${escapeAttr(nums)}" type="start"` +
+              (cap ? `>${escapeXml(cap)}</ending>` : "/>"));
           } else {
             parts.push(`<ending number="${escapeAttr(nums)}" type="${mk.openEnd ? "discontinue" : "stop"}"/>`);
           }

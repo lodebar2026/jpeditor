@@ -562,7 +562,8 @@ function measureBarlineXml(
     // 房号：Measure 上有就用（MusicXML 来源），否则用 .Repeat 反推的（jpw 来源）。
     const ending = m.endingLeft ? endingAttr(m.endingNum) : volta?.start ?? null;
     const style = effectiveLeftBarline(m) ?? (rep ? "heavy-light" : null);
-    return barlineXml("left", { style, ending, repeat: rep });
+    // 房号原文写进元素文本（"1.2.3."），number 属性仍是机读的遍数列表（"1,2,3"）。
+    return barlineXml("left", { style, ending, repeat: rep, endingText: m.endingLeft ? m.endingText : null });
   }
   // 房末（最后一房除外）必须回头，否则外部软件走不出正确的演唱顺序。
   const rep = hasRepeatBackward(m) || !!volta?.repeatBack;
