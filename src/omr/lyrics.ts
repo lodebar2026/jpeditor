@@ -366,6 +366,10 @@ export async function recognizeLyrics(
   const dTop = (nums: JpNum[]) => Math.min(...nums.map((n) => n.bbox.y - k * rcx(n.bbox)));
   const dBot = (nums: JpNum[]) => Math.max(...nums.map((n) => rbottom(n.bbox) - k * rcx(n.bbox)));
   if (TR) { TR.numH = numH; TR.charMin = charMin; TR.slope = k; TR.rows = []; }
+  // 谱行行距（deslant 空间，相邻谱行上缘之差的中位数）：末谱行下方带的封顶尺子，见下。
+  const rowTops = staff.filter((r) => r.nums.length).map((r) => dTop(r.nums));
+  const rowPitch = rowTops.length >= 2
+    ? median(rowTops.slice(1).map((t, j) => t - rowTops[j])) : 0;
 
   // i 从 **-1** 起：第 i 行的「下方带」就是第 i+1 行的「上方带」，是同一条带；唯独第 0 行的
   // 上方带原先没有任何一条带覆盖，那里的和弦（多数带和弦的谱子第一行就有）落进页眉 ROI 后
@@ -380,9 +384,17 @@ export async function recognizeLyrics(
     // 圆滑线，距顶 2.54 个字号）；代价是会把调号/表情记号一并卷进来，那些由下面几道判据挡掉：
     // 根音必须大写、`=` 后的音名算调号、整首和弦数与小节数的比例。
     const yTop = above ? Math.max(0, dTop(row.nums) - numH * 3.5) : dBot(row.nums) + numH * 0.15;
+    // 末谱行的下方带从前没有下界（`Infinity`）：谱后印的整段正文（曲子的背景介绍、版权说明）
+    // 全落进来，且它同样铺满整行、字高也够，S4 那几道门一道都拦不住——1600《南非之行》一口气
+    // 多出九段"歌词"，还触发 `fillLeadingVerses` 把第 1 段抄满前面六行。
+    // 尺子用**前面几行的行距**：同一首里每条歌词带装的段数一样多，末带不会比别的带更宽，
+    // 故照「假想的下一谱行上缘」封顶（口径与上面那支完全一致）。不留余量——正文的头一行离
+    // 末段词只有三个多字高，放宽一成就又漏进来了。封顶后一条 verse 行都不剩（末行歌词排得
+    // 特别靠下）就退回不封顶，宁可多收也别把真词丢了。
     const yBot = above ? dTop(row.nums) - numH * 0.15
       : i + 1 < staff.length && staff[i + 1].nums.length
-        ? dTop(staff[i + 1].nums) - numH * 0.15 : Infinity;
+        ? dTop(staff[i + 1].nums) - numH * 0.15
+        : rowPitch > 0 ? dTop(row.nums) + rowPitch - numH * 0.15 : Infinity;
     if (yBot - yTop < charMin) continue;
 
     const inBand = (c: Component) => { const y = dcy(c); return y >= yTop && y <= yBot; };
