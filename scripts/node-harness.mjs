@@ -580,6 +580,41 @@ const STEP_IDX = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
  * 二度和弦一并认出来了，这个口径差立刻现形（实测 071 一首就差 12 个音）。
  * **两边一律只比主音序列。**
  */
+/**
+ * GT musicxml → **逐谱表的谱号与声部名**，键是 `<part id>.<staff>`
+ * （与 `chorus-diff.mjs::gtParts` 的 id 同一套，错例清单里的 `staff` 就是它）。
+ *
+ * 诊断报告要用：光看「GT=F4、识别 D4」判断不了那个头该骑在第几线上——
+ * 得知道这一行是高音谱号还是低音谱号。**取 GT 那一侧的谱号**，
+ * 识别侧的谱号本身也可能读错，拿它解释音高等于用嫌疑人作证。
+ * 只取每个谱表**第一个**谱号（曲中换谱号少见，真换了报告里也标不出来）。
+ */
+export function gtClefs(musicxml) {
+  const SIGN = { G: "高音谱号", F: "低音谱号", C: "C 谱号", percussion: "打击乐谱号", TAB: "TAB" };
+  const names = new Map();
+  for (const m of musicxml.matchAll(/<score-part\s+id="([^"]+)"[\s\S]*?<\/score-part>/g))
+    names.set(m[1], /<part-name[^>]*>([^<]*)<\/part-name>/.exec(m[0])?.[1]?.trim() ?? "");
+  const out = new Map();
+  for (const m of musicxml.matchAll(/<part\s+id="([^"]+)"[\s\S]*?<\/part>/g)) {
+    for (const c of m[0].matchAll(/<clef(?:\s+number="(\d+)")?[^>]*>([\s\S]*?)<\/clef>/g)) {
+      const st = c[1] ?? "1";
+      const id = `${m[1]}.${st}`;
+      if (out.has(id)) continue; // 只要第一个
+      const sign = /<sign>([^<]+)<\/sign>/.exec(c[2])?.[1] ?? "";
+      const line = /<line>(\d+)<\/line>/.exec(c[2])?.[1] ?? "";
+      const oct = /<clef-octave-change>(-?\d+)<\/clef-octave-change>/.exec(c[2])?.[1];
+      out.set(id, {
+        sign,
+        line,
+        octaveChange: oct ? Number(oct) : 0,
+        name: names.get(m[1]) ?? "",
+        text: `${SIGN[sign] ?? sign}${line ? ` ${sign}${line}` : ""}${oct ? `（${Number(oct) > 0 ? "高" : "低"}八度）` : ""}`,
+      });
+    }
+  }
+  return out;
+}
+
 export function xmlStaffNotes(musicxml) {
   const out = [];
   for (const m of musicxml.matchAll(/<note[ >][\s\S]*?<\/note>/g)) {
@@ -1011,4 +1046,89 @@ for (const [id, entries] of byId) {
   });
 }
   return items;
+}
+
+// ── 图：位图 → 灰度 → PNG ──────────────────────────────────────────────────
+// 位图路的图本来就在 Node 手上（`RasterPageResult.raster.bin`、`debugNl` 之类的
+// `Binary`），但浏览器认不了 PGM（`raster-crop.mjs` 写的那种）。诊断报告要拿 `<img>`
+// 显示，就得有 PNG。**不引图像库**：8-bit 灰度、filter 0、`node:zlib` 压一下，就这么多。
+
+const crcTable = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function pngChunk(type, data) {
+  const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+  let c = 0xffffffff;
+  for (const b of body) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE((c ^ 0xffffffff) >>> 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+/**
+ * 8-bit 像素写成 PNG 文件。`pix` 长 `w*h` 时按灰度（0=黑，255=白），
+ * 长 `w*h*3` 时按 RGB——诊断报告要在二值裁图上画彩色标记框，那时才用得着彩色。
+ */
+export async function writePng(path, pix, w, h) {
+  const { deflateSync } = await import("node:zlib");
+  const ch = pix.length >= w * h * 3 ? 3 : 1;
+  // 每行前面一个 filter 字节（0 = None）
+  const stride = w * ch;
+  const raw = Buffer.alloc((stride + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (stride + 1)] = 0;
+    Buffer.from(pix.buffer, pix.byteOffset + y * stride, stride).copy(raw, y * (stride + 1) + 1);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = ch === 3 ? 2 : 0; // color type 2 = RGB、0 = 灰度
+  await mkdir(path.replace(/\/[^/]*$/, ""), { recursive: true });
+  await writeFile(
+    path,
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk("IHDR", ihdr),
+      pngChunk("IDAT", deflateSync(raw, { level: 6 })),
+      pngChunk("IEND", Buffer.alloc(0)),
+    ]),
+  );
+}
+
+/**
+ * `Binary`（1 = 墨）→ 灰度，可按盒裁、可整数倍放大（最近邻——放大是给人看**像素**的，
+ * 插值会把「淡印打碎成两块」这种病因抹平）。
+ *
+ * @param box  `{ x, y, w, h }`，缺省整张；越界处按白补齐（错例裁到纸边也不塌）
+ * @returns `{ gray, w, h }`
+ */
+export function binToGray(bin, box = null, scale = 1) {
+  const bx = box ? Math.round(box.x) : 0;
+  const by = box ? Math.round(box.y) : 0;
+  const bw = box ? Math.max(1, Math.round(box.w)) : bin.w;
+  const bh = box ? Math.max(1, Math.round(box.h)) : bin.h;
+  const s = Math.max(1, Math.round(scale));
+  const w = bw * s, h = bh * s;
+  const gray = new Uint8Array(w * h).fill(255);
+  for (let y = 0; y < bh; y++) {
+    const sy = by + y;
+    if (sy < 0 || sy >= bin.h) continue;
+    for (let x = 0; x < bw; x++) {
+      const sx = bx + x;
+      if (sx < 0 || sx >= bin.w) continue;
+      if (!bin.data[sy * bin.w + sx]) continue;
+      for (let dy = 0; dy < s; dy++) gray.fill(0, (y * s + dy) * w + x * s, (y * s + dy) * w + x * s + s);
+    }
+  }
+  return { gray, w, h };
 }

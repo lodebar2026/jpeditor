@@ -140,6 +140,9 @@ export async function alignSongs(opts = {}) {
       // 主旋律在最上面那行——只取每个系统的顶行，否则一首歌的音符数会翻倍
       // （实测 152 首 阿爸父 GT74 → 146，正好两倍）。
       notes: melody(r).map((n) => (n.rest ? "R" : n.step + n.octave)),
+      // `src[i]` 与 `notes[i]` 一一对应：错误要落回页面坐标才谈得上查错因
+      // （`staff-diff.mjs --errors`、`gen-staff-analysis.mjs`）。位图路那条同名同义。
+      src: melody(r).map((n) => ({ page: pn, box: n.sym?.box ?? null, code: n.sym?.code ?? null, rest: !!n.rest, base: n.base, dots: n.dots })),
       types: melody(r).map((n) => durType(n)),
       slurs: melody(r).map((n) => slurMark(n)),
       pitches: melody(r).map((n) => (n.rest ? "R" : n.step + (n.alter > 0 ? "+".repeat(n.alter) : n.alter < 0 ? "-".repeat(-n.alter) : "") + n.octave)),
@@ -358,6 +361,7 @@ export async function alignSongs(opts = {}) {
     let end = i + 1 < startPages.length ? startPages[i + 1] - 1 : doc.numPages;
     for (let p = page; p <= end; p++) if (!pageOf.get(p)?.hasStaff) { end = p - 1; break; }
     const notes = [];
+    const src = [];
     const types = [];
     const slurs = [];
     const pitches = [];
@@ -370,6 +374,7 @@ export async function alignSongs(opts = {}) {
     const lyricGlyphs = {};
     for (let p = page; p <= end; p++) {
       notes.push(...(pageOf.get(p)?.notes ?? []));
+      src.push(...(pageOf.get(p)?.src ?? []));
       types.push(...(pageOf.get(p)?.types ?? []));
       slurs.push(...(pageOf.get(p)?.slurs ?? []));
       pitches.push(...(pageOf.get(p)?.pitches ?? []));
@@ -385,7 +390,7 @@ export async function alignSongs(opts = {}) {
     const titleHit = (pageOf.get(page)?.titles ?? [])
       .map((t) => index.get(/[\u4e00-\u9fff]/.test(t.text) ? "zh:" + normZh(t.text) : "en:" + normEn(t.text)))
       .find(Boolean); // 命中的是**候选数组**（同名曲目不止一首）
-    return { from: page, to: end, notes, types, slurs, pitches, measures, repeats, barStyles, endings, octaves, fifths, verses, lyricGlyphs, titleGlyphs: pageOf.get(page)?.titleGlyphs ?? [], titleHit };
+    return { from: page, to: end, notes, src, types, slurs, pitches, measures, repeats, barStyles, endings, octaves, fifths, verses, lyricGlyphs, titleGlyphs: pageOf.get(page)?.titleGlyphs ?? [], titleHit };
   });
 
 
@@ -583,7 +588,7 @@ export async function alignSongs(opts = {}) {
     usedSpan.add(i);
     usedSong.add(j);
     const sp = spans[i];
-    results.push({ song: songs[j], from: sp.from, to: sp.to, cjkRatio: sp.cjkRatio, notes: sp.notes, types: sp.types, slurs: sp.slurs, pitches: sp.pitches, measures: sp.measures, repeats: sp.repeats, barStyles: sp.barStyles, endings: sp.endings, octaves: sp.octaves, fifths: sp.fifths, verses: sp.verses, lyricGlyphs: sp.lyricGlyphs, titleGlyphs: sp.titleGlyphs });
+    results.push({ song: songs[j], from: sp.from, to: sp.to, cjkRatio: sp.cjkRatio, notes: sp.notes, src: sp.src, types: sp.types, slurs: sp.slurs, pitches: sp.pitches, measures: sp.measures, repeats: sp.repeats, barStyles: sp.barStyles, endings: sp.endings, octaves: sp.octaves, fifths: sp.fifths, verses: sp.verses, lyricGlyphs: sp.lyricGlyphs, titleGlyphs: sp.titleGlyphs });
   }
   results.sort((a, b) => a.from - b.from);
   log(`对上 ${results.length}/${songs.length} 首（其中标题直接命中 ${spans.filter((s) => s.titleHit).length} 个首页；歌词否决 ${vetoed} 对）`);

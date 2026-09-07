@@ -3,6 +3,8 @@
 //   npm run build:cli && node scripts/chorus-symbols.mjs
 //   node scripts/chorus-symbols.mjs --one=宁静 --v
 //   node scripts/chorus-symbols.mjs --scan       # 真扫描件的同口径逐符号评测
+//   node scripts/chorus-symbols.mjs --errors     # 逐条错例 → staff-out/chorus-symbol-errors.json
+//                                                #（形状同 chorus-diff --errors 的音符档，诊断报告直接读）
 //
 // 与 `chorus-diff.mjs` 的分工：那边量的是**音高序列**对不对（音符准确率、音级准确率），
 // 这边量**别的符号**。两边共用同一套声部配对（`buildScore` → 与 GT 的 `<part>`×`<staff>`
@@ -19,12 +21,24 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { openPdf, eachPage, loadCli, loadChorus } from "./node-harness.mjs";
 import { acc, shiftOct } from "./staff-metrics.mjs";
+// 对齐与错因文案只写一处（`chorus-diff.mjs` / 诊断报告共用同一份）
+import { errorList } from "./staff-errors.mjs";
 
 const args = process.argv.slice(2);
 const argOf = (n) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
 const verbose = args.includes("--v");
 const only = argOf("one");
 const scanOnly = args.includes("--scan");
+const wantErrors = args.includes("--errors");
+
+/**
+ * `--errors` 的逐条符号错例。**形状与 `chorus-diff.mjs --errors` 的音符档一致**
+ *（`song/file/staff/cat/kind/got/gt/why/src{page,box}`），诊断报告两份清单一样吃。
+ * 只收**落得到页面坐标**的那几类；拍号、松叶、力度是「份级」的序列比，
+ * 逐条给不出位置，仍只在终端出摘要。
+ */
+const symbolErrors = [];
+const pushErr = (o) => { if (wantErrors) symbolErrors.push(o); };
 
 const cli = await loadCli();
 const look = new cli.RasterGlyphLookup(JSON.parse(await readFile("src/rasteromr/rasterglyphs.json", "utf8")));
@@ -70,6 +84,8 @@ function gtParts(xml) {
       const accid = /<accidental[^>]*>([^<]+)<\/accidental>/.exec(seg)?.[1];
       const rest = /<rest\s*\/?>/.test(seg);
       const slurStart = /<slur[^>]*type="start"/.test(seg);
+      // 连音线（tie）与圆滑线（slur）在 musicxml 里是两套标记，识别侧也是两个字段
+      const tieStart = /<tied[^>]*type="start"/.test(seg) || /<tie[^>]*type="start"/.test(seg);
       const step = /<step>([A-G])<\/step>/.exec(seg)?.[1];
       const oct = /<octave>(-?\d+)<\/octave>/.exec(seg)?.[1];
       if (!rest && (!step || oct === undefined)) continue;
@@ -80,6 +96,7 @@ function gtParts(xml) {
         dots,
         accidental: accid && ACC_ALTER[accid] !== undefined ? ACC_ALTER[accid] : null,
         slurStart,
+        tieStart,
       });
       byStaff.set(key, seq);
     }
@@ -141,13 +158,15 @@ function gotParts(entries) {
         rows.push(ctxOf.get(stf) ?? null);
         const mv = minVoice(stf, byStaff);
         for (const n of (byStaff.get(stf) ?? []).filter((x) => !x.chordExtra && !x.grace && x.voice === mv))
-          seq.push({ pitch: n.rest ? "R" : n.step + n.octave, rest: n.rest, base: n.base, dots: n.dots, accidental: n.accidental, beams: n.beams, slurStart: !!n.slurStart,
+          seq.push({ pitch: n.rest ? "R" : n.step + n.octave, rest: n.rest, base: n.base, dots: n.dots, accidental: n.accidental, beams: n.beams, slurStart: !!n.slurStart, tieStart: !!n.tieStart,
             source: { page: stf.page?.index, box: n.sym.box, code: n.sym.code, stemUp: n.stemUp } });
         // 松叶与力度挂在音符上（`attachWedges` / `attachDynamicTexts`），按音符次序取出来。
         // **只取起头的松叶**，与 GT 侧同口径。
+        // 松叶与力度**带上挂着它的那个音符的盒**：线性记号的错例也要落得回页面
         for (const n of byStaff.get(stf) ?? []) {
-          if (n.wedgeStart) wedges.push(n.wedgeStart);
-          if (n.dynamic) dynamics.push(n.dynamic);
+          const src = { page: stf.page?.index, box: n.sym?.box ?? null };
+          if (n.wedgeStart) wedges.push({ v: n.wedgeStart, src });
+          if (n.dynamic) dynamics.push({ v: n.dynamic, src });
         }
       }
       if (seq.length) out.push({ id: `P${i + 1}.${k + 1}`, seq, rows, wedges, dynamics });
@@ -210,7 +229,7 @@ function pairParts(got, gt) {
 /** SMuFL 谱号名 → GT 的 `<sign>`。 */
 const clefSign = (code) => (code?.startsWith("gClef") ? "G" : code?.startsWith("fClef") ? "F" : code?.startsWith("cClef") ? "C" : null);
 
-const tally = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, timeN: 0, timeOk: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, wedgeAcc: 0, wedgeStaves: 0, dynN: 0, dynGot: 0, dynAcc: 0, dynStaves: 0, slurN: 0, slurOk: 0, slurFalse: 0 };
+const tally = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, timeN: 0, timeOk: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, wedgeAcc: 0, wedgeStaves: 0, dynN: 0, dynGot: 0, dynAcc: 0, dynStaves: 0, slurN: 0, slurOk: 0, slurFalse: 0, tieN: 0, tieOk: 0, tieFalse: 0 };
 const confuse = new Map();
 const reports = [];
 const durationErrors = [];
@@ -242,7 +261,7 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
     const got = gotParts(entries);
     const pairs = pairParts(got, gt);
 
-    const sub = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, dynN: 0, dynGot: 0, slurN: 0, slurOk: 0, slurFalse: 0 };
+    const sub = { durN: 0, durOk: 0, accN: 0, accOk: 0, accFalse: 0, clefN: 0, clefOk: 0, clefMiss: 0, dotsN: 0, dotsOk: 0, wedgeN: 0, wedgeGot: 0, dynN: 0, dynGot: 0, slurN: 0, slurOk: 0, slurFalse: 0, tieN: 0, tieOk: 0, tieFalse: 0 };
     for (const p of pairs) {
       const G = got[p.i];
       const T = gt[p.j];
@@ -254,22 +273,47 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
           const sign = clefSign(c?.clef?.code);
           if (!sign) sub.clefMiss++;
           else if (sign === want) sub.clefOk++;
+          if (sign !== want)
+            pushErr({
+              song: song.name, file, staff: T.id, cat: "clef",
+              kind: sign ? "读错" : "漏掉",
+              gt: want, got: sign ?? null,
+              why: sign ? `谱号读成 ${sign}` : "谱号认不出",
+              src: c?.clef ? { page: c.clef.page?.index ?? c.staff?.page?.index, box: c.clef.box, code: c.clef.code } : null,
+            });
         }
       }
       // 松叶与力度：位置不比（位图路的小节号本来就不可靠），比**出现的序列**
       // ——与拍号那一档同一个口径。数量另记，那是检出率。
+      const gotW = G.wedges.map((x) => x.v);
+      const gotD = G.dynamics.map((x) => x.v);
       sub.wedgeN += T.wedges.length;
       sub.wedgeGot += G.wedges.length;
       if (T.wedges.length) {
-        tally.wedgeAcc += acc(G.wedges, T.wedges, 4);
+        tally.wedgeAcc += acc(gotW, T.wedges, 4);
         tally.wedgeStaves++;
       }
       sub.dynN += T.dynamics.length;
       sub.dynGot += G.dynamics.length;
       if (T.dynamics.length) {
-        tally.dynAcc += acc(G.dynamics, T.dynamics, 4);
+        tally.dynAcc += acc(gotD, T.dynamics, 4);
         tally.dynStaves++;
       }
+      // 线性记号的逐条错例：**位置不比**（位图路的小节号不可靠），比出现的序列；
+      // 多出来的那条能落回页面（挂着它的音符的盒），漏掉的落不到——进「定位不到」。
+      if (wantErrors)
+        for (const [cat, label, gotArr, gtArr] of [
+          ["wedge", "松叶", G.wedges, T.wedges],
+          ["dynamic", "力度", G.dynamics, T.dynamics],
+        ]) {
+          if (!gotArr.length && !gtArr.length) continue;
+          for (const e of errorList(gotArr.map((x) => x.v), gtArr, gotArr.map((x) => x.src), {
+            whySub: () => `${label}读错`,
+            whyIns: () => `凭空多出${label}`,
+            whyDel: () => `漏掉${label}`,
+          }))
+            pushErr({ song: song.name, file, staff: T.id, cat, ...e });
+        }
       // 时值 / 附点 / 临时升降：只在**音高对上的**位置比
       const pr = alignPairs(G.seq.map((x) => x.pitch), T.seq.map((x) => x.pitch));
       for (const [gi, ti] of pr) {
@@ -282,19 +326,55 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
             const k = `${durName(b.base)}→${a.base == null ? "?" : durName(a.base)}`;
             confuse.set(k, (confuse.get(k) ?? 0) + 1);
             durationErrors.push({ song: song.name, file, expected: durName(b.base), actual: a.base == null ? "?" : durName(a.base), pitch: a.pitch, beams: a.beams, ...a.source });
+            pushErr({
+              song: song.name, file, staff: T.id, cat: "duration",
+              kind: "读错", gt: durName(b.base), got: a.base == null ? "?" : durName(a.base),
+              why: `时值 ${k}`, pitch: a.pitch, src: a.source,
+            });
           }
           sub.dotsN++;
           if ((a.dots ?? 0) === b.dots) sub.dotsOk++;
+          else
+            pushErr({
+              song: song.name, file, staff: T.id, cat: "dots",
+              kind: (a.dots ?? 0) > b.dots ? "多出" : "漏掉",
+              gt: String(b.dots), got: String(a.dots ?? 0),
+              why: (a.dots ?? 0) > b.dots ? "凭空多出附点" : "漏掉附点", pitch: a.pitch, src: a.source,
+            });
         }
         // 圆滑线：只在音高对上的位置比（与时值同口径）。GT 说这里起一条，我们起了没有。
+        if (b.tieStart) {
+          sub.tieN++;
+          if (a.tieStart) sub.tieOk++;
+          else
+            pushErr({ song: song.name, file, staff: T.id, cat: "tie", kind: "漏掉", gt: "连音线起点", got: null, why: "漏掉连音线起点", pitch: a.pitch, src: a.source });
+        } else if (a.tieStart) {
+          sub.tieFalse++;
+          pushErr({ song: song.name, file, staff: T.id, cat: "tie", kind: "多出", gt: null, got: "连音线起点", why: "凭空多出连音线", pitch: a.pitch, src: a.source });
+        }
         if (b.slurStart) {
           sub.slurN++;
           if (a.slurStart) sub.slurOk++;
-        } else if (a.slurStart) sub.slurFalse++;
+          else
+            pushErr({ song: song.name, file, staff: T.id, cat: "slur", kind: "漏掉", gt: "圆滑线起点", got: null, why: "漏掉圆滑线起点", pitch: a.pitch, src: a.source });
+        } else if (a.slurStart) {
+          sub.slurFalse++;
+          pushErr({ song: song.name, file, staff: T.id, cat: "slur", kind: "多出", gt: null, got: "圆滑线起点", why: "凭空多出圆滑线", pitch: a.pitch, src: a.source });
+        }
         if (b.accidental != null) {
           sub.accN++;
           if (a.accidental === b.accidental) sub.accOk++;
-        } else if (a.accidental != null) sub.accFalse++;
+          else
+            pushErr({
+              song: song.name, file, staff: T.id, cat: "accidental",
+              kind: a.accidental == null ? "漏掉" : "读错",
+              gt: String(b.accidental), got: a.accidental == null ? null : String(a.accidental),
+              why: a.accidental == null ? "漏掉临时升降号" : "临时升降号读错", pitch: a.pitch, src: a.source,
+            });
+        } else if (a.accidental != null) {
+          sub.accFalse++;
+          pushErr({ song: song.name, file, staff: T.id, cat: "accidental", kind: "多出", gt: null, got: String(a.accidental), why: "凭空多出临时升降号", pitch: a.pitch, src: a.source });
+        }
       }
     }
     // 拍号：比**出现过的拍号**（识别侧的拍号数字对 → 几几拍）
@@ -321,14 +401,15 @@ for (const song of (await loadChorus()).filter((s) => (!only || s.name.includes(
         `  临时升降 ${pct(sub.accOk, sub.accN)}（GT ${sub.accN} 个）  凭空多出 ${sub.accFalse}\n` +
         `  拍号 GT ${gtTime.join(" ") || "—"}  识别 ${[...gotAsTime].join(" ") || "—"}\n` +
         `  松叶 认出 ${sub.wedgeGot}（GT ${sub.wedgeN}）　力度 认出 ${sub.dynGot}（GT ${sub.dynN}）\n` +
-        `  圆滑线 ${pct(sub.slurOk, sub.slurN)}（GT ${sub.slurN} 起，凭空多出 ${sub.slurFalse}）`,
+        `  圆滑线 ${pct(sub.slurOk, sub.slurN)}（GT ${sub.slurN} 起，凭空多出 ${sub.slurFalse}）\n` +
+        `  连音线 ${pct(sub.tieOk, sub.tieN)}（GT ${sub.tieN} 起，凭空多出 ${sub.tieFalse}）`,
     );
     if (verbose) {
       for (const p of pairs) {
         if (gt[p.j].dynamics.length || got[p.i].dynamics.length)
-          console.log(`    ${got[p.i].id}↔${gt[p.j].id} 力度 识别[${got[p.i].dynamics.join(" ")}] GT[${gt[p.j].dynamics.join(" ")}]`);
+          console.log(`    ${got[p.i].id}↔${gt[p.j].id} 力度 识别[${got[p.i].dynamics.map((x) => x.v).join(" ")}] GT[${gt[p.j].dynamics.join(" ")}]`);
         if (gt[p.j].wedges.length || got[p.i].wedges.length)
-          console.log(`    ${got[p.i].id}↔${gt[p.j].id} 松叶 识别[${got[p.i].wedges.map((w)=>w[0]).join("")}] GT[${gt[p.j].wedges.map((w)=>w[0]).join("")}]`);
+          console.log(`    ${got[p.i].id}↔${gt[p.j].id} 松叶 识别[${got[p.i].wedges.map((w) => w.v[0]).join("")}] GT[${gt[p.j].wedges.map((w)=>w[0]).join("")}]`);
       }
       for (const p of pairs) console.log(`    ${got[p.i].id}(${got[p.i].seq.length}) ↔ ${gt[p.j].id}(${gt[p.j].seq.length}) 音高 ${(p.a * 100).toFixed(1)}%`);
     }
@@ -359,9 +440,29 @@ const summary = {
   wedgeAcc: rate(tally.wedgeAcc, tally.wedgeStaves),
   dynamicAcc: rate(tally.dynAcc, tally.dynStaves),
   slurAcc: rate(tally.slurOk, tally.slurN),
+  tieAcc: rate(tally.tieOk, tally.tieN),
 };
 await mkdir("staff-out", { recursive: true });
 // `--one` 只跑一首，别拿它的结果盖掉整份语料的报表（另存一份带曲名的）。
 const output = `staff-out/chorus-symbols-${scanOnly ? "scan" : "clean"}${only ? "-" + only : ""}.json`;
 await writeFile(output, JSON.stringify({ summary, tally, reports, durationConfusions: Object.fromEntries(confuse), durationErrors }, null, 2));
 console.log(`→ ${output}`);
+
+if (wantErrors) {
+  // **按类别各排各的**：时值、附点、升降号、谱号、圆滑线的分母各不相同，
+  // 混一张表占比就没有意义（同 `chorus-diff --errors` 的分档理由）。
+  const CATS = [["clef", "谱号"], ["duration", "时值"], ["dots", "附点"], ["accidental", "临时升降"],
+    ["slur", "圆滑线"], ["tie", "连音线"], ["wedge", "松叶"], ["dynamic", "力度"]];
+  for (const [cat, label] of CATS) {
+    const rows0 = symbolErrors.filter((e) => e.cat === cat);
+    if (!rows0.length) continue;
+    const t = new Map();
+    for (const e of rows0) t.set(e.why, (t.get(e.why) ?? 0) + 1);
+    console.log(`\n【${label}错因排行】共 ${rows0.length} 处`);
+    for (const [why, n] of [...t].sort((a, b) => b[1] - a[1]).slice(0, 12))
+      console.log(`  ${String(n).padStart(5)}  ${((100 * n) / rows0.length).toFixed(1).padStart(5)}%  ${why}`);
+  }
+  const errOut = `staff-out/chorus-symbol-errors${scanOnly ? "-scan" : ""}${only ? "-" + only : ""}.json`;
+  await writeFile(errOut, JSON.stringify(symbolErrors, null, 1));
+  console.log(`\n→ ${errOut}（${symbolErrors.length} 条，带页码与盒）`);
+}

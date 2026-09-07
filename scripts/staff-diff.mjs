@@ -3,6 +3,7 @@
 //   npm run build:cli && node staff-diff.mjs              # 全书
 //   node staff-diff.mjs --one=赞美之泉                    # 只跑标题含该串的曲子
 //   node staff-diff.mjs --bless                           # 重写基线
+//   node staff-diff.mjs --errors [--one=…]                # 逐条错误清单（带页码与盒）
 //
 // **基准一律是 GT 的 musicxml**。识别与曲目对齐都在 `scripts/staff-align.mjs`
 // （与 gen-stafflyrics.mjs 共用），这里只留对拍与记账。
@@ -10,6 +11,8 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { alignSongs } from "./staff-align.mjs";
 // **对拍判据只写在 staff-metrics.mjs 一处**，位图路那条（chorus-diff.mjs）共用同一份
 import { acc, shiftOct, shiftStep, shiftPitch, keyShift, letters, lyricNorm as lyricNorm0 } from "./staff-metrics.mjs";
+// 错误清单与错因归类也只写一处（位图路那条共用同一份）
+import { errorList } from "./staff-errors.mjs";
 const lyricNorm = (s) => lyricNorm0(t2s, s);
 
 const args = process.argv.slice(2);
@@ -18,6 +21,9 @@ const verbose = args.includes("--v");
 const only = argOf("one");
 
 const { results, songs, t2s } = await alignSongs();
+
+/** `--errors` 的逐条错误清单（口径同位图路的 `chorus-diff.mjs --errors`）。 */
+const errorRows = [];
 
 // ── 对拍 ────────────────────────────────────────────────────────────────────
 let sumN = 0, sumT = 0, sumL = 0, sumS = 0, sumP = 0, sumV = 0, nV = 0, nMismatch = 0, exact = 0, shifted = 0;
@@ -71,6 +77,12 @@ for (const r of results) {
   const scriptMismatch = av !== null && (r.cjkRatio < 0.2 || gotLen < gtV.length * 0.4);
   if (av !== null && !scriptMismatch) { sumV += av; nV++; }
   if (scriptMismatch) nMismatch++;
+  // ── `--errors`：把每一个错误落回页面坐标，按类型归因 ────────────────
+  // **比的是与准确率同一条序列**（已按调号/八度对齐过的 `rNotes`），
+  // 否则清单里会冒出整首平移那种假错。
+  if (args.includes("--errors"))
+    for (const e of errorList(shiftOct(rNotes, oct), r.song.notes, r.src))
+      errorRows.push({ song: r.song.zh || r.song.en, id: r.song.id, file: r.song.file, staff: "melody", ...e });
   sumN += an; sumT += at; sumL += al; sumS += as; sumP += ap;
   if (an === 1) exact++;
   rows.push({ id: r.song.id, zh: r.song.zh, en: r.song.en, p: `${r.from}-${r.to}`, gt: r.song.notes.length, got: r.notes.length, an, al, at, as, ap, av, oct, gtM: r.song.measures, gotM: r.measures,
@@ -161,6 +173,23 @@ const now = {
   // 小节数与反复只记**合计**，不进「不许变差」的门槛：
   // 逐首完全相同的只有个位数，噪声比信号大（见文档「现状与待办」）。
 };
+// ── `--errors` 汇总：按错因大类排行，逐条清单落盘（带页码与盒，可直接裁图） ──
+if (args.includes("--errors")) {
+  // **只收「数目相当」那一档**，与准确率的分母同口径：谱面用反复记号、GT 写成两遍的
+  // 那些曲子（GT125→179）逐音对齐必然满屏「多出音符」，那是表述不一致不是读错，
+  // 混进排行就把真正的错因淹掉了（实测占到 71%）。
+  const sizedIds = new Set(sized.map((r) => r.id));
+  const rowsE = errorRows.filter((e) => sizedIds.has(e.id));
+  const tally = new Map();
+  for (const e of rowsE) tally.set(e.why, (tally.get(e.why) ?? 0) + 1);
+  console.log(`\n【错因排行】共 ${rowsE.length} 处（${sized.length} 首「数目相当」的曲子；另有 ${errorRows.length - rowsE.length} 处出自结构不一致的曲子，不计）`);
+  for (const [why, n] of [...tally].sort((a, b) => b[1] - a[1]))
+    console.log(`  ${String(n).padStart(5)}  ${((100 * n) / Math.max(1, rowsE.length)).toFixed(1).padStart(5)}%  ${why}`);
+  await mkdir("staff-out", { recursive: true });
+  await writeFile("staff-out/staff-errors.json", JSON.stringify(rowsE, null, 1));
+  console.log(`→ staff-out/staff-errors.json（${rowsE.length} 条，带页码与盒）`);
+}
+
 if (args.includes("--bless") || only) {
   if (!only) {
     await mkdir("testdata/赞美之泉", { recursive: true });
