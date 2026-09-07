@@ -311,6 +311,13 @@ slur-tie **99.8%**、歌词 **99.5%**。只剩两个已知缺口：世上所有�
 回归脚本：`node scripts/measure-all.mjs`（自动扫 `testdata/` 每个歌谱文件夹，需本地 Edge；用 `window.__omr` 跑真实管线；
 可加子串参数只测部分曲，如 `node scripts/measure-all.mjs 从前`）。**每首之间重载页面**——App/Score 在同一 page 里
 复用会串味（「爱是不保留」单跑 slur/歌词 100%，跟在别的歌谱后面跑掉到 60%/42%），基线因此不可复现。
+**语料的两种摆法与两种 GT 载体**：`testdata/<曲名>/`（一张图 + GT）是原来那种；按歌本归拢的
+写作 `testdata/<歌本>/<曲名>/`，扫描时**往下多找一层**（`measure-all.mjs::songAt` /
+`harness.mjs::findSongFixtures`），曲名前缀歌本名以免不同歌本重名。GT 载体除 `.jpwabc` 外还认
+**诗歌本文本谱 `gt.shige.pu`**，诗歌本那批语料统一用后者——混合拍的多拍号与曲中转拍号 `.jpwabc`
+根本写不下（`KeyAndMeters` 只放得下一个拍号）。比对时它先在页面里过 `puToMusicXml` → 导入 →
+`getText()` 折成 jpwabc，与识别侧走的是同一条 musicxml → 导入 路径，故下面那套 token 判据一份就够。
+
 `testdata/` 14 首**都已有人工核对过的 `.jpwabc` GT**（UTF-16LE + BOM，**必须 LF**：`.Words` 解析按 `\n`
 切行，CRLF 会把 `\r` 当歌词字符、每行报一次 `unsupported char?`）。GT 用 `node scripts/check-gt.mjs [子串]` 校验
 （逐个 setText，报页数/排版行数/控制台错误）。GT 的小节线口径：曲末终止线写 `|]`，段落双纵线仍写 `|`
