@@ -553,14 +553,23 @@ function stage(sec) {
   const nCat = new Map(), nKind = new Map();
   const errRects = sec.errors
     .map((e, i) => {
-      if (!e.mark) return "";
+      if (!e.mark) return null;
       const { css: c, key } = kindOf(e);
       const cat = e.cat ?? "note";
       nCat.set(cat, (nCat.get(cat) ?? 0) + 1);
       nKind.set(key, (nKind.get(key) ?? 0) + 1);
-      const at = `class="ec" data-cat="${cat}" data-kind="${key}"`;
-      return `<rect ${at} x="${e.mark.x.toFixed(1)}" y="${e.mark.y.toFixed(1)}" width="${e.mark.w.toFixed(1)}" height="${e.mark.h.toFixed(1)}" stroke="${c}"/><text ${at} x="${e.mark.x.toFixed(1)}" y="${(e.mark.y - 3).toFixed(1)}" fill="${c}">${i + 1}</text>`;
+      // hover 提示：文字与下面的错例块同源（`errFields`），只是不带图
+      const at = `class="ec" data-cat="${cat}" data-kind="${key}" data-tip="${esc(errPlain(e, i))}" data-color="${c}"`;
+      return {
+        area: e.mark.w * e.mark.h,
+        svg: `<rect ${at} x="${e.mark.x.toFixed(1)}" y="${e.mark.y.toFixed(1)}" width="${e.mark.w.toFixed(1)}" height="${e.mark.h.toFixed(1)}" stroke="${c}"/><text ${at} x="${e.mark.x.toFixed(1)}" y="${(e.mark.y - 3).toFixed(1)}" fill="${c}">${i + 1}</text>`,
+      };
     })
+    .filter(Boolean)
+    // **大框先画、小框后画**：漏音那种框横跨半行谱，常常整个套住旁边音符的小框。
+    // SVG 后画的在上层、也先被命中，这样 hover 到的总是**最贴切的那一条**。
+    .sort((a, b) => b.area - a.area)
+    .map((x) => x.svg)
     .join("");
   // **错例两组开关，取交集**：一组筛类别（这一页的时值错都落在哪儿？），
   // 一组筛性质（漏的那些是不是挤在同一段墨上？）。混在一起就只能一条条数。
@@ -584,16 +593,46 @@ function stage(sec) {
   </div>`;
 }
 
+/**
+ * 一条错例的**字段**。底图上的 hover 提示与下面的错例块**读同一份**
+ * ——两处各拼一遍，改了一处忘了另一处，说明就对不上了。
+ * 返回 `[[标签, 值], …]`，值已是纯文本。
+ */
+function errFields(e) {
+  const f = [
+    ["类别", catLabel(e.cat)],
+    ["GT", e.gt ?? "—"],
+    ["识别", e.got ?? "—"],
+  ];
+  if (e.step != null) f.push(["级差", `${e.step > 0 ? "+" : ""}${e.step}`]);
+  if (e.pitch) f.push(["音", e.pitch]);
+  f.push(["错因", e.why]);
+  const c = clefs.get(e.staff);
+  f.push(["谱行", `${e.staff ?? "—"}${c ? `（${c.text}${c.name ? ` · ${c.name}` : ""}）` : ""}`]);
+  if (e.mark) f.push(["位置", `${e.mark.x | 0},${e.mark.y | 0}`]);
+  if (e.blame)
+    f.push([
+      "病因",
+      `${e.blame.size.replace(/\*\*/g, "")}${e.blame.w != null ? `　这团墨 ${e.blame.w.toFixed(1)}×${e.blame.h.toFixed(1)} 格` : ""}` +
+        `${e.blame.claims?.length ? `　被 ${countUp(e.blame.claims)} 认走` : e.blame.contour ? "　没人认领" : ""}`,
+    ]);
+  return f;
+}
+
+/** 同上，拼成一行纯文本（底图上 hover 时显示的就是它）。 */
+const errPlain = (e, i) => `#${i + 1} ${e.kind}　` + errFields(e).map(([k, v]) => `${k} ${v}`).join("　");
+
 /** 一条错例。裁图超出 `--max` 时只出文字，不出图。 */
 function errBox(e, i) {
   const c = kindOf(e).css;
+  const F = Object.fromEntries(errFields(e));
   let h = `<div class="errbox" style="border-color:${c};border-left-width:6px"><b style="color:${c}">#${i + 1} ${esc(e.kind)}</b>
-    <span class="cat">${esc(catLabel(e.cat))}</span>　
-    GT=<span class="ok">${esc(e.gt ?? "—")}</span> → 识别 <span class="bad">${esc(e.got ?? "—")}</span>
-    ${e.step != null ? `　级差 ${e.step > 0 ? "+" : ""}${e.step}` : ""}
-    ${e.pitch ? `　音 ${esc(e.pitch)}` : ""}
-    　错因 <span class="why">${esc(e.why)}</span>　谱行 ${esc(e.staff ?? "—")}${clefText(e.staff)}
-    ${e.mark ? `　位置 ${e.mark.x | 0},${e.mark.y | 0}` : ""}`;
+    <span class="cat">${esc(F["类别"])}</span>　
+    GT=<span class="ok">${esc(F["GT"])}</span> → 识别 <span class="bad">${esc(F["识别"])}</span>
+    ${F["级差"] ? `　级差 ${esc(F["级差"])}` : ""}
+    ${F["音"] ? `　音 ${esc(F["音"])}` : ""}
+    　错因 <span class="why">${esc(F["错因"])}</span>　谱行 ${esc(e.staff ?? "—")}${clefText(e.staff)}
+    ${F["位置"] ? `　位置 ${esc(F["位置"])}` : ""}`;
   if (e.blame)
     h += `<div>病因（<code>blameGap</code>，同 <code>raster-gap.mjs</code>）：${bold(e.blame.size)}${
       e.blame.w != null ? `　这团墨 ${e.blame.w.toFixed(1)}×${e.blame.h.toFixed(1)} 格` : ""
@@ -710,6 +749,11 @@ async function writeReport(rep) {
  .stage svg{position:absolute;inset:0;width:100%;height:100%}
  .stage svg rect{fill:none;stroke-width:1.6;vector-effect:non-scaling-stroke}
  .stage svg text{font:bold 11px sans-serif}
+ /* 错例框要 hover 得到：fill:none 的矩形默认只有描边能命中，框细的时候点不着 */
+ .stage svg .ec{pointer-events:all;cursor:help}
+ #tip{position:fixed;z-index:99;display:none;max-width:560px;background:#fffdf5;border:1px solid #ccc;
+      border-left-width:6px;border-radius:6px;padding:7px 11px;font-size:13px;line-height:1.6;
+      box-shadow:0 3px 12px rgba(0,0,0,.18);pointer-events:none}
  .ctl{margin:10px 0 4px;font-size:13px} .ctl label{margin-right:14px;white-space:nowrap}
  .ctl .sep{color:#999;margin-right:10px}
  .bad{color:#e11;font-weight:bold} .ok{color:#080;font-weight:bold}
@@ -729,6 +773,7 @@ async function writeReport(rep) {
 <b>错例配色</b>（底图叠加框 / 裁图里的圈 / 错例块边条，三处同一套）：${ERR_LEGEND}<br>
 裁图<b>纵向取整行谱</b>（五条线 + 上下三格的加线区），不然看不出那个头骑在第几线上；框圈的就是出错的那个音。
 每条错例标着<b>那一行谱的 GT 谱号</b>，数线判音高用。</div>
+<div id="tip"></div>
 <div class="panel on" id="pl-ov">${ov}</div>
 ${panels.map((p) => `<div class="panel" id="pl-${p.tag}"><h2>第 ${p.pn} 页</h2>${p.html}</div>`).join("")}
 <script>
@@ -742,6 +787,38 @@ document.querySelectorAll("nav a").forEach((a) =>
   a.addEventListener("click", (ev) => { ev.preventDefault(); show(a.dataset.panel); }));
 document.querySelectorAll("[data-goto]").forEach((a) =>
   a.addEventListener("click", (ev) => { ev.preventDefault(); document.getElementById(a.dataset.goto)?.scrollIntoView(); }));
+// 底图上的错例框：hover 出说明（文字与下面的错例块同一份，只是不带图）。
+const tip = document.getElementById("tip");
+/** 鼠标底下的错例框：有好几个套在一起时**取最小的那个**（大框多半是漏音的整段）。 */
+const hitEc = (x, y) => {
+  const all = document.elementsFromPoint(x, y).filter((el) => el.classList?.contains("ec") && el.style.display !== "none");
+  if (!all.length) return null;
+  const area = (el) => (el.tagName === "rect" ? el.width.baseVal.value * el.height.baseVal.value : 0);
+  return all.reduce((best, el) => (best === null || area(el) < area(best) ? el : best), null);
+};
+document.addEventListener("mouseover", (ev) => {
+  const el = hitEc(ev.clientX, ev.clientY);
+  if (!el) return;
+  tip.textContent = el.dataset.tip;
+  tip.style.borderLeftColor = el.dataset.color;
+  tip.style.display = "block";
+});
+document.addEventListener("mousemove", (ev) => {
+  const el = hitEc(ev.clientX, ev.clientY);
+  if (!el) { tip.style.display = "none"; return; }
+  if (tip.textContent !== el.dataset.tip) {
+    tip.textContent = el.dataset.tip;
+    tip.style.borderLeftColor = el.dataset.color;
+  }
+  tip.style.display = "block";
+  // 贴着鼠标右下，撞到右/下边就翻到另一侧
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = (ev.clientX + 14 + w > innerWidth ? ev.clientX - 14 - w : ev.clientX + 14) + "px";
+  tip.style.top = (ev.clientY + 16 + h > innerHeight ? ev.clientY - 16 - h : ev.clientY + 16) + "px";
+});
+document.addEventListener("mouseout", (ev) => {
+  if (ev.target.closest?.(".ec")) tip.style.display = "none";
+});
 // 叠加层开关：图层各管各的；错例要**类别与性质都勾上**才显示（两组取交集）。
 document.querySelectorAll(".ctl").forEach((ctl) => {
   const st = document.getElementById("st-" + ctl.dataset.for);
