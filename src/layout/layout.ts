@@ -3013,7 +3013,9 @@ export class Line {
     for (const seg of segs) {
       if (seg.m.endingLeft) {
         flush(false);
-        num = seg.m.endingNum && seg.m.endingNum.size ? [...seg.m.endingNum].sort((a, b) => a - b).join(".") + "." : "";
+        // 有原文就照原文画（MusicXML `<ending>` 的元素文本），否则按房号集合拼「1.2.3.」。
+        num = seg.m.endingText
+          ?? (seg.m.endingNum && seg.m.endingNum.size ? [...seg.m.endingNum].sort((a, b) => a - b).join(".") + "." : "");
       }
       if (num === null) continue;
       notes.push(...seg.notes);

@@ -295,7 +295,14 @@ function parseBarline(m: Measure, blEl: Element, st: MState): void {
   const ending = elem(blEl, "ending");
   if (ending) {
     if (loc === "left") {
-      m.endingNum = m.parseEndingNum(ending.getAttribute("number"));
+      // `<ending>` 的**元素文本**才是给人看的房号，`number` 属性只是「适用于第几遍」的机读列表；
+      // 文本为空时才回落到属性。两者不一致的谱不少见（Finale 常写 number="1" 而文本 "1.2.3."），
+      // 此时以文本为准：房号既决定显示，也决定演唱遍数（getPassCountByEnding / endingActive），
+      // 照属性走会把「1.2.3./4.」这种 4 遍的谱当成 2 遍。文本里没有数字（"ad lib." 之类）才用属性。
+      const text = (ending.textContent ?? "").trim();
+      m.endingText = text || null;
+      const digits = text.match(/\d+/g);
+      m.endingNum = m.parseEndingNum(digits ? digits.join(",") : ending.getAttribute("number"));
       m.endingLeft = true;
     } else {
       m.endingRight = (ending.getAttribute("type") as StartStopDiscontinue) ?? null;

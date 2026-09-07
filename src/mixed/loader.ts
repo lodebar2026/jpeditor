@@ -226,7 +226,7 @@ class PartLoader {
   lrcExtendPts: { note: MNote; lrc: MLyric; tick: Fraction; stop: boolean }[] = [];
   // 本声部自己的 ending 端点（print-object="no" 不计入），对齐 musicpp 按 part 收集，
   // 避免反复记号在每个声部都被画一遍。
-  endingPts: { mif: MeasureInfo; nums: Set<number>; start: boolean; stop: boolean }[] = [];
+  endingPts: { mif: MeasureInfo; nums: Set<number>; text: string; start: boolean; stop: boolean }[] = [];
 
   // 琶音：当前小节内按 offset 聚合的音符（loadMeasure 末尾成组）。
   arpegNotes = new Map<string, MNote[]>();
@@ -1128,15 +1128,18 @@ class PartLoader {
     // print-object="no" 的 ending 不参与绘制（parser.cpp::processEnding 1232）；ending 端点按
     // 本声部收集（musicpp 逐声部读 barline），否则全局 MeasureInfo 会让每个声部都画一遍。
     if (endingEl && endingEl.getAttribute("print-object") !== "no") {
-      const nums = parseEndingNums(endingEl.getAttribute("number") ?? "");
+      // 房号以元素文本为准、属性兜底（同 score/musicxml.ts parseBarline）：文本才是给人看的
+      // 那串「1.2.3.」，number 属性只说这一房适用于第几遍，两者常不一致。
+      const text = (endingEl.textContent ?? "").trim();
+      const nums = parseEndingNums(text.match(/\d+/g)?.join(",") ?? endingEl.getAttribute("number") ?? "");
       if (nums.size > 0) {
         const ty = endingEl.getAttribute("type");
         if (loc === "left") {
-          if (ty === "start") this.endingPts.push({ mif, nums, start: true, stop: false });
+          if (ty === "start") this.endingPts.push({ mif, nums, text, start: true, stop: false });
         } else {
-          if (ty === "stop") this.endingPts.push({ mif, nums, start: false, stop: true });
+          if (ty === "stop") this.endingPts.push({ mif, nums, text, start: false, stop: true });
           else if (ty === "discontinue")
-            this.endingPts.push({ mif, nums, start: false, stop: false });
+            this.endingPts.push({ mif, nums, text, start: false, stop: false });
         }
       }
     }
@@ -1263,11 +1266,12 @@ class PartLoader {
    *  相邻两两配对。左反复记号（start）在小节起点，右反复记号（stop/discontinue）在小节末端。
    *  此处 mif.offset 已在 PartLoader 主循环里赋为绝对 tick，可直接取用。 */
   private processEnding(): void {
-    type EndingPt = { tick: Fraction; mif: MeasureInfo; nums: Set<number>; stop: boolean };
+    type EndingPt = { tick: Fraction; mif: MeasureInfo; nums: Set<number>; text: string; stop: boolean };
     const pts: EndingPt[] = this.endingPts.map((p) => ({
       tick: p.start ? p.mif.offset : p.mif.endTick(),
       mif: p.mif,
       nums: p.nums,
+      text: p.text,
       stop: p.stop,
     }));
     pts.sort((a, b) => a.tick.compareTo(b.tick));
@@ -1279,7 +1283,7 @@ class PartLoader {
       end.endTick = b.tick;
       end.startMeasure = a.mif;
       end.endMeasure = b.mif;
-      end.number = [...a.nums].sort((x, y) => x - y).join(",");
+      end.number = a.text || [...a.nums].sort((x, y) => x - y).join(",");
       end.hasStop = b.stop;
     }
   }
