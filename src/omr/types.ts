@@ -73,6 +73,9 @@ export interface JpNum {
   // 延续由下游各自处理（MusicXML 那路在 musicxml.ts 里带状态输出 <alter>，
   // .jpwabc/文本谱那路照原样写记号、由 jppitch.ts::applyJpPitch 延续）。
   accidental?: "sharp" | "flat" | "natural";
+  // 延长记号（fermata 𝄐，谱面上是音符头顶一段小弧、弧下扣一个点）。
+  // → MusicXML `<notations><fermata/>`；文本谱写作音符后的 `&yc`；.jpwabc 是 `{YanYin}`。
+  fermata?: boolean;
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */
@@ -84,6 +87,9 @@ export interface StaffRow {
   // 本行里印着的转拍号（「3/4」），按 x 排序。音符流里已把这两个数字摘掉，
   // 值同时锚到右侧第一个音符的 `JpNum.timeChange` 上；这里留 bbox 供识别模式按原位叠加。
   meters?: { x: number; beats: number; beatType: number; bbox: Rect }[];
+  // 行末那道小节线是不是**终止线**（细+粗两根并排 ‖）。→ MusicXML `<bar-style>light-heavy`、
+  // 文本谱 `|||`（诗歌本）/`||`（番茄）。反复线由 JpNum.repeatBackward 另管，两者不叠。
+  finalBarline?: "end";
 }
 
 /** 一处带源图坐标的识别文本（页眉/歌词），供识别模式按原位、原字号叠加。 */

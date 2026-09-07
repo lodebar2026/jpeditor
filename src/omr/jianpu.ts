@@ -688,11 +688,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     // 的最大高度设相对门（<0.6×行内最高 → 丢弃）即可干净分开——基督更美 h44<0.6×118 被剔，而日光
     // (45~70)、世上(真 35~49)行内最高与真线同簇，整簇保留。绝对/字号比阈值跨图不通，故用行内相对。
     const maxH = Math.max(0, ...spanning.map((b) => b.bbox.h));
-    const barlineXs = spanning
-      .filter((b) => b.bbox.h >= maxH * 0.6)
-      .map((b) => rcx(b.bbox))
-      .sort((a, b) => a - b);
-    return { rd, topY, botY, barlineXs };
+    const real = spanning.filter((b) => b.bbox.h >= maxH * 0.6).sort((a, b) => rcx(a.bbox) - rcx(b.bbox));
+    const barlineXs = real.map((b) => rcx(b.bbox));
+    return { rd, topY, botY, barlineXs, bars: real };
   });
 
   // 关键启发式：乐谱行有小节线穿过，歌词/标题行没有。先筛出乐谱行，
@@ -756,11 +754,59 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   }
 
   const dotSizes: number[] = []; // 累积所有被采纳的八度点/附点源图直径 → 取中位数当统计点径
+  // 终止线：谱末那道 ‖ 是细线加粗线并排（16《爱心的功课》实测 5px + 8px、相距 5px，
+  // 而普通小节线 4px）。两根线都各自进了 barlineXs（中间切出的空小节由 measuresOfRow 滤掉），
+  // 这里只认「行末最后两根挨着、其中一根明显更粗」这一形，标在该行上供下游写成 `|||` / light-heavy。
+  {
+    const medW = median(staff.flatMap((m) => m.bars.map((b) => b.bbox.w))) || 1;
+    for (const m of staff) {
+      const n = m.bars.length;
+      if (n < 2) continue;
+      const last = m.bars[n - 1], prev = m.bars[n - 2];
+      if (rcx(last.bbox) - rcx(prev.bbox) > numH * 0.5) continue;      // 不是并排的两根
+      if (Math.max(last.bbox.w, prev.bbox.w) < medW * 1.5) continue;   // 没有明显更粗的那根
+      (m as { finalBarline?: "end" }).finalBarline = "end";
+    }
+  }
+
+  // 延长记号（fermata 𝄐）：音符头顶一段小弧、弧下扣一个点。整块只有半个字号宽，够不着
+  // detectSlurs 的圆滑线判据（那里要求宽 ≥0.8 字号），弧本身常连归类都轮不上；而弧下那个点
+  // 正落在八度点的窗口里，于是 16《爱心的功课》末行的 `5·6̂ 7̂` 读成了 `5. 6̇ 7̇`（高了一个八度）。
+  // 判据：宽薄小弧（0.5~1.3 字号宽、扁平）+ 正下方居中的一个小点 + 再下方紧跟着数字。
+  const fermataOf = new Map<DigitCore, boolean>();
+  const fermataDots = new Set<Component>();
+  for (const m of staff) {
+    const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
+    for (const arc of comps) {
+      const ab = arc.bbox;
+      if (ab.w < numH * 0.5 || ab.w > numH * 1.3) continue;
+      if (ab.h < numH * 0.15 || ab.h > numH * 0.45 || ab.w / ab.h < 1.8) continue;
+      const dotC = c.dots.find((o) => {
+        const ob = o.bbox;
+        return Math.abs(rcx(ob) - rcx(ab)) <= numH * 0.25 && ob.y >= ab.y &&
+          ob.y - rbottom(ab) <= numH * 0.25 && ob.w <= numH * 0.4;
+      });
+      if (!dotC) continue;
+      const owner = m.rd.find((k) => Math.abs(rcx(k.bbox) - rcx(ab)) <= numH * 0.3 &&
+        k.bbox.y - rbottom(dotC.bbox) >= -2 && k.bbox.y - rbottom(dotC.bbox) <= numH * 0.5 &&
+        k.bbox.h >= medH * 0.85);
+      if (!owner) continue;
+      fermataOf.set(owner, true);
+      fermataDots.add(dotC);
+    }
+  }
+  // 弧下那个点不是八度点，别让 buildJpNums 收走。
+  if (fermataDots.size) c.dots = c.dots.filter((o) => !fermataDots.has(o));
+
   const allRows: StaffRow[] = staff.map((m) => {
     const nums = buildJpNums(bin, m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes);
     // buildJpNums 与 rd 一一对应，故按下标把摘出来的变音记号挂回它所修饰的那个音符。
-    m.rd.forEach((k, j) => { const a = accidentals.get(k); if (a && nums[j]) nums[j].accidental = a; });
-    return { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums };
+    m.rd.forEach((k, j) => {
+      const a = accidentals.get(k); if (a && nums[j]) nums[j].accidental = a;
+      if (fermataOf.get(k) && nums[j]) nums[j].fermata = true;
+    });
+    return { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums,
+      finalBarline: (m as { finalBarline?: "end" }).finalBarline };
   });
 
   // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是

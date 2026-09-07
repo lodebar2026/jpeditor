@@ -262,8 +262,17 @@ export function toPuText(
         tb.push(` ["${endingStart}"`);
         pendingVolta = true;
       }
+      // 减时线的连断：文本谱把相邻两个带减时线的音符自动连成一条线，满一拍才断
+      // （`pu/layout.ts::computeUnderlines` 按 `floor(beat)` 分组）。为免读谱的一方不按拍子连，
+      // **凡跨过整拍的地方都显式写 `^`**（强制断开）。拍位以四分音符为 1、每小节从头算，
+      // 与 pu 那边同一口径；增时线也占拍，故一并累加。
+      const beatsOf = (n: JpNum) => (1 / Math.pow(2, n.div)) * (n.dot > 0 ? 1.5 : 1) + n.augment;
+      let prevNote: JpNum | null = null, prevBeat = 0, beat = 0;
       for (const n of notes) {
         tb.push(" ");
+        if (prevNote && prevNote.div > 0 && n.div > 0 &&
+            Math.floor(prevBeat + 1e-9) !== Math.floor(beat + 1e-9)) tb.push("^");
+        prevNote = n; prevBeat = beat; beat += beatsOf(n);
         tb.push("(".repeat(opens.get(noteIdx) ?? 0)); // 弧线起点在音符**之前**
         meta.noteRanges[noteIdx] = tb.push(noteToken(n, dialect));
         // 休止本不跟词；识别到它带词时补 `@` 翻转 lyricAnchor，否则歌词整行错位
@@ -272,6 +281,8 @@ export function toPuText(
         // 写在前面会挂到上一个音符上（行首更是无处可挂，直接丢）。两条注释可以连着写，
         // 解析端 applyQuoted 分别落到 chord 与 annotation 两个字段上，不互相覆盖。
         // 拍内偏移（chordOffset）在文本谱里表达不了，就近挂本音符（有损，MusicXML 那路保得住）。
+        // 延长记号：文本谱写作音符后的 `&yc`（parse.ts 的 NOTE_COMMANDS）。
+        if (n.fermata) tb.push("&yc");
         if (n.chord) tb.push(`"hx:${n.chord}"`);
         if (n.sectionMark) tb.push(`"${n.sectionMark}"`);
         tb.push(")".repeat(closes.get(noteIdx) ?? 0)); // 收弧要在增时线之前，弧才止于本音符
@@ -304,7 +315,7 @@ export function toPuText(
     if (pendingVolta) tb.push(" ]"); // 房号跨到行末未闭合：就地收口，免得整行的 `[` 悬空
     // 行末小节线：反复记号必须写出；普通线只在图上有时写（开口收尾说明这小节跨到下一行，不可凭空补）
     if (pendingRight !== null) writeBarline(pendingRight);
-    else if (rowEndsClosed(row)) writeBarline("normal");
+    else if (rowEndsClosed(row)) writeBarline(row.finalBarline === "end" ? "end" : "normal");
     else if (pendingJump) tb.push(`&${pendingJump}`); // 行末没有小节线可挂，退而挂在末音符上
     pendingJump = null;
     tb.push("\n");
