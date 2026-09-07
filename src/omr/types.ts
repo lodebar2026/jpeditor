@@ -69,6 +69,10 @@ export interface JpNum {
   // 曲中转拍号：谱面上「3/4」直接印在谱行里（多见于混合拍的曲子），锚在**其右侧第一个音符**上，
   // MusicXML 输出时提升为该小节的 `<attributes><time>`（下游 score/musicxml.ts 收进 Measure.timeChange）。
   timeChange?: { beats: number; beatType: number };
+  // 临时升降号（印在数字左侧的 ♯/♭/♮）。按简谱规矩在**小节内延续**到同数字的后续音符——
+  // 延续由下游各自处理（MusicXML 那路在 musicxml.ts 里带状态输出 <alter>，
+  // .jpwabc/文本谱那路照原样写记号、由 jppitch.ts::applyJpPitch 延续）。
+  accidental?: "sharp" | "flat" | "natural";
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */
