@@ -293,9 +293,11 @@ export function toPuText(
 
     // ---- 歌词行 ----
     const verses = row.nums.reduce((m, n) => Math.max(m, n.lyrics?.length ?? 0), 0);
+    // 只有一段歌词时行首写 `C:`（不带段号）；多段才写 `C1:` `C2:` …
+    const numbered = verses > 1;
     for (let v = 0; v < verses; v++) {
       if (!row.nums.some((n) => n.lyrics?.[v])) continue;
-      tb.push(`C${v + 1}:`);
+      tb.push(numbered ? `C${v + 1}:` : "C:");
       let prevToken = "";
       row.nums.forEach((n, k) => {
         // 跟词的只有唱名音符（与解析端 takesLyric 同判据）；休止只在补了 `@` 时占位

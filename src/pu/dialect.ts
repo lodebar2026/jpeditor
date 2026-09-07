@@ -30,7 +30,7 @@ export interface DialectSpec {
   rhythmToken: string;
   /** 数字 9 是不是节奏音符（番茄）——否则是隐藏休止（有谱） */
   nineIsRhythm: boolean;
-  /** 歌词里表示「跳过一个音符」的字符 */
+  /** 歌词里表示「跳过一个音符」的字符；**第一个是写出去时用的那个**，其余只认不写 */
   lyricSkip: readonly string[];
   /** 小节线写法，按**从长到短**匹配 */
   barlines: ReadonlyArray<readonly [string, import("./ast").BarlineType]>;
@@ -114,7 +114,8 @@ const SHIGE: DialectSpec = {
   },
   rhythmToken: "X",
   nineIsRhythm: false,
-  lyricSkip: ["@", "/"],
+  // 规范里的占位符是 `/`（写出去用它）；`@` 是实际谱面里也见得到的写法，只认不写。
+  lyricSkip: ["/", "@"],
   // 诗歌本的小节线是 `| || ||| |: :| :|:`：`|||` 才是左细右粗的终止线。
   barlines: [
     [":|:", "repeat-both"],
