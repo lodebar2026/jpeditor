@@ -93,24 +93,27 @@ const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"]);
 export async function findSongFixtures(filters = [], { allowPdf = true } = {}) {
   const TESTDATA = join(process.cwd(), "testdata");
   const out = [];
-  for (const d of await readdir(TESTDATA, { withFileTypes: true })) {
-    if (!d.isDirectory() || d.name === "pu") continue;
-    if (filters.length && !filters.some((f) => d.name.includes(f))) continue;
-    const dir = join(TESTDATA, d.name);
+  const dirs = async (d) => (await readdir(d, { withFileTypes: true })).filter((e) => e.isDirectory());
+  const fixtureAt = async (dir, name) => {
     const files = await readdir(dir);
     const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase()))
       ?? (allowPdf ? files.find((f) => extname(f).toLowerCase() === ".pdf") : undefined);
-    if (!img) continue;
+    if (!img) return null;
     const gt = files.find((f) => extname(f).toLowerCase() === ".jpwabc");
-    out.push({
-      name: d.name,
-      img: join(dir, img),
-      mime: mimeOf(img),
-      gt: gt ? join(dir, gt) : null,
-      dir,
-    });
+    return { name, img: join(dir, img), mime: mimeOf(img), gt: gt ? join(dir, gt) : null, dir };
+  };
+  for (const d of await dirs(TESTDATA)) {
+    if (d.name === "pu") continue;
+    const dir = join(TESTDATA, d.name);
+    const one = await fixtureAt(dir, d.name);
+    if (one) { out.push(one); continue; }
+    // 按歌本归拢的语料（testdata/诗歌本/714 我说算了吧/…）：曲名前缀歌本名，免不同歌本重名。
+    for (const sub of await dirs(dir)) {
+      const song = await fixtureAt(join(dir, sub.name), `${d.name}/${sub.name}`);
+      if (song) out.push(song);
+    }
   }
-  return out;
+  return out.filter((s) => !filters.length || filters.some((f) => s.name.includes(f)));
 }
 
 /** 图片文件 → page.evaluate 的入参 { b64, mime }。页面里用

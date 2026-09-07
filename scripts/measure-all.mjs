@@ -195,22 +195,39 @@ function chordSeq(puText) {
   return [...puText.matchAll(/"hx:([^"]*)"/g)].map((m) => m[1]);
 }
 
+// 一个歌谱文件夹（一张图 + 一份 GT）→ 一首；凑不齐就当它是歌本文件夹，再往下找一层。
+// GT 有两种载体：`.jpwabc`，或**诗歌本文本谱** `gt.shige.pu`（诗歌本那批语料统一用后者——
+// 混合拍的多拍号、曲中转拍号 .jpwabc 都写不下）。后者在页面里过 puToMusicXml → 导入 → getText
+// 折成 jpwabc 再比，下面那套 token 判据因此一份就够，不必按载体分叉。
+async function songAt(dir, name) {
+  const files = await readdir(dir);
+  // 优先图片；无图片的歌谱（如 PDF-only 的「耶稣普治」）取 .pdf，走同一 decodeToBinary(pdf) 管线。
+  const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase())) ?? files.find((f) => extname(f).toLowerCase() === ".pdf");
+  const gt = files.find((f) => extname(f).toLowerCase() === ".jpwabc");
+  const shigeGt = files.includes("gt.shige.pu") ? join(dir, "gt.shige.pu") : null;
+  if (!img || (!gt && !shigeGt)) return null;
+  // 和弦 GT（可选）：一份人工核对过的番茄文本谱原文。.jpwabc 装不下和弦，只能另置载体。
+  const puGt = files.includes("gt.tomato.pu") && !CHORD_GT_SKIP.has(name) ? join(dir, "gt.tomato.pu") : null;
+  return { name, img: join(dir, img), gt: gt ? join(dir, gt) : null, shigeGt, puGt };
+}
+
 async function findSongs() {
   const out = [];
-  for (const name of (await readdir(TESTDATA, { withFileTypes: true })).filter((d) => d.isDirectory())) {
-    if (name.name === "pu") continue;   // 文本谱渲染夹具，不是识别用的歌谱
-    const dir = join(TESTDATA, name.name);
-    const files = await readdir(dir);
-    // 优先图片；无图片的歌谱（如 PDF-only 的「耶稣普治」）取 .pdf，走同一 decodeToBinary(pdf) 管线。
-    const img = files.find((f) => IMG_EXT.has(extname(f).toLowerCase())) ?? files.find((f) => extname(f).toLowerCase() === ".pdf");
-    const gt = files.find((f) => extname(f).toLowerCase() === ".jpwabc");
-    if (!img || !gt) continue;
-    if (filters.length && !filters.some((f) => name.name.includes(f))) continue;
-    // 和弦 GT（可选）：一份人工核对过的番茄文本谱原文。.jpwabc 装不下和弦，只能另置载体。
-    const puGt = files.includes("gt.tomato.pu") && !CHORD_GT_SKIP.has(name.name) ? join(dir, "gt.tomato.pu") : null;
-    out.push({ name: name.name, img: join(dir, img), gt: join(dir, gt), puGt });
+  const dirs = async (d) => (await readdir(d, { withFileTypes: true })).filter((e) => e.isDirectory());
+  for (const top of await dirs(TESTDATA)) {
+    if (top.name === "pu") continue;   // 文本谱渲染夹具，不是识别用的歌谱
+    const dir = join(TESTDATA, top.name);
+    const one = await songAt(dir, top.name);
+    if (one) { out.push(one); continue; }
+    // 按歌本归拢的语料（testdata/诗歌本/714 我说算了吧/…）：曲名前缀歌本名，免不同歌本重名。
+    for (const sub of await dirs(dir)) {
+      const song = await songAt(join(dir, sub.name), `${top.name}/${sub.name}`);
+      if (song) out.push(song);
+    }
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+  return out
+    .filter((s) => !filters.length || filters.some((f) => s.name.includes(f)))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh"));
 }
 
 const { port, close: closeServer } = await serveDist();
@@ -246,7 +263,16 @@ for (const song of songs) {
     rows.push({ name: song.name, fail: true });
     continue;
   }
-  const gt = decodeJpwabc(await readFile(song.gt)), rj = rec.jpw;
+  // 诗歌本文本谱的 GT 先在页面里折成 jpwabc（与识别侧同一条 musicxml → 导入 路径，两边可比）。
+  const gt = song.gt
+    ? decodeJpwabc(await readFile(song.gt))
+    : await page.evaluate(async (text) => {
+        const pu = await window.__pu;
+        const doc = pu.parsePu(text); // 方言由 parsePu 自己嗅探
+        window.__app.importBytes(new TextEncoder().encode(pu.puToMusicXml(doc)), "gt.musicxml");
+        return window.__app.getText();
+      }, await readFile(song.shigeGt, "utf8"));
+  const rj = rec.jpw;
   const g = voiceTokens(gt), r = voiceTokens(rj);
   const a = acc(g, r), d = acc(dOnly(g), dOnly(r)), o = acc(dOct(g), dOct(r));
   const dc = acc(dotFlag(g), dotFlag(r));
