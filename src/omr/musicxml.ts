@@ -293,14 +293,19 @@ export function toMusicXml(score: RecognizedScore): string {
 
 
   let mi = 0;
+  // 曲中转拍号：识别时锚在该小节头一个音符上（JpNum.timeChange），这里提升为本小节的
+  // `<attributes><time>`。之后的符杠分组也得跟着改用新拍号，故用 cur 一路带下去。
+  let curBeats = score.beats, curBeatType = score.beatType;
   const measuresXml = allMeasures.map((notes, idx) => {
     mi++;
     const printEl = rowStartIdx.has(idx) ? `<print new-system="yes"/>` : "";
+    const change = notes.find((n) => n.timeChange)?.timeChange;
+    if (change && mi > 1) { curBeats = change.beats; curBeatType = change.beatType; }
+    const timeEl = `<time><beats>${curBeats}</beats><beat-type>${curBeatType}</beat-type></time>`;
     const attrs = mi === 1
       ? `<attributes><divisions>${QUARTER}</divisions><key><fifths>${score.fifths}</fifths></key>` +
-        `<time><beats>${score.beats}</beats><beat-type>${score.beatType}</beat-type></time>` +
-        `<clef><sign>G</sign><line>2</line></clef></attributes>`
-      : "";
+        timeEl + `<clef><sign>G</sign><line>2</line></clef></attributes>`
+      : change ? `<attributes>${timeEl}</attributes>` : "";
     // 速度记号置于首小节（♩=NN）。下游导入器暂不读 tempo，仅供 MusicXML 完整性。
     const tempoEl = mi === 1 && score.tempo
       ? `<direction placement="above"><direction-type><metronome><beat-unit>quarter</beat-unit>` +
@@ -321,7 +326,7 @@ export function toMusicXml(score: RecognizedScore): string {
         `<sound ${JUMP_SOUND[jump] ?? 'dacapo="yes"'}/></direction>`
       : "";
     // 符杠按拍分组：8 分拍号（6/8 等）一组是 3 个八分，其余一拍一组。
-    const beatDiv = score.beatType === 8 ? QUARTER * 3 / 2 : QUARTER * 4 / score.beatType;
+    const beatDiv = curBeatType === 8 ? QUARTER * 3 / 2 : QUARTER * 4 / curBeatType;
     const beams = beamsOfMeasure(notes, beatDiv);
     // 和弦符号：MusicXML 要求 <harmony> 紧接其所辖音符**之前**。chordOffset 是本音符时值内的
     // 比例（和弦印在两音符之间的拍点上时非 0），这里折成 divisions 交给 <offset>。

@@ -166,7 +166,10 @@ function noteToken(n: JpNum, dialect: Dialect): string {
 function headerLines(score: RecognizedScore, d: DialectSpec, tb: TextBuilder, meta: JpwMeta): void {
   const h = d.header;
   const key = keyNameOf(score.fifths, h.keyStyle);
-  const meter = `${score.beats}/${score.beatType}`;
+  // 混合拍：页眉并排印着好几个拍号，两家的头部都写得下（番茄 `P: 4/4 3/4`、
+  // 诗歌本 `1=D4/4 3/4 5/4`，后者还可跟一段说明文字）。识别不到 meters 就照单个拍号写。
+  const meterList = score.meters?.length ? score.meters : [{ beats: score.beats, beatType: score.beatType }];
+  const meter = meterList.map((m) => `${m.beats}/${m.beatType}`).join(" ");
   const push = (s: string) => tb.push(s + "\n");
 
   if (h.versionLine) push(h.versionLine);
@@ -185,7 +188,7 @@ function headerLines(score: RecognizedScore, d: DialectSpec, tb: TextBuilder, me
     push(`${h.keyField}:${key}`);
     push(`${h.meterField}:${meter}`);
   } else {
-    push(`1=${key}${meter}`);
+    push(`1=${key}${meter}${score.meterNote ? ` ${score.meterNote}` : ""}`);
   }
   if (score.tempo) push(`${h.tempoField}:${score.tempo}`);
   push("");
@@ -224,19 +227,29 @@ export function toPuText(
     // 分开写会连着两条小节线、中间没音符，读回来就多一个空小节。
     let pendingRight: BarlineType | null = null;
     let pendingJump: string | null = null; // 跳转记号挂在这条小节线上，不能挂到音符上
+    // 曲中转拍号：文本谱把临时拍号写成**小节线后面的引号备注** `"p:3/4"`
+    // （解析端 interpretQuoted → BarlineElement.temporaryMeter）。识别时它锚在新小节的
+    // 头一个音符上，故由那一小节的左侧小节线带出来。
+    let pendingMeter: string | null = null;
     const writeBarline = (type: BarlineType): void => {
       tb.push(" " + barlineCode(dialect, type));
+      if (pendingMeter) { tb.push(`"p:${pendingMeter}"`); pendingMeter = null; }
       if (pendingJump) {
         tb.push(`&${pendingJump}`); // 紧跟小节线，parse 的 lastAttachable 才挂得到它身上
         pendingJump = null;
       }
     };
     measures.forEach((notes, mi) => {
+      const change = notes.find((n) => n.timeChange)?.timeChange;
+      if (change) pendingMeter = `${change.beats}/${change.beatType}`;
       const forward = notes.some((n) => n.repeatForward);
       if (pendingRight === "repeat-end" && forward) writeBarline("repeat-both");
       else if (pendingRight !== null) writeBarline(pendingRight);
       else if (forward) writeBarline("repeat-start");
       else if (mi > 0) writeBarline("normal");
+      // 行首那一小节没有左侧小节线可挂（换行处图上本就没线），临时拍号只好丢——
+      // 挂到下一根线上会整整错开一小节，凭空补一根线又会多出一个空小节。
+      pendingMeter = null;
       pendingRight = null;
       // 跳房子：`[` 起、`]` 止。必与前面的小节线隔一个空格——紧贴音符的 `[` 在番茄里是倚音。
       const endingStart = notes.find((n) => n.endingStart !== undefined)?.endingStart;
