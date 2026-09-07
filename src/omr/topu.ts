@@ -196,7 +196,7 @@ function headerLines(score: RecognizedScore, d: DialectSpec, tb: TextBuilder, me
     push(`1=${key}${meter}${score.meterNote ? ` ${score.meterNote}` : ""}`);
   }
   if (score.tempo) push(`${h.tempoField}:${score.tempo}`);
-  push("");
+  if (d.id !== "shige") push("");   // 诗歌本紧排：头部与曲行之间也不空行
 }
 
 /**
@@ -210,6 +210,10 @@ export function toPuText(
   dialect: Dialect,
 ): { text: string; meta: JpwMeta } {
   const d = dialectSpec(dialect);
+  // 诗歌本的曲行是**紧排**的（`Q:3/5/|"p:5/4"6-7/…`），番茄那边照旧用空格分隔。
+  // 每个音符都以数字开头、记号都跟在数字后面，紧排不会有歧义；房号 `[` 前那一个空格两家都留
+  // （番茄里紧贴音符的 `[` 是倚音语法）。
+  const sp = d.id === "shige" ? "" : " ";
   const skip = d.lyricSkip[0] ?? "@";
   const wordSeparator = d.wordSeparator;
   const tb = new TextBuilder();
@@ -220,6 +224,7 @@ export function toPuText(
   const { opens, closes } = pairCurves(score.rows.flatMap((r) => r.nums));
 
   let noteIdx = 0; // 全曲音符序（== flatten(rows[].nums)）
+  let openTail = false; // 上一行的末小节是否跨行未收（行末图上没有小节线）
   for (const row of score.rows) {
     if (!row.nums.length) continue;
     const measures = measuresOfRow(row);
@@ -227,6 +232,9 @@ export function toPuText(
 
     // ---- 曲行 ----
     tb.push("Q:");
+    // 上一行是**开口收尾**（末小节跨到本行继续，换行处图上本就没有小节线）：本行开头写一条
+    // 隐藏小节线 `|/`，读回来才知道这一行接的是上一行那个没写完的小节，而不是新起一小节。
+    if (openTail) tb.push(barlineCode(dialect, "hidden"));
     let pendingVolta = false; // 房号已开、等着 `]` 收尾
     // 右侧小节线不当场写，攒到下一小节的左侧再落笔：`:|` 紧接 `|:` 要合成一条 `:|:`，
     // 分开写会连着两条小节线、中间没音符，读回来就多一个空小节。
@@ -237,7 +245,7 @@ export function toPuText(
     // 头一个音符上，故由那一小节的左侧小节线带出来。
     let pendingMeter: string | null = null;
     const writeBarline = (type: BarlineType): void => {
-      tb.push(" " + barlineCode(dialect, type));
+      tb.push(sp + barlineCode(dialect, type));
       if (pendingMeter) { tb.push(`"p:${pendingMeter}"`); pendingMeter = null; }
       if (pendingJump) {
         tb.push(`&${pendingJump}`); // 紧跟小节线，parse 的 lastAttachable 才挂得到它身上
@@ -263,18 +271,28 @@ export function toPuText(
         pendingVolta = true;
       }
       // 减时线的连断：文本谱把相邻两个带减时线的音符自动连成一条线，满一拍才断
-      // （`pu/layout.ts::computeUnderlines` 按 `floor(beat)` 分组）。为免读谱的一方不按拍子连，
-      // **凡跨过整拍的地方都显式写 `^`**（强制断开）。拍位以四分音符为 1、每小节从头算，
-      // 与 pu 那边同一口径；增时线也占拍，故一并累加。
+      // （`pu/layout.ts::computeUnderlines` 按 `floor(beat)` 分组）。多数地方按拍分组就与谱面
+      // 一致，不必多写记号；**切分音把拍位推离整数、且减时线层数又变了**的那个交界（十六分接
+      // 八分之类）最容易被读谱的一方连错，那里显式写 `^` 强制断开。714《我说算了吧》全曲
+      // 只有两处这样的切分（`2g//2g//^2g/`、`5//5//^5/`），与谱面上的分组正好对上。
+      // 拍位以四分音符为 1、每小节从头算，与 pu 那边同一口径；增时线也占拍，故一并累加。
       const beatsOf = (n: JpNum) => (1 / Math.pow(2, n.div)) * (n.dot > 0 ? 1.5 : 1) + n.augment;
-      let prevNote: JpNum | null = null, prevBeat = 0, beat = 0;
+      let prevNote: JpNum | null = null, prevBeat = 0, beat = 0, syncopated = false;
       for (const n of notes) {
-        tb.push(" ");
-        if (prevNote && prevNote.div > 0 && n.div > 0 &&
+        tb.push(sp);
+        if (syncopated && prevNote && prevNote.div > 0 && n.div > 0 && prevNote.div !== n.div &&
             Math.floor(prevBeat + 1e-9) !== Math.floor(beat + 1e-9)) tb.push("^");
-        prevNote = n; prevBeat = beat; beat += beatsOf(n);
+        prevNote = n; prevBeat = beat;
+        const end = beat + beatsOf(n);
+        // 切分音：从非整拍起、又跨过整拍线（整拍起头的长音不算）。
+        if (beat % 1 !== 0 && Math.floor(beat + 1e-9) !== Math.floor(end - 1e-9)) syncopated = true;
+        beat = end;
         tb.push("(".repeat(opens.get(noteIdx) ?? 0)); // 弧线起点在音符**之前**
-        meta.noteRanges[noteIdx] = tb.push(noteToken(n, dialect));
+        // 收弧的括号紧跟音符**本体**，附点写在括号外（`(1.1).` 而不是 `(1.1.)`）——
+        // 增时线本来就在括号之后（见下），两者口径一致。
+        const closeHere = closes.get(noteIdx) ?? 0;
+        const tailDot = closeHere > 0 && n.dot > 0;
+        meta.noteRanges[noteIdx] = tb.push(noteToken(tailDot ? { ...n, dot: 0 } : n, dialect));
         // 休止本不跟词；识别到它带词时补 `@` 翻转 lyricAnchor，否则歌词整行错位
         if (n.digit === 0 && (n.lyrics ?? []).some((t) => t)) tb.push("@");
         // 和弦 / 段落标记 → 音符上方的注释。写在音符**之后**：双引号注释挂的是前一个符号，
@@ -285,7 +303,8 @@ export function toPuText(
         if (n.fermata) tb.push("&yc");
         if (n.chord) tb.push(`"hx:${n.chord}"`);
         if (n.sectionMark) tb.push(`"${n.sectionMark}"`);
-        tb.push(")".repeat(closes.get(noteIdx) ?? 0)); // 收弧要在增时线之前，弧才止于本音符
+        tb.push(")".repeat(closeHere)); // 收弧要在增时线之前，弧才止于本音符
+        if (tailDot) tb.push(".".repeat(n.dot));
         // 增时线：长音里逐拍换的和弦（extraChords）就印在它们上方，按拍位挂到对应那一条上。
         // offset 是占本音符**总时值**的比例，折成拍数后减掉音符本体占的拍，就是第几条增时线。
         const extras = n.extraChords ?? [];
@@ -293,7 +312,7 @@ export function toPuText(
           const baseBeats = (1 / Math.pow(2, n.div)) * (n.dot > 0 ? 1.5 : 1);
           const total = baseBeats + n.augment;
           for (let k = 1; k <= n.augment; k++) {
-            tb.push(" -");
+            tb.push(sp + "-");
             const hit = extras.find((e) => {
               const idx = Math.round(e.offset * total - baseBeats) + 1;
               return Math.min(Math.max(idx, 1), n.augment) === k;
@@ -312,6 +331,7 @@ export function toPuText(
       const jump = notes.find((n) => n.jumpMark)?.jumpMark;
       if (jump && JUMP_MARK[jump]) pendingJump = JUMP_MARK[jump]!;
     });
+    openTail = !rowEndsClosed(row);
     if (pendingVolta) tb.push(" ]"); // 房号跨到行末未闭合：就地收口，免得整行的 `[` 悬空
     // 行末小节线：反复记号必须写出；普通线只在图上有时写（开口收尾说明这小节跨到下一行，不可凭空补）
     if (pendingRight !== null) writeBarline(pendingRight);
@@ -349,7 +369,7 @@ export function toPuText(
       if (prevToken.endsWith("}")) tb.push(skip);
       tb.push("\n");
     }
-    tb.push("\n");
+    if (sp) tb.push("\n");   // 番茄那边每组曲行/歌词之间空一行；诗歌本紧排、不留空行
   }
 
   // noteRanges 必须逐位对齐音符序：中间不该有洞，这里补齐类型上的空洞

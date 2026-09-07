@@ -187,13 +187,10 @@ export class AccidentalStat {
     const def = MusicCommon.getAlter(step, this.fifths);
     const expect = step in this.alter ? this.alter[step] : def;
     if (expect === alt) return null;
-    let res: string | null = null;
-    if (step in this.alter) {
-      if (def === alt) res = "n";
-      else throw new Error("");
-    } else {
-      res = expect > alt ? "b" : "#";
-    }
+    // 同一音级在一个小节里**再换一次记号**（先 ♯4 后 ♭4，16《爱心的功课》那串倚音就是）：
+    // 原 Kotlin 这一支直接 error("")，整首谱就崩在导入这一步。谱面上这写法完全合法，
+    // 照「新记号相对当前值往哪边走」写出 `b`/`#` 即可（回到调号本身则是还原号 `n`）。
+    const res: string | null = def === alt ? "n" : (expect > alt ? "b" : "#");
     if (def === alt) delete this.alter[step];
     else this.alter[step] = alt;
     return res;
