@@ -36,7 +36,10 @@ export function detectSlurs(comps: Component[], rows: StaffRow[], numH: number):
       // ——弧越长越扁（7.3），方框接近方正（2.7）。
       const maxH = b.w > numH * 3 ? numH * 1.6 : numH * 1.05;
       if (b.w < numH * 0.8 || b.h < 2 || b.h > maxH) return false;
-      if (b.w / b.h < (b.h > numH * 1.05 ? 4 : 2)) return false;
+      // 扁平度下限 1.8（原为 2）：跨度只有一个字号的短弧拱得相对更高——714《我说算了吧》
+      // 第 1 行 `1̇ (5̇ 3̇)` 那条实测 38×20 = 1.9，卡在 2 上被整条漏掉。数字块是「高而窄」
+      // （w/h≈0.67）、减时线与增时线又都不在上方带里，放到 1.8 不会把它们放进来。
+      if (b.w / b.h < (b.h > numH * 1.05 ? 4 : 1.8)) return false;
       // 底边落在 [数字顶 - 1.2字号, 数字顶 + 0.25字号]：即整体在数字上方、最多略压数字顶缘。
       return between(rbottom(b), rowTop - numH * 1.2, rowTop + numH * 0.25);
     });

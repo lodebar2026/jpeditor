@@ -72,7 +72,10 @@ function puVoiceTokens(text) {
   const toks = [];
   for (const raw of text.split(/\r?\n/)) {
     if (!/^\s*Q:/.test(raw)) continue;
-    const s = raw.replace(/^\s*Q:/, "").replace(/"[^"]*"/g, " ").replace(/&[A-Za-z]+/g, " ");
+    // 括号先去掉：收弧的 `)` 落在音符本体与附点之间（`(1.1).`），留着会把附点挡在正则外。
+    // 弧线另由 puBrackets 单独统计，这里只管音符。
+    const s = raw.replace(/^\s*Q:/, "").replace(/"[^"]*"/g, " ")
+      .replace(/&[A-Za-z]+/g, " ").replace(/[()]/g, "");
     const re = /([0-7])([#b\u266e]?)([gd]*)(\/*)(\.*)|(\|+)|(-)/g;
     let m;
     while ((m = re.exec(s))) {

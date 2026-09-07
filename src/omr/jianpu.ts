@@ -909,7 +909,16 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 休止 0 不接附点：尾随休止右侧常有终止线碎块/噪点被误当附点（为基督 r5 末 "0" → 误 "0."）；
   // 简谱附点休止极罕见，休止右侧本就无修饰。放在**复原之后**清零——放在 buildJpNums 里会把
   // 「被误读成 0、复原后是 3」的音符的真附点一并丢掉。
-  for (const r of useRows) for (const n of r.nums) if (n.digit === 0) n.dot = 0;
+  // 例外：**右侧同一小节里还有音符**的休止，那个点是真附点（`0. 5` 这种附点休止，
+  // 714《我说算了吧》第 4、7 谱行各一处）。噪点误判都出在小节末/行末的尾随休止上。
+  for (const r of useRows) {
+    r.nums.forEach((n, i) => {
+      if (n.digit !== 0 || !n.dot) return;
+      const next = r.nums[i + 1];
+      const sameBar = next && !r.barlineXs.some((x) => x > rright(n.bbox) && x < next.bbox.x);
+      if (!sameBar) n.dot = 0;
+    });
+  }
 
   // **隐含 tie 补检**：无歌词的音符若与前一个音同音高，就是延音——简谱里同音延续本该有连音线，
   // 但**跨谱行的弧画不出来**（原图上就没有），行内的淡弧也可能漏检。有歌词的音是新音节、不算延音；
