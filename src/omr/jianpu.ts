@@ -15,7 +15,7 @@ import { recognizeLyrics } from "./lyrics";
 import { recognizeHeader } from "./header";
 import { detectSlurs } from "./slur";
 import { detectRepeatsAndEndings } from "./repeats";
-import { median, overlapX } from "./geom";
+import { median, overlapX, unionRect } from "./geom";
 
 
 /** 一个数字格：紧包围盒 + 自身下划线条数(div)。 */
@@ -344,6 +344,44 @@ function groupRows(cores: DigitCore[], numH: number): DigitCore[][] {
   return rows;
 }
 
+/** 曲中转拍号（谱行里直接印着的「3/4」）候选：一条短分数线，正上方一个数字、正下方一个数字。
+ *  不摘出去有两害：① 分子分母会当成两个音符混进音流；② 分子在数字带上方、分母在下方，整行的
+ *  y 跨度被撑到两倍（714《我说算了吧》那行 76px vs 常规 35px），贯穿本行的小节线过不了
+ *  buildRowMeta 里「覆盖 70% 行高」那道判据 → **整行连音符带歌词一起丢**。
+ *  判据只用几何：分数线与两个数字同 x 居中、上下间隙都在半个字号内。增时线 '-' 与减时线也是
+ *  短横块，但前者没有正上/正下方紧贴的数字，后者上方是数字、下方是歌词（不在 cores 里），分得开。 */
+function meterCandidates(cores: DigitCore[], hlines: Component[], numH: number): MeterCand[] {
+  const out: MeterCand[] = [];
+  for (const h of hlines) {
+    const hb = h.bbox;
+    if (hb.w < numH * 0.35 || hb.w > numH * 1.6) continue; // 分数线与数字同宽量级
+    const hcx = rcx(hb);
+    const near = (k: DigitCore) => Math.abs(rcx(k.bbox) - hcx) <= Math.max(numH * 0.3, hb.w * 0.5);
+    const pick = (cands: DigitCore[], key: (k: DigitCore) => number) =>
+      cands.sort((a, b) => key(a) - key(b))[0];
+    const up = pick(cores.filter((k) => near(k) && hb.y - rbottom(k.bbox) >= -2 &&
+      hb.y - rbottom(k.bbox) < numH * 0.55), (k) => hb.y - rbottom(k.bbox));
+    const dn = pick(cores.filter((k) => near(k) && k.bbox.y - rbottom(hb) >= -2 &&
+      k.bbox.y - rbottom(hb) < numH * 0.55), (k) => k.bbox.y - rbottom(hb));
+    if (!up || !dn) continue;
+    // 分子分母都不宽于分数线（宽出去的多半是别的东西恰好上下夹着一条横线）
+    if (up.bbox.w > hb.w * 1.5 || dn.bbox.w > hb.w * 1.5) continue;
+    out.push({ line: h, up, dn, bbox: unionRect(unionRect(up.bbox, dn.bbox), hb) });
+  }
+  return out;
+}
+
+/** 转拍号候选：分数线 + 分子/分母两个数字格（值待 OCR）。 */
+interface MeterCand {
+  line: Component;
+  up: DigitCore;
+  dn: DigitCore;
+  bbox: Rect;
+}
+
+/** 合法拍号：分母 2 的幂、分子 1..16（同 header.ts::validMeter 的口径）。 */
+const validMeter = (n: number, d: number) => n >= 1 && n <= 16 && (d === 2 || d === 4 || d === 8 || d === 16);
+
 // 为一行的每个数字格归并修饰（八度点/增时线/附点），div 已随数字格带入。
 /** 小块正下方半个字号内的前景占比。八度点是**孤立**的圆点、下方留白；歌词字的顶部笔画
  *  （如「主」字上方那一竖）下方紧接着字的其余笔画，占比高。与字号无关，故比宽高比/间隙阈值稳。 */
@@ -511,7 +549,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   // 数字块 → 数字格（拆分粘连/连音，并测各自下划线 div）。
   // 与数字粘连的圆滑线弧帽在此切出，作为合成连通块补进 comps 供 detectSlurs 检测。
-  const allCores: DigitCore[] = [];
+  let allCores: DigitCore[] = [];
   const mergedArcs: Rect[] = [];
   for (const blk of c.blocks) {
     const { cores, arc } = splitBlock(bin, blk, numH);
@@ -521,6 +559,27 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const arcComps: Component[] = mergedArcs.map((bb, i) => ({
     id: 1_000_000 + i, bbox: bb, area: bb.w * bb.h, cx: bb.x + bb.w / 2, cy: bb.y + bb.h / 2,
   }));
+
+  // 曲中转拍号「3/4」：先把分子/分母两个数字格与分数线从音符流里摘出去（见 meterCandidates），
+  // 再按 OCR 出的数值校验；读出来不是合法拍号就当误判、把两个数字格放回音符流。
+  const meterCands = meterCandidates(allCores, c.hlines, numH);
+  const meterMarks: { x: number; beats: number; beatType: number; bbox: Rect }[] = [];
+  const meterCores = new Set<DigitCore>();
+  const meterLines = new Set<Component>();
+  if (meterCands.length) {
+    const vals = await ocr.recognizeDigits(bin, meterCands.flatMap((m) => [m.up.bbox, m.dn.bbox]));
+    meterCands.forEach((m, i) => {
+      const beats = vals[2 * i] ?? 0, beatType = vals[2 * i + 1] ?? 0;
+      if (!validMeter(beats, beatType)) return;
+      meterMarks.push({ x: rcx(m.bbox), beats, beatType, bbox: m.bbox });
+      meterCores.add(m.up); meterCores.add(m.dn); meterLines.add(m.line);
+    });
+    if (meterCores.size) {
+      allCores = allCores.filter((k) => !meterCores.has(k));
+      // 分数线留在 hlines 里会被右邻音符当成增时线（它与数字带同高）。
+      c.hlines = c.hlines.filter((h) => !meterLines.has(h));
+    }
+  }
 
   const rowsC = groupRows(allCores, numH).filter((r) => r.length >= 3);
   // 每行的 y 范围 + 穿过的小节线。
@@ -593,6 +652,20 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 整曲都被判伪行（极端情况）则回退，至少出点东西。
   const useRows = rows.length ? rows : allRows;
 
+  // 转拍号归行：落在哪一谱行的纵向范围里就归哪一行，并锚到**其右侧第一个音符**上
+  // （谱面上转拍号总印在小节线右边、新小节的头一个音符之前）。本行右侧没有音符了
+  // （行末换拍）就锚到下一行的第一个音符。
+  for (const mk of meterMarks) {
+    const mcy = rcy(mk.bbox);
+    const ri = useRows.findIndex((r) => mcy >= r.topY - numH && mcy <= r.bottomY + numH);
+    if (ri < 0) continue;
+    const row = useRows[ri];
+    (row.meters ??= []).push(mk);
+    const anchor = row.nums.find((n) => n.bbox.x > mk.x) ?? useRows[ri + 1]?.nums[0];
+    if (anchor) anchor.timeChange = { beats: mk.beats, beatType: mk.beatType };
+  }
+  for (const r of useRows) r.meters?.sort((a, b) => a.x - b.x);
+
   // 反复线与一/二房：以冒号点对/顶括线几何识别，锚到相邻音符供 MusicXML 输出。
   await detectRepeatsAndEndings(bin, comps, c.dots, useRows, numH, ocr);
 
@@ -610,12 +683,14 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   let title: string | undefined, credits: string[] | undefined;
   let fifths = 0, tempo: number | undefined;
   let beats = 4, beatType = 4;
+  let meters: RecognizedScore["meters"], meterNote: string | undefined;
   let headerRegions: RecognizedScore["headerRegions"];
   if (ocr.recognizeTexts && useRows.length) {
     const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr);
     title = h.title; credits = h.credits.length ? h.credits : undefined;
     if (h.fifths !== undefined) fifths = h.fifths;
     if (h.beats !== undefined && h.beatType !== undefined) { beats = h.beats; beatType = h.beatType; }
+    meters = h.meters; meterNote = h.meterNote;
     tempo = h.tempo;
     headerRegions = h.regions.length ? h.regions : undefined;
   }
@@ -694,5 +769,5 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   const dotDiam = dotSizes.length ? median(dotSizes) : undefined;
 
-  return { key: "C", fifths, beats, beatType, rows: useRows, title, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
+  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, title, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
 }
