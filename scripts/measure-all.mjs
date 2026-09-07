@@ -20,7 +20,10 @@ function voiceTokens(text) {
     const t = ln.trim();
     if (t.startsWith(".")) { inV = /^\.voice/i.test(t); continue; }
     if (!inV || !t) continue;
-    const s = ln.replace(/\$\([^)]*\)/g, " ");
+    // 曲中转拍号（`3/4`）与转调（`"1=G"`）不是音符，先抹掉——否则拍号的两个数字会被下面的
+    // 音符正则数成两个音（GT 走 pu→musicxml 那条路会按小节实际拍数补出一串拍号，识别侧只写
+    // 图上印着的那个，两边一比就凭空差出二十来个 token）。
+    const s = ln.replace(/\$\([^)]*\)/g, " ").replace(/\d+\s*\/\s*\d+/g, " ").replace(/"[^"]*"/g, " ");
     const re = /([0-7])([',]*)([_.]*)(-*)|(\|)|(-)/g;
     let m;
     while ((m = re.exec(s))) {
@@ -61,6 +64,38 @@ const charAcc = (g, r) => {
 
 // ---- 圆滑线/连音线：.Voice 里 slur 与 tie 都渲染成 ( )。抽出有序括号序列(剔除 $(..)换行标记与
 // {..}三连音/记号)，按序列 Levenshtein 比，并报组数(左括号数)。 ----
+// 文本谱（诗歌本方言）原文 → 与 voiceTokens 同构的音符 token。**诗歌本 GT 走这一路**：
+// GT 与识别两边都是 shige 原文，逐 token 直接比，绕开 pu→musicxml→jpwabc 那趟往返——
+// 那一步会按小节实际拍数补出一串转拍号、并把休止凑成附点（混合拍谱尤甚），全不是识别差异。
+// 记号顺序同 topu.ts::noteToken：数字 → 变音 → 八度 → 减时线 `/` → 附点。
+function puVoiceTokens(text) {
+  const toks = [];
+  for (const raw of text.split(/\r?\n/)) {
+    if (!/^\s*Q:/.test(raw)) continue;
+    const s = raw.replace(/^\s*Q:/, "").replace(/"[^"]*"/g, " ").replace(/&[A-Za-z]+/g, " ");
+    const re = /([0-7])([#b\u266e]?)([gd]*)(\/*)(\.*)|(\|+)|(-)/g;
+    let m;
+    while ((m = re.exec(s))) {
+      if (m[6]) { toks.push("|"); continue; }
+      if (m[7]) { toks.push("-"); continue; }
+      const oct = m[3].split("").reduce((a, c) => a + (c === "g" ? 1 : -1), 0);
+      const acc = m[2] === "#" ? "s" : m[2] === "b" ? "f" : m[2] ? "n" : "";
+      toks.push(`N${m[1]}${acc}o${oct}u${m[4].length}${m[5].length ? "." : ""}`);
+    }
+  }
+  return toks;
+}
+
+/** 文本谱原文里的弧线括号序列（同 brackets，但只看 `Q:` 行）。 */
+function puBrackets(text) {
+  const seq = [];
+  for (const raw of text.split(/\r?\n/)) {
+    if (!/^\s*Q:/.test(raw)) continue;
+    for (const ch of raw.replace(/"[^"]*"/g, "")) if (ch === "(" || ch === ")") seq.push(ch);
+  }
+  return seq;
+}
+
 function brackets(text) {
   const seq = []; let inV = false;
   for (const ln of text.split(/\r?\n/)) {
@@ -255,8 +290,9 @@ for (const song of songs) {
       const score = await omr.recognizeJianpu(bin, omr.paddleOcrBackend());
       const stats = { rows: score.rows.length, notes: score.rows.reduce((a, r) => a + r.nums.length, 0), bars: score.rows.reduce((a, r) => a + r.barlineXs.length, 0) };
       const pu = omr.toPuText(score, "tomato").text;
+      const puShige = omr.toPuText(score, "shige").text;
       window.__app.importBytes(new TextEncoder().encode(omr.toMusicXml(score)), "omr.musicxml");
-      return { jpw: window.__app.getText(), stats, pu };
+      return { jpw: window.__app.getText(), stats, pu, puShige };
     }, { b64, mime });
   } catch (e) {
     console.log(`✗ ${song.name}: 识别异常 ${String(e).slice(0, 120)}`);
@@ -273,10 +309,14 @@ for (const song of songs) {
         return window.__app.getText();
       }, await readFile(song.shigeGt, "utf8"));
   const rj = rec.jpw;
-  const g = voiceTokens(gt), r = voiceTokens(rj);
+  // 诗歌本 GT：音符几档直接比文本谱原文（见 puVoiceTokens）；歌词/标题/词曲/对位仍走 jpwabc。
+  const gtPu = song.shigeGt ? await readFile(song.shigeGt, "utf8") : null;
+  const g = gtPu ? puVoiceTokens(gtPu) : voiceTokens(gt);
+  const r = gtPu ? puVoiceTokens(rec.puShige) : voiceTokens(rj);
   const a = acc(g, r), d = acc(dOnly(g), dOnly(r)), o = acc(dOct(g), dOct(r));
   const dc = acc(dotFlag(g), dotFlag(r));
-  const gB = brackets(gt), rB = brackets(rj);
+  const gB = gtPu ? puBrackets(gtPu) : brackets(gt);
+  const rB = gtPu ? puBrackets(rec.puShige) : brackets(rj);
   const s = acc(gB, rB);
   const ly = lyricsAcc(gt, rj);
   const lyNp = lyricsAcc(gt, rj, true);

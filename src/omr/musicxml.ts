@@ -131,6 +131,7 @@ function notationsXml(num: JpNum, arcs: ArcPairs): string {
   if (ti?.start) ns.push(`<tied type="start"/>`);
   if (sl?.stop !== undefined) ns.push(`<slur type="stop" number="${sl.stop}"/>`);
   if (sl?.start !== undefined) ns.push(`<slur type="start" number="${sl.start}"/>`);
+  if (num.fermata) ns.push(`<fermata/>`);
   return ns.length ? `<notations>${ns.join("")}</notations>` : "";
 }
 
@@ -257,8 +258,9 @@ const JUMP_SOUND: Record<string, string> = {
   "To Coda": 'tocoda="1"',
 };
 
-/** 识别阶段把反复/房号锚到边界相邻音符；这里提升成 MusicXML 小节线结构。 */
-function structuralBarlineXml(notes: JpNum[], location: "left" | "right"): string {
+/** 识别阶段把反复/房号锚到边界相邻音符；这里提升成 MusicXML 小节线结构。
+ *  `endStyle` 为真表示这一小节的右边界是**终止线**（谱面上细+粗两根并排）。 */
+function structuralBarlineXml(notes: JpNum[], location: "left" | "right", endStyle = false): string {
   if (location === "left") {
     const ending = notes.find((n) => n.endingStart !== undefined)?.endingStart;
     const repeat = notes.some((n) => n.repeatForward);
@@ -271,7 +273,9 @@ function structuralBarlineXml(notes: JpNum[], location: "left" | "right"): strin
   }
   const ending = [...notes].reverse().find((n) => n.endingStop !== undefined)?.endingStop;
   const repeat = notes.some((n) => n.repeatBackward);
-  if (ending === undefined && !repeat) return "";
+  if (ending === undefined && !repeat) {
+    return endStyle ? barlineXml("right", { style: "light-heavy", ending: null, repeat: false }) : "";
+  }
   return barlineXml("right", {
     style: repeat ? "light-heavy" : null,
     ending: ending === undefined ? null : String(ending),
@@ -287,6 +291,7 @@ export function toMusicXml(score: RecognizedScore): string {
   // 无法在小节边界干净断行 → 不记（与「开口不补小节线」一致）。
   const allMeasures: JpNum[][] = [];
   const rowStartIdx = new Set<number>();
+  const endStyleIdx = new Set<number>();   // 右边界是终止线（‖）的小节
   let openTail = false;
   for (const row of score.rows) {
     const ms = measuresOfRow(row);
@@ -294,6 +299,7 @@ export function toMusicXml(score: RecognizedScore): string {
     if (openTail && allMeasures.length) allMeasures[allMeasures.length - 1].push(...ms.shift()!);
     else if (allMeasures.length) rowStartIdx.add(allMeasures.length);
     allMeasures.push(...ms);
+    if (row.finalBarline === "end") endStyleIdx.add(allMeasures.length - 1);
     openTail = !rowEndsClosed(row);
   }
 
@@ -358,7 +364,7 @@ export function toMusicXml(score: RecognizedScore): string {
       return harm + noteXml(n, score.fifths, arcs, beams.get(n), barAlter);
     }).join("");
     const leftBar = structuralBarlineXml(notes, "left");
-    const rightBar = structuralBarlineXml(notes, "right");
+    const rightBar = structuralBarlineXml(notes, "right", endStyleIdx.has(idx));
     return `<measure number="${mi}">${printEl}${attrs}${leftBar}${tempoEl}${markEl}${noteEls}${jumpEl}${rightBar}</measure>`;
   }).join("");
 

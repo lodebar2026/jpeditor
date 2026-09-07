@@ -109,6 +109,24 @@ function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number, dotR: nu
     }
   }
 
+  // 临时升降号：画在数字左上角（谱面上就在那儿），字号比数字小一号。
+  if (n.accidental) {
+    const ch = n.accidental === "sharp" ? "♯" : n.accidental === "flat" ? "♭" : "♮";
+    g.appendChild(text(b.x - H * 0.28, cy - H * 0.18, ch, digitFontSize(H) * 0.75));
+  }
+  // 延长记号（fermata）：音符头顶一段小弧 + 弧下一个点。八度点也在上方，故再抬高一格避让。
+  if (n.fermata) {
+    const fy = top - H * (Math.abs(n.octave) > 0 && n.octave > 0 ? 0.72 : 0.4);
+    const w = H * 0.5;
+    const p = document.createElementNS(SVG_NS, "path");
+    p.setAttribute("d", `M ${cx - w} ${fy} Q ${cx} ${fy - H * 0.42} ${cx + w} ${fy}`);
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke-width", String(Math.max(1.5, H * 0.07)));
+    p.setAttribute("class", "omr-mark");
+    g.appendChild(p);
+    g.appendChild(dot(cx, fy - H * 0.12, dotR));
+  }
+
   // 附点（dot）：数字右侧，dot 个圆点（用统计原图点径）
   if (n.dot > 0) {
     const r = dotR;
