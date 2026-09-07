@@ -207,7 +207,10 @@ function renderHeaderRegion(g: SVGGElement, r: { text: string; bbox: Rect; chars
     }
     return;
   }
-  const t = text(b.x, b.y + b.h * 0.82, r.text, fs, "start");
+  // 字号还要按**框宽**封顶：混合拍的 "4/4 3/4 5/4 混合拍" 那种，源框跨了分子分母两排、
+  // 高度是单排的两倍，只按高定字号会画成一条盖住半个页眉的大字。0.62em/字是中西文混排的粗估宽。
+  const fitted = Math.min(fs, b.w / Math.max(1, r.text.length * 0.62));
+  const t = text(b.x, b.y + b.h * 0.82, r.text, fitted, "start");
   t.setAttribute("dominant-baseline", "alphabetic");
   t.setAttribute("class", cls);
   g.appendChild(t);
@@ -302,6 +305,13 @@ function buildOverlayGroup(
     for (const bx of row.barlineXs) {
       const cy = fit(bx);
       g.appendChild(line(bx, cy - barLen / 2, bx, cy + barLen / 2, barW, "omr-barline"));
+    }
+    // 曲中转拍号：分子在上、分母在下、中间一条横线，整体照源图 bbox 摆（谱面上它比音符略小）。
+    for (const mk of row.meters ?? []) {
+      const cy = fit(mk.x), size = noteH * 0.62;
+      g.appendChild(text(mk.x, cy - size * 0.6, String(mk.beats), size));
+      g.appendChild(line(mk.x - size * 0.45, cy, mk.x + size * 0.45, cy, Math.max(1, barW * 0.8)));
+      g.appendChild(text(mk.x, cy + size * 0.6, String(mk.beatType), size));
     }
     for (const n of row.nums) renderNum(g, n, noteH, fit(rcx(n.bbox)), dotR);
   });

@@ -19,6 +19,11 @@ export interface HeaderInfo {
   /** 拍号分子/分母（识别到 "4/4" 等时给出，否则 undefined→上游用默认 4/4）。 */
   beats?: number;
   beatType?: number;
+  /** 混合拍：页眉并排印着的**全部**拍号（"4/4 3/4 5/4"），首个即 beats/beatType。
+   *  只印一个拍号时也给出（长度 1）。文本谱两家的头部都写得下多个拍号，.jpwabc 只写得下头一个。 */
+  meters?: { beats: number; beatType: number }[];
+  /** 拍号后面跟着的说明文字（"混合拍"），只在识别到时给出。 */
+  meterNote?: string;
   /** 页眉文本的源图定位（识别模式按原位叠加）。 */
   regions: TextRegion[];
 }
@@ -89,8 +94,14 @@ const unionBox = (cs: Component[]): Rect => unionRects(cs.map((c) => c.bbox));
 
 /** 从页眉小字区解析调号("1=♭B")与速度("♩=76")。OCR 常把 ♭→b、♩→J；页眉碎片散落，
  *  故按碎片就地匹配、必要时空间最近邻配对，避免跨列拼接误配。 */
-function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number; beats?: number; beatType?: number; fifthsLine?: HLine; tempoLine?: HLine; timeBBox?: Rect } {
-  const res: { fifths?: number; tempo?: number; beats?: number; beatType?: number; fifthsLine?: HLine; tempoLine?: HLine; timeBBox?: Rect } = {};
+interface MetaInfo {
+  fifths?: number; tempo?: number; beats?: number; beatType?: number;
+  meters?: { beats: number; beatType: number }[]; meterNote?: string;
+  fifthsLine?: HLine; tempoLine?: HLine; timeBBox?: Rect;
+}
+
+function parseMeta(lines: HLine[]): MetaInfo {
+  const res: MetaInfo = {};
   const toFifths = (note: string, acc: string): number | undefined => {
     if (!(note in NAT_FIFTHS)) return undefined;
     let f = NAT_FIFTHS[note];
@@ -129,15 +140,77 @@ function parseMeta(lines: HLine[]): { fifths?: number; tempo?: number; beats?: n
     if (t) { const bpm = parseInt(t[1], 10); if (bpm >= 30 && bpm <= 300) { res.tempo = bpm; res.tempoLine = l; break; } }
   }
 
+  // 混合拍：并排印着好几个竖排拍号（"4/4 3/4 5/4 混合拍"）。det 把上下两排各读成一行
+  // （"1=D435" / "444混合拍"），先按这一路认；认不出再走单个拍号那条。
+  const mixed = parseMixedMeters(lines, res.fifthsLine);
+  if (mixed) {
+    res.meters = mixed.meters;
+    res.beats = mixed.meters[0].beats;
+    res.beatType = mixed.meters[0].beatType;
+    res.meterNote = mixed.note;
+    res.timeBBox = mixed.bbox;
+    return res;
+  }
   // 拍号：分子/分母。简谱常写成 "X/4"（或与调号同块 "1=C 2/4"）；OCR 偶把斜杠丢成空格或上下竖排。
   const tm = parseTime(lines, res.fifthsLine);
-  if (tm) { res.beats = tm.beats; res.beatType = tm.beatType; res.timeBBox = tm.bbox; }
+  if (tm) {
+    res.beats = tm.beats; res.beatType = tm.beatType; res.timeBBox = tm.bbox;
+    res.meters = [{ beats: tm.beats, beatType: tm.beatType }];
+  }
   return res;
 }
 
 /** 合法拍号：分母为 2 的幂(2/4/8/16，偶含 1/2 拍 → beatType 2)，分子 1..16。 */
 const validBeatType = (d: number) => d === 1 || d === 2 || d === 4 || d === 8 || d === 16;
 const validBeats = (n: number) => n >= 1 && n <= 16;
+
+/** 混合拍的并排拍号（谱面上「4/4 3/4 5/4 混合拍」这一串分数写在调号右边）。
+ *  det 是按**行**切的，一整排分子连同调号读成一行（"1=D435"）、一整排分母连同说明文字读成
+ *  下一行（"444混合拍"），谁跟谁配对全在 x 上——故按逐字 cx 就近配，没有字位时退回按序配。
+ *  只在**两排都不止一个数字**时才走这条：单个拍号交给 parseTime（它还认斜杠式与调号同块的写法）。 */
+function parseMixedMeters(lines: HLine[], fifthsLine?: HLine):
+  { meters: { beats: number; beatType: number }[]; note?: string; bbox: Rect } | undefined {
+  // 数字串：分子行取**末尾**的连续数字（前面是 "1=D" 之类的调号），分母行取**开头**的。
+  const tailDigits = (l: HLine) => (/(\d{2,})\s*$/.exec(l.text.trim())?.[1] ?? "");
+  const headDigits = (l: HLine) => (/^\s*(\d{2,})/.exec(l.text.trim())?.[1] ?? "");
+  const digitsWithX = (l: HLine, s: string, fromTail: boolean) => {
+    const ds = [...s];
+    if (!l.chars?.length) return ds.map((d) => ({ d, cx: NaN }));
+    const cxs = l.chars.filter((c) => /^\d$/.test(c.text)).map((c) => c.cx);
+    const take = fromTail ? cxs.slice(-ds.length) : cxs.slice(0, ds.length);
+    return ds.map((d, i) => ({ d, cx: take[i] ?? NaN }));
+  };
+  let best: { meters: { beats: number; beatType: number }[]; note?: string; bbox: Rect } | undefined;
+  let bd = Infinity;
+  for (const up of lines) for (const dn of lines) {
+    if (up === dn) continue;
+    // 分母那一排在分子这一排下面。**不能按行距卡**：det 给的两个框上下重叠得厉害
+    // （分子行 y=130 高 76、分母行 y=153 高 67，中心只差 18px），够不着一个字高。
+    const dy = dn.cy - up.cy;
+    if (dy <= 0 || dn.bbox.y <= up.bbox.y || dy > 2.5 * up.charH) continue;
+    if (overlapRatioX(up.bbox, dn.bbox) < 0.2) continue;               // 两排要大致对着
+    const us = tailDigits(up), ds = headDigits(dn);
+    if (us.length < 2 || us.length !== ds.length) continue;            // 只认多拍号；数量须对得上
+    const un = digitsWithX(up, us, true), dnn = digitsWithX(dn, ds, false);
+    const meters: { beats: number; beatType: number }[] = [];
+    let bad = false;
+    for (let i = 0; i < un.length && !bad; i++) {
+      // 有字位就按 x 就近取分母，没有就按序取（两排数字个数已相等，按序是安全的兜底）。
+      const pick = isNaN(un[i].cx) ? dnn[i]
+        : dnn.reduce((a, b) => (Math.abs(b.cx - un[i].cx) < Math.abs(a.cx - un[i].cx) ? b : a));
+      const n = Number(un[i].d), d = Number(pick.d);
+      if (!validBeats(n) || !validBeatType(d)) { bad = true; break; }
+      meters.push({ beats: n, beatType: d });
+    }
+    if (bad) continue;
+    // 分母行数字后面剩下的短文字就是说明（"混合拍"）。长句不收，免把别的行当成说明。
+    const rest = dn.text.trim().slice(ds.length).trim();
+    const note = /^[^\d]{1,5}拍$/.test(rest) ? rest : undefined;
+    const score = fifthsLine ? Math.abs(up.cy - fifthsLine.cy) : dy;
+    if (score < bd) { bd = score; best = { meters, note, bbox: unionRect(up.bbox, dn.bbox) }; }
+  }
+  return best;
+}
 
 /** 解析拍号：先认含斜杠的碎片 "X/Y"（含调号同块 "1=C 4/4"）；否则认上下竖排两碎片(分子在上、
  *  分母在下、同列)。返回分子/分母与**叠加标注的源图 bbox**。 */
@@ -329,8 +402,13 @@ export async function recognizeHeader(
     out.tempo = meta.tempo;
     out.beats = meta.beats;
     out.beatType = meta.beatType;
+    out.meters = meta.meters;
+    out.meterNote = meta.meterNote;
     if (meta.fifths !== undefined && meta.fifthsLine) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: meta.fifthsLine.bbox });
     if (meta.tempo !== undefined && meta.tempoLine) out.regions.push({ text: `♩=${meta.tempo}`, bbox: meta.tempoLine.bbox });
-    if (meta.beats !== undefined && meta.beatType !== undefined && meta.timeBBox) out.regions.push({ text: `${meta.beats}/${meta.beatType}`, bbox: meta.timeBBox });
+    if (meta.timeBBox && meta.meters?.length) {
+      const text = meta.meters.map((m) => `${m.beats}/${m.beatType}`).join(" ") + (meta.meterNote ? ` ${meta.meterNote}` : "");
+      out.regions.push({ text, bbox: meta.timeBBox });
+    }
   }
 }

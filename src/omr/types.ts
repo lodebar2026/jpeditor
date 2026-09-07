@@ -66,6 +66,9 @@ export interface JpNum {
   endingStop?: string;      // 本音符所在小节结束该房
   // 跳转记号（D.C./D.S./Fine/To Coda…），印在本谱行音符附近 → MusicXML <direction>+<sound>。
   jumpMark?: string;
+  // 曲中转拍号：谱面上「3/4」直接印在谱行里（多见于混合拍的曲子），锚在**其右侧第一个音符**上，
+  // MusicXML 输出时提升为该小节的 `<attributes><time>`（下游 score/musicxml.ts 收进 Measure.timeChange）。
+  timeChange?: { beats: number; beatType: number };
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */
@@ -74,6 +77,9 @@ export interface StaffRow {
   bottomY: number;
   nums: JpNum[]; // 按 x 排序
   barlineXs: number[]; // 小节线 x 位置
+  // 本行里印着的转拍号（「3/4」），按 x 排序。音符流里已把这两个数字摘掉，
+  // 值同时锚到右侧第一个音符的 `JpNum.timeChange` 上；这里留 bbox 供识别模式按原位叠加。
+  meters?: { x: number; beats: number; beatType: number; bbox: Rect }[];
 }
 
 /** 一处带源图坐标的识别文本（页眉/歌词），供识别模式按原位、原字号叠加。 */
@@ -90,6 +96,10 @@ export interface RecognizedScore {
   fifths: number;
   beats: number;
   beatType: number;
+  // 混合拍：页眉并排印着的**全部**拍号（首个即 beats/beatType），只印一个时长度为 1。
+  // 文本谱两家的头部都写得下多个拍号（`P: 4/4 3/4` / `1=D4/4 3/4`），.jpwabc 只写得下头一个。
+  meters?: { beats: number; beatType: number }[];
+  meterNote?: string; // 拍号后跟着的说明文字（"混合拍"）
   rows: StaffRow[];
   title?: string;
   credits?: string[]; // 著作者整行文本（作词/作曲…），→ MusicXML <credit>
