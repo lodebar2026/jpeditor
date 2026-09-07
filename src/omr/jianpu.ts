@@ -413,7 +413,11 @@ const validMeter = (n: number, d: number) => n >= 1 && n <= 16 && (d === 2 || d 
 /** 小块正下方半个字号内的前景占比。八度点是**孤立**的圆点、下方留白；歌词字的顶部笔画
  *  （如「主」字上方那一竖）下方紧接着字的其余笔画，占比高。与字号无关，故比宽高比/间隙阈值稳。 */
 function inkBelow(bin: Binary, r: Rect, numH: number): number {
-  const y0 = Math.round(rbottom(r)) + 1, y1 = Math.min(bin.h - 1, Math.round(rbottom(r) + numH * 0.3));
+  // 窗口只探**紧挨着**点下方的那一小条（0.18 字号）：字顶笔画与字身其余笔画之间几乎不留空
+  // （1~3px），而真低音点到下一行歌词字顶还有半个点径。窗口开到 0.3 字号就够到歌词了——
+  // 17《不失足》第 2 行 `7̣ 5̣` 的低音点即因此被当成字顶笔画剔掉（同一首第 4 行的却留住了，
+  // 只因那行歌词排得略低，一条判据两种结果，正说明窗口过宽）。
+  const y0 = Math.round(rbottom(r)) + 1, y1 = Math.min(bin.h - 1, Math.round(rbottom(r) + numH * 0.18));
   const x0 = Math.max(0, Math.round(r.x - numH * 0.2)), x1 = Math.min(bin.w - 1, Math.round(rright(r) + numH * 0.2));
   if (y1 <= y0 || x1 <= x0) return 0;
   let ink = 0, tot = 0;
@@ -438,6 +442,7 @@ function buildJpNums(
     // 同 y 高度约束已能防越界到别行。再以本小节右界封顶。
     const augR = Math.min(next ? next.x : Number.POSITIVE_INFINITY, rightLimit);
     let octave = 0, dot = 0, augment = 0;
+    const upDots: Rect[] = [], downDots: Rect[] = []; // 八度点候选（上/下），循环后按叠放规则裁决
     // 数字先识别（附点判定要用到：休止 0 不接附点 —— 见下）。
     // "1" 是简谱唯一单竖笔，明显比其它数字窄（实测 ≈0.45~0.55字号，其余 ≈0.9字号）：极窄块若被
     // OCR 误判成别的数字（淡印/碎裂的 "1" 常被读成 4/7），按宽度纠回 1；不动休止 0（圆形、不窄）。
@@ -493,6 +498,21 @@ function buildJpNums(
       // 偏在两字之间、|dx| 0.3~0.39，旧阈值放它进来 → 凭空多出低八度点，若该音本就有高八度点还会
       // 被一加一减抵消（实测「主祢真伟大」Coda 的 `i`(为) 丢点、`7`(我) 平白多点）。
       if (Math.abs(rcx(kb) - dcx) > numH * 0.25) continue;
+      // 音符上方那一带偶尔印着别的字（段落名、上一行歌词的尾字），它的碎笔散成几个点大小的小块，
+      // 尺寸与居中判据都拦不住（17《不失足》首音头顶那个「羔」字，`3.` 成了 `3̈.`）。
+      // 分野在**左右**：八度点在数字正上/正下方孤零零一个，同高度上左右一个字距内不会再有小块
+      // （相邻音符的八度点隔着一整个音符间距，≥1 字号）；字的碎笔则是一排挨着的。
+      // 邻块**必须不居中于任何音符**才算碎笔：密排音符（十六分）的八度点彼此也可能挨到
+      // 0.7 字号以内（基督更美实测），但那些邻块各自正对着一个音符——把这条漏掉会连真点一起剔，
+      // 那首音符 100→94.2。
+      const hasSideMate = (k: Rect): boolean => cls.dots.some((o) => {
+        const ob = o.bbox;
+        if (ob === k) return false;
+        const dx = Math.abs(rcx(ob) - rcx(k));
+        if (dx <= (k.w + ob.w) / 2 || dx > numH * 0.7) return false;
+        if (Math.abs(rcy(ob) - rcy(k)) > Math.max(2, k.h * 0.8)) return false;
+        return !rowCores.some((c2) => Math.abs(rcx(c2.bbox) - rcx(ob)) < numH * 0.3);
+      });
       const gapAbove = d.y - rbottom(kb);  // 点在数字上方的间隙
       const gapBelow = kb.y - rbottom(d);  // 点在数字下方的间隙
       if (gapAbove >= -1 && gapAbove < numH * 0.8) {
@@ -506,15 +526,34 @@ function buildJpNums(
           return rbottom(ab) > kb.y && rbottom(ab) <= rbottom(kb) + numH * 0.15 &&
             rcx(kb) >= ab.x - numH * 0.4 && rcx(kb) <= rright(ab) + numH * 0.4;
         });
-        if (!isArcFoot) { octave++; dotSizes.push((kb.w + kb.h) / 2); }  // 上点 → 高八度
+        if (!isArcFoot && !hasSideMate(kb)) upDots.push(kb); // 上点 → 高八度（几点算几个八度见下面的裁决）
       // 下点 → 低八度。额外一道门专防**歌词字的顶部笔画**：歌词带紧接在数字下方，字顶的短竖/点
       // （如「主」字上方那一笔）正落在数字正下方、dx≈0、间隙也与「减时线下方的低音点」几乎同高
       // （14~15px vs 真点 3~13px），靠位置分不开。改看**它下方还有没有墨**：八度点孤立、下方留白，
       // 字顶笔画下方紧接着字的其余笔画。（先试过宽高比，但小字号图上真点只有 2×3 像素、比值不可靠，
       // 世上所有的民族的真低音点被误剔、音符 100→99.3。）
-      } else if (gapBelow >= -1 && gapBelow < numH * 0.8 && inkBelow(bin, kb, numH) < 0.12) {
-        octave--; dotSizes.push((kb.w + kb.h) / 2); }
+      } else if (gapBelow >= -1 && gapBelow < numH * 0.8 && inkBelow(bin, kb, numH) < 0.12 && !hasSideMate(kb)) {
+        downDots.push(kb); }
     }
+    // 八度点是**竖排叠放**的：第二、三个点各自摞在前一个点的正上/正下方——同一条竖线上、
+    // 彼此紧挨着（间距不过一个点径）。只按「落在窗口内」计数，音符上方**并排**的两个墨块就被
+    // 数成双高八度（17《不失足》首音上方那个「羔」字的碎笔，`3.` 成了 `3̈.`，高了两个八度）。
+    // 故由近及远逐个验位，第一个不合就断，后面的一概不数。
+    const stackCount = (dots: Rect[], up: boolean): number => {
+      const sorted = [...dots].sort((a, b) => (up ? rbottom(b) - rbottom(a) : a.y - b.y));
+      let n = 0, prev: Rect | null = null;
+      for (const kb of sorted) {
+        const diam = (kb.w + kb.h) / 2;
+        if (prev) {
+          if (Math.abs(rcx(kb) - rcx(prev)) > Math.max(2, diam * 0.9)) break;   // 不在同一条竖线上
+          const gap = up ? prev.y - rbottom(kb) : kb.y - rbottom(prev);
+          if (gap < -1 || gap > diam * 1.6) break;                              // 与前一个点不相邻
+        }
+        n++; prev = kb; dotSizes.push(diam);
+      }
+      return n;
+    };
+    octave = stackCount(upDots, true) - stackCount(downDots, false);
     octave = Math.max(-3, Math.min(3, octave)); // 简谱八度极少超过 ±2~3
     let div = 0;
     const augmentRects: Rect[] = [];
