@@ -65,6 +65,33 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
     tryCut(b.h - Math.round(numH * 0.6), b.h - Math.round(numH * 0.12), false);
 }
 
+/** 装饰记号（波音 ∿、涟音等）画在音符**正上方**，常与那个音的高八度点 4-连通粘成一块：
+ *  块进了数字通道，又因远离数字带被 groupRows 丢弃，粘着的点也就跟着没了
+ *  （1600《南非之行》末小节的 `2̇`——记号盖住了它的八度点，音高整个掉了一个八度）。
+ *  这里从这类**没进任何谱行**的块底部把圆点切回来：自下而上找一段窄行（宽 ≤0.5 字号 = 点宽），
+ *  上头接着明显更宽的记号主体，两段之间墨宽突变即切点。切出的点交回 `cls.dots`，
+ *  八度归属仍由 buildJpNums 原有那套判据决定（居中于数字、间隙 <0.8 字号）。 */
+function splitOrnamentDot(bin: Binary, b: Rect, numH: number): Component | null {
+  if (b.h < numH * 0.35 || b.h > numH * 0.95 || b.w < numH * 0.5 || b.w > numH * 1.6) return null;
+  // 逐行的墨迹左右缘 → 行宽。点那几行窄，记号主体那几行宽。
+  const rowSpan = (y: number): number => {
+    let lo = -1, hi = -1;
+    for (let x = 0; x < b.w; x++) if (bin.data[(b.y + y) * bin.w + (b.x + x)]) { if (lo < 0) lo = x; hi = x; }
+    return lo < 0 ? 0 : hi - lo + 1;
+  };
+  const spans = Array.from({ length: b.h }, (_, y) => rowSpan(y));
+  let y1 = b.h - 1;
+  while (y1 >= 0 && spans[y1] === 0) y1--;            // 跳过底部空行
+  let y0 = y1;
+  while (y0 >= 0 && spans[y0] > 0 && spans[y0] <= numH * 0.5) y0--;
+  const dotH = y1 - y0;
+  if (dotH < numH * 0.15 || dotH > numH * 0.5) return null;
+  if (y0 < 0 || spans[y0] < numH * 0.7) return null;   // 点上头必须紧接着明显更宽的记号主体
+  const t = tightBox(bin, b, 0, b.w, y0 + 1, y1 + 1);
+  if (!t || t.w > numH * 0.5 || t.w < numH * 0.13 || t.w < dotH * 0.5) return null; // 近方形的小墨斑才是点
+  return { id: -1, bbox: t, area: t.w * t.h, cx: rcx(t), cy: rcy(t) };
+}
+
 /** 在块内按列找"竖直连续墨迹 ≥0.8 块高"的窄列簇 = 贯穿全高的竖笔（小节线）。相邻达标列并成一根，
  *  返回其中心 x、竖笔 y 起点与高度。弧/横线各列只有很短竖直段，天然不达标。 */
 function fullHeightBars(bin: Binary, b: Rect, numH: number): Array<{ cx: number; y: number; h: number }> {
@@ -634,6 +661,14 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     const b = k.bbox;
     return b.w >= numH * 0.8 && b.h >= 2 && b.h <= numH * 0.8 && b.w / b.h >= 2;
   });
+
+  // 与装饰记号粘连的八度点：把没进任何谱行的块底部的圆点切回 dots（见 splitOrnamentDot）。
+  const inStaff = new Set(staff.flatMap((m) => m.rd));
+  for (const k of allCores) {
+    if (inStaff.has(k)) continue;
+    const dotComp = splitOrnamentDot(bin, k.bbox, numH);
+    if (dotComp) c.dots.push(dotComp);
+  }
 
   const dotSizes: number[] = []; // 累积所有被采纳的八度点/附点源图直径 → 取中位数当统计点径
   const allRows: StaffRow[] = staff.map((m) => ({
