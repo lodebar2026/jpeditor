@@ -199,7 +199,8 @@ const beamXml = beamElementsXml;
 
 // MusicXML 3.0 的 note 子元素顺序：(pitch|rest), duration, tie*, voice?, type?, dot*,
 // time-modification?, …, beam*, notations*, lyric*。改这里务必守住这个顺序。
-function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number, string>): string {
+function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number, string>,
+                 barAlter?: Map<number, number>): string {
   const d = durationOf(num);
   if (num.digit === 0) {
     // 休止符也要出 <notations>：圆滑线的一端落在休止符上是常有的事，早先这里直接 return
@@ -208,13 +209,21 @@ function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number,
       `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${notationsXml(num, arcs)}</note>`;
   }
   const p = pitchOf(num, fifths);
-  const alterXml = p.alter ? `<alter>${p.alter}</alter>` : "";
+  // 临时升降号：谱面上的 ♯/♭/♮ 是相对**调内音**的升降，故在调号给的 alter 上加减；
+  // 按简谱规矩它在**小节内延续**到同一个数字的后续音符（barAlter 记着这个状态），
+  // 延续出来的那些只写 <alter>（音高对），不写 <accidental>（谱面上并没有再印一个记号）。
+  const acc = num.accidental;
+  if (acc && barAlter) barAlter.set(num.digit, acc === "sharp" ? 1 : acc === "flat" ? -1 : 0);
+  const extra = barAlter?.get(num.digit) ?? 0;
+  const alter = p.alter + extra;
+  const alterXml = alter ? `<alter>${alter}</alter>` : "";
+  const accXml = acc ? `<accidental>${acc}</accidental>` : "";
   // <tie> 是播放语义（延音线要真的连起来），<tied> 是记号，规范要求两者齐全。
   const ti = arcs.tie.get(num);
   const ties = (ti?.stop ? `<tie type="stop"/>` : "") + (ti?.start ? `<tie type="start"/>` : "");
   return `<note><pitch><step>${p.step}</step>${alterXml}<octave>${p.octave}</octave></pitch>` +
     `<duration>${d.divisions}</duration>${ties}<voice>1</voice>` +
-    `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}` +
+    `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${accXml}` +
     `${beamXml(beams)}${notationsXml(num, arcs)}${lyricsXml(num)}</note>`;
 }
 
@@ -328,6 +337,8 @@ export function toMusicXml(score: RecognizedScore): string {
     // 符杠按拍分组：8 分拍号（6/8 等）一组是 3 个八分，其余一拍一组。
     const beatDiv = curBeatType === 8 ? QUARTER * 3 / 2 : QUARTER * 4 / curBeatType;
     const beams = beamsOfMeasure(notes, beatDiv);
+    // 临时升降号在小节内延续（简谱与五线谱同规矩），每到新小节清零。
+    const barAlter = new Map<number, number>();
     // 和弦符号：MusicXML 要求 <harmony> 紧接其所辖音符**之前**。chordOffset 是本音符时值内的
     // 比例（和弦印在两音符之间的拍点上时非 0），这里折成 divisions 交给 <offset>。
     const noteEls = notes.map((n) => {
@@ -344,7 +355,7 @@ export function toMusicXml(score: RecognizedScore): string {
         ? [{ tok: n.chord, div: Math.round((n.chordOffset ?? 0) * div) }, ...extra]
           .map((c) => harmonyXml(c.tok, c.div)).join("")
         : "";
-      return harm + noteXml(n, score.fifths, arcs, beams.get(n));
+      return harm + noteXml(n, score.fifths, arcs, beams.get(n), barAlter);
     }).join("");
     const leftBar = structuralBarlineXml(notes, "left");
     const rightBar = structuralBarlineXml(notes, "right");

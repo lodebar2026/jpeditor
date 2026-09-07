@@ -65,6 +65,27 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
     tryCut(b.h - Math.round(numH * 0.6), b.h - Math.round(numH * 0.12), false);
 }
 
+/** 变音记号（临时升降号 ♯ / ♭ / ♮）印在音符**左侧、紧贴着**，比数字明显矮一截、也窄一截。
+ *  不摘出去就被当成一个音符送 OCR（实测 ♯ 读成 `1`、`0`，17《不失足》第 3 行凭空多两个音）。
+ *  形状分类看**四象限墨迹**：♯ 两条竖笔上下贯通、四格都有墨；♭ 只有左边一条竖笔、右上几乎空白；
+ *  ♮ 是左竖在下半、右竖在上半，故左上与右下同时偏空。 */
+function accidentalOf(bin: Binary, b: Rect): "sharp" | "flat" | "natural" | null {
+  const half = (x0: number, x1: number, y0: number, y1: number): number => {
+    let ink = 0, tot = 0;
+    for (let y = Math.round(y0); y < Math.round(y1); y++)
+      for (let x = Math.round(x0); x < Math.round(x1); x++) { tot++; if (bin.data[y * bin.w + x]) ink++; }
+    return tot ? ink / tot : 0;
+  };
+  const mx = b.x + b.w / 2, my = b.y + b.h / 2;
+  const lt = half(b.x, mx, b.y, my), rt = half(mx, rright(b), b.y, my);
+  const lb = half(b.x, mx, my, rbottom(b)), rb = half(mx, rright(b), my, rbottom(b));
+  if (lt + rt + lb + rb < 0.3) return null;              // 墨太少 → 噪点，不认
+  if (rt < rb * 0.45 && lt > rt) return "flat";          // 右上空、左竖贯通 → ♭
+  if (lt < lb * 0.5 && rb < rt * 0.5) return "natural";  // 左上空 + 右下空 → ♮
+  if (Math.min(lt, rt, lb, rb) >= 0.12) return "sharp";  // 四格都有墨 → ♯
+  return null;
+}
+
 /** 装饰记号（波音 ∿、涟音等）画在音符**正上方**，常与那个音的高八度点 4-连通粘成一块：
  *  块进了数字通道，又因远离数字带被 groupRows 丢弃，粘着的点也就跟着没了
  *  （1600《南非之行》末小节的 `2̇`——记号盖住了它的八度点，音高整个掉了一个八度）。
@@ -679,6 +700,31 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const withBars = rowMeta.filter((m) => m.barlineXs.length > 0);
   const staff = withBars.length ? withBars : rowMeta;
 
+  // 临时升降号：印在音符左侧、紧贴着，比数字矮一截也窄一截（实测 ♯ 是 10×17，同行数字 15×24）。
+  // 摘出音符流，记在右邻那个音符上（下游 applyJpPitch 会按简谱规矩在小节内延续）。
+  const accidentals = new Map<DigitCore, "sharp" | "flat" | "natural">();
+  const accCores = new Set<DigitCore>();
+  for (const m of staff) {
+    // 尺子用本行数字的**中位高/宽**，不能用整条带高：记号本身骑在数字上方，带高被它撑大
+    // （17 第 3 行带高 37、数字才 24），拿带高作比例，右邻的正常数字反倒不达标。
+    const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
+    const medW = median(m.rd.map((k) => k.bbox.w)) || numH;
+    for (let j = 0; j + 1 < m.rd.length; j++) {
+      const k = m.rd[j], nx = m.rd[j + 1];
+      if (k.bbox.h > medH * 0.85 || k.bbox.w > medW * 0.85) continue;        // 与数字一般大 → 就是数字
+      if (k.bbox.h < medH * 0.45 || k.bbox.w < medW * 0.3) continue;         // 太小 → 点/碎片
+      if (nx.bbox.x - rright(k.bbox) > numH * 0.3) continue;                 // 没紧贴右边那个数字
+      if (nx.bbox.h < medH * 0.85) continue;                                 // 右邻得是个正常数字
+      // 记号印在音符的**左上角**：顶比数字高、底也不该垂到数字底下（17 实测记号顶比数字高 10px）。
+      if (k.bbox.y > nx.bbox.y + medH * 0.15 || rbottom(k.bbox) > rbottom(nx.bbox) + medH * 0.1) continue;
+      const kind = accidentalOf(bin, k.bbox);
+      if (!kind) continue;
+      accidentals.set(nx, kind);
+      accCores.add(k);
+    }
+    if (accCores.size) m.rd = m.rd.filter((k) => !accCores.has(k));
+  }
+
   const allDigits = staff.flatMap((m) => m.rd);
   // rec 输入裁剪：连通域偶尔只截到半个字（淡印/断笔的 "1" 竖笔断开，块高≈半个字高 → 送 rec 成半字被
   // 误读，如"1"读成"4"）。据本行数字带统计高度把过矮的块纵向补到整字高（cellOf 按 rect 从二值图裁，
@@ -710,10 +756,12 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   }
 
   const dotSizes: number[] = []; // 累积所有被采纳的八度点/附点源图直径 → 取中位数当统计点径
-  const allRows: StaffRow[] = staff.map((m) => ({
-    topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs,
-    nums: buildJpNums(bin, m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes),
-  }));
+  const allRows: StaffRow[] = staff.map((m) => {
+    const nums = buildJpNums(bin, m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes);
+    // buildJpNums 与 rd 一一对应，故按下标把摘出来的变音记号挂回它所修饰的那个音符。
+    m.rd.forEach((k, j) => { const a = accidentals.get(k); if (a && nums[j]) nums[j].accidental = a; });
+    return { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums };
+  });
 
   // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是
   // 休止(digit 0)，且贯穿小节线很少。实测真乐谱行休止占比 ≤18%、小节线 ≥4；伪行休止 ≥79%、
