@@ -394,7 +394,11 @@ export async function recognizeHeader(
       if (!titleLine || ln.charH > titleLine.charH) titleLine = ln;  // 标题=最大字号中文行
     }
     if (titleLine) {
-      out.title = titleLine.text.trim().replace(/^\s*\d{1,4}\s*[.．、]\s*/, ""); // 去掉 "557." 之类的诗歌编号前缀
+      // 去掉 "557." 之类的诗歌编号前缀，以及尾巴上的出处标记（17《不失足》标题右边印着
+      // 「《旷》108」——那是选自哪本诗集的第几首，不是曲名的一部分）。
+      out.title = titleLine.text.trim()
+        .replace(/^\s*\d{1,4}\s*[.．、]\s*/, "")
+        .replace(/\s*《[^》]{0,8}》\s*\d{0,4}\s*$/, "");
       out.regions.push({ text: out.title, bbox: titleLine.bbox, chars: charsForText(out.title, titleLine.chars) });
     }
     const meta = parseMeta(ls);
