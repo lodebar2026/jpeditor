@@ -98,6 +98,27 @@ function accidentalOf(bin: Binary, b: Rect): "sharp" | "flat" | "natural" | null
   return null;
 }
 
+/** 倚音底下的减时线条数：从块底往下 0.6 字高内，逐行看有没有一条与它同宽的横墨，连着的算一条。
+ *  **不数连通块**：第二条常与那道连到主音符的弧连成一块（2152 末行实测 15×11），
+ *  按「扁而宽」的块判据一卡就只数得出一条，倚音的时值差一倍。 */
+function graceDivLines(bin: Binary, b: Rect, medH: number): number {
+  const x0 = Math.max(0, Math.round(b.x - b.w * 0.4));
+  const x1 = Math.min(bin.w - 1, Math.round(rright(b) + b.w * 0.4));
+  const need = b.w * 0.8;
+  const yEnd = Math.min(bin.h, Math.round(rbottom(b) + medH * 0.6));
+  let runs = 0, inRun = false;
+  for (let y = Math.round(rbottom(b)) + 1; y < yEnd; y++) {
+    let best = 0, cur = 0;
+    for (let x = x0; x <= x1; x++) {
+      if (bin.data[y * bin.w + x]) { cur++; if (cur > best) best = cur; } else cur = 0;
+    }
+    const wide = best >= need;
+    if (wide && !inRun) runs++;
+    inRun = wide;
+  }
+  return Math.min(runs, 3);
+}
+
 /** 装饰记号（波音 ∿、涟音等）画在音符**正上方**，常与那个音的高八度点 4-连通粘成一块：
  *  块进了数字通道，又因远离数字带被 groupRows 丢弃，粘着的点也就跟着没了
  *  （1600《南非之行》末小节的 `2̇`——记号盖住了它的八度点，音高整个掉了一个八度）。
@@ -701,9 +722,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     }
   }
 
-  const rowsC = groupRows(allCores, numH).filter((r) => r.length >= 3);
+  const rowsC = groupRows(allCores, numH);
   // 每行的 y 范围 + 穿过的小节线。
-  const rowMeta = rowsC.map((rd) => {
+  const rowMetaAll = rowsC.map((rd) => {
     const topY = Math.min(...rd.map((k) => k.bbox.y));
     const botY = Math.max(...rd.map((k) => rbottom(k.bbox)));
     // 小节线须**纵向贯穿本行**（覆盖本行 [topY,botY] 的大部分）。歌词行竖笔在行下方、
@@ -726,6 +747,27 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     return { rd, topY, botY, barlineXs, bars: real };
   });
 
+  // 少于三个数字的「行」多半是噪声（歌词碎笔、标题/页脚里的竖笔），一概不要——**除了末行
+  // 那种「一个音 + 一条终止线」**：2157《在这希望的田野上》末行就是 `1 - - -‖`，整行只有一个
+  // 数字（减时线是 hline，不算核），旧判据一刀切掉，整行连歌词「望！」一起丢。
+  // 救回的门开得极窄，三条都得满足，缺一条就是误救（实测放宽任一条都会在别的曲子上凑出假谱行：
+  // 只卡「有高竖线」时，世上/南非的标题带被凑成一行，标题识别跟着归零）：
+  //   ① 位置在所有正经谱行**之下**——末行才叫末行；
+  //   ② 带着**两条**并排的终止线（普通小节线只有一条，凑不出这个形）；
+  //   ③ 那两条与正经谱行的小节线一般高（中位高的 0.6，与行内相对判据同一口径）。
+  const rowMeta = rowMetaAll.filter((m) => m.rd.length >= 3);
+  const medBarH = median(rowMeta.flatMap((m) => m.bars.map((b) => b.bbox.h)));
+  if (medBarH > 0) {
+    // 「之下」要跟**正经谱行**比，不能跟 rowMeta 里的歌词行/页脚比（歌词行也有三个以上的核，
+    // 页脚更在末行下方一大截，拿它当界，末行永远进不来）。
+    const staffY = rowMeta.filter((m) => m.barlineXs.length > 0).map((m) => m.botY);
+    const lastY = staffY.length ? Math.max(...staffY) : Infinity;
+    const tail = rowMetaAll
+      .filter((m) => m.rd.length && m.rd.length < 3 && m.topY > lastY)
+      .filter((m) => m.bars.filter((b) => b.bbox.h >= medBarH * 0.6).length >= 2);
+    rowMeta.push(...tail);
+  }
+
   // 关键启发式：乐谱行有小节线穿过，歌词/标题行没有。先筛出乐谱行，
   // **只对乐谱行做 OCR**——避免把歌词汉字也送去识别（拖慢且污染结果）；整曲无小节线则回退全部。
   const withBars = rowMeta.filter((m) => m.barlineXs.length > 0);
@@ -742,7 +784,12 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     const medW = median(m.rd.map((k) => k.bbox.w)) || numH;
     for (let j = 0; j + 1 < m.rd.length; j++) {
       const k = m.rd[j], nx = m.rd[j + 1];
-      if (k.bbox.h > medH * 0.85 || k.bbox.w > medW * 0.85) continue;        // 与数字一般大 → 就是数字
+      // 与数字一般大 → 就是数字。**高度只挡明显更高的**：记号与数字孰高孰低随书而异——
+      // 17《不失足》的 ♯ 是 10×17、数字 15×24（矮一截），2152《就是不一样》第 5 行的 ♯ 却是
+      // 14×38、本行数字中位 12×32（反倒高出一截）；按 0.85 字高一卡，后者整个被挡在外面，
+      // 那个 ♯ 就当成音符送去 OCR、读成了休止 0。真正稳的判据是**宽度**（14 vs 22，记号一律
+      // 比数字窄）加上后面 accidentalOf 的形状判据。
+      if (k.bbox.h > medH * 1.25 || k.bbox.w > medW * 0.85) continue;
       if (k.bbox.h < medH * 0.45 || k.bbox.w < medW * 0.3) continue;         // 太小 → 点/碎片
       if (nx.bbox.x - rright(k.bbox) > numH * 0.3) continue;                 // 没紧贴右边那个数字
       if (nx.bbox.h < medH * 0.85) continue;                                 // 右邻得是个正常数字
@@ -754,6 +801,79 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       accCores.add(k);
     }
     if (accCores.size) m.rd = m.rd.filter((k) => !accCores.has(k));
+  }
+
+  // 倚音：小号数字印在主音符的左上方，**底下压着一两条与它同宽的减时线**，再由一小段弧连到
+  // 主音符（2156《祢为我解读一生的道路》第 7 行的 `4 ³5`）。那个小数字比数字带矮一截、中心又高
+  // 出大半个字（实测 cy 差 42px > groupRows 的 0.7 字号），挂不上任何谱行，自成一「行」后被
+  // 「行里得有三个数字」滤掉——整个倚音连同减时线一起没了。
+  // 判据里**减时线不可省**：三连音的那个小 `3` 也印在音符上方，它下面是括线不是减时线；
+  // 变音记号同样矮一截，但与主音符齐顶齐底、下面也没有横线（且早一步被上面那段摘走了）。
+  const graceOf = new Map<DigitCore, { digit: number; octave: number; div: number; bbox: Rect }[]>();
+  {
+    const cands: { box: Rect; owner: DigitCore; div: number; octave: number; dot?: Component }[] = [];
+    // 已经进了某条带的块一概不考虑：倚音之所以要单独救，正是因为它的中心比数字带高出大半个
+    // 字、**挂不上任何带**。反过来，落在带里的就是那条带的正经音符——谱面上和弦字母行、歌词行
+    // 也会各自成带（要等 OCR 完才按休止占比剔掉），不设这道门，上一带行末那个带减时线的音符
+    // 就会被下一带认领成倚音（实测为基督/因有主同在/主祢真伟大各因此吃掉一个真音符）。
+    const rowBoxes = staff.flatMap((m) => m.rd.map((k) => k.bbox));
+    const inRow = (b: Rect) => rowBoxes.some((r) =>
+      b.x < rright(r) && rright(b) > r.x && b.y < rbottom(r) && rbottom(b) > r.y);
+    // **候选从 comps 里取，不能只看 allCores**：倚音的 `1` 只有一条细竖笔（2152 末行实测宽 8），
+    // 够不着 classify 里数字块「宽 ≥0.3 字号」的门槛，压根没进数字通道，allCores 里找不到它。
+    for (const m of staff) {
+      const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
+      const medW = median(m.rd.map((k) => k.bbox.w)) || numH;
+      for (const kc of comps) {
+        const kb = kc.bbox;
+        if (inRow(kb)) continue;
+        if (kb.h < medH * 0.45 || kb.h > medH * 0.8) continue;   // 小号数字：比正经数字矮一号
+        if (kb.w > medW * 0.9) continue;                         // 也比它窄（圆滑线弧帽宽得多）
+        // 位置：底边**贴着数字带的顶**（倚音只是印得高一点，并没有离开这一行）。上下都要卡死：
+        // 只卡上界的话，**上一谱行**行末那个带减时线的音符正好落进窗口——它比本行数字略矮、
+        // 底下又真有一条减时线，判据条条都对。实测真倚音的底边就压在带顶上（2156 是带顶 +1px），
+        // 那些误判则在带顶上方一整个字高开外。
+        if (rbottom(kb) > m.topY + medH * 0.25) continue;
+        if (rbottom(kb) < m.topY - medH * 0.5) continue;
+        const div = graceDivLines(bin, kb, medH);
+        if (!div) continue;                                      // 底下没有减时线 → 不是倚音
+        // 右边紧跟着的那个正常数字就是它修饰的主音符
+        const owner = m.rd.find((n) => n.bbox.h >= medH * 0.85 &&
+          n.bbox.x >= rright(kb) - 2 && n.bbox.x - rright(kb) < medH * 0.9);
+        if (!owner) continue;
+        // 八度点**只认上面那个**：连到主音符的那道小弧就挂在减时线下方，断成的碎块
+        // （2156 实测 15×11）与八度点（13×14）一般大、也几乎正对着小数字（中心只偏 6px），
+        // 形状与位置都分不开——认下面那个点，等于给每个倚音都平白记上一个低八度。
+        // 高八度点没有这个麻烦：小数字上方空无一物。低八度的倚音因此少一个点（有损）。
+        const dot = c.dots.find((o) => Math.abs(rcx(o.bbox) - rcx(kb)) <= Math.max(kb.w * 0.5, numH * 0.2) &&
+          o.bbox.w <= Math.max(kb.w * 0.8, numH * 0.3) &&
+          kb.y - rbottom(o.bbox) >= -2 && kb.y - rbottom(o.bbox) < medH * 0.5);
+        cands.push({ box: kb, owner, div, octave: dot ? 1 : 0, dot });
+      }
+    }
+    if (cands.length) {
+      const vals = await ocr.recognizeDigits(bin, cands.map((g) => g.box));
+      const taken: Rect[] = [];
+      const usedDots = new Set<Component>();
+      cands.forEach((g, i) => {
+        const digit = vals[i] ?? 0;
+        if (digit < 1 || digit > 7) return;            // 读不出合法音就当误判，原样留给别的判据
+        const list = graceOf.get(g.owner) ?? [];
+        list.push({ digit, octave: g.octave, div: g.div, bbox: g.box });
+        graceOf.set(g.owner, list);
+        taken.push(g.box);
+        if (g.dot) usedDots.add(g.dot);
+      });
+      if (taken.length) {
+        // 倚音自己那几块要从音符流里摘干净：小数字、它底下的减时线（留着会被主音符当成自己的）、
+        // 八度点。减时线按几何剔——它们多半根本没进 hlines 那个池子（太窄），进了的按位置认。
+        const mine = (b: Rect) => taken.some((t) =>
+          Math.abs(rcx(b) - rcx(t)) <= t.w && b.y >= rbottom(t) - 2 && b.y - rbottom(t) < numH * 0.6);
+        allCores = allCores.filter((k) => !taken.some((t) => t.x === k.bbox.x && t.y === k.bbox.y));
+        c.hlines = c.hlines.filter((h) => !mine(h.bbox));
+        c.dots = c.dots.filter((o) => !usedDots.has(o));
+      }
+    }
   }
 
   const allDigits = staff.flatMap((m) => m.rd);
@@ -831,12 +951,51 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 弧下那个点不是八度点，别让 buildJpNums 收走。
   if (fermataDots.size) c.dots = c.dots.filter((o) => !fermataDots.has(o));
 
+  // 波音（上波音 ∿）：音符正上方一小段**两个尖峰的锯齿**（2152《就是不一样》第 5、8 行）。
+  // 与它同区的还有圆滑线弧帽与延长记号，三者都是「音符上方一块扁而宽的墨」，靠两条分开：
+  //   · **宽度**——波音只有一个字宽（实测 29px ≈ 0.9 字号），圆滑线至少跨两个音（81~143px）；
+  //   · **形状**——弧是凸的、顶点在正中间；波音正中间是两峰之间的**谷**。取每列最高墨点连成
+  //     上缘线，比「中间那几列的最高点」与「整块的最高点」：弧的差是 0，波音差着小半块高。
+  // 带竖杠的下波音（∿ 中间一竖）过不了谷判据，认不出来——手头没有样张，不照着猜写判据。
+  const ornamentOf = new Map<DigitCore, "upper-mordent">();
+  for (const m of staff) {
+    const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
+    for (const k of comps) {
+      const b = k.bbox;
+      if (b.w < numH * 0.6 || b.w > numH * 1.4) continue;
+      if (b.h < numH * 0.25 || b.h > numH * 0.6 || b.w / b.h < 1.6) continue;
+      // 正下方紧跟着一个正常字号的数字
+      const owner = m.rd.find((n) => Math.abs(rcx(n.bbox) - rcx(b)) <= numH * 0.4 &&
+        n.bbox.y - rbottom(b) >= -numH * 0.25 && n.bbox.y - rbottom(b) <= numH * 0.5 &&
+        n.bbox.h >= medH * 0.85);
+      if (!owner) continue;
+      // 上缘线：每列最高的那个墨点（没墨的列跳过）
+      const top: number[] = [];
+      for (let x = b.x; x < rright(b); x++) {
+        let y = b.y;
+        while (y < rbottom(b) && !bin.data[y * bin.w + x]) y++;
+        top.push(y < rbottom(b) ? y - b.y : NaN);
+      }
+      const peak = Math.min(...top.filter((v) => !isNaN(v)));
+      if (!isFinite(peak)) continue;
+      // 两个峰要分得开，峰之间要有个像样的谷
+      const hi = top.map((v, i) => (!isNaN(v) && v <= peak + b.h * 0.15 ? i : -1)).filter((i) => i >= 0);
+      const pl = hi[0], pr = hi[hi.length - 1];
+      if (pr - pl < b.w * 0.35) continue;                       // 峰都挤在一处 → 是弧顶，不是锯齿
+      const valley = Math.max(...top.slice(pl, pr + 1).filter((v) => !isNaN(v)));
+      if (valley - peak < b.h * 0.3) continue;                  // 两峰之间没有谷 → 还是弧
+      ornamentOf.set(owner, "upper-mordent");
+    }
+  }
+
   const allRows: StaffRow[] = staff.map((m) => {
     const nums = buildJpNums(bin, m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes);
     // buildJpNums 与 rd 一一对应，故按下标把摘出来的变音记号挂回它所修饰的那个音符。
     m.rd.forEach((k, j) => {
       const a = accidentals.get(k); if (a && nums[j]) nums[j].accidental = a;
       if (fermataOf.get(k) && nums[j]) nums[j].fermata = true;
+      const orn = ornamentOf.get(k); if (orn && nums[j]) nums[j].ornament = orn;
+      const g = graceOf.get(k); if (g && nums[j]) nums[j].grace = g;
     });
     return { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums,
       finalBarline: (m as { finalBarline?: "end" }).finalBarline };
@@ -856,10 +1015,16 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 转拍号归行：落在哪一谱行的纵向范围里就归哪一行，并锚到**其右侧第一个音符**上
   // （谱面上转拍号总印在小节线右边、新小节的头一个音符之前）。本行右侧没有音符了
   // （行末换拍）就锚到下一行的第一个音符。
+  // 页眉上并排印着的那几个拍号（`1=C 3/4 4/4`）也是同一个形，几何法一并认了出来，
+  // 它们落在第一谱行**上方**、归不进任何谱行；收起来交给 recognizeHeader 当混合拍用。
+  const headerMeters: { beats: number; beatType: number; bbox: Rect }[] = [];
   for (const mk of meterMarks) {
     const mcy = rcy(mk.bbox);
     const ri = useRows.findIndex((r) => mcy >= r.topY - numH && mcy <= r.bottomY + numH);
-    if (ri < 0) continue;
+    if (ri < 0) {
+      if (useRows.length && mcy < useRows[0].topY) headerMeters.push(mk);
+      continue;
+    }
     const row = useRows[ri];
     (row.meters ??= []).push(mk);
     const anchor = row.nums.find((n) => n.bbox.x > mk.x) ?? useRows[ri + 1]?.nums[0];
@@ -887,7 +1052,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   let meters: RecognizedScore["meters"], meterNote: string | undefined;
   let headerRegions: RecognizedScore["headerRegions"];
   if (ocr.recognizeTexts && useRows.length) {
-    const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr);
+    const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr,
+      headerMeters.sort((a, b) => a.bbox.x - b.bbox.x));
     title = h.title; credits = h.credits.length ? h.credits : undefined;
     if (h.fifths !== undefined) fifths = h.fifths;
     if (h.beats !== undefined && h.beatType !== undefined) { beats = h.beats; beatType = h.beatType; }
