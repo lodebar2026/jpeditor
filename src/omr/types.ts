@@ -73,6 +73,13 @@ export interface JpNum {
   // 延续由下游各自处理（MusicXML 那路在 musicxml.ts 里带状态输出 <alter>，
   // .jpwabc/文本谱那路照原样写记号、由 jppitch.ts::applyJpPitch 延续）。
   accidental?: "sharp" | "flat" | "natural";
+  // 波音（上波音 ∿，音符正上方一小段两个尖峰的锯齿）。带竖杠的下波音不识别（见 jianpu.ts）。
+  // → MusicXML `<notations><ornaments><inverted-mordent/>`；文本谱 `&sby`；.jpwabc/Score 装不下。
+  ornament?: "upper-mordent";
+  // 倚音（谱面上是主音符左上角的小号数字，底下压着一两条减时线、再由一小段弧连到主音符）。
+  // 一个主音符可以带一串（`"yy:5 4# 4b"`），故是数组、按 x 排序。
+  // → MusicXML `<note><grace slash="yes"/>…`（无 duration、不占拍位）；文本谱 `"yy:…"`。
+  grace?: { digit: number; octave: number; div: number; bbox: Rect }[];
   // 延长记号（fermata 𝄐，谱面上是音符头顶一段小弧、弧下扣一个点）。
   // → MusicXML `<notations><fermata/>`；文本谱写作音符后的 `&yc`；.jpwabc 是 `{YanYin}`。
   fermata?: boolean;

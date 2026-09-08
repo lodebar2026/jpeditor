@@ -132,6 +132,8 @@ function notationsXml(num: JpNum, arcs: ArcPairs): string {
   if (sl?.stop !== undefined) ns.push(`<slur type="stop" number="${sl.stop}"/>`);
   if (sl?.start !== undefined) ns.push(`<slur type="start" number="${sl.start}"/>`);
   if (num.fermata) ns.push(`<fermata/>`);
+  // 上波音 ∿ = MusicXML 的 inverted-mordent（带竖杠的那个才是 mordent）。
+  if (num.ornament === "upper-mordent") ns.push(`<ornaments><inverted-mordent/></ornaments>`);
   return ns.length ? `<notations>${ns.join("")}</notations>` : "";
 }
 
@@ -200,13 +202,26 @@ const beamXml = beamElementsXml;
 
 // MusicXML 3.0 的 note 子元素顺序：(pitch|rest), duration, tie*, voice?, type?, dot*,
 // time-modification?, …, beam*, notations*, lyric*。改这里务必守住这个顺序。
+/** 倚音：`<grace>` 音符没有 duration、不占拍位，排在它修饰的那个音符**之前**。
+ *  简谱的小音符一律带斜杠符干（acciaccatura），故写 slash="yes"。 */
+function graceNotesXml(num: JpNum, fifths: number): string {
+  return (num.grace ?? []).map((g) => {
+    const p = jpPitch(g.digit, g.octave, fifths);
+    const alter = p.alter ? `<alter>${p.alter}</alter>` : "";
+    const { type } = noteTypeDots(QUARTER / Math.pow(2, g.div));
+    return `<note><grace slash="yes"/><pitch><step>${p.step}</step>${alter}` +
+      `<octave>${p.octave}</octave></pitch><voice>1</voice><type>${type}</type></note>`;
+  }).join("");
+}
+
 function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number, string>,
                  barAlter?: Map<number, number>): string {
   const d = durationOf(num);
+  const grace = graceNotesXml(num, fifths);
   if (num.digit === 0) {
     // 休止符也要出 <notations>：圆滑线的一端落在休止符上是常有的事，早先这里直接 return
     // 把它丢了，弧线只剩半条，MuseScore 就一路拖到下一条 slur 那里去。
-    return `<note><rest/><duration>${d.divisions}</duration><voice>1</voice>` +
+    return grace + `<note><rest/><duration>${d.divisions}</duration><voice>1</voice>` +
       `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${notationsXml(num, arcs)}</note>`;
   }
   const p = pitchOf(num, fifths);
@@ -222,7 +237,7 @@ function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number,
   // <tie> 是播放语义（延音线要真的连起来），<tied> 是记号，规范要求两者齐全。
   const ti = arcs.tie.get(num);
   const ties = (ti?.stop ? `<tie type="stop"/>` : "") + (ti?.start ? `<tie type="start"/>` : "");
-  return `<note><pitch><step>${p.step}</step>${alterXml}<octave>${p.octave}</octave></pitch>` +
+  return grace + `<note><pitch><step>${p.step}</step>${alterXml}<octave>${p.octave}</octave></pitch>` +
     `<duration>${d.divisions}</duration>${ties}<voice>1</voice>` +
     `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${accXml}` +
     `${beamXml(beams)}${notationsXml(num, arcs)}${lyricsXml(num)}</note>`;
