@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 把简谱 OMR 命令行打成**自包含**分发包：解压即用，不联网、不装依赖（只要机器上有 Node ≥20）。
+// 把简谱 OMR 命令行打成**自包含**分发包：解压即用，不联网、不装依赖（只要机器上有 Node ≥18.17）。
 // 支持交叉打包——在 mac 上就能打出 Linux / Windows 的包。
 //
 // 用法（从仓库根跑，先 npm run build:cli）：
@@ -7,8 +7,12 @@
 //   node scripts/pack-omr.mjs --targets=all                   # 全部 5 个目标
 //   node scripts/pack-omr.mjs --targets=linux-x64,win32-x64   # 挑几个
 //   node scripts/pack-omr.mjs --targets=linux-x64 --libc=musl # Alpine 那类 musl 发行版
-//   node scripts/pack-omr.mjs --slim                          # Windows 包去掉 DirectML（见下）
+//   node scripts/pack-omr.mjs --no-slim                       # Windows 包保留 DirectML（见下）
 //   node scripts/pack-omr.mjs --keep                          # 保留目录、不打压缩包
+//
+// 本脚本自身在 macOS / Linux / Windows 都能跑：外部命令只用 npm（Windows 上是 npm.cmd）与
+// tar（Win10 1803+ 自带 bsdtar；GNU tar 不认 zip，那种环境回退到 zip 命令），体积统计走 Node
+// 自己遍历，不依赖 du。
 //
 // 产物：dist-pkg/jpeditor-omr-<版本>-<os>-<cpu>[-musl].{tar.gz|zip}
 //
@@ -16,15 +20,15 @@
 // 两个原生依赖都是**预编译分发**，不在安装时编译：
 //   - sharp 按平台拆成 @img/sharp-<os>-<cpu> 子包，`npm i --os= --cpu= --libc=` 能精确拉到；
 //   - onnxruntime-node 是**单包内含全平台**二进制，装完再裁掉别的平台。
-// 所以交叉打包不需要目标平台的工具链。但**产物没在目标平台上跑过**，务必在目标机上
-// 用 `omr-cli.mjs <图>` 自检一次；本脚本只做静态校验（该在的文件在不在）。
+// 所以交叉打包不需要目标平台的工具链。win32-x64 的产物已在 Windows 上实测跑通（16 张图逐字
+// 一致）；**其余目标仍只做静态校验**（该在的文件在不在），到目标机上请 `omr-cli.mjs <图>` 自检。
 //
 // ## 各平台的裁剪要点
 //   darwin  libonnxruntime.1.dylib 与 libonnxruntime.1.29.0.dylib 是两个完整副本（各 42MB），
 //           换成硬链接，tar 存成 hardlink 记录 → 省 42MB。
 //   win32   除 onnxruntime.dll 外还带 DirectML.dll / dxcompiler.dll / dxil.dll 共 ~36MB，那是
-//           DirectML EP 用的，我们只跑 CPU EP。`--slim` 会删掉它们——**没在 Windows 上验证过**，
-//           默认保留，要用请先在目标机上自检。
+//           DirectML EP 用的，我们只跑 CPU EP，**默认删掉**（包从 122M 降到 85M）。
+//           已在 Windows 上实测：删后 16 张图全跑通、与 macOS 侧逐字一致。要保留用 `--no-slim`。
 import { readFile, writeFile, mkdir, rm, cp, readdir, link, unlink, chmod, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -46,7 +50,7 @@ const opt = (k, dflt) => {
   return hit ? hit.slice(k.length + 3) : dflt;
 };
 const KEEP = argv.includes("--keep");
-const SLIM = argv.includes("--slim");
+const SLIM = !argv.includes("--no-slim"); // Windows 上实测通过，默认开
 const DEDUPE = !argv.includes("--no-dedupe");
 const LIBC = opt("libc", "glibc");
 const targetsArg = opt("targets", `${process.platform}-${process.arch}`);
@@ -65,7 +69,21 @@ if (!existsSync(join(ROOT, "dist-cli", "omr.js"))) {
 
 const pkg = JSON.parse(await readFile(join(ROOT, "package.json"), "utf-8"));
 const VER = pkg.version;
-const du = (p) => execFileSync("du", ["-sh", p]).toString().split("\t")[0].trim();
+/** Windows 上没有 du，自己遍历。硬链接按 (dev,ino) 只算一次，与 du 口径一致。 */
+const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
+async function bytesOf(p, seen = new Set()) {
+  const st = await stat(p);
+  if (!st.isDirectory()) {
+    const key = `${st.dev}:${st.ino}`;
+    if (st.nlink > 1) { if (seen.has(key)) return 0; seen.add(key); }
+    return st.size;
+  }
+  let total = 0;
+  for (const e of await readdir(p)) total += await bytesOf(join(p, e), seen);
+  return total;
+}
+const human = (n) => (n >= 1 << 20 ? `${Math.round(n / (1 << 20))}M` : `${Math.round(n / 1024)}K`);
+const du = async (p) => human(await bytesOf(p));
 
 /** vite 多入口会把 omr.js 与 index.js 的公共代码拆成共享 chunk（如 lyrics.js），
  *  只拷 omr.js 会 ERR_MODULE_NOT_FOUND → 顺着相对 import 递归收全。 */
@@ -105,6 +123,29 @@ async function verify(dir, os, cpu, libcTag) {
   return problems;
 }
 
+/** tar 是不是 bsdtar（libarchive）——只有它能产 zip。macOS 与 Win10 1803+ 自带的都是。 */
+let _bsdtar = null;
+function hasBsdtar() {
+  if (_bsdtar === null) {
+    try { _bsdtar = /bsdtar|libarchive/i.test(execFileSync("tar", ["--version"]).toString()); }
+    catch { _bsdtar = false; }
+  }
+  return _bsdtar;
+}
+
+/** 打包成 zip 或 tar.gz。**不用 zip 命令**——Windows 上没有；bsdtar 能产 zip，
+ *  但要显式给 deflate，否则 -a 默认 store（85M 的包会原样存成 85M）。
+ *  GNU tar 不认 zip 格式，那种环境（多数 Linux）回退到 zip 命令。 */
+function archive(file, dirName, asZip) {
+  if (!asZip) { execFileSync("tar", ["czf", file, "-C", OUT, dirName]); return; }
+  if (hasBsdtar()) {
+    execFileSync("tar", ["-a", "-cf", file, "--options", "zip:compression=deflate", "-C", OUT, dirName]);
+    return;
+  }
+  try { execFileSync("zip", ["-qry", file, dirName], { cwd: OUT }); }
+  catch { throw new Error("打 zip 需要 bsdtar 或 zip 命令，两者都没有"); }
+}
+
 async function build(target) {
   const [os, cpu] = target.split("-");
   const libcTag = os === "linux" && LIBC === "musl" ? "musl" : null;
@@ -122,7 +163,7 @@ async function build(target) {
   for (const f of await readdir(join(ROOT, "public", "redist", "ocr"))) {
     await cp(join(ROOT, "public", "redist", "ocr", f), join(dir, "models", f));
   }
-  console.log(`代码 ${chunks.join(", ")} + 模型 ${du(join(dir, "models"))}`);
+  console.log(`代码 ${chunks.join(", ")} + 模型 ${await du(join(dir, "models"))}`);
 
   // 2. package.json：只留运行期真正要的两个依赖
   await writeFile(join(dir, "package.json"), JSON.stringify({
@@ -132,7 +173,7 @@ async function build(target) {
     type: "module",
     bin: { [NAME]: "./omr-cli.mjs" },
     exports: { ".": "./omr.js" },
-    engines: { node: ">=20" },
+    engines: { node: ">=18.17" }, // 实测 18.20.5 可跑；sharp 0.35 的下限也是 18.17
     license: pkg.license,
     // 目标平台只做记录用：**不能写 os/cpu 字段**——npm 会拿它跟宿主比，交叉打包时
     // 自己 install 到这个目录就先 EBADPLATFORM 挂掉了。
@@ -147,7 +188,8 @@ async function build(target) {
   const flags = ["install", "--omit=dev", "--no-audit", "--no-fund", "--no-package-lock",
     `--os=${os}`, `--cpu=${cpu}`];
   if (os === "linux") flags.push(`--libc=${LIBC}`);
-  execFileSync("npm", flags, { cwd: dir, stdio: ["ignore", "ignore", "inherit"] });
+  // Windows 上 npm 是 npm.cmd，execFile 不走 shell 找不到裸 "npm"（Git Bash 里也一样）。
+  execFileSync(NPM, flags, { cwd: dir, stdio: ["ignore", "ignore", "inherit"] });
 
   // 4. 裁掉 ORT 的其余平台
   const ortBin = join(dir, "node_modules", "onnxruntime-node", "bin");
@@ -175,7 +217,7 @@ async function build(target) {
   // 5b. win32：--slim 去掉 DirectML 那套（只跑 CPU EP 用不上）
   if (SLIM && os === "win32" && existsSync(binDir)) {
     for (const f of WIN_DML) await rm(join(binDir, f), { force: true });
-    console.log(`slim：删掉 ${WIN_DML.join(" / ")}（未在 Windows 上验证，请在目标机自检）`);
+    console.log(`slim：删掉 ${WIN_DML.join(" / ")}（只跑 CPU EP 用不到；Windows 实测通过）`);
   }
 
   // 5c. win32：给个 .cmd 入口——shebang 在 Windows 上不起作用，自包含包又没有 npm 生成的 shim
@@ -187,7 +229,7 @@ async function build(target) {
   // 6. README
   await writeFile(join(dir, "README.md"), `# ${NAME} ${VER}
 
-简谱图像识别命令行。自包含：解压即用，不联网、不装依赖，只要机器上有 Node ≥ 20。
+简谱图像识别命令行。自包含：解压即用，不联网、不装依赖，只要机器上有 Node ≥ 18.17（实测 18.20.5 / 20 / 22 均可）。
 本包目标平台 **${os}/${cpu}${libcTag ? " (musl)" : ""}**。
 
 ${os === "win32" ? `\`\`\`bat
@@ -225,16 +267,15 @@ const { text } = await recognizeImage(bytes, { mime: "image/jpeg", format: "shig
     console.error(`✗ ${suffix} 校验不过：${problems.join("；")}`);
     return { target: suffix, ok: false };
   }
-  const size = du(dir);
+  const size = await du(dir);
   if (KEEP) { console.log(`✓ ${suffix}  ${size}  → ${dir}`); return { target: suffix, ok: true, size }; }
-  // Windows 用 zip（解压即用不必依赖 tar），其余 tar.gz（能保住硬链接与可执行位）
+  // Windows 出 zip（那边解压即用），其余 tar.gz（能保住硬链接与可执行位）
   const isWin = os === "win32";
   const file = join(OUT, `${NAME}-${VER}-${suffix}.${isWin ? "zip" : "tar.gz"}`);
   await rm(file, { force: true });
-  if (isWin) execFileSync("zip", ["-qry", file, `${NAME}-${suffix}`], { cwd: OUT });
-  else execFileSync("tar", ["czf", file, "-C", OUT, `${NAME}-${suffix}`]);
+  archive(file, `${NAME}-${suffix}`, isWin);
   await rm(dir, { recursive: true, force: true });
-  console.log(`✓ ${suffix}  目录 ${size} → ${file.replace(ROOT + "/", "")} (${du(file)})`);
+  console.log(`✓ ${suffix}  目录 ${size} → ${file.replace(ROOT + "/", "")} (${await du(file)})`);
   return { target: suffix, ok: true, size, file };
 }
 
@@ -246,4 +287,4 @@ for (const t of targets) results.push(await build(t));
 const bad = results.filter((r) => !r.ok);
 console.log(`\n完成 ${results.length - bad.length}/${results.length}`);
 if (bad.length) { console.error(`失败：${bad.map((r) => r.target).join(", ")}`); process.exit(1); }
-console.log("交叉打包的产物没在目标平台上跑过，请在目标机上 omr-cli.mjs <图> 自检一次。");
+console.log("交叉产物只做了静态校验（win32-x64 另经 Windows 实测），到目标机请 omr-cli.mjs <图> 自检一次。");
