@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "npm run build && node scripts/win-crt.mjs"
+  },
+  "bundle": {
+    "resources": {
+      "../public/redist/Bravura.otf": "Bravura.otf",
+      "../public/redist/ocr/ch_PP-OCRv6_small_rec_infer.onnx": "ocr/rec.onnx",
+      "../public/redist/ocr/ch_PP-OCRv4_det_infer.onnx": "ocr/det.onnx",
+      "crt/msvcp140.dll": "msvcp140.dll",
+      "crt/msvcp140_1.dll": "msvcp140_1.dll",
+      "crt/msvcp140_2.dll": "msvcp140_2.dll",
+      "crt/msvcp140_atomic_wait.dll": "msvcp140_atomic_wait.dll",
+      "crt/msvcp140_codecvt_ids.dll": "msvcp140_codecvt_ids.dll",
+      "crt/vcruntime140.dll": "vcruntime140.dll",
+      "crt/vcruntime140_1.dll": "vcruntime140_1.dll"
+    }
+  }
+}

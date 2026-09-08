@@ -46,6 +46,18 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      # 先单独编一遍 exe 校验：ort 静态链进来的 ONNX Runtime 是 /MD 编的，exe 直接导入
+      # MSVCP140*/VCRUNTIME140*，这些 DLL 随包内置（src-tauri/tauri.windows.conf.json 的
+      # resources）。清单漏了要在**上传之前**红，而不是等用户在干净的 Windows 上撞见
+      # 「找不到 MSVCP140_1.dll」。下面 tauri-action 那步是增量编译，不会重来一遍。
+      - name: 校验 Windows 包内置的 VC++ 运行库
+        if: matrix.os == 'windows-latest'
+        run: |
+          npm run build
+          node scripts/win-crt.mjs
+          cargo build --release --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
+          node scripts/win-crt.mjs --verify=src-tauri/target/${{ matrix.target }}/release/jpeditor.exe
+
       - name: Build and upload to release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -57,6 +69,7 @@ jobs:
           releaseDraft: false
           prerelease: ${{ github.event.release.prerelease }}
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
 
   # Web 版随同一 release 部署到 GitHub Pages
   pages-build:
