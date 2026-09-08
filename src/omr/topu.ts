@@ -149,6 +149,16 @@ function pairCurves(flat: readonly JpNum[]): { opens: Map<number, number>; close
   return { opens, closes };
 }
 
+/** 倚音串 `"yy:5 4 4"`：小号数字本身也是音符 token（八度/减时线照 noteToken 那套写法），
+ *  多个之间用空格隔开（parse.ts::scanGraceNotes 认这个形）。
+ *  **减时线要少写一条**：倚音的基准时值是八分音符（`scanGraceNotes` 里 `scanNote(…, 8)`），
+ *  谱面上那条八分的减时线不写；识别端数出的 div 是谱面上的条数，故写出去时减一。 */
+function graceToken(g: { digit: number; octave: number; div: number }, dialect: Dialect): string {
+  const d = dialectSpec(dialect);
+  const oct = g.octave > 0 ? d.octaveUp : d.octaveDown;
+  return String(g.digit) + oct.repeat(Math.abs(g.octave)) + "/".repeat(Math.max(0, g.div - 1));
+}
+
 /** 音符 token（不含其后的增时线）。修饰顺序：变音 → 八度 → 减时线 → 附点。 */
 function noteToken(n: JpNum, dialect: Dialect): string {
   const d = dialectSpec(dialect);
@@ -327,6 +337,11 @@ export function toPuText(
         // 拍内偏移（chordOffset）在文本谱里表达不了，就近挂本音符（有损，MusicXML 那路保得住）。
         // 延长记号：文本谱写作音符后的 `&yc`（parse.ts 的 NOTE_COMMANDS）。
         if (n.fermata) tb.push("&yc");
+        // 波音：文本谱写作音符后的 `&sby`（上波音，parse.ts 的 NOTE_COMMANDS）。
+        if (n.ornament === "upper-mordent") tb.push("&sby");
+        // 倚音：写成音符后面的引号备注 `"yy:…"`（parse.ts::interpretQuoted → graceBefore）。
+        // 番茄那边紧贴音符的 `[3]` 也是倚音，但两家都认 `"yy:"`，故不分方言。
+        if (n.grace?.length) tb.push(`"yy:${n.grace.map((g) => graceToken(g, dialect)).join(" ")}"`);
         if (n.chord) tb.push(`"hx:${n.chord}"`);
         if (n.sectionMark) tb.push(`"${n.sectionMark}"`);
         tb.push(")".repeat(closeHere)); // 收弧要在增时线之前，弧才止于本音符

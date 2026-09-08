@@ -290,6 +290,7 @@ function mergeStackedColumns(comps: Component[], numH: number): Component[] {
 /** 识别页眉信息。firstStaffTopY = 第一乐谱行顶部 y；只看其上方区域。 */
 export async function recognizeHeader(
   bin: Binary, comps: Component[], firstStaffTopY: number, numH: number, ocr: OcrBackend,
+  geoMeters?: { beats: number; beatType: number; bbox: Rect }[],
 ): Promise<HeaderInfo> {
   const out: HeaderInfo = { credits: [], regions: [] };
   if (!ocr.recognizeTexts || firstStaffTopY < numH) return out;
@@ -409,7 +410,14 @@ export async function recognizeHeader(
         continue;
       }
       if (hanziCount(txt) < 2) continue;            // 跳过页码/调号/速度等（数字/符号为主）
-      if (!titleLine || ln.charH > titleLine.charH) titleLine = ln;  // 标题=最大字号中文行
+      // 标题 = 最大字号的中文行；**字号差不多（15% 以内）时取更宽的那一行**。det 给的框高
+      // 只是个近似，同一本书里印在右上角的出版方（迦南诗选每页都印着「迦南诗歌」）会因框
+      // 松紧不同，忽而比标题矮（2157：61 vs 77）、忽而比它高（2156：79 vs 68）——单看框高，
+      // 2156 的标题就成了「迦南诗歌」。整行宽度在这里是压倒性的（892 vs 289），因为标题
+      // 是一整句、出版方只有四个字。
+      if (!titleLine) titleLine = ln;
+      else if (ln.charH > titleLine.charH * 1.25) titleLine = ln;
+      else if (ln.charH >= titleLine.charH * 0.85 && ln.bbox.w > titleLine.bbox.w) titleLine = ln;
     }
     if (titleLine) {
       // 去掉 "557." 之类的诗歌编号前缀，以及尾巴上的出处标记（17《不失足》标题右边印着
@@ -428,6 +436,19 @@ export async function recognizeHeader(
     out.meterNote = meta.meterNote;
     if (meta.fifths !== undefined && meta.fifthsLine) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: meta.fifthsLine.bbox });
     if (meta.tempo !== undefined && meta.tempoLine) out.regions.push({ text: `♩=${meta.tempo}`, bbox: meta.tempoLine.bbox });
+    // **几何法读出的并排拍号优先**：det 是按行切的，`1=C 3/4 4/4` 这种调号与拍号挨得紧的
+    // 页眉会被切成一整块（2156 实测读成 "1=Cz" + 孤零零一个 "4"），分子分母根本对不上，
+    // parseMixedMeters 无从下手、只落下一个 4/4。而 jianpu.ts::meterCandidates 那套判据
+    // （一条短分数线、上下各紧贴一个数字）在页眉上同样成立，两个拍号都干净地读了出来。
+    // 只在**它数出来的更多**时接管：det 那路认得斜杠式与调号同块的写法，单个拍号仍归它。
+    if (geoMeters && geoMeters.length > (meta.meters?.length ?? 0)) {
+      out.meters = geoMeters.map((m) => ({ beats: m.beats, beatType: m.beatType }));
+      out.beats = geoMeters[0].beats;
+      out.beatType = geoMeters[0].beatType;
+      const bbox = geoMeters.map((m) => m.bbox).reduce((a, b) => unionRect(a, b));
+      out.regions.push({ text: out.meters.map((m) => `${m.beats}/${m.beatType}`).join(" "), bbox });
+      return;
+    }
     if (meta.timeBBox && meta.meters?.length) {
       const text = meta.meters.map((m) => `${m.beats}/${m.beatType}`).join(" ") + (meta.meterNote ? ` ${meta.meterNote}` : "");
       out.regions.push({ text, bbox: meta.timeBBox });
