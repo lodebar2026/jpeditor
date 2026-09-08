@@ -3,14 +3,24 @@
 // 与 GT 同一 tokenizer 出 token，算 Levenshtein 准确率。用法：
 //   node measure-all.mjs              # 全部歌谱
 //   node measure-all.mjs 世上 日光    # 仅文件夹名含这些子串的
+//   node measure-all.mjs --node       # 识别改走 Node 管线（快 ~2.5×，见下）
 // 需先 npm run build 出 dist + 本地 Edge。
+//
+// `--node`：识别在 Node 侧跑（dist-cli/omr.js，onnxruntime-node 原生推理），浏览器只留
+// 「MusicXML → 编辑器导入 → getText」这一步折 jpwabc（那条路要排版/字体测量，离不开 DOM）。
+// 两端逐字符一致由 scripts/omr-node-check.mjs 保证，故指标口径不变；PDF 语料 Node 不认
+// （见 src/omr/decode.node.ts），自动回退浏览器识别。需先 npm run build:cli。
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { extname, join, basename } from "node:path";
 import { serveDist, launchPage, loadApp, decodeJpwabc, mimeOf } from "./harness.mjs";
 
 const TESTDATA = join(process.cwd(), "testdata");
 const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".bmp", ".webp"]);
-const filters = process.argv.slice(2);
+const args = process.argv.slice(2);
+const USE_NODE = args.includes("--node");
+const filters = args.filter((a) => a !== "--node");
+// 识别走 Node 时才加载 CLI 产物（没跑 build:cli 的话，只在用 --node 时才报错）。
+const nodeCli = USE_NODE ? await import(new URL("../dist-cli/omr.js", import.meta.url).href) : null;
 
 // 逐音符粘性 token。jpwabc 音符间可无空格；下划线(_)与附点(.)顺序不固定(GT 自身混用 6,_./2._)，
 // 故用 [_.]* 一并吞、各自计数。一个音 → N<digit>o<octave>u<下划线数>(+附点)，增时线 '-' 单列、小节线 '|'。
@@ -286,7 +296,20 @@ for (const song of songs) {
   const b64 = Buffer.from(await readFile(song.img)).toString("base64");
   let rec;
   try {
-    rec = await page.evaluate(async ({ b64, mime }) => {
+    // Node 管线：识别在本进程跑完，只把 MusicXML 送进页面折 jpwabc。
+    if (USE_NODE && extname(song.img).toLowerCase() !== ".pdf") {
+      const d = await nodeCli.recognizeMusicppDetailed(new Uint8Array(await readFile(song.img)), mime);
+      const stats = {
+        rows: d.score.rows.length,
+        notes: d.score.rows.reduce((a, r) => a + r.nums.length, 0),
+        bars: d.score.rows.reduce((a, r) => a + r.barlineXs.length, 0),
+      };
+      const jpw = await page.evaluate((xml) => {
+        window.__app.importBytes(new TextEncoder().encode(xml), "omr.musicxml");
+        return window.__app.getText();
+      }, nodeCli.toMusicXml(d.score));
+      rec = { jpw, stats, pu: nodeCli.toPuText(d.score, "tomato").text, puShige: nodeCli.toPuText(d.score, "shige").text };
+    } else rec = await page.evaluate(async ({ b64, mime }) => {
       const omr = await window.__omr;
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       const bin = await omr.decodeToBinary(bytes, mime);

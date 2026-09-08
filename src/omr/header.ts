@@ -3,7 +3,8 @@
 // 按内容/字号归类：含 作/词/曲/编/译 → 著作者 credit；最大字号且较居中的中文行 → 标题。
 import type { Binary, Component, Rect, TextRegion } from "./types";
 import type { OcrBackend } from "./ocr";
-import { srcCanvasOf, mergeToChars, chunkCells, buildStrip } from "./lyrics";
+import { mergeToChars, chunkCells, buildStrip } from "./lyrics";
+import { surfaceFromBinary, type Surface } from "./surface";
 import { clusterByY, median, overlapRatioX, unionRect, unionRects } from "./geom";
 
 const hanziCount = (s: string) => (s.match(/[一-鿿]/g) || []).length;
@@ -314,10 +315,10 @@ export async function recognizeHeader(
   });
   if (!region.length) return out;
 
-  const src = srcCanvasOf(bin);
+  const src = surfaceFromBinary(bin);
   // 行 = 一组连通块；整体 rec（自然区域分块）。返回 {text,charH,cx,cy,n}。
   const ocrGroups = async (gs: Component[][]): Promise<HLine[]> => {
-    const meta: Component[][] = [], strips: OffscreenCanvas[] = [], owner: number[] = [];
+    const meta: Component[][] = [], strips: Surface[] = [], owner: number[] = [];
     for (const g of gs) {
       const charH = median(g.map((k) => k.bbox.h)) || numH;
       const cells = mergeToChars(g, charH);

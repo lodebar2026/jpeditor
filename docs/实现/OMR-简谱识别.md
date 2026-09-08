@@ -531,3 +531,135 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 逐段歌词、弧线条数（跨行的只数起头那条）、段落标记个数、无空小节、无两条挨着的小节线、
 歌词行不被读成联合括号，以及 `noteRanges` 切出来的子串确是音符 token。
 上面每条判据都能被这套断言抓住——退回任一条，对应曲目立刻报错。
+
+## 无浏览器管线（Node CLI）
+
+`node scripts/omr-cli.mjs 图片.jpg -f shige` —— 图片进、文本谱出，全程不起浏览器，
+给第三方打谱软件当命令行工具用。识别逻辑与网页端**同一份源码**，只换后端。
+
+### 三个注入点
+
+管线本来只有三处碰浏览器 API，各拆出一个注入点，两端各给一个实现：
+
+| 注入点 | 浏览器实现 | Node 实现 | 抽掉的是什么 |
+|---|---|---|---|
+| `surface.ts` | 无（两端共用） | 同左 | `OffscreenCanvas`：建缓冲、铺白底、缩放贴图、读像素 |
+| `runtime.ts` | `runtime.browser.ts`（ort-web/wasm） | `runtime.node.ts`（onnxruntime-node） | 模型/字典从哪来、用什么跑 |
+| `decode.ts` | `decode.browser.ts`（createImageBitmap + pdf.js） | `decode.node.ts`（sharp） | 图片/PDF 字节 → RGBA |
+
+装配是副作用式的：网页端 `omr/index.ts` 顶部装浏览器那套，Node 端 `cli/omr.ts` 装 Node 那套。
+**`runtime.node.ts` / `decode.node.ts` 绝不能进 `omr/index.ts` 的 import 链**，否则 `fs`、`sharp`
+会被拖进网页产物。Tauri 那条原生 OCR（`paddleocr.ts::nativeOcr`，张量经 IPC 交给 Rust `ort`）
+不走 `runtime.ts`，是并列的第三个后端。
+
+CLI 不吃 PDF：`decode.node.ts` 没装光栅化器，喂 PDF 直接报错。矢量那一摊
+（`vector.ts`/`vectext.ts`/`inventory.ts` + `pdflayout/`）仍只在浏览器与 `cli/index.ts` 那条链上。
+
+### 解码器必须是 sharp，不能图省事用纯 JS
+
+判据里那些尺寸阈值**是在浏览器解码出的像素上标定的**，换一套 IDCT/色度上采样等于把所有
+边界样本重掷一次。实测「我今来就你」第 4 谱行首音符（`90,1090,30×31`）右侧的附点块：
+
+| 解码 | 全图连通块 | numH | 附点块 | `numH*0.45=13.95` | 结果 |
+|---|---|---|---|---|---|
+| 浏览器 / sharp | 314 | 31 | 9×**13** | ✓ | 进 `cls.dots` → 判附点 |
+| jpeg-js（纯 JS） | 310 | 31 | 9×**14** | ✗ | 落选，附点丢失 |
+
+jpeg-js 让该块底部多留一行像素（全图墨迹多 798 个，0.16%），越过 `classify()` 判小点的
+`w,h <= numH*0.45`；再往下数字块要 `h >= numH*0.55`(17.05)、淡印窄块那条要 `w >= numH*0.3`(9.3，
+块宽正好 9)，全部落空 → 整块被丢弃。**注意 numH 两边都是 31，判据没漂，纯粹是输入差了一行像素。**
+
+sharp 走 libvips→libjpeg-turbo，与浏览器同一套解码，实测 18 首**逐像素、逐字符**一致
+（`scripts/omr-node-check.mjs`），故不留纯 JS 回退——两套解码器就是两套精度基线。
+两种装法都逐像素一致，按分发形态选：`npm i sharp`（原生，~28MB 含 libvips）或
+`npm i --cpu=wasm32 sharp`（纯 wasm，~11MB，跨平台一份，**单文件分发只能用这个**，
+原生 `.node` 没法被 bundler 内联）。解码 5ms / 9ms，纯 JS 43ms——但那 40ms 只占单首的 3%，
+选它不是为速度。
+
+### 重采样两端统一走 `surface.ts`，不再用 drawImage
+
+缩放结果直接就是 rec/det 的输入张量，两端若用不同重采样，识别结果会分叉、精度基线得各维护一套。
+故 `blit()` 自己实现：**缩小用面积平均(box)、放大用双线性**，分离式两趟。缩小必须是面积平均——
+朴素双线性只采样两点，歌词条常缩到原高 1/3 以下，细笔画会整根丢失。
+
+换掉 `drawImage` 后全量重跑 14 首基线：互有涨跌、无系统性下降（平均八度/小节 +0.1、
+歌词\* −0.1，音符与对位平均持平；「16 爱心的功课」音符 96.1→96.6、「耶稣普治」歌词 100→99.5）。
+
+### 线程数按张量形状分派
+
+同一模型同一后端，最优线程数随形状**反转**（M5 实测 ms/次）：
+
+| 输入 | wasm 4线程 | node 1线程 | node 4线程 |
+|---|---|---|---|
+| rec 歌词条 `[1,3,48,320]` | 25.1 | **8.7** | 16.6 |
+| rec 长条 `[1,3,48,2048]` | 139.1 | **53.3** | 76.9 |
+| rec 数字批 `[16,3,48,48]` | 61.3 | 63.4 | **38.6** |
+| det 整片 `[1,3,960,960]` | 134.6 | 193.1 | **76.4** |
+
+单张小图开多线程反被调度开销吃掉，成批或整片才填得满多核。`runtime.node.ts::pickThreads` 据此
+判：`dims[0] > 1`（成批）或元素数 ≥ 1M（det 整片）才用多线程，其余单线程；两个 rec session
+按需各建一个。浏览器侧拿不到这个收益——ort-web 的 `numThreads` 是全局 env、模型又是 21MB，
+建两份不划算。
+
+### 实测耗时
+
+浏览器（wasm 4 线程）三首合计 8552ms = decode 290(3%) + infer 6189(**72%**) + CTC 7 + 预处理/几何 2066(24%)。
+换 Node 原生后同样 18 首平均 **1169ms/首**（浏览器约 2900ms/首），约 2.5×。**推理是大头**，
+所以这一步的收益几乎全来自「wasm → 原生」；`ort` crate 与 `onnxruntime-node` 绑的是同一个
+ONNX Runtime，为性能改写 Rust 只能再动那 24% 的几何部分，不划算（要重写全部判据并重对基线）。
+上 Rust 的理由应该是分发形态（第三方要进程内加载 native 库），不是速度。
+
+### 命令
+
+```bash
+npm run build:cli && node scripts/omr-cli.mjs <图> [-f shige|tomato|jpwabc] [-o 出] [--profile]
+npm run build && npm run build:cli && node scripts/omr-node-check.mjs [曲名子串…]
+```
+
+后者是 Node 管线的验收依据：同一张图两端各跑一遍，比文本谱原文与结构统计，逐字符必须相同。
+模型默认读 `public/redist/ocr/`（env `OMR_MODELS` 可改），线程数 env `OMR_THREADS`。
+
+### 打包分发（`scripts/pack-omr.mjs`）
+
+打成**自包含**分发包：解压即用，不联网、不装依赖，只要目标机有 Node ≥20。
+支持交叉打包——在 mac 上就能打出 Linux / Windows 的包。
+
+```bash
+npm run build:cli && node scripts/pack-omr.mjs                     # 当前平台
+node scripts/pack-omr.mjs --targets=all                            # 全部 5 个
+node scripts/pack-omr.mjs --targets=linux-x64,win32-x64            # 挑几个
+node scripts/pack-omr.mjs --targets=linux-x64 --libc=musl          # Alpine 那类
+node scripts/pack-omr.mjs --targets=win32-x64 --slim               # Windows 去掉 DirectML
+```
+
+产物 `dist-pkg/jpeditor-omr-<版本>-<os>-<cpu>[-musl].{tar.gz|zip}`（Windows 出 zip），
+内含 `omr.js` + 共享 chunk + `omr-cli.mjs`（Windows 另附 `omr-cli.cmd`）+ `models/` + `node_modules/`。
+
+| 目标 | 目录 | 压缩包 |
+|---|---|---|
+| darwin-arm64 | 99M | 46M |
+| linux-x64 | 101M | 50M |
+| linux-arm64 | 82M | 44M |
+| win32-x64 | 122M（`--slim` 85M） | 61M（`--slim` 45M） |
+| win32-arm64 | 125M | 62M |
+
+**交叉打包靠什么成立**：两个原生依赖都是预编译分发，不在安装时编译——sharp 按平台拆成
+`@img/sharp-<os>-<cpu>` 子包（`npm i --os= --cpu= --libc=` 能精确拉到），onnxruntime-node 是
+单包内含全平台二进制（装完再裁掉别的平台）。所以不需要目标平台的工具链。**但产物没在目标平台
+跑过**，脚本只做静态校验（目标平台的 ORT binding、运行库、sharp 平台包在不在），到目标机上
+务必 `omr-cli.mjs <图>` 自检一次。
+
+几处踩过的坑：
+
+- 生成的 `package.json` **不能写 `os`/`cpu` 字段**——npm 会拿它跟宿主比，交叉打包时自己
+  `npm install` 到那个目录就先 `EBADPLATFORM` 挂掉。改用自定义的 `target` 字段做记录。
+- vite 多入口把 `omr.js` 与 `index.js` 的公共代码拆成了共享 chunk（`lyrics.js`），只拷
+  `omr.js` 会 `ERR_MODULE_NOT_FOUND` → 顺着相对 import 递归收全。
+- `runtime.node.ts` 找模型**按产物位置解析，不看 cwd**（`import.meta.url` → 同级 `models/`
+  → 仓库 `public/redist/ocr`），否则第三方在任意目录跑就找不到模型。
+- macOS 的 `libonnxruntime.1.dylib` 与 `libonnxruntime.1.29.0.dylib` 是两个完整副本（各 42MB），
+  换硬链接后 tar 存成 hardlink 记录，直接省 42MB。
+- Windows 包里除 `onnxruntime.dll` 还有 `DirectML.dll`/`dxcompiler.dll`/`dxil.dll` 共 ~36MB，
+  那是 DirectML EP 用的，我们只跑 CPU EP。`--slim` 删掉它们——**没在 Windows 上验证过**，
+  默认保留。另注意 Windows 需要 VC++ 2019/2022 可再发行组件（`onnxruntime.dll` 依赖），
+  以及 shebang 不起作用，故另附 `omr-cli.cmd`。

@@ -4,7 +4,7 @@
 
 import type { Binary, RecognizedScore, JpNum, Rect } from "./types";
 import { rcx, rcy, rright } from "./types";
-import { srcCanvasOf } from "./lyrics";
+import { surfaceFromBinary } from "./surface";
 import { clusterRectsByY, median } from "./geom";
 import { measureGlyphText } from "../common/measure";
 
@@ -26,13 +26,13 @@ function digitFontSize(targetInkH: number): number {
 
 /** 二值图 → PNG dataURL（黑字白底，作叠加背景）。 */
 function binDataUrl(bin: Binary): string {
-  const off = srcCanvasOf(bin); // OffscreenCanvas（黑字白底）
+  const surf = surfaceFromBinary(bin); // 黑字白底
   const cv = document.createElement("canvas");
   cv.width = bin.w;
   cv.height = bin.h;
   const ctx = cv.getContext("2d");
   if (!ctx) throw new Error("无法创建 2D 画布上下文");
-  ctx.drawImage(off, 0, 0);
+  ctx.putImageData(new ImageData(surf.data, bin.w, bin.h), 0, 0);
   return cv.toDataURL("image/png");
 }
 

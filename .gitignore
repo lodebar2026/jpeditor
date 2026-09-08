@@ -52,3 +52,4 @@ docs/实现/文本谱-规范外写法.md
 
 # Swift 工具的编译产物（源码在 tools/*.swift，编译命令见 CLAUDE.md）
 tools/vision-ocr
+dist-pkg
