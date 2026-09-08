@@ -669,10 +669,42 @@ sharp 走 libvips→libjpeg-turbo，与浏览器同一套解码，实测 18 首*
 ONNX Runtime，为性能改写 Rust 只能再动那 24% 的几何部分，不划算（要重写全部判据并重对基线）。
 上 Rust 的理由应该是分发形态（第三方要进程内加载 native 库），不是速度。
 
+### 线程策略随 CPU 反转，别把 M5 的结论当普适
+
+上面那张表和 `pickThreads` 的判据（单张小图走单线程）成立的**前提是单核极强、核少**——
+M5 上多线程那点并行赚不回调度开销。换到**单核弱、核多**的机器就反过来了：有 Xeon E5
+（2.0~2.4GHz Haswell/Broadwell）服务器上实测 Node 版比同机浏览器 4 线程 wasm **慢 2~3×**，
+且差值随曲子变长而放大（5 首里最长的两首差 10.8s / 12.2s，最短的差 4.2s）——正是逐条歌词
+rec 全被按在一个弱核上、按歌词条数累积的形状。
+
+故留了出口，三种策略输出**逐字相同**，只影响速度：
+
+| `OMR_THREAD_MODE` / `--thread-mode` | 适用 |
+|---|---|
+| `auto`（默认） | 按张量形状分派；单核强、核少（Apple M 系）最快 |
+| `always` | 一律多线程；**单核弱、核多（Xeon E5 那代）该用这个** |
+| `single` | 一律单线程；CPU quota 只有一两核的容器，免线程池自旋空转 |
+
+`OMR_THREADS` / `--threads=N` 定多线程时用几个核（默认 4）。`--profile` 会把实际生效的
+`模式/线程数` 一并打出来。**换机器请先用这三种跑一遍对比再定**，别照搬默认值。
+
+### 批量比逐张起进程快得多
+
+模型 21MB、ONNX 图反序列化 + ORT 初始化 + JIT 预热约 **2.4s**（M5 实测，弱 CPU 上更久）。
+逐张调用等于每张都付一遍，浏览器版页面常驻只付一次——服务端集成若是「一张图起一次进程」，
+这笔固定开销足以把原生推理的优势吃光。CLI 因此支持多图/目录一次跑完：
+
+```bash
+node scripts/omr-cli.mjs a.jpg b.jpg 谱子目录/ -o 出目录/
+```
+
+或者把 `dist-cli/omr.js` 当库 `import` 进常驻服务（`recognizeImage`），只加载一次模型。
+
 ### 命令
 
 ```bash
-npm run build:cli && node scripts/omr-cli.mjs <图> [-f shige|tomato|jpwabc] [-o 出] [--profile]
+npm run build:cli && node scripts/omr-cli.mjs <图…|目录…> [-f shige|tomato|jpwabc] [-o 出]
+                       [--profile] [--thread-mode=auto|always|single] [--threads=N]
 npm run build && npm run build:cli && node scripts/omr-node-check.mjs [曲名子串…]
 ```
 
@@ -689,19 +721,25 @@ npm run build:cli && node scripts/pack-omr.mjs                     # 当前平�
 node scripts/pack-omr.mjs --targets=all                            # 全部 5 个
 node scripts/pack-omr.mjs --targets=linux-x64,win32-x64            # 挑几个
 node scripts/pack-omr.mjs --targets=linux-x64 --libc=musl          # Alpine 那类
-node scripts/pack-omr.mjs --targets=win32-x64 --slim               # Windows 去掉 DirectML
+node scripts/pack-omr.mjs --targets=win32-x64 --no-slim            # Windows 保留 DirectML
 ```
+
+脚本本身在 macOS / Linux / Windows 都能跑：外部命令只用 npm（Windows 上要 `npm.cmd`，
+execFile 不走 shell 找不到裸 `npm`，Git Bash 里也一样）与 tar，体积统计走 Node 自己遍历
+（Windows 没有 `du`）。**打 zip 不用 `zip` 命令**（Windows 没有）：bsdtar 能产 zip，但要显式
+`--options zip:compression=deflate`，否则 `-a` 默认 store、85M 的包原样存成 85M；GNU tar 不认
+zip 格式，那种环境才回退到 `zip`。
 
 产物 `dist-pkg/jpeditor-omr-<版本>-<os>-<cpu>[-musl].{tar.gz|zip}`（Windows 出 zip），
 内含 `omr.js` + 共享 chunk + `omr-cli.mjs`（Windows 另附 `omr-cli.cmd`）+ `models/` + `node_modules/`。
 
 | 目标 | 目录 | 压缩包 |
 |---|---|---|
-| darwin-arm64 | 99M | 46M |
-| linux-x64 | 101M | 50M |
-| linux-arm64 | 82M | 44M |
-| win32-x64 | 122M（`--slim` 85M） | 61M（`--slim` 45M） |
-| win32-arm64 | 125M | 62M |
+| darwin-arm64 | 96M | 46M |
+| linux-x64 | 98M | 50M |
+| linux-arm64 | 78M | 43M |
+| win32-x64 | 82M（`--no-slim` 122M） | 44M（`--no-slim` 61M） |
+| win32-arm64 | 80M（`--no-slim` 125M） | 43M（`--no-slim` 62M） |
 
 **交叉打包靠什么成立**：两个原生依赖都是预编译分发，不在安装时编译——sharp 按平台拆成
 `@img/sharp-<os>-<cpu>` 子包（`npm i --os= --cpu= --libc=` 能精确拉到），onnxruntime-node 是
@@ -720,8 +758,10 @@ node scripts/pack-omr.mjs --targets=win32-x64 --slim               # Windows 去
 - macOS 的 `libonnxruntime.1.dylib` 与 `libonnxruntime.1.29.0.dylib` 是两个完整副本（各 42MB），
   换硬链接后 tar 存成 hardlink 记录，直接省 42MB。
 - Windows 包里除 `onnxruntime.dll` 还有 `DirectML.dll`/`dxcompiler.dll`/`dxil.dll` 共 ~36MB，
-  那是 DirectML EP 用的，我们只跑 CPU EP。`--slim` 删掉它们——**没在 Windows 上验证过**，
-  默认保留。另外 Windows 上 shebang 不起作用，故另附 `omr-cli.cmd`。
+  那是 DirectML EP 用的，我们只跑 CPU EP，**默认删掉**（`--no-slim` 保留）。已在 Windows 上
+  实测：删后 16 张图全跑通、与 macOS 侧逐字一致。另外 Windows 上 shebang 不起作用，
+  故另附 `omr-cli.cmd`。
+- `engines` 写 `>=18.17`（sharp 0.35 的下限）：实测 Node 18.20.5 能跑，不必卡 20。
 - Windows 需要 **VC++ 2015–2022 可再发行组件**（x64 包用 `vc_redist.x64.exe`，arm64 用
   `vc_redist.arm64.exe`）：查过导入表，`onnxruntime.dll` 与 `onnxruntime_binding.node` 动态链接
   `MSVCP140.dll`/`VCRUNTIME140.dll`，不在系统自带的 UCRT（`api-ms-win-crt-*`）里；**sharp 那几个
