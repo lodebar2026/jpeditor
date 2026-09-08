@@ -6,6 +6,7 @@ import type { OcrBackend } from "./ocr";
 import { mergeToChars, chunkCells, buildStrip } from "./lyrics";
 import { surfaceFromBinary, type Surface } from "./surface";
 import { clusterByY, median, overlapRatioX, unionRect, unionRects } from "./geom";
+import { accidentalOf } from "./accidental";
 
 const hanziCount = (s: string) => (s.match(/[一-鿿]/g) || []).length;
 
@@ -112,9 +113,13 @@ function parseMeta(lines: HLine[]): MetaInfo {
   };
 
   // 调号：先认单碎片内 "1=♭B" 或 "♭B"（升降号紧贴音名）；再认自然调 "1=G"（音名无升降号）。
+  // 升降号**印在音名右上角**的写法（`1=E♭`）同样要认，但只在 `1=` 锚定的形里认——不带 `1=`
+  // 的裸后缀形（"Ab"、"Fb"）在英文碎片里遍地都是，一放开就满页误判。
   for (const l of lines) {
     const acc = l.text.match(/1\s*[=＝]\s*([b#♭♯])\s*([A-G])/) || l.text.match(/([b#♭♯])\s*([A-G])(?![a-z])/);
     if (acc) { const f = toFifths(acc[2], acc[1]); if (f !== undefined) { res.fifths = f; res.fifthsLine = l; break; } }
+    const post = l.text.match(/1\s*[=＝]\s*([A-G])\s*([b#♭♯])(?![a-z])/);
+    if (post) { const f = toFifths(post[1], post[2]); if (f !== undefined) { res.fifths = f; res.fifthsLine = l; break; } }
     // 自然调："1=G"/"1=C4"(4 来自拍号)。音名后须非升降号(否则属上面的带号情形)、非小写字母。
     const nat = l.text.match(/1\s*[=＝]\s*([A-G])(?![b#♭♯a-z])/);
     if (nat && nat[1] in NAT_FIFTHS) { res.fifths = NAT_FIFTHS[nat[1]]; res.fifthsLine = l; break; }
@@ -143,10 +148,14 @@ function parseMeta(lines: HLine[]): MetaInfo {
     for (const l of lines) {
       const t = l.text.replace(/\s+/g, "");
       if (t.length > 8) continue;
-      const m = t.match(/(?:^|[^A-Za-z])([A-G])(\d{1,2})[/／](\d{1,2})(?![0-9])/);
+      // 升降号在音名右上角的（`E♭ 3/4`，det 读成 "Eb3/4"）一并认下：这一路本就靠「右边紧跟着
+      // 一个合法拍号」定位，音名与拍号之间夹的那一个字符只可能是升降号（5《我今来就你》）。
+      const m = t.match(/(?:^|[^A-Za-z])([A-G])([b#♭♯]?)(\d{1,2})[/／](\d{1,2})(?![0-9])/);
       if (!m || !(m[1] in NAT_FIFTHS)) continue;
-      if (!validBeats(Number(m[2])) || !validBeatType(Number(m[3]))) continue;
-      res.fifths = NAT_FIFTHS[m[1]];
+      if (!validBeats(Number(m[3])) || !validBeatType(Number(m[4]))) continue;
+      const f = m[2] ? toFifths(m[1], m[2]) : NAT_FIFTHS[m[1]];
+      if (f === undefined) continue;
+      res.fifths = f;
       res.fifthsLine = l;
       break;
     }
@@ -369,6 +378,36 @@ export async function recognizeHeader(
 
   // 归类：以 作/词/曲/编/译 开头紧跟冒号(作词：/词曲：…) → credits；其余最大字号中文行作标题。
   // 著作者前缀须**行首**紧贴冒号——否则长句经文副标题("…正如他作更美之约…来8：6")也会因含"作"+"："被误判。
+  /** 把 `1=<残字><音名>` 里的残字按形状改写成 `b`/`#`。改了返回 true。
+   *  定位靠 det/CTC 给的逐字位：残字的 cx 附近那个连通块就是升降号本体（页眉里 `=` 的两横、
+   *  音名字母各是独立的块，取**离它最近**的那个即可）。找不到块或形状判不出就原样不动。 */
+  function repairKeyAccidental(ls: HLine[]): boolean {
+    let fixed = false;
+    for (const l of ls) {
+      if (!l.chars?.length) continue;
+      const m = l.text.match(/1\s*[=＝]\s*([^A-Ga-g0-9\s])\s*([A-G])(?![a-z])/);
+      if (!m) continue;
+      const idx = l.text.indexOf(m[1], l.text.indexOf(m[0]));
+      const ch = l.chars[idx];
+      if (!ch) continue;
+      // 页眉里的块：落在本行框内（上下各放半个字高，上标本就骑得高）、且不比整行还宽。
+      let best: Component | null = null, bd = Infinity;
+      for (const k of comps) {
+        const b = k.bbox;
+        if (b.y > l.bbox.y + l.bbox.h || b.y + b.h < l.bbox.y - l.bbox.h * 0.5) continue;
+        if (b.w > l.bbox.h || b.h > l.bbox.h) continue;      // 音名/数字那种整字大小的块不算
+        const d = Math.abs(b.x + b.w / 2 - ch.cx);
+        if (d < bd) { bd = d; best = k; }
+      }
+      if (!best || bd > l.bbox.h) continue;
+      const kind = accidentalOf(bin, best.bbox);
+      if (kind !== "flat" && kind !== "sharp") continue;
+      l.text = l.text.slice(0, idx) + (kind === "flat" ? "b" : "#") + l.text.slice(idx + m[1].length);
+      fixed = true;
+    }
+    return fixed;
+  }
+
   function classify(ls: HLine[]) {
     // 著作者前缀：`作词：`/`词曲：`，也含顿号/斜杠分列的 `词、曲：`、`作词/作曲：`。
     const creditRe = /^\s*[作詞词曲編编譯译]{1,2}(?:\s*[、，,/／]\s*[作詞词曲編编譯译]{1,2})*\s*[:：]/;
@@ -427,7 +466,13 @@ export async function recognizeHeader(
         .replace(/\s*《[^》]{0,8}》\s*\d{0,4}\s*$/, "");
       out.regions.push({ text: out.title, bbox: titleLine.bbox, chars: charsForText(out.title, titleLine.chars) });
     }
-    const meta = parseMeta(ls);
+    let meta = parseMeta(ls);
+    // 调号里的升降号读成了残字：`1=♭B` 的 ♭ 印成上标、只有一个数字的三分之一大，PP-OCR 常读成
+    // 引号一类的东西（227《施比受更为有福》读成 `1=″B`），`parseMeta` 的 `[b#♭♯]` 一条都对不上，
+    // 整个调号就落回默认的 C。此时**回头看形状**：那个字的位置上有一块墨，交给 accidentalOf
+    // 判 ♯/♭，把残字改写成 `b`/`#` 再解析一遍。只在 parseMeta 什么都没认出来时兜底，
+    // 认出来的（`1=bB`、`1=G`）一概不动。
+    if (meta.fifths === undefined && repairKeyAccidental(ls)) meta = parseMeta(ls);
     out.fifths = meta.fifths;
     out.tempo = meta.tempo;
     out.beats = meta.beats;
