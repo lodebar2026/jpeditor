@@ -6,7 +6,7 @@
 
 import { Fraction } from "../common/fraction";
 import { BarStyle, StartStopDiscontinue } from "./enums";
-import { keyAlter } from "./jppitch";
+import { jpTonicOctaveShift, keyAlter } from "./jppitch";
 
 export { BarStyle, StartStopDiscontinue };
 
@@ -174,7 +174,9 @@ export class MusicCommon {
       step = step.replace(/#/g, "");
     }
     res += MusicCommon.stepToPitch(step[0]);
-    res += "AB".includes(step[0]) ? 48 : 60;
+    // 无点 1 落在 B3..A4 一个八度里，只有字母 B 的调降八度（《简谱通用规范》23-24 页的
+    // 各调音域对照表；判据与 jppitch.ts::jpTonicOctaveShift 同源，那边按 fifths 判）。
+    res += step[0] === "B" ? 48 : 60;
     return res;
   }
 }
@@ -345,7 +347,7 @@ export class Note {
     }
     this.jpAlter = stat.update(this.step, this.alter) ?? " ";
     this.jpOctave = Math.floor((wr - b) / 7) - 4;
-    if (fifths === 3 || fifths === 5 || fifths === -2) this.jpOctave += 1;
+    this.jpOctave += jpTonicOctaveShift(fifths);
   }
 }
 

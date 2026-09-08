@@ -58,8 +58,9 @@ MuseScore、Finale、Sibelius 这类软件，且**尽可能不丢信息**。
 （`alignWithEdits`）：LCS 认出没动过的项，两个锚点之间数量相同的一段就是「内容被改过」的项。
 
 **签名比的是简谱表述**（`number`/`jpOctave`/`jpAlter`），不是 `Note.pitch`：jpwimport 的
-basePitch 走 `getBasePitch`（A/B 用 48、其余 60），`Note.init` 又对 fifths 3/5/−2 做
-`jpOctave+1`，直接比 MIDI pitch 有系统性 ±12 偏差，会把没改过的音判成改过。
+basePitch 走 `getBasePitch`（主音字母 B 用 48、其余 60），`Note.init` 又对同一批调
+（`jpTonicOctaveShift`）做 `jpOctave+1`，直接比 MIDI pitch 有系统性 ±12 偏差，会把没改过的音
+判成改过。
 
 **歌词签名只比文本，不比 verse 编号**：底本可能把某段标成 `number="chorus"`（导入端
 `findRefrain` 推断的共用副歌），而从 .jpwabc 重建的 Score 按 W 段标成 `number="1"`。
@@ -77,7 +78,9 @@ basePitch 走 `getBasePitch`（A/B 用 48、其余 60），`Note.init` 又对 fi
 **(b) 音高走 jp 表述，不走 `spellPitch(pitch)`。** `jpSpelling()` = `jpPitch(数字, 八度点,
 fifths)` 定 step/octave + `accidentalOf()` 定临时记号。两点原因：`.jpwabc` 来源的 Score 只设
 了 `pitch` 和 `step`，`octave`/`alter` 恒 0；且 `jpPitch` 里的 `extra` 修正正是为抵消
-`Note.init` 对 fifths 3/5/−2 的 `jpOctave+1`。
+`Note.init` 的 `jpTonicOctaveShift`（主音字母 B 的调，即 B/bB；无点 1 落在 B3..A4
+一个八度里，依据《简谱通用规范》23-24 页的各调音域对照表，见 `jppitch.ts` 顶部与
+`docs/架构与实现.md`）。
 `accidentalOf` 按**音高差**（pitch − 该数字在本调的自然音高）算临时记号，不能读 `nt.jpAlter`
 ——那只标在记号出现的那个音上，同小节后续同音级由 `AccidentalStat` 延续，jpAlter 是 `" "`
 但音高实际带着升降。
