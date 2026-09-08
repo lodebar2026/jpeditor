@@ -196,8 +196,10 @@ omr-cli.cmd 图片.jpg -f tomato -o 曲.txt  :: 换格式、写文件
 omr-cli.cmd 图片.jpg --profile            :: 附带分段耗时
 \`\`\`
 
-需要 **Microsoft Visual C++ 2019/2022 可再发行组件**（onnxruntime.dll 依赖它）；
-Win10/11 多半已装，报「找不到 VCRUNTIME140.dll」时装一下即可。
+需要 **Microsoft Visual C++ 2015–2022 可再发行组件**（\`vc_redist.${cpu === "arm64" ? "arm64" : "x64"}.exe\`）：
+包里的 \`onnxruntime.dll\` 与 \`onnxruntime_binding.node\` 动态链接 \`MSVCP140.dll\` / \`VCRUNTIME140.dll\`，
+那几个不在系统自带的 UCRT 里。（sharp 那部分是静态链接的，不需要。）
+Win10/11 多半已装过，报「找不到 VCRUNTIME140.dll」时到微软官网下载安装即可。
 输出编码为 UTF-8，用 \`-o\` 写文件最稳；直接看 stdout 的话先 \`chcp 65001\`。` : `\`\`\`bash
 ./omr-cli.mjs 图片.jpg                      # 默认输出诗歌本文本谱到 stdout
 ./omr-cli.mjs 图片.jpg -f tomato -o 曲.txt   # 换格式、写文件

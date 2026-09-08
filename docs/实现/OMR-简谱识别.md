@@ -721,5 +721,8 @@ node scripts/pack-omr.mjs --targets=win32-x64 --slim               # Windows 去
   换硬链接后 tar 存成 hardlink 记录，直接省 42MB。
 - Windows 包里除 `onnxruntime.dll` 还有 `DirectML.dll`/`dxcompiler.dll`/`dxil.dll` 共 ~36MB，
   那是 DirectML EP 用的，我们只跑 CPU EP。`--slim` 删掉它们——**没在 Windows 上验证过**，
-  默认保留。另注意 Windows 需要 VC++ 2019/2022 可再发行组件（`onnxruntime.dll` 依赖），
-  以及 shebang 不起作用，故另附 `omr-cli.cmd`。
+  默认保留。另外 Windows 上 shebang 不起作用，故另附 `omr-cli.cmd`。
+- Windows 需要 **VC++ 2015–2022 可再发行组件**（x64 包用 `vc_redist.x64.exe`，arm64 用
+  `vc_redist.arm64.exe`）：查过导入表，`onnxruntime.dll` 与 `onnxruntime_binding.node` 动态链接
+  `MSVCP140.dll`/`VCRUNTIME140.dll`，不在系统自带的 UCRT（`api-ms-win-crt-*`）里；**sharp 那几个
+  二进制是静态链接的，不需要**。多数 Win10/11 已装过，报「找不到 VCRUNTIME140.dll」时再装。
