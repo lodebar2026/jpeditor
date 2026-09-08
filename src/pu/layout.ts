@@ -12,6 +12,7 @@ import type {
   LyricLine,
   Mark,
   LyricSyllable,
+  Meter,
   MusicElement,
   NoteElement,
   PuSong,
@@ -160,7 +161,11 @@ function assignLyrics(items: PlacedItem[], lyrics: readonly LyricLine[]): void {
 }
 
 /** 算一行的自然布局（x 从 0 起），返回符号序列与自然总宽。 */
-function layoutVoiceLine(voice: ScoreLine, m: PuMetrics): { items: PlacedItem[]; width: number } {
+function layoutVoiceLine(
+  voice: ScoreLine,
+  m: PuMetrics,
+  ctx: BeatCtx = {},
+): { items: PlacedItem[]; width: number; groups: number[]; tail: number } {
   // 只有音符/增时线/小节线占位；`~`/`^` 与内联层不进步进序列。
   const flat = voice.elements.filter(
     (el) => el.kind === "note" || el.kind === "sustain" || el.kind === "barline",
@@ -198,7 +203,7 @@ function layoutVoiceLine(voice: ScoreLine, m: PuMetrics): { items: PlacedItem[];
     items.push({
       index: i,
       srcIndex,
-      x,
+      x: 0,
       advance: 0,
       element: el,
       beat,
@@ -207,7 +212,15 @@ function layoutVoiceLine(voice: ScoreLine, m: PuMetrics): { items: PlacedItem[];
     });
     if (el.kind === "barline") beat = 0;
     else beat += beats;
+  });
 
+  // 紧排的判据就是「同一条减时线下」，与减时线本身同一把尺子：拍组在这里算一次，
+  // 连同 items 一起带出去给 computeUnderlines 用，两处不各算一遍。
+  const { groups, tail } = beatGroups(items, ctx);
+
+  flat.forEach((el, i) => {
+    const srcIndex = items[i]!.srcIndex;
+    items[i]!.x = x;
     const next = flat[i + 1];
     let advance: number;
     if (next === undefined) {
@@ -215,8 +228,7 @@ function layoutVoiceLine(voice: ScoreLine, m: PuMetrics): { items: PlacedItem[];
     } else if (el.kind === "barline" || next.kind === "barline") {
       advance = m.stepBarline;
     } else {
-      const sameBeat = Math.floor(items[i]!.beat + 1e-9) === Math.floor(beat + 1e-9);
-      advance = isBeamed(el) && isBeamed(next) && sameBeat ? m.stepBeamed : m.stepPlain;
+      advance = isBeamed(el) && isBeamed(next) && groups[i] === groups[i + 1] ? m.stepBeamed : m.stepPlain;
     }
     if (el.kind === "note") advance += m.stepPerDot * el.dots;
     // `&sbf` 的小节线后面要挤进一个连谱号（它离音符 1.41 个墨迹高），所以额外让出
@@ -250,11 +262,97 @@ function layoutVoiceLine(voice: ScoreLine, m: PuMetrics): { items: PlacedItem[];
     x += advance;
   });
 
-  return { items, width: x };
+  return { items, width: x, groups, tail };
 }
 
-/** 同一拍内连续的减时线音符连成一条线；满一拍断开（`~`/`^` 可强制连断）。 */
-function computeUnderlines(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): PlacedUnderline[] {
+/** 一行的拍组上下文：行首拍号、上一行开口小节已用的拍数、是不是整首的头一行。
+ *  三样都只给 beatGroups 用，由 layoutSong 逐行往下带。 */
+interface BeatCtx {
+  meter?: Meter;
+  /** 跨行小节：上一行那个开口小节已经算到哪个拍位（beatGroups 的 tail） */
+  carryIn?: number;
+  /** 整首的头一行——首小节不满一小节就是弱起，拍位要按小节末尾对齐 */
+  songStart?: boolean;
+  /** 整首的末一行——末小节不满不补（musicpp: `this == measures.back()`） */
+  songEnd?: boolean;
+}
+
+/**
+ * 谱面拍组：一条减时线连到哪一个音符为止，只由**时值**决定——同一组内连、跨组断。
+ * 移植自 musicpp `MusicData::processJpBeam`。减时线的连断与横向紧排（`stepBeamed`）
+ * 共用这一份，一行只算一次（`layoutVoiceLine` 算好带出来）。
+ *
+ * - 组长（以四分音符为 1）：x/4、x/2 是一拍一组；**复拍子**（分母 8、分子是 3 的
+ *   倍数：3/8 6/8 9/8 12/8）三个八分为一组，即 1.5 个四分拍。9/8 的一小节九个八分
+ *   因此排成 3+3+3，而不是按整四分拍切出的 2+2+2+2+1。简谱那路的
+ *   `score.ts::autoBeamGroup` 早有同一条，两边口径要一致。
+ * - **残节**（弱起，或被反复切开的那半个小节）按小节末尾对齐：拍位整体加上
+ *   `整小节时值 − 本小节时值`，组界才落在谱面该断的地方。两条例外同原文：下一小节的
+ *   时值正好等于要补的那一截（首尾配对的两个残节）不补，末小节不补。
+ * - 跨行的小节接着上一行算：续行以 `|/` 开头、拍位却从 0 重来（见 layoutVoiceLine），
+ *   不接上就会在续行头一个音上错开一组。musicpp 的 measure 本来就是整的，没这一层。
+ *
+ * 拍号取行首那个，曲中的 `"p:3/4"`（`BarlineElement.temporaryMeter`）逐小节改写。
+ */
+function beatGroups(items: PlacedItem[], ctx: BeatCtx = {}): { groups: number[]; tail: number } {
+  // 先按小节线切段：段 = 一个小节里的占位符号（小节线本身当分隔，不进段）
+  const segs: { from: number; to: number; meter: Meter | undefined; carried: boolean }[] = [];
+  let cur = ctx.meter;
+  let from = 0;
+  let carried = false; // 本段是不是上一行那个小节的后半（行首 `|/`）
+  items.forEach((it, i) => {
+    if (it.element.kind !== "barline") return;
+    segs.push({ from, to: i, meter: cur, carried });
+    if (it.element.temporaryMeter) cur = it.element.temporaryMeter;
+    carried = it.element.type === "hidden";
+    from = i + 1;
+  });
+  segs.push({ from, to: items.length, meter: cur, carried });
+
+  const durOf = (seg: { from: number; to: number }): number => {
+    let dur = 0;
+    for (let i = seg.from; i < seg.to; i++) dur += items[i]!.beats;
+    return dur;
+  };
+  // 整曲末小节 = 最后一个非空段（行以小节线收尾时末段是空的）
+  let lastFilled = -1;
+  segs.forEach((seg, si) => { if (seg.to > seg.from) lastFilled = si; });
+  const out = new Array<number>(items.length).fill(0);
+  let tail = 0; // 行末那个开口小节（跨行未收）算到哪个拍位——下一行的续段接着它
+  segs.forEach((seg, si) => {
+    const size =
+      seg.meter !== undefined && seg.meter.denominator === 8 && seg.meter.numerator % 3 === 0
+        ? 1.5
+        : 1;
+    let offset = seg.carried ? ctx.carryIn ?? 0 : 0;
+    // 残节（弱起、被反复切开的那半个）按小节末尾对齐。两种不补：行末那个开口小节
+    // （跨行未收，后半在下一行），以及整曲的末小节（musicpp: `this == measures.back()`）。
+    // 曲首那个弱起例外——整行只有它一节时也得补。
+    const openTail = si === segs.length - 1 && !(si === 0 && ctx.songStart === true);
+    if (!seg.carried && !openTail && !(ctx.songEnd === true && si === lastFilled) &&
+        seg.meter !== undefined) {
+      const expect = (seg.meter.numerator * 4) / seg.meter.denominator;
+      const skip = expect - durOf(seg);
+      const next = segs[si + 1];
+      // 例外同 musicpp：下一小节的时值正好等于要补的那一截（首尾配对的两个残节）就不补
+      if (skip > 1e-9 && !(next && Math.abs(durOf(next) - skip) < 1e-9)) offset = skip;
+    }
+    for (let i = seg.from; i < seg.to; i++) {
+      out[i] = Math.floor((offset + items[i]!.beat) / size + 1e-9);
+    }
+    // 末段非空就是行末的开口小节：行以小节线收尾时它是空的，tail 留 0
+    if (si === segs.length - 1 && seg.to > seg.from) tail = offset + durOf(seg);
+  });
+  return { groups: out, tail };
+}
+
+/** 同一拍组内连续的减时线音符连成一条线，跨组断开（`~`/`^` 可强制连断）。 */
+function computeUnderlines(
+  voice: ScoreLine,
+  items: PlacedItem[],
+  m: PuMetrics,
+  groupAt: number[],
+): PlacedUnderline[] {
   // 源码里的 `~`（强制连）/`^`（强制断）按它在元素序列里的位置生效
   const forceJoin = new Set<number>();
   const forceSplit = new Set<number>();
@@ -296,8 +394,7 @@ function computeUnderlines(voice: ScoreLine, items: PlacedItem[], m: PuMetrics):
       const breaks =
         prev === undefined ||
         forceSplit.has(i - 1) ||
-        (!forceJoin.has(i - 1) &&
-          Math.floor(prev.beat + 1e-9) !== Math.floor(it.beat + 1e-9));
+        (!forceJoin.has(i - 1) && groupAt[i - 1] !== groupAt[i]);
       if (runStart !== null && breaks) flush();
       if (runStart === null) runStart = it;
       runEnd = it;
@@ -508,7 +605,12 @@ function placeMarks(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Placed
 }
 
 /** 内联层：`{bz}` 是上方小字号行，`{dsb}` 是与主旋律并排的一块（见 PlacedLayer）。 */
-function placeLayers(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): PlacedLayer[] {
+function placeLayers(
+  voice: ScoreLine,
+  items: PlacedItem[],
+  m: PuMetrics,
+  ctx: BeatCtx = {},
+): PlacedLayer[] {
   const out: PlacedLayer[] = [];
   voice.elements.forEach((el, srcIndex) => {
     if (el.kind !== "inline-layer") return;
@@ -524,7 +626,7 @@ function placeLayers(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Place
       raw: el.code,
       source: el.source,
     };
-    const laid = layoutVoiceLine(inner, m);
+    const laid = layoutVoiceLine(inner, m, { meter: ctx.meter });
 
     if (el.role !== "voice" || hostAt < 0) {
       // `{bz}`：上方另排一小行，按 layerScale 缩小
@@ -533,7 +635,7 @@ function placeLayers(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Place
         it.advance *= m.layerScale;
         it.syllables = [];
       }
-      out.push({ layer: el, items: laid.items, underlines: computeUnderlines(inner, laid.items, m) });
+      out.push({ layer: el, items: laid.items, underlines: computeUnderlines(inner, laid.items, m, laid.groups) });
       return;
     }
 
@@ -587,7 +689,7 @@ function placeLayers(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Place
     const endAt = tailHasNote ? lastAt : items.length - 1;
     // 主旋律这一段下移
     for (let i = hostAt; i <= endAt; i++) items[i]!.dy = split;
-    const underlines = computeUnderlines(inner, laid.items, m);
+    const underlines = computeUnderlines(inner, laid.items, m, laid.groups);
     for (const u of underlines) u.dy = -split;
     const marks = placeMarks(inner, laid.items, m);
     const placed: PlacedSplit = {
@@ -626,6 +728,13 @@ export function layoutSong(
   const pages: PlacedPage[] = [];
 
   const bottomLimit = m.pageHeight - m.marginBottom;
+  // 拍号一路带过来：头部 `1=D4/4 3/4 5/4` 这类混合拍只有首个是起头拍号，其余由曲中
+  // 的 `"p:3/4"` 逐小节改写（`BarlineElement.temporaryMeter`），故要跨行延续。
+  // 只有减时线分组用得着（见 beatGroups）。
+  let meterCursor: Meter | undefined = song.metadata.meters[0];
+  // 跨行小节：上一行行末那个开口小节已用掉的拍数（见 openTailBeats）
+  let carryCursor = 0;
+  let atSongStart = true; // 整首的头一组——首小节不满就是弱起
   // 末组（整首的最后一个 system）单独判断：太短就不拉伸，留它短着
   const lastPage = song.pages[song.pages.length - 1];
   const lastGroup = lastPage?.groups[lastPage.groups.length - 1];
@@ -652,7 +761,19 @@ export function layoutSong(
       if (head > baseHead) y += head - baseHead;
       if (group.texts.length > 0) y += Math.max(0, -m.textLineY - head);
 
-      const laidOut = group.voices.map((voice) => layoutVoiceLine(voice, m));
+      const beatCtx: BeatCtx = {
+        meter: meterCursor,
+        carryIn: carryCursor,
+        songStart: atSongStart,
+        songEnd: group === lastGroup,
+      };
+      atSongStart = false;
+      // 本组之后生效的拍号：以主声部为准（各声部拍号相同）
+      for (const el of group.voices[0]?.elements ?? []) {
+        if (el.kind === "barline" && el.temporaryMeter) meterCursor = el.temporaryMeter;
+      }
+      const laidOut = group.voices.map((voice) => layoutVoiceLine(voice, m, beatCtx));
+      carryCursor = laidOut[0]?.tail ?? 0;
       // 多声部：同组各行按**拍位**对齐——逐个拍位取各声部里最靠右的 x，统一推齐。
       if (laidOut.length > 1) alignVoices(laidOut);
       // 两端对齐：诗歌本/印刷原版把每个 system 拉到版心右缘；番茄不拉伸，短行就是短的。
@@ -675,7 +796,7 @@ export function layoutSong(
           it.syllables = new Array(voice.lyrics.length).fill(null);
         }
         assignLyrics(l.items, voice.lyrics);
-        const underlines = computeUnderlines(voice, l.items, m);
+        const underlines = computeUnderlines(voice, l.items, m, l.groups);
         // 第一行歌词的位置是**动态**的：常规按 gapMusicLyric，但一行里若有十六分音符
         // 这样「减时线 + 低音点」叠下来的音，就按最低墨迹再让开一个 stackGap，
         // 免得歌词字顶贴到低音点上。
@@ -686,7 +807,7 @@ export function layoutSong(
         );
         const lyricY0 = firstLyric;
         // 内联层要先排：`{dsb}` 会给主旋律那一段打上 dy，减时线与记号都得跟着走
-        const layers = placeLayers(voice, l.items, m);
+        const layers = placeLayers(voice, l.items, m, beatCtx);
         // 并排块里主旋律下移了半个行距，歌词要跟着让开，否则会和下行音符叠在一起
         let splitDrop = 0;
         for (const lay of layers) {

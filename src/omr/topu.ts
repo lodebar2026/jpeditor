@@ -225,6 +225,9 @@ export function toPuText(
 
   let noteIdx = 0; // 全曲音符序（== flatten(rows[].nums)）
   let openTail = false; // 上一行的末小节是否跨行未收（行末图上没有小节线）
+  // 当前生效的拍号：起头用页眉那个（混合拍时 score.beats 就是首个），曲中由 timeChange
+  // 改写。只给减时线的连断记号用（见下），跨行也要接着算，故声明在行循环之外。
+  let curBeats = score.beats, curBeatType = score.beatType;
   for (const row of score.rows) {
     if (!row.nums.length) continue;
     const measures = measuresOfRow(row);
@@ -254,7 +257,10 @@ export function toPuText(
     };
     measures.forEach((notes, mi) => {
       const change = notes.find((n) => n.timeChange)?.timeChange;
-      if (change) pendingMeter = `${change.beats}/${change.beatType}`;
+      if (change) {
+        pendingMeter = `${change.beats}/${change.beatType}`;
+        curBeats = change.beats; curBeatType = change.beatType;
+      }
       const forward = notes.some((n) => n.repeatForward);
       if (pendingRight === "repeat-end" && forward) writeBarline("repeat-both");
       else if (pendingRight !== null) writeBarline(pendingRight);
@@ -271,17 +277,37 @@ export function toPuText(
         pendingVolta = true;
       }
       // 减时线的连断：文本谱把相邻两个带减时线的音符自动连成一条线，满一拍才断
-      // （`pu/layout.ts::computeUnderlines` 按 `floor(beat)` 分组）。多数地方按拍分组就与谱面
-      // 一致，不必多写记号；**切分音把拍位推离整数、且减时线层数又变了**的那个交界（十六分接
-      // 八分之类）最容易被读谱的一方连错，那里显式写 `^` 强制断开。714《我说算了吧》全曲
-      // 只有两处这样的切分（`2g//2g//^2g/`、`5//5//^5/`），与谱面上的分组正好对上。
+      // （`pu/layout.ts::computeUnderlines`）。本项目排版认拍号，多数地方不写记号也排得对；
+      // 但**诗歌本 app 那边要照谱本的写法写出来**，故这里照它的范式生成。
       // 拍位以四分音符为 1、每小节从头算，与 pu 那边同一口径；增时线也占拍，故一并累加。
       const beatsOf = (n: JpNum) => (1 / Math.pow(2, n.div)) * (n.dot > 0 ? 1.5 : 1) + n.augment;
+      // **复拍子**（分母 8、分子是 3 的倍数）一组是三个八分 = 1.5 个四分拍，两条范式：
+      //   · 组界：两个音符按 `floor(绝对拍位)` 落在同一整拍里（不写就会连着）时写 `^`；
+      //     9/8 的第二个组界在 2.5→3.0，本来就跨了整拍，那里不写。
+      //   · 组内：以**组首**为原点，每跨一个四分拍写一个 `~`（即每组第三个八分之前）。
+      // 9/8 的一小节九个八分因此写成 `1/1/~1/^2/2/~2/3/3/~3/`、6/8 写成 `1/1/~1/^2/2/~2/`。
+      const groupBeats = curBeatType === 8 && curBeats % 3 === 0 ? 1.5 : 1;
+      const groupOf = (b: number) => Math.floor(b / groupBeats + 1e-9);
       let prevNote: JpNum | null = null, prevBeat = 0, beat = 0, syncopated = false;
       for (const n of notes) {
         tb.push(sp);
-        if (syncopated && prevNote && prevNote.div > 0 && n.div > 0 && prevNote.div !== n.div &&
-            Math.floor(prevBeat + 1e-9) !== Math.floor(beat + 1e-9)) tb.push("^");
+        // 两边都得有减时线才有线可连断。复拍子照上面的范式写；其余拍号（groupBeats=1，
+        // 组即整拍、组内无细分）只在**切分音**处写 `^`：小节里音符从非整拍起、又跨过整拍
+        // 线之后拍位整个错开，读谱的一方最容易在「减时线层数变了」的那个交界上连错。
+        if (prevNote && prevNote.div > 0 && n.div > 0) {
+          const sameBeat = Math.floor(prevBeat + 1e-9) === Math.floor(beat + 1e-9);
+          if (groupBeats !== 1) {
+            const g = groupOf(beat);
+            if (groupOf(prevBeat) !== g) {
+              if (sameBeat) tb.push("^");
+            } else if (Math.floor(prevBeat - g * groupBeats + 1e-9) !==
+                       Math.floor(beat - g * groupBeats + 1e-9)) {
+              tb.push("~");
+            }
+          } else if (syncopated && prevNote.div !== n.div && !sameBeat) {
+            tb.push("^");
+          }
+        }
         prevNote = n; prevBeat = beat;
         const end = beat + beatsOf(n);
         // 切分音：从非整拍起、又跨过整拍线（整拍起头的长音不算）。
