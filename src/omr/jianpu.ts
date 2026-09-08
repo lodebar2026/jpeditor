@@ -67,8 +67,11 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
 
 /** 变音记号（临时升降号 ♯ / ♭ / ♮）印在音符**左侧、紧贴着**，比数字明显矮一截、也窄一截。
  *  不摘出去就被当成一个音符送 OCR（实测 ♯ 读成 `1`、`0`，17《不失足》第 3 行凭空多两个音）。
- *  形状分类看**四象限墨迹**：♯ 两条竖笔上下贯通、四格都有墨；♭ 只有左边一条竖笔、右上几乎空白；
- *  ♮ 是左竖在下半、右竖在上半，故左上与右下同时偏空。 */
+ *  形状分类：♯ 两条竖笔上下贯通、四象限都有墨；♭ 只有左边一条竖笔、右上几乎空白；
+ *  ♮ 的两条竖笔**一高一低**——左竖在上半、右竖在下半，故**左半墨迹的重心明显高于右半**。
+ *  ♮ 早先用「左上空 + 右下空」的四象限判据，方向正好反了（8《心持两意的人》第 1 行实测
+ *  左上 0.43 / 右下 0.61 才是有墨的那两格）；而且中间两条横笔一压，四格比例本就不干净，
+ *  改用左右两半的重心差（那两条横笔左右各占一半，对差值影响相互抵消）。 */
 function accidentalOf(bin: Binary, b: Rect): "sharp" | "flat" | "natural" | null {
   const half = (x0: number, x1: number, y0: number, y1: number): number => {
     let ink = 0, tot = 0;
@@ -76,12 +79,21 @@ function accidentalOf(bin: Binary, b: Rect): "sharp" | "flat" | "natural" | null
       for (let x = Math.round(x0); x < Math.round(x1); x++) { tot++; if (bin.data[y * bin.w + x]) ink++; }
     return tot ? ink / tot : 0;
   };
+  /** 半边墨迹的重心（0=顶、1=底）；没墨返回 null */
+  const centerY = (x0: number, x1: number): number | null => {
+    let sum = 0, ink = 0;
+    for (let y = Math.round(b.y); y < Math.round(rbottom(b)); y++)
+      for (let x = Math.round(x0); x < Math.round(x1); x++)
+        if (bin.data[y * bin.w + x]) { ink++; sum += y - b.y; }
+    return ink ? sum / ink / Math.max(1, b.h - 1) : null;
+  };
   const mx = b.x + b.w / 2, my = b.y + b.h / 2;
   const lt = half(b.x, mx, b.y, my), rt = half(mx, rright(b), b.y, my);
   const lb = half(b.x, mx, my, rbottom(b)), rb = half(mx, rright(b), my, rbottom(b));
   if (lt + rt + lb + rb < 0.3) return null;              // 墨太少 → 噪点，不认
   if (rt < rb * 0.45 && lt > rt) return "flat";          // 右上空、左竖贯通 → ♭
-  if (lt < lb * 0.5 && rb < rt * 0.5) return "natural";  // 左上空 + 右下空 → ♮
+  const lc = centerY(b.x, mx), rc = centerY(mx, rright(b));
+  if (lc !== null && rc !== null && rc - lc > 0.18) return "natural"; // 左竖高、右竖低 → ♮
   if (Math.min(lt, rt, lb, rb) >= 0.12) return "sharp";  // 四格都有墨 → ♯
   return null;
 }
@@ -377,17 +389,38 @@ function splitBlock(bin: Binary, comp: Component, numH: number): { cores: DigitC
 }
 
 // 按 y 把数字格分行（贪心：行内 y 重叠或中心接近）。
+//
+// **先用够大的块定行，小块随后挂靠**：变音记号这类块比数字矮、又骑在数字左上角，中心比
+// 数字高小半格。一轮贪心是按 y 中心从上往下走的，小块会先跟头顶的弧帽结成一行，等数字来时
+// 那行的中位数已经偏高、进不去，小块就跟着那行一起被后面「行里得有小节线」的判据滤掉
+// （8《心持两意的人》第 1 行的 ♮ 正是这样丢的：它与三个弧帽结成 y=154 那行，数字行在 179）。
 function groupRows(cores: DigitCore[], numH: number): DigitCore[][] {
-  const sorted = [...cores].sort((a, b) => rcy(a.bbox) - rcy(b.bbox));
-  const rows: DigitCore[][] = [];
-  for (const d of sorted) {
-    let placed = false;
-    for (const row of rows) {
-      const ry = median(row.map((k) => rcy(k.bbox)));
-      if (Math.abs(rcy(d.bbox) - ry) < numH * 0.7) { row.push(d); placed = true; break; }
+  // 自上而下贪心：够近就并进那一行，否则另起一行
+  const greedy = (list: DigitCore[], into: DigitCore[][]): DigitCore[][] => {
+    for (const d of [...list].sort((a, b) => rcy(a.bbox) - rcy(b.bbox))) {
+      let placed = false;
+      for (const row of into) {
+        const ry = median(row.map((k) => rcy(k.bbox)));
+        if (Math.abs(rcy(d.bbox) - ry) < numH * 0.7) { row.push(d); placed = true; break; }
+      }
+      if (!placed) into.push([d]);
     }
-    if (!placed) rows.push([d]);
+    return into;
+  };
+  // 一轮：够大的块（真数字）定下每一行的中位数
+  const rows = greedy(cores.filter((k) => k.bbox.h >= numH * 0.7), []);
+  // 二轮：小块挂到中心**最近**的那一行（不是第一个够近的），挂不上的再互相聚成行
+  const orphans: DigitCore[] = [];
+  for (const d of cores.filter((k) => k.bbox.h < numH * 0.7)) {
+    let best: DigitCore[] | null = null;
+    let bestDist = numH * 0.7;
+    for (const row of rows) {
+      const dist = Math.abs(rcy(d.bbox) - median(row.map((k) => rcy(k.bbox))));
+      if (dist < bestDist) { best = row; bestDist = dist; }
+    }
+    if (best) best.push(d); else orphans.push(d);
   }
+  rows.push(...greedy(orphans, []));
   for (const row of rows) row.sort((a, b) => a.bbox.x - b.bbox.x);
   return rows;
 }
