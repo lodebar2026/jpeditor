@@ -133,6 +133,23 @@ function parseMeta(lines: HLine[]): MetaInfo {
       if (best) { const f = toFifths(best.text.trim()[0], a.text.trim()); if (f !== undefined) { res.fifths = f; res.fifthsLine = best; break; } }
     }
   }
+  // 还有一路：调号与拍号并排印在**标题那一行**、且**不写 `1=`**（旷野人声那本：`F 6/8`、
+  // `ᵇE 4/4`，OCR 连成 "F6/8"、"16bE4/4"）。带升降号的已被上面两条认下（`ᵇE` 里升降号紧贴
+  // 音名）；单个音名没有任何前缀可认，只能靠**它右边紧跟着一个合法的斜杠拍号**定下来。
+  // 音名前若是字母就不算（"16bE4/4" 的 E 前面是降号的 b，那种归上面那条），碎片也得够短
+  // ——标题、英文副标题那些长碎片里恰好凑出 "E4/4" 的，不认。
+  if (res.fifths === undefined) {
+    for (const l of lines) {
+      const t = l.text.replace(/\s+/g, "");
+      if (t.length > 8) continue;
+      const m = t.match(/(?:^|[^A-Za-z])([A-G])(\d{1,2})[/／](\d{1,2})(?![0-9])/);
+      if (!m || !(m[1] in NAT_FIFTHS)) continue;
+      if (!validBeats(Number(m[2])) || !validBeatType(Number(m[3]))) continue;
+      res.fifths = NAT_FIFTHS[m[1]];
+      res.fifthsLine = l;
+      break;
+    }
+  }
 
   // 速度：含 "=NN" 的碎片（♩/J 常与数字同块，如 "J=76"）。
   for (const l of lines) {
