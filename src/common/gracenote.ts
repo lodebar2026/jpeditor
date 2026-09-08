@@ -7,7 +7,7 @@
 //
 // 所有比例都是照原版矢量量的，单位 = **主音数字的墨迹高**（`ink`）：
 // 倚音墨迹高 0.50、中心在主音墨迹中心上方 0.94、离主音中心 0.665；
-// 减时线长 0.388、线宽 0.055、落在倚音中心下方 0.36；
+// 减时线长 0.388、线宽 0.055、落在倚音中心下方 0.42（原版是 0.36，见 `GRACE_BEAM_DROP`）；
 // 连接钩从减时线中点垂下再朝主音弯（水平 0.249、垂直 0.304）。
 
 /** 主音那一侧的度量。各路把自己的常量折算成这几个数。 */
@@ -33,6 +33,17 @@ const GRACE_STEP = 0.45;
 /** 带升降号的那一颗要额外多占这么一截，数字在格子里跟着右移同样多——
  *  不让位的话升降号会骑到左边那颗倚音上。 */
 const GRACE_ACC_INSET = 0.32;
+
+/** 竖向的三处间距（单位 = 主音墨迹高 `ink`）。原版矢量量出来的那套（0.36 / 0.8 / 0.055）
+ *  在成书字号下挤成一团——倚音本来只有半个字高，几件东西贴在一起就糊成一坨，所以整体
+ *  放宽：数字墨迹中心 → 第一条减时线顶 `GRACE_BEAM_DROP`（数字墨迹底在 0.25，净距因此
+ *  是 0.17）、减时线的层距 `GRACE_BEAM_LAYER × m.underlineGap`、八度点与相邻墨迹之间
+ *  以及点与点之间的净距 `GRACE_DOT_GAP`。三处一起调，只放宽一处会显得比例不对。 */
+const GRACE_BEAM_DROP = 0.42;
+const GRACE_BEAM_LAYER = 1.0;
+const GRACE_DOT_GAP = 0.1;
+/** 减时线线宽（也是钩子的线宽）——这是**墨迹**不是间距，放宽间距时不要跟着动。 */
+const GRACE_BEAM_H = 0.055;
 
 /** 倚音的临时升降号。两条路的原始口径不一样（简谱是 `jpAlter` 的 `#/b/n`、
  *  文本谱是 `NoteElement.accidental`），在这里统一成这一套名字。 */
@@ -103,7 +114,8 @@ export function graceGeometry(
   const gxs = centers.map((c) => c + shift);
   // 倚音默认八分：一条减时线；时值再短就多一层。比主音的细得多。
   const lvCounts = notes.map((gn) => Math.max(1, Math.ceil(Math.log2((gn.duration ?? 8) / 4))));
-  const beamY = (lv: number): number => gy + ink * 0.36 + lv * m.underlineGap * 0.8;
+  const beamY = (lv: number): number =>
+    gy + ink * GRACE_BEAM_DROP + lv * m.underlineGap * GRACE_BEAM_LAYER;
   // **同一层里相邻的倚音连成一条通杠**（`3_2_` 这种要画一条横线贯到底，不是两小段）。
   // 层数不齐时按「这一层还有份的连续段」分别连，与主音符的符杠同一个道理。
   const maxLv = Math.max(...lvCounts);
@@ -115,7 +127,7 @@ export function graceGeometry(
       if (!on && runStart >= 0) {
         const x1 = gxs[runStart]! - halfBeam;
         const x2 = gxs[i - 1]! + halfBeam;
-        out.beams.push({ x: x1, y: beamY(lv), w: x2 - x1, h: ink * 0.055 });
+        out.beams.push({ x: x1, y: beamY(lv), w: x2 - x1, h: ink * GRACE_BEAM_H });
         runStart = -1;
       }
     }
@@ -148,35 +160,36 @@ export function graceGeometry(
     // 点也该是一半。原先给 0.75，点比该有的胖出一半，整摞跟着往外顶
     //（用户口径：「倚音的低音点离音符太远，参考正常音符整体缩小」）。
     const rr = m.octaveDotRadius * 0.5;
-    // 墨迹到第一个点的净距，同样是**主音那一格缩一半**：PPT 档 28pt 上主音的
-    // 「减时线下缘 → 低音点墨迹顶」是 2.09pt，减半 1.04pt，`ink * 0.055` 折出来 1.10pt。
-    const inkGap = ink * 0.055;
+    // 墨迹到第一个点的净距（见 `GRACE_DOT_GAP`）。
+    const inkGap = ink * GRACE_DOT_GAP;
     const dotStep = rr * 2 + inkGap;
     for (let k = 0; k < gn.octave; k++)
       out.dots.push({ cx: gx, cy: gy - ink * 0.25 - inkGap - rr - k * dotStep, r: rr });
     for (let k = 0; k < -gn.octave; k++)
-      out.dots.push({ cx: gx, cy: lastY + ink * 0.055 + inkGap + rr + k * dotStep, r: rr });
-    if (i === anchor) hookAt = { mid: gx, y: lastY, low: gn.octave < 0 };
+      out.dots.push({ cx: gx, cy: lastY + ink * GRACE_BEAM_H + inkGap + rr + k * dotStep, r: rr });
+    if (i === anchor) {
+      // 有低音点时钩子从**最低那个点的下缘**再让开一格起笔（见下面 hook 那一段）。
+      const dotsBottom =
+        gn.octave < 0
+          ? lastY + ink * GRACE_BEAM_H + inkGap + rr * 2 + (-gn.octave - 1) * dotStep + inkGap
+          : lastY;
+      hookAt = { mid: gx, y: dotsBottom, low: gn.octave < 0 };
+    }
   });
   if (hookAt === null) return out;
   const { mid, y: uy, low } = hookAt as { mid: number; y: number; low: boolean };
   const toward = -dir; // 前倚音（画在左）朝右弯，后倚音朝左弯
   const drop = ink * 0.304;
   const reach = ink * 0.249 * toward;
-  const width = ink * 0.055;
-  // **有低音点时钩子要错开**：低音点排在数字正下方（cx = gx），钩子本来也从那儿垂下来，
-  // 两者正好叠在一起（用户口径：「有低音点时需要把倚音的小弧线左移错开」）。两件事一起做：
-  //   1. 起脚往**反着弯的方向**挪一个「点半径 + 半个线宽 + 一格」——仍落在减时线上
-  //      （减时线半长 0.194 ink，让的量只有它的六成）；
-  //   2. 控制点改成**先垂直落到底、再横着甩过去**，这样扫到低音点那一段 x 时曲线已经
-  //      在点的下缘之外。只挪起脚不够：默认那套控制点是斜着扫的，半路正好从点上穿过。
-  const hx = low ? mid - toward * (m.octaveDotRadius * 0.5 + width / 2 + ink * 0.055) : mid;
-  const dy = low ? drop * 1.1 : drop; // 有低音点时再垂深一成，横甩那一段稳稳走在点的下面
+  const width = ink * GRACE_BEAM_H;
+  // **有低音点时钩子接在低音点下方**：低音点排在数字正下方（cx = gx），钩子也从那儿
+  // 垂下来，两者本来会叠在一起。做法不是把起脚横着挪开（那样钩子跟数字对不上竖轴），
+  // 而是让**起点顺着同一条竖轴下移到最低那个点的下缘之外**，中间留一格空隙
+  //（`GRACE_DOT_GAP`，与八度点之间的净距同一个口径，已经算进上面的 `hookAt.y`）。
+  const startY = low ? uy : uy + ink * 0.033;
   out.hook = {
-    m: [hx, uy + ink * 0.033],
-    c: low
-      ? [hx, uy + dy, hx, uy + dy, mid + reach, uy + dy] // 直角圆转：先落到底再横甩
-      : [hx, uy + drop * 0.6, hx - reach * 0.15, uy + drop * 0.87, mid + reach, uy + drop],
+    m: [mid, startY],
+    c: [mid, startY + drop * 0.6, mid - reach * 0.15, startY + drop * 0.87, mid + reach, startY + drop],
     width,
   };
   return out;
