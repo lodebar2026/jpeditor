@@ -11,6 +11,7 @@ import type { OcrBackend } from "./ocr";
 import type { ChordCand } from "./chordline";
 import { chordCandidates, isAnnotationLine, placeChords } from "./chordline";
 import { clusterByY, findLineByY, median } from "./geom";
+import { blit, createSurface, surfaceFromBinary, type Surface } from "./surface";
 
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
 // 歌词里贴在字尾的标点。简谱印刷用全角，但 PP-OCR 常把 ，；：！？ 识成半角 , ; : ! ? ——
@@ -135,20 +136,9 @@ function compactSegs(cells: Rect[], maxGap: number): { segs: { cx0: number; cx1:
   return { segs, contentW: cx };
 }
 
-/** 整幅二值图 → 黑字白底源画布（供拼条裁剪）。 */
-export function srcCanvasOf(bin: Binary): OffscreenCanvas {
-  const cv = new OffscreenCanvas(bin.w, bin.h);
-  const ctx = cv.getContext("2d");
-  if (!ctx) throw new Error("无法创建 2D 画布上下文");
-  const img = new ImageData(bin.w, bin.h);
-  for (let i = 0; i < bin.data.length; i++) { const v = bin.data[i] ? 0 : 255; const p = i * 4; img.data[p] = img.data[p + 1] = img.data[p + 2] = v; img.data[p + 3] = 255; }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
 /** 裁一块字格所覆盖的**自然连续区域**(保留原始字间距/渲染，不重拼)，缩到高 STRIP_H 整体 rec。
  *  自然排版让 PP-OCR 远比逐字/拼接 rec 准；块按宽度上限切，避免长行被压扁(rec 宽上限 320)。 */
-export function buildStrip(src: OffscreenCanvas, cells: Rect[], H = STRIP_H, maxGap = Infinity): OffscreenCanvas {
+export function buildStrip(src: Surface, cells: Rect[], H = STRIP_H, maxGap = Infinity): Surface {
   const y0 = Math.min(...cells.map((r) => r.y));
   const y1 = Math.max(...cells.map((r) => r.y + r.h));
   const { segs, contentW } = compactSegs(cells, maxGap);
@@ -156,16 +146,13 @@ export function buildStrip(src: OffscreenCanvas, cells: Rect[], H = STRIP_H, max
   const sw = contentW + STRIP_PAD * 2;
   const scale = H / sh;
   const W = Math.max(1, Math.round(sw * scale));
-  const cv = new OffscreenCanvas(W, H);
-  const ctx = cv.getContext("2d");
-  if (!ctx) throw new Error("无法创建 2D 画布上下文");
-  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+  const out = createSurface(W, H);
   // 逐格从源图取整列高切片，画到压缩后位置（去掉多余字间空白；空白无墨，故不丢内容）。
   for (const sg of segs) {
-    ctx.drawImage(src, sg.sx0, y0 - STRIP_PAD, sg.sw, sh,
-      Math.round((sg.cx0 + STRIP_PAD) * scale), 0, Math.max(1, Math.round(sg.sw * scale)), H);
+    blit(out, src, { x: sg.sx0, y: y0 - STRIP_PAD, w: sg.sw, h: sh },
+      { x: Math.round((sg.cx0 + STRIP_PAD) * scale), y: 0, w: Math.max(1, Math.round(sg.sw * scale)), h: H });
   }
-  return cv;
+  return out;
 }
 
 /** 把一行字格切成若干块（每块缩到 H 后 ≤ ~300px → 不超 rec 宽上限 320）。
@@ -355,9 +342,9 @@ export async function recognizeLyrics(
   if (!ocr.recognizeTexts || !staff.length) return { lyrics: regions, chords: [] };
 
   const charMin = numH * 0.5; // 歌词字号下限（约等于音符字号）
-  const src = srcCanvasOf(bin);
+  const src = surfaceFromBinary(bin);
   const chunks: Chunk[] = [];
-  const strips: OffscreenCanvas[] = [];
+  const strips: Surface[] = [];
   const TR = (globalThis as { __lyricTrace?: LyricTrace }).__lyricTrace; // 调试可视化：设置后逐步记录 I/O
 
   // S0 全局斜率 + deslant-y（同一斜线上的点 dcy 相同 → 斜线变水平）。

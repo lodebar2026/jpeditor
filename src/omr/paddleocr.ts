@@ -8,31 +8,17 @@
 //
 // 识别单元：每个数字裁成 64×64 居中白底黑字格（与回归基准一致），逐格 rec → CTC 解码 → 取 0-7。
 import type { OcrBackend } from "./ocr";
+import { blit, createSurface, surfaceFromBinary, type Surface } from "./surface";
 import type { Binary, Rect } from "./types";
 import { rright, rbottom } from "./types";
-// ort 运行时（纯 wasm，单线程，免 jsep 26MB）经 Vite `?url` 引入：dev/build 都由 Vite 解析为
-// 合法资源 URL。**不能**把这两个文件放 /public 再用 wasmPaths 字符串——onnxruntime-web 会对
-// 其中的 .mjs 做动态 import()，而 Vite dev 拒绝把 /public 文件当模块加载。
-import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
-import ortMjsUrl from "onnxruntime-web/ort-wasm-simd-threaded.mjs?url";
-
-const BASE = import.meta.env.BASE_URL; // "/" 或 "/jpeditor/"
-const REC_URL = `${BASE}redist/ocr/ch_PP-OCRv6_small_rec_infer.onnx`;
-const DICT_URL = `${BASE}redist/ocr/ppocrv6_dict.txt`;
-const DET_URL = `${BASE}redist/ocr/ch_PP-OCRv4_det_infer.onnx`;
+// 模型/字典从哪来、用什么跑，由运行时注入（浏览器=ort-web，Node=onnxruntime-node）。
+import { omrRuntime } from "./runtime";
 
 const REC_H = 48, REC_MAXW = 320, REC_MAXW_LONG = 2048;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _ort: any = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _session: any = null;
 let _chars: string[] | null = null;
 let _initPromise: Promise<void> | null = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _detSession: any = null;
-let _detInitPromise: Promise<void> | null = null;
-let _ready = false; // 字典(+ 浏览器下 ort session)就绪
+let _ready = false; // 字典(+ 非 Tauri 下 rec session)就绪
 
 type OnnxOut = { data: Float32Array; dims: number[] };
 
@@ -93,26 +79,18 @@ async function nativeRun(model: number, chw: Float32Array, dims: number[]): Prom
 }
 async function runRec(chw: Float32Array, dims: number[]): Promise<OnnxOut> {
   if (nativeOcr()) return nativeRun(0, chw, dims);
-  const tensor = new _ort.Tensor("float32", chw, dims);
-  const feeds: Record<string, unknown> = {}; feeds[_session.inputNames[0]] = tensor;
-  const o = (await _session.run(feeds))[_session.outputNames[0]];
-  return { data: o.data as Float32Array, dims: o.dims as number[] };
+  return omrRuntime().run("rec", chw, dims);
 }
 async function runDet(chw: Float32Array, dims: number[]): Promise<OnnxOut> {
   if (nativeOcr()) return nativeRun(1, chw, dims);
-  const tensor = new _ort.Tensor("float32", chw, dims);
-  const feeds: Record<string, unknown> = {}; feeds[_detSession.inputNames[0]] = tensor;
-  const o = (await _detSession.run(feeds))[_detSession.outputNames[0]];
-  return { data: o.data as Float32Array, dims: o.dims as number[] };
+  return omrRuntime().run("det", chw, dims);
 }
 
-/** wasm 单张量 rec → 每时间步 argmax [N,T]（TS 内做 argmax，成本同原先 CTC 内层）。 */
-async function wasmRecArgmax(chw: Float32Array, dims: number[]): Promise<ArgmaxOut> {
-  const tensor = new _ort.Tensor("float32", chw, dims);
-  const feeds: Record<string, unknown> = {}; feeds[_session.inputNames[0]] = tensor;
-  const o = (await _session.run(feeds))[_session.outputNames[0]];
-  const [N, T, C] = o.dims as number[];
-  const arr = o.data as Float32Array;
+/** 本地（非 Tauri）单张量 rec → 每时间步 argmax [N,T]（TS 内做 argmax，成本同原先 CTC 内层）。 */
+async function localRecArgmax(chw: Float32Array, dims: number[]): Promise<ArgmaxOut> {
+  const o = await omrRuntime().run("rec", chw, dims);
+  const [N, T, C] = o.dims;
+  const arr = o.data;
   const idx = new Int32Array(N * T);
   for (let i = 0; i < N * T; i++) {
     const base = i * C; let best = 0, bv = -Infinity;
@@ -124,7 +102,7 @@ async function wasmRecArgmax(chw: Float32Array, dims: number[]): Promise<ArgmaxO
 
 /** **一次 IPC 跑多个 rec 输入**，各自返回 argmax [N,T]。原生：单次 omr_onnx_batch 携带全部张量，
  *  Rust 内部逐个 session.run（逐个=算力最优）→ 把 Tauri 每次往返(~数 ms)从 N 次压到 1 次；
- *  wasm：本地逐个（无 IPC 成本）。这是原生下的关键优化（IPC 往返开销 >> 批量算力差异）。 */
+ *  非 Tauri：本地逐个（无 IPC 成本）。这是原生下的关键优化（IPC 往返开销 >> 批量算力差异）。 */
 async function runRecArgmaxMany(inputs: { chw: Float32Array; dims: number[] }[]): Promise<ArgmaxOut[]> {
   if (!inputs.length) return [];
   const _t = performance.now(); _prof.calls++;
@@ -160,61 +138,9 @@ async function runRecArgmaxMany(inputs: { chw: Float32Array; dims: number[] }[])
     return out;
   }
   const out: ArgmaxOut[] = [];
-  for (const inp of inputs) out.push(await wasmRecArgmax(inp.chw, inp.dims));
+  for (const inp of inputs) out.push(await localRecArgmax(inp.chw, inp.dims));
   _prof.infer += performance.now() - _t;
   return out;
-}
-
-/** 是否 Chromium 系引擎（Chrome/Edge/Chromium/Windows WebView2）。
- *  仅这些引擎上 onnxruntime 的多线程 wasm worker 经验证稳定；WebKit（Tauri 在 macOS=WKWebView、
- *  Linux=WebKitGTK，及 Safari）的线程化 wasm worker 冷启动会挂死，且 ort 的 wasm 模块是全局单例，
- *  一旦卡住连单线程回退也救不回来 → 故 WebKit 上绝不尝试多线程。 */
-function isChromiumEngine(): boolean {
-  const uaData = (globalThis.navigator as { userAgentData?: { brands?: { brand: string }[] } } | undefined)?.userAgentData;
-  if (uaData?.brands?.length) return uaData.brands.some((b) => /Chromium|Google Chrome|Microsoft Edge/i.test(b.brand));
-  return /Chrome\/\d/.test((globalThis.navigator as { userAgent?: string } | undefined)?.userAgent ?? "");
-}
-
-/** 期望线程数：显式 __ortThreads 优先（高级覆盖，自负 WebKit 风险）；否则需同时满足
- *  跨源隔离(SharedArrayBuffer 可用) + Chromium 引擎才开多线程，取 min(4, 核数)，否则恒为 1。 */
-function desiredThreads(): number {
-  const ov = (globalThis as { __ortThreads?: number }).__ortThreads;
-  if (typeof ov === "number") return Math.max(1, ov);
-  if (!(globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated) return 1;
-  if (!isChromiumEngine()) return 1;
-  const hw = (globalThis.navigator as { hardwareConcurrency?: number } | undefined)?.hardwareConcurrency ?? 4;
-  return Math.min(4, Math.max(1, hw));
-}
-
-/** Promise 超时包装：超时即 reject（底层操作无法取消，由调用方走回退）。 */
-function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
-  return Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`${what} 超时 ${ms}ms`)), ms))]);
-}
-
-/** 单线程建 rec session（回退用，必定可用）。 */
-async function createRecSingle(): Promise<unknown> {
-  _ort.env.wasm.numThreads = 1;
-  return _ort.InferenceSession.create(REC_URL, { executionProviders: ["wasm"] });
-}
-
-/** 按期望线程数建 rec session。多线程下额外做一次极小 warmup run 确认 worker 池真能响应
- *  （worker 冷启动在部分 webview/真实浏览器里会让 create 成功但首个 run 永久挂起）；
- *  create 或 warmup 任一超时/报错即回退单线程。保证绝不永久卡"识别中"。 */
-async function createRecSession(): Promise<unknown> {
-  const threads = desiredThreads();
-  if (threads <= 1) { _ort.env.wasm.numThreads = 1; return _ort.InferenceSession.create(REC_URL, { executionProviders: ["wasm"] }); }
-  try {
-    _ort.env.wasm.numThreads = threads;
-    const sess = await withTimeout(_ort.InferenceSession.create(REC_URL, { executionProviders: ["wasm"] }), 8000, "多线程 OCR create");
-    // warmup：一张 1×3×48×48 全零张量，确认 worker 池能跑通 run。
-    const warm = new _ort.Tensor("float32", new Float32Array(3 * REC_H * REC_H), [1, 3, REC_H, REC_H]);
-    const feeds: Record<string, unknown> = {}; feeds[(sess as { inputNames: string[] }).inputNames[0]] = warm;
-    await withTimeout((sess as { run: (f: unknown) => Promise<unknown> }).run(feeds), 8000, "多线程 OCR warmup");
-    return sess;
-  } catch (e) {
-    console.warn("[OMR] 多线程 OCR 初始化失败/超时，回退单线程：", e);
-    return createRecSingle();
-  }
 }
 
 async function ensureSession(): Promise<void> {
@@ -222,39 +148,30 @@ async function ensureSession(): Promise<void> {
   if (_initPromise) return _initPromise;
   _initPromise = (async () => {
     // 字典两端都要（CTC 解码在前端）。PaddleOCR CTC 字符表：index0=blank，随后字典，末尾可能补 space。
-    const dictText = await (await fetch(DICT_URL)).text();
+    const dictText = await omrRuntime().loadDict();
     // Windows checkouts commonly use core.autocrlf, so the packaged dictionary
     // may contain CRLF even though the repository copy uses LF. A plain
     // split("\n") leaves `\r` attached to every OCR class; after MusicXML's
     // line-ending normalization that becomes a real newline after every title
     // and lyric character. Accept either line ending and reject empty lines.
     _chars = ["", ...dictText.split(/\r?\n/).filter((l) => l.length)];
-    if (nativeOcr()) { _ready = true; return; } // 原生(Tauri)：推理在 Rust，无需加载 ort-web
-    // 浏览器：纯 wasm 构建（非 jsep/webgpu），只需 ort-wasm-simd-threaded.wasm，省去 26MB jsep。
-    const ort = await import("onnxruntime-web/wasm");
-    // 用 Vite 解析出的资源 URL 映射，避免 dev 下对 /public 的 .mjs 动态 import 报错。
-    ort.env.wasm.wasmPaths = { wasm: ortWasmUrl, mjs: ortMjsUrl };
-    _ort = ort;
-    _session = await createRecSession(); // 多线程（带超时回退）/单线程
+    if (nativeOcr()) { _ready = true; return; } // 原生(Tauri)：推理在 Rust，无需 session
+    await omrRuntime().prepare("rec"); // 提前拉起 rec（21MB，别等首次推理才加载）
     _ready = true;
   })();
   return _initPromise;
 }
 
-/** 懒加载 PP-OCRv4 检测(DBNet)模型。原生下推理在 Rust，只需 ensureSession(字典)；浏览器下拉起 ort-web det session。 */
+/** 懒加载 PP-OCRv4 检测(DBNet)模型。原生(Tauri)下推理在 Rust，只需 ensureSession(字典)。 */
 async function ensureDetSession(): Promise<void> {
   await ensureSession();
-  if (nativeOcr() || _detSession) return;
-  if (_detInitPromise) return _detInitPromise;
-  _detInitPromise = (async () => {
-    _detSession = await _ort.InferenceSession.create(DET_URL, { executionProviders: ["wasm"] });
-  })();
-  return _detInitPromise;
+  if (nativeOcr()) return;
+  await omrRuntime().prepare("det");
 }
 
 /** DBNet 文本检测：在源画布的 region 子图内找文本行框，返回**原图坐标**的 Rect[]（已 unclip 外扩、
  *  按阅读序排好）。det 在干净二值图上同样有效（高对比）。仅供页眉(标题/著作者)整片识别用。 */
-async function detectRegion(src: OffscreenCanvas, region: Rect): Promise<Rect[]> {
+async function detectRegion(src: Surface, region: Rect): Promise<Rect[]> {
   await ensureDetSession();
   const rx = Math.max(0, Math.round(region.x)), ry = Math.max(0, Math.round(region.y));
   const rw = Math.min(src.width - rx, Math.round(region.w)), rh = Math.min(src.height - ry, Math.round(region.h));
@@ -267,11 +184,9 @@ async function detectRegion(src: OffscreenCanvas, region: Rect): Promise<Rect[]>
   const W = round32(rw), H = round32(rh);
   const sxScale = W / rw, syScale = H / rh; // 原图→det 输入 的实际缩放（各维独立）
 
-  const tmp = new OffscreenCanvas(W, H);
-  const tctx = tmp.getContext("2d");
-  if (!tctx) throw new Error("无法创建 2D 画布上下文");
-  tctx.drawImage(src, rx, ry, rw, rh, 0, 0, W, H);
-  const px = tctx.getImageData(0, 0, W, H).data;
+  const tmp = createSurface(W, H);
+  blit(tmp, src, { x: rx, y: ry, w: rw, h: rh }, { x: 0, y: 0, w: W, h: H });
+  const px = tmp.data;
 
   // 归一化（ImageNet mean/std, RGB, CHW）。
   const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
@@ -318,52 +233,30 @@ async function detectRegion(src: OffscreenCanvas, region: Rect): Promise<Rect[]>
   return boxes;
 }
 
-/** 整幅二值图 → 黑字白底源画布（一次性，供逐格裁剪）。 */
-function binToCanvas(bin: Binary): OffscreenCanvas {
-  const cv = new OffscreenCanvas(bin.w, bin.h);
-  const ctx = cv.getContext("2d");
-  if (!ctx) throw new Error("无法创建 2D 画布上下文");
-  const img = new ImageData(bin.w, bin.h);
-  for (let i = 0; i < bin.data.length; i++) {
-    const v = bin.data[i] ? 0 : 255; // 前景(1)→黑，背景→白
-    const p = i * 4;
-    img.data[p] = img.data[p + 1] = img.data[p + 2] = v;
-    img.data[p + 3] = 255;
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
-
 /** 把一个 rect 裁成 cell×cell 居中白底黑字格（等比缩放到 inner）。 */
-function cellOf(src: OffscreenCanvas, bin: Binary, r: Rect, cell = 64, pad = 8): OffscreenCanvas {
+function cellOf(src: Surface, bin: Binary, r: Rect, cell = 64, pad = 8): Surface {
   const inner = cell - pad * 2;
-  const cv = new OffscreenCanvas(cell, cell);
-  const ctx = cv.getContext("2d");
-  if (!ctx) throw new Error("无法创建 2D 画布上下文");
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, cell, cell);
+  const out = createSurface(cell, cell);
   const sx = Math.max(0, r.x), sy = Math.max(0, r.y);
   const sw = Math.min(bin.w, rright(r)) - sx, sh = Math.min(bin.h, rbottom(r)) - sy;
   if (sw > 0 && sh > 0) {
     const scale = Math.min(inner / sw, inner / sh);
     const dw = sw * scale, dh = sh * scale;
-    ctx.drawImage(src, sx, sy, sw, sh, (cell - dw) / 2, (cell - dh) / 2, dw, dh);
+    blit(out, src, { x: sx, y: sy, w: sw, h: sh }, { x: (cell - dw) / 2, y: (cell - dh) / 2, w: dw, h: dh });
   }
-  return cv;
+  return out;
 }
 
 /** 画布 → rec 输入张量（等比缩放到高 REC_H、宽 ≤ maxW、零填充到 tensorW）。返回 chw + dims + 内容宽 w。
  *  maxW≤320 时 tensorW=320（保持逐格既有行为/精度）；放宽上限的长行按实际宽。 */
-function prepCell(cell: OffscreenCanvas, maxW = REC_MAXW): { chw: Float32Array; dims: number[]; w: number; tensorW: number } {
+function prepCell(cell: Surface, maxW = REC_MAXW): { chw: Float32Array; dims: number[]; w: number; tensorW: number } {
   let w = Math.ceil(REC_H * (cell.width / cell.height));
   if (w > maxW) w = maxW;
   if (w < 1) w = 1;
   const tensorW = maxW <= REC_MAXW ? REC_MAXW : w;
-  const tmp = new OffscreenCanvas(w, REC_H);
-  const tctx = tmp.getContext("2d");
-  if (!tctx) throw new Error("无法创建 2D 画布上下文");
-  tctx.drawImage(cell, 0, 0, w, REC_H);
-  const px = tctx.getImageData(0, 0, w, REC_H).data;
+  const tmp = createSurface(w, REC_H);
+  blit(tmp, cell, { x: 0, y: 0, w: cell.width, h: cell.height }, { x: 0, y: 0, w, h: REC_H });
+  const px = tmp.data;
   const chw = new Float32Array(3 * REC_H * tensorW); // 零填充：padding 区归一化值=0
   for (let y = 0; y < REC_H; y++) for (let x = 0; x < w; x++) {
     const p = (y * w + x) * 4;
@@ -373,7 +266,7 @@ function prepCell(cell: OffscreenCanvas, maxW = REC_MAXW): { chw: Float32Array; 
 }
 
 /** 对一个文本行/字符画布跑 rec → 原始 logits [T,C]（供 rankDigits 取各类最大分）。 */
-async function inferLogits(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ arr: Float32Array; T: number; C: number; w: number; tensorW: number }> {
+async function inferLogits(cell: Surface, maxW = REC_MAXW): Promise<{ arr: Float32Array; T: number; C: number; w: number; tensorW: number }> {
   const { chw, dims, w, tensorW } = prepCell(cell, maxW);
   const o = await runRec(chw, dims);
   const [, T, C] = o.dims;
@@ -384,11 +277,11 @@ async function inferLogits(cell: OffscreenCanvas, maxW = REC_MAXW): Promise<{ ar
  *  输入内容宽度上的**左缘/右缘**（CTC 非空标签连续run 的起止时间步换算）。xFrac 沿用原「起点」语义
  *  (歌词按它对齐音符，勿动)；x1Frac 为新增右缘，供按**字符边界间隙**(右字左缘−左字右缘)判词间空格。
  *  用于歌词条 & 页眉框——把逐条 N 次 IPC 压到 1 次。 */
-async function recognizeCharsPosMany(cells: OffscreenCanvas[], maxW: number | "auto" = REC_MAXW): Promise<{ ch: string; xFrac: number; x1Frac: number }[][]> {
+async function recognizeCharsPosMany(cells: Surface[], maxW: number | "auto" = REC_MAXW): Promise<{ ch: string; xFrac: number; x1Frac: number }[][]> {
   if (!cells.length) return [];
   // "auto"：逐条按其**自身宽度**定上限——常规歌词条 ≤320 → 与旧行为完全一致；只有切不开的超宽条
   // （如整串英文音节 "How-awe-some-you-are"，小字号缩到 48px 高后宽近千）才放宽，免被压扁失真。
-  const maxWOf = (c: OffscreenCanvas) =>
+  const maxWOf = (c: Surface) =>
     maxW === "auto" ? Math.min(REC_MAXW_LONG, Math.max(REC_MAXW, Math.ceil(REC_H * (c.width / c.height)))) : maxW;
   const preps = cells.map((c) => prepCell(c, maxWOf(c)));
   const results = await runRecArgmaxMany(preps.map((p) => ({ chw: p.chw, dims: p.dims })));
@@ -428,7 +321,7 @@ function digitClassIdx(): number[] {
 
 /** 单数字格 → 候选数字按置信度降序（取各数字类在所有时间步上的最大 logit 排序）。
  * 用于退化字形（贪心解码出空/非数字、默认成 0=休止）时，由上层据上下文（如歌词）剔除 0 取次优。 */
-async function rankDigitCandidates(cell: OffscreenCanvas): Promise<number[]> {
+async function rankDigitCandidates(cell: Surface): Promise<number[]> {
   const { arr, T, C } = await inferLogits(cell);
   const idx = digitClassIdx();
   const scored = idx.map((ci, d) => {
@@ -451,12 +344,9 @@ const DIGIT_BATCH = 64;
 
 /** 批量识别数字格 → 各格 CTC 解码字符串。数字格统一缩到 48×48，按 DIGIT_BATCH 分块成若干张量，
  *  **一次 IPC** 发全部块（Rust 内部逐块 session.run）。 */
-async function recognizeDigitCells(cells: OffscreenCanvas[]): Promise<string[]> {
+async function recognizeDigitCells(cells: Surface[]): Promise<string[]> {
   await ensureSession();
   const chars = _chars!;
-  const tmp = new OffscreenCanvas(DIGIT_W, REC_H);
-  const tctx = tmp.getContext("2d");
-  if (!tctx) throw new Error("无法创建 2D 画布上下文");
   const inputs: { chw: Float32Array; dims: number[] }[] = [];
   const sizes: number[] = [];
   for (let i = 0; i < cells.length; i += DIGIT_BATCH) {
@@ -464,9 +354,9 @@ async function recognizeDigitCells(cells: OffscreenCanvas[]): Promise<string[]> 
     const N = chunk.length;
     const chw = new Float32Array(N * 3 * REC_H * DIGIT_W); // 零填充：不足区归一化值=0
     for (let n = 0; n < N; n++) {
-      tctx.clearRect(0, 0, DIGIT_W, REC_H);
-      tctx.drawImage(chunk[n], 0, 0, DIGIT_W, REC_H);
-      const px = tctx.getImageData(0, 0, DIGIT_W, REC_H).data;
+      const tmp = createSurface(DIGIT_W, REC_H);
+      blit(tmp, chunk[n], { x: 0, y: 0, w: chunk[n].width, h: chunk[n].height }, { x: 0, y: 0, w: DIGIT_W, h: REC_H });
+      const px = tmp.data;
       const base = n * 3 * REC_H * DIGIT_W;
       for (let y = 0; y < REC_H; y++) for (let x = 0; x < DIGIT_W; x++) {
         const p = (y * DIGIT_W + x) * 4;
@@ -501,44 +391,41 @@ export function paddleOcrBackend(): OcrBackend {
     async recognizeDigits(bin: Binary, rects: Rect[]): Promise<number[]> {
       if (!rects.length) return [];
       await ensureSession();
-      const src = binToCanvas(bin);
+      const src = surfaceFromBinary(bin);
       const texts = await recognizeDigitCells(rects.map((r) => cellOf(src, bin, r)));
       return texts.map((text) => { const m = text.match(/[0-7]/); return m ? Number(m[0]) : 0; });
     },
     async rankDigits(bin: Binary, rects: Rect[]): Promise<number[][]> {
       if (!rects.length) return [];
       await ensureSession();
-      const src = binToCanvas(bin);
+      const src = surfaceFromBinary(bin);
       const out: number[][] = [];
       for (const r of rects) out.push(await rankDigitCandidates(cellOf(src, bin, r)));
       return out;
     },
-    async recognizeTexts(canvases: OffscreenCanvas[]): Promise<string[]> {
-      if (!canvases.length) return [];
+    async recognizeTexts(strips: Surface[]): Promise<string[]> {
+      if (!strips.length) return [];
       await ensureSession();
       // 全部歌词条一次 IPC（Rust 内部逐条推理=算力最优，往返只 1 次）。
-      return (await recognizeCharsPosMany(canvases, "auto")).map((cp) => cp.map((c) => c.ch).join(""));
+      return (await recognizeCharsPosMany(strips, "auto")).map((cp) => cp.map((c) => c.ch).join(""));
     },
-    async recognizeTextsPos(canvases: OffscreenCanvas[]): Promise<{ ch: string; xFrac: number }[][]> {
-      if (!canvases.length) return [];
+    async recognizeTextsPos(strips: Surface[]): Promise<{ ch: string; xFrac: number }[][]> {
+      if (!strips.length) return [];
       await ensureSession();
-      return recognizeCharsPosMany(canvases, "auto"); // 一次 IPC
+      return recognizeCharsPosMany(strips, "auto"); // 一次 IPC
     },
     async recognizeRegion(bin: Binary, region: Rect): Promise<{ text: string; bbox: Rect; chars?: { text: string; cx: number; x1?: number }[] }[]> {
       await ensureSession();
-      const src = binToCanvas(bin);
+      const src = surfaceFromBinary(bin);
       const boxes = await detectRegion(src, region);
       // 先裁出所有页眉框画布，再一次 IPC 批量 rec（放宽宽上限免长英文行被压扁）。
-      const items: { cv: OffscreenCanvas; x: number; y: number; w: number; h: number }[] = [];
+      const items: { cv: Surface; x: number; y: number; w: number; h: number }[] = [];
       for (const b of boxes) {
         const x = Math.max(0, Math.round(b.x)), y = Math.max(0, Math.round(b.y));
         const w = Math.min(bin.w - x, Math.round(b.w)), h = Math.min(bin.h - y, Math.round(b.h));
         if (w < 4 || h < 4) continue;
-        const cv = new OffscreenCanvas(w, h);
-        const cx = cv.getContext("2d");
-        if (!cx) continue;
-        cx.fillStyle = "#fff"; cx.fillRect(0, 0, w, h);
-        cx.drawImage(src, x, y, w, h, 0, 0, w, h);
+        const cv = createSurface(w, h);
+        blit(cv, src, { x, y, w, h }, { x: 0, y: 0, w, h });
         items.push({ cv, x, y, w, h });
       }
       const cps = await recognizeCharsPosMany(items.map((it) => it.cv), 2048);
