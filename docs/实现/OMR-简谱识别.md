@@ -230,6 +230,15 @@ det 会把它并进标题行。按 `《…》数字$` 从标题尾巴上剥掉�
 ③ 那两条与正经谱行的小节线一般高（中位高的 0.6，与行内相对判据同一口径）。实测放宽任何一条
 都会在别的曲子上凑出假谱行：只卡「有高竖线」时，世上/南非的标题带被凑成一行，标题识别归零。
 
+**谱行的小节线要跟全谱一般高**（`withBars`）：只要「有一条贯穿本行的高竖线」就算谱行，页眉里的
+经文出处也能凑出一条——1123《施比受更为有福》的「♩=103」与「（徒20：35）」被 `groupRows` 并成
+一行，那个全角左括号（10×41）恰好过了小节线判据，整行被当谱行读成 `1--0#3|20..350`；更糟的是
+它顶在第一谱行前面，页眉 ROI 的下界跟着上移，速度记号一并丢了。真小节线在**全谱**是同一高度
+（18 首实测每条谱行的线都落在全谱中位高的 0.96~1.04），伪线一概 ≤0.82（本首的括号 0.73、和弦行
+的竖笔 0.45~0.55），故按全谱中位高设 **0.85** 的门。中位数按**每条线一票**算而不是每行一票：
+真谱行每行贡献三五条、伪行只有一两条，中位数稳落在真线上，与伪行多寡无关。末行救回来的那些
+（上一条，终止线本就矮一截）豁免。回归：18 首 `measure-all` 全档逐首一字不变。
+
 **波音**（上波音 ∿，`JpNum.ornament`）：音符正上方一小段**两个尖峰的锯齿**（2152《就是不一样》
 第 5、8 行）。与它同区的还有圆滑线弧帽与延长记号，三者都是「音符上方一块扁而宽的墨」，靠两条分开：
 **宽度**——波音只有一个字宽（实测 29px ≈ 0.9 字号），圆滑线至少跨两个音（81~143px）；**形状**——
@@ -722,6 +731,7 @@ node scripts/pack-omr.mjs --targets=all                            # 全部 5 �
 node scripts/pack-omr.mjs --targets=linux-x64,win32-x64            # 挑几个
 node scripts/pack-omr.mjs --targets=linux-x64 --libc=musl          # Alpine 那类
 node scripts/pack-omr.mjs --targets=win32-x64 --no-slim            # Windows 保留 DirectML
+node scripts/pack-omr.mjs --targets=win32-x64 --no-crt             # Windows 不内置 VC++ 运行库
 ```
 
 脚本本身在 macOS / Linux / Windows 都能跑：外部命令只用 npm（Windows 上要 `npm.cmd`，
@@ -738,8 +748,8 @@ zip 格式，那种环境才回退到 `zip`。
 | darwin-arm64 | 96M | 46M |
 | linux-x64 | 98M | 50M |
 | linux-arm64 | 78M | 43M |
-| win32-x64 | 82M（`--no-slim` 122M） | 44M（`--no-slim` 61M） |
-| win32-arm64 | 80M（`--no-slim` 125M） | 43M（`--no-slim` 62M） |
+| win32-x64 | 83M（`--no-slim` 123M） | 44M（`--no-slim` 61M） |
+| win32-arm64 | 82M（`--no-slim` 127M） | 44M（`--no-slim` 62M） |
 
 **交叉打包靠什么成立**：两个原生依赖都是预编译分发，不在安装时编译——sharp 按平台拆成
 `@img/sharp-<os>-<cpu>` 子包（`npm i --os= --cpu= --libc=` 能精确拉到），onnxruntime-node 是
@@ -762,7 +772,33 @@ zip 格式，那种环境才回退到 `zip`。
   实测：删后 16 张图全跑通、与 macOS 侧逐字一致。另外 Windows 上 shebang 不起作用，
   故另附 `omr-cli.cmd`。
 - `engines` 写 `>=18.17`（sharp 0.35 的下限）：实测 Node 18.20.5 能跑，不必卡 20。
-- Windows 需要 **VC++ 2015–2022 可再发行组件**（x64 包用 `vc_redist.x64.exe`，arm64 用
-  `vc_redist.arm64.exe`）：查过导入表，`onnxruntime.dll` 与 `onnxruntime_binding.node` 动态链接
-  `MSVCP140.dll`/`VCRUNTIME140.dll`，不在系统自带的 UCRT（`api-ms-win-crt-*`）里；**sharp 那几个
-  二进制是静态链接的，不需要**。多数 Win10/11 已装过，报「找不到 VCRUNTIME140.dll」时再装。
+- Windows 的 **VC++ 运行库直接内置在包里**（app-local 部署），用户不必先装 vc_redist——见下一节。
+
+### Windows 包内置 VC++ 运行库（`scripts/vcredist.mjs`）
+
+`onnxruntime.dll` 与 `onnxruntime_binding.node` 动态链接 VC++ 运行库——查导入表，实际要的是
+`VCRUNTIME140.dll` / `VCRUNTIME140_1.dll`（arm64 没有 `_1`）/ `MSVCP140.dll` / `MSVCP140_1.dll` /
+`MSVCP140_ATOMIC_WAIT.dll`，都不在系统自带的 UCRT（`api-ms-win-crt-*`）里。**sharp 那几个二进制
+是静态链接的，不依赖 CRT**（扫描包内所有 PE 得到的结论，不是猜的）。
+
+**静态链接这条路走不通**：那两个文件是 ORT 官方用 `/MD` 编好发到 npm 的预编译产物，要静态就得
+自己重编 ONNX Runtime + N-API binding（要 Windows + VS 工具链，还废掉交叉打包）。改走 **app-local
+部署**：把 CRT 放到用它的二进制旁边，效果等价，代价约 0.7M（x64 目录 82M→83M，zip 仍 44M）。
+
+- **凭什么能生效**：Node 的 `process.dlopen` 走 libuv 的 `uv_dlopen` →
+  `LoadLibraryExW(..., LOAD_WITH_ALTERED_SEARCH_PATH)`，被加载的 `.node`**所在目录**先于系统目录
+  参与依赖搜索。包里 `onnxruntime.dll` 本来就是靠这条被 `onnxruntime_binding.node` 找到的。
+  注意搜索的是**加载者自己那个目录**，所以脚本是按目录分别算需求、分别放，不是往包根扔一份。
+- **DLL 从哪来**：`scripts/vcredist.mjs` 直接从官方 `vc_redist.<arch>.exe` 里抠，**全程纯 Node，
+  不依赖 7z / cabextract / bsdtar**（跨平台打包的前提）。vc_redist 是 WiX Burn 自解压 exe：PE
+  后面附着一个 CAB，里面 `a0…aN` 中有几个又是 CAB，CRT 以 `msvcp140.dll_amd64` 这种「名字 +
+  `_架构`」的形式躺在里面。CAB 用 MSZIP = 分块 raw deflate，块间沿用前一块输出的末 32K 作预置
+  字典，`zlib.inflateRawSync` 的 `dictionary` 选项正好对得上；解出的字节与 bsdtar 解同一个 cab
+  **逐字节一致**（已对拍 sha256）。下载缓存在 `node_modules/.cache/vcredist/`。
+- **拷哪几个是算出来的**：扫包内所有 `.dll`/`.node`/`.exe` 的导入表 → 落在 redist 提供范围内的
+  就是需求 → 再对 CRT 自身递归求闭包（`MSVCP140_1` 还要 `MSVCP140`，它又要 `VCRUNTIME140_1`…）。
+  `verify` 阶段再扫一遍，**任何目录还缺 CRT 就打包失败**——这类问题不拦住就得到 Windows 上才炸。
+  故意漏拷一个 `msvcp140_1.dll` 验证过，确实会报「缺 msvcp140_1.dll」。
+- **代价**：app-local 的 CRT 不跟 Windows Update 走安全更新，升级要靠重打包（删掉
+  `node_modules/.cache/vcredist/` 重跑即可）。不想内置就 `--no-crt`，README 会自动换回
+  「请装 vc_redist」那套说法。分发本身没问题——这些是微软明示的 redistributable files。

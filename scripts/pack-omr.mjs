@@ -8,6 +8,7 @@
 //   node scripts/pack-omr.mjs --targets=linux-x64,win32-x64   # 挑几个
 //   node scripts/pack-omr.mjs --targets=linux-x64 --libc=musl # Alpine 那类 musl 发行版
 //   node scripts/pack-omr.mjs --no-slim                       # Windows 包保留 DirectML（见下）
+//   node scripts/pack-omr.mjs --no-crt                        # Windows 包不内置 VC++ 运行库
 //   node scripts/pack-omr.mjs --keep                          # 保留目录、不打压缩包
 //
 // 本脚本自身在 macOS / Linux / Windows 都能跑：外部命令只用 npm（Windows 上是 npm.cmd）与
@@ -34,6 +35,7 @@ import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { crtLibrary, crtClosure, peImports } from "./vcredist.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const NAME = "jpeditor-omr";
@@ -52,6 +54,7 @@ const opt = (k, dflt) => {
 const KEEP = argv.includes("--keep");
 const SLIM = !argv.includes("--no-slim"); // Windows 上实测通过，默认开
 const DEDUPE = !argv.includes("--no-dedupe");
+const CRT = !argv.includes("--no-crt"); // Windows 包内置 VC++ 运行库（app-local），见 vcredist.mjs
 const LIBC = opt("libc", "glibc");
 const targetsArg = opt("targets", `${process.platform}-${process.arch}`);
 const targets = targetsArg === "all" ? TARGETS : targetsArg.split(",").map((t) => t.trim());
@@ -66,6 +69,9 @@ if (!existsSync(join(ROOT, "dist-cli", "omr.js"))) {
   console.error("缺 dist-cli/omr.js —— 先跑 npm run build:cli");
   process.exit(1);
 }
+
+/** 当前目标的 CRT 库，installCrt 填上、verify 复用。 */
+let CRT_LIB = new Map();
 
 const pkg = JSON.parse(await readFile(join(ROOT, "package.json"), "utf-8"));
 const VER = pkg.version;
@@ -101,6 +107,52 @@ async function copyWithChunks(dir, entry) {
   return [...seen];
 }
 
+/** 递归找出包里的 Windows 原生二进制（dll / node / exe），返回 [绝对路径, 依赖的 DLL 名]。 */
+async function scanPe(dir, out = []) {
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) { await scanPe(p, out); continue; }
+    if (!/\.(dll|node|exe)$/i.test(e.name)) continue;
+    out.push([p, peImports(await readFile(p))]);
+  }
+  return out;
+}
+
+/** 每个目录里缺哪些 CRT（app-local 的搜索范围是**加载者自己那个目录**，所以要按目录分别算）。
+ *  返回 Map<目录, Set<小写 dll 名>>；lib 为 null 时只报需求、不算闭包（校验用）。 */
+async function crtNeeds(dir, lib) {
+  const byDir = new Map();
+  for (const [file, deps] of await scanPe(dir)) {
+    const d = dirname(file);
+    const has = new Set((await readdir(d)).map((f) => f.toLowerCase()));
+    for (const dep of deps) {
+      const name = dep.toLowerCase();
+      if (!(lib ?? CRT_LIB).has(name) || has.has(name)) continue;
+      if (!byDir.has(d)) byDir.set(d, new Set());
+      byDir.get(d).add(name);
+    }
+  }
+  if (!lib) return byDir;
+  return new Map([...byDir].map(([d, needs]) => [d, crtClosure(needs, lib)]));
+}
+
+/** Windows：把 VC++ 运行库放到用它的二进制旁边（app-local），省掉用户装 vc_redist 这一步。
+ *  为什么不静态链接、app-local 凭什么生效、DLL 怎么从官方 exe 里抠出来 —— 见 scripts/vcredist.mjs。 */
+async function installCrt(dir, cpu) {
+  const lib = (CRT_LIB = await crtLibrary(cpu));
+  let n = 0;
+  // 闭包会带出新依赖（MSVCP140 → VCRUNTIME140_1 → …），拷完再算一轮直到不再缺
+  for (let round = 0; round < 4; round++) {
+    const needs = await crtNeeds(dir, lib);
+    if (!needs.size) break;
+    for (const [d, dlls] of needs) {
+      for (const name of dlls) { await writeFile(join(d, name), lib.get(name)); n++; }
+      console.log(`内置 VC++ 运行库 → ${d.replace(dir + "/", "").replace(/\\/g, "/")}：${[...dlls].sort().join(" ")}`);
+    }
+  }
+  if (!n) console.log("内置 VC++ 运行库：包里没有依赖 CRT 的二进制，跳过");
+}
+
 /** 装完之后静态校验：目标平台的 ORT 二进制与 sharp 平台包必须真的在包里。
  *  交叉打包最容易出的错就是 npm 静默装了宿主平台的包，跑到目标机上才炸。 */
 async function verify(dir, os, cpu, libcTag) {
@@ -117,6 +169,12 @@ async function verify(dir, os, cpu, libcTag) {
   }
   const sharpPkg = `@img/sharp-${libcTag === "musl" ? `${os}musl` : os}-${cpu}`;
   if (!existsSync(join(dir, "node_modules", sharpPkg))) problems.push(`缺 ${sharpPkg}`);
+  // 内置 CRT 时，包里不该再有哪个二进制缺 VC++ 运行库（缺了到 Windows 上才炸）
+  if (CRT && os === "win32") {
+    for (const [d, dlls] of await crtNeeds(dir, null)) {
+      problems.push(`${d.replace(dir + "/", "")} 缺 ${[...dlls].sort().join(" ")}`);
+    }
+  }
   for (const f of ["omr.js", "omr-cli.mjs", "models/ppocrv6_dict.txt"]) {
     if (!existsSync(join(dir, f))) problems.push(`缺 ${f}`);
   }
@@ -226,6 +284,9 @@ async function build(target) {
       "@echo off\r\nsetlocal\r\nnode \"%~dp0omr-cli.mjs\" %*\r\n", "utf-8");
   }
 
+  // 5d. win32：内置 VC++ 运行库（app-local），用户不必先装 vc_redist
+  if (CRT && os === "win32") await installCrt(dir, cpu);
+
   // 6. README
   await writeFile(join(dir, "README.md"), `# ${NAME} ${VER}
 
@@ -238,10 +299,12 @@ omr-cli.cmd 图片.jpg -f tomato -o 曲.txt  :: 换格式、写文件
 omr-cli.cmd 图片.jpg --profile            :: 附带分段耗时
 \`\`\`
 
-需要 **Microsoft Visual C++ 2015–2022 可再发行组件**（\`vc_redist.${cpu === "arm64" ? "arm64" : "x64"}.exe\`）：
+${CRT ? `\`onnxruntime.dll\` 与 \`onnxruntime_binding.node\` 动态链接 VC++ 运行库（\`MSVCP140.dll\` /
+\`VCRUNTIME140.dll\` 那几个，不在系统自带的 UCRT 里），**本包已把它们放在同目录内置**，
+不必另装 Microsoft Visual C++ 可再发行组件。（sharp 那部分是静态链接的，本来就不需要。）` : `需要 **Microsoft Visual C++ 2015–2022 可再发行组件**（\`vc_redist.${cpu === "arm64" ? "arm64" : "x64"}.exe\`）：
 包里的 \`onnxruntime.dll\` 与 \`onnxruntime_binding.node\` 动态链接 \`MSVCP140.dll\` / \`VCRUNTIME140.dll\`，
 那几个不在系统自带的 UCRT 里。（sharp 那部分是静态链接的，不需要。）
-Win10/11 多半已装过，报「找不到 VCRUNTIME140.dll」时到微软官网下载安装即可。
+Win10/11 多半已装过，报「找不到 VCRUNTIME140.dll」时到微软官网下载安装即可。`}
 输出编码为 UTF-8，用 \`-o\` 写文件最稳；直接看 stdout 的话先 \`chcp 65001\`。` : `\`\`\`bash
 ./omr-cli.mjs 图片.jpg                      # 默认输出诗歌本文本谱到 stdout
 ./omr-cli.mjs 图片.jpg -f tomato -o 曲.txt   # 换格式、写文件
