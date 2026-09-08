@@ -16,6 +16,7 @@ import { recognizeHeader } from "./header";
 import { detectSlurs } from "./slur";
 import { detectRepeatsAndEndings } from "./repeats";
 import { median, overlapX, unionRect } from "./geom";
+import { accidentalOf } from "./accidental";
 
 
 /** 一个数字格：紧包围盒 + 自身下划线条数(div)。 */
@@ -63,39 +64,6 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
   };
   return tryCut(Math.round(numH * 0.12), Math.round(numH * 0.6), true) ??
     tryCut(b.h - Math.round(numH * 0.6), b.h - Math.round(numH * 0.12), false);
-}
-
-/** 变音记号（临时升降号 ♯ / ♭ / ♮）印在音符**左侧、紧贴着**，比数字明显矮一截、也窄一截。
- *  不摘出去就被当成一个音符送 OCR（实测 ♯ 读成 `1`、`0`，17《不失足》第 3 行凭空多两个音）。
- *  形状分类：♯ 两条竖笔上下贯通、四象限都有墨；♭ 只有左边一条竖笔、右上几乎空白；
- *  ♮ 的两条竖笔**一高一低**——左竖在上半、右竖在下半，故**左半墨迹的重心明显高于右半**。
- *  ♮ 早先用「左上空 + 右下空」的四象限判据，方向正好反了（8《心持两意的人》第 1 行实测
- *  左上 0.43 / 右下 0.61 才是有墨的那两格）；而且中间两条横笔一压，四格比例本就不干净，
- *  改用左右两半的重心差（那两条横笔左右各占一半，对差值影响相互抵消）。 */
-function accidentalOf(bin: Binary, b: Rect): "sharp" | "flat" | "natural" | null {
-  const half = (x0: number, x1: number, y0: number, y1: number): number => {
-    let ink = 0, tot = 0;
-    for (let y = Math.round(y0); y < Math.round(y1); y++)
-      for (let x = Math.round(x0); x < Math.round(x1); x++) { tot++; if (bin.data[y * bin.w + x]) ink++; }
-    return tot ? ink / tot : 0;
-  };
-  /** 半边墨迹的重心（0=顶、1=底）；没墨返回 null */
-  const centerY = (x0: number, x1: number): number | null => {
-    let sum = 0, ink = 0;
-    for (let y = Math.round(b.y); y < Math.round(rbottom(b)); y++)
-      for (let x = Math.round(x0); x < Math.round(x1); x++)
-        if (bin.data[y * bin.w + x]) { ink++; sum += y - b.y; }
-    return ink ? sum / ink / Math.max(1, b.h - 1) : null;
-  };
-  const mx = b.x + b.w / 2, my = b.y + b.h / 2;
-  const lt = half(b.x, mx, b.y, my), rt = half(mx, rright(b), b.y, my);
-  const lb = half(b.x, mx, my, rbottom(b)), rb = half(mx, rright(b), my, rbottom(b));
-  if (lt + rt + lb + rb < 0.3) return null;              // 墨太少 → 噪点，不认
-  if (rt < rb * 0.45 && lt > rt) return "flat";          // 右上空、左竖贯通 → ♭
-  const lc = centerY(b.x, mx), rc = centerY(mx, rright(b));
-  if (lc !== null && rc !== null && rc - lc > 0.18) return "natural"; // 左竖高、右竖低 → ♮
-  if (Math.min(lt, rt, lb, rb) >= 0.12) return "sharp";  // 四格都有墨 → ♯
-  return null;
 }
 
 /** 倚音底下的减时线条数：从块底往下 0.6 字高内，逐行看有没有一条与它同宽的横墨，连着的算一条。
@@ -681,11 +649,51 @@ function midbandInk(bin: Binary, b: Rect): number {
   return t ? n / t : 0;
 }
 
+/** 断成几截的横线接回一条。扫描件里一道减时线常被二值化断开一两个像素，断出来的碎段既够不着
+ *  classify 里横线的宽度门（w ≥ 0.6 字号），也把长的那截截短——227《施比受更为有福》第 1 行
+ *  `3·4` 底下那道共用减时线实测断成 81px + 12px + 18px 三截（缝各 1px），长的那截止步于 "4" 的
+ *  左缘、与 "4" 只重叠 6px，过不了「横线要盖住数字四成宽」那条，两截碎的又都进不了 hlines，
+ *  于是 "4" 一条减时线都没剩下，那一拍的时值凭空翻倍。
+ *  只接**同一水平线上、缝隙一两像素**的扁块：真正分开的两道增时线 `- -` 之间隔着大半个字号，
+ *  上下堆叠的两条减时线纵向不重叠，都够不着这个门。 */
+function mergeBrokenHlines(comps: Component[], numH: number): Component[] {
+  const flat = (k: Component) => k.bbox.h <= Math.max(3, numH * 0.32) && k.bbox.w >= k.bbox.h * 2;
+  const gapMax = Math.max(2, numH * 0.06);
+  const rest = comps.filter((k) => !flat(k));
+  const line = comps.filter(flat).sort((a, b) => a.bbox.x - b.bbox.x);
+  const yTol = Math.max(2, numH * 0.06);
+  const out: Component[] = [];
+  for (const k of line) {
+    // 往回找**同一条线**上的那一截：不能只跟紧挨着的上一个比——同一道减时线的第二层就夹在
+    // 按 x 排的序列中间（227 那处的四截是 x784/866/874/879，其中 874 是下面一层），
+    // 只比上一个的话第三截就接不回去了。纵向要真的挨着（上下缘各差不过一条线的厚度）。
+    let host: Component | undefined;
+    for (let i = out.length - 1; i >= 0; i--) {
+      const p = out[i];
+      if (k.bbox.x - rright(p.bbox) > gapMax) continue;
+      if (k.bbox.x < p.bbox.x) continue;
+      if (Math.abs(k.bbox.y - p.bbox.y) > yTol || Math.abs(rbottom(k.bbox) - rbottom(p.bbox)) > yTol) continue;
+      // **两截里至少有一截短得不成线**（够不着 classify 里横线的 0.6 字号宽度门）。接的是二值化
+      // 掉出来的碎渣，不是把两道真横线并成一道：为基督赢得城市第 1 行 `3 - - 0` 的两道增时线
+      // 印得几乎挨上（缝隙不到 2px），少了这一条就并成一道、那个音少掉一拍。
+      if (Math.min(k.bbox.w, p.bbox.w) >= numH * 0.6) continue;
+      host = p; break;
+    }
+    if (host) {
+      const bb = unionRect(host.bbox, k.bbox);
+      out[out.indexOf(host)] = { id: host.id, bbox: bb, area: host.area + k.area, cx: bb.x + bb.w / 2, cy: bb.y + bb.h / 2 };
+      continue;
+    }
+    out.push(k);
+  }
+  return [...rest, ...out];
+}
+
 export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<RecognizedScore> {
   // 去连通：把贯穿全高的小节线（常像"桥"把弧/增时线粘成一团）从像素上擦掉重做连通域，
   // 让弧/小节线/数字各自独立、以干净连通块流入下面的 classify 与 detectSlurs。
   const raw = connectedComponents(bin, 4);
-  const comps = untangleBridged(raw, bin, estimateNumH(raw));
+  const comps = mergeBrokenHlines(untangleBridged(raw, bin, estimateNumH(raw)), estimateNumH(raw));
   const { c, numH } = classify(comps, bin);
 
   // 数字块 → 数字格（拆分粘连/连音，并测各自下划线 div）。
@@ -744,7 +752,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     const maxH = Math.max(0, ...spanning.map((b) => b.bbox.h));
     const real = spanning.filter((b) => b.bbox.h >= maxH * 0.6).sort((a, b) => rcx(a.bbox) - rcx(b.bbox));
     const barlineXs = real.map((b) => rcx(b.bbox));
-    return { rd, topY, botY, barlineXs, bars: real };
+    return { rd, topY, botY, barlineXs, bars: real, tail: false };
   });
 
   // 少于三个数字的「行」多半是噪声（歌词碎笔、标题/页脚里的竖笔），一概不要——**除了末行
@@ -765,12 +773,21 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     const tail = rowMetaAll
       .filter((m) => m.rd.length && m.rd.length < 3 && m.topY > lastY)
       .filter((m) => m.bars.filter((b) => b.bbox.h >= medBarH * 0.6).length >= 2);
+    for (const t of tail) t.tail = true;
     rowMeta.push(...tail);
   }
 
   // 关键启发式：乐谱行有小节线穿过，歌词/标题行没有。先筛出乐谱行，
   // **只对乐谱行做 OCR**——避免把歌词汉字也送去识别（拖慢且污染结果）；整曲无小节线则回退全部。
-  const withBars = rowMeta.filter((m) => m.barlineXs.length > 0);
+  // 光有「一条贯穿本行的高竖线」还不够：页眉里的经文出处「（徒20：35）」那对括号、速度记号旁的
+  // 竖笔，都能凑出一条，1123《施比受更为有福》的「♩=103 （徒20：35）」就整行被当成谱行读成
+  // `1--0#3|20..350`（连带把第一谱行顶到页眉 ROI 之外，速度记号跟着丢）。真小节线在**全谱**是
+  // 同一高度：14 首实测各行都在中位高的 0.96~1.04，伪线一概 ≤0.82（本首括号 0.73、和弦行竖笔
+  // 0.45~0.55）。故按全谱中位高设 0.85 的门——中位数按**每条线一票**算，真谱行每行贡献三五条、
+  // 伪行只有一两条，中位数稳落在真线上，不受伪行多寡影响。末行救回来的那些（终止线本就矮一截，
+  // 判据见上）豁免。
+  const withBars = rowMeta.filter((m) => m.barlineXs.length > 0
+    && (m.tail || !(medBarH > 0) || m.bars.some((b) => b.bbox.h >= medBarH * 0.85)));
   const staff = withBars.length ? withBars : rowMeta;
 
   // 临时升降号：印在音符左侧、紧贴着，比数字矮一截也窄一截（实测 ♯ 是 10×17，同行数字 15×24）。
@@ -917,7 +934,11 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       if (n < 2) continue;
       const last = m.bars[n - 1], prev = m.bars[n - 2];
       if (rcx(last.bbox) - rcx(prev.bbox) > numH * 0.5) continue;      // 不是并排的两根
-      if (Math.max(last.bbox.w, prev.bbox.w) < medW * 1.5) continue;   // 没有明显更粗的那根
+      // 「更粗的那根」只在**中间的谱行**上要求：那里两根并排的还可能是分段用的复纵线，粗细是
+      // 唯一可分的线索。**末行**行末的两根并排不作他想，就是终止线——而且细粗之别常印不出来：
+      // 227《施比受更为有福》末行那道 ‖ 实测 5px + 7px、中位 5px，比 1.5 倍差一点点就整个丢了
+      // （同一首歌的另一版 1123 是 6px + 10px，同一条判据一个过一个不过，说明门槛卡在噪声上）。
+      if (m !== staff[staff.length - 1] && Math.max(last.bbox.w, prev.bbox.w) < medW * 1.5) continue;
       (m as { finalBarline?: "end" }).finalBarline = "end";
     }
   }
