@@ -145,9 +145,11 @@ export function showOptionsDialog(app: App): void {
   lines.type = "text";
   lines.placeholder = "例如 4 或 4|3|3（留空=自动）";
   lines.value = app.getLinesPerPage();
+  // 「每页行数」写在 .Layout 段里，只有 jpwabc 文档有这个段；文本谱不要往里插。
+  const hasLayoutSection = app.docFormat !== "pu";
   body.append(
     labeled("谱面比例", sel),
-    labeled("每页行数", lines),
+    ...(hasLayoutSection ? [labeled("每页行数", lines)] : []),
     labeled("基础字号", fs),
     labeled("标题字号", titleSz),
     labeled("词曲信息字号", creditSz),
@@ -184,8 +186,10 @@ export function showOptionsDialog(app: App): void {
     const titleSize = parseInt(titleSz.value, 10) || app.titleSize;
     const creditSize = parseInt(creditSz.value, 10) || app.creditSize;
     const argb = 0xff000000 | (parseInt(color.value.slice(1), 16) & 0xffffff);
-    const linesVal = lines.value.trim();
-    if (linesVal !== app.getLinesPerPage()) app.setLinesPerPage(linesVal);
+    if (hasLayoutSection) {
+      const linesVal = lines.value.trim();
+      if (linesVal !== app.getLinesPerPage()) app.setLinesPerPage(linesVal);
+    }
     app.applyRenderSettings({ pageW: w, pageH: h, fontSize, titleSize, creditSize, color: argb >>> 0 });
     if (app.mode === "mixed") void app.setMixedHideBarNumber(hideBarNum.checked);
   });

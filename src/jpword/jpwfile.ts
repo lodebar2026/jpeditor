@@ -282,7 +282,14 @@ export class JpwFile {
 
   static fromString(s: string): JpwFile | null {
     const res = new JpwFile();
-    const ok = res.parse(s.split("\n"));
+    // parse() 对「正文出现在任何段落头之前」是抛异常的（见 parse）。fromString 的契约
+    // 是「解析不了就给 null」——异常在这里吞掉，否则每个调用方都得记着包 try。
+    let ok: boolean;
+    try {
+      ok = res.parse(s.split("\n"));
+    } catch {
+      return null;
+    }
     return ok ? res : null;
   }
 
