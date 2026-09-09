@@ -210,7 +210,7 @@ function buildPart(
         b.slurOpen = ch;
       }
       if (slur.ends) {
-        ch.slurEnd = true;
+        ch.slurEnds++;
         if (b.slurOpen) b.slurOpen.slurEndChord = ch;
         b.slurOpen = null;
       }

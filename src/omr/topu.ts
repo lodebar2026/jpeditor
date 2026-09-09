@@ -136,14 +136,14 @@ function pairCurves(flat: readonly JpNum[]): { opens: Map<number, number>; close
   const bump = (m: Map<number, number>, i: number) => m.set(i, (m.get(i) ?? 0) + 1);
   flat.forEach((n, i) => {
     if (n.digit === 0) return; // 休止符上的弧端点：不开也不闭，对家因此配不上而被丢弃
-    const nClose = (n.slurStop ? 1 : 0) + (n.tieStop ? 1 : 0);
+    const nClose = (n.slurStop ?? 0) + (n.tieStop ? 1 : 0);
     for (let c = 0; c < nClose; c++) {
       const start = queue.shift();
       if (start === undefined) break; // 多余的收尾，丢
       bump(opens, start);
       bump(closes, i);
     }
-    const nOpen = (n.slurStart ? 1 : 0) + (n.tieStart ? 1 : 0);
+    const nOpen = (n.slurStart ?? 0) + (n.tieStart ? 1 : 0);
     for (let o = 0; o < nOpen; o++) queue.push(i);
   });
   return { opens, closes };
@@ -193,6 +193,8 @@ function headerLines(score: RecognizedScore, d: DialectSpec, tb: TextBuilder, me
     meta.titleRange = tb.push(score.title);
     tb.push("\n");
   }
+  // 副标题：两家方言都是「第一条标题行是主标题，其余为副标题」，再写一条同名字段即可。
+  if (score.subtitle) push(`${h.titleField}:${score.subtitle}`);
   for (const c of score.credits ?? []) {
     tb.push(`${h.creditField}:`);
     const range = tb.push(c);
