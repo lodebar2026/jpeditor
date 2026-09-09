@@ -829,7 +829,7 @@ function cutsThroughSpan(part: Part, mi: number): boolean {
   const a = prev[prev.length - 1];
   const b = cur[0];
   if (!a || !b) return false;
-  if (a.slurStart && b.slurEnd) return true;
+  if (a.slurStart && b.slurEnds > 0) return true;
   if (a.notes[0]?.tieStart && b.notes[0]?.tieEnd) return true;
   return false;
 }

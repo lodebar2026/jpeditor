@@ -62,7 +62,8 @@ export function doPairTuplet(tupletNotes: Note[]): void {
 }
 
 export class ParserTemp {
-  slurStart: Chord | null = null;
+  /** 按文档序收集的和弦，收齐了在 `pairSlur` 里栈式配对（后开先闭）。 */
+  slurChords: Chord[] = [];
   tieNotes: Note[] = [];
   tupletNotes: Note[] = [];
   /** 还没落到主音符上的倚音（`<grace>` 排在它修饰的音符**之前**）。 */
@@ -73,6 +74,19 @@ export class ParserTemp {
     this.tupletNotes.sort((a, b) => a.absoluteTick.compareTo(b.absoluteTick));
     doPairTuplet(this.tupletNotes);
     this.tupletNotes = [];
+  }
+
+  /** 圆滑线配对：栈式（后开先闭），这样嵌套的两条弧各自连对端点。 */
+  pairSlur(): void {
+    const stack: Chord[] = [];
+    for (const c of this.slurChords) {
+      for (let k = 0; k < c.slurEnds; k++) {
+        const s = stack.pop();
+        if (s) s.slurEndChord = c;
+      }
+      if (c.slurStart) stack.push(c);
+    }
+    this.slurChords = [];
   }
 
   pairTie(): void {
@@ -257,7 +271,10 @@ export class Chord extends Entry {
   rest = false;
   beamGroup: BeamGroup | null = null;
   slurStart = false;
-  slurEnd = false;
+  /** 本和弦收几条弧。嵌套双弧（外弧罩三音、内弧只罩后两音）在末音上同时收两条，故是计数。
+   *  起弧仍是布尔：一条弧的另一端记在起点的 `slurEndChord` 上，同一个和弦起两条弧装不下
+   *  （谱面上也罕见），识别侧遇到时只留外面那条。 */
+  slurEnds = 0;
   slurEndChord: Chord | null = null;
   fermata = false;
   /** 印在这个音符上方的和弦符号（"Am7" / "G/B"）。来自 musicxml 的 `<harmony>`，
@@ -1025,7 +1042,7 @@ function voltaLead(measures: Measure[], volta1Beg: number, volta1End: number, ta
   if (n <= 0) return 0;
   for (let i = 0; i < n; i++) {
     const c = tail[i];
-    if (c.slurStart || c.slurEnd) return 0;
+    if (c.slurStart || c.slurEnds > 0) return 0;
     if (c.notes.some((nt) => nt.tieStart || nt.tieEnd)) return 0;
   }
   return n;

@@ -938,7 +938,7 @@ export class NoteEntry extends Entry {
     return false;
   }
   get endOfSlurTied(): boolean {
-    if (this.chord.slurEnd) return true;
+    if (this.chord.slurEnds > 0) return true;
     if (this.chord.notes[0].tieEnd) return true;
     return false;
   }

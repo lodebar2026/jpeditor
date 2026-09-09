@@ -116,12 +116,12 @@ function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
         // 老规矩（inTuplet 就一律当三连音收尾）会把括线提前一个音符停掉。
         if (stat.slurDepth > 0) {
           stat.slurDepth--;
-          res.slurEnd = true;
+          res.slurEnds++;
         } else if (stat.inTuplet) {
           stat.inTuplet = false;
           nt.tupletEnd = true;
         } else {
-          res.slurEnd = true;
+          res.slurEnds++;
         }
         break;
       default: console.log(ch);
@@ -184,7 +184,7 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
   const data = sec.voiceData;
   let mea: Measure | null = null;
   let newMeasure = false;
-  let slurStart: Chord | null = null;
+  const slurOpen: Chord[] = []; // 已开未闭的弧（栈：后开先闭，容嵌套的两条）
   const stat = new JpState();
   stat.basePitch = MusicCommon.getBasePitchOfKey(key);
   stat.fifths = key.fifths;
@@ -226,12 +226,12 @@ function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
       const chord = makeChord(noteCtx, mea, stat);
       const nt = chord.notes[0];
       if (nt.tupletEnd || nt.tupletBegin) tupNotes.push(nt);
-      if (chord.slurStart) {
-        slurStart = chord;
-      } else if (chord.slurEnd) {
-        if (slurStart !== null) slurStart.slurEndChord = chord;
-        slurStart = null;
+      // 收在前、起在后：同一个音符上「收上一条、再起下一条」是常见写法。
+      for (let k = 0; k < chord.slurEnds; k++) {
+        const from = slurOpen.pop();
+        if (from) from.slurEndChord = chord;
       }
+      if (chord.slurStart) slurOpen.push(chord);
       mea.entries.push(chord);
     } else if (barlineCtx) {
       // **曲子最开头就写小节线**（`|:3_ …`，全曲一上来就是反复开始记号）：此刻还没有

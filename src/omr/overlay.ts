@@ -265,9 +265,9 @@ function renderSlursTies(g: SVGGElement, score: RecognizedScore, rowFits: ((x: n
   });
   const slurStack: N[] = [], tieStack: N[] = [];
   for (const it of flat) {
-    if (it.n.slurStop) { const s = slurStack.pop(); if (s && s.row === it.row) g.appendChild(arc(s.cx, s.top, it.cx, it.top, noteH, "omr-slur")); }
+    for (let k = 0; k < (it.n.slurStop ?? 0); k++) { const s = slurStack.pop(); if (s && s.row === it.row) g.appendChild(arc(s.cx, s.top, it.cx, it.top, noteH, "omr-slur")); }
     if (it.n.tieStop) { const s = tieStack.pop(); if (s && s.row === it.row) g.appendChild(arc(s.cx, s.top, it.cx, it.top, noteH, "omr-tie")); }
-    if (it.n.slurStart) slurStack.push(it);
+    for (let k = 0; k < (it.n.slurStart ?? 0); k++) slurStack.push(it);
     if (it.n.tieStart) tieStack.push(it);
   }
 }

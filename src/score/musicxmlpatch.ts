@@ -205,7 +205,9 @@ function patchNotations(
   const want: Array<[string, string | null]> = [];
   if (ti?.stop) want.push(["tied", "stop"]);
   if (ti?.start) want.push(["tied", "start"]);
-  if (first && sl?.stop !== undefined) want.push(["slur", "stop"]);
+  // 嵌套双弧在同一个音符上收两条 → 两个 `slur:stop`（number 由下游 slurXml 那路给；
+  // 这条增量 patch 只管有没有、顺序对不对）。
+  if (first) for (let k = 0; k < (sl?.stops.length ?? 0); k++) want.push(["slur", "stop"]);
   if (first && sl?.start !== undefined) want.push(["slur", "start"]);
   if (nt.tupletEnd) want.push(["tuplet", "stop"]);
   if (nt.tupletBegin) want.push(["tuplet", "start"]);
@@ -231,15 +233,12 @@ function patchNotations(
   } else {
     for (const c of Array.from(nts.children)) if (OWNED.includes(c.tagName)) c.remove();
   }
+  // 按 want 的顺序追加到末尾（本模块不管的子元素——articulations/ornaments——留在前面不动）。
   for (const [tag, type] of want) {
     const e = noteEl.ownerDocument.createElement(tag);
     if (type) e.setAttribute("type", type);
-    nts.insertBefore(e, nts.firstChild);
+    nts.append(e);
   }
-  // 上面倒序插入会翻转顺序，重排成 want 的顺序。
-  const ordered = want.map(([tag, type]) =>
-    Array.from(nts!.children).find((c) => c.tagName === tag && (c.getAttribute("type") ?? null) === type)!);
-  for (const e of ordered) nts.append(e);
   return 1;
 }
 

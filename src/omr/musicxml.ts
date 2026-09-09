@@ -51,9 +51,10 @@ function lyricsXml(num: JpNum): string {
   return out;
 }
 
-/** 弧线配对结果：slur 的 number，以及配上对、可以输出的 tie 端点。 */
+/** 弧线配对结果：slur 的 number（嵌套双弧时一个音符可收/起多条，故是数组），
+ *  以及配上对、可以输出的 tie 端点。 */
 interface ArcPairs {
-  slur: Map<JpNum, { start?: number; stop?: number }>;
+  slur: Map<JpNum, { starts: number[]; stops: number[] }>;
   tie: Map<JpNum, { start?: boolean; stop?: boolean }>;
 }
 
@@ -68,7 +69,7 @@ interface ArcPairs {
  * 硬输出只会得到一条莫名其妙的长弧，剔除。
  */
 function pairArcs(notes: JpNum[], fifths: number): ArcPairs {
-  const slur = new Map<JpNum, { start?: number; stop?: number }>();
+  const slur = new Map<JpNum, { starts: number[]; stops: number[] }>();
   const tie = new Map<JpNum, { start?: boolean; stop?: boolean }>();
   const slot = <T>(m: Map<JpNum, T>, n: JpNum, init: T): T => {
     const v = m.get(n) ?? init;
@@ -84,23 +85,28 @@ function pairArcs(notes: JpNum[], fifths: number): ArcPairs {
   // [number, 起始音符, 这条弧是否已作废]
   const openSlur: Array<[number, JpNum, boolean]> = [];
   const openTie: JpNum[] = [];
-  const dropSlurStart = (n: JpNum) => { const s = slur.get(n); if (s) delete s.start; };
+  // 起点作废：把它那条 number 从起点音符的 starts 里摘掉（一个音符可能起了不止一条）。
+  const dropSlurStart = (n: JpNum, k: number) => {
+    const s = slur.get(n);
+    if (s) s.starts = s.starts.filter((v) => v !== k);
+  };
   for (const n of notes) {
-    if (n.slurStop) {
+    // 嵌套双弧（外弧罩三音、内弧只罩后两音）在末音上同时收两条，故按条数循环。
+    for (let c = 0; c < (n.slurStop ?? 0); c++) {
       const top = openSlur.pop();
       // 端点落在休止符上的圆滑线是**识别错误**（弧线本该连到旁边的音符），整条作废——
       // 只丢一端会剩半条弧，MuseScore 会把它一路拖到下一条 slur 那里去。
       // 注：人工写的 .jpwabc 里 slur 连休止符是合法的，全量序列化那条路不做这个剔除。
       if (!top) dropped++;
-      else if (top[2] || n.digit === 0) { dropSlurStart(top[1]); dropped++; }
-      else slot(slur, n, {}).stop = top[0];
+      else if (top[2] || n.digit === 0) { dropSlurStart(top[1], top[0]); dropped++; }
+      else slot(slur, n, { starts: [], stops: [] }).stops.push(top[0]);
     }
-    if (n.slurStart) {
+    for (let o = 0; o < (n.slurStart ?? 0); o++) {
       const used = new Set(openSlur.map(([k]) => k));
       let k = 1;
       while (used.has(k)) k++;
       openSlur.push([k, n, n.digit === 0]);
-      slot(slur, n, {}).start = k;
+      slot(slur, n, { starts: [], stops: [] }).starts.push(k);
     }
     if (n.tieStop) {
       const from = openTie.pop();
@@ -115,7 +121,7 @@ function pairArcs(notes: JpNum[], fifths: number): ArcPairs {
     if (n.tieStart && n.digit !== 0) { openTie.push(n); slot(tie, n, {}).start = true; }
     else if (n.tieStart) dropped++;
   }
-  for (const [, n] of openSlur) { dropSlurStart(n); dropped++; }
+  for (const [k, n] of openSlur) { dropSlurStart(n, k); dropped++; }
   for (const n of openTie) { const s = tie.get(n); if (s) delete s.start; dropped++; }
   if (dropped) console.warn(`OMR→MusicXML：剔除了 ${dropped} 个配不上对的 slur/tie 记号`);
   return { slur, tie };
@@ -129,8 +135,8 @@ function notationsXml(num: JpNum, arcs: ArcPairs): string {
   const sl = arcs.slur.get(num);
   if (ti?.stop) ns.push(`<tied type="stop"/>`);
   if (ti?.start) ns.push(`<tied type="start"/>`);
-  if (sl?.stop !== undefined) ns.push(`<slur type="stop" number="${sl.stop}"/>`);
-  if (sl?.start !== undefined) ns.push(`<slur type="start" number="${sl.start}"/>`);
+  for (const k of sl?.stops ?? []) ns.push(`<slur type="stop" number="${k}"/>`);
+  for (const k of sl?.starts ?? []) ns.push(`<slur type="start" number="${k}"/>`);
   if (num.fermata) ns.push(`<fermata/>`);
   // 上波音 ∿ = MusicXML 的 inverted-mordent（带竖杠的那个才是 mordent）。
   if (num.ornament === "upper-mordent") ns.push(`<ornaments><inverted-mordent/></ornaments>`);
@@ -384,8 +390,11 @@ export function toMusicXml(score: RecognizedScore): string {
   }).join("");
 
   const workXml = workElementXml(score.title);
+  // 副标题带 `<credit-type>subtitle</credit-type>` 单列（与文本谱那路口径一致），别混进著作者：
+  // 下游 jpscore 是按「非 title 的 credit」拼 WordsByAndMusicBy 的，不标类型就会被当成作者。
+  const subtitleXml = score.subtitle ? creditWordsXml(score.subtitle, 1, "subtitle") : "";
   // 著作者整行（作词：…/作曲：…）作为 credit；下游 jpscore 据此拼 WordsByAndMusicBy。
-  const creditsXml = (score.credits ?? []).map((c) => creditWordsXml(c)).join("");
+  const creditsXml = subtitleXml + (score.credits ?? []).map((c) => creditWordsXml(c)).join("");
 
   return wrapPartwise({
     work: workXml, credits: creditsXml, partList: scorePartXml("P1"),

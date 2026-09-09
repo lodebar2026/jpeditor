@@ -105,6 +105,7 @@ function parseLrc(nt: Note, noteEl: Element): void {
 function parseNotations(nt: Note, noteEl: Element): void {
   const nts = elem(noteEl, "notations");
   if (!nts) return;
+  let stops = 0;
   for (const it of Array.from(nts.children)) {
     if (it.tagName === "tied") {
       const ty = it.getAttribute("type");
@@ -122,9 +123,13 @@ function parseNotations(nt: Note, noteEl: Element): void {
     } else if (it.tagName === "slur") {
       const ty = it.getAttribute("type");
       if (ty === "start") nt.chord.slurStart = true;
-      else if (ty === "stop") nt.chord.slurEnd = true;
+      else if (ty === "stop") stops++;
     }
   }
+  // 收弧按**本音符**上的条数取大，不累加：多音和弦里同一条弧的记号可能挂在好几个音上
+  // （MusicXML 不规定挂哪个），累加会凭空多出几条来。嵌套双弧的两个 stop 挂在同一个音上，
+  // 取大就是 2。
+  if (stops > nt.chord.slurEnds) nt.chord.slurEnds = stops;
 }
 
 function parseDuration(ch: Chord, noteEl: Element): void {
@@ -167,11 +172,7 @@ function onNote(m: Measure, noteEl: Element, tmp: ParserTemp, div: number, st: M
   }
   const nt = new Note(last);
   loadNote(nt, noteEl);
-  if (last.slurEnd) {
-    if (tmp.slurStart) tmp.slurStart.slurEndChord = last;
-  } else if (last.slurStart) {
-    tmp.slurStart = last;
-  }
+  if (newChord) tmp.slurChords.push(last); // 配对留到 pairSlur（弧记号可能挂在和弦的后一个音上）
   if (nt.tieStart || nt.tieEnd) tmp.tieNotes.push(nt);
   if (nt.tupletBegin || nt.tupletEnd) tmp.tupletNotes.push(nt);
   last.add(nt);
@@ -408,6 +409,7 @@ function loadPart(part: Part, partEl: Element, pd: PlayData): void {
     pos = pos.plus(mea.duration);
     cur = mea;
   });
+  tmp.pairSlur();
   tmp.pairTie();
 }
 

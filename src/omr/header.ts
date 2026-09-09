@@ -12,6 +12,10 @@ const hanziCount = (s: string) => (s.match(/[一-鿿]/g) || []).length;
 
 export interface HeaderInfo {
   title?: string;
+  /** 副标题：印在标题正下方、字号不大于标题、与标题居中对齐的那一行（多是曲名的英译，
+   *  如「2146 奉献的心志在燃烧」下的 "The spirit of devotion is burning"）。
+   *  → MusicXML `<credit-type>subtitle</credit-type>`、文本谱第二条标题行；.jpwabc 装不下，那一路会丢。 */
+  subtitle?: string;
   /** 著作者整行文本（如 "作词：叶薇心"），下游作为 credit 写入 WordsByAndMusicBy。 */
   credits: string[];
   /** 调号五度圈数（识别到 "1=♭B" 等时给出，否则 undefined→上游用默认 0）。 */
@@ -61,6 +65,48 @@ function recoverLatinSpaces(text: string, raw?: { text: string; cx: number; x1?:
     if (i < chars.length - 1 && pair(i) && gapAt(i) > med * 1.5 && gapAt(i) > med + 6) out += " ";
   }
   return out;
+}
+
+/**
+ * 整句英文（副标题）的词间空格：**按源图上真实的空白列**补，而不是靠 CTC 帧位算间距。
+ * 帧位是等宽量化的，一句话里词内间隙常和词间空白同量级（"It's justdifferent"、"T he spirit"
+ * 都是这么来的）；而谱面上词间那道白是实打实比字母间的白宽一截。
+ *
+ * 定界：把本行所有空白段按宽度排序，在**跳变最大处**切开，界取跳变两侧的中点（再要求
+ * ≥0.12×行高，免得整行只有一个词时把字母间隙切出空格来）。落在界以上的空白，按它的位置
+ * 找到左右两个字符，**两侧都是字母**才插空格——撇号/引号这类窄字形两边的白也很宽，
+ * 但那儿不该有空格（"It's" 不能拆成 "It 's"）。
+ */
+function recoverSpacesByInk(bin: Binary, text: string, bbox: Rect, chars?: { text: string; cx: number }[]): string {
+  if (!chars || chars.length !== [...text].length || !/[A-Za-z]{2}/.test(text)) return text;
+  const y1 = Math.min(bin.h, bbox.y + bbox.h), x1 = Math.min(bin.w, bbox.x + bbox.w);
+  const blanks: Array<[number, number]> = []; // [起列, 宽]
+  let s = -1;
+  for (let x = Math.max(0, bbox.x); x < x1; x++) {
+    let ink = false;
+    for (let y = Math.max(0, bbox.y); y < y1; y++) if (bin.data[y * bin.w + x]) { ink = true; break; }
+    if (!ink) { if (s < 0) s = x; }
+    else if (s >= 0) { blanks.push([s, x - s]); s = -1; }
+  }
+  if (blanks.length < 3) return text;
+  const widths = [...new Set(blanks.map((b) => b[1]))].sort((a, b) => a - b);
+  let cut = 0, jump = 0;
+  for (let i = 0; i < widths.length - 1; i++) {
+    if (widths[i + 1] - widths[i] >= jump) { jump = widths[i + 1] - widths[i]; cut = (widths[i] + widths[i + 1]) / 2; }
+  }
+  const thr = Math.max(cut, bbox.h * 0.12);
+  const cs = [...text];
+  const isLetter = (c: string) => /[A-Za-z]/.test(c);
+  const spaceAfter = new Set<number>();
+  for (const [bx, bw] of blanks) {
+    if (bw < thr) continue;
+    const mid = bx + bw / 2;
+    let i = -1;
+    while (i + 1 < chars.length && chars[i + 1].cx < mid) i++;
+    if (i < 0 || i + 1 >= cs.length) continue;
+    if (isLetter(cs[i]) && isLetter(cs[i + 1])) spaceAfter.add(i);
+  }
+  return cs.map((c, i) => (spaceAfter.has(i) ? c + " " : c)).join("");
 }
 
 /** 把展示文本(可能已规整：去编号前缀、冒号全角化、截尾噪声)逐字对位回 OCR 原始字位，
@@ -427,6 +473,7 @@ export async function recognizeHeader(
     };
     const maxCharH = Math.max(0, ...ls.map((l) => l.charH));
     let titleLine: HLine | null = null;
+    const rest: HLine[] = [];
     for (const ln of ls) {
       const txt = ln.text.trim();
       const sm = ln.charH < maxCharH ? creditSuffixRe.exec(txt) : null;
@@ -448,6 +495,7 @@ export async function recognizeHeader(
         out.regions.push({ text: credit, bbox: ln.bbox, chars: charsForText(credit, ln.chars) });
         continue;
       }
+      rest.push(ln);                                // 非著作者行：标题、副标题、调号、页码…
       if (hanziCount(txt) < 2) continue;            // 跳过页码/调号/速度等（数字/符号为主）
       // 标题 = 最大字号的中文行；**字号差不多（15% 以内）时取更宽的那一行**。det 给的框高
       // 只是个近似，同一本书里印在右上角的出版方（迦南诗选每页都印着「迦南诗歌」）会因框
@@ -467,6 +515,30 @@ export async function recognizeHeader(
       out.regions.push({ text: out.title, bbox: titleLine.bbox, chars: charsForText(out.title, titleLine.chars) });
     }
     let meta = parseMeta(ls);
+    // 副标题：标题**正下方**、字号不大于标题、与标题居中对齐的那一行。
+    //  - 居中对齐这一条是关键：页眉里印在两侧的东西（左边的 `1=C 4/4`、右上角每页都有的
+    //    出版方「迦南诗歌」）与标题中心差得远，靠它一并挡掉。
+    //  - 调号/速度/拍号即使居中也不能当副标题，故连同 parseMeta 认下的那两行一起排除。
+    // 英文副标题按字距补回词间空格（det/CTC 不吐空格，"Thespiritof…" → "The spirit of…"）。
+    if (titleLine) {
+      const tl = titleLine;
+      const metaRe = /[1１]\s*[=＝]|[♩♪]|\d+\s*[/／]\s*\d+/;
+      // 和弦记号（"Am"、"G/D"、"Dm7"）：第一谱行的和弦印在页眉 ROI 里，一个个都是居中的短串。
+      const chordRe = /^[A-G][#b♯♭]?(?:m|maj|min|dim|aug|sus|add)?\d*(?:\s*\/\s*[A-G][#b♯♭]?)?$/;
+      // 副标题**贴着标题**印（多在其下，也有印在标题上方的）；和弦则贴着谱行。离谁近就归谁。
+      const gapTitle = (l: HLine) => (l.cy < tl.cy ? tl.bbox.y - l.cy : l.cy - (tl.bbox.y + tl.bbox.h));
+      const cand = rest
+        .filter((l) => l !== tl && l !== meta.fifthsLine && l !== meta.tempoLine)
+        .filter((l) => l.charH <= tl.charH * 1.05)
+        .filter((l) => Math.abs(l.cx - tl.cx) <= tl.bbox.w * 0.35)
+        .filter((l) => gapTitle(l) < firstStaffTopY - l.cy)
+        .filter((l) => { const t = l.text.trim(); return t.length >= 2 && !metaRe.test(t) && !chordRe.test(t) && /[^\d\s.,:：、·]/.test(t); })
+        .sort((a, b) => gapTitle(a) - gapTitle(b))[0];
+      if (cand) {
+        out.subtitle = recoverSpacesByInk(bin, cand.text.trim(), cand.bbox, cand.chars);
+        out.regions.push({ text: out.subtitle, bbox: cand.bbox, chars: charsForText(out.subtitle, cand.chars) });
+      }
+    }
     // 调号里的升降号读成了残字：`1=♭B` 的 ♭ 印成上标、只有一个数字的三分之一大，PP-OCR 常读成
     // 引号一类的东西（227《施比受更为有福》读成 `1=″B`），`parseMeta` 的 `[b#♭♯]` 一条都对不上，
     // 整个调号就落回默认的 C。此时**回头看形状**：那个字的位置上有一块墨，交给 accidentalOf
