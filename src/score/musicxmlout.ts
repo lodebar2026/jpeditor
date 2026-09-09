@@ -175,8 +175,9 @@ export function jpSpelling(nt: Note, fifths: number): { step: string; alter: num
 // ---------------- slur / tie 配对 ----------------
 /** 逐条弧线的配对结果：给 `<slur>` 分配 number，并剔除配不上对的孤立记号。 */
 export interface SlurTieMap {
-  /** Chord → 该处 slur 的 number（start/stop 各一个槽）。不在表里 = 该记号被剔除。 */
-  slur: Map<Chord, { start?: number; stop?: number }>;
+  /** Chord → 该处 slur 的 number（收弧可能不止一条：嵌套的两条弧在同一个音符上收尾）。
+   *  不在表里 = 该记号被剔除。 */
+  slur: Map<Chord, { start?: number; stops: number[] }>;
   /** 配对成功的 tie 记号（Note → 保留哪一端）。 */
   tie: Map<Note, { start?: boolean; stop?: boolean }>;
   /** 被剔除的孤立记号数。 */
@@ -196,14 +197,14 @@ export interface SlurTieMap {
  * 配对用栈（后开先闭，符合嵌套语义；简谱里深度基本是 1，退化成顺序配对）。
  */
 export function pairSlurTies(score: Score): SlurTieMap {
-  const slur = new Map<Chord, { start?: number; stop?: number }>();
+  const slur = new Map<Chord, { start?: number; stops: number[] }>();
   const tie = new Map<Note, { start?: boolean; stop?: boolean }>();
   let dropped = 0;
   const part = score.parts[0];
   if (!part) return { slur, tie, dropped };
 
   const slot = (ch: Chord) => {
-    const s = slur.get(ch) ?? {};
+    const s = slur.get(ch) ?? { stops: [] };
     slur.set(ch, s);
     return s;
   };
@@ -219,10 +220,10 @@ export function pairSlurTies(score: Score): SlurTieMap {
   for (const m of part.measures) {
     for (const e of m.entries) {
       if (!(e instanceof Chord)) continue;
-      // 同一个和弦上 stop 在 start 之前（一条弧收、下一条起）。
-      if (e.slurEnd) {
+      // 同一个和弦上 stop 在 start 之前（一条弧收、下一条起）。嵌套双弧在末音上收两条。
+      for (let k = 0; k < e.slurEnds; k++) {
         const top = open.pop();
-        if (top) slot(e).stop = top[0];
+        if (top) slot(e).stops.push(top[0]);
         else dropped++;
       }
       if (e.slurStart) {
@@ -358,10 +359,10 @@ function notationsXml(ch: Chord, nt: Note, first: boolean, pairs?: SlurTieMap): 
   if (first) {
     // 配对表在时只输出配上对的，并带 number；没有配对表才退回按字段原样输出。
     if (pairs) {
-      if (sl?.stop !== undefined) ns.push(`<slur type="stop" number="${sl.stop}"/>`);
+      for (const k of sl?.stops ?? []) ns.push(`<slur type="stop" number="${k}"/>`);
       if (sl?.start !== undefined) ns.push(`<slur type="start" number="${sl.start}"/>`);
     } else {
-      if (ch.slurEnd) ns.push(`<slur type="stop"/>`);
+      for (let k = 0; k < ch.slurEnds; k++) ns.push(`<slur type="stop"/>`);
       if (ch.slurStart) ns.push(`<slur type="start"/>`);
     }
   }

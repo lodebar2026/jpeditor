@@ -53,9 +53,11 @@ export interface JpNum {
   // 谱面上它们印在增时线上方，模型里没有独立元素可挂，只能连同 offset 挂回起头的那个音符。
   // → MusicXML 各出一个带 <offset> 的 <harmony>；文本谱挂到对应的那条增时线上（`- "hx:…"`）。
   extraChords?: { tok: string; offset: number }[];
-  // 圆滑线/连音线（音符上方弧形 ⌒）。一个音符可同时是上一条的结束与下一条的开始，故各用布尔。
-  slurStart?: boolean; // 圆滑线起点 → MusicXML <slur type="start">
-  slurStop?: boolean;  // 圆滑线终点 → <slur type="stop">
+  // 圆滑线/连音线（音符上方弧形 ⌒）。一个音符可同时是上一条的结束与下一条的开始，故起止分开记。
+  // slur 记的是**条数**而非布尔：两条弧嵌套时（外弧罩三音、内弧罩后两音）末音要同时收两条，
+  // 见 slur.ts::splitNestedArcs。tie 没有嵌套之说，仍是布尔。
+  slurStart?: number; // 本音符起了几条圆滑线 → MusicXML <slur type="start">
+  slurStop?: number;  // 本音符收了几条圆滑线 → <slur type="stop">
   tieStart?: boolean;  // 连音线起点（弧下同音高）→ <tied type="start">
   tieStop?: boolean;   // 连音线终点 → <tied type="stop">
   // 反复与一/二房结构锚定到边界相邻音符，MusicXML 输出时再提升为小节左右 barline。
@@ -119,6 +121,9 @@ export interface RecognizedScore {
   meterNote?: string; // 拍号后跟着的说明文字（"混合拍"）
   rows: StaffRow[];
   title?: string;
+  // 副标题（多是曲名英译）：→ MusicXML `<credit-type>subtitle</credit-type>`、文本谱的第二条
+  // 标题行。`.jpwabc` 的 `.Title` 段没有这个字段（既定，不扩语法），走那一路会丢。
+  subtitle?: string;
   credits?: string[]; // 著作者整行文本（作词/作曲…），→ MusicXML <credit>
   tempo?: number; // 速度 ♩=NN（仅进 MusicXML；当前下游导入器不读 tempo）
   headerRegions?: TextRegion[]; // 页眉文本的源图定位（识别模式按原位叠加）

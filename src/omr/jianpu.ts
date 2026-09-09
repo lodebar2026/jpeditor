@@ -1059,7 +1059,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
   // comps 之外再补上与数字粘连切出的弧帽（arcComps）。与小节线粘连的弧已在 untangleBridged
   // 去连通阶段还原为 comps 里的独立连通块，这里天然一并检测。
-  detectSlurs([...comps, ...arcComps], useRows, numH);
+  detectSlurs(bin, [...comps, ...arcComps], useRows, numH);
 
   // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
   // **必须排在歌词/和弦识别之前**：第一谱行的「上方带」（和弦所在）与页眉 ROI 在几何上是重叠的，
@@ -1067,7 +1067,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 恰好是合法的「根音 + 数字」和弦，「为基督赢得城市」就凭空多出一个 C4）。
   // 拿 header **已采纳**的字段区域当禁区交给 recognizeLyrics 剔，比在文法上猜可靠得多——
   // det 框里那个真和弦 `Am` 不会被 header 采纳，故不在禁区里。
-  let title: string | undefined, credits: string[] | undefined;
+  let title: string | undefined, subtitle: string | undefined, credits: string[] | undefined;
   let fifths = 0, tempo: number | undefined;
   let beats = 4, beatType = 4;
   let meters: RecognizedScore["meters"], meterNote: string | undefined;
@@ -1075,7 +1075,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   if (ocr.recognizeTexts && useRows.length) {
     const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr,
       headerMeters.sort((a, b) => a.bbox.x - b.bbox.x));
-    title = h.title; credits = h.credits.length ? h.credits : undefined;
+    title = h.title; subtitle = h.subtitle; credits = h.credits.length ? h.credits : undefined;
     if (h.fifths !== undefined) fifths = h.fifths;
     if (h.beats !== undefined && h.beatType !== undefined) { beats = h.beats; beatType = h.beatType; }
     meters = h.meters; meterNote = h.meterNote;
@@ -1166,5 +1166,5 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   const dotDiam = dotSizes.length ? median(dotSizes) : undefined;
 
-  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, title, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
+  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, title, subtitle, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
 }

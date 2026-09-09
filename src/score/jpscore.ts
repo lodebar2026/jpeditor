@@ -257,6 +257,9 @@ class JpScore {
     const authors: string[] = [];
     for (const it of scr.credit) {
       if (it.type === "title") continue;
+      // 副标题不是著作者。`.jpwabc` 的 `.Title` 段没有副标题字段（既定，不扩语法），只能丢；
+      // 混进 WordsByAndMusicBy 会在版面上把曲名英译印成作者名。
+      if (it.type === "subtitle") continue;
       if (it.page !== 0) continue;
       authors.push(escape(it.text.trim()));
     }
@@ -467,7 +470,7 @@ class JpScore {
           this.noteRecs.push({ line: this.lines.length, colStart, colEnd: l.length });
           if (nt.tieEnd) l += ")";
           if (nt.tupletEnd) l += ")";
-          if (ch.slurEnd) l += ")";
+          l += ")".repeat(ch.slurEnds);
           l += " ";
           // 乐句尾（弱起谱漏进本小节的休止/长音）处行内换行，不加小节线。
           if (breaks?.midBreaks.has(ch)) {
