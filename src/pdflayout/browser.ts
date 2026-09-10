@@ -216,6 +216,8 @@ export function applyBookStyle(opt: LayoutOptions, s: BookStyle): void {
   opt.applyFontSize(lyric);
   opt.lrcFont = new Font(fontFamilyOf(s, "lyric"), lyric);
   opt.numberFont = new Font(fontFamilyOf(s, "note"), note);
+  // 成书是逐像素复刻印刷底本，字重由 BookStyle 的 roles.note 说了算，不跟编辑器那档加粗
+  opt.noteBold = false;
   opt.smuflFont = new Font(fontFamilyOf(s, "smufl"), note);
   opt.titleSize = fontSizeFor(s, "title");
   opt.creditSize = fontSizeFor(s, "credit");
