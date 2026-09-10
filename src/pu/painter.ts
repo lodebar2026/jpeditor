@@ -18,6 +18,7 @@ import { jpBarlineItems, jpDot, jpTimeSigItems } from "../layout/jpglyph";
 import type { BarlineSpec } from "../layout/layout";
 import { BarStyle } from "../score/score";
 import { renderPageSvg } from "../layout/painter";
+import { JianpuPainter } from "../jianpu/painter";
 import type { LyricSyllable, Metadata, NoteElement, PuDoc } from "./ast";
 import { primaryMetadata } from "./ast";
 import type { Dialect } from "./dialect";
@@ -279,7 +280,7 @@ const PU_BARLINE_SPEC: Record<string, BarlineSpec | undefined> = {
   "repeat-both": { repeatBackward: true, repeatForward: true },
 };
 
-export class PuPainter {
+export class PuPainter extends JianpuPainter {
   metrics: PuMetrics;
   /** 与 JinpuPainter 同名，便于 buildPptx 等直接取用 */
   layout: { pages: Group[] } = { pages: [] };
@@ -306,6 +307,8 @@ export class PuPainter {
   private ink: number | null = null;
 
   constructor(profile: PageProfileName = "print") {
+    // 引擎内部的尺寸档名 print/slide 与排版输出一一对应：slide ⇔ 展开
+    super(profile === "slide" ? "expanded" : "original");
     this.profile = profile;
     this.metrics = metricsFor(profile);
   }
@@ -344,6 +347,7 @@ export class PuPainter {
 
   setProfile(profile: PageProfileName): void {
     this.profile = profile;
+    this.mode = profile === "slide" ? "expanded" : "original";
     this.metrics = metricsFor(profile, this.dialect);
     if (this.doc) this.load(this.doc);
   }
@@ -371,7 +375,7 @@ export class PuPainter {
     this._pageShiftX = 0;
     // 展开档的头部**另起一页**（同 .jpwabc 的展开档，见 layout/painter.ts::titlePage），
     // 所以谱面这一路不必在首页顶上给它留位——每一页都从页顶排起。
-    const slide = this.profile === "slide";
+    const slide = this.expanded;
     const headerBottoms = doc.songs.map((song) => (slide ? m.marginTop : this.headerBottom(song.metadata)));
     this.placed = layoutDocument(doc.songs, m, headerBottoms);
     // 连续长图：页面尺寸随内容走，不受纸张尺寸约束（短曲子不该拖着一大片空白）
@@ -412,22 +416,23 @@ export class PuPainter {
    */
   private addSlideFurniture(): void {
     const m = this.metrics;
-    const font = new Font(m.fontFamily, m.authorSize);
-    const title = primaryMetadata(this.doc!).titles[0] ?? "";
-    const n = this.layout.pages.length;
-    this.layout.pages.forEach((pg, i) => {
-      // 页脚是绝对坐标，而 `Group.update` 会把子项归一化、把偏移收进 pg.y——减掉它才落对位置
-      const y = this.pageHeight - m.marginBottom * 0.5 - pg.y;
-      if (title) {
-        const w = font.measureText(title);
-        pg.add(text(title, (this.pageWidth - w) / 2 - this._pageShiftX, y, font, INK));
-      }
-      pg.add(text(`${i + 1}/${n}`, this.pageWidth * 0.8 - this._pageShiftX, y, font, INK));
+    this.addFooters(this.layout.pages, {
+      title: primaryMetadata(this.doc!).titles[0] ?? "",
+      font: new Font(m.fontFamily, m.authorSize),
+      color: INK,
+      pageWidth: this.pageWidth,
+      pageHeight: this.pageHeight,
+      marginBottom: m.marginBottom,
+      marginRight: m.marginRight,
+      originX: this._pageShiftX,
+      titleLeft: 0,
+      titleWidth: this.pageWidth,
+      pageNoAnchor: this._pageShiftX + this.pageWidth * 0.8,
+      compress: true,
     });
     const titlePage = new Group();
     this.paintHeader(titlePage, 0, m.marginLeft);
-    titlePage.update();
-    this.layout.pages.unshift(titlePage);
+    this.prependTitlePage(this.layout.pages, titlePage);
   }
 
   /**
@@ -519,7 +524,7 @@ export class PuPainter {
     const m = this.metrics;
     const root = new Group();
     // 展开档的头部另起一页（addSlideFurniture），谱面页不再画它
-    if (page.firstOfSong && this.profile !== "slide") {
+    if (page.firstOfSong && !this.expanded) {
       this.paintHeader(root, page.song, this.systemLeft(page));
     }
     for (const group of page.groups) {

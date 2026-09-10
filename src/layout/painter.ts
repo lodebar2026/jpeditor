@@ -13,12 +13,17 @@ import {
 } from "./layout";
 import { Chord, MusicCommon, Score } from "../score/score";
 import { jpTimeSigItems } from "./jpglyph";
-import type { PagePainter } from "./pagepainter";
+import { applyPptxStyle } from "./pptxstyle";
+import { JianpuPainter } from "../jianpu/painter";
+import type { JianpuLayoutMode } from "../jianpu/profile";
 import { walkPageItem, type ItemVisitor } from "./walk";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-export class JinpuPainter implements PagePainter {
+/** 「原样」档多段歌词叠排时的段间行距 ÷ 歌词字号。原书量到的是 1.3 上下。 */
+export const LYRIC_STACK_RATIO = 1.35;
+
+export class JinpuPainter extends JianpuPainter {
   layout: Layout;
   score = new Score();
   pageWidth = 0;
@@ -32,7 +37,29 @@ export class JinpuPainter implements PagePainter {
   private pageHeights: number[] = [];
 
   constructor(fontSize: number) {
+    super("expanded");
     this.layout = new Layout(fontSize);
+  }
+
+  /**
+   * 按排版输出灌选项。**契约**：构造之后、颜色/标题字号等选项之后、`resize` 之前调——
+   * 展开档的笔画常量（`applyPptxStyle`）要覆盖在前面那几个之上（同 applyBookStyle），
+   * 而且是**单向覆写**：从展开切回原样只能重新构造一个 painter（App._rebuildPainter 的 force）。
+   *
+   * - 展开：反复与多段逐遍展开（`buildLine` 走 `playData`），另起标题页，每页有页脚；
+   * - 原样：按原谱排一遍（`lyricStack > 0`，多段叠在同一条谱行下），标题排在第一页顶上
+   *   （`bookHead`）——印刷歌本的排法；`longImage` = 一张连续长纸（观感同文本谱的「原版」）。
+   */
+  applyMode(mode: JianpuLayoutMode, opts: { longImage?: boolean } = {}): void {
+    this.mode = mode;
+    const opt = this.layout.options;
+    if (mode === "expanded") {
+      applyPptxStyle(opt);
+      return;
+    }
+    opt.lyricStack = opt.lrcFont.size * LYRIC_STACK_RATIO;
+    opt.continuousPage = opts.longImage ?? true;
+    opt.bookHead = true;
   }
 
   resize(w: number, h: number, dur: string | null): void {
@@ -46,9 +73,26 @@ export class JinpuPainter implements PagePainter {
     if (head) head.update();
     opt.firstPageHeadroom = head && !opt.continuousPage ? head.height + opt.marginTop : 0;
     this.layout.fromScore(this.score, dur, w, h);
+    // 页脚（曲名 + 「i/n」）只归展开档：原样档是印刷歌本的排法，没有页眉页脚；
+    // 连续长纸只有一页，成书（`pageFurniture: "none"`）的页眉页脚由整本那一层统一加。
+    if (this.expanded && !opt.continuousPage && opt.pageFurniture !== "none") {
+      this.addFooters(this.layout.pages, {
+        title: this.score.title,
+        font: opt.lrcFont.scaled(0.8),
+        color: opt.color,
+        pageWidth: w,
+        pageHeight: h,
+        marginBottom: opt.marginBottom,
+        marginRight: opt.marginRight,
+        originX: opt.marginLeft, // fromScore 已把页组右移一个左边距
+        titleLeft: opt.marginLeft,
+        titleWidth: w - opt.marginLeft - opt.marginRight,
+        pageNoAnchor: opt.marginLeft + 0.8 * w,
+      });
+    }
     if (opt.continuousPage) this.stackContinuous(head!);
     else if (head) this.attachBookHead(head);
-    else this.layout.pages.unshift(this.titlePage(w, h));
+    else this.prependTitlePage(this.layout.pages, this.titlePage(w, h));
     for (const p of this.layout.pages) p.update();
     this.buildChordIndex();
   }

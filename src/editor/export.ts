@@ -3,7 +3,6 @@ import type { App } from "./app";
 import { scoreToMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
 import { JinpuPainter } from "../layout/painter";
-import { applyPptxStyle } from "../layout/pptxstyle";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { scoreToJpwabc } from "../score/jpscore";
 import { puToMusicXml } from "../pu";
@@ -146,7 +145,7 @@ export function pptxPainter(app: App): JinpuPainter {
   opt.color = app.colorsOf("expanded").fg; // 同字号：取展开档那一套，不跟着屏幕当前档走
   opt.titleSize = sizes.titleSize;
   opt.creditSize = sizes.creditSize;
-  applyPptxStyle(opt); // 契约：构造之后、resize 之前
+  p.applyMode("expanded"); // 契约：颜色/字号之后、resize 之前
   p.score = app.painter.score;
   p.resize(app.pageW, app.pageH, app.breakDesc);
   return p;
