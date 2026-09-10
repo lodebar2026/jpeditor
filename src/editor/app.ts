@@ -112,6 +112,8 @@ export class App implements OmrHost, PlaybackHost {
   /** 上次转出的 Score 及「Chord → AST 音符」的对照（试听逐字高亮靠它搭桥）。 */
   private _puScoreCache: {
     text: string;
+    /** 转出这份 Score 的 AST：切档后原样/展开是两份对象，只比文本会拿到另一档的旧 Score */
+    doc: PuDoc;
     score: Score | null;
     noteMap: Map<Chord, PuNoteElement>;
   } | null = null;
@@ -608,6 +610,10 @@ export class App implements OmrHost, PlaybackHost {
   puDoc(): PuDoc | null {
     if (this.docFormat !== "pu") return null;
     const text = this.getText();
+    // 展开档：导出与试听都跟随当前档，取排版器实际排出来的那份（展开后的 AST）
+    if (this._puDoc?.text === text && this.layoutMode === "expanded" && this._puPainter?.renderedDoc) {
+      return this._puPainter.renderedDoc;
+    }
     if (this._puDoc?.text === text) return this._puDoc.doc;
     try {
       const doc = parsePu(text);
@@ -623,19 +629,21 @@ export class App implements OmrHost, PlaybackHost {
   puScore(): Score | null {
     if (this.docFormat !== "pu") return null;
     const text = this.getText();
-    if (this._puScoreCache && this._puScoreCache.text === text) return this._puScoreCache.score;
     let score: Score | null = null;
     const noteMap = new Map<Chord, PuNoteElement>();
+    let doc: PuDoc;
     try {
       // **必须复用排版时那份 AST**：PuPainter 的高亮索引是按节点对象身份建的，
-      // 重新 parse 一遍会得到另一批对象，播放高亮就永远找不到。
-      const doc = this._puDoc?.text === text ? this._puDoc.doc : parsePu(text);
+      // 重新 parse 一遍会得到另一批对象，播放高亮就永远找不到。展开档取展开后的那份（见 puDoc）。
+      doc = this.puDoc() ?? parsePu(text);
+      const c = this._puScoreCache;
+      if (c && c.text === text && c.doc === doc) return c.score;
       score = puToScore(doc, { noteMap });
     } catch (e) {
       console.error("文本谱转 Score 失败", e);
       return null;
     }
-    this._puScoreCache = { text, score, noteMap };
+    this._puScoreCache = { text, doc, score, noteMap };
     return score;
   }
 
