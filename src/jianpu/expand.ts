@@ -67,6 +67,22 @@ export function walkPlay(items: readonly PlayItem[], sink: PlaySink): void {
   });
 }
 
+/** 展开档应有几遍——按 walkPlay 的换页切出来、确有小节的段数。page-check 的 P5 拿它对页面结构。 */
+export function countPasses(items: readonly PlayItem[]): number {
+  let n = 0;
+  let open = false;
+  walkPlay(items, {
+    measure: () => {
+      if (!open) n++;
+      open = true;
+    },
+    passEnd: () => {
+      open = false;
+    },
+  });
+  return n;
+}
+
 /**
  * 这一遍唱哪几段词：段号区间含 `pass` 的那几行。一行都不含时，只有**整行只写了一段**
  *（副歌只写一段、各遍共用）才照用；写了好几段却没有这一段的，这一遍就不挂词。
