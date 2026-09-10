@@ -53,6 +53,9 @@ docs/实现/文本谱-规范外写法.md
 # 国标（简谱/五线谱通用规范）原件与转出的 md，本地参考，不入库
 docs/规范/
 
+# 遗留问题清单（本地待办，不入库）
+docs/遗留问题.md
+
 # Swift 工具的编译产物（源码在 tools/*.swift，编译命令见 CLAUDE.md）
 tools/vision-ocr
 dist-pkg
