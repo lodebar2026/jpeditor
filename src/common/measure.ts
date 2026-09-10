@@ -87,7 +87,7 @@ export function measureGlyphText(
   t.style.fontFeatureSettings = feat;
   t.textContent = text;
 
-  const width = t.getComputedTextLength();
+  let width = t.getComputedTextLength();
 
   // Use Canvas actualBoundingBox* for tight glyph bounds.
   // getBBox() on SVG <text> returns the full em/line box for CJK fonts (e.g.
@@ -109,6 +109,11 @@ export function measureGlyphText(
   if (glyphCtx) {
     glyphCtx.font = cssFontShorthand(fontFamily, fontSizePx, fontWeight);
     const cm = glyphCtx.measureText(text);
+    // **整串都是空白时 `getComputedTextLength()` 恒为 0**（浏览器把纯空白的文本节点当空的，
+    // 加 `xml:space="preserve"` 也一样）。于是「空格」这个字的 advance 被量成 0，逐字量
+    // advance 的那条路（`compressRun`，字体没有 chws 之类特性时走它）就把
+    // 「John Laudon 词曲」排成「JohnLaudon词曲」。canvas 的 measureText 对空白是准的，拿它兜底。
+    if (/^\s+$/.test(text)) width = cm.width;
     bboxTop = -(cm.actualBoundingBoxAscent ?? fontSizePx * 0.8);
     bboxBottom = cm.actualBoundingBoxDescent ?? fontSizePx * 0.2;
     // actualBoundingBoxLeft is the distance *left* of the origin, so it is
