@@ -85,6 +85,10 @@ export interface JpNum {
   // 延长记号（fermata 𝄐，谱面上是音符头顶一段小弧、弧下扣一个点）。
   // → MusicXML `<notations><fermata/>`；文本谱写作音符后的 `&yc`；.jpwabc 是 `{YanYin}`。
   fermata?: boolean;
+  // 顿音（谱面上是音符正上方一个**实心倒三角** ▼，简谱印刷体的顿音记号）。
+  // → MusicXML `<notations><articulations><staccato/>`（与 pu/toxml.ts 的 `dy` 同口径）；
+  //   文本谱 `&dy`；.jpwabc/Score 装不下（layout 那边只画重音）。
+  articulation?: "staccato";
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */
@@ -99,6 +103,11 @@ export interface StaffRow {
   // 行末那道小节线是不是**终止线**（细+粗两根并排 ‖）。→ MusicXML `<bar-style>light-heavy`、
   // 文本谱 `|||`（诗歌本）/`||`（番茄）。反复线由 JpNum.repeatBackward 另管，两者不叠。
   finalBarline?: "end";
+  // 本行歌词行首印着的**段号**（`1.`、`3.5.`），下标 = 段号所属的 verse（0 基）。
+  // 段号在装配时本就被丢弃、不占音符位，这里另存一份原样输出：文本谱写成歌词行前置说明
+  // `C1:<1.>…`（pu/parse.ts::stripLyricAnnotation，排在细竖线与首字之间）。
+  // 只在段号成套可信时才填（见 lyrics.ts 的 verseLabels）；MusicXML 那路装不下，不输出。
+  lyricLabels?: string[];
 }
 
 /** 一处带源图坐标的识别文本（页眉/歌词），供识别模式按原位、原字号叠加。 */

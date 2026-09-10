@@ -341,6 +341,8 @@ export function toPuText(
         if (n.fermata) tb.push("&yc");
         // 波音：文本谱写作音符后的 `&sby`（上波音，parse.ts 的 NOTE_COMMANDS）。
         if (n.ornament === "upper-mordent") tb.push("&sby");
+        // 顿音：文本谱写作音符后的 `&dy`（parse.ts 的 NOTE_COMMANDS）。
+        if (n.articulation === "staccato") tb.push("&dy");
         // 倚音：写成音符后面的引号备注 `"yy:…"`（parse.ts::interpretQuoted → graceBefore）。
         // 番茄那边紧贴音符的 `[3]` 也是倚音，但两家都认 `"yy:"`，故不分方言。
         if (n.grace?.length) tb.push(`"yy:${n.grace.map((g) => graceToken(g, dialect)).join(" ")}"`);
@@ -390,6 +392,11 @@ export function toPuText(
     for (let v = 0; v < verses; v++) {
       if (!row.nums.some((n) => n.lyrics?.[v])) continue;
       tb.push(numbered ? `C${v + 1}:` : "C:");
+      // 谱面印在歌词行首的段号（`1.`、`3.5.`）：文本谱写作歌词行前置说明——诗歌本用尖括号
+      // `<1.>`、番茄用双引号 `"1."`（两家的写法见 pu/parse.ts::stripLyricAnnotation）。
+      // 它不是唱词、不对位任何音符，故不进 lyricRanges。
+      const label = row.lyricLabels?.[v];
+      if (label) tb.push(d.id === "shige" ? `<${label}>` : `"${label}"`);
       let prevToken = "";
       row.nums.forEach((n, k) => {
         // 跟词的只有唱名音符（与解析端 takesLyric 同判据）；休止只在补了 `@` 时占位

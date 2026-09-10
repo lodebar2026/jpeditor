@@ -36,51 +36,23 @@ export interface HeaderInfo {
 
 interface HLine { text: string; charH: number; cx: number; cy: number; n: number; bbox: Rect; chars?: { text: string; cx: number; x1?: number }[]; }
 
-/** 英文著作者名的词间空格恢复：PP-OCR rec 不吐空格，故 "Isaac Watts" → "IsaacWatts"。
- *  用 det/CTC 给的逐字**左缘 cx + 右缘 x1**：相邻两字母的**边界间隙**(右字左缘 − 左字右缘) 明显大于
- *  字母间隙中位数处补一个空格。**关键**：用边界间隙而非中心距——中心距含字形宽度(W 宽、i 窄)会虚高、
- *  且被逗号等窄字撑大误判；边界间隙才是真实空白。只认字母-字母对(跳标点/数字，"1719" 不拆)。 */
-function recoverLatinSpaces(text: string, raw?: { text: string; cx: number; x1?: number }[]): string {
-  if (!raw || raw.length < 4 || !/[A-Za-z]{2}/.test(text)) return text;
-  const chars = [...text];
-  const cx: number[] = [], x1: number[] = []; // 每个 text 字符对位到的 raw 左缘/右缘（贪心顺序匹配）
-  let ri = 0;
-  for (const ch of chars) {
-    let j = ri; while (j < raw.length && raw[j].text !== ch) j++;
-    if (j < raw.length) { cx.push(raw[j].cx); x1.push(raw[j].x1 ?? raw[j].cx); ri = j + 1; } else { cx.push(NaN); x1.push(NaN); }
-  }
-  const isLetter = (c: string) => /[A-Za-z]/.test(c);
-  // 相邻字母的边界间隙：右字左缘 cx[i+1] − 左字右缘 x1[i]。
-  const gapAt = (i: number) => cx[i + 1] - x1[i];
-  const pair = (i: number) => isLetter(chars[i]) && isLetter(chars[i + 1]) && !isNaN(x1[i]) && !isNaN(cx[i + 1]);
-  const llGaps: number[] = [];
-  for (let i = 0; i < chars.length - 1; i++) if (pair(i)) llGaps.push(gapAt(i));
-  if (llGaps.length < 3) return text;
-  const med = median(llGaps);
-  let out = "";
-  for (let i = 0; i < chars.length; i++) {
-    out += chars[i];
-    // 词内字母边界间隙落在 {1,2}×基元(实测量化)、中位≈2×基元；词间空白≈4×基元=2×中位。取 1.5×中位为
-    // 界，稳落两簇之间(词内 ≤中位、词间 ≈2×中位)。含绝对下限防紧排文字里中位过小被放大误插。
-    if (i < chars.length - 1 && pair(i) && gapAt(i) > med * 1.5 && gapAt(i) > med + 6) out += " ";
-  }
-  return out;
-}
-
 /**
- * 整句英文（副标题）的词间空格：**按源图上真实的空白列**补，而不是靠 CTC 帧位算间距。
- * 帧位是等宽量化的，一句话里词内间隙常和词间空白同量级（"It's justdifferent"、"T he spirit"
- * 都是这么来的）；而谱面上词间那道白是实打实比字母间的白宽一截。
+ * 整句英文（副标题、英文著作者名）的词间空格：**按源图上真实的空白列**补，而不是靠 CTC 帧位
+ * 算间距。早先另有一条按帧位间隙（右字左缘 − 左字右缘）判空格的路子，被同一个毛病拖垮：帧位是
+ * 等宽量化的，`JohnLaudon` 的字母间隙就有 1 个基元与 2 个基元两档，而门是「>1.5 倍中位」——
+ * 中位恰是 1 个基元时，2 个基元的那些全过，读成 `Joh n La ud on`。两条路合并成这一条。
+ * 同一个毛病在整句英文上更明显（"It's justdifferent"、"T he spirit" 都是这么来的）；
+ * 而谱面上词间那道白是实打实比字母间的白宽一截。
  *
  * 定界：把本行所有空白段按宽度排序，在**跳变最大处**切开，界取跳变两侧的中点（再要求
  * ≥0.12×行高，免得整行只有一个词时把字母间隙切出空格来）。落在界以上的空白，按它的位置
  * 找到左右两个字符，**两侧都是字母**才插空格——撇号/引号这类窄字形两边的白也很宽，
  * 但那儿不该有空格（"It's" 不能拆成 "It 's"）。
  */
-function recoverSpacesByInk(bin: Binary, text: string, bbox: Rect, chars?: { text: string; cx: number }[]): string {
-  if (!chars || chars.length !== [...text].length || !/[A-Za-z]{2}/.test(text)) return text;
+/** 一行文本框里的空白列段：`[起列, 宽]`，按 x 序。两处判词间空当都用它。 */
+function inkBlanks(bin: Binary, bbox: Rect): Array<[number, number]> {
   const y1 = Math.min(bin.h, bbox.y + bbox.h), x1 = Math.min(bin.w, bbox.x + bbox.w);
-  const blanks: Array<[number, number]> = []; // [起列, 宽]
+  const blanks: Array<[number, number]> = [];
   let s = -1;
   for (let x = Math.max(0, bbox.x); x < x1; x++) {
     let ink = false;
@@ -88,23 +60,53 @@ function recoverSpacesByInk(bin: Binary, text: string, bbox: Rect, chars?: { tex
     if (!ink) { if (s < 0) s = x; }
     else if (s >= 0) { blanks.push([s, x - s]); s = -1; }
   }
+  return blanks;
+}
+
+/** 第 i 个字与第 i+1 个字之间，谱面上**真有一道空当**吗？（≥1.6 倍于本行空白宽度的中位数）
+ *  后缀式著作者的「名字 ↔ 职能词」之间：脚步印的是「盛晓玫 词曲」（有空当），
+ *  沧海一声笑印的是「黄 霑作词、作曲」（名字里有空当、名字与职能之间没有）。rec 从不吐空格，
+ *  照谱面原样输出就得回源图上量这一道。 */
+function gapWideAt(bin: Binary, bbox: Rect, chars: { text: string; cx: number }[] | undefined, i: number): boolean {
+  if (!chars || i < 0 || i + 1 >= chars.length) return false;
+  const blanks = inkBlanks(bin, bbox);
+  if (blanks.length < 3) return false;
+  const med = median(blanks.map((b) => b[1])) || 1;
+  const lo = chars[i].cx, hi = chars[i + 1].cx;
+  return blanks.some(([bx, bw]) => bx + bw / 2 > lo && bx + bw / 2 <= hi && bw >= med * 1.6);
+}
+
+function recoverSpacesByInk(bin: Binary, text: string, bbox: Rect, chars?: { text: string; cx: number }[]): string {
+  if (!chars || chars.length !== [...text].length || !/[A-Za-z]{2}/.test(text)) return text;
+  const blanks = inkBlanks(bin, bbox);
   if (blanks.length < 3) return text;
-  const widths = [...new Set(blanks.map((b) => b[1]))].sort((a, b) => a - b);
+  const cs = [...text];
+  const isLetter = (c: string) => /[A-Za-z]/.test(c);
+  // 每道空白的左侧字符下标（右侧即 +1）。
+  const leftOf = (bx: number, bw: number): number => {
+    const mid = bx + bw / 2;
+    let i = -1;
+    while (i + 1 < chars.length && chars[i + 1].cx < mid) i++;
+    return i;
+  };
+  // **切分门只在字母↔字母的空白上算**：括号、连字符、汉字冒号旁边的白又宽又不成比例
+  // （"Assisi (1182- 1226)" 里 `(` 两侧的白比词间空白宽一截），把它们算进来，最大跳变就落在
+  // 那处outlier上、门被抬到词间空白之上，整行一个空格都插不出来（15《赞美真神》的作词行）。
+  // 只在这一类空白里找跳变，两簇（词内 / 词间）才分得开。够不着 3 道就退回全体。
+  const ll = blanks.filter(([bx, bw]) => {
+    const i = leftOf(bx, bw);
+    return i >= 0 && i + 1 < cs.length && isLetter(cs[i]) && isLetter(cs[i + 1]);
+  });
+  const widths = [...new Set((ll.length >= 3 ? ll : blanks).map((b) => b[1]))].sort((a, b) => a - b);
   let cut = 0, jump = 0;
   for (let i = 0; i < widths.length - 1; i++) {
     if (widths[i + 1] - widths[i] >= jump) { jump = widths[i + 1] - widths[i]; cut = (widths[i] + widths[i + 1]) / 2; }
   }
   const thr = Math.max(cut, bbox.h * 0.12);
-  const cs = [...text];
-  const isLetter = (c: string) => /[A-Za-z]/.test(c);
   const spaceAfter = new Set<number>();
-  for (const [bx, bw] of blanks) {
+  for (const [bx, bw] of ll) {
     if (bw < thr) continue;
-    const mid = bx + bw / 2;
-    let i = -1;
-    while (i + 1 < chars.length && chars[i + 1].cx < mid) i++;
-    if (i < 0 || i + 1 >= cs.length) continue;
-    if (isLetter(cs[i]) && isLetter(cs[i + 1])) spaceAfter.add(i);
+    spaceAfter.add(leftOf(bx, bw));
   }
   return cs.map((c, i) => (spaceAfter.has(i) ? c + " " : c)).join("");
 }
@@ -454,23 +456,38 @@ export async function recognizeHeader(
     return fixed;
   }
 
+  /** 后缀式著作者的「名字 ↔ 职能词」之间照谱面补空当：`at` 是职能词在 `text` 里的起始下标，
+   *  `charAt` 是它在 OCR 原始字位里的下标（文本补过空格时两者不同，默认相同）。
+   *  **写成函数声明**：`classify` 在它下面、却先被调用，写成 const 会撞 TDZ。 */
+  function spaceIfGap(text: string, at: number, ln: HLine, charAt = at): string {
+    const chars = ln.chars && ln.chars.length === [...text].filter((c) => c !== " ").length ? ln.chars : undefined;
+    return gapWideAt(bin, ln.bbox, chars, charAt - 1)
+      ? `${text.slice(0, at).trimEnd()} ${text.slice(at)}` : text;
+  }
+
   function classify(ls: HLine[]) {
     // 著作者前缀：`作词：`/`词曲：`，也含顿号/斜杠分列的 `词、曲：`、`作词/作曲：`。
     const creditRe = /^\s*[作詞词曲編编譯译]{1,2}(?:\s*[、，,/／]\s*[作詞词曲編编譯译]{1,2})*\s*[:：]/;
     // 后缀式著作者：中文谱很常见把职能写在名字**后面**、且不带冒号——"盛晓玫 词曲"、
     // "卢永亨词曲"、"黄霑作词、作曲"。前缀式一条都认不出（实测 4 首词曲整档 0 分）。
-    // 判据是整行恰好等于「人名(2~4 字，可顿号并列) + 职能词组」，再归一成 .jpwabc 约定的
-    // `<职能>：<名字>`。要求**不是最大字号行**，免得短标题被当成著作者、连标题一起丢掉。
+    // 判据是整行恰好等于「人名(2~4 字，可顿号并列) + 职能词组」。**认出来后照谱面原样输出**
+    // （从前归一成 `<职能>：<名字>`）：谱面怎么印就怎么写，不调换次序、不补分隔符——
+    // "黄 霑作词、作曲" 那种名字与职能之间本就没有空当，补一个反倒不是原样。
+    // 要求**不是最大字号行**，免得短标题被当成著作者、连标题一起丢掉。
     // 名字组**非贪婪**、职能组锚定行尾：贪婪会把「卢永亨词曲」的「词」吃进名字、只剩「曲」→
     // 出成 `作曲：卢永亨词`。非贪婪 + `$` 让引擎先给名字最短长度，回溯到「卢永亨」+「词曲」。
     // 职能词之间的分隔符**可选**：既有「作词、作曲」也有连写的「词曲」，后者若强求分隔符，
     // 职能组只吃得下一个字，剩下那个会被名字回溯吞掉（→ `作曲：卢永亨词`）。
     const creditSuffixRe = /^\s*([一-鿿·]{2,4}?(?:\s*[、，,]\s*[一-鿿·]{2,4}?)*)\s*((?:[作編编]?[詞词曲])(?:\s*[、，,/／]?\s*(?:[作編编]?[詞词曲]))*)\s*$/;
-    const roleOf = (s: string): string => {
-      const ci = /[詞词]/.test(s), qu = /曲/.test(s);
-      if (/[編编]/.test(s) && !ci) return "编曲";
-      return ci && qu ? "词曲" : ci ? "作词" : "作曲";
-    };
+    // 后缀式著作者的名字也可能是**英文名**——"John Laudon 词曲"（1《以色列的圣者》）。上面那条
+    // 正则的名字组只收汉字，整行就落到"非著作者行"里、词曲整档为空。故另走一条：先按行尾的
+    // 职能词组切开，剩下的前半必须是**纯拉丁名**（字母 + 空格/点/连字符之类），再按字距补回
+    // 词间空格（rec 不吐空格，读出来是 `JohnLaudon词曲`）。名字里但凡有个汉字就不走这条，
+    // 仍归上面那条中文名规则，两条互不重叠。
+    const creditRoleTailRe = /((?:[作編编]?[詞词曲])(?:\s*[、，,/／]?\s*(?:[作編编]?[詞词曲]))*)\s*$/;
+    // 名字里还可能带生卒/出版年份与括号（"Felice de Giardini (1769) 曲"），故收数字与括号；
+    // 但**必须以字母打头**——纯数字/符号的短碎块（页码、调号）不会被当成人名。
+    const latinNameRe = /^[A-Za-z][A-Za-z0-9 .,'’&·()（）\-]*$/;
     const maxCharH = Math.max(0, ...ls.map((l) => l.charH));
     let titleLine: HLine | null = null;
     const rest: HLine[] = [];
@@ -478,10 +495,31 @@ export async function recognizeHeader(
       const txt = ln.text.trim();
       const sm = ln.charH < maxCharH ? creditSuffixRe.exec(txt) : null;
       if (sm && !creditRe.test(txt)) {
-        const credit = `${roleOf(sm[2])}：${sm[1].replace(/\s+/g, "")}`;
-        out.credits.push(credit);
-        out.regions.push({ text: credit, bbox: ln.bbox }); // 字序已重排，不带逐字位
+        // 名字与职能词之间谱面上有没有空当，回源图量（rec 从不吐空格）：脚步是「盛晓玫 词曲」，
+        // 沧海一声笑是「黄 霑作词、作曲」——一个有一个没有，只能按墨列判。
+        const at = txt.length - sm[2].length;                 // 职能词组的起始字符下标
+        const cr = spaceIfGap(txt, at, ln);
+        out.credits.push(cr);
+        out.regions.push({ text: cr, bbox: ln.bbox, chars: charsForText(cr, ln.chars) });
         continue;
+      }
+      // 英文名同样照原样输出（"John Laudon词曲"），只把 rec 吞掉的**词间空格**补回来。
+      // 空格按**源图真实空白列**补（`recoverSpacesByInk`），不走 CTC 帧位那条：这一行的
+      // 帧位间隙量化成 1/2/4 个基元，字母内就有 2 个基元的（`Joh|n`、`La|u|d|on`），
+      // 而 `recoverLatinSpaces` 的门是「>1.5 倍中位」——中位恰好是 1 个基元时那些全过，
+      // 读成 `Joh n La ud on`。真空白只有词间那一处，按墨列量一眼就分得开。
+      const lm = !sm && ln.charH < maxCharH && !creditRe.test(txt)
+        ? creditRoleTailRe.exec(recoverSpacesByInk(bin, txt, ln.bbox, ln.chars)) : null;
+      if (lm) {
+        const name = lm.input.slice(0, lm.index).trim();
+        if (latinNameRe.test(name) && /[A-Za-z]{2}/.test(name)) {
+          // 下标要换算回**没补空格前**的字符序，才对得上 chars（补出来的空格没有字形）。
+          const at = [...lm.input.slice(0, lm.index)].filter((c) => c !== " ").length;
+          const cr = spaceIfGap(lm.input, lm.index, ln, at);
+          out.credits.push(cr);
+          out.regions.push({ text: cr, bbox: ln.bbox, chars: charsForText(cr, ln.chars) });
+          continue;
+        }
       }
       if (creditRe.test(txt)) {
         // "作曲：王丽玲1=bB4" → "作曲：王丽玲"：取 冒号前缀 + 紧随的中文名（英文名则整行保留）。
@@ -489,7 +527,7 @@ export async function recognizeHeader(
         const m = txt.match(/^(.*?[:：])\s*([一-鿿·]+(?:\s*[、，,]\s*[一-鿿·]+)*)/);
         // 中文名取前缀+名；英文名整行保留、并按字距恢复词间空格（"IsaacWatts"→"Isaac Watts"）。
         // 著作者前缀的冒号统一成全角 `：`（.jpwabc 约定；中文名行 OCR 多已全角，英文名行常落半角）。
-        const credit = (m ? m[1] + m[2] : recoverLatinSpaces(txt, ln.chars))
+        const credit = (m ? m[1] + m[2] : recoverSpacesByInk(bin, txt, ln.bbox, ln.chars))
           .replace(/\s*[:：]\s*/, "：");
         out.credits.push(credit);
         out.regions.push({ text: credit, bbox: ln.bbox, chars: charsForText(credit, ln.chars) });

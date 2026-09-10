@@ -1009,6 +1009,46 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     }
   }
 
+  // 顿音（▼）：音符正上方一个**实心倒三角**（1640《主要在中国掌权》整首每音一个）。
+  // 尺寸落在 classify 的「小点」档里（实测 12×14，字号 32），故它本已躺在 c.dots 里，
+  // 随时可能被 buildJpNums 收成高八度点——认出来后要从 dots 里摘掉。
+  // 与真八度点靠**形状**分：三角是上宽下尖，逐行墨宽单调收到一个尖；圆点上下一样宽。
+  // 再加填充率（三角 ≈0.5、圆点 ≈0.8）兜一道，免得淡印的圆点因边缘缺墨被当成三角。
+  const staccatoOf = new Map<DigitCore, boolean>();
+  const staccatoComps = new Set<Component>();
+  for (const m of staff) {
+    const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
+    for (const k of comps) {
+      const b = k.bbox;
+      if (b.w < numH * 0.2 || b.w > numH * 0.6 || b.h < numH * 0.2 || b.h > numH * 0.6) continue;
+      const ratio = b.w / b.h;
+      if (ratio < 0.6 || ratio > 1.6) continue;
+      const fill = k.area / (b.w * b.h);
+      if (fill < 0.4 || fill > 0.75) continue;
+      // 正下方紧跟着一个正常字号的数字。三角与数字之间隔着大半个字号（实测 0.7），
+      // 比八度点/附点那种紧贴的窗口宽得多，故窗口放到 1 个字号。
+      const owner = m.rd.find((n) => Math.abs(rcx(n.bbox) - rcx(b)) <= numH * 0.35 &&
+        n.bbox.y - rbottom(b) >= -numH * 0.1 && n.bbox.y - rbottom(b) <= numH &&
+        n.bbox.h >= medH * 0.85);
+      if (!owner) continue;
+      // 逐行墨宽：上宽下尖且一路不回头（容 1px 二值化毛刺）。
+      const rowW: number[] = [];
+      for (let y = b.y; y < rbottom(b); y++) {
+        let lo = -1, hi = -1;
+        for (let x = b.x; x < rright(b); x++) if (bin.data[y * bin.w + x]) { if (lo < 0) lo = x; hi = x; }
+        rowW.push(lo < 0 ? 0 : hi - lo + 1);
+      }
+      if (rowW.length < 4) continue;
+      if (rowW[0] < b.w * 0.8) continue;                                   // 顶行不是最宽 → 不是倒三角
+      if (rowW[rowW.length - 1] > b.w * 0.4) continue;                     // 底行没收成尖
+      if (rowW.some((v, i) => i > 0 && v > rowW[i - 1] + 1)) continue;     // 中途变宽 → 不是三角
+      staccatoOf.set(owner, true);
+      staccatoComps.add(k);
+    }
+  }
+  // 三角不是八度点，别让 buildJpNums 收走。
+  if (staccatoComps.size) c.dots = c.dots.filter((o) => !staccatoComps.has(o));
+
   const allRows: StaffRow[] = staff.map((m) => {
     const nums = buildJpNums(bin, m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes);
     // buildJpNums 与 rd 一一对应，故按下标把摘出来的变音记号挂回它所修饰的那个音符。
@@ -1016,6 +1056,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       const a = accidentals.get(k); if (a && nums[j]) nums[j].accidental = a;
       if (fermataOf.get(k) && nums[j]) nums[j].fermata = true;
       const orn = ornamentOf.get(k); if (orn && nums[j]) nums[j].ornament = orn;
+      if (staccatoOf.get(k) && nums[j]) nums[j].articulation = "staccato";
       const g = graceOf.get(k); if (g && nums[j]) nums[j].grace = g;
     });
     return { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums,
