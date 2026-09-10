@@ -73,9 +73,6 @@ jpwabc: string, opts: { width?: number; height?: number; titlePage?: boolean } =
     p.layout.fromScore(score, breakDesc, width, height);
     const pg = p.layout.pages[0];
     if (!pg) return null;
-    // fromScore appends a running-title + page-number footer as the last two
-    // children of each page; drop them so examples show only the music.
-    if (pg.children.length > 2) pg.children.splice(pg.children.length - 2, 2);
     pg.update();
     return p.renderPage(0);
   } catch {
