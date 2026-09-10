@@ -154,6 +154,9 @@ export interface PuMetrics {
   layerY: number;
 
   fontFamily: string;
+  /** 音符数字用的字体族与字重。数字比歌词粗，两支要分开配；PPT 档不加粗 */
+  digitFamily: string;
+  digitBold: boolean;
 }
 
 const PRINT: PuMetrics = {
@@ -239,6 +242,8 @@ const PRINT: PuMetrics = {
   layerY: -40,
 
   fontFamily: "PingFang SC, Microsoft YaHei, sans-serif",
+  digitFamily: "PingFang SC, Microsoft YaHei, sans-serif",
+  digitBold: true,
 };
 
 /** 投影用：16:9、字号放大、行距拉开，页眉页脚从简。 */
@@ -252,6 +257,7 @@ const SLIDE: PuMetrics = {
   marginTop: 70,
   marginBottom: 70,
   continuous: false, // 投影按幻灯片分页
+  digitBold: false, // PPT 档的观感是既有的，不跟简谱档加粗
   continuousSideMargin: 130,
 
   // 投影距离远，整体放大约 1.55 倍
@@ -322,31 +328,51 @@ const SLIDE: PuMetrics = {
 };
 
 /**
- * 诗歌本的字号比例与番茄不同（实测两家渲染输出）：以数字墨迹高为 1，
- *   歌词墨迹  番茄 0.82 / 诗歌本 1.30   ← 差别最大，诗歌本的歌词几乎与数字等大
- *   和弦墨迹  番茄 0.78 / 诗歌本 0.90
+ * 诗歌本的尺寸按**诗歌本 App 自己导出的《圣哉三一歌》长图**逐项量得
+ * （四声部、四段歌词、四个 system；底本在本地 `testdata/pu/ref/圣哉三一歌.pdf`）。
+ * 量法：抽出内嵌位图 → 二值化 → 连通域；以数字「1」的墨迹高为 1 个 digitInkHeight
+ * （底本上 119px），曲行锚点取数字墨迹的竖直中心（= painter 画数字的锚点），
+ * 歌词基线取汉字墨迹反推（**字号不等于墨迹**，PingFang SC 的「圣/哉/清」墨迹分别是
+ * 字号的 0.829 / 0.905 / 0.917，三条路都指向字号 24.6）。
+ *
+ * 以数字墨迹高为 1，与番茄的对照：
+ *   歌词墨迹  番茄 0.82 / 诗歌本 1.15（底本实测；实际落值见 lyricSize 那行）
  *   小节线高  番茄 1.62 / 诗歌本 1.90
- *   词行间距  番茄 1.51 / 诗歌本 1.64
- *   声部间距  番茄 2.57 / 诗歌本 2.38
+ *   词行间距  番茄 1.51 / 诗歌本 1.68（同上）
+ *   声部间距  番茄 2.57 / 诗歌本 2.07
  * 「原版」既然是各复刻各的，尺寸就按方言分开，不取折中。
+ *
+ * 落值一律取整、取不了整就落到 .5——这些数是拿一首曲子量的，多余的小数位是假精度。
+ * **有意不跟底本**的几处（别照实测「改回去」，缘由见 docs/实现/文本谱.md）：
+ * 整体版面缩放、歌词字号与行距、增时线与附点的 y、八度点位置、附点的横向距离、
+ * 弧线的粗细与弧高。
  */
 function applyShige(m: PuMetrics): PuMetrics {
   const k = m.digitInkHeight / 17.9; // 相对 print profile 的整体缩放
   return {
     ...m,
-    // 下列数值由「小节线段的竖直中心」反推——比按墨迹带估行距可靠得多
     justify: true, // 诗歌本/印刷原版各 system 都对齐到版心右缘
-    lyricSize: 27 * k, // CJK 墨迹约 0.86 字号 → 1.30 × 数字墨迹
-    lyricLabelSize: 27 * k,
-    annotationSize: 19 * k,
+    // 底本的数字是**粗**的：中部笔画 / 墨迹高 = 0.227，苹方常规只有 0.126、黑体更细（0.111）。
+    // 各系统字体里最接近的是 Helvetica/Arial Bold（0.21）。
+    digitFamily: "Helvetica Neue, Helvetica, Arial, PingFang SC, sans-serif",
+    // 底本量得字号 24.5（汉字墨迹 ≈ 0.846 字号 → 1.15 × 数字墨迹）、行距 29.6，
+    // 这里**有意都往上放**：实际渲染下 24.5 的歌词偏小，字号回 27 之后行距也得跟着回 35，
+    // 否则四段歌词叠起来会挤。字号与行距是一对，改一个必须改另一个。
+    lyricSize: 27 * k,
+    lyricLabelSize: 27 * k, // 底本上段号比歌词小 2.5%，差得太少，不单列
+    annotationSize: 19 * k, // 底本的和弦全隐藏，量不到，沿用旧值
     barlineHeight: 34 * k,
-    gapMusicLyric: 46.5 * k, // 歌词字块比数字高，不多让就会顶到低八度点
-    gapLyricLyric: 35 * k, // 比实测的 29 再放开一点：四段歌词堆在一起太挤
-    gapLyricMusic: 32 * k, // 歌词块之后 → 下一声部
-    gapVoice: 42 * k, // 声部 → 声部
-    gapGroup: 108 * k, // system 之间留得开一点，四声部堆在一起时更需要
-    sustainWidth: 2.7 * k,
-    sustainHalfLength: 3.6 * k,
+    barlineDoubleGap: 3.5 * k,
+    underlineY: 11.5 * k, // 减时线更贴近数字
+    underlineWidth: 1.5 * k, // 也更细
+    sustainWidth: 3 * k, // 增时线反过来更粗更长
+    sustainHalfLength: 4 * k,
+    // 纵向：由「小节线段的竖直中心」反推——比按墨迹带估行距可靠得多
+    gapMusicLyric: 44 * k, // 歌词字块比数字高，不多让就会顶到低八度点
+    gapLyricLyric: 35 * k, // 与 lyricSize 是一对（底本 29.6，配 24.5 的字号）
+    gapLyricMusic: 37 * k, // 歌词块之后 → 下一声部
+    gapVoice: 37 * k, // 声部 → 声部
+    gapGroup: 65 * k, // system 之间
   };
 }
 
