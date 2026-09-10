@@ -23,6 +23,7 @@ import type {
 import { contentWidth, puGraceMetrics, puGraceNotes, puSlurRise, type PuMetrics } from "./metrics";
 import { graceAdvance } from "../common/gracenote";
 import { elementQuarters, takesLyric, tupletRatios } from "./ast";
+import { paginate, type SystemBlock } from "../jianpu/vertical";
 
 /** 一个占位的谱面符号（音符 / 增时线 / 小节线）。 */
 export interface PlacedItem {
@@ -737,7 +738,6 @@ export function layoutSong(
   // 可用宽度要扣掉左内边距和末个音符的字形半宽，这样两端对齐后
   // 最后一个音符的墨迹右缘正好落在版心右缘上
   const width = contentWidth(m) - m.bodyLeftPad - m.digitInkHeight * 0.6;
-  const pages: PlacedPage[] = [];
 
   const bottomLimit = m.pageHeight - m.marginBottom;
   // 拍号一路带过来：头部 `1=D4/4 3/4 5/4` 这类混合拍只有首个是起头拍号，其余由曲中
@@ -750,23 +750,14 @@ export function layoutSong(
   // 末组（整首的最后一个 system）单独判断：太短就不拉伸，留它短着
   const lastPage = song.pages[song.pages.length - 1];
   const lastGroup = lastPage?.groups[lastPage.groups.length - 1];
+  // 每组先按**自己的原点**排（光标从 0 起），占位 = 光标推进的那一段（头顶让位 + 声部 + 歌词
+  // + 组间距都在里面）；排完交给公共分页器定页与 y（`jianpu/vertical.ts::paginate`，`.jpwabc` 也走它）。
+  // 从前这里自己分页：整组挪下页时先把光标重置到页顶、再减位移，下一组被排到页顶之上
+  //（日光之下展开档第 2 页第二组 y = −515），挪过去的那组也丢了头顶的让位。
+  const blocks: Array<SystemBlock & { group: PlacedGroup }> = [];
   for (const [pageIdx, srcPage] of song.pages.entries()) {
-    let placedGroups: PlacedGroup[] = [];
-    // 首页要让过标题/词曲/调号那一整块——头部行数因谱而异，写死会压到正文
-    let firstOfSong = pageIdx === 0;
-    let y = firstOfSong
-      ? Math.max(m.marginTop + m.bodyTop, headerBottom)
-      : m.marginTop + m.bodyTop * 0.35;
-
-    // 源里 `[fenye]` 之外，一页塞不下时也要另起一页
-    const breakPage = (): void => {
-      pages.push({ groups: placedGroups, song: songIndex, firstOfSong });
-      placedGroups = [];
-      firstOfSong = false;
-      y = m.marginTop + m.bodyTop * 0.35;
-    };
-
-    for (const group of srcPage.groups) {
+    for (const [groupIdx, group] of srcPage.groups.entries()) {
+      let y = 0;
       // 记号往上画，先给这一组留够头顶空间
       const head = groupHeadroom(group, m);
       const baseHead = -m.annotationY;
@@ -884,19 +875,6 @@ export function layoutSong(
         y += consumed + after;
       });
 
-      // 这一组的实际高度已知了，超出版心就把它整组挪到下一页重排
-      // （连续长图模式不分页，页高随内容长）
-      if (!m.continuous && placedGroups.length > 0 && y > bottomLimit) {
-        const shift = voices[0]!.y - (m.marginTop + m.bodyTop * 0.35);
-        breakPage();
-        for (const v of voices) {
-          v.y -= shift;
-          for (let li = 0; li < v.lyricY.length; li++) v.lyricY[li]! -= shift;
-        }
-        textY -= shift;
-        y -= shift;
-      }
-
       const hasBrace = voices.length > 1;
       const placedGroup: PlacedGroup = {
         group,
@@ -910,13 +888,28 @@ export function layoutSong(
       // 不该被括进来（原版《同一首歌》第 3 个 system 就是这样：前 4 小节 `8` 占位）。
       const sbf = braceStartX(voices);
       if (sbf !== null) placedGroup.braceFromX = sbf;
-      placedGroups.push(placedGroup);
-    }
-    if (placedGroups.length > 0 || pages.length === 0) {
-      pages.push({ groups: placedGroups, song: songIndex, firstOfSong });
+      // 源里的 `[fenye]`：新的一页从这组起（长图里也分开，由 layoutDocument 接成一张时多留一段白）
+      blocks.push({ group: placedGroup, top: 0, bottom: y, breakBefore: groupIdx === 0 && pageIdx > 0 });
     }
   }
-  return pages;
+  // 首页要让过标题/词曲/调号那一整块——头部行数因谱而异，写死会压到正文
+  const firstTop = Math.max(m.marginTop + m.bodyTop, headerBottom);
+  const otherTop = m.marginTop + m.bodyTop * 0.35;
+  const laid = paginate(blocks, {
+    pageTop: (i) => (i === 0 ? firstTop : otherTop),
+    // 连续长图不按高度分页，页高随内容长
+    bottom: m.continuous ? Infinity : bottomLimit,
+    gap: 0,
+  });
+  if (laid.length === 0) return [{ groups: [], song: songIndex, firstOfSong: true }];
+  return laid.map((pg, i) => ({
+    song: songIndex,
+    firstOfSong: i === 0,
+    groups: pg.map(({ block, y }) => {
+      shiftGroup(block.group, y);
+      return block.group;
+    }),
+  }));
 }
 
 /**

@@ -12,8 +12,8 @@
 //
 // 谱行块与歌词靠 PageItem.classes 认（`system` / `lyric`，见 layout.ts::layoutVertically、
 // Lyric 构造函数与 pu/painter.ts::paintPage / paintSyllables）——构建会压缩类名，instanceof 用不上。
-// 墨迹盒取 PageItem.bound：文字是字体的 ascent/descent 盒而不是紧墨迹，判据因此偏严，
-// 所以断言的是「不得多于基线」，外加点名曲子的定点断言。
+// 墨迹盒：文字取紧墨迹（见 probeInPage::inkOf），线与路径取 PageItem.bound。
+// 断言的是「不得多于基线」，外加点名曲子的定点断言。
 //
 // 输出两层：各格式 × 判据的违例总数（不得高于基线 testdata/page-check-baseline.json），
 // 与定点断言（用户点名的两首：P2 = 0、P4 = 0）。任一层不过就退出码 1。
@@ -69,8 +69,17 @@ function probeInPage(TOL) {
   res.pages = pages.length;
   const hasCls = (it, c) => it.classes && it.classes.has(c);
   const up = (it, c) => { for (let p = it; p; p = p.parent) if (hasCls(p, c)) return p; return null; };
+  // 文字取**紧墨迹**（TextFrame.inkBound，排版器给 SMuFL 字形用的同一个开关）：
+  // 字体的 ascent/descent 盒太松——连谱号那类字形高达 4 em，多声部谱组的盒子被它撑得
+  // 压到上下两组，歌词的 descent 也会「压」到页脚上，全是量法的误报。
+  const inkOf = (it) => {
+    if (typeof it.text !== "string" || !("inkBound" in it) || !it.text.trim()) return it.bound;
+    const was = it.inkBound;
+    it.inkBound = true;
+    try { return it.bound; } finally { it.inkBound = was; }
+  };
   const absBox = (it) => {
-    const b = it.bound, o = it.pos(null);
+    const b = inkOf(it), o = it.pos(null);
     return { l: o.x + b.left, t: o.y + b.top, r: o.x + b.right, b: o.y + b.bottom };
   };
   const empty = (x) => !(x.r - x.l > 0.01 && x.b - x.t > 0.01);
