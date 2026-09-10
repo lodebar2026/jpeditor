@@ -838,7 +838,8 @@ export class RepeatProcessor {
       if (t.compareTo(tbeg) < 0) continue;
       if (t.compareTo(tend) > 0) continue;
       if (!this.inJump && v.kind === PlaySpecKind.DalSegno) seg = v.value as string;
-      if (v.kind === PlaySpecKind.Dacapo) dacapo = true;
+      // 跳回之后再遇到 D.C. 不再跳（同 D.S.），否则没有 Fine 的 D.C. 会一直绕到 pass 上限
+      if (!this.inJump && v.kind === PlaySpecKind.Dacapo) dacapo = true;
       if (this.inJump && v.kind === PlaySpecKind.ToCoda) tocoda = v.value as string;
       if (this.inJump && v.kind === PlaySpecKind.Fine) res = true;
     }
@@ -868,6 +869,14 @@ export class RepeatProcessor {
       if (t === undefined) t = new TimePosition(parseInt(tocoda, 10) - 1, new Fraction(0));
       this.doJump(m, t);
       this.inJump = false;
+    }
+    // 写在 `:|` 小节上的 D.C.（小兔子乖乖 `:|&dc`）：先把反复唱完，最后一遍才跳回曲首
+    if (dacapo && !this.inEnding && mea.repeatBackward) {
+      if (this.passCount < 0) {
+        this.passCount = this.getPassCountByLrc(this.loopStart, mid + 1);
+        if (this.passCount <= 1) this.passCount = 2;
+      }
+      if (m.pass < this.passCount) dacapo = false;
     }
     if (dacapo) {
       // 房内的 D.C.（沧海一声笑的「4.」房：1.2.3.5 房带 :||、4 房改用 D.C.、6 房收尾）：
@@ -946,8 +955,9 @@ export class RepeatProcessor {
     return this.getPassCountByLrc(0, meas.length);
   }
 
+  /** 段数取各声部的最大值：合唱谱的歌词常只挂在某一个声部上（圣哉三一歌挂在 Q2）。 */
   getPassCountByLrc(beg: number, end: number): number {
-    return this.score.parts[0].getVerseCount(beg, end);
+    return Math.max(0, ...this.score.parts.map((p) => p.getVerseCount(beg, end)));
   }
 
   process(m: TimePosition): boolean {

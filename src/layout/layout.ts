@@ -3,6 +3,7 @@
 // the common geom types, and the Font abstraction (measurement via SVG/canvas).
 
 import { paginate } from "../jianpu/vertical";
+import { identityPlan, walkPlay } from "../jianpu/expand";
 import { Fraction } from "../common/fraction";
 import { jpBarlineItems, jpDot, jpTimeSigItems } from "./jpglyph";
 import { Point, Rect, Matrix33, newMatrix, Colors } from "../common/geom";
@@ -3848,41 +3849,25 @@ export class Layout {
     const p = scr.parts[0];
     if (dur !== null) scr.clearSystemBreak();
     const l = new Line();
-    let repMeasures = scr.playData.measures;
-    // 叠排 = **按原谱排一遍**：不展开任何反复。
+    // 叠排 = **按原谱排一遍**：不展开任何反复（原样档）。
     //
     // 反复本来就是用记号表示的（`‖:` `:‖`、房号、D.S.），原书 500 首就是印一遍谱 +
     // 记号 + 底下叠几段歌词。而 playData 是给**试听**用的展开序列：多段歌词在那里被摊成
     // 好几遍，064《啊！圣善夜》甚至摊成 10 遍——照着它排，一首歌能排出十几页。
-    if (this.options.lyricStack > 0) {
-      repMeasures = p.measures.map((_, i) => {
-        const it = new S.PlayItem();
-        it.mid = i;
-        it.end = i + 1;
-        it.pass = 0;
-        it.skip = 0;
-        it.limit = -1;
-        it.endOfPass = false;
-        return it;
-      });
-    }
-    repMeasures.forEach((it, idx) => {
-      for (let mid = it.mid; mid < it.end; mid++) {
+    // 逐遍怎么走（首尾裁切、遍末换页）与文本谱共用 jianpu/expand.ts::walkPlay。
+    const plan = this.options.lyricStack > 0 ? identityPlan(p.measures.length) : scr.playData.measures;
+    walkPlay(plan, {
+      measure: (mid, pass, cut) => {
         const m = p.measures[mid];
-        const pass = it.pass;
         m.autoBeamGroup();
-        const final = mid === it.end - 1 && idx === repMeasures.length - 1;
-        l.load(
-          m, pass, this.options, final,
-          mid === it.mid ? it.skip : 0,
-          mid === it.end - 1 ? it.limit : -1,
-        );
-      }
-      if (it.endOfPass && dur === null) {
+        l.load(m, pass, this.options, cut.final, cut.skip, cut.limit);
+      },
+      passEnd: () => {
+        if (dur !== null) return;
         const lst = l.entries[l.entries.length - 1];
         if (!(lst instanceof LineBreak)) l.entries.push(new LineBreak());
         (l.entries[l.entries.length - 1] as LineBreak).newPage = true;
-      }
+      },
     });
     if (dur !== null) {
       const part = scr.parts[0];

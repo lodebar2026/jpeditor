@@ -19,6 +19,7 @@ import type { BarlineSpec } from "../layout/layout";
 import { BarStyle } from "../score/score";
 import { renderPageSvg } from "../layout/painter";
 import { JianpuPainter } from "../jianpu/painter";
+import { expandPuDoc } from "./expand";
 import type { LyricSyllable, Metadata, NoteElement, PuDoc } from "./ast";
 import { primaryMetadata } from "./ast";
 import type { Dialect } from "./dialect";
@@ -290,6 +291,8 @@ export class PuPainter extends JianpuPainter {
   nodeMap = new WeakMap<PageItem, SVGGElement>();
 
   private doc: PuDoc | null = null;
+  /** 实际排出来的那份（见 renderedDoc） */
+  private shown: PuDoc | null = null;
   private placed: PlacedScore | null = null;
   private digitFont!: Font;
   private _accFont: Font | null = null;
@@ -353,9 +356,28 @@ export class PuPainter extends JianpuPainter {
     if (this.doc) this.load(this.doc);
   }
 
+  /** 实际排出来的那份 AST：展开档是展开后的（expandPuDoc），原样档就是原文。
+   *  App 的试听 Score 与导出都取它（「导出跟随当前档」），高亮索引认的也是这份对象。 */
+  get renderedDoc(): PuDoc | null {
+    return this.shown;
+  }
+
+  /** 展开档：反复与多段歌词逐遍展开。推不出来就原样排，投影片宁可不展开也不能白屏。 */
+  private expandForMode(doc: PuDoc): PuDoc {
+    if (!this.expanded) return doc;
+    try {
+      return expandPuDoc(doc);
+    } catch (e) {
+      console.warn("文本谱展开失败，按原样排", e);
+      return doc;
+    }
+  }
+
   /** 排一份文档并生成全部页面。 */
   load(doc: PuDoc): void {
     this.doc = doc;
+    const shown = this.expandForMode(doc);
+    this.shown = shown;
     // 「原版」各复刻各的：两种方言的字号比例不同，排版前先按方言取尺寸
     this.dialect = doc.dialect;
     // 谱面自带的 `FontSize:` / `Margin:` 也要生效（真实语料里 `all=` 用得最多）
@@ -377,7 +399,7 @@ export class PuPainter extends JianpuPainter {
     // 展开档的头部**另起一页**（同 .jpwabc 的展开档，见 layout/painter.ts::titlePage），
     // 所以谱面这一路不必在首页顶上给它留位——每一页都从页顶排起。
     const slide = this.expanded;
-    const headerBottoms = doc.songs.map((song) => (slide ? m.marginTop : this.headerBottom(song.metadata)));
+    const headerBottoms = shown.songs.map((song) => (slide ? m.marginTop : this.headerBottom(song.metadata)));
     // 歌词的**墨迹**伸出注入给排版（它不碰字体）：落位口径同 paintSyllables——主体居中于锚点、
     // 尾随标点挂右边。量墨迹而不是字面框：「声，」的全角逗号字面框右半边是空的，
     // 按字面框约束会把墨迹根本没碰到的行也撑开（《圣哉三一歌》长图就是这样被误伤的）。
@@ -387,7 +409,7 @@ export class PuPainter extends JianpuPainter {
       const ink = lyricFont.charBound(syl.text + (syl.trailingPunctuation ?? ""));
       return { left: half - ink.left, right: ink.right - half };
     };
-    this.placed = layoutDocument(doc.songs, m, headerBottoms, measure);
+    this.placed = layoutDocument(shown.songs, m, headerBottoms, measure);
     // 连续长图：页面尺寸随内容走，不受纸张尺寸约束（短曲子不该拖着一大片空白）
     if (m.continuous) {
       this.pageHeight = Math.max(

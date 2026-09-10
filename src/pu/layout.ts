@@ -1036,6 +1036,18 @@ export function layoutSong(
       blocks.push({ group: placedGroup, top: 0, bottom: y, breakBefore: groupIdx === 0 && pageIdx > 0 });
     }
   }
+  // 连谱号的上下花头各伸出首/末声部 ≈1.5 个墨迹高（粗线探出 0.85，花头字形高 1.18 线距 =
+  // 1.18/4 em × 字号 2.2 墨迹高，见 painter.ts::paintBrace）。末声部底下有歌词时歌词块早把它盖住；
+  // 展开档里末声部这一遍没词（同一首歌的 Q2）时，上一组的下花头会压到下一组的上花头。
+  // 只在真会相压时把上一块往下撑——不压的一点不动，原样档的行距是对过原书的。
+  const braceReach = m.digitInkHeight * (0.85 + (1.18 / 4) * 2.2);
+  for (let i = 0; i + 1 < blocks.length; i++) {
+    const a = blocks[i]!;
+    const b = blocks[i + 1]!.group;
+    if (!a.group.hasBrace || !b.hasBrace) continue;
+    const need = a.group.braceBottom + 2 * braceReach - b.braceTop + m.digitInkHeight * 0.3;
+    if (a.bottom < need) a.bottom = need;
+  }
   // 首页要让过标题/词曲/调号那一整块——头部行数因谱而异，写死会压到正文
   const firstTop = Math.max(m.marginTop + m.bodyTop, headerBottom);
   const otherTop = m.marginTop + m.bodyTop * 0.35;
