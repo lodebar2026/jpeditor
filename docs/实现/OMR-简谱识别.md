@@ -393,6 +393,12 @@ w/h≥4**——弧越长越扁（7.3），段落方框（"Chorus" 带框 w98 h36
 当成作者印进 `WordsByAndMusicBy`。det 把一行切成两块的写法（「主祢真伟大」的
 "How Awesome / You Are" 分居标题两侧）目前不认。
 
+**空格的 advance 别信 `getComputedTextLength()`**（`common/measure.ts`）：SVG `<text>` 里
+**整串都是空白时它恒返回 0**（浏览器把纯空白的文本节点当空的，加 `xml:space="preserve"` 也一样），
+而 `compressRun` 是**逐字**量 advance 的（字体没有 chws 之类特性时走它），于是空格宽度为 0——
+`Z:John Laudon 词曲` 排出来是 `JohnLaudon词曲`。canvas 的 `measureText` 对空白是准的，
+整串空白时拿它兜底。识别侧把空格补对了，排版端不跟上就白补。
+
 **整句英文的词间空格按真实空白列补**（`header.ts::recoverSpacesByInk`，著作者行也走这条）：
 PP-OCR 的 rec 不吐空格，早先那套「按 CTC 帧位算字距」在整句上不够用——帧位是等宽量化的，
 一句话里词内间隙和词间空白常同量级（实测出 "T he spirit"、"It's justdifferent"）。改成在源图上
@@ -530,11 +536,15 @@ jpwabc 那边看不出任何异样）。
 
 仅 PaddleOCR 后端(`recognizeTexts`)支持，`nullOcr` 跳过歌词。自然区域分块 rec 实测 W1 98.9%/W2 96.5%
 （早期逐字/拼接 rec 仅 ~85%，差在破坏自然排版+细笔画字漏检）——回归 `node scripts/bench-lyrics.mjs`。
-**当前基线（14 首全 GT）**：音符 / 八度 / 附点 / 小节 / 对位 / 标题 / 词曲 **全 100%**，
-slur-tie **99.8%**、歌词 **99.5%**。只剩两个已知缺口：世上所有的民族漏 1 组 slur（96.6）、
-从前所珍爱歌词 94.2（含标点；忽略标点 99.3）。补齐 5 首 GT（因有主同在/脚步/立定心志/
-爱是不保留/沧海一声笑）后修掉的四类缺陷，见下面各处「附点」「隐含 tie」「后缀式著作者」
-「孤立的一」注释。（历史：tesseract 初版完整 token 仅 ~25%。）
+**当前基线（21 首全 GT）**：音符 / 八度 / 附点 / 小节 **99.8%**、对位 99.4%、标题 / 词曲 **全 100%**，
+slur-tie **98.8%**、歌词 98.9%（忽略标点 99.3%）。已知缺口四处：世上所有的民族漏 1 组 slur（96.6）、
+从前所珍爱歌词 94.8（含标点；忽略标点 99.3）、16 爱心的功课与 714 我说算了吧各有几个音（96.6 / 98.5）、
+**1 以色列的圣者的两处三连音没识别**（slur-tie 80.0 —— 三连音的括线与圆滑线同走 `puBrackets` 计数；
+音符档看不出来，那一档不比时值）。补齐 5 首 GT（因有主同在/脚步/立定心志/爱是不保留/沧海一声笑）
+后修掉的四类缺陷，见下面各处「附点」「隐含 tie」「后缀式著作者」「孤立的一」注释。
+后补的 3 首（1 以色列的圣者 / 1640 主要在中国掌权 / 73 我主耶稣是生命源）分别覆盖
+**和弦行末尾的方框「副歌」**、**顿音 ▼ 整首每音一个**、**四段词的行首段号**三条新判据。
+（历史：tesseract 初版完整 token 仅 ~25%。）
 回归：`node scripts/measure-all.mjs`(音符/八度/附点/小节/slur-tie/歌词/标题/词曲，全 7 档、CSV 逐曲+平均) +
 `node scripts/bench-lyrics.mjs`(歌词)。
 回归脚本：`node scripts/measure-all.mjs`（自动扫 `testdata/` 每个歌谱文件夹，需本地 Edge；用 `window.__omr` 跑真实管线；
@@ -552,7 +562,7 @@ slur-tie **99.8%**、歌词 **99.5%**。只剩两个已知缺口：世上所有�
 根本写不下（`KeyAndMeters` 只放得下一个拍号）。比对时它先在页面里过 `puToMusicXml` → 导入 →
 `getText()` 折成 jpwabc，与识别侧走的是同一条 musicxml → 导入 路径，故下面那套 token 判据一份就够。
 
-`testdata/` 14 首**都已有人工核对过的 `.jpwabc` GT**（UTF-16LE + BOM，**必须 LF**：`.Words` 解析按 `\n`
+`.jpwabc` GT 那批**都经人工核对**（UTF-16LE + BOM，**必须 LF**：`.Words` 解析按 `\n`
 切行，CRLF 会把 `\r` 当歌词字符、每行报一次 `unsupported char?`）。GT 用 `node scripts/check-gt.mjs [子串]` 校验
 （逐个 setText，报页数/排版行数/控制台错误）。GT 的小节线口径：曲末终止线写 `|]`，段落双纵线仍写 `|`
 ——`voiceTokens` 把 `||` 数成两个小节线 token，写了就与识别端不可比。
