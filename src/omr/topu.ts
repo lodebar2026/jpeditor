@@ -292,7 +292,10 @@ export function toPuText(
       // （`pu/layout.ts::computeUnderlines`）。本项目排版认拍号，多数地方不写记号也排得对；
       // 但**诗歌本 app 那边要照谱本的写法写出来**，故这里照它的范式生成。
       // 拍位以四分音符为 1、每小节从头算，与 pu 那边同一口径；增时线也占拍，故一并累加。
-      const beatsOf = (n: JpNum) => (1 / Math.pow(2, n.div)) * (n.dot > 0 ? 1.5 : 1) + n.augment;
+      // 多连音的每个音只占 normal/actual 拍（三连音 2/3），拍位跟着缩——否则本小节后面的
+      // 音符全被算成跨拍，`~`/`^` 连断记号会乱写一气。
+      const beatsOf = (n: JpNum) => ((1 / Math.pow(2, n.div)) * (n.dot > 0 ? 1.5 : 1) + n.augment) *
+        (n.tuplet ? n.tuplet.normal / n.tuplet.actual : 1);
       // **复拍子**（分母 8、分子是 3 的倍数）一组是三个八分 = 1.5 个四分拍，两条范式：
       //   · 组界：两个音符按 `floor(绝对拍位)` 落在同一整拍里（不写就会连着）时写 `^`；
       //     9/8 的第二个组界在 2.5→3.0，本来就跨了整拍，那里不写。
@@ -325,10 +328,15 @@ export function toPuText(
         // 切分音：从非整拍起、又跨过整拍线（整拍起头的长音不算）。
         if (beat % 1 !== 0 && Math.floor(beat + 1e-9) !== Math.floor(end - 1e-9)) syncopated = true;
         beat = end;
+        // 多连音起头：文本谱写作 `(y…)`（`parse.ts` 里 `(` 后紧跟 `y` 即多连音而非圆滑线）。
+        // 排在圆滑线的 `(` **之前**：解析端配对用的是队列（先开先闭），先开的这一条也要先闭，
+        // 收尾处同样把 `)` 写在圆滑线的收尾之前。两者真交错嵌套时这套写法表达不了
+        // （队列语义使然，与本模块无关），手头也没有那样的谱面。
+        if (n.tuplet?.start) tb.push("(y");
         tb.push("(".repeat(opens.get(noteIdx) ?? 0)); // 弧线起点在音符**之前**
         // 收弧的括号紧跟音符**本体**，附点写在括号外（`(1.1).` 而不是 `(1.1.)`）——
         // 增时线本来就在括号之后（见下），两者口径一致。
-        const closeHere = closes.get(noteIdx) ?? 0;
+        const closeHere = (closes.get(noteIdx) ?? 0) + (n.tuplet?.stop ? 1 : 0);
         const tailDot = closeHere > 0 && n.dot > 0;
         meta.noteRanges[noteIdx] = tb.push(noteToken(tailDot ? { ...n, dot: 0 } : n, dialect));
         // 休止本不跟词；识别到它带词时补 `@` 翻转 lyricAnchor，否则歌词整行错位
@@ -348,7 +356,7 @@ export function toPuText(
         if (n.grace?.length) tb.push(`"yy:${n.grace.map((g) => graceToken(g, dialect)).join(" ")}"`);
         if (n.chord) tb.push(`"hx:${n.chord}"`);
         if (n.sectionMark) tb.push(`"${n.sectionMark}"`);
-        tb.push(")".repeat(closeHere)); // 收弧要在增时线之前，弧才止于本音符
+        tb.push(")".repeat(closeHere)); // 收弧/收多连音要在增时线之前，才止于本音符
         if (tailDot) tb.push(".".repeat(n.dot));
         // 增时线：长音里逐拍换的和弦（extraChords）就印在它们上方，按拍位挂到对应那一条上。
         // offset 是占本音符**总时值**的比例，折成拍数后减掉音符本体占的拍，就是第几条增时线。
