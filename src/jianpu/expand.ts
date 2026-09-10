@@ -39,17 +39,31 @@ export interface PlaySink {
   passEnd(): void;
 }
 
-/** 逐遍逐小节回调。 */
+/**
+ * 逐遍逐小节回调。换页（`passEnd`）有两处：`endOfPass`，以及**往回跳**（反复、D.C./D.S.）——
+ * 那是新的一遍。遍号变了但往前接着唱的（二房之后 pass 归 1 的尾段、跳过一房）不换页，
+ * 否则前一页常只剩一行半（同一首歌）。同一小节被 limit/skip 切成前后两截的，后一截也是接着唱。
+ */
 export function walkPlay(items: readonly PlayItem[], sink: PlaySink): void {
+  let lastMid = -1;
+  let broke = true; // 刚换过页，不必再换
   items.forEach((it, idx) => {
+    if (lastMid >= 0 && !broke && (it.mid < lastMid || (it.mid === lastMid && it.skip === 0))) {
+      sink.passEnd();
+    }
+    broke = false;
     for (let mid = it.mid; mid < it.end; mid++) {
+      lastMid = mid;
       sink.measure(mid, it.pass, {
         skip: mid === it.mid ? it.skip : 0,
         limit: mid === it.end - 1 ? it.limit : -1,
         final: mid === it.end - 1 && idx === items.length - 1,
       });
     }
-    if (it.endOfPass) sink.passEnd();
+    if (it.endOfPass) {
+      sink.passEnd();
+      broke = true;
+    }
   });
 }
 

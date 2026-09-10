@@ -73,17 +73,12 @@ function expandSong(doc: PuDoc, song: PuSong, songIndex: number): PuSong | null 
   const pages: Run[][] = [];
   let cur: Run | null = null;
   let needPage = true;
-  let lastMid = -1;
+  // 何时换页（endOfPass、往回跳）由 walkPlay 统一判，经 passEnd 通知
   walkPlay(score.playData.measures, {
     measure: (mid, pass, cut) => {
       const ref0 = mainRefs[mid]!;
       const slices0 = cutMeasure(ref0, cut);
       if (slices0.length === 0) return;
-      // 往回跳（反复、D.C./D.S.）才另起一页：那是新的一遍。遍号变了但往前接着唱的
-      //（二房之后 pass 归 1 的尾段、跳过一房）不换页——同一首歌二房后的尾段要是另起一页，
-      // 前一页就只剩一行半。同一小节被 limit/skip 切成前后两截的，后一截也是接着唱。
-      if (lastMid >= 0 && (mid < lastMid || (mid === lastMid && cut.skip === 0))) needPage = true;
-      lastMid = mid;
       // 主旋律的每一段片段决定落进哪一行（跨行的小节会落进两行）
       const runs: Run[] = [];
       for (const s of slices0) {
