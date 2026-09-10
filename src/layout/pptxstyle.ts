@@ -41,6 +41,9 @@ export function applyPptxStyle(opt: LayoutOptions): void {
   // 纵向堆叠回到旧式三套步长（数字↔点、点↔弧、三连音各走各的）。见 jpGridLegacy 的注释。
   opt.jpGridLegacy = true;
 
+  // 音符数字**不加粗**：投影那一档的观感是既有的，简谱档才照印刷谱加粗。
+  opt.noteBold = false;
+
   // **小节线的上下缘不再覆写**（用户口径：「PPT 模式的小节线有点短，用简谱模式的高度」）。
   // 老 PPT 档是 −23/28 em 与 +5/28 em（合起来正好 1 em），比今天的 −1 em / +1/3 em
   // （合起来 4/3 em）矮三分之一；投影上那截线短得不像小节线。于是 H 回到 4/3 em，

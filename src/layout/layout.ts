@@ -1110,7 +1110,7 @@ export class NoteEntry extends Entry {
     if (!ch.graceNotes.length) return;
     const gm = graceMetricsOf(options);
     const size = options.numberFont.size * gm.scale;
-    const font = options.numberFont.makeWithSize(size);
+    const font = options.noteFont.makeWithSize(size);
     // 公共几何按「主音数字的墨迹中心 x、基线 y」定位；这里先摆在原点，稍后整体右移。
     //
     // **倚音整组的底缘贴着主音的墨迹顶**（用户口径：「倚音底部对齐正常音符顶部」）。
@@ -1254,7 +1254,7 @@ export class NoteEntry extends Entry {
    * 把 `·` 从文本里摘掉而不补回它的 advance，带附点的音符就会与后一个音符贴到一起。
    */
   static addAugDots(num: JpNumber, opt: LayoutOptions, dots: number, ent: NoteEntry): void {
-    const font = opt.numberFont;
+    const font = opt.noteFont;
     const adv = font.measureText("·");
     const r = opt.jpAugDotRadius;
     // 数字本身的 advance。**不能用 `num.width`**——此刻 `update()` 还没跑过，它还是 0。
@@ -1290,7 +1290,7 @@ export class NoteEntry extends Entry {
     let it = new JpNumber();
     it.color = options.color;
     it.text = ch.notes[0].number;
-    it.font = options.numberFont;
+    it.font = options.noteFont;
     ent.add(it);
     NoteEntry.addAccidental(it, options, ch, ent);
     if (ch.beats <= 1 && ch.dot > 0) NoteEntry.addAugDots(it, options, ch.dot, ent);
@@ -1309,7 +1309,7 @@ export class NoteEntry extends Entry {
       it = new JpNumber();
       it.text = num;
       it.color = options.color;
-      it.font = options.numberFont;
+      it.font = options.noteFont;
       ent.add(it);
       ent.update();
       res.push(ent);
@@ -3427,6 +3427,13 @@ export class LayoutOptions {
   color = Colors.black;
   lrcFont: Font;
   numberFont: Font;
+  /**
+   * 音符数字是否加粗。**只管数字与倚音**——`numberFont` 还派生出和弦、房号、
+   * 调号拍号那一行，那些不跟着粗，所以这里是个开关而不是把 `numberFont` 换成粗体。
+   * PPT 档（`applyPptxStyle`）与成书排版（`applyBookStyle`）关掉：前者是投影的既有观感、
+   * 后者要逐像素复刻印刷底本，都不能凭空变粗。
+   */
+  noteBold = true;
   smuflFont: Font;
   smuflMeta = new MetaData();
   titleSize = 48;
@@ -3713,11 +3720,16 @@ export class LayoutOptions {
     return this.augDotRadius > 0 ? this.augDotRadius : this.jpDotRadius;
   }
 
+  /** 音符数字实际用的那支字（`numberFont` 加不加粗，见 `noteBold`）。 */
+  get noteFont(): Font {
+    return this.noteBold ? this.numberFont.withBold() : this.numberFont;
+  }
+
   /** Tight glyph box of a jianpu number/dot. Was measured on `lrcFont`, which
    * is a no-op only as long as the two fonts stay identical (they do today,
-   * but `lrcSize` is settable) — the numbers are drawn with `numberFont`. */
+   * but `lrcSize` is settable) — the numbers are drawn with `noteFont`. */
   numberBound(ch: string): Rect {
-    return LayoutOptions.charBound(this.numberFont, ch);
+    return LayoutOptions.charBound(this.noteFont, ch);
   }
 
   /**
