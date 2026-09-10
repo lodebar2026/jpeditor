@@ -14,7 +14,7 @@ import type { PageProfileName, PuUserOptions } from "../pu/metrics";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
 import { JinpuPainter } from "../layout/painter";
-import { PPTX_PAGE, applyPptxStyle, type JpProfileName } from "../layout/pptxstyle";
+import { PPTX_PAGE, type JpProfileName } from "../layout/pptxstyle";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/layout";
 import { Point, colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
@@ -33,9 +33,6 @@ import {
   loadPersistedSettings, savePersistedSettings, loadLastFile, saveLastFile, clearLastFile,
 } from "./settings";
 export type { OmrFormat } from "../omr";
-
-/** 「原样」档多段歌词叠排时的段间行距 ÷ 歌词字号。原书量到的是 1.3 上下。 */
-const JP_LYRIC_STACK_RATIO = 1.35;
 
 /** 两档字号的出厂值（= 老版展开档的那三个，见 layout/pptxstyle.ts::PPTX_PAGE）。 */
 const JP_SIZE_DEFAULTS = {
@@ -285,21 +282,8 @@ export class App implements OmrHost, PlaybackHost {
     this.painter.layout.options.color = this.color;
     this.painter.layout.options.titleSize = this.titleSize;
     this.painter.layout.options.creditSize = this.creditSize;
-    // 版面档的笔画常量最后灌，覆盖在上面那几个之上（契约同 applyBookStyle）
-    const opt = this.painter.layout.options;
-    if (this.jpProfile === "pptx") {
-      applyPptxStyle(opt);
-    } else {
-      // **「原样」档按原谱排一遍**（用户口径：「PPT 模式是把多段展开，简谱是原样展示」）。
-      // 多段歌词叠在同一条谱行下、反复不展开——传统圣诗本的排法，也是原书 500 首的排法。
-      // 展开档相反：一段一遍、逐遍成页，投影时一屏一段。见 layout.ts::LayoutOptions.lyricStack。
-      opt.lyricStack = opt.lrcFont.size * JP_LYRIC_STACK_RATIO;
-      // 「长图」= 一张连续长纸不分页，观感同文本谱的「原版」（见 LayoutOptions.continuousPage）；
-      // 选了实际纸张就按那张纸分页。**两种都把标题排在第一页顶上**（bookHead），
-      // 不像展开档另起一张标题页——这一档是印刷歌本的排法。
-      opt.continuousPage = this.jpLongImage;
-      opt.bookHead = true;
-    }
+    // 排版输出的选项最后灌，覆盖在上面那几个之上（契约见 JinpuPainter.applyMode）
+    this.painter.applyMode(this.layoutMode, { longImage: this.jpLongImage });
   }
 
   /** 简谱版面切换（原版 / PPT）。展开档 = 2026-08 排版重构之前的笔画观感，

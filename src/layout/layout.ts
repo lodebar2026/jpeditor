@@ -3902,36 +3902,13 @@ export class Layout {
     const l = this.buildLine(scr, dur);
     l.connectTextFrames();
     for (const g of l.layout(cw, ch, this.options)) this.pages.push(g);
-    this.titleAndPageNumber(scr.title, width, height, cw);
+    this.shiftToMargin();
   }
 
-  titleAndPageNumber(title: string, width: number, height: number, cw: number): void {
-    // 连续长纸只有一页，页眉页脚（曲名 + 「第 i/n 页」）无从谈起——标题由
-    // `JinpuPainter` 排在纸顶（`titleBlock`）。
-    if (this.options.continuousPage || this.options.pageFurniture === "none") {
-      // 成书：页眉页脚由整本那一层按书页码统一加，这里印「第 i/n 页」只会打架
-      for (const pg of this.pages) pg.x += this.options.marginLeft;
-      return;
-    }
-    this.pages.forEach((pg, idx) => {
-      pg.x += this.options.marginLeft;
-      const tf = new TextFrame();
-      tf.font = this.options.lrcFont.scaled(0.8);
-      tf.text = title.split("\n")[0];
-      tf.color = this.options.color;
-      tf.x = (cw - tf.measureText()) / 2;
-      tf.y = height - this.options.marginBottom * 0.5 - pg.y;
-      tf.update();
-      const tf1 = new TextFrame();
-      tf1.text = `${idx + 1}/${this.pages.length}`;
-      tf1.color = this.options.color;
-      tf1.x = 0.8 * width;
-      tf1.y = tf.y;
-      tf1.font = tf.font;
-      tf1.update();
-      pg.add(tf);
-      pg.add(tf1);
-    });
+  /** 页组右移一个左边距（版心原点）。页脚（曲名 + 页码）归 painter 那一层
+   *  （`jianpu/painter.ts::addFooters`，展开档才有）。 */
+  shiftToMargin(): void {
+    for (const pg of this.pages) pg.x += this.options.marginLeft;
   }
 }
 
