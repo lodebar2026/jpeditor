@@ -523,10 +523,13 @@ export class PuPainter {
       this.paintHeader(root, page.song, this.systemLeft(page));
     }
     for (const group of page.groups) {
+      // 每个谱组单独成一个 Group（`system`）：页面检查按它量相邻谱行的墨迹盒，绝对坐标不受影响
+      const sys = new Group();
+      sys.classes.add("system");
       const texts = group.group.texts;
       if (texts.length > 0) {
         const font = new Font(m.fontFamily, m.textLineSize);
-        root.add(text(texts.map((t) => t.text).join("  "), m.marginLeft, group.textY, font, INK));
+        sys.add(text(texts.map((t) => t.text).join("  "), m.marginLeft, group.textY, font, INK));
       }
       const { braceX, notesLeft } = this.systemMetrics(group);
       // `&sbf` 标了分声部位置就从那里起（前半段仍是单声部），否则从 system 左缘
@@ -535,21 +538,21 @@ export class PuPainter {
           ? notesLeft + group.braceFromX - m.digitInkHeight * 1.41
           : braceX;
       if (group.hasBrace) {
-        this.paintBrace(root, braceAt, group.braceTop, group.braceBottom);
+        this.paintBrace(sys, braceAt, group.braceTop, group.braceBottom);
         // 声部名（`Q1"女高"` / `Q1<女高>`）排在连谱号**左侧**，与各自的声部行对齐
         const nameFont = new Font(m.fontFamily, m.annotationSize);
         for (const v of group.voices) {
           const caption = v.voice.caption;
           if (!caption) continue;
           const w = nameFont.measureText(caption);
-          root.add(text(caption, braceAt - 6 - w, v.y + m.digitInkHeight * 0.35, nameFont, INK));
+          sys.add(text(caption, braceAt - 6 - w, v.y + m.digitInkHeight * 0.35, nameFont, INK));
         }
       }
       // 多声部：小节线贯穿相邻的声部，但**在歌词块处断开**——四声部谱因此分成
       // 「声部1+2」与「声部3+4」两段（对照印刷原版）。连谱号才是整组一根到底。
       const spanBarlines = group.voices.length > 1;
       for (const voice of group.voices) {
-        this.paintVoice(root, voice, pageIndex, spanBarlines);
+        this.paintVoice(sys, voice, pageIndex, spanBarlines);
       }
       if (spanBarlines) {
         for (const block of barlineBlocks(group.voices)) {
@@ -558,7 +561,7 @@ export class PuPainter {
           for (const it of first.items) {
             if (it.element.kind !== "barline") continue;
             this.paintBarline(
-              root,
+              sys,
               m.marginLeft + m.bodyLeftPad + it.x,
               first.y,
               it,
@@ -567,6 +570,7 @@ export class PuPainter {
           }
         }
       }
+      root.add(sys);
     }
     return root;
   }

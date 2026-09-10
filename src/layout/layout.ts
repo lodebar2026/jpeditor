@@ -404,6 +404,7 @@ export class Lyric extends TextFrame {
   constructor() {
     super();
     this.selectable = true;
+    this.classes.add("lyric"); // 页面检查（scripts/page-check.mjs）靠它认歌词——构建会压缩类名，instanceof 用不上
   }
   /** 开头那串标点的宽度（`“凡` 的引号）。避让时可以悬挂出去，见 calcXPos。 */
   get leadWidth(): number {
@@ -2607,6 +2608,7 @@ export class Line {
       let y = top;
       for (const l of lines) {
         l.group.update();
+        l.group.classes.add("system"); // 页面检查按它量相邻谱行的墨迹盒
         one.add(l.group);
         l.group.y = y;
         y += l.group.height + maxDist;
@@ -2624,6 +2626,7 @@ export class Line {
     for (const l of lines) {
       let newPage = res.length === 0;
       l.group.update();
+      l.group.classes.add("system");
       if (bottomOfLastLine + l.group.height + dist > height - headroom(res.length - 1)) newPage = true;
       if (pageBreak) {
         newPage = true;
