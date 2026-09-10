@@ -2615,13 +2615,16 @@ export class Line {
       return [one];
     }
     const dist = opt.staffDist;
+    // 首页要给标题块让出 `firstPageHeadroom`（「简谱」档分页那一路，见 LayoutOptions.bookHead）：
+    // 首页能放的行少一些，且各行整体下移。其余页不受影响。
+    const headroom = (pageIdx: number): number => (pageIdx === 0 ? opt.firstPageHeadroom : 0);
     const res: Page[] = [];
     let bottomOfLastLine = 0;
     let pageBreak = false;
     for (const l of lines) {
       let newPage = res.length === 0;
       l.group.update();
-      if (bottomOfLastLine + l.group.height + dist > height) newPage = true;
+      if (bottomOfLastLine + l.group.height + dist > height - headroom(res.length - 1)) newPage = true;
       if (pageBreak) {
         newPage = true;
         pageBreak = false;
@@ -2641,7 +2644,8 @@ export class Line {
     }
     const grps: Group[] = [];
     let y = 0;
-    for (const pg of res) {
+    for (const [i, pg] of res.entries()) {
+      const hr = headroom(i);
       const grp = new Group();
       let totalHeight = 0;
       for (const l of pg.lines) {
@@ -2649,10 +2653,13 @@ export class Line {
         totalHeight += l.group.height;
       }
       if (pg.lines.length > 1) {
-        let dd = (height - totalHeight) / (pg.lines.length - 1);
-        y = top;
+        let dd = (height - hr - totalHeight) / (pg.lines.length - 1);
+        y = top + hr;
         if (dd > maxDist) {
-          y += ((dd - maxDist) * (pg.lines.length - 1)) / 2;
+          // 放不满的一页，行距摊到 maxDist 为止，剩下的空白**整块居中**。
+          // **首页有标题块时不居中**（`hr > 0`）：谱面要贴着标题排，
+          // 居中会把第一条谱行连同整块一起往下推，标题与音符之间平白多出一大片空。
+          if (hr === 0) y += ((dd - maxDist) * (pg.lines.length - 1)) / 2;
           dd = maxDist;
         }
         for (const ll of pg.lines) {
@@ -2661,7 +2668,7 @@ export class Line {
           y += l.height + dd;
         }
       } else {
-        pg.lines[0].group.y = opt.marginTop;
+        pg.lines[0].group.y = opt.marginTop + hr;
       }
       grp.update();
       grps.push(grp);
@@ -3495,6 +3502,13 @@ export class LayoutOptions {
    *  「简谱」档走它——那一档是「原样展示」，与文本谱的「原版」同一种观感；
    *  PPT 档仍按 16:9 的纸分页。见 `Line.layoutVertically` 与 `JinpuPainter.resize`。 */
   continuousPage = false;
+  /** 标题与词曲**排在第一页的顶上**（印刷歌本的排法），而不是另起一张标题页。
+   *  「简谱」档走它——长图那一档由 `continuousPage` 隐含，分页那一档靠这个字段。
+   *  PPT 档仍是标题页独占第一屏。见 `JinpuPainter.resize`。 */
+  bookHead = false;
+  /** 第一页顶部为标题块预留的高度。分页时首页可用高度按它扣减、首页各行整体下移。
+   *  由 `JinpuPainter.resize` 量出 `bookHead` 的实际高度后填，**不是给人配的**。 */
+  firstPageHeadroom = 0;
   /** 歌词标点挤压的档（见 common/cjkpunct.ts::CompressMode）。
    *
    *  默认 `halfwidth`：**简谱歌词的标点不占音符格**，原书印的就是压缩形。

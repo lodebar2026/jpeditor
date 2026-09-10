@@ -11,6 +11,7 @@ import { asset } from "../common/asset";
 import { scoreToMusicXml } from "../score/musicxmlout";
 import { patchMusicXml } from "../score/musicxmlpatch";
 import { annotateLayout } from "../score/musicxmllayout";
+import { colorToCss } from "../common/geom";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -42,8 +43,25 @@ async function bravuraDataUrl(): Promise<string> {
   return bravuraDataUrlPromise;
 }
 
-/** Serialize a page <svg> with Bravura embedded so it rasterizes faithfully. */
-async function svgToBytes(svg: SVGSVGElement, scale: number): Promise<Uint8Array> {
+/** 给一页 SVG 铺上纸张底色（插一个满幅 rect 到最底层）。
+ *  页面树里没有背景这一层——屏幕上靠 CSS 铺（见 App._applyPageBg），
+ *  而 SVG 一旦离开浏览器（直出 PDF）就只剩透明底，所以导出时要显式铺一次。
+ *  白底不铺：PDF 的纸本来就是白的，少一个无用图元。 */
+function paintBg(svg: SVGSVGElement, bgColor: number): void {
+  if (((bgColor >>> 0) & 0xffffff) === 0xffffff) return;
+  const { width: w, height: h } = svgSize(svg);
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("x", "0");
+  rect.setAttribute("y", "0");
+  rect.setAttribute("width", String(w));
+  rect.setAttribute("height", String(h));
+  rect.setAttribute("fill", colorToCss(bgColor));
+  svg.insertBefore(rect, svg.firstChild);
+}
+
+/** Serialize a page <svg> with Bravura embedded so it rasterizes faithfully.
+ *  `bg` 是纸张底色（CSS 颜色）——SVG 自身是透明的，不铺底导出的 PNG 会是透明背景。 */
+async function svgToBytes(svg: SVGSVGElement, scale: number, bg = "#fff"): Promise<Uint8Array> {
   const { width: w, height: h } = svgSize(svg);
   const clone = svg.cloneNode(true) as SVGSVGElement;
   clone.setAttribute("xmlns", SVG_NS);
@@ -70,7 +88,7 @@ async function svgToBytes(svg: SVGSVGElement, scale: number): Promise<Uint8Array
   canvas.width = Math.round(w * scale);
   canvas.height = Math.round(h * scale);
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
@@ -91,7 +109,7 @@ export async function exportCurrentPagePng(app: App): Promise<void> {
   const wrap = app.pageEls[app.pageIndex];
   const svg = wrap?.querySelector("svg") as SVGSVGElement | null;
   if (!svg) throw new Error("当前页面没有可导出的乐谱");
-  const bytes = await svgToBytes(svg, 2);
+  const bytes = await svgToBytes(svg, 2, colorToCss(app.bgColor));
   await saveBytes(bytes, `${baseName(app)}-第${app.pageIndex + 1}页.png`, "image/png");
 }
 
@@ -108,7 +126,7 @@ export async function exportPptx(app: App): Promise<void> {
   // 切到 PPT 档预览则是所见即所得。字号/纸张仍取用户设置。
   const pu = app.docFormat === "pu" ? app.puPainter : null;
   if (app.docFormat === "pu" && !pu) throw new Error("这份文本谱还没有排出可导出的页面");
-  const bytes = await buildPptx(pu ?? pptxPainter(app));
+  const bytes = await buildPptx(pu ?? pptxPainter(app), app.colorsOf("ppt").bg);
   await saveBytes(
     bytes,
     `${baseName(app)}.pptx`,
@@ -119,12 +137,15 @@ export async function exportPptx(app: App): Promise<void> {
 /** 按 PPT 档另排一份简谱。屏幕已在 PPT 档时直接用屏幕那个，省一次排版。 */
 export function pptxPainter(app: App): JinpuPainter {
   if (app.jpProfile === "pptx") return app.painter;
-  const p = new JinpuPainter(app.fontSize);
+  // **字号取 PPT 档那一套**，不是屏幕上简谱档的那套——两档各记各的字号之后，
+  // 「按 PPT 档另排一遍」也包括按那一档的字号排（否则导出的投影片会带着简谱档的字号）。
+  const sizes = app.sizesOf("pptx");
+  const p = new JinpuPainter(sizes.fontSize);
   const opt = p.layout.options;
   opt.smuflMeta = app.painter.layout.options.smuflMeta;
-  opt.color = app.painter.layout.options.color;
-  opt.titleSize = app.painter.layout.options.titleSize;
-  opt.creditSize = app.painter.layout.options.creditSize;
+  opt.color = app.colorsOf("ppt").fg; // 同字号：取 PPT 档那一套，不跟着屏幕当前档走
+  opt.titleSize = sizes.titleSize;
+  opt.creditSize = sizes.creditSize;
   applyPptxStyle(opt); // 契约：构造之后、resize 之前
   p.score = app.painter.score;
   p.resize(app.pageW, app.pageH, app.breakDesc);
@@ -212,6 +233,7 @@ export async function exportMixedPdf(app: App): Promise<void> {
       svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
       svg.setAttribute("width", `${wPt}pt`);
       svg.setAttribute("height", `${hPt}pt`);
+      paintBg(svg, app.bgColor);
       pages.push(new XMLSerializer().serializeToString(svg));
     }
     await invoke("export_pdf_cmd", { pagesSvg: pages, widthPt: wPt, heightPt: hPt, outPath });
@@ -221,7 +243,7 @@ export async function exportMixedPdf(app: App): Promise<void> {
     const pdf = new jsPDF({ unit: "pt", format: [wPt, hPt], orientation, compress: true });
     for (let i = 0; i < painter.pageCount; i++) {
       const svg = painter.renderPage(i);
-      const png = await svgToBytes(svg, 2);
+      const png = await svgToBytes(svg, 2, colorToCss(app.bgColor));
       if (i > 0) pdf.addPage([wPt, hPt], orientation);
       pdf.addImage(png, "PNG", 0, 0, wPt, hPt, undefined, "FAST");
     }

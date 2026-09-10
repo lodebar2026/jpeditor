@@ -10,13 +10,13 @@ import { PuPainter } from "../pu/painter";
 import { parsePu, puToScore, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import type { Chord, Score } from "../score/score";
 import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
-import type { PageProfileName } from "../pu/metrics";
+import type { PageProfileName, PuUserOptions } from "../pu/metrics";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
 import { JinpuPainter } from "../layout/painter";
-import { applyPptxStyle, type JpProfileName } from "../layout/pptxstyle";
+import { PPTX_PAGE, applyPptxStyle, type JpProfileName } from "../layout/pptxstyle";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/layout";
-import { Point } from "../common/geom";
+import { Point, colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";
 import type { FitMetric } from "../score/phrase";
@@ -36,10 +36,55 @@ export type { OmrFormat } from "../omr";
 /** 「简谱」档多段歌词叠排时的段间行距 ÷ 歌词字号。原书量到的是 1.3 上下。 */
 const JP_LYRIC_STACK_RATIO = 1.35;
 
-/** 「简谱」档的纸宽。**不用 PPT 那张 16:9 的纸**（用户口径：「简谱模式相当于文本谱的展示」）
- *  ——那一档是一张连续长纸，宽度取文本谱「原版」的那一份（`pu/metrics.ts::PRINT.pageWidth`，
- *  A4 比例），高度由内容说了算（`JinpuPainter.pageSize`）。 */
-const JP_CONTINUOUS_WIDTH = 1000;
+/** 两档字号的出厂值（= 老版 PPT 档的那三个，见 layout/pptxstyle.ts::PPTX_PAGE）。 */
+const JP_SIZE_DEFAULTS = {
+  fontSize: PPTX_PAGE.fontSize,
+  titleSize: PPTX_PAGE.titleSize,
+  creditSize: PPTX_PAGE.creditSize,
+};
+
+/** 简谱档标题/词曲字号 ÷ 基础字号。取出厂那三个数的比（48/28、36/28）——
+ *  那一档不单独设标题与词曲，字号一改整块跟着缩放，观感与出厂值一致。 */
+const JP_TITLE_RATIO = PPTX_PAGE.titleSize / PPTX_PAGE.fontSize;
+const JP_CREDIT_RATIO = PPTX_PAGE.creditSize / PPTX_PAGE.fontSize;
+
+/** PPT 档的投影片尺寸（1 排版单位 = 1pt，导出 PPTX 要的就是这个）。
+ *  **16:9 / 4:3 只归 PPT 档**（用户口径：「16:9 仅用于 PPT 模式」）。 */
+export const PAGE_RATIOS: Record<string, [number, number]> = {
+  "16:9": [960, 540],
+  "4:3": [720, 540],
+  A4: [595, 842],
+};
+
+/** 简谱档与文本谱「原版」档能选的纸：**实际纸张尺寸**（pt，1pt = 1/72 in），
+ *  外加一档「长图」。长图不是纸——它是一张连续长纸，宽度取 `LONG_IMAGE_WIDTH`、
+ *  高度由内容说了算。**这里没有 16:9 / 4:3**：那是投影片的比例，只归 PPT 档。 */
+export const PAPER_SIZES: Record<string, [number, number] | null> = {
+  投影片: [1600, 900],
+  A4: [595, 842],
+  A5: [420, 595],
+  B5: [499, 709],
+  Letter: [612, 792],
+  长图: null,
+};
+
+/** 「PPT 档」能选的纸：**没有长图**（PPT 恒分页）。「投影片」是文本谱那套版式自带的
+ *  16:9 原生尺寸（`pu/metrics.ts::SLIDE`），换成实际纸张时字号不跟着缩——
+ *  与简谱档同理，纸窄了就是每行少放几个音符。 */
+export const PPT_PAPERS = ["投影片", "A4", "A5", "B5", "Letter"] as const;
+
+/** 「简谱档」能选的纸：**没有投影片**（那是 PPT 那一档的东西），有长图。 */
+export const JIANPU_PAPERS = ["A4", "A5", "B5", "Letter", "长图"] as const;
+
+/** 「长图」那一档的纸宽。取文本谱「原版」量到的那一份（`pu/metrics.ts::PRINT.pageWidth`）
+ *  ——两者本就是同一种观感，长图也就该同宽。 */
+export const LONG_IMAGE_WIDTH = 1000;
+
+/** 出厂纸。简谱档与文本谱「原版」档一贯的观感都是长图。 */
+export const PAPER_DEFAULT = "长图";
+
+/** 这个纸张名在不在表里。 */
+const isPaper = (k: string): boolean => Object.prototype.hasOwnProperty.call(PAPER_SIZES, k);
 
 /** 谱面区的四档排版模式。见 `App.setViewModeButtons` 的注释：这是两组正交状态的组合。 */
 export type ViewMode = "ppt" | "jianpu" | "staff" | "mixed";
@@ -96,10 +141,98 @@ export class App implements OmrHost, PlaybackHost {
   // render settings (app-level, not part of the .jpwabc document)
   pageW = 960;
   pageH = 540;
-  fontSize = 28;
-  titleSize = 48;
-  creditSize = 36;
-  color = 0xff000000; // ARGB
+  /** 两档各记一套字号，切档互不影响（用户口径：「区分 PPT/简谱的字号设置」）。
+   *  PPT 档三个都能调；简谱档**只调基础字号**，标题与词曲按 `_setJpFontSize` 派生。
+   *  当前生效的那一套走下面三个 getter——排版器、设置面板、帮助示例都只认「当前档」。 */
+  private _sizes: Record<JpProfileName, { fontSize: number; titleSize: number; creditSize: number }> = {
+    pptx: { ...JP_SIZE_DEFAULTS },
+    normal: { ...JP_SIZE_DEFAULTS },
+  };
+  get fontSize(): number {
+    return this._sizes[this.jpProfile].fontSize;
+  }
+  get titleSize(): number {
+    return this._sizes[this.jpProfile].titleSize;
+  }
+  get creditSize(): number {
+    return this._sizes[this.jpProfile].creditSize;
+  }
+  /** 某一档的那套字号（只读快照）。导出 PPTX 要按 **PPT 档**另排一遍，
+   *  用的就得是那一档的字号，哪怕屏幕正停在简谱档。 */
+  sizesOf(profile: JpProfileName): { fontSize: number; titleSize: number; creditSize: number } {
+    return { ...this._sizes[profile] };
+  }
+  /** 当前档实际排版用的那张纸。PPT 档就是 `pageW`/`pageH` 那张投影片；简谱档宽度锁定、
+   *  简谱档取 `PAPER_SIZES` 里那张实际纸（长图那一档不分页，返回的高度只是个占位）。
+   *  排版、分行度量（`_phraseFit`）都认它——两处若各用各的纸，行长会按 A 张纸算、
+   *  按 B 张纸排。 */
+  get layoutPage(): { w: number; h: number } {
+    if (this.jpProfile === "pptx") return { w: this.pageW, h: this.pageH };
+    const paper = PAPER_SIZES[this.jpPaper];
+    // 长图：宽固定，高度由内容说了算（传进去的只是个不参与分页的占位）
+    if (!paper) return { w: LONG_IMAGE_WIDTH, h: LONG_IMAGE_WIDTH };
+    return { w: paper[0], h: paper[1] };
+  }
+
+  /** 简谱档当前是不是长图那一档。 */
+  get jpLongImage(): boolean {
+    return PAPER_SIZES[this.jpPaper] == null;
+  }
+
+  /** 文本谱面板设置 → PuPainter 的覆盖层。**PPT（slide）档只吃字号缩放**：那一档的纸是
+   *  16:9 投影片、且恒分页（用户口径），换纸与长图都不适用。 */
+  puUserOptions(): PuUserOptions {
+    const slide = this.puProfile === "slide";
+    const digitFontSize = (slide ? this.puPptFontSize : this.puFontSize) || undefined;
+    const paper = PAPER_SIZES[slide ? this.puPptPaper : this.puPaper];
+    if (!paper) return { digitFontSize, continuous: true }; // 长图：纸交给内容定
+    return { digitFontSize, pageWidth: paper[0], pageHeight: paper[1], continuous: false };
+  }
+
+  /** 简谱档换纸（「长图」也是其中一档）。 */
+  setJpPaper(paper: string): void {
+    this.applyRenderSettings({ jpPaper: paper });
+  }
+
+  /** 简谱档只暴露基础字号，标题/词曲按 PPT 档的出厂比例派生（见 JP_TITLE_RATIO）。 */
+  private _setJpFontSize(v: number): void {
+    this._sizes.normal = {
+      fontSize: v,
+      titleSize: Math.round(v * JP_TITLE_RATIO),
+      creditSize: Math.round(v * JP_CREDIT_RATIO),
+    };
+  }
+  /** 前景色与背景色，**两档各记一套**（同纸张与字号：档与档之间的设置不该串味）。
+   *  档指的是「PPT / 简谱」那一对排版方式，跨文档格式——`.jpwabc` 与文本谱在同一档下共用同一份色。
+   *  背景色只作用于「纸」（预览页的底、导出 PNG 的底、PPTX 的幻灯片底），排版器不认识它。 */
+  private _colors: Record<"ppt" | "jianpu", { fg: number; bg: number }> = {
+    ppt: { fg: 0xff000000, bg: 0xffffffff },
+    jianpu: { fg: 0xff000000, bg: 0xffffffff },
+  };
+  /** 当前档的键。`_slideProfile()` 已经把两种格式各自的档统一成这一对了。 */
+  private get _colorKey(): "ppt" | "jianpu" {
+    return this._slideProfile() ? "ppt" : "jianpu";
+  }
+  get color(): number {
+    return this._colors[this._colorKey].fg;
+  }
+  get bgColor(): number {
+    return this._colors[this._colorKey].bg;
+  }
+  /** 某一档的配色。导出 PPTX 要按 **PPT 档**另排一遍，用的就得是那一档的色。 */
+  colorsOf(profile: "ppt" | "jianpu"): { fg: number; bg: number } {
+    return { ...this._colors[profile] };
+  }
+  /** 简谱档的纸（键取自 `PAPER_SIZES`，「长图」是其中一档）。 */
+  jpPaper = PAPER_DEFAULT;
+  /** 文本谱两档各自的纸。两档的分野只是**展开反复与否**，纸张是独立设置项，
+   *  所以两档都能选（PPT 档那份没有长图——PPT 恒分页）。 */
+  puPaper = PAPER_DEFAULT;
+  puPptPaper = "投影片";
+  /** 文本谱音符数字的字号（pt），**两档各记一套**（同简谱：档与档之间字号不该串味）。
+   *  0 = 跟随该档版式量到的原尺寸。 */
+  puFontSize = 0;
+  puPptFontSize = 0;
   mixedHideBarNumber = false; // 混排：隐藏小节号
   mixedShowJianpuLayer = true;
   zoom = 1; // 谱面显示缩放（应用到 #score-pane 的 --score-zoom）
@@ -127,14 +260,15 @@ export class App implements OmrHost, PlaybackHost {
     this._rebuildPainter();
   }
 
-  /** 换字号要重建 painter（字号是 JinpuPainter 的构造参数），保留已排好的 Score。
+  /** 当前档的字号与 painter 手上那份对不上就重建（字号是 JinpuPainter 的构造参数），
+   *  保留已排好的 Score。字号自己不再当参数传——分档之后「当前字号」是 `fontSize` getter，
+   *  真相在 `_sizes`，这里只负责让 painter 追上它。
    *  随后把 color/titleSize/creditSize 三个选项同步进新 painter。三个调用点共用。
    *
    *  `force` 用于换版面档：`applyPptxStyle` 是**单向覆写**，从 PPT 档切回原版
    *  只能重新构造一份干净的 LayoutOptions。 */
-  private _rebuildPainter(fontSize?: number, force = false): void {
-    if (force || (fontSize && fontSize !== this.fontSize)) {
-      if (fontSize) this.fontSize = fontSize;
+  private _rebuildPainter(force = false): void {
+    if (force || this.painter.layout.fontSize !== this.fontSize) {
       const score = this.painter.score;
       this.painter = new JinpuPainter(this.fontSize);
       this.painter.layout.options.smuflMeta = this.meta;
@@ -152,8 +286,11 @@ export class App implements OmrHost, PlaybackHost {
       // 多段歌词叠在同一条谱行下、反复不展开——传统圣诗本的排法，也是原书 500 首的排法。
       // PPT 档相反：一段一遍、逐遍成页，投影时一屏一段。见 layout.ts::LayoutOptions.lyricStack。
       opt.lyricStack = opt.lrcFont.size * JP_LYRIC_STACK_RATIO;
-      // 而且不分页：一张连续长纸，观感同文本谱的「原版」。见 LayoutOptions.continuousPage。
-      opt.continuousPage = true;
+      // 「长图」= 一张连续长纸不分页，观感同文本谱的「原版」（见 LayoutOptions.continuousPage）；
+      // 选了实际纸张就按那张纸分页。**两种都把标题排在第一页顶上**（bookHead），
+      // 不像 PPT 档另起一张标题页——这一档是印刷歌本的排法。
+      opt.continuousPage = this.jpLongImage;
+      opt.bookHead = true;
     }
   }
 
@@ -162,22 +299,51 @@ export class App implements OmrHost, PlaybackHost {
   setJpProfile(profile: JpProfileName): void {
     if (this.jpProfile === profile) return;
     this.jpProfile = profile;
-    this._rebuildPainter(undefined, true);
+    // 换档连字号与配色也换了一套（两档各记各的）：_rebuildPainter 按新档的 fontSize 重建，
+    // 纸底那层是 CSS 变量、不经排版器，得单独刷一次
+    this._rebuildPainter(true);
+    this._applyPageBg();
     this._syncViewModeButtons();
     this.saveSettings();
     if (this.docFormat !== "pu") this.reload(this.getText());
   }
 
   /** Apply page-size / font-size / title-size / credit-size / color render settings and re-render. */
-  applyRenderSettings(opts: { pageW?: number; pageH?: number; fontSize?: number; titleSize?: number; creditSize?: number; color?: number }): void {
+  applyRenderSettings(opts: {
+    pageW?: number; pageH?: number; jpPaper?: string;
+    puPaper?: string; puPptPaper?: string; puFontSize?: number; puPptFontSize?: number;
+    fontSize?: number; titleSize?: number; creditSize?: number; color?: number; bgColor?: number;
+  }): void {
     if (opts.pageW) this.pageW = opts.pageW;
     if (opts.pageH) this.pageH = opts.pageH;
-    if (opts.color !== undefined) this.color = opts.color;
-    if (opts.titleSize !== undefined) this.titleSize = opts.titleSize;
-    if (opts.creditSize !== undefined) this.creditSize = opts.creditSize;
-    this._rebuildPainter(opts.fontSize);
+    // 简谱档的纸要在 _rebuildPainter 之前定好——那里按 jpLongImage 灌 continuousPage
+    if (opts.jpPaper && isPaper(opts.jpPaper)) this.jpPaper = opts.jpPaper;
+    if (opts.puPaper && isPaper(opts.puPaper)) this.puPaper = opts.puPaper;
+    if (opts.puPptPaper && isPaper(opts.puPptPaper)) this.puPptPaper = opts.puPptPaper;
+    if (opts.puFontSize !== undefined) this.puFontSize = Math.min(200, Math.max(0, opts.puFontSize));
+    if (opts.puPptFontSize !== undefined) this.puPptFontSize = Math.min(200, Math.max(0, opts.puPptFontSize));
+    if (opts.color !== undefined) this._colors[this._colorKey].fg = opts.color;
+    if (opts.bgColor !== undefined) {
+      this._colors[this._colorKey].bg = opts.bgColor;
+      this._applyPageBg();
+    }
+    this._applySizes(opts);
+    this._rebuildPainter();
     this.saveSettings();
     this.reload(this.getText());
+  }
+
+  /** 字号落到**当前档**那一套里。简谱档只收基础字号——那一档的标题/词曲是派生的，
+   *  面板上根本不显示（见 editor/dialogs.ts），收了也只会被下一次派生覆盖掉。 */
+  private _applySizes(opts: { fontSize?: number; titleSize?: number; creditSize?: number }): void {
+    if (this.jpProfile === "normal") {
+      if (opts.fontSize) this._setJpFontSize(opts.fontSize);
+      return;
+    }
+    const s = this._sizes.pptx;
+    if (opts.fontSize) s.fontSize = opts.fontSize;
+    if (opts.titleSize !== undefined) s.titleSize = opts.titleSize;
+    if (opts.creditSize !== undefined) s.creditSize = opts.creditSize;
   }
 
   /** Restore persisted render settings; call before mountEditor() so first render uses them.
@@ -191,15 +357,30 @@ export class App implements OmrHost, PlaybackHost {
     if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
     if (s.pageW) this.pageW = s.pageW;
     if (s.pageH) this.pageH = s.pageH;
-    if (s.titleSize !== undefined) this.titleSize = s.titleSize;
-    if (s.creditSize !== undefined) this.creditSize = s.creditSize;
-    if (s.color !== undefined) this.color = s.color;
+    // 字号分两档存：fontSize/titleSize/creditSize 是 PPT 档（存量数据的语义），
+    // jpFontSize 是简谱档；后者缺省就按出厂比例从出厂字号派生。
+    if (s.fontSize) this._sizes.pptx.fontSize = s.fontSize;
+    if (s.titleSize !== undefined) this._sizes.pptx.titleSize = s.titleSize;
+    if (s.creditSize !== undefined) this._sizes.pptx.creditSize = s.creditSize;
+    this._setJpFontSize(s.jpFontSize || JP_SIZE_DEFAULTS.fontSize);
+    // 存量数据里的 color/bgColor 是 PPT 档的（默认档一直是 PPT），原地继承、不必迁移
+    if (s.color !== undefined) this._colors.ppt.fg = s.color;
+    if (s.bgColor !== undefined) this._colors.ppt.bg = s.bgColor;
+    if (s.jianpuColor !== undefined) this._colors.jianpu.fg = s.jianpuColor;
+    if (s.jianpuBgColor !== undefined) this._colors.jianpu.bg = s.jianpuBgColor;
     if (s.zoom) this.zoom = s.zoom;
+    if (s.jpPaper && isPaper(s.jpPaper)) this.jpPaper = s.jpPaper;
+    if (s.puPaper && isPaper(s.puPaper)) this.puPaper = s.puPaper;
+    if (s.puPptPaper && isPaper(s.puPptPaper)) this.puPptPaper = s.puPptPaper;
+    if (s.puFontSize !== undefined) this.puFontSize = s.puFontSize;
+    if (s.puPptFontSize !== undefined) this.puPptFontSize = s.puPptFontSize;
     if (s.jpProfile === "normal" || s.jpProfile === "pptx") this.jpProfile = s.jpProfile;
     if (s.puProfile === "print" || s.puProfile === "slide") this.puProfile = s.puProfile;
     this._applyZoom();
-    // jpProfile 要在重建之前定好——_rebuildPainter 末尾按它灌 PPT 档的笔画常量
-    this._rebuildPainter(s.fontSize);
+    this._applyPageBg();
+    // jpProfile 要在重建之前定好——_rebuildPainter 既按它取那一档的字号，
+    // 末尾又按它灌 PPT 档的笔画常量
+    this._rebuildPainter();
   }
 
   /** 两个控制器也要用（切输出格式 / 改速度后持久化）。 */
@@ -207,10 +388,19 @@ export class App implements OmrHost, PlaybackHost {
     savePersistedSettings({
       pageW: this.pageW,
       pageH: this.pageH,
-      fontSize: this.fontSize,
-      titleSize: this.titleSize,
-      creditSize: this.creditSize,
-      color: this.color,
+      fontSize: this._sizes.pptx.fontSize,
+      titleSize: this._sizes.pptx.titleSize,
+      creditSize: this._sizes.pptx.creditSize,
+      jpFontSize: this._sizes.normal.fontSize,
+      jpPaper: this.jpPaper,
+      puPaper: this.puPaper,
+      puPptPaper: this.puPptPaper,
+      puFontSize: this.puFontSize,
+      puPptFontSize: this.puPptFontSize,
+      color: this._colors.ppt.fg,
+      bgColor: this._colors.ppt.bg,
+      jianpuColor: this._colors.jianpu.fg,
+      jianpuBgColor: this._colors.jianpu.bg,
       zoom: this.zoom,
       mixedHideBarNumber: this.mixedHideBarNumber,
       mixedShowJianpuLayer: this.mixedShowJianpuLayer,
@@ -238,6 +428,13 @@ export class App implements OmrHost, PlaybackHost {
   }
   private _applyZoom(): void {
     this.scorePane.style.setProperty("--score-zoom", String(this.zoom));
+  }
+
+  /** 背景色灌进 #score-pane 的自定义属性，由 .score-page-wrap 继承。
+   *  写在容器上而不是逐页写：页元素每次重排都重建（_renderPagesWith），
+   *  写在容器上就不必在每条铺页路径里各记一次。 */
+  private _applyPageBg(): void {
+    this.scorePane.style.setProperty("--score-page-bg", colorToCss(this.bgColor));
   }
 
   mountEditor(parent: HTMLElement, initialText: string): void {
@@ -318,10 +515,10 @@ export class App implements OmrHost, PlaybackHost {
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
     this._breakDesc = breakDesc; // 导出 PPTX 时另排一遍要用同一份分页描述
     try {
-      // 简谱档不用 PPT 那张纸（见 JP_CONTINUOUS_WIDTH）；连续长纸的高度由内容定，
-      // 传进去的 pageH 只是个不参与分页的占位。
-      const pptx = this.jpProfile === "pptx";
-      this.painter.resize(pptx ? this.pageW : JP_CONTINUOUS_WIDTH, this.pageH, breakDesc);
+      // 简谱档不用 PPT 那张投影片（见 PAPER_SIZES）；长图那一档不分页，纸的高度
+      // 只是个占位，实际高度由内容说了算。
+      const { w, h } = this.layoutPage;
+      this.painter.resize(w, h, breakDesc);
     } catch (e) {
       console.error("layout failed", e);
       return false;
@@ -351,6 +548,7 @@ export class App implements OmrHost, PlaybackHost {
     else if (this._puPainter.metrics.profile !== this.puProfile) {
       this._puPainter = new PuPainter(this.puProfile);
     }
+    this._puPainter.setUserOptions(this.puUserOptions(), this.color);
     try {
       this._puPainter.load(doc);
     } catch (e) {
@@ -392,6 +590,7 @@ export class App implements OmrHost, PlaybackHost {
   setPuProfile(profile: PageProfileName): void {
     if (this.puProfile === profile) return;
     this.puProfile = profile;
+    this._applyPageBg(); // 同 setJpProfile：配色两档各记各的，纸底那层不经排版器
     this._syncViewModeButtons();
     this.saveSettings();
     if (this.docFormat === "pu") this.reload(this.getText());
@@ -854,7 +1053,7 @@ export class App implements OmrHost, PlaybackHost {
     p.layout.options.smuflMeta = this.painter.layout.options.smuflMeta;
     p.layout.options.lyricStack = this.fontSize; // 只要 > 0：不展开反复，一遍就够量
     score.clearSystemBreak();
-    return p.layout.measureNatural(score, this.pageW);
+    return p.layout.measureNatural(score, this.layoutPage.w);
   }
 
   /** 注册工具栏「简繁」按钮，供转换期间切换加载中状态。 */
