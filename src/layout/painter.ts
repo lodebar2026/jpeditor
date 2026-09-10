@@ -36,27 +36,54 @@ export class JinpuPainter implements PagePainter {
   }
 
   resize(w: number, h: number, dur: string | null): void {
+    const opt = this.layout.options;
     this.pageWidth = w;
     this.pageHeight = h;
     this.pageHeights = [];
+    // 标题块（`bookHead`）**要在排版之前量**：分页那一路得先知道它多高，
+    // 才能让首页少放几行（`LayoutOptions.firstPageHeadroom`）。
+    const head = opt.continuousPage || opt.bookHead ? this.bookHead(w) : null;
+    if (head) head.update();
+    opt.firstPageHeadroom = head && !opt.continuousPage ? head.height + opt.marginTop : 0;
     this.layout.fromScore(this.score, dur, w, h);
-    if (this.layout.options.continuousPage) this.stackContinuous(w);
+    if (opt.continuousPage) this.stackContinuous(head!);
+    else if (head) this.attachBookHead(head);
     else this.layout.pages.unshift(this.titlePage(w, h));
     for (const p of this.layout.pages) p.update();
     this.buildChordIndex();
+  }
+
+  /** 分页那一路的标题块：排在**第一页顶上**，谱行已由 `firstPageHeadroom` 让开位置。
+   *
+   *  **另包一层 Group，不能直接 `first.add(head)`**：`Group.update` 会把子元素归一化到
+   *  左上角原点、把偏移收进 group 自身的 x/y，而 `first` 早已 update 过——它的谱行 y 从 0
+   *  起算，`marginTop + headroom` 那段偏移在 `first.y` 上。往里塞 head 再设 `head.y`，
+   *  设的是**相对第一条谱行**的位置，标题就压到谱面上了。 */
+  private attachBookHead(head: Group): void {
+    const opt = this.layout.options;
+    const first = this.layout.pages[0];
+    if (!first) {
+      head.y = opt.marginTop;
+      this.layout.pages = [head];
+      return;
+    }
+    const outer = new Group();
+    outer.add(head);
+    head.y = opt.marginTop;
+    outer.add(first); // first.y 已是 marginTop + firstPageHeadroom，正好在标题块下方
+    outer.update();
+    this.layout.pages[0] = outer;
   }
 
   /**
    * 连续长纸（「简谱」档）：标题与词曲**排在同一张纸的顶上**，谱面接在下面，
    * 整张纸多高由内容说了算——不另起标题页，也没有页脚。
    */
-  private stackContinuous(w: number): void {
+  private stackContinuous(head: Group): void {
     const opt = this.layout.options;
     const score = this.layout.pages[0];
     if (!score) return;
     score.update();
-    const head = this.bookHead(w);
-    head.update();
     const outer = new Group();
     outer.add(head);
     head.y = opt.marginTop;
@@ -182,9 +209,26 @@ export class JinpuPainter implements PagePainter {
     for (const it of this.score.credit) if (it.type === "title") titles.push(it.text);
     if (titles.length === 0 && this.score.title.trim().length > 0) titles.push(this.score.title);
 
+    const credits = this.creditLines();
+    // **窄纸要缩排**：标题与署名的字号是照长图那张 1000 宽的纸定的，换到 A4/A5 就装不下
+    //（署名是右对齐的，量出来比版心还长时 x 直接成负数，整块探到纸外去——
+    // 基督更美在 A4 上曾左溢 294pt、整块比纸还宽 244pt）。按最宽的那一行整块等比缩，
+    // **够宽时 k = 1、一点不动**，所以长图那一档的观感分毫不变。
+    const headScale = (size: number, lines: readonly string[]): number => {
+      const f = fnt.makeWithSize(size);
+      let need = 0;
+      for (const t of lines) for (const one of t.split("\n")) need = Math.max(need, f.measureText(one));
+      return need > 0 ? need : 0;
+    };
+    const avail = Math.max(1, right - left);
+    const need = Math.max(headScale(opt.titleSize, titles), headScale(opt.creditSize, credits));
+    const k = need > avail ? avail / need : 1;
+    const titleSize = opt.titleSize * k;
+    const creditSize = opt.creditSize * k;
+
     let ypos = 0;
     for (const t of titles) {
-      const obj = this.multipleLineText(t, fnt.makeWithSize(opt.titleSize), w, opt.color);
+      const obj = this.multipleLineText(t, fnt.makeWithSize(titleSize), w, opt.color);
       obj.y = ypos;
       obj.update();
       pg.add(obj);
@@ -192,10 +236,9 @@ export class JinpuPainter implements PagePainter {
     }
 
     // 词曲署名：右对齐，一行一条
-    const credits = this.creditLines();
-    const cf = fnt.makeWithSize(opt.creditSize);
+    const cf = fnt.makeWithSize(creditSize);
     const cfm = cf.metrics;
-    const gap = opt.creditSize * 1.46;
+    const gap = creditSize * 1.46;
     const base = ypos - cfm.ascent;
     credits.forEach((t, i) => {
       const tf = new TextFrame();

@@ -331,13 +331,20 @@ function pptTypeface(cssFamily: string): string {
   return families.find((f) => !/^(?:sans-serif|serif|monospace|system-ui)$/i.test(f)) || "Arial";
 }
 
-function slideXml(shapes: Shape[]): string {
+/** 幻灯片底色。用户没改过（白）就不写 `<p:bg>`——留给母版的 bg1，
+ *  换主题时仍随主题走；只有改过才钉死一个 srgbClr。 */
+function bgXml(bgColor: number): string {
+  if (((bgColor >>> 0) & 0xffffff) === 0xffffff) return "";
+  return `<p:bg><p:bgPr><a:solidFill><a:srgbClr val="${hex(bgColor)}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>`;
+}
+
+function slideXml(shapes: Shape[], bgColor: number): string {
   let body = "";
   let id = 2;
   for (const s of shapes) body += s.kind === "text" ? textXml(s, id++) : geomXml(s, id++);
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
     `<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">` +
-    `<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>` +
+    `<p:cSld>${bgXml(bgColor)}<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>` +
     `<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>` +
     `${body}</p:spTree></p:cSld><p:clrMapOvr><a:overrideClrMapping bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></p:clrMapOvr></p:sld>`;
 }
@@ -401,12 +408,12 @@ export interface PptxSource {
   pageHeight: number;
 }
 
-export async function buildPptx(painter: PptxSource): Promise<Uint8Array> {
+export async function buildPptx(painter: PptxSource, bgColor = 0xffffffff): Promise<Uint8Array> {
   const font = await loadBravura();
   const slides = painter.layout.pages.map((pg) => {
     const shapes: Shape[] = [];
     collectShapes(pg, font, shapes);
-    return slideXml(shapes);
+    return slideXml(shapes, bgColor);
   });
   const deck = buildDeck(slides, EMU(painter.pageWidth), EMU(painter.pageHeight));
   return zipSync(deck);

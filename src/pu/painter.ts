@@ -33,11 +33,40 @@ import {
   type PlacedVoice,
 } from "./layout";
 import { BRACE_GLYPHS } from "./brace";
-import { applyDocOptions, contentWidth, metricsFor, puGraceMetrics, puGraceNotes, puSlurStyle, type PageProfileName, type PuMetrics } from "./metrics";
+import { applyDocOptions, applyUserOptions, contentWidth, metricsFor, puGraceMetrics, puGraceNotes, puSlurStyle, type PageProfileName, type PuMetrics, type PuUserOptions } from "./metrics";
 import { ACCOMP_BRACKET, ACCIDENTAL_GLYPH, BARLINE_MARKS, BRACKET, DYNAMICS, ORNAMENTS, TERMS } from "./glyph";
 
-const BLACK = 0xff1b1b1b;
-const LYRIC_COLOR = 0xff101010;
+/**
+ * 反推数字字号：让数字墨迹高度等于版式量到的 `digitInkHeight`。
+ * 不同字体的数字高宽比不同，但因为锚点按固定步进、字形按墨迹居中，
+ * 位置仍与原版逐点一致。
+ *
+ * **提到模块级**：面板上的「基础字号」是 pt，要把它换算回 `scale` 就得先知道
+ * 「这套版式原本是多少 pt」——那要在 metrics 定稿**之前**算，不能只有实例方法。
+ */
+export function digitFontSizeOf(m: Pick<PuMetrics, "digitFamily" | "digitBold" | "digitInkHeight">): number {
+  const probe = new Font(m.digitFamily, 100, m.digitBold);
+  const b = probe.charBound("1");
+  const inkAt100 = Math.abs(b.bottom - b.top) || 71;
+  return (m.digitInkHeight * 100) / inkAt100;
+}
+
+/** 文本谱的出厂墨色。歌词比谱面略黑一点，是原版量出来的。 */
+const DEFAULT_INK = 0xff1b1b1b;
+const DEFAULT_LYRIC_INK = 0xff101010;
+
+/** 当前墨色。**模块级可变**：颜色出现在这个文件几十处画笔的默认参数里，
+ *  逐处穿参数等于把颜色织进每一个绘制助手的签名。排版是同步的、同一时刻只有一个
+ *  PuPainter 在跑（`load` 从头到尾不 await），所以在 `load` 开头设一次就够。 */
+let INK = DEFAULT_INK;
+let LYRIC_INK = DEFAULT_LYRIC_INK;
+
+/** 设文本谱的前景色。`null` = 回到出厂两色（谱面与歌词各有各的黑）；
+ *  给了颜色则两者同色——用户指定的是「前景色」，没道理还留着那点深浅差。 */
+export function setPuInk(color: number | null): void {
+  INK = color ?? DEFAULT_INK;
+  LYRIC_INK = color ?? DEFAULT_LYRIC_INK;
+}
 // 歌词联合括号：尺寸对照印刷原版量得（单位 = 歌词字号）
 // 换气记号 V 的**尖底**离基线多远（单位 = 数字墨迹高，照原版矢量量的）
 const BREATH_Y = 0.522;
@@ -65,10 +94,10 @@ function barlineBlocks(voices: readonly PlacedVoice[]): PlacedVoice[][] {
 
 /** 实心圆。谱面/混排/文本谱共用一份（`jpglyph.ts::jpDot`，四段贝塞尔的标准正圆）。
  *  这里原先是两段近似（控制点 1.34r），腰部比正圆略胖。 */
-const dot = (cx: number, cy: number, r: number, color = BLACK): GraphicPath =>
+const dot = (cx: number, cy: number, r: number, color = INK): GraphicPath =>
   jpDot(cx, cy, r, color);
 
-function rect(x: number, y: number, w: number, h: number, color = BLACK): GraphicPath {
+function rect(x: number, y: number, w: number, h: number, color = INK): GraphicPath {
   const p = new GraphicPath();
   p.moveTo(x, y);
   p.lineTo(x + w, y);
@@ -80,7 +109,7 @@ function rect(x: number, y: number, w: number, h: number, color = BLACK): Graphi
   return p;
 }
 
-function stroke(color = BLACK, width = 1.4): GraphicPath {
+function stroke(color = INK, width = 1.4): GraphicPath {
   const p = new GraphicPath();
   p.stroke = true;
   p.strokeColor = color;
@@ -94,7 +123,7 @@ function line(x0: number, y0: number, x1: number, y1: number, width = 1.4): Grap
   l.p0.y = y0;
   l.p1.x = x1;
   l.p1.y = y1;
-  l.strokeColor = BLACK;
+  l.strokeColor = INK;
   l.strokeWidth = width;
   return l;
 }
@@ -215,7 +244,7 @@ function braceItem(
   path.segs = parsePathD(g.d);
   path.offset(g.shift, g.shift); // 字形自带的 translate
   path.fill = true;
-  path.fillColor = BLACK;
+  path.fillColor = INK;
   // 承载缩放的那层必须是裸 PageItem：Group.update() 会把子项归一到组包围盒原点，
   // 带非等比缩放时补偿量对不上，图形会被挪走
   const holder = new PageItem();
@@ -271,10 +300,37 @@ export class PuPainter {
 
   private profile: PageProfileName;
   private dialect: Dialect = "tomato";
+  /** 编辑器面板上的手动设置（字号缩放 / 换纸 / 长图）。null = 全按档位的内置版式。 */
+  private userOptions: PuUserOptions | null = null;
+  /** 前景色。null = 出厂墨色。 */
+  private ink: number | null = null;
 
   constructor(profile: PageProfileName = "print") {
     this.profile = profile;
     this.metrics = metricsFor(profile);
+  }
+
+  /** 手动设置。改完要重排才看得见——调用方通常紧接着 `load`（见 App.reloadPu）。 */
+  setUserOptions(o: PuUserOptions | null, ink: number | null): void {
+    this.userOptions = o;
+    this.ink = ink;
+  }
+
+  /** 面板给的是**字号（pt）**，metrics 那层认的是缩放——在这里换算：
+   *  拿「这套版式（含谱面自带的 FontSize 指令）原本多少 pt」当分母。 */
+  private resolveScale(docMetrics: PuMetrics): PuUserOptions | null {
+    const o = this.userOptions;
+    if (!o?.digitFontSize) return o;
+    const base = digitFontSizeOf(docMetrics);
+    return base > 0 ? { ...o, scale: o.digitFontSize / base } : o;
+  }
+
+  /** 这份文档在**不加手动字号**时的数字字号（pt）——面板拿它当「跟随版式」的默认值。 */
+  baseDigitFontSize(doc: PuDoc): number {
+    const meta0 = doc.songs[0]?.metadata;
+    return digitFontSizeOf(
+      applyDocOptions(metricsFor(this.profile, doc.dialect), meta0?.fontSizes ?? [], meta0?.margins ?? []),
+    );
   }
 
   /** PagePainter：连续长图模式下宽高随谱而变，故不是常数。 */
@@ -299,18 +355,24 @@ export class PuPainter {
     this.dialect = doc.dialect;
     // 谱面自带的 `FontSize:` / `Margin:` 也要生效（真实语料里 `all=` 用得最多）
     const meta0 = doc.songs[0]?.metadata;
-    this.metrics = applyDocOptions(
+    // 谱面自带的指令先生效，面板上的手动设置叠在最外层（用户说了算）
+    setPuInk(this.ink);
+    const docMetrics = applyDocOptions(
       metricsFor(this.profile, doc.dialect),
       meta0?.fontSizes ?? [],
       meta0?.margins ?? [],
     );
+    this.metrics = applyUserOptions(docMetrics, this.resolveScale(docMetrics));
     const m = this.metrics;
     this.pageWidth = m.pageWidth;
     this.pageHeight = m.pageHeight;
     this.digitFont = this.makeDigitFont();
     this._accFont = null;
     this._pageShiftX = 0;
-    const headerBottoms = doc.songs.map((song) => this.headerBottom(song.metadata));
+    // PPT 档的头部**另起一页**（同 .jpwabc 的 PPT 档，见 layout/painter.ts::titlePage），
+    // 所以谱面这一路不必在首页顶上给它留位——每一页都从页顶排起。
+    const slide = this.profile === "slide";
+    const headerBottoms = doc.songs.map((song) => (slide ? m.marginTop : this.headerBottom(song.metadata)));
     this.placed = layoutDocument(doc.songs, m, headerBottoms);
     // 连续长图：页面尺寸随内容走，不受纸张尺寸约束（短曲子不该拖着一大片空白）
     if (m.continuous) {
@@ -336,7 +398,36 @@ export class PuPainter {
       g.x += this._pageShiftX;
       return g;
     });
+    if (slide) this.addSlideFurniture();
     for (const p of this.layout.pages) p.update();
+  }
+
+  /**
+   * PPT 档的版面家具：**第一页是独立的标题词曲页**，其后每页的页脚放曲名 + 页码
+   * ——与 `.jpwabc` 的 PPT 档同一个观感（`layout/painter.ts::titlePage` +
+   * `layout.ts::titleAndPageNumber`）。「原版」档不走这条：那一档是印刷歌本的排法，
+   * 标题排在第一页顶上、没有页眉页脚。
+   *
+   * **页码不含标题页**（`i + 1 / n` 在 unshift 之前算好），同 .jpwabc 那一路。
+   */
+  private addSlideFurniture(): void {
+    const m = this.metrics;
+    const font = new Font(m.fontFamily, m.authorSize);
+    const title = primaryMetadata(this.doc!).titles[0] ?? "";
+    const n = this.layout.pages.length;
+    this.layout.pages.forEach((pg, i) => {
+      // 页脚是绝对坐标，而 `Group.update` 会把子项归一化、把偏移收进 pg.y——减掉它才落对位置
+      const y = this.pageHeight - m.marginBottom * 0.5 - pg.y;
+      if (title) {
+        const w = font.measureText(title);
+        pg.add(text(title, (this.pageWidth - w) / 2 - this._pageShiftX, y, font, INK));
+      }
+      pg.add(text(`${i + 1}/${n}`, this.pageWidth * 0.8 - this._pageShiftX, y, font, INK));
+    });
+    const titlePage = new Group();
+    this.paintHeader(titlePage, 0, m.marginLeft);
+    titlePage.update();
+    this.layout.pages.unshift(titlePage);
   }
 
   /**
@@ -345,13 +436,12 @@ export class PuPainter {
    * 位置仍与原版逐点一致。
    */
   private makeDigitFont(): Font {
-    const family = this.metrics.digitFamily;
-    const bold = this.metrics.digitBold;
-    const probe = new Font(family, 100, bold);
-    const b = probe.charBound("1");
-    const inkAt100 = Math.abs(b.bottom - b.top) || 71;
-    const size = (this.metrics.digitInkHeight * 100) / inkAt100;
-    return new Font(family, size, bold);
+    return new Font(this.metrics.digitFamily, digitFontSizeOf(this.metrics), this.metrics.digitBold);
+  }
+
+  /** 当前音符数字的字号（pt）。面板上的「基础字号」显示的就是它。 */
+  get digitFontSize(): number {
+    return this.digitFont.size;
   }
 
   /** 数字按墨迹居中于锚点：返回该把文字画在哪个 x/y，并附带墨迹盒。 */
@@ -428,12 +518,15 @@ export class PuPainter {
   private paintPage(page: PlacedPage, pageIndex: number): Group {
     const m = this.metrics;
     const root = new Group();
-    if (page.firstOfSong) this.paintHeader(root, page.song, this.systemLeft(page));
+    // PPT 档的头部另起一页（addSlideFurniture），谱面页不再画它
+    if (page.firstOfSong && this.profile !== "slide") {
+      this.paintHeader(root, page.song, this.systemLeft(page));
+    }
     for (const group of page.groups) {
       const texts = group.group.texts;
       if (texts.length > 0) {
         const font = new Font(m.fontFamily, m.textLineSize);
-        root.add(text(texts.map((t) => t.text).join("  "), m.marginLeft, group.textY, font, BLACK));
+        root.add(text(texts.map((t) => t.text).join("  "), m.marginLeft, group.textY, font, INK));
       }
       const { braceX, notesLeft } = this.systemMetrics(group);
       // `&sbf` 标了分声部位置就从那里起（前半段仍是单声部），否则从 system 左缘
@@ -449,7 +542,7 @@ export class PuPainter {
           const caption = v.voice.caption;
           if (!caption) continue;
           const w = nameFont.measureText(caption);
-          root.add(text(caption, braceAt - 6 - w, v.y + m.digitInkHeight * 0.35, nameFont, BLACK));
+          root.add(text(caption, braceAt - 6 - w, v.y + m.digitInkHeight * 0.35, nameFont, INK));
         }
       }
       // 多声部：小节线贯穿相邻的声部，但**在歌词块处断开**——四声部谱因此分成
@@ -528,7 +621,7 @@ export class PuPainter {
       const font = new Font(m.fontFamily, size, i === 0);
       const w = font.measureText(title);
       const y = m.titleY + (i === 0 ? 0 : m.titleSize * 0.2 + i * (m.subtitleSize * 1.35));
-      root.add(text(title, centre - w / 2, y, font, BLACK));
+      root.add(text(title, centre - w / 2, y, font, INK));
     });
 
     const right = this.pageWidth - m.continuousSideMargin - this._pageShiftX;
@@ -536,18 +629,18 @@ export class PuPainter {
     // `Z:` 词曲作者靠右；`TL:`/`TR:` 是与标题同高的左右文字块（多行，允许空行占位）
     meta.authors.forEach((a, i) => {
       const w = authorFont.measureText(a);
-      root.add(text(a, right - w, m.authorY + i * m.authorStep, authorFont, BLACK));
+      root.add(text(a, right - w, m.authorY + i * m.authorStep, authorFont, INK));
     });
     const topFont = new Font(m.fontFamily, m.topTextSize);
     meta.topLeft.forEach((t, i) => {
       if (!t) return;
       // `TL:` 与 system 左缘对齐（它不是跟着音符走的）
-      root.add(text(t, systemLeft, m.authorY + i * m.authorStep, topFont, BLACK));
+      root.add(text(t, systemLeft, m.authorY + i * m.authorStep, topFont, INK));
     });
     meta.topRight.forEach((t, i) => {
       if (!t) return;
       const w = topFont.measureText(t);
-      root.add(text(t, right - w, m.authorY + i * m.authorStep, topFont, BLACK));
+      root.add(text(t, right - w, m.authorY + i * m.authorStep, topFont, INK));
     });
 
     // 调号拍号排在左侧文字块**下方**，否则会和 TL 的多行叠在一起
@@ -566,7 +659,7 @@ export class PuPainter {
     const keyText = modeText ? `${tonic}=${modeText}` : "";
     let x = systemLeft;
     if (keyText) {
-      root.add(text(keyText, x, keyY, headFont, BLACK));
+      root.add(text(keyText, x, keyY, headFont, INK));
       x += headFont.measureText(keyText) + 8;
     }
     for (const meter of meta.meters) {
@@ -578,17 +671,17 @@ export class PuPainter {
     if (tempoWords.length > 0) {
       const wordFont = new Font(m.fontFamily, m.headerSize * 0.85);
       root.add(
-        text(tempoWords.join(" "), systemLeft, keyY + m.headerSize * 1.55, wordFont, BLACK),
+        text(tempoWords.join(" "), systemLeft, keyY + m.headerSize * 1.55, wordFont, INK),
       );
     }
 
     // 序号：左上 / 右上
     const indexFont = new Font(m.fontFamily, m.titleSize * 0.62);
     // `XL:` 序号同样对齐 system 左缘
-    if (meta.indexLeft) root.add(text(meta.indexLeft, systemLeft, m.titleY, indexFont, BLACK));
+    if (meta.indexLeft) root.add(text(meta.indexLeft, systemLeft, m.titleY, indexFont, INK));
     if (meta.indexRight) {
       const w = indexFont.measureText(meta.indexRight);
-      root.add(text(meta.indexRight, right - w, m.titleY, indexFont, BLACK));
+      root.add(text(meta.indexRight, right - w, m.titleY, indexFont, INK));
     }
   }
 
@@ -610,7 +703,7 @@ export class PuPainter {
       height: this.metrics.barlineHeight,
       centerY: 0,
       ruleWidth: 1.4,
-      color: BLACK,
+      color: INK,
       font,
     });
     for (const item of r.items) {
@@ -646,8 +739,8 @@ export class PuPainter {
     const inset = ink * 0.42;
     root.add(rect(x + gap - thin / 2, top - inset, thin, bottom - top + inset * 2));
     // 上下花头：字形基线分别落在粗线两端
-    root.add(text(BRACKET.top, x - thick / 2, y0, font, BLACK));
-    root.add(text(BRACKET.bottom, x - thick / 2, y1, font, BLACK));
+    root.add(text(BRACKET.top, x - thick / 2, y0, font, INK));
+    root.add(text(BRACKET.bottom, x - thick / 2, y1, font, INK));
   }
 
   private paintVoice(
@@ -678,7 +771,7 @@ export class PuPainter {
         line.p0.y = base;
         line.p1.x = x + m.sustainHalfLength;
         line.p1.y = base;
-        line.strokeColor = BLACK;
+        line.strokeColor = INK;
         line.strokeWidth = m.sustainWidth;
         root.add(line);
         // 长音里换的和弦印在增时线上方（`- "hx:C/G"`），画法与音符上方那个一样
@@ -715,14 +808,14 @@ export class PuPainter {
    *  弧高（含超长跨度改扁平的阈值）由 puSlurStyle 定，与 layout 的纵向预留同源。 */
   private paintArc(root: Group, x0: number, x1: number, y: number): void {
     const arc = new Slur();
-    arc.init(new Point(x0, y), new Point(x1, y), puSlurStyle(this.metrics, BLACK));
+    arc.init(new Point(x0, y), new Point(x1, y), puSlurStyle(this.metrics, INK));
     arc.update();
     root.add(arc);
   }
 
   /** 多连音弧线的半段：从端点 (x, y) 弯到中间断口 (xMid, apex)。 */
   private paintTupletHalf(root: Group, x: number, y: number, xMid: number, apex: number): void {
-    const p = stroke(BLACK, 1.3);
+    const p = stroke(INK, 1.3);
     p.moveTo(x, y);
     const c1x = x + (xMid - x) * 0.45;
     p.cubicTo(c1x, apex + (y - apex) * 0.15, xMid - (xMid - x) * 0.18, apex, xMid, apex);
@@ -751,7 +844,7 @@ export class PuPainter {
         const apex = y - m.slurHeight;
         this.paintTupletHalf(root, x0, y, cx - half, apex);
         this.paintTupletHalf(root, x1, y, cx + half, apex);
-        root.add(text(label, cx - w / 2, apex + m.annotationSize * 0.36, font, BLACK));
+        root.add(text(label, cx - w / 2, apex + m.annotationSize * 0.36, font, INK));
         break;
       }
       case "crescendo":
@@ -777,7 +870,7 @@ export class PuPainter {
           // 房号在钩的**下方**（原版基线落在钩底再往下 4/1000 版面），压在线上会糊成一团
           const font = new Font(m.fontFamily, m.annotationSize * 0.9);
           root.add(
-            text(mk.mark.caption, x0 + m.digitInkHeight * 0.18, y + drop + m.digitInkHeight * 0.24, font, BLACK),
+            text(mk.mark.caption, x0 + m.digitInkHeight * 0.18, y + drop + m.digitInkHeight * 0.24, font, INK),
           );
         }
         break;
@@ -837,7 +930,7 @@ export class PuPainter {
       const ch = String(it.element.pitch);
       const b = font.charBound(ch);
       root.add(
-        text(ch, x - (b.left + b.right) / 2, y - (b.top + b.bottom) / 2, font, BLACK),
+        text(ch, x - (b.left + b.right) / 2, y - (b.top + b.bottom) / 2, font, INK),
       );
       const oct = it.element.octave;
       for (let i = 0; i < oct; i++) {
@@ -865,7 +958,7 @@ export class PuPainter {
     const wordFont = new Font(m.fontFamily, m.annotationSize);
     const musicFont = new Font("Bravura", m.annotationSize);
     const segs = chordTextSegs(chord);
-    const grp = layoutHarmonySegs(segs, wordFont, musicFont, BLACK);
+    const grp = layoutHarmonySegs(segs, wordFont, musicFont, INK);
     grp.x = x - harmonyWidth(segs, wordFont, musicFont) / 2;
     grp.y = baseline + m.annotationY;
     g.add(grp);
@@ -887,7 +980,7 @@ export class PuPainter {
     if (!note.hidden) {
       const ch = note.sound === "rhythm" ? "X" : String(note.pitch);
       const { dx, dy, b } = this.digitOrigin(ch);
-      g.add(text(ch, x + dx, baseline + dy, this.digitFont, BLACK));
+      g.add(text(ch, x + dx, baseline + dy, this.digitFont, INK));
 
       // 变音记号：用 Bravura 的 SMuFL 字形，按**墨迹**定位——字号取到墨迹高与数字相当，
       // 再把墨迹右缘贴到数字墨迹左缘、墨迹竖向中心对齐数字中心（降号略下移）。
@@ -907,7 +1000,7 @@ export class PuPainter {
           baseline -
           m.digitInkHeight * 0.34 +
           (note.accidental!.includes("flat") ? m.digitInkHeight * 0.08 : 0);
-        g.add(text(acc, cx - inkCx, cy - inkCy, accFont, BLACK));
+        g.add(text(acc, cx - inkCx, cy - inkCy, accFont, INK));
       }
 
       // 八度点：高音在上、低音在下，同侧多点向外叠。
@@ -937,7 +1030,7 @@ export class PuPainter {
     } else if (note.annotation) {
       const font = new Font(m.fontFamily, m.annotationSize);
       const a = note.annotation;
-      g.add(text(a, x - font.measureText(a) / 2, baseline + m.annotationY, font, BLACK));
+      g.add(text(a, x - font.measureText(a) / 2, baseline + m.annotationY, font, INK));
     }
 
     // 倚音：主音左/右侧的小号数字（默认八分，故带一条减时线）
@@ -975,7 +1068,7 @@ export class PuPainter {
     for (const d of geom.digits) {
       // 数字按**墨迹中心**定位（公共几何给的是中心，这里换算成落笔点）
       const b = font.charBound(d.text);
-      g.add(text(d.text, d.cx - (b.left + b.right) / 2, d.cy - (b.top + b.bottom) / 2, font, BLACK));
+      g.add(text(d.text, d.cx - (b.left + b.right) / 2, d.cy - (b.top + b.bottom) / 2, font, INK));
     }
     for (const o of geom.dots) g.add(dot(o.cx, o.cy, o.r));
     // 升降号：与主音同一套画法（Bravura 的 SMuFL 字形、按墨迹定位），只是所有量
@@ -988,11 +1081,11 @@ export class PuPainter {
       const inkAt100 = Math.abs(pb.bottom - pb.top) || 68;
       const accFont = new Font("Bravura", (acc.inkHeight * 100) / inkAt100);
       const ab = accFont.charBound(glyph);
-      g.add(text(glyph, acc.inkRight - ab.right, acc.inkCy - (ab.top + ab.bottom) / 2, accFont, BLACK));
+      g.add(text(glyph, acc.inkRight - ab.right, acc.inkCy - (ab.top + ab.bottom) / 2, accFont, INK));
     }
     for (const bm of geom.beams) g.add(rect(bm.x, bm.y, bm.w, bm.h));
     if (geom.hook) {
-      const p = stroke(BLACK, geom.hook.width);
+      const p = stroke(INK, geom.hook.width);
       p.moveTo(geom.hook.m[0], geom.hook.m[1]);
       p.cubicTo(...geom.hook.c);
       g.add(p);
@@ -1016,7 +1109,7 @@ export class PuPainter {
         const isLeft = orn.name === "zkh";
         const h = m.digitInkHeight * 1.5;
         const bx = x + (isLeft ? -m.digitInkHeight * 0.62 : m.digitInkHeight * 0.62);
-        const p = stroke(BLACK, 1.4);
+        const p = stroke(INK, 1.4);
         const bend = isLeft ? -4.5 : 4.5;
         p.moveTo(bx, baseline - h / 2);
         p.cubicTo(bx + bend, baseline - h / 4, bx + bend, baseline + h / 4, bx, baseline + h / 2);
@@ -1030,7 +1123,7 @@ export class PuPainter {
         const cx = x + m.digitInkHeight * 0.75;
         const w = m.digitInkHeight * 0.383;
         const vy = baseline - m.digitInkHeight * BREATH_Y;
-        const p = stroke(BLACK, 1.1);
+        const p = stroke(INK, 1.1);
         p.moveTo(cx - w / 2, vy - m.digitInkHeight * 0.477);
         p.lineTo(cx, vy);
         p.lineTo(cx + w / 2, vy - m.digitInkHeight * 0.477);
@@ -1042,7 +1135,7 @@ export class PuPainter {
       if (glyph) {
         const font = new Font("Bravura", this.digitFont.size * glyph.scale);
         const w = font.measureText(glyph.glyph);
-        g.add(text(glyph.glyph, x - w / 2, y, font, BLACK));
+        g.add(text(glyph.glyph, x - w / 2, y, font, INK));
         slot += 1;
         continue;
       }
@@ -1051,7 +1144,7 @@ export class PuPainter {
       if (dyn) {
         const font = new Font("Bravura", this.digitFont.size * 0.95);
         const w = font.measureText(dyn);
-        g.add(text(dyn, x - w / 2, y, font, BLACK));
+        g.add(text(dyn, x - w / 2, y, font, INK));
         slot += 1;
         continue;
       }
@@ -1059,7 +1152,7 @@ export class PuPainter {
       const term = TERMS[orn.name];
       if (term) {
         const font = new Font(m.fontFamily, m.annotationSize);
-        g.add(text(term, x - font.measureText(term) / 2, y, font, BLACK));
+        g.add(text(term, x - font.measureText(term) / 2, y, font, INK));
         slot += 1;
         continue;
       }
@@ -1067,12 +1160,12 @@ export class PuPainter {
       const bar = BARLINE_MARKS[orn.name];
       if (bar?.text) {
         const font = new Font(m.fontFamily, m.annotationSize);
-        g.add(text(bar.text, x - font.measureText(bar.text) / 2, y, font, BLACK));
+        g.add(text(bar.text, x - font.measureText(bar.text) / 2, y, font, INK));
         slot += 1;
       } else if (bar?.glyph) {
         const font = new Font("Bravura", this.digitFont.size * 0.95);
         const w = font.measureText(bar.glyph);
-        g.add(text(bar.glyph, x - w / 2, y, font, BLACK));
+        g.add(text(bar.glyph, x - w / 2, y, font, INK));
         slot += 1;
       }
     }
@@ -1128,7 +1221,7 @@ export class PuPainter {
       light: m.barlineWidth,
       heavy: m.barlineWidth * 2.6,
       dotRadius: m.repeatDotRadius,
-      color: BLACK,
+      color: INK,
     });
     // jpBarlineItems 的 x 从 0 起；文本谱的小节线是**居中于锚点**的
     const ox = x - r.width / 2;
@@ -1195,7 +1288,7 @@ export class PuPainter {
       const gapPx = Math.max(line.annotationGap / 100, 0.1) * m.lyricSize;
       const w = font.measureText(line.annotation);
       root.add(
-        text(line.annotation, left - m.lyricSize * 0.5 - gapPx - w, voice.lyricY[verse]!, font, LYRIC_COLOR),
+        text(line.annotation, left - m.lyricSize * 0.5 - gapPx - w, voice.lyricY[verse]!, font, LYRIC_INK),
       );
     });
   }
@@ -1218,7 +1311,7 @@ export class PuPainter {
       g.data = syl;
       // 音节按其**主体**（不含尾随标点）居中于音符锚点，标点自然挂在右边
       const bodyWidth = font.measureText(syl.text);
-      g.add(text(str, x - bodyWidth / 2, voice.lyricY[verse]!, font, LYRIC_COLOR));
+      g.add(text(str, x - bodyWidth / 2, voice.lyricY[verse]!, font, LYRIC_INK));
       if (rightEdge) {
         rightEdge[verse] = Math.max(rightEdge[verse] ?? 0, x - bodyWidth / 2 + font.run(str).width);
       }

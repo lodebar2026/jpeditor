@@ -13,10 +13,28 @@ const KEY = "jpeditor-render-settings";
 export interface PersistedSettings {
   pageW?: number;
   pageH?: number;
+  /** **PPT 档**的三个字号。字段名不改是为了存量数据：默认档一直是 PPT，
+   *  旧版存下来的这三个值本来就是那一档的，原地继承即可，不必迁移。 */
   fontSize?: number;
   titleSize?: number;
   creditSize?: number;
+  /** **简谱档**的基础字号。那一档只调这一个，标题/词曲字号按比例派生，故不单独存。 */
+  jpFontSize?: number;
+  /** 简谱档 / 文本谱「原版」档的纸（`PAPER_SIZES` 的键，「长图」是其中一档）。
+   *  PPT 档那张投影片仍是 pageW/pageH。 */
+  jpPaper?: string;
+  puPaper?: string;
+  puPptPaper?: string;
+  /** 文本谱音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。 */
+  puFontSize?: number;
+  puPptFontSize?: number;
+  /** **PPT 档**的前景色（谱面笔画/文字）与背景色（纸张），ARGB。
+   *  字段名不改是为了存量数据：默认档一直是 PPT，旧版存的就是那一档的色。 */
   color?: number;
+  bgColor?: number;
+  /** **简谱档**的那一套。 */
+  jianpuColor?: number;
+  jianpuBgColor?: number;
   zoom?: number;
   mixedHideBarNumber?: boolean;
   mixedShowJianpuLayer?: boolean;

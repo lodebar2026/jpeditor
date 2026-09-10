@@ -464,20 +464,60 @@ export function applyDocOptions(
   // `q` 改的是音符数字，整个音符栅格（步进、八度点、减时线）都得等比跟随
   const noteK = fs.q ?? 1;
   if (noteK !== 1) {
-    for (const key of [
-      "digitInkHeight", "octaveUpY", "octaveDownY", "octaveDotGap", "octaveDotRadius",
-      "dotOffsetX", "dotRadius", "underlineY", "underlineGap", "underlineWidth",
-      "underlineHalfSpan", "barlineHeight", "sustainWidth", "sustainHalfLength",
-      "stepPlain", "stepBeamed", "stepBarline", "stepPerDot", "slurStackGap", "slurFlatSpan",
-    ] as const) {
-      m[key] = base[key] * noteK;
-    }
+    for (const key of NOTE_GRID_KEYS) m[key] = base[key] * noteK;
   }
 
   if (mg.left !== undefined) m.marginLeft = mg.left;
   if (mg.right !== undefined) m.marginRight = mg.right;
   if (mg.top !== undefined) m.marginTop = mg.top;
   if (mg.bottom !== undefined) m.marginBottom = mg.bottom;
+  return m;
+}
+
+/** 音符栅格那一族尺寸：改音符字号，步进、八度点、减时线都得等比跟随。
+ *  `applyDocOptions` 的 `q=` 与 `applyUserOptions` 的整体缩放共用这张表。 */
+const NOTE_GRID_KEYS = [
+  "digitInkHeight", "octaveUpY", "octaveDownY", "octaveDotGap", "octaveDotRadius",
+  "dotOffsetX", "dotRadius", "underlineY", "underlineGap", "underlineWidth",
+  "underlineHalfSpan", "barlineHeight", "sustainWidth", "sustainHalfLength",
+  "stepPlain", "stepBeamed", "stepBarline", "stepPerDot", "slurStackGap", "slurFlatSpan",
+] as const;
+
+/** 文字那一族字号（含跟着歌词字号走的两个行距）。 */
+const TEXT_SIZE_KEYS = [
+  "titleSize", "subtitleSize", "authorSize", "headerSize", "topTextSize",
+  "annotationSize", "lyricLabelSize", "textLineSize", "lyricSize",
+  "gapMusicLyric", "gapLyricLyric",
+] as const;
+
+/** 编辑器面板上能手动改的那几项。谱面自带的 `FontSize:`/`Margin:` 先生效，再叠这一层。 */
+export interface PuUserOptions {
+  /** 整体字号缩放（1 = 原尺寸）。纸与边距不跟着缩——版心不变，字大了每行就放得少。
+   *  面板不直接给它：那边给的是**字号 pt**（`digitFontSize`），由 PuPainter 换算过来。 */
+  scale?: number;
+  /** 音符数字的字号（pt）。0/缺省 = 跟随版式量到的原尺寸。 */
+  digitFontSize?: number;
+  /** 换纸：实际纸张尺寸（pt）。两个一起给才算数——只给一个等于把纸拉长/压扁。 */
+  pageWidth?: number;
+  pageHeight?: number;
+  /** 长图（一张连续长纸）还是按纸分页。覆盖档位自带的 `continuous`。 */
+  continuous?: boolean;
+}
+
+/** 把面板上的手动设置叠到量好的 metrics 上。 */
+export function applyUserOptions(base: PuMetrics, o: PuUserOptions | null): PuMetrics {
+  if (!o) return base;
+  const m = { ...base };
+  const k = o.scale ?? 1;
+  if (k !== 1) {
+    for (const key of NOTE_GRID_KEYS) m[key] = base[key] * k;
+    for (const key of TEXT_SIZE_KEYS) m[key] = base[key] * k;
+  }
+  if (o.pageWidth && o.pageHeight) {
+    m.pageWidth = o.pageWidth;
+    m.pageHeight = o.pageHeight;
+  }
+  if (o.continuous !== undefined) m.continuous = o.continuous;
   return m;
 }
 
