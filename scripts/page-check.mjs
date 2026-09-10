@@ -9,6 +9,8 @@
 //   P2  同页相邻谱行（`system` 标记的块）墨迹盒相压——且横向确有交叠
 //   P3  谱面以外的东西（页脚曲名、页码、标题块）压到谱面上
 //   P4  同一条谱行、同一段歌词里相邻两个字相压
+//   P5  展开档结构：页数 ≥ 标题页 + 遍数（遍数由 jianpu/expand.ts::countPasses 按同一换页口径数）；
+//       文本谱另查一页只属一遍、遍次不回头（按 expandPuDoc 给组打的 pass）
 //
 // 谱行块与歌词靠 PageItem.classes 认（`system` / `lyric`，见 layout.ts::layoutVertically、
 // Lyric 构造函数与 pu/painter.ts::paintPage / paintSyllables）——构建会压缩类名，instanceof 用不上。
@@ -62,14 +64,31 @@ async function fixtures() {
     .filter((f) => !flags.one || String(flags.one).split(",").some((s) => f.name.includes(s)));
 }
 
-/** 页面里跑：按当前配置排好后量四条判据。返回 { pages, P1..P4: [{page, amount, what}] }。 */
-function probeInPage(TOL) {
+/** 页面里跑：按当前配置排好后量五条判据。返回 { pages, P1..P5: [{page, amount, what}] }。 */
+function probeInPage(TOL, pu, expanded) {
   const app = window.__app;
   const painter = app.docFormat === "pu" ? app.puPainter : app.painter;
-  const res = { pages: 0, P1: [], P2: [], P3: [], P4: [] };
+  const res = { pages: 0, P1: [], P2: [], P3: [], P4: [], P5: [] };
   if (!painter) return res;
   const pages = painter.layout.pages;
   res.pages = pages.length;
+  // P5：展开档结构。遍数取**原文**的遍次序列（文本谱展开后的 Score 已是一遍到底，不能用它）
+  if (expanded && pu) {
+    const orig = app.docFormat === "pu" ? pu.puToScore(pu.parsePu(app.getText())) : painter.score;
+    const want = orig ? pu.countPasses(orig.playData.measures) : 0;
+    if (pages.length < 1 + want) {
+      res.P5.push({ page: 0, amount: 1 + want - pages.length, what: `页数 ${pages.length} < 标题页+${want} 遍` });
+    }
+    if (app.docFormat === "pu") {
+      let last = -1;
+      painter.placedPages().forEach((pg, i) => {
+        const ps = [...new Set(pg.groups.map((g) => g.group.pass).filter((v) => v !== undefined))];
+        if (ps.length > 1) res.P5.push({ page: i + 1, amount: ps.length, what: `一页含 ${ps.length} 遍` });
+        if (ps.length && Math.min(...ps) < last) res.P5.push({ page: i + 1, amount: 1, what: "遍次回头" });
+        if (ps.length) last = Math.max(last, ...ps);
+      });
+    }
+  }
   const hasCls = (it, c) => it.classes && it.classes.has(c);
   const up = (it, c) => { for (let p = it; p; p = p.parent) if (hasCls(p, c)) return p; return null; };
   // 文字取**紧墨迹**（Font.charBound）：字体的 ascent/descent 盒太松——连谱号那类字形高达
@@ -166,8 +185,9 @@ for (const fx of list) {
     window.__app.importBytes(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), name);
   }, { b64, name });
   for (const cfg of CONFIGS) {
-    const got = await page.evaluate(({ cfg, fmt, TOL, probeSrc }) => {
+    const got = await page.evaluate(async ({ cfg, fmt, TOL, probeSrc }) => {
       const app = window.__app;
+      const pu = await window.__pu;
       app.setProfile(cfg.expanded);
       if (fmt === "pu") {
         app.applyRenderSettings(cfg.expanded
@@ -180,19 +200,19 @@ for (const fx of list) {
         app.applyRenderSettings({ jpPaper: cfg.paper, fontSize: cfg.font || 28 });
       }
       // eslint-disable-next-line no-new-func
-      return new Function("TOL", `return (${probeSrc})(TOL);`)(TOL);
+      return new Function("TOL", "pu", "expanded", `return (${probeSrc})(TOL, pu, expanded);`)(TOL, pu, cfg.expanded);
     }, { cfg, fmt: fx.fmt, TOL, probeSrc: probeInPage.toString() });
     rows.push({ fx, cfg, got });
   }
 }
 
 // ── 汇总
-const JUDGES = ["P1", "P2", "P3", "P4"];
+const JUDGES = ["P1", "P2", "P3", "P4", "P5"];
 const totals = {};
 for (const { fx, got } of rows) {
   for (const j of JUDGES) totals[`${fx.fmt}.${j}`] = (totals[`${fx.fmt}.${j}`] ?? 0) + got[j].length;
 }
-console.log("曲子 | 格式 | 配置 | 页数 | P1 P2 P3 P4 | 最严重的几处");
+console.log("曲子 | 格式 | 配置 | 页数 | P1 P2 P3 P4 P5 | 最严重的几处");
 for (const { fx, cfg, got } of rows) {
   const n = JUDGES.map((j) => got[j].length);
   if (n.every((v) => v === 0)) continue;

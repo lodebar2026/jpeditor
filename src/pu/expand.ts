@@ -40,6 +40,8 @@ interface Slice {
 
 interface Run {
   pass: number;
+  /** 展开后的第几遍（walkPlay 每换一次遍页就 +1；源里 `[fenye]` 换页不算） */
+  seg: number;
   page: number;
   group: VoiceGroup;
   slices: Map<number, Slice[]>;
@@ -73,6 +75,7 @@ function expandSong(doc: PuDoc, song: PuSong, songIndex: number): PuSong | null 
   const pages: Run[][] = [];
   let cur: Run | null = null;
   let needPage = true;
+  let seg = 0;
   // 何时换页（endOfPass、往回跳）由 walkPlay 统一判，经 passEnd 通知
   walkPlay(score.playData.measures, {
     measure: (mid, pass, cut) => {
@@ -87,7 +90,7 @@ function expandSong(doc: PuDoc, song: PuSong, songIndex: number): PuSong | null 
         const contiguous = cur !== null && !needPage && cur.lastLine === s.line && cur.lastTo === s.from;
         if (needPage) pages.push([]);
         if (needPage || !contiguous) {
-          cur = { pass, page: h.page, group: h.group, slices: new Map(), lastLine: null, lastTo: -1 };
+          cur = { pass, seg, page: h.page, group: h.group, slices: new Map(), lastLine: null, lastTo: -1 };
           pages[pages.length - 1]!.push(cur);
         }
         needPage = false;
@@ -108,6 +111,7 @@ function expandSong(doc: PuDoc, song: PuSong, songIndex: number): PuSong | null 
     },
     passEnd: () => {
       needPage = true;
+      seg++;
     },
   });
   if (pages.length === 0) return null;
@@ -121,7 +125,7 @@ function expandSong(doc: PuDoc, song: PuSong, songIndex: number): PuSong | null 
       // `W:` 说明文字只跟这一遍里该组第一次出现的地方，逐遍重复印会很吵
       const texts = seen.has(key) ? [] : run.group.texts;
       seen.add(key);
-      const out: VoiceGroup = { index: groupIndex++, texts, voices: [] };
+      const out: VoiceGroup = { index: groupIndex++, texts, voices: [], pass: run.seg };
       for (const v of voices) {
         const slices = run.slices.get(v);
         if (slices && slices.length > 0) out.voices.push(buildLine(slices, run.pass));
@@ -304,7 +308,8 @@ function buildLine(slices: readonly Slice[], pass: number): ScoreLine {
       }
       if (s.from === 0 && ly.annotation !== undefined && out.annotation === undefined) out.annotation = ly.annotation;
       while (out.syllables.length < lyricCursor) out.syllables.push(blank(ly));
-      const got = ly.syllables.slice(before, before + n);
+      // 音节也要拷贝：只写一段、各遍共用的歌词行（副歌）若共享对象，高亮索引只剩最后一遍那页
+      const got = ly.syllables.slice(before, before + n).map((syl) => ({ ...syl }));
       out.syllables.push(...got);
       for (let i = got.length; i < n; i++) out.syllables.push(blank(ly));
     });
