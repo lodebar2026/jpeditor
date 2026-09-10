@@ -150,6 +150,147 @@ function isBeamed(el: MusicElement): boolean {
  * 把一行歌词的音节按顺序发给该行「跟词」的符号。
  * 空音节（源码里的 `@` / `/`）本身就代表跳过一个音符，所以照序发即可。
  */
+/**
+ * 一个音节画出来之后，**墨迹**在锚点左右各伸出多少（音节按**主体**居中于锚点，尾随标点挂在右边——
+ * 同 painter.ts::paintSyllables）。由绘制端注入：排版这一层不碰字体。
+ */
+export type LyricMeasure = (syl: LyricSyllable) => { left: number; right: number };
+
+/** 相邻两字（含尾随标点）的**墨迹**之间至少留这么多，按歌词字号计（伸出量由绘制端按墨迹注入）。
+ *  量墨迹而不量字面框：汉字字面框左右自带留白，按框约束会把墨迹根本没碰到的行也撑开
+ * （按框加 0.12 em 时有 62 组原本不挤的谱行被动，含对照原书 PDF 对过的《圣哉三一歌》长图）。
+ *  也不能取 0：墨迹恰好相碰（「日|子」）照样是挤在一起的字。 */
+const LYRIC_MIN_GAP_EM = 0.1;
+/** 为给歌词让位，音符步进最多压到两端对齐算出的系数的这么多倍；再撑不下就让这一行超宽。 */
+const LYRIC_MIN_SCALE_RATIO = 0.6;
+
+/**
+ * 两端对齐 + 歌词防重叠，一次解出每个符号的最终 x。
+ *
+ * 横向步进只按拍值走（layoutVoiceLine），**不看字宽**：两个四分音符挂「荣耀，」「哈利路亚」
+ * 这类长音节会叠在一起，行被压缩（超宽）时更甚。从前的做法是整行乘一个缩放系数了事。
+ *
+ * 这里把各声部的符号 x 归并成**共享的列**（多声部已按拍位对齐，同拍位 x 相同），
+ * 列的位置取「前一列 + 系数 × 自然步进」与「同声部同一段里前一个有字的列 + 两字半宽 + 间隙」
+ * 的较大者。总宽随系数单调，二分找系数让总宽落到目标宽度：
+ * 两端对齐的行等于原来的目标宽；不拉伸的行（番茄）不超版心就保持原系数。
+ * **不相撞的行解出来就是原来的系数**，落点一点不动（《圣哉三一歌》对照原书 PDF 对过）。
+ * 音符压到 `LYRIC_MIN_SCALE_RATIO` 仍放不下（光歌词就比版心宽）时，歌词约束按比例打折守住版心。
+ */
+function placeColumns(
+  lines: ReadonlyArray<{ items: PlacedItem[]; width: number }>,
+  lyrics: ReadonlyArray<readonly LyricLine[]>,
+  scale: number,
+  stretchable: boolean,
+  width: number,
+  m: PuMetrics,
+  measure: LyricMeasure | undefined,
+): void {
+  const natural = Math.max(...lines.map((l) => l.width), 1);
+  const apply = (xs: (x: number) => number, s: number): void => {
+    for (const l of lines) {
+      for (const it of l.items) {
+        it.x = xs(it.x);
+        it.advance *= s;
+      }
+    }
+  };
+  if (!measure) {
+    apply((x) => x * scale, scale);
+    return;
+  }
+  // 共享列：各声部符号 x 的并集（自然坐标）
+  const EPS = 0.01;
+  const cols = [...new Set(lines.flatMap((l) => l.items.map((it) => it.x)))].sort((a, b) => a - b);
+  const colsU: number[] = [];
+  for (const x of cols) if (colsU.length === 0 || x - colsU[colsU.length - 1]! > EPS) colsU.push(x);
+  const colOf = (x: number): number => {
+    let lo = 0;
+    let hi = colsU.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (colsU[mid]! <= x + EPS) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+  // 歌词约束：同声部同一段里相邻两个有字的符号，列距至少 D
+  const gap = m.lyricSize * LYRIC_MIN_GAP_EM;
+  const need = new Map<number, Array<{ from: number; d: number }>>();
+  lines.forEach((l, vi) => {
+    const verses = lyrics[vi]?.length ?? 0;
+    for (let v = 0; v < verses; v++) {
+      let prev: { col: number; right: number } | null = null;
+      for (const it of l.items) {
+        const syl = it.syllables[v];
+        if (!syl) continue;
+        const e = measure(syl);
+        const col = colOf(it.x);
+        if (prev && col > prev.col) {
+          const d = prev.right + e.left + gap;
+          const list = need.get(col) ?? [];
+          list.push({ from: prev.col, d });
+          need.set(col, list);
+        }
+        prev = { col, right: e.right };
+      }
+    }
+  });
+  // 列位置。f 是歌词约束的折扣（1 = 足额；只有整行放不进版心时才往下打）。
+  const positions = (s: number, f = 1): { X: number[]; raised: boolean } => {
+    const X = new Array<number>(colsU.length).fill(0);
+    X[0] = s * colsU[0]!;
+    let raised = false;
+    for (let c = 1; c < colsU.length; c++) {
+      let x = X[c - 1]! + s * (colsU[c]! - colsU[c - 1]!);
+      for (const { from, d } of need.get(c) ?? []) {
+        const want = X[from]! + d * f;
+        if (want > x + 1e-9) {
+          x = want;
+          raised = true;
+        }
+      }
+      X[c] = x;
+    }
+    return { X, raised };
+  };
+  const totalOf = (X: number[], s: number): number =>
+    X[X.length - 1]! + s * (natural - colsU[colsU.length - 1]!);
+  const first = positions(scale);
+  // 没有哪一列被歌词撑开：照老样子整行乘系数。逐列累加与直接相乘在末位上会差 0.01，
+  // 不相撞的行就该一个坐标都不动。
+  if (!first.raised) {
+    apply((x) => x * scale, scale);
+    return;
+  }
+  const target = stretchable ? natural * scale : Math.min(totalOf(first.X, scale), width);
+  /** total 随参数单调增：二分取总宽不超过 target 的最大参数。 */
+  const largest = (lo: number, hi: number, total: (v: number) => number): number => {
+    for (let k = 0; k < 40; k++) {
+      const mid = (lo + hi) / 2;
+      if (total(mid) > target) hi = mid;
+      else lo = mid;
+    }
+    return lo;
+  };
+  let s = scale;
+  let f = 1;
+  if (totalOf(first.X, s) > target + EPS) {
+    // 压音符步进给歌词让位
+    const sMin = scale * LYRIC_MIN_SCALE_RATIO;
+    if (totalOf(positions(sMin).X, sMin) <= target) {
+      s = largest(sMin, scale, (v) => totalOf(positions(v).X, v));
+    } else {
+      // 音符压到底，光歌词还是比版心宽（窄纸上一串长英文词）：歌词约束按比例打折，
+      // 整行守住版心——字挨得更紧、甚至微叠，也不能伸出纸外被裁掉
+      s = sMin;
+      f = largest(0, 1, (v) => totalOf(positions(sMin, v).X, sMin));
+    }
+  }
+  const X = positions(s, f).X;
+  apply((x) => X[colOf(x)]!, s);
+}
+
 function assignLyrics(items: PlacedItem[], lyrics: readonly LyricLine[]): void {
   lyrics.forEach((line, verse) => {
     let cursor = 0;
@@ -734,6 +875,7 @@ export function layoutSong(
   m: PuMetrics,
   songIndex = 0,
   headerBottom = 0,
+  measure?: LyricMeasure,
 ): PlacedPage[] {
   // 可用宽度要扣掉左内边距和末个音符的字形半宽，这样两端对齐后
   // 最后一个音符的墨迹右缘正好落在版心右缘上
@@ -789,16 +931,18 @@ export function layoutSong(
         ? Math.min(width / natural, m.maxStretch)
         : Math.min(1, width / natural);
 
+      // 音节先挂上（只按序号对到跟词的符号上），列位置要看字宽
+      laidOut.forEach((l, vi) => {
+        const voice = group.voices[vi]!;
+        for (const it of l.items) it.syllables = new Array(voice.lyrics.length).fill(null);
+        assignLyrics(l.items, voice.lyrics);
+      });
+      placeColumns(laidOut, group.voices.map((v) => v.lyrics), scale, stretchable, width, m, measure);
+
       const voices: PlacedVoice[] = [];
       let textY = y + m.textLineY;
       laidOut.forEach((l, vi) => {
         const voice = group.voices[vi]!;
-        for (const it of l.items) {
-          it.x *= scale;
-          it.advance *= scale;
-          it.syllables = new Array(voice.lyrics.length).fill(null);
-        }
-        assignLyrics(l.items, voice.lyrics);
         const underlines = computeUnderlines(voice, l.items, m, l.groups);
         // 第一行歌词的位置是**动态**的：常规按 gapMusicLyric，但一行里若有十六分音符
         // 这样「减时线 + 低音点」叠下来的音，就按最低墨迹再让开一个 stackGap，
@@ -987,9 +1131,10 @@ export function layoutDocument(
   songs: readonly PuSong[],
   m: PuMetrics,
   headerBottoms: readonly number[] = [],
+  measure?: LyricMeasure,
 ): PlacedScore {
   let pages: PlacedPage[] = [];
-  songs.forEach((song, i) => pages.push(...layoutSong(song, m, i, headerBottoms[i] ?? 0)));
+  songs.forEach((song, i) => pages.push(...layoutSong(song, m, i, headerBottoms[i] ?? 0, measure)));
 
   // 连续长图：所有页面首尾相接成一张，源里的 `[fenye]` 只当作一段额外留白
   if (m.continuous && pages.length > 1) {

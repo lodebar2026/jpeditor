@@ -28,8 +28,11 @@ const flags = Object.fromEntries(args.filter((a) => a.startsWith("--")).map((a) 
 }));
 const BASELINE = flags.baseline ?? "testdata/page-check-baseline.json";
 const TOL = 0.5;
-/** 定点断言：这两首在这两条判据上必须为 0。 */
+/** 定点断言：这两首的**文本谱**在这两条判据上必须为 0（用户点名的相压都出在文本谱）。
+ *  `.jpwabc` 的沧海一声笑展开档另有 2 处 P4：源文件里 `W1` 写过了第 15 小节、又有一行
+ *  `W1-6@15:` 给同一批音符挂「啦」，两份词抢同一个音——那是歌词归属的语义，不是排版。 */
 const PINNED = { 沧海一声笑: ["P2", "P4"], 我今来就你: ["P2", "P4"] };
+const PINNED_FMT = "pu";
 
 /** 配置矩阵。`expanded` 只有投影片比例；原样档字号一般不会那么大，只跑默认字号。 */
 const CONFIGS = [
@@ -69,14 +72,15 @@ function probeInPage(TOL) {
   res.pages = pages.length;
   const hasCls = (it, c) => it.classes && it.classes.has(c);
   const up = (it, c) => { for (let p = it; p; p = p.parent) if (hasCls(p, c)) return p; return null; };
-  // 文字取**紧墨迹**（TextFrame.inkBound，排版器给 SMuFL 字形用的同一个开关）：
-  // 字体的 ascent/descent 盒太松——连谱号那类字形高达 4 em，多声部谱组的盒子被它撑得
-  // 压到上下两组，歌词的 descent 也会「压」到页脚上，全是量法的误报。
+  // 文字取**紧墨迹**（Font.charBound）：字体的 ascent/descent 盒太松——连谱号那类字形高达
+  // 4 em，多声部谱组的盒子被它撑得压到上下两组，歌词的 descent 也会「压」到页脚上。
+  // **横向也要真墨迹**：TextFrame.inkBound 那个开关只收纵向、横向仍是 0..字宽（字面框），
+  // 汉字字面框左右自带留白，按它判「相压」的其实是框贴框（「日|子」框叠 4pt、墨迹恰好相碰）。
+  // SMuFL 字形（SmuflText）自己重写了 bound，照用。
   const inkOf = (it) => {
-    if (typeof it.text !== "string" || !("inkBound" in it) || !it.text.trim()) return it.bound;
-    const was = it.inkBound;
-    it.inkBound = true;
-    try { return it.bound; } finally { it.inkBound = was; }
+    if (typeof it.text !== "string" || !it.font?.charBound || !it.text.trim() || it.smufl) return it.bound;
+    const b = it.font.charBound(it.text);
+    return { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
   };
   const absBox = (it) => {
     const b = inkOf(it), o = it.pos(null);
@@ -205,7 +209,7 @@ const fail = (m) => { console.log("  ✗ " + m); bad++; };
 // 定点断言
 console.log("\n【定点】");
 for (const [song, judges] of Object.entries(PINNED)) {
-  for (const { fx, cfg, got } of rows.filter((r) => r.fx.name === song)) {
+  for (const { fx, cfg, got } of rows.filter((r) => r.fx.name === song && r.fx.fmt === PINNED_FMT)) {
     for (const j of judges) {
       if (got[j].length) fail(`${song}（${fx.fmt}，${cfg.key}）${j} ${got[j].length} 处，最大 ${Math.max(...got[j].map((v) => v.amount))}pt`);
     }
