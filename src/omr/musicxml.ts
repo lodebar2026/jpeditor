@@ -140,6 +140,8 @@ function notationsXml(num: JpNum, arcs: ArcPairs): string {
   if (num.fermata) ns.push(`<fermata/>`);
   // 上波音 ∿ = MusicXML 的 inverted-mordent（带竖杠的那个才是 mordent）。
   if (num.ornament === "upper-mordent") ns.push(`<ornaments><inverted-mordent/></ornaments>`);
+  // 顿音 ▼ = staccato（与文本谱 `&dy` 同一口径，见 pu/toxml.ts 的记号表）。
+  if (num.articulation === "staccato") ns.push(`<articulations><staccato/></articulations>`);
   return ns.length ? `<notations>${ns.join("")}</notations>` : "";
 }
 

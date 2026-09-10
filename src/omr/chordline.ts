@@ -16,12 +16,19 @@ export type ChordCand = { tok: string; x: number; bbox: Rect };
 const SECTION_RE = /(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|fine|tag|refrain)\d*/gi;
 // 编者注/段落标记的方括号（`[下面一行也可用]`、`【Chorus】`）。
 const BRACKET_RE = /[[【][^\]】]*[\]】]/g;
+// 中文段落方框词（`副歌`、`前奏`——1《以色列的圣者》第 2 谱行上方的和弦行末尾就印着一个方框
+// `副歌`）。它们与英文的 Chorus/Intro 是同一类东西，只是印的是汉字：不先剥掉，`isAnnotationLine`
+// 的「含汉字即真歌词」一条会把整行和弦判成歌词——那一行的 8 个和弦全丢，还多出一条伪 verse
+// （实测该曲第 1 谱行凭空多出 `C2:Em/D//B m//A/Bm Esus E副歌`）。
+// 只收**方框里印的那几个词**：真歌词行除了这几个字还会有别的汉字，剥完仍判为歌词，不会误伤。
+const CN_SECTION_RE = /(副歌|主歌|前奏|间奏|尾奏|尾声|过门|引子|结束)/g;
 /** 把段落方框词与方括号注抹成**等长**空格：和弦切词要保住字符下标（换算源图 x 用），
  *  不能像 isAnnotationLine 那样变长替换。不抹的话 `Verse` 里的 e、`Coda` 里的 C/d/a
  *  都是合法根音，会被贪心吃成 E、C、D、A 四个凭空的和弦（「主祢真伟大」的 Verse/Coda 行）。 */
 const blankNonChord = (s: string): string =>
   s.replace(BRACKET_RE, (m) => " ".repeat(m.length))
     .replace(SECTION_RE, (m) => " ".repeat(m.length))
+    .replace(CN_SECTION_RE, (m) => " ".repeat(m.length))
     .replace(JUMP_RE, (m) => " ".repeat(m.length))
     .replace(KEY_METER_RE, (m) => " ".repeat(m.length));
 // 中文谱常把备选和弦写成 `F或C`，升降根音也可能写成 `升F` / `降B`。这些少量汉字属于
@@ -92,7 +99,7 @@ export function normalizeChord(tok: string): string {
 }
 
 /** 整行 rec 原文是否为和弦/段落标记行（而非歌词）。
- *  ① 无歌词汉字（只允许和弦语法里的「或/升/降」）；② 整行几乎能被一串**和弦记号**贪心覆盖
+ *  ① 无歌词汉字（只允许和弦语法里的「或/升/降」，以及方框段落词「副歌/前奏…」）；② 整行几乎能被一串**和弦记号**贪心覆盖
  *  （见 chordCoverage）。旧判据按 `[A-Za-z]+` 切字母簇、要求每簇首字母是 A-G 根音，但升降号与
  *  数字会把簇切断——`C#mF#mBm7E` 切出 `mF`/`mBmBm`、`E7sus4` 切出 `sus`，首字母都不是根音，
  *  于是整行和弦被当成歌词（「再次将我更新」的 W2/W3 就是这么来的）。改看覆盖率后二者都能吃完。
@@ -101,7 +108,7 @@ export function normalizeChord(tok: string): string {
 export function isAnnotationLine(text0: string): boolean {
   // 方括号里的是编者注/段落标记（「立定心志」和弦行末的 `[下面一行也可用]`、`【Chorus】`），
   // 从来不是唱词。不先剥掉，一句中文编者注就会让整行和弦行被当成真歌词（该曲的 W2 = 和弦）。
-  const text = text0.replace(/[[【][^\]】]*[\]】]/g, " ");
+  const text = text0.replace(/[[【][^\]】]*[\]】]/g, " ").replace(CN_SECTION_RE, " ");
   const hanzi = text.match(/[一-鿿]/g) ?? [];
   if (hanzi.some((ch) => !/[或升降]/.test(ch))) return false;  // 除和弦连接/升降记号外有汉字 → 真歌词行
   const rest = text.replace(SECTION_RE, " ").replace(CHORD_HANZI_RE, " ");
