@@ -13,28 +13,25 @@ const KEY = "jpeditor-render-settings";
 export interface PersistedSettings {
   pageW?: number;
   pageH?: number;
-  /** **PPT 档**的三个字号。字段名不改是为了存量数据：默认档一直是 PPT，
-   *  旧版存下来的这三个值本来就是那一档的，原地继承即可，不必迁移。 */
+  /** **展开档**的三个字号。 */
   fontSize?: number;
   titleSize?: number;
   creditSize?: number;
-  /** **简谱档**的基础字号。那一档只调这一个，标题/词曲字号按比例派生，故不单独存。 */
-  jpFontSize?: number;
-  /** 简谱档 / 文本谱「原版」档的纸（`PAPER_SIZES` 的键，「长图」是其中一档）。
-   *  PPT 档那张投影片仍是 pageW/pageH。 */
+  /** **原样档**的基础字号。那一档只调这一个，标题/词曲字号按比例派生，故不单独存。 */
+  originalFontSize?: number;
+  /** 原样档的纸（`PAPER_SIZES` 的键，「长图」是其中一档）。
+   *  展开档只选比例：`.jpwabc` 那张投影片是 pageW/pageH，文本谱是 `puExpandedRatio`。 */
   jpPaper?: string;
   puPaper?: string;
-  puPptPaper?: string;
+  puExpandedRatio?: string;
   /** 文本谱音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。 */
   puFontSize?: number;
-  puPptFontSize?: number;
-  /** **PPT 档**的前景色（谱面笔画/文字）与背景色（纸张），ARGB。
-   *  字段名不改是为了存量数据：默认档一直是 PPT，旧版存的就是那一档的色。 */
-  color?: number;
-  bgColor?: number;
-  /** **简谱档**的那一套。 */
-  jianpuColor?: number;
-  jianpuBgColor?: number;
+  puExpandedFontSize?: number;
+  /** 两档各自的前景色（谱面笔画/文字）与背景色（纸张），ARGB。 */
+  expandedColor?: number;
+  expandedBgColor?: number;
+  originalColor?: number;
+  originalBgColor?: number;
   zoom?: number;
   mixedHideBarNumber?: boolean;
   mixedShowJianpuLayer?: boolean;
@@ -42,7 +39,7 @@ export interface PersistedSettings {
   playSpeed?: unknown;
   /** 交 OmrController 自己校验 */
   omrFormat?: unknown;
-  /** 版面档（原版 / PPT）。两种谱各记各的：简谱 normal|pptx、文本谱 print|slide。 */
+  /** 当前排版输出（展开 / 原样）在两个引擎里的尺寸档名：简谱 normal|pptx、文本谱 print|slide。 */
   jpProfile?: "normal" | "pptx";
   puProfile?: "print" | "slide";
 }

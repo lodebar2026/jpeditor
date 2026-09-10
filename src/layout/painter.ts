@@ -76,7 +76,7 @@ export class JinpuPainter implements PagePainter {
   }
 
   /**
-   * 连续长纸（「简谱」档）：标题与词曲**排在同一张纸的顶上**，谱面接在下面，
+   * 连续长纸（「原样」档）：标题与词曲**排在同一张纸的顶上**，谱面接在下面，
    * 整张纸多高由内容说了算——不另起标题页，也没有页脚。
    */
   private stackContinuous(head: Group): void {
@@ -186,7 +186,7 @@ export class JinpuPainter implements PagePainter {
   }
 
   /**
-   * 「简谱」档纸顶那一块 —— **照 500 首重排的成书排版**（`scripts/rebuild.mjs::decorateSong`）：
+   * 「原样」档纸顶那一块 —— **照 500 首重排的成书排版**（`scripts/rebuild.mjs::decorateSong`）：
    * 标题居中、**调号拍号排在左边**、**词曲署名右对齐逐行**。
    *
    * 原先这一块把词曲跟标题一样居中堆在标题底下，调号拍号则**根本没画**——

@@ -154,7 +154,7 @@ export interface PuMetrics {
   layerY: number;
 
   fontFamily: string;
-  /** 音符数字用的字体族与字重。数字比歌词粗，两支要分开配；PPT 档不加粗 */
+  /** 音符数字用的字体族与字重。数字比歌词粗，两支要分开配；展开档不加粗 */
   digitFamily: string;
   digitBold: boolean;
 }
@@ -257,7 +257,7 @@ const SLIDE: PuMetrics = {
   marginTop: 70,
   marginBottom: 70,
   continuous: false, // 投影按幻灯片分页
-  digitBold: false, // PPT 档的观感是既有的，不跟简谱档加粗
+  digitBold: false, // 展开档的观感是既有的，不跟原样档加粗
   continuousSideMargin: 130,
 
   // 投影距离远，整体放大约 1.55 倍

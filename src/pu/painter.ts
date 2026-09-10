@@ -369,7 +369,7 @@ export class PuPainter {
     this.digitFont = this.makeDigitFont();
     this._accFont = null;
     this._pageShiftX = 0;
-    // PPT 档的头部**另起一页**（同 .jpwabc 的 PPT 档，见 layout/painter.ts::titlePage），
+    // 展开档的头部**另起一页**（同 .jpwabc 的展开档，见 layout/painter.ts::titlePage），
     // 所以谱面这一路不必在首页顶上给它留位——每一页都从页顶排起。
     const slide = this.profile === "slide";
     const headerBottoms = doc.songs.map((song) => (slide ? m.marginTop : this.headerBottom(song.metadata)));
@@ -403,8 +403,8 @@ export class PuPainter {
   }
 
   /**
-   * PPT 档的版面家具：**第一页是独立的标题词曲页**，其后每页的页脚放曲名 + 页码
-   * ——与 `.jpwabc` 的 PPT 档同一个观感（`layout/painter.ts::titlePage` +
+   * 展开档的版面家具：**第一页是独立的标题词曲页**，其后每页的页脚放曲名 + 页码
+   * ——与 `.jpwabc` 的展开档同一个观感（`layout/painter.ts::titlePage` +
    * `layout.ts::titleAndPageNumber`）。「原版」档不走这条：那一档是印刷歌本的排法，
    * 标题排在第一页顶上、没有页眉页脚。
    *
@@ -518,7 +518,7 @@ export class PuPainter {
   private paintPage(page: PlacedPage, pageIndex: number): Group {
     const m = this.metrics;
     const root = new Group();
-    // PPT 档的头部另起一页（addSlideFurniture），谱面页不再画它
+    // 展开档的头部另起一页（addSlideFurniture），谱面页不再画它
     if (page.firstOfSong && this.profile !== "slide") {
       this.paintHeader(root, page.song, this.systemLeft(page));
     }
