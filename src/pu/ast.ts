@@ -237,6 +237,8 @@ export interface VoiceGroup {
   /** 本组之前的 `W:` 文字行 */
   texts: TextLine[];
   voices: ScoreLine[];
+  /** 展开档：这一组属于展开后的第几遍（expandPuDoc 填；原文里没有）。page-check 的 P5 据此查「一页只属一遍」 */
+  pass?: number;
 }
 
 export interface ScorePage {
