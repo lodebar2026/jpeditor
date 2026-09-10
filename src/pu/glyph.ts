@@ -25,7 +25,10 @@ export const ORNAMENTS: Readonly<Record<string, OrnamentGlyph>> = {
   ycy: { glyph: C(0xe4c0), placement: "above", scale: 1.0, label: "延长记号" },
   bc: { glyph: C(0xe4a4), placement: "above", scale: 0.9, label: "保持音" },
   zy: { glyph: C(0xe4a0), placement: "above", scale: 0.9, label: "重音" },
-  dy: { glyph: C(0xe4a2), placement: "above", scale: 0.9, label: "顿音" },
+  // 顿音在简谱印刷体里是**实心倒三角** ▼（articStaccatissimoAbove），不是圆点：数字正上方的
+  // 圆点在简谱里已经是高八度点，用 articStaccatoAbove 画顿音两者分不开（1640《主要在中国掌权》
+  // 整首每音一个顿音，画成圆点满纸都像高八度）。
+  dy: { glyph: C(0xe4a6), placement: "above", scale: 0.9, label: "顿音" },
   hx: { glyph: C(0xe4ce), placement: "above", scale: 0.9, label: "呼吸记号" },
   shy: { glyph: C(0xe5d0), placement: "above", scale: 0.9, label: "上滑音" },
   xhy: { glyph: C(0xe5d3), placement: "above", scale: 0.9, label: "下滑音" },
