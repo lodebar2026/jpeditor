@@ -3,7 +3,7 @@
 //   npm run build && node zoom-check.mjs
 //
 // 守四条：
-//   Z1 四档（PPT/简谱/五线谱/混排）纸宽一致——混排从前单独写 620px
+//   Z1 四档（展开/原样/五线谱/混排）纸宽一致——混排从前单独写 620px
 //   Z2 缩放确实作用在纸上（zoom ×2 / ×0.5 纸宽同比例）——`--score-zoom` 是设在
 //      `#score-pane` 上的，把整条 calc 挪进 `:root` 会让它恒取回退值 1，缩放整个失效
 //   Z3 触控板捏合（ctrl+wheel）改缩放，且按手指位置锚定（滚动跟着走）；捏回去能复原
@@ -102,8 +102,8 @@ const modes = await page.evaluate(async (x) => {
   const o = {};
   app.adoptStaffXml(x); await new Promise((r) => setTimeout(r, 900)); o.混排 = w();
   await app.setViewMode("staff"); await new Promise((r) => setTimeout(r, 400)); o.五线谱 = w();
-  await app.setViewMode("jianpu"); await new Promise((r) => setTimeout(r, 400)); o.简谱 = w();
-  await app.setViewMode("ppt"); await new Promise((r) => setTimeout(r, 400)); o.PPT = w();
+  await app.setViewMode("original"); await new Promise((r) => setTimeout(r, 400)); o.原样 = w();
+  await app.setViewMode("expanded"); await new Promise((r) => setTimeout(r, 400)); o.展开 = w();
   return o;
 }, xml);
 const widths = Object.values(modes);

@@ -94,7 +94,7 @@ for (const s of slides) {
   const sh = shapesOf(dec.decode(s));
   const notes = sh.filter((q) => q.size === EM && /^[0-7]$/.test(q.text));
   const dashes = sh.filter((q) => q.size === EM && q.text === "-");
-  // 小节线：竖的细长路径，上缘 = 基线 − em（PPT 档的 jpStaffTop）
+  // 小节线：竖的细长路径，上缘 = 基线 − em（展开档的 jpStaffTop）
   const bars = sh.filter((q) => q.w < 0.1 && Math.abs(q.h - EM * 4 / 3) < 0.2);
   const beams = sh.filter((q) => q.h < 0.1 && q.w > 1 && q.strokeW !== null);
   // 矢量圆（八度点/附点）：无描边的小正方形包围盒

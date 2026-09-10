@@ -1049,7 +1049,7 @@ export class NoteEntry extends Entry {
       // 栅格是**墨迹到墨迹**量的。圆的局部包围盒就是墨迹本身（(0,0)–(2r,2r)），
       // 所以直接按上/下缘落位——不必再像字形那样倒扣 `.` 自己的基线偏移。
       if (options.jpGridLegacy) {
-        // 旧式落位（PPT 档）：阶梯以**基线**为准，见 `LayoutOptions.jpLegacyDotCenter`。
+        // 旧式落位（展开档）：阶梯以**基线**为准，见 `LayoutOptions.jpLegacyDotCenter`。
         // 那里记的是**墨迹中心**，圆的局部原点在墨迹顶，所以退一个半径。
         tf.y = options.jpLegacyDotCenter(d, ch.beams, oct >= 0) - r;
       } else if (oct >= 0) {
@@ -1248,7 +1248,7 @@ export class NoteEntry extends Entry {
   }
   /**
    * 附点 —— **一个实心矢量圆**（三条简谱路统一，见 `jpglyph.ts`；八度点、反复点同理）。
-   * 大小默认照字体里那个 `·`（`jpAugDotRadius`），PPT 档把它与八度点设成同一个值。
+   * 大小默认照字体里那个 `·`（`jpAugDotRadius`），展开档把它与八度点设成同一个值。
    *
    * **advance 照旧留给附点**（`JpNumber.augDotAdvance`）：横向间距走 `JpNumber.right`，
    * 把 `·` 从文本里摘掉而不补回它的 advance，带附点的音符就会与后一个音符贴到一起。
@@ -2599,7 +2599,7 @@ export class Line {
   private layoutVertically(lines: Line[], opt: LayoutOptions, height: number): Group[] {
     const top = opt.marginTop;
     const maxDist = opt.maxLineDist;
-    // **一张连续长纸**（`continuousPage`，「简谱」档走这条）：不分页、不为了撑满纸张
+    // **一张连续长纸**（`continuousPage`，「原样」档走这条）：不分页、不为了撑满纸张
     // 摊开行距，各行首尾相接、间距恒为 `maxLineDist`。纸有多高由内容说了算
     // （`JinpuPainter.pageSize` 按这一页的实际高度报），观感与文本谱的「原版」一致。
     if (opt.continuousPage) {
@@ -2615,7 +2615,7 @@ export class Line {
       return [one];
     }
     const dist = opt.staffDist;
-    // 首页要给标题块让出 `firstPageHeadroom`（「简谱」档分页那一路，见 LayoutOptions.bookHead）：
+    // 首页要给标题块让出 `firstPageHeadroom`（「原样」档分页那一路，见 LayoutOptions.bookHead）：
     // 首页能放的行少一些，且各行整体下移。其余页不受影响。
     const headroom = (pageIdx: number): number => (pageIdx === 0 ? opt.firstPageHeadroom : 0);
     const res: Page[] = [];
@@ -3437,7 +3437,7 @@ export class LayoutOptions {
   /**
    * 音符数字是否加粗。**只管数字与倚音**——`numberFont` 还派生出和弦、房号、
    * 调号拍号那一行，那些不跟着粗，所以这里是个开关而不是把 `numberFont` 换成粗体。
-   * PPT 档（`applyPptxStyle`）与成书排版（`applyBookStyle`）关掉：前者是投影的既有观感、
+   * 展开档（`applyPptxStyle`）与成书排版（`applyBookStyle`）关掉：前者是投影的既有观感、
    * 后者要逐像素复刻印刷底本，都不能凭空变粗。
    */
   noteBold = true;
@@ -3499,12 +3499,12 @@ export class LayoutOptions {
    *  每一遍的谱面本来就不同，叠不到一起。 */
   lyricStack = 0;
   /** **一张连续长纸**：不按纸张高度分页，所有谱行首尾相接排成一页（高度由内容定）。
-   *  「简谱」档走它——那一档是「原样展示」，与文本谱的「原版」同一种观感；
-   *  PPT 档仍按 16:9 的纸分页。见 `Line.layoutVertically` 与 `JinpuPainter.resize`。 */
+   *  「原样」档走它——那一档是「原样展示」，与文本谱的「原版」同一种观感；
+   *  展开档仍按 16:9 的纸分页。见 `Line.layoutVertically` 与 `JinpuPainter.resize`。 */
   continuousPage = false;
   /** 标题与词曲**排在第一页的顶上**（印刷歌本的排法），而不是另起一张标题页。
-   *  「简谱」档走它——长图那一档由 `continuousPage` 隐含，分页那一档靠这个字段。
-   *  PPT 档仍是标题页独占第一屏。见 `JinpuPainter.resize`。 */
+   *  「原样」档走它——长图那一档由 `continuousPage` 隐含，分页那一档靠这个字段。
+   *  展开档仍是标题页独占第一屏。见 `JinpuPainter.resize`。 */
   bookHead = false;
   /** 第一页顶部为标题块预留的高度。分页时首页可用高度按它扣减、首页各行整体下移。
    *  由 `JinpuPainter.resize` 量出 `bookHead` 的实际高度后填，**不是给人配的**。 */
@@ -3596,18 +3596,18 @@ export class LayoutOptions {
    * 为什么不跟上方共用 `jpStackGap`：上方那一格要给弧/三连音括线留手，量出来是 1/6 em；
    * 下方三样是紧挨着排的一摞，1/6 em 会把低音点推得离减时线明显比减时线离数字远
    * （实测 3.9 : 4.7，因为减时线原来是按**线心**摆在 `jpStackGap` 上、而低音点是按**墨迹**
-   * 摆在减时线墨迹之下，两处口径不一致）。这里取 PPT 档实测的那个距离（≈ 1/9 em，
+   * 摆在减时线墨迹之下，两处口径不一致）。这里取展开档实测的那个距离（≈ 1/9 em，
    * 那一档是 2.9 / 3.0），并且两处都按墨迹算，看着才是均匀的一摞。
    */
   jpBelowGap!: number;
 
   /** `jpStaffTop` / `jpStaffBottom` 的覆写（0 = 按字号推算，见那两个 getter）。
-   *  PPT 档要回到本项目原来的 −23/28 em 与 +5/28 em。 */
+   *  展开档要回到本项目原来的 −23/28 em 与 +5/28 em。 */
   jpStaffTopOverride = 0;
   jpStaffBottomOverride = 0;
 
   /**
-   * **旧式纵向栅格**（PPT 档专用；默认 false = 等距的单一 `jpStackGap`）。
+   * **旧式纵向栅格**（展开档专用；默认 false = 等距的单一 `jpStackGap`）。
    *
    * 打开后，数字上下堆叠的那几样东西回到 2026-08 重构之前的**三套步长**：
    * 高音点按 `dotBound.height * 1.5` 步进、`entryTop` 在此之上再退 `numberSize/8`
@@ -3615,7 +3615,7 @@ export class LayoutOptions {
    * 低音点按 `numberSize * (d*0.175 + 0.25)` 排。
    *
    * 这几个数彼此对不齐（数字↔点 ≈ 2.0px 而点↔弧 ≈ 4.4px，故有了后来的等距栅格），
-   * 但那正是老 PPTX 的观感。**只在 PPT 档打开**，默认那条路一个数都不许受影响。
+   * 但那正是老 PPTX 的观感。**只在展开档打开**，默认那条路一个数都不许受影响。
    * 换算不成单纯的 gap/rung 两个数——老式带 0.5 格偏移，且八度点当年是字形、
    * 按基线落位，今天是矢量圆、按墨迹落位，两者差一个 `dotBound.top`。
    */
@@ -3634,7 +3634,7 @@ export class LayoutOptions {
   }
 
   /**
-   * 旧式（PPT 档）数字的**墨迹顶**——按**目标字体**（Microsoft YaHei，`.pptx` 里真正
+   * 旧式（展开档）数字的**墨迹顶**——按**目标字体**（Microsoft YaHei，`.pptx` 里真正
    * 渲染的那一份）算，不是拿排版字体量的 `numberBound("1").top`。
    *
    * 两者差了 0.0585 em（PingFang 的 "1" 墨迹高 0.714 em、YaHei 的 0.7725）——28pt 上
@@ -3648,7 +3648,7 @@ export class LayoutOptions {
   }
 
   /**
-   * 旧式（PPT 档，`jpGridLegacy`）八度点阶梯：第 `d` 级（0 = 离数字最近）那个点的
+   * 旧式（展开档，`jpGridLegacy`）八度点阶梯：第 `d` 级（0 = 离数字最近）那个点的
    * **墨迹中心**离基线多远，`up` 为真是高音点（返回负值）。
    *
    * 两个系数是从 2019 年那批成品 .pptx（`ppt500/`，原桌面版在 Windows 上导的）
@@ -3658,7 +3658,7 @@ export class LayoutOptions {
    * 一律走 `jpBeamDist`（同一批成品里量到 3.267pt @28pt，见 `pptxstyle.ts`）。
    */
   /**
-   * 旧式（PPT 档）音符**上方那一带的底**：弧 / fermata / 三连音括线 / 和弦 / 房号
+   * 旧式（展开档）音符**上方那一带的底**：弧 / fermata / 三连音括线 / 和弦 / 房号
    * 都落在它上面（`NoteEntry.entryTop` 在没有高音点时直接返回它）。
    *
    * 同样量自 2019 年那批成品（`ppt500/`）：28pt 上圆滑线外弧的两端（也就是弧的下缘）

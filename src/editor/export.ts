@@ -121,12 +121,12 @@ export async function exportMidi(app: App): Promise<void> {
 }
 
 export async function exportPptx(app: App): Promise<void> {
-  // 文本谱用它自己的排版器出片（PPT 版面）；简谱**另排一遍 PPT 档**，
+  // 文本谱用它自己的排版器出片（PPT 版面）；简谱**另排一遍展开档**，
   // 不吃屏幕上那个 painter——这样屏幕在原版档也导得出 PPT 观感，
-  // 切到 PPT 档预览则是所见即所得。字号/纸张仍取用户设置。
+  // 切到展开档预览则是所见即所得。字号/纸张仍取用户设置。
   const pu = app.docFormat === "pu" ? app.puPainter : null;
   if (app.docFormat === "pu" && !pu) throw new Error("这份文本谱还没有排出可导出的页面");
-  const bytes = await buildPptx(pu ?? pptxPainter(app), app.colorsOf("ppt").bg);
+  const bytes = await buildPptx(pu ?? pptxPainter(app), app.colorsOf("expanded").bg);
   await saveBytes(
     bytes,
     `${baseName(app)}.pptx`,
@@ -134,16 +134,16 @@ export async function exportPptx(app: App): Promise<void> {
   );
 }
 
-/** 按 PPT 档另排一份简谱。屏幕已在 PPT 档时直接用屏幕那个，省一次排版。 */
+/** 按展开档另排一份简谱。屏幕已在展开档时直接用屏幕那个，省一次排版。 */
 export function pptxPainter(app: App): JinpuPainter {
   if (app.jpProfile === "pptx") return app.painter;
-  // **字号取 PPT 档那一套**，不是屏幕上简谱档的那套——两档各记各的字号之后，
-  // 「按 PPT 档另排一遍」也包括按那一档的字号排（否则导出的投影片会带着简谱档的字号）。
+  // **字号取展开档那一套**，不是屏幕上原样档的那套——两档各记各的字号之后，
+  // 「按展开档另排一遍」也包括按那一档的字号排（否则导出的投影片会带着原样档的字号）。
   const sizes = app.sizesOf("pptx");
   const p = new JinpuPainter(sizes.fontSize);
   const opt = p.layout.options;
   opt.smuflMeta = app.painter.layout.options.smuflMeta;
-  opt.color = app.colorsOf("ppt").fg; // 同字号：取 PPT 档那一套，不跟着屏幕当前档走
+  opt.color = app.colorsOf("expanded").fg; // 同字号：取展开档那一套，不跟着屏幕当前档走
   opt.titleSize = sizes.titleSize;
   opt.creditSize = sizes.creditSize;
   applyPptxStyle(opt); // 契约：构造之后、resize 之前

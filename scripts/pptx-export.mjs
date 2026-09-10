@@ -1,7 +1,7 @@
 // 500 首（或任一批 .musicxml）→ 每首一份 .pptx，按乐句排版、PPT 版面档。
 //
 // 走的是编辑器那条真路：`__app.importBytes(xml)` → 乐句排版 → `pptxPainter(app)`
-//（PPT 档另排一遍）→ `buildPptx`，与工具栏「导出 → PPTX」同一套代码。
+//（展开档另排一遍）→ `buildPptx`，与工具栏「导出 → PPTX」同一套代码。
 //
 // 乐句排版的行长目标按**纸张实测**折算（`App._phraseFit` → `phrase.ts::targetMeasForFit`），
 // 编辑器点「按乐句重排」走的是同一条路，所以这里出的片就是屏幕上看到的那个分行。

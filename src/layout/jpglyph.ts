@@ -156,7 +156,7 @@ export interface TimeSigStyle {
 
 /**
  * 数字墨迹与分数线墨迹之间的净距 ÷ 拍值字号 —— 就是**减时线与音符**那一格
- * （`LayoutOptions.jpBelowGap` = 1/9 em，按 PPT 档实测的距离定）。
+ * （`LayoutOptions.jpBelowGap` = 1/9 em，按展开档实测的距离定）。
  *
  * 竖向排布因此**只由拍值字号一个参数决定**：上数字的墨迹底离分数线上缘一格、
  * 下数字的墨迹顶离分数线下缘一格，上下对称。原先是两个「基线 ÷ H」的比例常量
