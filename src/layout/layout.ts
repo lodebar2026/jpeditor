@@ -2,6 +2,7 @@
 // painter.ts. Skija Path/Canvas/Font replaced by GraphicPath command lists,
 // the common geom types, and the Font abstraction (measurement via SVG/canvas).
 
+import { paginate } from "../jianpu/vertical";
 import { Fraction } from "../common/fraction";
 import { jpBarlineItems, jpDot, jpTimeSigItems } from "./jpglyph";
 import { Point, Rect, Matrix33, newMatrix, Colors } from "../common/geom";
@@ -1462,9 +1463,6 @@ class EntryItemInfo {
   entry: Entry | null = null;
 }
 
-class Page {
-  lines: Line[] = [];
-}
 
 /** 段落词落点的几何输入（一行之内，坐标以该行的 group 为原点）。 */
 export interface SectionWordGeom {
@@ -2597,86 +2595,52 @@ export class Line {
     return Math.max(0, need);
   }
 
+  /**
+   * 谱行进页。码放交给公共分页器（`jianpu/vertical.ts::paginate`，文本谱也走它），
+   * 这里只报每条谱行的占位盒（`l.group` 的包围盒，`update` 后原点就在左上角）与强制分页。
+   *
+   * **一张连续长纸**（`continuousPage`，「原样」档走这条）：不分页、不为了撑满纸张
+   * 摊开行距，各行首尾相接、间距恒为 `maxLineDist`。纸有多高由内容说了算
+   * （`JinpuPainter.pageSize` 按这一页的实际高度报），观感与文本谱的「原版」一致。
+   *
+   * 分页时首页要给标题块让出 `firstPageHeadroom`（「原样」档分页那一路，见 LayoutOptions.bookHead）：
+   * 首页能放的行少一些，且各行整体下移。放不满的一页行距摊到 `maxLineDist` 为止，剩下的空白
+   * **整块居中**——**首页有标题块时不居中**：谱面要贴着标题排，居中会把第一条谱行连同整块一起
+   * 往下推，标题与音符之间平白多出一大片空。
+   */
   private layoutVertically(lines: Line[], opt: LayoutOptions, height: number): Group[] {
     const top = opt.marginTop;
-    const maxDist = opt.maxLineDist;
-    // **一张连续长纸**（`continuousPage`，「原样」档走这条）：不分页、不为了撑满纸张
-    // 摊开行距，各行首尾相接、间距恒为 `maxLineDist`。纸有多高由内容说了算
-    // （`JinpuPainter.pageSize` 按这一页的实际高度报），观感与文本谱的「原版」一致。
-    if (opt.continuousPage) {
-      const one = new Group();
-      let y = top;
-      for (const l of lines) {
-        l.group.update();
-        l.group.classes.add("system"); // 页面检查按它量相邻谱行的墨迹盒
-        one.add(l.group);
-        l.group.y = y;
-        y += l.group.height + maxDist;
-      }
-      one.update();
-      return [one];
-    }
-    const dist = opt.staffDist;
-    // 首页要给标题块让出 `firstPageHeadroom`（「原样」档分页那一路，见 LayoutOptions.bookHead）：
-    // 首页能放的行少一些，且各行整体下移。其余页不受影响。
-    const headroom = (pageIdx: number): number => (pageIdx === 0 ? opt.firstPageHeadroom : 0);
-    const res: Page[] = [];
-    let bottomOfLastLine = 0;
-    let pageBreak = false;
-    for (const l of lines) {
-      let newPage = res.length === 0;
+    const continuous = opt.continuousPage;
+    const blocks = lines.map((l, i) => {
       l.group.update();
-      l.group.classes.add("system");
-      if (bottomOfLastLine + l.group.height + dist > height - headroom(res.length - 1)) newPage = true;
-      if (pageBreak) {
-        newPage = true;
-        pageBreak = false;
-      }
-      if (newPage) {
-        res.push(new Page());
-        bottomOfLastLine = 0;
-      } else {
-        bottomOfLastLine += dist;
-      }
-      l.group.y = bottomOfLastLine;
-      bottomOfLastLine += l.group.height;
-      const pg = res[res.length - 1];
-      pg.lines.push(l);
-      const lst = l.entries[l.entries.length - 1];
-      if (lst instanceof LineBreak) pageBreak = lst.newPage;
-    }
-    const grps: Group[] = [];
-    let y = 0;
-    for (const [i, pg] of res.entries()) {
-      const hr = headroom(i);
+      l.group.classes.add("system"); // 页面检查按它量相邻谱行的墨迹盒
+      // 上一行以「另起一页」的换行符收尾（`.Layout` 的强制分页、展开档逐遍换页）
+      const prev = lines[i - 1]?.entries[lines[i - 1]!.entries.length - 1];
+      const breakBefore = !continuous && prev instanceof LineBreak && prev.newPage;
+      return { line: l, top: 0, bottom: l.group.height, breakBefore };
+    });
+    const headroom = (pageIdx: number): number => (pageIdx === 0 ? opt.firstPageHeadroom : 0);
+    const pages = paginate(
+      blocks,
+      continuous
+        ? { pageTop: () => top, bottom: Infinity, gap: opt.maxLineDist }
+        : {
+            pageTop: (i) => top + headroom(i),
+            bottom: top + height,
+            gap: opt.staffDist,
+            spread: { maxGap: opt.maxLineDist, center: (i) => headroom(i) === 0 },
+          },
+    );
+    if (continuous && pages.length === 0) return [new Group()];
+    return pages.map((pg) => {
       const grp = new Group();
-      let totalHeight = 0;
-      for (const l of pg.lines) {
-        grp.add(l.group);
-        totalHeight += l.group.height;
-      }
-      if (pg.lines.length > 1) {
-        let dd = (height - hr - totalHeight) / (pg.lines.length - 1);
-        y = top + hr;
-        if (dd > maxDist) {
-          // 放不满的一页，行距摊到 maxDist 为止，剩下的空白**整块居中**。
-          // **首页有标题块时不居中**（`hr > 0`）：谱面要贴着标题排，
-          // 居中会把第一条谱行连同整块一起往下推，标题与音符之间平白多出一大片空。
-          if (hr === 0) y += ((dd - maxDist) * (pg.lines.length - 1)) / 2;
-          dd = maxDist;
-        }
-        for (const ll of pg.lines) {
-          const l = ll.group;
-          l.y = y;
-          y += l.height + dd;
-        }
-      } else {
-        pg.lines[0].group.y = opt.marginTop + hr;
+      for (const { block, y } of pg) {
+        grp.add(block.line.group);
+        block.line.group.y = y;
       }
       grp.update();
-      grps.push(grp);
-    }
-    return grps;
+      return grp;
+    });
   }
 
   /** 一条弧罩住几个音符（含两端）。按**和弦**数，长音的增时线不另算。 */
