@@ -85,6 +85,11 @@ export interface JpNum {
   // 延长记号（fermata 𝄐，谱面上是音符头顶一段小弧、弧下扣一个点）。
   // → MusicXML `<notations><fermata/>`；文本谱写作音符后的 `&yc`；.jpwabc 是 `{YanYin}`。
   fermata?: boolean;
+  // 多连音（三连音 ⌒3⌒：括线上方标着「几连」）。组里**每个音符都带**同一份 actual/normal，
+  // 首尾另标 start/stop。normal 取不大于 actual 的最大 2 的幂（3→2、5/6/7→4），即通行写法。
+  // → MusicXML `<time-modification>` + `<notations><tuplet type=…>`（duration 同时按比例缩）；
+  //   文本谱 `(y…)`；.jpwabc/Score 装不下。
+  tuplet?: { actual: number; normal: number; start: boolean; stop: boolean };
   // 顿音（谱面上是音符正上方一个**实心倒三角** ▼，简谱印刷体的顿音记号）。
   // → MusicXML `<notations><articulations><staccato/>`（与 pu/toxml.ts 的 `dy` 同口径）；
   //   文本谱 `&dy`；.jpwabc/Score 装不下（layout 那边只画重音）。

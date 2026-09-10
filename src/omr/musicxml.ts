@@ -20,9 +20,11 @@ function pitchOf(num: JpNum, fifths: number): { step: string; alter: number; oct
 // 时值：基础=四分(quarter)=QUARTER 个 division；div 条下划线 → 每条减半；
 // augment 增时线每条 +1 拍(四分)；dot 附点 → +半。type 从最终总时值反推（修复初版 type
 // 只看基础值、augment/dot 后与 duration 不一致的 bug）。
-// divisions per quarter。取 16 而不是 4：div=3（32 分）时 base = QUARTER/8，取 4 会得到 0.5、
-// 被 round 成 1，时值凭空翻倍；16 能精确表示到 64 分附点。<divisions> 直接用这个常量输出。
-const QUARTER = 16;
+// divisions per quarter。取 48 而不是 4：div=3（32 分）时 base = QUARTER/8，取 4 会得到 0.5、
+// 被 round 成 1，时值凭空翻倍。48 = 16×3：既能精确表示到 64 分附点，**又能被 3 整除**——
+// 三连音的每个音是 2/3 拍，QUARTER=16 时算出 10.67、round 完一小节凑不满（3×11≠32）。
+// <divisions> 直接用这个常量输出。
+const QUARTER = 48;
 
 // 时值 → <type> + 附点数：与 Score 那路（score/musicxmlout.ts::typeOfDuration）共用同一份实现。
 // **附点不只来自简谱附点**：增时线把音延长到 3 拍(如 3/4 的 5--)即「附点二分」、6 拍即「附点全」
@@ -35,8 +37,12 @@ function durationOf(num: JpNum): { type: string; divisions: number; dots: number
   const base = QUARTER / Math.pow(2, num.div); // 下划线每条减半
   let total = base + num.augment * QUARTER;    // 增时线每条 +1 拍
   if (num.dot > 0) total += base / 2;          // 附点 +半
-  const divisions = Math.max(1, Math.round(total));
-  return { divisions, ...noteTypeDots(divisions) };
+  // **多连音只缩 duration，不动 type**：三连音的四分音符写的还是 `<type>quarter</type>`，
+  // 少的那三分之一由 `<time-modification>` 表达。拿缩过的 divisions 去反推 type 只会得到
+  // 一个凑不出的怪时值。
+  const t = num.tuplet;
+  const divisions = Math.max(1, Math.round(t ? (total * t.normal) / t.actual : total));
+  return { divisions, ...noteTypeDots(total) };
 }
 
 // 歌词 <lyric number="i"><text>字</text></lyric>，按 verse 索引。下游 score/musicxml.ts 导入器接收。
@@ -142,6 +148,8 @@ function notationsXml(num: JpNum, arcs: ArcPairs): string {
   if (num.ornament === "upper-mordent") ns.push(`<ornaments><inverted-mordent/></ornaments>`);
   // 顿音 ▼ = staccato（与文本谱 `&dy` 同一口径，见 pu/toxml.ts 的记号表）。
   if (num.articulation === "staccato") ns.push(`<articulations><staccato/></articulations>`);
+  if (num.tuplet?.start) ns.push(`<tuplet type="start" bracket="yes"/>`);
+  if (num.tuplet?.stop) ns.push(`<tuplet type="stop"/>`);
   return ns.length ? `<notations>${ns.join("")}</notations>` : "";
 }
 
@@ -222,6 +230,14 @@ function graceNotesXml(num: JpNum, fifths: number): string {
   }).join("");
 }
 
+/** 多连音的 `<time-modification>`：组里每个音符都要有，缺一个下游就按原时值算。
+ *  位置在 `<accidental>` 之后、`<beam>` 之前（MusicXML 3.0 的 note 子元素顺序）。 */
+function timeModXml(num: JpNum): string {
+  const t = num.tuplet;
+  return t ? `<time-modification><actual-notes>${t.actual}</actual-notes>` +
+    `<normal-notes>${t.normal}</normal-notes></time-modification>` : "";
+}
+
 function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number, string>,
                  barAlter?: Map<number, number>): string {
   const d = durationOf(num);
@@ -230,7 +246,7 @@ function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number,
     // 休止符也要出 <notations>：圆滑线的一端落在休止符上是常有的事，早先这里直接 return
     // 把它丢了，弧线只剩半条，MuseScore 就一路拖到下一条 slur 那里去。
     return grace + `<note><rest/><duration>${d.divisions}</duration><voice>1</voice>` +
-      `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${notationsXml(num, arcs)}</note>`;
+      `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${timeModXml(num)}${notationsXml(num, arcs)}</note>`;
   }
   const p = pitchOf(num, fifths);
   // 临时升降号：谱面上的 ♯/♭/♮ 是相对**调内音**的升降，故在调号给的 alter 上加减；
@@ -247,7 +263,7 @@ function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number,
   const ties = (ti?.stop ? `<tie type="stop"/>` : "") + (ti?.start ? `<tie type="start"/>` : "");
   return grace + `<note><pitch><step>${p.step}</step>${alterXml}<octave>${p.octave}</octave></pitch>` +
     `<duration>${d.divisions}</duration>${ties}<voice>1</voice>` +
-    `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${accXml}` +
+    `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${accXml}${timeModXml(num)}` +
     `${beamXml(beams)}${notationsXml(num, arcs)}${lyricsXml(num)}</note>`;
 }
 

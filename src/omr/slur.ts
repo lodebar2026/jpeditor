@@ -6,7 +6,7 @@
 //   - 弧线是「宽而薄」的连通块：w ≳ 0.8×字号、w/h ≥ 2，落在数字行**上方**（底边贴近数字顶）。
 //   - 八度上点很小(w,h ≤ 0.45×字号)；增时线 '-' 在数字**中线**、减时线在数字**下方** → 都不在上方，天然不混。
 //   - 数字块 h ≥ 0.55×字号 才算，弧线更矮 → 不会被当成假音符（classify 里已落到 hlines 或被丢弃）。
-import type { Binary, Component, Rect, StaffRow } from "./types";
+import type { Binary, Component, JpNum, Rect, StaffRow } from "./types";
 import { rright, rbottom, rcx } from "./types";
 import { median } from "./geom";
 
@@ -88,6 +88,67 @@ function splitNestedArcs(bin: Binary, a: Rect, numH: number): Rect[] {
 }
 
 /** 在 comps 里为每个 staff 行检测上方弧线，置位音符的 slurStart/Stop 或 tieStart/Stop。 */
+/** 一处多连音候选：括线上方那个小号数字的框（送 OCR 定「几连」）、括线两半的连通块、
+ *  以及括线横向罩住的音符。 */
+export interface TupletCand {
+  numeral: Rect;
+  arcs: Component[];
+  notes: JpNum[];
+}
+
+/**
+ * 多连音（三连音 ⌒3⌒）：音符上方一条**中间断开的弧**，缺口里嵌着一个小号数字。
+ * 1《以色列的圣者》实测（numH 36）：左弧 54×23、数字 19×21、右弧 54×23，三块紧挨着排在
+ * 数字带上方 0.6 字号处，弧的墨占比只有 0.16（细线），数字是 0.56（实心笔画）。
+ *
+ * 判据（都不依赖 OCR，数字读几由上层补）：
+ *   ① 小号数字块：高 0.35~0.8 字号、宽高比 0.4~1.3、墨占比 ≥0.35，整块落在数字带**上方**；
+ *   ② 左右各有一段**细弧**：与数字纵向重叠、墨占比 ≤0.4、宽 ≥0.6 字号，横向缝隙 ≤0.6 字号。
+ *      两侧都要有——只认这一种谱面写法（手头只有这一种样张，不照着猜别的形状）。
+ * 括线罩住的音符按与 `detectSlurs` 同一口径取（质心落在跨度内、左右各放宽 0.5 字号）。
+ *
+ * **括线的两半自己也够得着圆滑线的判据**（54/23=2.35 ≥1.8、高也够矮），只是各自只罩得住
+ * 一个音符才没变成假 slur。认出多连音后要把这两块从 `detectSlurs` 的输入里摘掉，别留这个隐患。
+ */
+export function tupletCandidates(bin: Binary, comps: Component[], rows: StaffRow[], numH: number): TupletCand[] {
+  const out: TupletCand[] = [];
+  const inkFill = (b: Rect): number => {
+    let ink = 0;
+    for (let y = b.y; y < rbottom(b); y++)
+      for (let x = b.x; x < rright(b); x++) if (bin.data[y * bin.w + x]) ink++;
+    return ink / Math.max(1, b.w * b.h);
+  };
+  for (const row of rows) {
+    if (row.nums.length < 2) continue;
+    const rowTop = median(row.nums.map((n) => n.bbox.y));
+    const above = comps.filter((c) => rbottom(c.bbox) <= rowTop + numH * 0.1 &&
+      rbottom(c.bbox) >= rowTop - numH * 2.2);
+    for (const num of above) {
+      const nb = num.bbox;
+      if (nb.h < numH * 0.35 || nb.h > numH * 0.8) continue;
+      const r = nb.w / nb.h;
+      if (r < 0.4 || r > 1.3) continue;
+      if (inkFill(nb) < 0.35) continue;                       // 实心笔画（弧是细线）
+      // 左右两段细弧：与数字纵向重叠、横向紧挨着。
+      const arcAt = (side: -1 | 1) => above.find((c) => {
+        const b = c.bbox;
+        if (b === nb || b.w < numH * 0.6 || b.h > numH * 0.9) return false;
+        const gap = side < 0 ? nb.x - rright(b) : b.x - rright(nb);
+        if (gap < -numH * 0.15 || gap > numH * 0.6) return false;
+        if (rbottom(b) < nb.y || b.y > rbottom(nb)) return false;   // 纵向不重叠
+        return inkFill(b) <= 0.4;
+      });
+      const left = arcAt(-1), right = arcAt(1);
+      if (!left || !right) continue;
+      const x0 = Math.min(left.bbox.x, nb.x), x1 = Math.max(rright(right.bbox), rright(nb));
+      const notes = row.nums.filter((n) => between(rcx(n.bbox), x0 - numH * 0.5, x1 + numH * 0.5));
+      if (notes.length < 2) continue;
+      out.push({ numeral: nb, arcs: [left, right], notes });
+    }
+  }
+  return out;
+}
+
 export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], numH: number): void {
   for (const row of rows) {
     if (row.nums.length < 2) continue;

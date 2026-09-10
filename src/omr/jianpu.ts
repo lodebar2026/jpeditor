@@ -13,7 +13,7 @@ import { connectedComponents } from "./ccl";
 import type { OcrBackend } from "./ocr";
 import { recognizeLyrics } from "./lyrics";
 import { recognizeHeader } from "./header";
-import { detectSlurs } from "./slur";
+import { detectSlurs, tupletCandidates } from "./slur";
 import { detectRepeatsAndEndings } from "./repeats";
 import { median, overlapX, unionRect } from "./geom";
 import { accidentalOf } from "./accidental";
@@ -1097,10 +1097,31 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 反复线与一/二房：以冒号点对/顶括线几何识别，锚到相邻音符供 MusicXML 输出。
   await detectRepeatsAndEndings(bin, comps, c.dots, useRows, numH, ocr);
 
+  // 多连音（三连音 ⌒3⌒）：先于 slur 认——括线的两半自己也够得着圆滑线的判据，认出来后
+  // 要把它们从 detectSlurs 的输入里摘掉。「几连」靠 OCR 读括线上那个小号数字；
+  // **读出的数要与括线罩住的音符个数对上**才采信（三连音三个音），对不上宁可整条作废：
+  // 这一条同时兜住了误检——凑巧的三块墨很难恰好又是个数字、又与音符数吻合。
+  const tupComps = new Set<Component>();
+  {
+    const cands = tupletCandidates(bin, [...comps, ...arcComps], useRows, numH);
+    const digits = cands.length ? await ocr.recognizeDigits(bin, cands.map((c) => c.numeral)) : [];
+    cands.forEach((cand, i) => {
+      const actual = digits[i] ?? 0;
+      // normal = 不大于 actual 的最大 2 的幂（3→2、5/6/7→4）。4 连音是「4 占 3」、
+      // 2 连音是「2 占 3」，都只出现在复拍子里且这条推法不成立，故不收。
+      if (![3, 5, 6, 7].includes(actual) || cand.notes.length !== actual) return;
+      const normal = Math.pow(2, Math.floor(Math.log2(actual)));
+      cand.notes.forEach((n, k) => {
+        n.tuplet = { actual, normal, start: k === 0, stop: k === cand.notes.length - 1 };
+      });
+      for (const a of cand.arcs) tupComps.add(a);
+    });
+  }
+
   // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
   // comps 之外再补上与数字粘连切出的弧帽（arcComps）。与小节线粘连的弧已在 untangleBridged
   // 去连通阶段还原为 comps 里的独立连通块，这里天然一并检测。
-  detectSlurs(bin, [...comps, ...arcComps], useRows, numH);
+  detectSlurs(bin, [...comps, ...arcComps].filter((k) => !tupComps.has(k)), useRows, numH);
 
   // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
   // **必须排在歌词/和弦识别之前**：第一谱行的「上方带」（和弦所在）与页眉 ROI 在几何上是重叠的，
