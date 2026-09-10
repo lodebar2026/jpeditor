@@ -32,6 +32,7 @@ import {
   type PlacedPage,
   type PlacedScore,
   type PlacedVoice,
+  type LyricMeasure,
 } from "./layout";
 import { BRACE_GLYPHS } from "./brace";
 import { applyDocOptions, applyUserOptions, contentWidth, metricsFor, puGraceMetrics, puGraceNotes, puSlurStyle, type PageProfileName, type PuMetrics, type PuUserOptions } from "./metrics";
@@ -377,7 +378,16 @@ export class PuPainter extends JianpuPainter {
     // 所以谱面这一路不必在首页顶上给它留位——每一页都从页顶排起。
     const slide = this.expanded;
     const headerBottoms = doc.songs.map((song) => (slide ? m.marginTop : this.headerBottom(song.metadata)));
-    this.placed = layoutDocument(doc.songs, m, headerBottoms);
+    // 歌词的**墨迹**伸出注入给排版（它不碰字体）：落位口径同 paintSyllables——主体居中于锚点、
+    // 尾随标点挂右边。量墨迹而不是字面框：「声，」的全角逗号字面框右半边是空的，
+    // 按字面框约束会把墨迹根本没碰到的行也撑开（《圣哉三一歌》长图就是这样被误伤的）。
+    const lyricFont = new Font(m.fontFamily, m.lyricSize);
+    const measure: LyricMeasure = (syl) => {
+      const half = lyricFont.measureText(syl.text) / 2;
+      const ink = lyricFont.charBound(syl.text + (syl.trailingPunctuation ?? ""));
+      return { left: half - ink.left, right: ink.right - half };
+    };
+    this.placed = layoutDocument(doc.songs, m, headerBottoms, measure);
     // 连续长图：页面尺寸随内容走，不受纸张尺寸约束（短曲子不该拖着一大片空白）
     if (m.continuous) {
       this.pageHeight = Math.max(
