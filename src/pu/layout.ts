@@ -404,6 +404,11 @@ function computeUnderlines(
   return out;
 }
 
+/** 和弦/注释那一行**墨迹顶**（相对音符基线，负为上）：基线在 annotationY，字往上长。 */
+function annotationTop(m: PuMetrics): number {
+  return m.annotationY - m.annotationSize * 0.9;
+}
+
 /**
  * 一组曲行头顶需要留多少空间——记号是往上画的（弧线、跳房子、渐强渐弱、装饰音、
  * 临时伴奏），不预留就会压到上一组的歌词。
@@ -425,6 +430,13 @@ function groupHeadroom(group: VoiceGroup, m: PuMetrics): number {
     }
     for (const el of voice.elements) {
       if (el.kind === "inline-layer") consider(m.layerY - m.digitInkHeight * 0.6);
+      // 和弦/注释画在 annotationY 那条**基线**上，字还要往上长一截——只留 annotationY
+      // 的话，system 间距一收紧（gapGroup 按无和弦的底本量得）和弦就顶进上一组的低音点。
+      // 再往上让一个数字高：只让到墨迹顶是「不打架」，两组之间还得看得出是两组。
+      if (el.kind === "note" && (el.chord || el.annotation)) {
+        consider(annotationTop(m) - m.digitInkHeight);
+      }
+      if (el.kind === "sustain" && el.chord) consider(annotationTop(m) - m.digitInkHeight);
       if (el.kind === "note" || el.kind === "sustain" || el.kind === "barline") {
         for (const orn of el.ornaments) {
           // 换气的 V 有自己的高度（照原版放在基线上方两个墨迹高），不走记号槽
@@ -460,8 +472,8 @@ function voiceHeadroom(voice: ScoreLine, m: PuMetrics): number {
     }
   }
   for (const el of voice.elements) {
-    if (el.kind === "note" && (el.chord || el.annotation)) consider(m.annotationY);
-    if (el.kind === "sustain" && el.chord) consider(m.annotationY); // 增时线上的和弦同样要留头顶
+    if (el.kind === "note" && (el.chord || el.annotation)) consider(annotationTop(m));
+    if (el.kind === "sustain" && el.chord) consider(annotationTop(m)); // 增时线上的和弦同样要留头顶
     if (el.kind === "note" || el.kind === "sustain" || el.kind === "barline") {
       for (const orn of el.ornaments) {
         if (orn.name === "hx") consider(-m.digitInkHeight * 1.05);

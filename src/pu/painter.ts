@@ -345,12 +345,13 @@ export class PuPainter {
    * 位置仍与原版逐点一致。
    */
   private makeDigitFont(): Font {
-    const family = this.metrics.fontFamily;
-    const probe = new Font(family, 100);
+    const family = this.metrics.digitFamily;
+    const bold = this.metrics.digitBold;
+    const probe = new Font(family, 100, bold);
     const b = probe.charBound("1");
     const inkAt100 = Math.abs(b.bottom - b.top) || 71;
     const size = (this.metrics.digitInkHeight * 100) / inkAt100;
-    return new Font(family, size);
+    return new Font(family, size, bold);
   }
 
   /** 数字按墨迹居中于锚点：返回该把文字画在哪个 x/y，并附带墨迹盒。 */
