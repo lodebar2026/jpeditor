@@ -14,8 +14,10 @@ REPO="lodebar2026/jpeditor"
 PAGES_URL="https://lodebar2026.github.io/jpeditor/"
 cd "$(dirname "$0")/.."
 
-# 约定：本项目提交/推送用 lodebar2026 帐号
-gh auth switch --user lodebar2026 >/dev/null 2>&1 || true
+# 约定：本项目提交/推送用 lodebar2026 帐号。不切换 gh 的活跃帐号，只在本脚本内导出它的 token：
+# gh 各命令优先读 GH_TOKEN，git push 走的 `gh auth git-credential` 同样认它。
+GH_TOKEN="$(gh auth token --user lodebar2026)" || { echo "!! 取不到 lodebar2026 的 token，先 gh auth login"; exit 1; }
+export GH_TOKEN
 
 echo "==> bump 版本 → ${VER}"
 sed -i '' "s/\"version\": \"[0-9][0-9.]*\"/\"version\": \"${VER}\"/" package.json src-tauri/tauri.conf.json
