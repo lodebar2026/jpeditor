@@ -286,7 +286,10 @@ function applyShige(m: PuMetrics): PuMetrics {
     gapLyricLyric: 35 * k, // 与 lyricSize 是一对（底本 29.6，配 24.5 的字号）
     gapLyricMusic: 37 * k, // 歌词块之后 → 下一声部
     gapVoice: 37 * k, // 声部 → 声部
-    gapGroup: 65 * k, // system 之间
+    // system 之间：末行歌词与下一组之间**只空一行字**（用户口径；65、55 都嫌大）。
+    // 实测 55 时歌词墨迹底 → 下一组数字墨迹顶空白 46，要的是一行歌词字高（lyricSize 27），故减 19。
+    // 带和弦/记号的组由 groupHeadroom 另外让位，不靠这个值。
+    gapGroup: 36 * k,
   };
 }
 
@@ -297,7 +300,31 @@ const DIALECT_TWEAK: Record<Dialect, (m: PuMetrics) => PuMetrics> = {
 };
 
 export function metricsFor(dialect: Dialect = "tomato"): PuMetrics {
-  return DIALECT_TWEAK[dialect]({ ...PRINT });
+  return alignNoteMarks(DIALECT_TWEAK[dialect]({ ...PRINT }));
+}
+
+/**
+ * 数字墨迹 ↔ 第一条减时线、数字墨迹 ↔ 高/低音点，净距取**同一个值**：两条减时线的距离
+ * （`noteMarkGap`，即减时线行距 `underlineGap`）。用户口径：第一条减时线离音符太近，
+ * 应与两条减时线的距离一样，八度点离音符也该是这个距离。故这三个 y 不单独落值，由它派生；
+ * 低音点挂在减时线下时（`layout.ts::noteInkBottom`）、延长记号离音符堆叠顶（painter）让的也是这一截。
+ * 数字按墨迹竖直居中于基线画（墨迹底 = +digitInkHeight/2），减时线 rect 的上缘就是 underlineY。
+ */
+// 数字墨迹底 → 第一条减时线**中心** = 两条减时线的中心距（underlineGap）。用户两次复核：
+// 取两线净空（3.0）挨着粗体数字嫌近，取整个行距当净空（4.5）又嫌宽，中心对中心看着才一样。
+export function noteMarkGap(m: PuMetrics): number {
+  return m.underlineGap - m.underlineWidth / 2;
+}
+
+function alignNoteMarks(m: PuMetrics): PuMetrics {
+  const gap = noteMarkGap(m);
+  const inkHalf = m.digitInkHeight / 2;
+  return {
+    ...m,
+    underlineY: inkHalf + gap,
+    octaveUpY: -(inkHalf + gap + m.octaveDotRadius),
+    octaveDownY: inkHalf + gap + m.octaveDotRadius,
+  };
 }
 
 /** 版心宽度。 */

@@ -441,7 +441,9 @@ function beatGroups(items: PlacedItem[], ctx: BeatCtx = {}): { groups: number[];
   const segs: { from: number; to: number; meter: Meter | undefined; carried: boolean }[] = [];
   let cur = ctx.meter;
   let from = 0;
-  let carried = false; // 本段是不是上一行那个小节的后半（行首 `|/`）
+  // 本段是不是上一行那个小节的后半：上一行开口收尾（carryIn > 0）时行首第一段就是续段——
+  // 换行本身不断小节；行首写了 `|/` 的写法也照认。carryIn 为 0 时不能当续段，否则曲首弱起不补齐。
+  let carried = (ctx.carryIn ?? 0) > 0;
   items.forEach((it, i) => {
     if (it.element.kind !== "barline") return;
     segs.push({ from, to: i, meter: cur, carried });
@@ -631,7 +633,7 @@ function voiceHeadroom(voice: ScoreLine, m: PuMetrics): number {
  * 有几个高八度点就抬到最上面那个点的上缘。弧线据此定位——与 .jpwabc 谱面同一规则
  * （见 layout.ts 的 NoteEntry.entryTop / slurRung），固定槽位会离音符太远。
  */
-function stackTop(el: MusicElement | undefined, m: PuMetrics): number {
+export function stackTop(el: MusicElement | undefined, m: PuMetrics): number {
   const inkTop = -m.digitInkHeight / 2;
   if (el?.kind !== "note" || el.octave <= 0) return inkTop;
   return m.octaveUpY - (el.octave - 1) * m.octaveDotGap - m.octaveDotRadius;
@@ -650,7 +652,9 @@ export function noteInkBottom(note: NoteElement, m: PuMetrics): number {
       ? m.underlineY + (beams - 1) * m.underlineGap + m.underlineWidth
       : m.digitInkHeight / 2;
   if (note.octave >= 0) return Math.max(m.digitInkHeight / 2, beamBottom);
-  const firstDot = Math.max(m.octaveDownY, beamBottom + m.slurStackGap + m.octaveDotRadius);
+  // 减时线下缘到低音点让的净距 = 数字墨迹底到低音点的净距（见 metrics.ts::alignNoteMarks）
+  const dotGap = m.octaveDownY - m.digitInkHeight / 2;
+  const firstDot = Math.max(m.octaveDownY, beamBottom + dotGap);
   return firstDot + (-note.octave - 1) * m.octaveDotGap + m.octaveDotRadius;
 }
 
@@ -1049,7 +1053,22 @@ export function layoutSong(
     if (a.bottom < need) a.bottom = need;
   }
   // 首页要让过标题/词曲/调号那一整块——头部行数因谱而异，写死会压到正文
-  const firstTop = Math.max(m.marginTop + m.bodyTop, headerBottom);
+  // headerBottom 是页首的**墨迹底**（painter.ts::headerBottom）。页首 → 首组**真正的墨迹顶**只空一行
+  // （歌词字高，与 system 间距同口径）：墨迹顶取首声部数字/高八度点、和弦等头顶记号、`W:` 文字行里
+  // 最高的那个——只按数字顶算，首组头顶有「引子」这类文字行时一行空隙就被吃掉了。
+  // 不再拿 bodyTop 兜底（兜底会把「只空一行」重新撑大）；没传页首（0）时才用 bodyTop。
+  let firstTop = m.marginTop + m.bodyTop;
+  const g0 = blocks[0]?.group;
+  if (headerBottom > 0 && g0) {
+    const base = g0.voices[0]?.y ?? 0;
+    let inkTop = base - m.digitInkHeight / 2;
+    for (const el of g0.voices[0]?.voice.elements ?? []) inkTop = Math.min(inkTop, base + stackTop(el, m));
+    // 头顶槽位默认常备一行和弦（annotationY），真有和弦/记号时 groupHeadroom 才会超过它
+    const head = groupHeadroom(g0.group, m);
+    if (head > -m.annotationY + 1e-6) inkTop = Math.min(inkTop, base - head);
+    if (g0.group.texts.length > 0) inkTop = Math.min(inkTop, g0.textY - m.textLineSize * 0.85);
+    firstTop = headerBottom + m.lyricSize - inkTop;
+  }
   const otherTop = m.marginTop + m.bodyTop * 0.35;
   const laid = paginate(blocks, {
     pageTop: (i) => (i === 0 ? firstTop : otherTop),
