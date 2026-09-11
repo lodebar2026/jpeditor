@@ -27,8 +27,8 @@
 
 import type { LayoutOptions } from "./layout";
 
-/** 简谱的版面档。与文本谱的 `PageProfileName`（print/slide）平行，但两者管的东西不同：
- *  那个换的是整套 metrics（页面尺寸都变），这个只换笔画常量。 */
+/** `.jpwabc` 当前的排版输出档名（`pptx` = 展开、`normal` = 原样；名字沿用存量设置）。
+ *  展开档两种格式都走 `jianpu/expanded.ts::ExpandedPainter`，笔画常量就是下面这一套。 */
 export type JpProfileName = "normal" | "pptx";
 
 /** 老版那几个「出厂默认」。选项面板照常可改，这里只是记下当年的值。 */

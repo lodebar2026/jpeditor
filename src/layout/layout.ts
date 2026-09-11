@@ -2460,7 +2460,10 @@ export class Line {
           break;
         }
         const r = lastGrp.x + entryBounds(lastGrp).right;
-        if (r - l < width) {
+        // 每行**至少收一个**：单个条目就比版心宽时（窄纸配大字号、超长的歌词音节），
+        // 不收它 idx 就永远不前进，这里会无限推空行（耶稣普治 文本谱 4:3 44pt 曾卡死）。
+        // 超宽的那个独占一行，之后照常由 adjust 压缩。
+        if (r - l < width || last === idx) {
           last++;
           continue;
         }
@@ -2839,14 +2842,12 @@ export class Line {
     }
     const numberSize = opt.numberFont.size;
     for (const t of tuplets) {
+      // 两端都得在**本行**里才画得出来：窄纸配大字号时断行可能落在三连音中间，
+      // 首尾分到两行（番茄语法覆盖 展开 16:9 44pt）。同 addSlurTie：只能不画这一个括线。
       const start = this.getEntry(t.first.chord);
-      if (!start) {
-        console.error("no begin entry for tuplet");
-        continue;
-      }
       const end = this.getEntry(t.last.chord);
-      if (!end) {
-        console.error("no end entry for tuplet");
+      if (!start || !end) {
+        console.error("三连音有一端不在本行，跳过");
         continue;
       }
       const leftItem = start.entryItem() as JpNumber | null;

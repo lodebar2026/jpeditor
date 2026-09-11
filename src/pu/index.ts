@@ -9,7 +9,7 @@ export { puToScore, type ToScoreOptions } from "./toscore";
 export { countPasses } from "../jianpu/expand";
 export { puToMusicXml, type ToXmlOptions } from "./toxml";
 export { layoutDocument, layoutSong, elementBeats } from "./layout";
-export { metricsFor, contentWidth, contentHeight, type PageProfileName, type PuMetrics } from "./metrics";
+export { metricsFor, contentWidth, contentHeight, type PuMetrics } from "./metrics";
 export type { PlacedItem, PlacedPage, PlacedScore, PlacedVoice, PlacedGroup } from "./layout";
 export type {
   Accidental,

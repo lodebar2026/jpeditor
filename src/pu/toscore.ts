@@ -31,6 +31,7 @@ import {
 } from "../score/score";
 import { StartStopDiscontinue } from "../score/enums";
 import type {
+  LyricLine,
   Mark,
   NoteElement,
   PuDoc,
@@ -71,19 +72,6 @@ function marksEdgeAt(marks: readonly Mark[], index: number, type: Mark["type"]):
 }
 
 
-/**
- * Score 的第 mid 小节在文本谱 AST 里是哪几段元素（展开档按它把小节拼回 AST，见 pu/expand.ts）。
- * **与 buildPart 切小节同源**——另写一个「按小节线数」的切分器，弱起、跨行小节、行首 `|:`
- * 挂在上一小节这几条立刻就会分叉。
- */
-export interface PuMeasureRef {
-  mid: number;
-  /** 小节覆盖的元素片段，`[from, to)`；跨行的小节有两段 */
-  segments: Array<{ line: ScoreLine; from: number; to: number }>;
-  /** 小节里每个和弦（音符）的起点，按出现顺序——展开时的 skip/limit 按和弦数 */
-  chords: Array<{ line: ScoreLine; index: number }>;
-}
-
 /** 跳转记号（`&dc` / `&ds` / `&fine` / `&ty` / `&hs`）先记下挂在哪一小节，时值定稿后再换算成位置。 */
 interface PendingJump {
   name: string;
@@ -106,7 +94,6 @@ interface Builder {
   pendingRepeatForward: boolean;
   /** 跳房子起点已过、等下一个音符开出（或落进）的那一小节来挂房号 */
   pendingEnding: Mark | null;
-  refs: PuMeasureRef[];
   jumps: PendingJump[];
 }
 
@@ -124,14 +111,6 @@ function newMeasure(b: Builder, time: Time, key: Key): Measure {
  * 把一个声部的所有曲行（跨 system）接成一个 Part。
  * `lines` 已按出现顺序排好；行与行之间插入 LineBreak，保留原始换行。
  */
-/** 这个元素归第 mid 小节：并进（或开出）该小节的片段。 */
-function claim(b: Builder, mid: number, line: ScoreLine, index: number): void {
-  const ref = (b.refs[mid] ??= { mid, segments: [], chords: [] });
-  const last = ref.segments[ref.segments.length - 1];
-  if (last && last.line === line && last.to === index) last.to = index + 1;
-  else ref.segments.push({ line, from: index, to: index + 1 });
-}
-
 /** 房号原文 → 适用于第几遍（同 MusicXML 导入端：文本里的数字才是遍数，"1,2,3,5" / "1.2.3." 通吃）。 */
 function applyEndingStart(mea: Measure, mark: Mark): void {
   const text = (mark.caption ?? "").trim();
@@ -141,13 +120,35 @@ function applyEndingStart(mea: Measure, mark: Mark): void {
   mea.endingNum = digits ? mea.parseEndingNum(digits.join(",")) : null;
 }
 
+/**
+ * 同一条曲行下**段号重复**的歌词行，依次顺延到下一个空闲段号（展开档用，见 `ToScoreOptions.forExpanded`）。
+ * 《同一首歌》同一段曲下写了两行 `C1:`，内容其实是第 1、2 段：展开档一遍只挂一行词，
+ * 两行同号就会画在同一位置相压，顺延之后各成一遍。段号不重复的行原样返回。
+ */
+function distinctVerses(lyrics: readonly LyricLine[]): readonly LyricLine[] {
+  let maxUsed = 0;
+  const used = new Set<number>();
+  return lyrics.map((l) => {
+    let shift = 0;
+    for (let v = l.verseFrom; v <= l.verseTo; v++) {
+      if (used.has(v)) shift = Math.max(shift, maxUsed + 1 - l.verseFrom);
+    }
+    const from = l.verseFrom + shift;
+    const to = l.verseTo + shift;
+    for (let v = from; v <= to; v++) used.add(v);
+    maxUsed = Math.max(maxUsed, to);
+    return shift === 0 ? l : { ...l, verseFrom: from, verseTo: to };
+  });
+}
+
 function buildPart(
   lines: readonly ScoreLine[],
   time: Time,
   key: Key,
   fifths: number,
   noteMap?: Map<Chord, NoteElement>,
-): { part: Part; refs: PuMeasureRef[]; jumps: PendingJump[] } {
+  renumberVerses = false,
+): { part: Part; jumps: PendingJump[] } {
   const b: Builder = {
     part: new Part(),
     measure: null,
@@ -159,17 +160,15 @@ function buildPart(
     lastChord: null,
     pendingRepeatForward: false,
     pendingEnding: null,
-    refs: [],
     jumps: [],
   };
 
   lines.forEach((line, lineIdx) => {
     // 每行的歌词：按「跟词」符号顺序逐个发放
-    const cursors = line.lyrics.map(() => 0);
+    const lyrics = renumberVerses ? distinctVerses(line.lyrics) : line.lyrics;
+    const cursors = lyrics.map(() => 0);
     // 跳房子（房号）：跨行的只在真正的起点/终点那一行落值
     const voltas = line.marks.filter((mk) => mk.type === "volta");
-    /** 还没开出小节（小节线之后、下一个音符之前）的元素归下一小节 */
-    const openMid = (): number => (b.newMeasureNeeded || b.measure === null ? b.mid : b.measure.index);
 
     line.elements.forEach((el, index) => {
       for (const mk of voltas) {
@@ -189,13 +188,9 @@ function buildPart(
         }
       };
 
-      if (el.kind === "beat-boundary" || el.kind === "inline-layer") {
-        claim(b, openMid(), line, index);
-        return;
-      }
+      if (el.kind === "beat-boundary" || el.kind === "inline-layer") return;
 
       if (el.kind === "sustain") {
-        claim(b, openMid(), line, index);
         closeVolta(b.measure);
         if (b.measure) noteJumps(b.measure, false);
         // 增时线并进前一个音符的时值
@@ -203,13 +198,12 @@ function buildPart(
           b.lastChord.beats += 1;
           b.lastChord.duration = chordDuration(b.lastChord);
         }
-        if (el.lyricAnchor && b.lastChord) attachLyrics(line, cursors, b.lastChord);
+        if (el.lyricAnchor && b.lastChord) attachLyrics(lyrics, cursors, b.lastChord);
         return;
       }
 
       if (el.kind === "barline") {
         const mea = b.measure ?? newMeasure(b, time, key);
-        claim(b, mea.index, line, index);
         closeVolta(mea);
         noteJumps(mea, true);
         const ent = new BarlineEntry(mea);
@@ -267,8 +261,6 @@ function buildPart(
         applyEndingStart(mea, b.pendingEnding);
         b.pendingEnding = null;
       }
-      claim(b, mea.index, line, index);
-      (b.refs[mea.index] ??= { mid: mea.index, segments: [], chords: [] }).chords.push({ line, index });
       closeVolta(mea);
       noteJumps(mea, false);
 
@@ -310,7 +302,7 @@ function buildPart(
       noteMap?.set(ch, el);
       mea.entries.push(ch);
       b.lastChord = ch;
-      if (takesLyric(el)) attachLyrics(line, cursors, ch);
+      if (takesLyric(el)) attachLyrics(lyrics, cursors, ch);
     });
 
     // 行末换行（末行不加）
@@ -319,7 +311,7 @@ function buildPart(
 
   doPairTuplet(b.tupletNotes);
   applyTupletDurations(b.part);
-  return { part: b.part, refs: b.refs, jumps: b.jumps };
+  return { part: b.part, jumps: b.jumps };
 }
 
 /**
@@ -402,11 +394,11 @@ function applyTupletDurations(part: Part): void {
 }
 
 function attachLyrics(
-  line: ScoreLine,
+  lyrics: readonly LyricLine[],
   cursors: number[],
   ch: Chord,
 ): void {
-  for (const { verse, text } of nextSyllables(line.lyrics, cursors)) {
+  for (const { verse, text } of nextSyllables(lyrics, cursors)) {
     const lrc = new Lyric();
     lrc.number = verse;
     lrc.text = text;
@@ -421,8 +413,12 @@ export interface ToScoreOptions {
   /** 传入一个空 Map，转换时会填上 Chord → AST 音符的对应关系。
    *  播放高亮要用：播放器给的是 Chord，而「原版」谱面认的是 AST 节点。 */
   noteMap?: Map<Chord, NoteElement>;
-  /** 传入一个空 Map，转换时会填上「声部号 → 逐小节的 AST 元素片段」。展开档要用（pu/expand.ts）。 */
-  measureMap?: Map<number, PuMeasureRef[]>;
+  /** 给展开档排版用（`jianpu/expanded.ts`：一遍一行词、只排 `parts[0]` 一条旋律）。两处调整：
+   *  - 带歌词的声部排到 `parts[0]`（没有带歌词的就保持原序）——合唱谱的词常挂在 Q2 上（圣哉三一歌）；
+   *    反复/跳转推理照旧读 `parts[0]`；
+   *  - 同一条曲行下段号重复的歌词行顺延成下一段（见 `distinctVerses`）。
+   *  导出 MusicXML / `.jpwabc` 不传——声部顺序与段号照原文。 */
+  forExpanded?: boolean;
 }
 
 /**
@@ -466,16 +462,19 @@ export function puToScore(doc: PuDoc, options: ToScoreOptions = {}): Score | nul
     }
   }
 
-  const voices = voiceNumbers(song);
+  let voices = voiceNumbers(song);
+  if (options.forExpanded) {
+    const lead = voices.find((v) => linesOfVoice(song, v).some((l) => l.lyrics.length > 0));
+    if (lead !== undefined) voices = [lead, ...voices.filter((v) => v !== lead)];
+  }
   let jumps: PendingJump[] = [];
   for (const v of voices) {
     const lines = linesOfVoice(song, v);
     if (lines.length === 0) continue;
-    const built = buildPart(lines, time, key, key.fifths, options.noteMap);
+    const built = buildPart(lines, time, key, key.fifths, options.noteMap, options.forExpanded);
     // 反复与跳转只看主旋律（parseRepeatInf 读的是 parts[0]）
     if (score.parts.length === 0) jumps = built.jumps;
     score.parts.push(built.part);
-    options.measureMap?.set(v, built.refs);
   }
   if (score.parts.length === 0) return null;
   applyJumps(score, jumps);
