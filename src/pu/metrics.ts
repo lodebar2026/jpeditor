@@ -286,10 +286,12 @@ function applyShige(m: PuMetrics): PuMetrics {
     gapLyricLyric: 35 * k, // 与 lyricSize 是一对（底本 29.6，配 24.5 的字号）
     gapLyricMusic: 37 * k, // 歌词块之后 → 下一声部
     gapVoice: 37 * k, // 声部 → 声部
-    // system 之间：末行歌词与下一组之间**只空一行字**（用户口径；65、55 都嫌大）。
-    // 实测 55 时歌词墨迹底 → 下一组数字墨迹顶空白 46，要的是一行歌词字高（lyricSize 27），故减 19。
+    // system 之间：末行歌词与下一组之间**只空一行字**（用户口径；65、55 都嫌大）——
+    // 歌词墨迹底 → 下一组数字墨迹顶 = 一行歌词字高（lyricSize 27），与页首 → 首行同口径。
+    // 折回基线距 = 歌词墨迹下伸（实测 ≈ 0.15 字号 ≈ 4）+ 27 + 数字半高 9 ≈ 40。
+    // 36 时实测只有 23（当初漏了歌词下伸那一截）。随面板字号等比缩放（SPACING_KEYS）。
     // 带和弦/记号的组由 groupHeadroom 另外让位，不靠这个值。
-    gapGroup: 36 * k,
+    gapGroup: 40 * k,
   };
 }
 
@@ -421,7 +423,15 @@ const NOTE_GRID_KEYS = [
   "dotOffsetX", "dotRadius", "underlineY", "underlineGap", "underlineWidth",
   "underlineHalfSpan", "barlineHeight", "sustainWidth", "sustainHalfLength",
   "stepPlain", "stepBeamed", "stepBarline", "stepPerDot", "slurStackGap", "slurFlatSpan",
+  // 音符头顶的各记号槽位与弧线/楔形尺寸：都是贴着音符画的，字号变了它们得跟着走，
+  // 否则放大后和弦、`W:` 文字行、房号会压到音符上（用户口径：距离参数以基础字号为基准）
+  "annotationY", "textLineY", "laneOrnament", "laneSlur", "laneSlurStep", "laneWedge",
+  "laneVolta", "laneLevelStep", "slurHeight", "wedgeMouth", "layerY",
 ] as const;
+
+/** 系统/声部之间的间距：跟着整体字号（`applyUserOptions` 的 scale）等比缩放。
+ *  歌词那两个行距（gapMusicLyric/gapLyricLyric）跟歌词字号走，在 TEXT_SIZE_KEYS 里。 */
+const SPACING_KEYS = ["gapGroup", "gapVoice", "gapLyricMusic"] as const;
 
 /** 文字那一族字号（含跟着歌词字号走的两个行距）。 */
 const TEXT_SIZE_KEYS = [
@@ -452,6 +462,7 @@ export function applyUserOptions(base: PuMetrics, o: PuUserOptions | null): PuMe
   if (k !== 1) {
     for (const key of NOTE_GRID_KEYS) m[key] = base[key] * k;
     for (const key of TEXT_SIZE_KEYS) m[key] = base[key] * k;
+    for (const key of SPACING_KEYS) m[key] = base[key] * k;
   }
   if (o.pageWidth && o.pageHeight) {
     m.pageWidth = o.pageWidth;
