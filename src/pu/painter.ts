@@ -18,11 +18,9 @@ import { jpBarlineItems, jpDot, jpTimeSigItems } from "../layout/jpglyph";
 import type { BarlineSpec } from "../layout/layout";
 import { BarStyle } from "../score/score";
 import { renderPageSvg } from "../layout/painter";
-import { JianpuPainter } from "../jianpu/painter";
-import { expandPuDoc } from "./expand";
+import type { PagePainter } from "../layout/pagepainter";
 import type { LyricSyllable, Metadata, NoteElement, PuDoc } from "./ast";
 import { primaryMetadata } from "./ast";
-import type { Dialect } from "./dialect";
 import {
   layoutDocument,
   noteInkBottom,
@@ -36,7 +34,7 @@ import {
   type LyricMeasure,
 } from "./layout";
 import { BRACE_GLYPHS } from "./brace";
-import { applyDocOptions, applyUserOptions, contentWidth, metricsFor, puGraceMetrics, puGraceNotes, puSlurStyle, type PageProfileName, type PuMetrics, type PuUserOptions } from "./metrics";
+import { applyDocOptions, applyUserOptions, contentWidth, metricsFor, puGraceMetrics, puGraceNotes, puSlurStyle, type PuMetrics, type PuUserOptions } from "./metrics";
 import { ACCOMP_BRACKET, ACCIDENTAL_GLYPH, BARLINE_MARKS, BRACKET, DYNAMICS, ORNAMENTS, TERMS } from "./glyph";
 
 /**
@@ -282,7 +280,11 @@ const PU_BARLINE_SPEC: Record<string, BarlineSpec | undefined> = {
   "repeat-both": { repeatBackward: true, repeatForward: true },
 };
 
-export class PuPainter extends JianpuPainter {
+/**
+ * 文本谱的「原样」档排版器（印刷原版的观感）。「展开」档不走这里：文本谱先转成 Score，
+ * 与 `.jpwabc` 同走 `jianpu/expanded.ts::ExpandedPainter`。
+ */
+export class PuPainter implements PagePainter {
   metrics: PuMetrics;
   /** 与 JinpuPainter 同名，便于 buildPptx 等直接取用 */
   layout: { pages: Group[] } = { pages: [] };
@@ -291,8 +293,6 @@ export class PuPainter extends JianpuPainter {
   nodeMap = new WeakMap<PageItem, SVGGElement>();
 
   private doc: PuDoc | null = null;
-  /** 实际排出来的那份（见 renderedDoc） */
-  private shown: PuDoc | null = null;
   private placed: PlacedScore | null = null;
   private digitFont!: Font;
   private _accFont: Font | null = null;
@@ -303,18 +303,13 @@ export class PuPainter extends JianpuPainter {
   private syllableItems = new Map<LyricSyllable, { page: number; item: PageItem }>();
   private highlighted: PageItem[] = [];
 
-  private profile: PageProfileName;
-  private dialect: Dialect = "tomato";
   /** 编辑器面板上的手动设置（字号缩放 / 换纸 / 长图）。null = 全按档位的内置版式。 */
   private userOptions: PuUserOptions | null = null;
   /** 前景色。null = 出厂墨色。 */
   private ink: number | null = null;
 
-  constructor(profile: PageProfileName = "print") {
-    // 引擎内部的尺寸档名 print/slide 与排版输出一一对应：slide ⇔ 展开
-    super(profile === "slide" ? "expanded" : "original");
-    this.profile = profile;
-    this.metrics = metricsFor(profile);
+  constructor() {
+    this.metrics = metricsFor();
   }
 
   /** 手动设置。改完要重排才看得见——调用方通常紧接着 `load`（见 App.reloadPu）。 */
@@ -336,7 +331,7 @@ export class PuPainter extends JianpuPainter {
   baseDigitFontSize(doc: PuDoc): number {
     const meta0 = doc.songs[0]?.metadata;
     return digitFontSizeOf(
-      applyDocOptions(metricsFor(this.profile, doc.dialect), meta0?.fontSizes ?? [], meta0?.margins ?? []),
+      applyDocOptions(metricsFor(doc.dialect), meta0?.fontSizes ?? [], meta0?.margins ?? []),
     );
   }
 
@@ -349,43 +344,15 @@ export class PuPainter extends JianpuPainter {
     return this.layout.pages.length;
   }
 
-  setProfile(profile: PageProfileName): void {
-    this.profile = profile;
-    this.mode = profile === "slide" ? "expanded" : "original";
-    this.metrics = metricsFor(profile, this.dialect);
-    if (this.doc) this.load(this.doc);
-  }
-
-  /** 实际排出来的那份 AST：展开档是展开后的（expandPuDoc），原样档就是原文。
-   *  App 的试听 Score 与导出都取它（「导出跟随当前档」），高亮索引认的也是这份对象。 */
-  get renderedDoc(): PuDoc | null {
-    return this.shown;
-  }
-
-  /** 展开档：反复与多段歌词逐遍展开。推不出来就原样排，投影片宁可不展开也不能白屏。 */
-  private expandForMode(doc: PuDoc): PuDoc {
-    if (!this.expanded) return doc;
-    try {
-      return expandPuDoc(doc);
-    } catch (e) {
-      console.warn("文本谱展开失败，按原样排", e);
-      return doc;
-    }
-  }
-
   /** 排一份文档并生成全部页面。 */
   load(doc: PuDoc): void {
     this.doc = doc;
-    const shown = this.expandForMode(doc);
-    this.shown = shown;
-    // 「原版」各复刻各的：两种方言的字号比例不同，排版前先按方言取尺寸
-    this.dialect = doc.dialect;
     // 谱面自带的 `FontSize:` / `Margin:` 也要生效（真实语料里 `all=` 用得最多）
     const meta0 = doc.songs[0]?.metadata;
     // 谱面自带的指令先生效，面板上的手动设置叠在最外层（用户说了算）
     setPuInk(this.ink);
     const docMetrics = applyDocOptions(
-      metricsFor(this.profile, doc.dialect),
+      metricsFor(doc.dialect),
       meta0?.fontSizes ?? [],
       meta0?.margins ?? [],
     );
@@ -396,10 +363,7 @@ export class PuPainter extends JianpuPainter {
     this.digitFont = this.makeDigitFont();
     this._accFont = null;
     this._pageShiftX = 0;
-    // 展开档的头部**另起一页**（同 .jpwabc 的展开档，见 layout/painter.ts::titlePage），
-    // 所以谱面这一路不必在首页顶上给它留位——每一页都从页顶排起。
-    const slide = this.expanded;
-    const headerBottoms = shown.songs.map((song) => (slide ? m.marginTop : this.headerBottom(song.metadata)));
+    const headerBottoms = doc.songs.map((song) => this.headerBottom(song.metadata));
     // 歌词的**墨迹**伸出注入给排版（它不碰字体）：落位口径同 paintSyllables——主体居中于锚点、
     // 尾随标点挂右边。量墨迹而不是字面框：「声，」的全角逗号字面框右半边是空的，
     // 按字面框约束会把墨迹根本没碰到的行也撑开（《圣哉三一歌》长图就是这样被误伤的）。
@@ -409,7 +373,7 @@ export class PuPainter extends JianpuPainter {
       const ink = lyricFont.charBound(syl.text + (syl.trailingPunctuation ?? ""));
       return { left: half - ink.left, right: ink.right - half };
     };
-    this.placed = layoutDocument(shown.songs, m, headerBottoms, measure);
+    this.placed = layoutDocument(doc.songs, m, headerBottoms, measure);
     // 连续长图：页面尺寸随内容走，不受纸张尺寸约束（短曲子不该拖着一大片空白）
     if (m.continuous) {
       this.pageHeight = Math.max(
@@ -434,37 +398,7 @@ export class PuPainter extends JianpuPainter {
       g.x += this._pageShiftX;
       return g;
     });
-    if (slide) this.addSlideFurniture();
     for (const p of this.layout.pages) p.update();
-  }
-
-  /**
-   * 展开档的版面家具：**第一页是独立的标题词曲页**，其后每页的页脚放曲名 + 页码
-   * ——与 `.jpwabc` 的展开档同一个观感（`layout/painter.ts::titlePage` +
-   * `layout.ts::titleAndPageNumber`）。「原版」档不走这条：那一档是印刷歌本的排法，
-   * 标题排在第一页顶上、没有页眉页脚。
-   *
-   * **页码不含标题页**（`i + 1 / n` 在 unshift 之前算好），同 .jpwabc 那一路。
-   */
-  private addSlideFurniture(): void {
-    const m = this.metrics;
-    this.addFooters(this.layout.pages, {
-      title: primaryMetadata(this.doc!).titles[0] ?? "",
-      font: new Font(m.fontFamily, m.authorSize),
-      color: INK,
-      pageWidth: this.pageWidth,
-      pageHeight: this.pageHeight,
-      marginBottom: m.marginBottom,
-      marginRight: m.marginRight,
-      originX: this._pageShiftX,
-      titleLeft: 0,
-      titleWidth: this.pageWidth,
-      pageNoAnchor: this._pageShiftX + this.pageWidth * 0.8,
-      compress: true,
-    });
-    const titlePage = new Group();
-    this.paintHeader(titlePage, 0, m.marginLeft);
-    this.prependTitlePage(this.layout.pages, titlePage);
   }
 
   /**
@@ -555,8 +489,7 @@ export class PuPainter extends JianpuPainter {
   private paintPage(page: PlacedPage, pageIndex: number): Group {
     const m = this.metrics;
     const root = new Group();
-    // 展开档的头部另起一页（addSlideFurniture），谱面页不再画它
-    if (page.firstOfSong && !this.expanded) {
+    if (page.firstOfSong) {
       this.paintHeader(root, page.song, this.systemLeft(page));
     }
     for (const group of page.groups) {

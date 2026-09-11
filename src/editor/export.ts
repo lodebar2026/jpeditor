@@ -2,7 +2,7 @@
 import type { App } from "./app";
 import { scoreToMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
-import { JinpuPainter } from "../layout/painter";
+import { ExpandedPainter } from "../jianpu/expanded";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { scoreToJpwabc } from "../score/jpscore";
 import { puToMusicXml } from "../pu";
@@ -120,12 +120,9 @@ export async function exportMidi(app: App): Promise<void> {
 }
 
 export async function exportPptx(app: App): Promise<void> {
-  // 文本谱用它自己的排版器出片（PPT 版面）；简谱**另排一遍展开档**，
-  // 不吃屏幕上那个 painter——这样屏幕在原版档也导得出 PPT 观感，
-  // 切到展开档预览则是所见即所得。字号/纸张仍取用户设置。
-  const pu = app.docFormat === "pu" ? app.puPainter : null;
-  if (app.docFormat === "pu" && !pu) throw new Error("这份文本谱还没有排出可导出的页面");
-  const bytes = await buildPptx(pu ?? pptxPainter(app), app.colorsOf("expanded").bg);
+  // 一律按**展开档**出片（两种格式同一个 ExpandedPainter）：屏幕在原样档也导得出 PPT 观感，
+  // 切到展开档预览则是所见即所得。字号/纸张取展开档那一套设置。
+  const bytes = await buildPptx(pptxPainter(app), app.colorsOf("expanded").bg);
   await saveBytes(
     bytes,
     `${baseName(app)}.pptx`,
@@ -133,21 +130,15 @@ export async function exportPptx(app: App): Promise<void> {
   );
 }
 
-/** 按展开档另排一份简谱。屏幕已在展开档时直接用屏幕那个，省一次排版。 */
-export function pptxPainter(app: App): JinpuPainter {
-  if (app.jpProfile === "pptx") return app.painter;
-  // **字号取展开档那一套**，不是屏幕上原样档的那套——两档各记各的字号之后，
-  // 「按展开档另排一遍」也包括按那一档的字号排（否则导出的投影片会带着原样档的字号）。
-  const sizes = app.sizesOf("pptx");
-  const p = new JinpuPainter(sizes.fontSize);
-  const opt = p.layout.options;
-  opt.smuflMeta = app.painter.layout.options.smuflMeta;
-  opt.color = app.colorsOf("expanded").fg; // 同字号：取展开档那一套，不跟着屏幕当前档走
-  opt.titleSize = sizes.titleSize;
-  opt.creditSize = sizes.creditSize;
-  p.applyMode("expanded"); // 契约：颜色/字号之后、resize 之前
-  p.score = app.painter.score;
-  p.resize(app.pageW, app.pageH, app.breakDesc);
+/** 按展开档另排一份。屏幕已在展开档时直接用屏幕那个，省一次排版。
+ *  **设置取展开档那一套**（`App.expandedOptions`），不是屏幕上原样档的那套——
+ *  否则导出的投影片会带着原样档的字号与颜色。 */
+export function pptxPainter(app: App): ExpandedPainter {
+  if (app.painter instanceof ExpandedPainter) return app.painter;
+  const score = app.docFormat === "pu" ? app.puScore(true) : app.painter.score;
+  if (!score) throw new Error("这份文本谱里没有可导出的曲行");
+  const p = new ExpandedPainter(app.expandedOptions());
+  p.load(score, app.docFormat === "pu" ? null : app.breakDesc);
   return p;
 }
 

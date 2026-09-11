@@ -2,8 +2,8 @@
 //
 // 「这首歌该唱成什么样」由 Score 那一层推（`Score.parseRepeatInf` / `.Repeat` 段），
 // 两种格式都拿到同一种 `PlayItem[]`；这里只负责**怎么走**——逐遍、逐小节、首尾小节的裁切、
-// 遍末换页，以及「这一遍唱哪几段词」。「怎么放一个小节」各格式自己写（sink）：
-// `.jpwabc` 往 Line 里装小节（layout.ts::buildLine），文本谱往展开后的 AST 里拼元素（pu/expand.ts）。
+// 遍末换页。「怎么放一个小节」由 sink 决定：排版往 Line 里装小节（layout.ts::buildLine）。
+// 文本谱也先转成 Score（pu/toscore.ts），展开档两种格式走的是同一条路（jianpu/expanded.ts）。
 
 import { PlayItem } from "../score/score";
 
@@ -81,17 +81,4 @@ export function countPasses(items: readonly PlayItem[]): number {
     },
   });
   return n;
-}
-
-/**
- * 这一遍唱哪几段词：段号区间含 `pass` 的那几行。一行都不含时，只有**整行只写了一段**
- *（副歌只写一段、各遍共用）才照用；写了好几段却没有这一段的，这一遍就不挂词。
- */
-export function versesForPass<T extends { verseFrom: number; verseTo: number }>(
-  lines: readonly T[],
-  pass: number,
-): T[] {
-  const hit = lines.filter((l) => l.verseFrom <= pass && pass <= l.verseTo);
-  if (hit.length > 0) return hit;
-  return lines.length === 1 ? [lines[0]!] : [];
 }

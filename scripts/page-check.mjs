@@ -9,8 +9,8 @@
 //   P2  同页相邻谱行（`system` 标记的块）墨迹盒相压——且横向确有交叠
 //   P3  谱面以外的东西（页脚曲名、页码、标题块）压到谱面上
 //   P4  同一条谱行、同一段歌词里相邻两个字相压
-//   P5  展开档结构：页数 ≥ 标题页 + 遍数（遍数由 jianpu/expand.ts::countPasses 按同一换页口径数）；
-//       文本谱另查一页只属一遍、遍次不回头（按 expandPuDoc 给组打的 pass）
+//   P5  展开档结构：页数 ≥ 标题页 + 遍数（遍数由 jianpu/expand.ts::countPasses 按同一换页口径数；
+//       展开档两种格式同一个排版器，文本谱也先转成 Score）
 //
 // 谱行块与歌词靠 PageItem.classes 认（`system` / `lyric`，见 layout.ts::layoutVertically、
 // Lyric 构造函数与 pu/painter.ts::paintPage / paintSyllables）——构建会压缩类名，instanceof 用不上。
@@ -67,26 +67,16 @@ async function fixtures() {
 /** 页面里跑：按当前配置排好后量五条判据。返回 { pages, P1..P5: [{page, amount, what}] }。 */
 function probeInPage(TOL, pu, expanded) {
   const app = window.__app;
-  const painter = app.docFormat === "pu" ? app.puPainter : app.painter;
+  const painter = app.docFormat === "pu" && !expanded ? app.puPainter : app.painter;
   const res = { pages: 0, P1: [], P2: [], P3: [], P4: [], P5: [] };
   if (!painter) return res;
   const pages = painter.layout.pages;
   res.pages = pages.length;
-  // P5：展开档结构。遍数取**原文**的遍次序列（文本谱展开后的 Score 已是一遍到底，不能用它）
+  // P5：展开档结构（两种格式都是 ExpandedPainter 排的，排的就是 painter.score）
   if (expanded && pu) {
-    const orig = app.docFormat === "pu" ? pu.puToScore(pu.parsePu(app.getText())) : painter.score;
-    const want = orig ? pu.countPasses(orig.playData.measures) : 0;
+    const want = pu.countPasses(painter.score.playData.measures);
     if (pages.length < 1 + want) {
       res.P5.push({ page: 0, amount: 1 + want - pages.length, what: `页数 ${pages.length} < 标题页+${want} 遍` });
-    }
-    if (app.docFormat === "pu") {
-      let last = -1;
-      painter.placedPages().forEach((pg, i) => {
-        const ps = [...new Set(pg.groups.map((g) => g.group.pass).filter((v) => v !== undefined))];
-        if (ps.length > 1) res.P5.push({ page: i + 1, amount: ps.length, what: `一页含 ${ps.length} 遍` });
-        if (ps.length && Math.min(...ps) < last) res.P5.push({ page: i + 1, amount: 1, what: "遍次回头" });
-        if (ps.length) last = Math.max(last, ...ps);
-      });
     }
   }
   const hasCls = (it, c) => it.classes && it.classes.has(c);
@@ -185,17 +175,16 @@ for (const fx of list) {
     window.__app.importBytes(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), name);
   }, { b64, name });
   for (const cfg of CONFIGS) {
+    process.stderr.write(`  … ${name} ${cfg.key}\n`); // 进度：某一首排版卡死时看得出是哪首哪档
     const got = await page.evaluate(async ({ cfg, fmt, TOL, probeSrc }) => {
       const app = window.__app;
       const pu = await window.__pu;
       app.setProfile(cfg.expanded);
-      if (fmt === "pu") {
-        app.applyRenderSettings(cfg.expanded
-          ? { puExpandedRatio: cfg.ratio, puExpandedFontSize: cfg.font }
-          : { puPaper: cfg.paper, puFontSize: cfg.font });
-      } else if (cfg.expanded) {
+      if (cfg.expanded) {
         const [pageW, pageH] = cfg.ratio === "4:3" ? [720, 540] : [960, 540];
         app.applyRenderSettings({ pageW, pageH, fontSize: cfg.font || 28 });
+      } else if (fmt === "pu") {
+        app.applyRenderSettings({ puPaper: cfg.paper, puFontSize: cfg.font });
       } else {
         app.applyRenderSettings({ jpPaper: cfg.paper, fontSize: cfg.font || 28 });
       }
@@ -255,8 +244,9 @@ if (flags["write-baseline"]) {
   }
 }
 
-// 「slur/tie 有一端不在本行」是简谱排版器展开反复时的既有提示（弧跨遍次被切开），不是本脚本要抓的
-const real = errors.filter((e) => !/favicon|slur\/tie 有一端不在本行/.test(e));
+// 「slur/tie / 三连音 有一端不在本行」是简谱排版器的既有提示（弧或三连音跨遍次、跨行被切开，只能不画），
+// 不是本脚本要抓的
+const real = errors.filter((e) => !/favicon|(slur\/tie |三连音)有一端不在本行/.test(e));
 if (real.length) { console.log("控制台报错：\n" + real.slice(0, 10).join("\n")); bad++; }
 console.log(bad === 0 ? "\n✓ 全部通过" : `\n✗ ${bad} 项不过`);
 await browser.close();

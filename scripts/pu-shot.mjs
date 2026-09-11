@@ -1,6 +1,7 @@
 // 文本谱渲染核对：把夹具排版后截图，人眼对照原版。
 //
-// 用法：npm run build && node pu-shot.mjs [曲名子串] [--slide]
+// 用法：npm run build && node pu-shot.mjs [曲名子串]
+// （只截原样档；展开档两种格式同走 ExpandedPainter，看编辑器即可）
 // 输出 /tmp/pu-<曲名>-p<页>.png，并打印页数与控制台错误。
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -8,7 +9,6 @@ import { serveDist, launchPage, loadApp } from "./harness.mjs";
 
 
 const args = process.argv.slice(2);
-const slide = args.includes("--slide");
 const filter = args.find((a) => !a.startsWith("--")) ?? "";
 const DIR = "testdata/pu";
 const files = readdirSync(DIR).filter((f) => /\.(pu|jps|txt)$/i.test(f) && f.includes(filter));
@@ -25,10 +25,10 @@ for (const file of files) {
   const name = file.replace(/\.[^.]+$/, "");
   const source = readFileSync(join(DIR, file), "utf8");
   const info = await page.evaluate(
-    async ([src, useSlide]) => {
+    async ([src]) => {
       const pu = await window.__pu;
       const doc = pu.parsePu(src);
-      const painter = new pu.PuPainter(useSlide ? "slide" : "print");
+      const painter = new pu.PuPainter();
       painter.load(doc);
       const svgs = [];
       for (let i = 0; i < painter.pageCount; i++) {
@@ -52,7 +52,7 @@ for (const file of files) {
         svgs,
       };
     },
-    [source, slide],
+    [source],
   );
 
   // 换到干净页面截图，免得应用自身的样式干扰
@@ -62,7 +62,7 @@ for (const file of files) {
       { waitUntil: "load" },
     );
     await page.setViewportSize({ width: Math.ceil(info.w), height: Math.ceil(info.h) });
-    await page.screenshot({ path: `/tmp/pu-${name}${slide ? "-slide" : ""}-p${i + 1}.png` });
+    await page.screenshot({ path: `/tmp/pu-${name}-p${i + 1}.png` });
   }
   await loadApp(page, port);
 

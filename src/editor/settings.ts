@@ -20,13 +20,11 @@ export interface PersistedSettings {
   /** **原样档**的基础字号。那一档只调这一个，标题/词曲字号按比例派生，故不单独存。 */
   originalFontSize?: number;
   /** 原样档的纸（`PAPER_SIZES` 的键，「长图」是其中一档）。
-   *  展开档只选比例：`.jpwabc` 那张投影片是 pageW/pageH，文本谱是 `puExpandedRatio`。 */
+   *  展开档只选比例（pageW/pageH），两种格式共用。 */
   jpPaper?: string;
   puPaper?: string;
-  puExpandedRatio?: string;
-  /** 文本谱音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。 */
+  /** 文本谱**原样档**音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。展开档与 `.jpwabc` 共用上面那三个字号。 */
   puFontSize?: number;
-  puExpandedFontSize?: number;
   /** 两档各自的前景色（谱面笔画/文字）与背景色（纸张），ARGB。 */
   expandedColor?: number;
   expandedBgColor?: number;
@@ -39,7 +37,7 @@ export interface PersistedSettings {
   playSpeed?: unknown;
   /** 交 OmrController 自己校验 */
   omrFormat?: unknown;
-  /** 当前排版输出（展开 / 原样）在两个引擎里的尺寸档名：简谱 normal|pptx、文本谱 print|slide。 */
+  /** 当前排版输出（展开 / 原样），两种格式各记一个：简谱 normal|pptx、文本谱 print|slide（slide = 展开）。 */
   jpProfile?: "normal" | "pptx";
   puProfile?: "print" | "slide";
 }

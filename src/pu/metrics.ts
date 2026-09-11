@@ -16,12 +16,8 @@ import { SlurTieBase, type SlurStyle } from "../layout/layout";
 import type { GraceMetrics, GraceNote } from "../common/gracenote";
 import type { NoteElement } from "./ast";
 
-/** 版面预设：print 忠实原版 A4；slide 是投影用的 16:9。 */
-export type PageProfileName = "print" | "slide";
-
+/** 文本谱排版器只排「原样」档（展开档两种格式都走 `jianpu/expanded.ts::ExpandedPainter`）。 */
 export interface PuMetrics {
-  profile: PageProfileName;
-
   pageWidth: number;
   pageHeight: number;
   marginLeft: number;
@@ -154,13 +150,12 @@ export interface PuMetrics {
   layerY: number;
 
   fontFamily: string;
-  /** 音符数字用的字体族与字重。数字比歌词粗，两支要分开配；展开档不加粗 */
+  /** 音符数字用的字体族与字重。数字比歌词粗，两支要分开配 */
   digitFamily: string;
   digitBold: boolean;
 }
 
 const PRINT: PuMetrics = {
-  profile: "print",
   pageWidth: 1000,
   pageHeight: 1415,
   marginLeft: 80,
@@ -246,87 +241,6 @@ const PRINT: PuMetrics = {
   digitBold: true,
 };
 
-/** 投影用：16:9、字号放大、行距拉开，页眉页脚从简。 */
-const SLIDE: PuMetrics = {
-  ...PRINT,
-  profile: "slide",
-  pageWidth: 1600,
-  pageHeight: 900,
-  marginLeft: 90,
-  marginRight: 90,
-  marginTop: 70,
-  marginBottom: 70,
-  continuous: false, // 投影按幻灯片分页
-  digitBold: false, // 展开档的观感是既有的，不跟原样档加粗
-  continuousSideMargin: 130,
-
-  // 投影距离远，整体放大约 1.55 倍
-  stepPlain: 58,
-  stepBeamed: 39,
-  stepBarline: 54,
-  stepPerDot: 19,
-  accidentalWidth: 14,
-
-  digitInkHeight: 27.5,
-  octaveUpY: -21.5,
-  octaveDownY: 20,
-  octaveDotGap: 8.5,
-  octaveDotRadius: 3.4,
-  dotOffsetX: 19,
-  dotRadius: 3.4,
-
-  sustainWidth: 3,
-  sustainHalfLength: 8.5,
-  underlineY: 20,
-  underlineGap: 7,
-  underlineWidth: 3,
-  underlineHalfSpan: 9.5,
-  barlineHeight: 45,
-  barlineWidth: 2.3,
-  barlineDoubleGap: 7.5,
-  repeatDotRadius: 3,
-
-  bodyLeftPad: 4.5,
-  bodyTop: 120,
-  gapMusicLyric: 56,
-  gapLyricLyric: 40,
-  gapGroup: 84,
-  gapVoice: 66,
-  gapLyricMusic: 66,
-
-  titleSize: 46,
-  subtitleSize: 26,
-  authorSize: 22,
-  headerSize: 22,
-  lyricSize: 26,
-  topTextSize: 22,
-  lyricLabelSize: 26,
-  titleY: 78,
-  authorY: 130,
-  authorStep: 28,
-  keyMeterY: 132,
-  annotationY: -38,
-  annotationSize: 20,
-  textLineY: -48,
-  textLineSize: 22,
-
-  laneOrnament: -26,
-  laneSlur: -38,
-  laneSlurStep: 8,
-  slurStackGap: 6.6,
-  laneWedge: -66,
-  laneVolta: -86,
-  laneLevelStep: 9,
-  slurHeight: 11,
-  slurFlatSpan: 330, // 27.5 × 12
-  slurThickness: 9.2,
-  wedgeMouth: 11,
-  wedgeWidth: 2,
-  graceScale: 0.5,
-  layerScale: 0.72,
-  layerY: -60,
-};
-
 /**
  * 诗歌本的尺寸按**诗歌本 App 自己导出的《圣哉三一歌》长图**逐项量得
  * （四声部、四段歌词、四个 system；底本在本地 `testdata/pu/ref/圣哉三一歌.pdf`）。
@@ -382,9 +296,8 @@ const DIALECT_TWEAK: Record<Dialect, (m: PuMetrics) => PuMetrics> = {
   shige: applyShige,
 };
 
-export function metricsFor(profile: PageProfileName, dialect: Dialect = "tomato"): PuMetrics {
-  const base = profile === "slide" ? { ...SLIDE } : { ...PRINT };
-  return DIALECT_TWEAK[dialect](base);
+export function metricsFor(dialect: Dialect = "tomato"): PuMetrics {
+  return DIALECT_TWEAK[dialect]({ ...PRINT });
 }
 
 /** 版心宽度。 */

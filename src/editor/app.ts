@@ -10,7 +10,8 @@ import { PuPainter } from "../pu/painter";
 import { parsePu, puToScore, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import type { Chord, Score } from "../score/score";
 import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
-import type { PageProfileName, PuUserOptions } from "../pu/metrics";
+import type { PuUserOptions } from "../pu/metrics";
+import { ExpandedPainter, type ExpandedOptions } from "../jianpu/expanded";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
 import { JinpuPainter } from "../layout/painter";
@@ -48,7 +49,7 @@ const JP_CREDIT_RATIO = PPTX_PAGE.creditSize / PPTX_PAGE.fontSize;
 
 /** 「展开」档只有这两种投影片比例（1 排版单位 = 1pt，导出 PPTX 要的就是这个）。
  *  **不给实际纸张**：展开是投影用的，一屏一段（用户口径：「不需要纸张设置，只要 2 种比例」）。
- *  `.jpwabc` 直接用这个尺寸；文本谱那套版式的原生尺寸是 1600×900，按同一比例取宽（见 `puUserOptions`）。 */
+ *  两种格式共用（展开档是同一个排版器，见 `App.expandedOptions`）。 */
 export const PAGE_RATIOS: Record<string, [number, number]> = {
   "16:9": [960, 540],
   "4:3": [720, 540],
@@ -77,11 +78,6 @@ export const PAPER_DEFAULT = "长图";
 
 /** 这个纸张名在不在表里。 */
 const isPaper = (k: string): boolean => Object.prototype.hasOwnProperty.call(PAPER_SIZES, k);
-/** 这个比例名在不在表里。 */
-const isRatio = (k: string): boolean => Object.prototype.hasOwnProperty.call(PAGE_RATIOS, k);
-
-/** 文本谱「展开」档那套版式（`pu/metrics.ts::SLIDE`）的原生纸高；宽按所选比例取。 */
-const PU_SLIDE_HEIGHT = 900;
 
 /** 谱面区的四档排版模式。见 `App.setViewModeButtons` 的注释：这是两组正交状态的组合。 */
 export type ViewMode = JianpuLayoutMode | "staff" | "mixed";
@@ -89,7 +85,9 @@ export type ViewMode = JianpuLayoutMode | "staff" | "mixed";
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 
 export class App implements OmrHost, PlaybackHost {
-  painter: JinpuPainter;
+  /** 简谱排版器：展开档是 ExpandedPainter（两种格式共用），`.jpwabc` 原样档是 JinpuPainter。
+   *  文本谱原样档另走 `_puPainter`，那时这个闲着。 */
+  painter: ExpandedPainter | JinpuPainter;
   view!: EditorView;
   scorePane: HTMLElement;
   pageEls: HTMLElement[] = [];
@@ -98,8 +96,8 @@ export class App implements OmrHost, PlaybackHost {
   mode: "jp" | "mixed" | "recognize" = "jp";
   /** 当前编辑的是哪种源格式：`.jpwabc` 还是文本谱（番茄 / 诗歌本）。 */
   docFormat: "jpwabc" | "pu" = "jpwabc";
-  /** 文本谱的版面：原版 A4 / PPT 16:9。 */
-  puProfile: PageProfileName = "slide";
+  /** 文本谱当前的排版输出：`slide` = 展开、`print` = 原样（名字沿用存量设置）。 */
+  puProfile: "print" | "slide" = "slide";
   /** 简谱版面档：`normal` = 当前观感；`pptx` = 排版重构之前的笔画（导出 PPTX 用的那一档）。 */
   jpProfile: JpProfileName = "pptx";
   private _puPainter: PuPainter | null = null;
@@ -112,8 +110,10 @@ export class App implements OmrHost, PlaybackHost {
   /** 上次转出的 Score 及「Chord → AST 音符」的对照（试听逐字高亮靠它搭桥）。 */
   private _puScoreCache: {
     text: string;
-    /** 转出这份 Score 的 AST：切档后原样/展开是两份对象，只比文本会拿到另一档的旧 Score */
+    /** 转出这份 Score 的 AST（重新 parse 过就是另一批对象，旧 Score 的 noteMap 对不上） */
     doc: PuDoc;
+    /** 展开档那一份调过声部顺序与段号（`ToScoreOptions.forExpanded`），与原样档那份不通用 */
+    forExpanded: boolean;
     score: Score | null;
     noteMap: Map<Chord, PuNoteElement>;
   } | null = null;
@@ -178,20 +178,9 @@ export class App implements OmrHost, PlaybackHost {
     return PAPER_SIZES[this.jpPaper] == null;
   }
 
-  /** 文本谱面板设置 → PuPainter 的覆盖层。「展开」档恒分页、只选比例：纸高取版式原生的
-   *  `PU_SLIDE_HEIGHT`，宽按比例折算（16:9 → 1600×900 即原生尺寸）。 */
+  /** 文本谱**原样档**的面板设置 → PuPainter 的覆盖层（展开档不走 PuPainter，见 `expandedOptions`）。 */
   puUserOptions(): PuUserOptions {
-    const slide = this.puProfile === "slide";
-    const digitFontSize = (slide ? this.puExpandedFontSize : this.puFontSize) || undefined;
-    if (slide) {
-      const [rw, rh] = PAGE_RATIOS[this.puExpandedRatio] ?? PAGE_RATIOS["16:9"]!;
-      return {
-        digitFontSize,
-        pageWidth: Math.round((PU_SLIDE_HEIGHT * rw) / rh),
-        pageHeight: PU_SLIDE_HEIGHT,
-        continuous: false,
-      };
-    }
+    const digitFontSize = this.puFontSize || undefined;
     const paper = PAPER_SIZES[this.puPaper];
     if (!paper) return { digitFontSize, continuous: true }; // 长图：纸交给内容定
     return { digitFontSize, pageWidth: paper[0], pageHeight: paper[1], continuous: false };
@@ -233,13 +222,10 @@ export class App implements OmrHost, PlaybackHost {
   }
   /** 原样档的纸（键取自 `PAPER_SIZES`，「长图」是其中一档）。 */
   jpPaper = PAPER_DEFAULT;
-  /** 文本谱「原样」档的纸；「展开」档只选比例（`PAGE_RATIOS` 的键）。 */
+  /** 文本谱「原样」档的纸（展开档与 `.jpwabc` 共用 pageW/pageH）。 */
   puPaper = PAPER_DEFAULT;
-  puExpandedRatio = "16:9";
-  /** 文本谱音符数字的字号（pt），**两档各记一套**（同简谱：档与档之间字号不该串味）。
-   *  0 = 跟随该档版式量到的原尺寸。 */
+  /** 文本谱原样档音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。展开档与 `.jpwabc` 共用 `_sizes.pptx`。 */
   puFontSize = 0;
-  puExpandedFontSize = 0;
   mixedHideBarNumber = false; // 混排：隐藏小节号
   mixedShowJianpuLayer = true;
   zoom = 1; // 谱面显示缩放（应用到 #score-pane 的 --score-zoom）
@@ -267,25 +253,51 @@ export class App implements OmrHost, PlaybackHost {
     this._rebuildPainter();
   }
 
-  /** 当前档的字号与 painter 手上那份对不上就重建（字号是 JinpuPainter 的构造参数），
-   *  保留已排好的 Score。字号自己不再当参数传——分档之后「当前字号」是 `fontSize` getter，
-   *  真相在 `_sizes`，这里只负责让 painter 追上它。
-   *  随后把 color/titleSize/creditSize 三个选项同步进新 painter。三个调用点共用。
-   *
-   *  `force` 用于换版面档：`applyPptxStyle` 是**单向覆写**，从展开档切回原版
-   *  只能重新构造一份干净的 LayoutOptions。 */
-  private _rebuildPainter(force = false): void {
-    if (force || this.painter.layout.fontSize !== this.fontSize) {
-      const score = this.painter.score;
-      this.painter = new JinpuPainter(this.fontSize);
-      this.painter.layout.options.smuflMeta = this.meta;
-      this.painter.score = score;
+  /** 按当前档与设置重建排版器，保留已排好的 Score。选项都是构造时一次灌定的
+   *  （`applyPptxStyle` 是**单向覆写**，切回原样只能换一份干净的 LayoutOptions），
+   *  所以档位或设置一变就整个重建——排版器本身很轻，重的是随后的 reload。 */
+  private _rebuildPainter(): void {
+    const score = this.painter.score;
+    if (this.layoutMode === "expanded") {
+      this.painter = new ExpandedPainter(this.expandedOptions());
+    } else {
+      const p = new JinpuPainter(this.fontSize);
+      const opt = p.layout.options;
+      opt.smuflMeta = this.meta;
+      opt.color = this.color;
+      opt.titleSize = this.titleSize;
+      opt.creditSize = this.creditSize;
+      // 排版输出的选项最后灌，覆盖在上面那几个之上（契约见 JinpuPainter.applyOriginal）
+      p.applyOriginal({ longImage: this.jpLongImage });
+      this.painter = p;
     }
-    this.painter.layout.options.color = this.color;
-    this.painter.layout.options.titleSize = this.titleSize;
-    this.painter.layout.options.creditSize = this.creditSize;
-    // 排版输出的选项最后灌，覆盖在上面那几个之上（契约见 JinpuPainter.applyMode）
-    this.painter.applyMode(this.layoutMode, { longImage: this.jpLongImage });
+    this.painter.score = score;
+  }
+
+  /** 展开档的设置——**只在这里组一次**：两种格式、屏幕预览与导出 PPTX 都吃这一份。 */
+  expandedOptions(): ExpandedOptions {
+    const s = this._sizes.pptx;
+    return {
+      pageW: this.pageW,
+      pageH: this.pageH,
+      fontSize: s.fontSize,
+      titleSize: s.titleSize,
+      creditSize: s.creditSize,
+      color: this._colors.expanded.fg,
+      smuflMeta: this.meta,
+    };
+  }
+
+  /** 把一份 Score 交给当前排版器排版（展开档用自己的投影片尺寸，原样档用 `layoutPage`）。 */
+  private _layoutScore(score: Score, breakDesc: string | null): void {
+    const p = this.painter;
+    if (p instanceof ExpandedPainter) {
+      p.load(score, breakDesc);
+      return;
+    }
+    p.score = score;
+    const { w, h } = this.layoutPage;
+    p.resize(w, h, breakDesc);
   }
 
   /** 简谱版面切换（原版 / PPT）。展开档 = 2026-08 排版重构之前的笔画观感，
@@ -295,7 +307,7 @@ export class App implements OmrHost, PlaybackHost {
     this.jpProfile = profile;
     // 换档连字号与配色也换了一套（两档各记各的）：_rebuildPainter 按新档的 fontSize 重建，
     // 纸底那层是 CSS 变量、不经排版器，得单独刷一次
-    this._rebuildPainter(true);
+    this._rebuildPainter();
     this._applyPageBg();
     this._syncViewModeButtons();
     this.saveSettings();
@@ -305,7 +317,7 @@ export class App implements OmrHost, PlaybackHost {
   /** Apply page-size / font-size / title-size / credit-size / color render settings and re-render. */
   applyRenderSettings(opts: {
     pageW?: number; pageH?: number; jpPaper?: string;
-    puPaper?: string; puExpandedRatio?: string; puFontSize?: number; puExpandedFontSize?: number;
+    puPaper?: string; puFontSize?: number;
     fontSize?: number; titleSize?: number; creditSize?: number; color?: number; bgColor?: number;
   }): void {
     if (opts.pageW) this.pageW = opts.pageW;
@@ -313,9 +325,7 @@ export class App implements OmrHost, PlaybackHost {
     // 原样档的纸要在 _rebuildPainter 之前定好——那里按 jpLongImage 灌 continuousPage
     if (opts.jpPaper && isPaper(opts.jpPaper)) this.jpPaper = opts.jpPaper;
     if (opts.puPaper && isPaper(opts.puPaper)) this.puPaper = opts.puPaper;
-    if (opts.puExpandedRatio && isRatio(opts.puExpandedRatio)) this.puExpandedRatio = opts.puExpandedRatio;
     if (opts.puFontSize !== undefined) this.puFontSize = Math.min(200, Math.max(0, opts.puFontSize));
-    if (opts.puExpandedFontSize !== undefined) this.puExpandedFontSize = Math.min(200, Math.max(0, opts.puExpandedFontSize));
     if (opts.color !== undefined) this._colors[this._colorKey].fg = opts.color;
     if (opts.bgColor !== undefined) {
       this._colors[this._colorKey].bg = opts.bgColor;
@@ -330,7 +340,8 @@ export class App implements OmrHost, PlaybackHost {
   /** 字号落到**当前档**那一套里。原样档只收基础字号——那一档的标题/词曲是派生的，
    *  面板上根本不显示（见 editor/dialogs.ts），收了也只会被下一次派生覆盖掉。 */
   private _applySizes(opts: { fontSize?: number; titleSize?: number; creditSize?: number }): void {
-    if (this.jpProfile === "normal") {
+    // 按**当前档**分：文本谱的展开档也落 `_sizes.pptx`（与 `.jpwabc` 共用），那时 jpProfile 未必是 pptx
+    if (this.layoutMode === "original") {
       if (opts.fontSize) this._setJpFontSize(opts.fontSize);
       return;
     }
@@ -368,9 +379,7 @@ export class App implements OmrHost, PlaybackHost {
     if (s.zoom) this.zoom = s.zoom;
     if (s.jpPaper && isPaper(s.jpPaper)) this.jpPaper = s.jpPaper;
     if (s.puPaper && isPaper(s.puPaper)) this.puPaper = s.puPaper;
-    if (s.puExpandedRatio && isRatio(s.puExpandedRatio)) this.puExpandedRatio = s.puExpandedRatio;
     if (s.puFontSize !== undefined) this.puFontSize = s.puFontSize;
-    if (s.puExpandedFontSize !== undefined) this.puExpandedFontSize = s.puExpandedFontSize;
     if (s.jpProfile === "normal" || s.jpProfile === "pptx") this.jpProfile = s.jpProfile;
     if (s.puProfile === "print" || s.puProfile === "slide") this.puProfile = s.puProfile;
     this._applyZoom();
@@ -391,9 +400,7 @@ export class App implements OmrHost, PlaybackHost {
       originalFontSize: this._sizes.normal.fontSize,
       jpPaper: this.jpPaper,
       puPaper: this.puPaper,
-      puExpandedRatio: this.puExpandedRatio,
       puFontSize: this.puFontSize,
-      puExpandedFontSize: this.puExpandedFontSize,
       expandedColor: this._colors.expanded.fg,
       expandedBgColor: this._colors.expanded.bg,
       originalColor: this._colors.original.fg,
@@ -508,14 +515,10 @@ export class App implements OmrHost, PlaybackHost {
     }
     if (!score) return false;
 
-    this.painter.score = score;
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
     this._breakDesc = breakDesc; // 导出 PPTX 时另排一遍要用同一份分页描述
     try {
-      // 原样档不用 PPT 那张投影片（见 PAPER_SIZES）；长图那一档不分页，纸的高度
-      // 只是个占位，实际高度由内容说了算。
-      const { w, h } = this.layoutPage;
-      this.painter.resize(w, h, breakDesc);
+      this._layoutScore(score, breakDesc);
     } catch (e) {
       console.error("layout failed", e);
       return false;
@@ -526,7 +529,8 @@ export class App implements OmrHost, PlaybackHost {
   }
 
 
-  /** 文本谱（番茄 / 诗歌本）：解析 → 专用排版 → 渲染。 */
+  /** 文本谱（番茄 / 诗歌本）：解析 → 排版 → 渲染。展开档先转成 Score、与 `.jpwabc` 同一个排版器；
+   *  原样档走文本谱专用的 PuPainter（印刷原版的观感）。 */
   private reloadPu(text: string): boolean {
     let doc;
     try {
@@ -541,23 +545,32 @@ export class App implements OmrHost, PlaybackHost {
       this.setStatus(`文本谱无法解析：${fatal.message}`);
       return false;
     }
-    if (!this._puPainter) this._puPainter = new PuPainter(this.puProfile);
-    else if (this._puPainter.metrics.profile !== this.puProfile) {
-      this._puPainter = new PuPainter(this.puProfile);
-    }
-    this._puPainter.setUserOptions(this.puUserOptions(), this.color);
+    this._puDoc = { text, doc };
+    this._puScoreCache = null; // 文本变了，Score 与 noteMap 都要重建
+    this._puDialect = doc.dialect;
+    this._syncFormatLabel();
     try {
-      this._puPainter.load(doc);
+      if (this.layoutMode === "expanded") {
+        this._puPainter = null;
+        // 试听、点选与高亮认的都是这同一份 Score 对象（puScore 有缓存）
+        const score = this.puScore();
+        if (!score) {
+          this.setStatus("这份文本谱里没有可排的曲行");
+          return false;
+        }
+        this._layoutScore(score, null);
+      } else {
+        this._puPainter ??= new PuPainter();
+        this._puPainter.setUserOptions(this.puUserOptions(), this.color);
+        this._puPainter.load(doc);
+      }
     } catch (e) {
       console.error("文本谱排版失败", e);
       this.setStatus("文本谱排版失败：" + (e instanceof Error ? e.message : String(e)));
       return false;
     }
-    this._puDoc = { text, doc };
-    this._puScoreCache = null; // 文本变了，Score 与 noteMap 都要重建
-    this._puDialect = doc.dialect;
-    this._syncFormatLabel();
-    this.renderPuPages();
+    if (this._puPainter) this.renderPuPages();
+    else this.renderPages();
     // 解析告警不拦排版，但要让用户看得见（谱面往往仍然是对的）
     const warns = doc.diagnostics.length;
     this.setStatus(
@@ -584,9 +597,10 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   /** 文本谱版面切换（原版 / PPT）。 */
-  setPuProfile(profile: PageProfileName): void {
+  setPuProfile(profile: "print" | "slide"): void {
     if (this.puProfile === profile) return;
     this.puProfile = profile;
+    this._rebuildPainter(); // 展开档要一个 ExpandedPainter
     this._applyPageBg(); // 同 setJpProfile：配色两档各记各的，纸底那层不经排版器
     this._syncViewModeButtons();
     this.saveSettings();
@@ -610,10 +624,6 @@ export class App implements OmrHost, PlaybackHost {
   puDoc(): PuDoc | null {
     if (this.docFormat !== "pu") return null;
     const text = this.getText();
-    // 展开档：导出与试听都跟随当前档，取排版器实际排出来的那份（展开后的 AST）
-    if (this._puDoc?.text === text && this.layoutMode === "expanded" && this._puPainter?.renderedDoc) {
-      return this._puPainter.renderedDoc;
-    }
     if (this._puDoc?.text === text) return this._puDoc.doc;
     try {
       const doc = parsePu(text);
@@ -624,9 +634,11 @@ export class App implements OmrHost, PlaybackHost {
     }
   }
 
-  /** 当前文本谱对应的 Score（导出 .jpwabc / MusicXML / MIDI 与试听共用）。
-   *  Score 装不下和弦与力度，那些信息只在「原版」谱面上有。 */
-  puScore(): Score | null {
+  /** 当前文本谱对应的 Score（导出 .jpwabc / MusicXML / MIDI、试听与展开档排版共用）。
+   *  Score 装不下和弦与力度，那些信息只在「原版」谱面上有。
+   *  `forExpanded`：展开档那一份（带歌词的声部换到最前、同号歌词顺延，见 `ToScoreOptions.forExpanded`）。
+   *  默认跟当前档走——展开档里谱面、试听与高亮必须是**同一份** Score 对象（高亮按 Chord 身份认）。 */
+  puScore(forExpanded = this.layoutMode === "expanded"): Score | null {
     if (this.docFormat !== "pu") return null;
     const text = this.getText();
     let score: Score | null = null;
@@ -634,16 +646,16 @@ export class App implements OmrHost, PlaybackHost {
     let doc: PuDoc;
     try {
       // **必须复用排版时那份 AST**：PuPainter 的高亮索引是按节点对象身份建的，
-      // 重新 parse 一遍会得到另一批对象，播放高亮就永远找不到。展开档取展开后的那份（见 puDoc）。
+      // 重新 parse 一遍会得到另一批对象，播放高亮就永远找不到。
       doc = this.puDoc() ?? parsePu(text);
       const c = this._puScoreCache;
-      if (c && c.text === text && c.doc === doc) return c.score;
-      score = puToScore(doc, { noteMap });
+      if (c && c.text === text && c.doc === doc && c.forExpanded === forExpanded) return c.score;
+      score = puToScore(doc, { noteMap, forExpanded });
     } catch (e) {
       console.error("文本谱转 Score 失败", e);
       return null;
     }
-    this._puScoreCache = { text, doc, score, noteMap };
+    this._puScoreCache = { text, doc, score, noteMap, forExpanded };
     return score;
   }
 
@@ -677,6 +689,8 @@ export class App implements OmrHost, PlaybackHost {
       this._puDoc = null;
       this._puScoreCache = null;
     }
+    // 两种格式各记一个档位（jpProfile / puProfile），换格式可能就换了档
+    this._rebuildPainter();
     this._syncViewModeButtons();
     this._syncFormatLabel();
   }
@@ -811,8 +825,9 @@ export class App implements OmrHost, PlaybackHost {
   /** PlaybackHost：播到某个和弦 → 谱面高亮 + 保证可见。
    *  高亮留在 App 而不进控制器：简谱与文本谱走各自排版器的索引，那属于「谁在画谱面」。 */
   highlightPlaying(chord: Chord | null, pass: number): void {
-    // 文本谱：播放器给的是 Chord，「原版」谱面按 AST 节点索引，靠 noteMap 搭桥
-    if (this.docFormat === "pu") {
+    // 文本谱原样档：播放器给的是 Chord，「原版」谱面按 AST 节点索引，靠 noteMap 搭桥。
+    // 展开档与 .jpwabc 同一个排版器，照下面按 Chord 高亮。
+    if (this.docFormat === "pu" && this.layoutMode === "original") {
       const painter = this._puPainter;
       if (!painter) return;
       const note = chord ? this._puScoreCache?.noteMap.get(chord) : null;
@@ -1054,7 +1069,7 @@ export class App implements OmrHost, PlaybackHost {
    */
   private _phraseFit(score: Score): FitMetric {
     const p = new JinpuPainter(this.fontSize);
-    p.layout.options.smuflMeta = this.painter.layout.options.smuflMeta;
+    p.layout.options.smuflMeta = this.meta;
     p.layout.options.lyricStack = this.fontSize; // 只要 > 0：不展开反复，一遍就够量
     score.clearSystemBreak();
     return p.layout.measureNatural(score, this.layoutPage.w);

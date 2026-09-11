@@ -1,5 +1,8 @@
 // Ported from mp/layout/draw.kt (JinpuPainter). Renders the page tree to SVG
 // (replacing Skija Canvas drawing) and provides resize/title-page/pick.
+//
+// `ScorePainter` 是 Layout 这一路排版器共有的那一半（页面、标题页、点选、播放高亮索引）；
+// 两个子类：`JinpuPainter`（原样档 / 成书 / 帮助示例）与 `jianpu/expanded.ts::ExpandedPainter`（展开档，两种格式共用）。
 
 import { Point, Rect, colorToCss } from "../common/geom";
 import { Font } from "./font";
@@ -13,9 +16,7 @@ import {
 } from "./layout";
 import { Chord, MusicCommon, Score } from "../score/score";
 import { jpTimeSigItems } from "./jpglyph";
-import { applyPptxStyle } from "./pptxstyle";
-import { JianpuPainter } from "../jianpu/painter";
-import type { JianpuLayoutMode } from "../jianpu/profile";
+import type { PagePainter } from "./pagepainter";
 import { walkPageItem, type ItemVisitor } from "./walk";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -23,7 +24,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 /** 「原样」档多段歌词叠排时的段间行距 ÷ 歌词字号。原书量到的是 1.3 上下。 */
 export const LYRIC_STACK_RATIO = 1.35;
 
-export class JinpuPainter extends JianpuPainter {
+export abstract class ScorePainter implements PagePainter {
   layout: Layout;
   score = new Score();
   pageWidth = 0;
@@ -34,29 +35,225 @@ export class JinpuPainter extends JianpuPainter {
   private chordItem = new Map<Chord, { page: number; item: PageItem; verse: number }[]>();
   private highlighted: PageItem | null = null;
   /** 逐页高度。空 = 各页同高（`pageHeight`）；连续长纸那一档按内容逐页给。 */
-  private pageHeights: number[] = [];
+  protected pageHeights: number[] = [];
 
   constructor(fontSize: number) {
-    super("expanded");
     this.layout = new Layout(fontSize);
   }
 
-  /**
-   * 按排版输出灌选项。**契约**：构造之后、颜色/标题字号等选项之后、`resize` 之前调——
-   * 展开档的笔画常量（`applyPptxStyle`）要覆盖在前面那几个之上（同 applyBookStyle），
-   * 而且是**单向覆写**：从展开切回原样只能重新构造一个 painter（App._rebuildPainter 的 force）。
-   *
-   * - 展开：反复与多段逐遍展开（`buildLine` 走 `playData`），另起标题页，每页有页脚；
-   * - 原样：按原谱排一遍（`lyricStack > 0`，多段叠在同一条谱行下），标题排在第一页顶上
-   *   （`bookHead`）——印刷歌本的排法；`longImage` = 一张连续长纸（观感同文本谱的「原版」）。
-   */
-  applyMode(mode: JianpuLayoutMode, opts: { longImage?: boolean } = {}): void {
-    this.mode = mode;
-    const opt = this.layout.options;
-    if (mode === "expanded") {
-      applyPptxStyle(opt);
-      return;
+  /** Walk each page tree, mapping every Chord to its note-entry group(s). */
+  protected buildChordIndex(): void {
+    this.chordItem.clear();
+    this.highlighted = null;
+    const walk = (item: PageItem, page: number): void => {
+      if (item.data instanceof NoteEntry) {
+        const ch = item.data.chord;
+        if (ch) {
+          const list = this.chordItem.get(ch) ?? [];
+          list.push({ page, item, verse: item.data.verse });
+          this.chordItem.set(ch, list);
+        }
+      }
+      for (const c of item.children) walk(c, page);
+    };
+    this.layout.pages.forEach((pg, i) => walk(pg, i));
+  }
+
+  /** The rendered entry for a chord at a given pass/verse (falls back to first). */
+  private hitFor(chord: Chord, pass: number): { page: number; item: PageItem } | null {
+    const list = this.chordItem.get(chord);
+    if (!list || list.length === 0) return null;
+    return list.find((h) => h.verse === pass) ?? list[0];
+  }
+
+  /** Highlight the note of `chord` at `pass` (clearing any previous). Returns page index. */
+  highlightChord(chord: Chord | null, pass = 0): number | null {
+    if (this.highlighted) {
+      this.nodeMap.get(this.highlighted)?.classList.remove("playing");
+      this.highlighted = null;
     }
+    if (!chord) return null;
+    const hit = this.hitFor(chord, pass);
+    if (!hit) return null;
+    this.nodeMap.get(hit.item)?.classList.add("playing");
+    this.highlighted = hit.item;
+    return hit.page;
+  }
+
+  /** SVG <g> for a chord's note at `pass` (for scroll-into-view); null if not rendered. */
+  chordGroupEl(chord: Chord, pass = 0): SVGGElement | null {
+    const hit = this.hitFor(chord, pass);
+    return hit ? this.nodeMap.get(hit.item) ?? null : null;
+  }
+
+  protected multipleLineText(str: string, fnt: Font, w: number, clr: number): PageItem {
+    const arr = str.split("\n");
+    const grp = new Group();
+    let ypos = 0;
+    const fm = fnt.metrics;
+    const height = fm.descent - fm.ascent;
+    for (const it of arr) {
+      const tf = new TextFrame();
+      tf.color = clr;
+      tf.font = fnt;
+      tf.text = it;
+      const ww = tf.measureText();
+      tf.x = (w - ww) / 2;
+      tf.y = ypos;
+      ypos += height;
+      if (arr.length === 1) return tf;
+      grp.add(tf);
+    }
+    return grp;
+  }
+
+  /** `h > 0` 时标题块整页居中（老行为，标题页用）；`h = 0` 时从纸顶排起（连续长纸用）。 */
+  titlePage(w: number, h: number): Group {
+    const opt = this.layout.options;
+    const fnt = opt.lrcFont;
+    const pg = new Group();
+    let titleCount = 0;
+    const texts: string[] = [];
+    const fonts: Font[] = [];
+    for (const it of this.score.credit) {
+      const isTitle = it.type === "title";
+      const sz = isTitle ? opt.titleSize : opt.creditSize;
+      if (isTitle) {
+        titleCount++;
+        texts.unshift(it.text);
+        fonts.unshift(fnt.makeWithSize(sz));
+      } else {
+        texts.push(it.text);
+        fonts.push(fnt.makeWithSize(sz));
+      }
+    }
+    if (titleCount === 0) {
+      if (this.score.title.trim().length > 0) {
+        titleCount = 1;
+        texts.unshift(this.score.title);
+        fonts.unshift(fnt.makeWithSize(opt.titleSize));
+      }
+    }
+    if (titleCount !== 1) console.error("title count error!");
+    let ypos = 0.3 * h;
+    texts.forEach((text, idx) => {
+      const font = fonts[idx];
+      const obj = this.multipleLineText(text, font, w, opt.color);
+      obj.y = ypos;
+      obj.update();
+      pg.add(obj);
+      ypos += obj.height;
+    });
+    return pg;
+  }
+
+  // ---------------- SVG rendering ----------------
+
+  /** Render one page group into a standalone <svg> of pageWidth x pageHeight. */
+  renderPage(pageIndex: number): SVGSVGElement {
+    const { w, h } = this.pageSize(pageIndex);
+    return renderPageSvg(this.layout.pages[pageIndex], w, h, this.nodeMap);
+  }
+
+  /** Walk up from a picked item to its enclosing "entry" group (else the item). */
+  entryGroupOf(item: PageItem): PageItem {
+    let cur: PageItem | null = item;
+    while (cur) {
+      if (cur.classes.has("entry")) return cur;
+      cur = cur.parent;
+    }
+    return item;
+  }
+
+  get pageCount(): number {
+    return this.layout.pages.length;
+  }
+
+  /** PagePainter：一般各页同尺寸（resize 给定的纸张）；连续长纸那一档按内容逐页给高。 */
+  pageSize(index: number): { w: number; h: number } {
+    return { w: this.pageWidth, h: this.pageHeights[index] ?? this.pageHeight };
+  }
+
+  // ---------------- picking (Phase 3) ----------------
+
+  private calcDist(x: number, y: number, inn: Rect): number {
+    let dx = 0;
+    if (x < inn.left) dx = inn.left - x;
+    else if (x > inn.right) dx = x - inn.right;
+    let dy = 0;
+    if (y < inn.top) dy = inn.top - y;
+    else if (y > inn.bottom) dy = y - inn.bottom;
+    return dx + dy;
+  }
+
+  pick(root: PageItem, x: number, y: number): [PageItem | null, number] {
+    let bnd = root.bound;
+    bnd = bnd.offset(root.x, root.y);
+    const edge = 5;
+    const dist = this.calcDist(x, y, bnd);
+    if (root.children.length === 0) {
+      let outer = new Rect(bnd.left, bnd.top, bnd.right, bnd.bottom);
+      const dx = Math.min(bnd.width - edge * 2, 0) / 2;
+      const dy = Math.min(bnd.height - edge * 2, 0) / 2;
+      outer = outer.inset(dx, dy);
+      return outer.contains(x, y) ? [root, dist] : [null, dist];
+    }
+    let outer = new Rect(bnd.left, bnd.top, bnd.right, bnd.bottom);
+    outer = outer.inset(-edge, -edge);
+    if (outer.contains(x, y)) {
+      const xx = x - bnd.left;
+      const yy = y - bnd.top;
+      const items: PageItem[] = [];
+      let minDist = Number.MAX_VALUE;
+      let best: PageItem | null = null;
+      let small: PageItem | null = null;
+      for (const ch of root.children) {
+        const [p, pd] = this.pick(ch, xx, yy);
+        if (p !== null) {
+          if (pd < minDist) {
+            best = p;
+            minDist = pd;
+            items.length = 0;
+            items.push(p);
+          }
+          if (pd === minDist) items.push(p);
+          if (ch.bound.width < edge || ch.bound.height < edge) small = ch;
+        }
+      }
+      if (small !== null) return [small, 0];
+      let area = Number.MAX_VALUE;
+      for (const it of items) {
+        const a = it.bound.width * it.bound.height;
+        if (a < area) {
+          best = it;
+          area = a;
+        }
+      }
+      return [best, minDist];
+    }
+    return [null, Number.MAX_VALUE];
+  }
+
+  pickPage(page: number, pos: Point): PageItem | null {
+    const pg = this.layout.pages[page];
+    const [p] = this.pick(pg, pos.x, pos.y);
+    return p;
+  }
+}
+
+/**
+ * `.jpwabc` 的「原样」档与成书（`pdflayout`）、帮助示例、分行度量用的排版器：
+ * 版面由调用方灌进 `layout.options`（原样档走 `applyOriginal`，成书走 `applyBookStyle`），
+ * 标题排在第一页顶上（`bookHead`）或整首一张连续长纸。「展开」档另见 `jianpu/expanded.ts::ExpandedPainter`。
+ */
+export class JinpuPainter extends ScorePainter {
+  /**
+   * 灌「原样」档的选项。**契约**：构造之后、颜色/标题字号等选项之后、`resize` 之前调。
+   * 按原谱排一遍（`lyricStack > 0`，多段叠在同一条谱行下），标题排在第一页顶上
+   * （`bookHead`）——印刷歌本的排法；`longImage` = 一张连续长纸（观感同文本谱的「原版」）。
+   */
+  applyOriginal(opts: { longImage?: boolean } = {}): void {
+    const opt = this.layout.options;
     opt.lyricStack = opt.lrcFont.size * LYRIC_STACK_RATIO;
     opt.continuousPage = opts.longImage ?? true;
     opt.bookHead = true;
@@ -73,26 +270,16 @@ export class JinpuPainter extends JianpuPainter {
     if (head) head.update();
     opt.firstPageHeadroom = head && !opt.continuousPage ? head.height + opt.marginTop : 0;
     this.layout.fromScore(this.score, dur, w, h);
-    // 页脚（曲名 + 「i/n」）只归展开档：原样档是印刷歌本的排法，没有页眉页脚；
-    // 连续长纸只有一页，成书（`pageFurniture: "none"`）的页眉页脚由整本那一层统一加。
-    if (this.expanded && !opt.continuousPage && opt.pageFurniture !== "none") {
-      this.addFooters(this.layout.pages, {
-        title: this.score.title,
-        font: opt.lrcFont.scaled(0.8),
-        color: opt.color,
-        pageWidth: w,
-        pageHeight: h,
-        marginBottom: opt.marginBottom,
-        marginRight: opt.marginRight,
-        originX: opt.marginLeft, // fromScore 已把页组右移一个左边距
-        titleLeft: opt.marginLeft,
-        titleWidth: w - opt.marginLeft - opt.marginRight,
-        pageNoAnchor: opt.marginLeft + 0.8 * w,
-      });
-    }
+    // 没有页脚：原样档是印刷歌本的排法，成书（`pageFurniture: "none"`）的页眉页脚由整本那一层统一加；
+    // 页脚只归展开档（ExpandedPainter）。
     if (opt.continuousPage) this.stackContinuous(head!);
     else if (head) this.attachBookHead(head);
-    else this.prependTitlePage(this.layout.pages, this.titlePage(w, h));
+    else {
+      // 既不叠标题块也不是长纸（成书、帮助示例）：标题另起一页
+      const title = this.titlePage(w, h);
+      title.update();
+      this.layout.pages.unshift(title);
+    }
     for (const p of this.layout.pages) p.update();
     this.buildChordIndex();
   }
@@ -137,72 +324,6 @@ export class JinpuPainter extends JianpuPainter {
     outer.update();
     this.layout.pages = [outer];
     this.pageHeights = [outer.y + outer.height + opt.marginBottom];
-  }
-
-  /** Walk each page tree, mapping every Chord to its note-entry group(s). */
-  private buildChordIndex(): void {
-    this.chordItem.clear();
-    this.highlighted = null;
-    const walk = (item: PageItem, page: number): void => {
-      if (item.data instanceof NoteEntry) {
-        const ch = item.data.chord;
-        if (ch) {
-          const list = this.chordItem.get(ch) ?? [];
-          list.push({ page, item, verse: item.data.verse });
-          this.chordItem.set(ch, list);
-        }
-      }
-      for (const c of item.children) walk(c, page);
-    };
-    this.layout.pages.forEach((pg, i) => walk(pg, i));
-  }
-
-  /** The rendered entry for a chord at a given pass/verse (falls back to first). */
-  private hitFor(chord: Chord, pass: number): { page: number; item: PageItem } | null {
-    const list = this.chordItem.get(chord);
-    if (!list || list.length === 0) return null;
-    return list.find((h) => h.verse === pass) ?? list[0];
-  }
-
-  /** Highlight the note of `chord` at `pass` (clearing any previous). Returns page index. */
-  highlightChord(chord: Chord | null, pass = 0): number | null {
-    if (this.highlighted) {
-      this.nodeMap.get(this.highlighted)?.classList.remove("playing");
-      this.highlighted = null;
-    }
-    if (!chord) return null;
-    const hit = this.hitFor(chord, pass);
-    if (!hit) return null;
-    this.nodeMap.get(hit.item)?.classList.add("playing");
-    this.highlighted = hit.item;
-    return hit.page;
-  }
-
-  /** SVG <g> for a chord's note at `pass` (for scroll-into-view); null if not rendered. */
-  chordGroupEl(chord: Chord, pass = 0): SVGGElement | null {
-    const hit = this.hitFor(chord, pass);
-    return hit ? this.nodeMap.get(hit.item) ?? null : null;
-  }
-
-  private multipleLineText(str: string, fnt: Font, w: number, clr: number): PageItem {
-    const arr = str.split("\n");
-    const grp = new Group();
-    let ypos = 0;
-    const fm = fnt.metrics;
-    const height = fm.descent - fm.ascent;
-    for (const it of arr) {
-      const tf = new TextFrame();
-      tf.color = clr;
-      tf.font = fnt;
-      tf.text = it;
-      const ww = tf.measureText();
-      tf.x = (w - ww) / 2;
-      tf.y = ypos;
-      ypos += height;
-      if (arr.length === 1) return tf;
-      grp.add(tf);
-    }
-    return grp;
   }
 
   /** 标题 + 词曲那一块，从 y = 0 往下排。
@@ -363,138 +484,6 @@ export class JinpuPainter extends JianpuPainter {
     return g;
   }
 
-  /** `h > 0` 时标题块整页居中（老行为，标题页用）；`h = 0` 时从纸顶排起（连续长纸用）。 */
-  titlePage(w: number, h: number): Group {
-    const opt = this.layout.options;
-    const fnt = opt.lrcFont;
-    const pg = new Group();
-    let titleCount = 0;
-    const texts: string[] = [];
-    const fonts: Font[] = [];
-    for (const it of this.score.credit) {
-      const isTitle = it.type === "title";
-      const sz = isTitle ? opt.titleSize : opt.creditSize;
-      if (isTitle) {
-        titleCount++;
-        texts.unshift(it.text);
-        fonts.unshift(fnt.makeWithSize(sz));
-      } else {
-        texts.push(it.text);
-        fonts.push(fnt.makeWithSize(sz));
-      }
-    }
-    if (titleCount === 0) {
-      if (this.score.title.trim().length > 0) {
-        titleCount = 1;
-        texts.unshift(this.score.title);
-        fonts.unshift(fnt.makeWithSize(opt.titleSize));
-      }
-    }
-    if (titleCount !== 1) console.error("title count error!");
-    let ypos = 0.3 * h;
-    texts.forEach((text, idx) => {
-      const font = fonts[idx];
-      const obj = this.multipleLineText(text, font, w, opt.color);
-      obj.y = ypos;
-      obj.update();
-      pg.add(obj);
-      ypos += obj.height;
-    });
-    return pg;
-  }
-
-  // ---------------- SVG rendering ----------------
-
-  /** Render one page group into a standalone <svg> of pageWidth x pageHeight. */
-  renderPage(pageIndex: number): SVGSVGElement {
-    const { w, h } = this.pageSize(pageIndex);
-    return renderPageSvg(this.layout.pages[pageIndex], w, h, this.nodeMap);
-  }
-
-  /** Walk up from a picked item to its enclosing "entry" group (else the item). */
-  entryGroupOf(item: PageItem): PageItem {
-    let cur: PageItem | null = item;
-    while (cur) {
-      if (cur.classes.has("entry")) return cur;
-      cur = cur.parent;
-    }
-    return item;
-  }
-
-  get pageCount(): number {
-    return this.layout.pages.length;
-  }
-
-  /** PagePainter：一般各页同尺寸（resize 给定的纸张）；连续长纸那一档按内容逐页给高。 */
-  pageSize(index: number): { w: number; h: number } {
-    return { w: this.pageWidth, h: this.pageHeights[index] ?? this.pageHeight };
-  }
-
-  // ---------------- picking (Phase 3) ----------------
-
-  private calcDist(x: number, y: number, inn: Rect): number {
-    let dx = 0;
-    if (x < inn.left) dx = inn.left - x;
-    else if (x > inn.right) dx = x - inn.right;
-    let dy = 0;
-    if (y < inn.top) dy = inn.top - y;
-    else if (y > inn.bottom) dy = y - inn.bottom;
-    return dx + dy;
-  }
-
-  pick(root: PageItem, x: number, y: number): [PageItem | null, number] {
-    let bnd = root.bound;
-    bnd = bnd.offset(root.x, root.y);
-    const edge = 5;
-    const dist = this.calcDist(x, y, bnd);
-    if (root.children.length === 0) {
-      let outer = new Rect(bnd.left, bnd.top, bnd.right, bnd.bottom);
-      const dx = Math.min(bnd.width - edge * 2, 0) / 2;
-      const dy = Math.min(bnd.height - edge * 2, 0) / 2;
-      outer = outer.inset(dx, dy);
-      return outer.contains(x, y) ? [root, dist] : [null, dist];
-    }
-    let outer = new Rect(bnd.left, bnd.top, bnd.right, bnd.bottom);
-    outer = outer.inset(-edge, -edge);
-    if (outer.contains(x, y)) {
-      const xx = x - bnd.left;
-      const yy = y - bnd.top;
-      const items: PageItem[] = [];
-      let minDist = Number.MAX_VALUE;
-      let best: PageItem | null = null;
-      let small: PageItem | null = null;
-      for (const ch of root.children) {
-        const [p, pd] = this.pick(ch, xx, yy);
-        if (p !== null) {
-          if (pd < minDist) {
-            best = p;
-            minDist = pd;
-            items.length = 0;
-            items.push(p);
-          }
-          if (pd === minDist) items.push(p);
-          if (ch.bound.width < edge || ch.bound.height < edge) small = ch;
-        }
-      }
-      if (small !== null) return [small, 0];
-      let area = Number.MAX_VALUE;
-      for (const it of items) {
-        const a = it.bound.width * it.bound.height;
-        if (a < area) {
-          best = it;
-          area = a;
-        }
-      }
-      return [best, minDist];
-    }
-    return [null, Number.MAX_VALUE];
-  }
-
-  pickPage(page: number, pos: Point): PageItem | null {
-    const pg = this.layout.pages[page];
-    const [p] = this.pick(pg, pos.x, pos.y);
-    return p;
-  }
 }
 
 /** `renderPageSvg` 的可选项。第四个参数直接给 WeakMap 是老写法，保留不动。 */
