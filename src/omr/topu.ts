@@ -236,7 +236,6 @@ export function toPuText(
   const { opens, closes } = pairCurves(score.rows.flatMap((r) => r.nums));
 
   let noteIdx = 0; // 全曲音符序（== flatten(rows[].nums)）
-  let openTail = false; // 上一行的末小节是否跨行未收（行末图上没有小节线）
   // 当前生效的拍号：起头用页眉那个（混合拍时 score.beats 就是首个），曲中由 timeChange
   // 改写。只给减时线的连断记号用（见下），跨行也要接着算，故声明在行循环之外。
   let curBeats = score.beats, curBeatType = score.beatType;
@@ -247,9 +246,9 @@ export function toPuText(
 
     // ---- 曲行 ----
     tb.push("Q:");
-    // 上一行是**开口收尾**（末小节跨到本行继续，换行处图上本就没有小节线）：本行开头写一条
-    // 隐藏小节线 `|/`，读回来才知道这一行接的是上一行那个没写完的小节，而不是新起一小节。
-    if (openTail) tb.push(barlineCode(dialect, "hidden"));
+    // 上一行**开口收尾**（换行处图上没有小节线）时本行开头什么都不写：换行本身不断小节，
+    // 读回来这一行自然接着上一行那个没写完的小节。别补 `|/`——那是隐藏小节线，
+    // 不是「跨行小节」的记号，写了反而在行首多出一条小节线。
     let pendingVolta = false; // 房号已开、等着 `]` 收尾
     // 右侧小节线不当场写，攒到下一小节的左侧再落笔：`:|` 紧接 `|:` 要合成一条 `:|:`，
     // 分开写会连着两条小节线、中间没音符，读回来就多一个空小节。
@@ -384,7 +383,6 @@ export function toPuText(
       const jump = notes.find((n) => n.jumpMark)?.jumpMark;
       if (jump && JUMP_MARK[jump]) pendingJump = JUMP_MARK[jump]!;
     });
-    openTail = !rowEndsClosed(row);
     if (pendingVolta) tb.push(" ]"); // 房号跨到行末未闭合：就地收口，免得整行的 `[` 悬空
     // 行末小节线：反复记号必须写出；普通线只在图上有时写（开口收尾说明这小节跨到下一行，不可凭空补）
     if (pendingRight !== null) writeBarline(pendingRight);

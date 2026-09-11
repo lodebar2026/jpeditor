@@ -946,15 +946,21 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 延长记号（fermata 𝄐）：音符头顶一段小弧、弧下扣一个点。整块只有半个字号宽，够不着
   // detectSlurs 的圆滑线判据（那里要求宽 ≥0.8 字号），弧本身常连归类都轮不上；而弧下那个点
   // 正落在八度点的窗口里，于是 16《爱心的功课》末行的 `5·6̂ 7̂` 读成了 `5. 6̇ 7̇`（高了一个八度）。
-  // 判据：宽薄小弧（0.5~1.3 字号宽、扁平）+ 正下方居中的一个小点 + 再下方紧跟着数字。
+  // 判据：宽薄小弧（0.5~1.6 字号宽、扁平）+ 正下方居中的一个小点 + 再下方紧跟着数字。
+  // 宽高上限按赞美诗选 21《我歌颂你》放到 1.6 / 0.7：那本的弧大一号（实测 39×17px、字号 28，
+  // 即 1.39 / 0.61），点还扣在弧**里面**（点顶高于弧底）。放宽不怕误认：点要居中、正下方还得
+  // 紧跟一个正常字号的数字，圆滑线跨两个音，中心下方落不着数字。
   const fermataOf = new Map<DigitCore, boolean>();
   const fermataDots = new Set<Component>();
+  // 认出来的弧也记下：它与下一谱行的歌词带同高，不摘掉会被聚成一条伪 verse 行，
+  // 连同行里伸上来的小节线头一起送 OCR（《我歌颂你》末行那道高小节线读成了 W2 的「I」）。
+  const fermataArcs = new Set<Component>();
   for (const m of staff) {
     const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
     for (const arc of comps) {
       const ab = arc.bbox;
-      if (ab.w < numH * 0.5 || ab.w > numH * 1.3) continue;
-      if (ab.h < numH * 0.15 || ab.h > numH * 0.45 || ab.w / ab.h < 1.8) continue;
+      if (ab.w < numH * 0.5 || ab.w > numH * 1.6) continue;
+      if (ab.h < numH * 0.15 || ab.h > numH * 0.7 || ab.w / ab.h < 1.8) continue;
       const dotC = c.dots.find((o) => {
         const ob = o.bbox;
         return Math.abs(rcx(ob) - rcx(ab)) <= numH * 0.25 && ob.y >= ab.y &&
@@ -967,6 +973,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       if (!owner) continue;
       fermataOf.set(owner, true);
       fermataDots.add(dotC);
+      fermataArcs.add(arc);
     }
   }
   // 弧下那个点不是八度点，别让 buildJpNums 收走。
@@ -1149,7 +1156,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   let lyricRegions: RecognizedScore["lyricRegions"];
   let chordRegions: RecognizedScore["chordRegions"];
   if (ocr.recognizeTexts) {
-    const lr = await recognizeLyrics(bin, comps, useRows, numH, ocr, headerRegions);
+    const lyricComps = fermataArcs.size ? comps.filter((k) => !fermataArcs.has(k)) : comps;
+    const lr = await recognizeLyrics(bin, lyricComps, useRows, numH, ocr, headerRegions);
     lyricRegions = lr.lyrics.length ? lr.lyrics : undefined;
     chordRegions = lr.chords.length ? lr.chords : undefined;
   }

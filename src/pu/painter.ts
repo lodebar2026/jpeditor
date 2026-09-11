@@ -24,6 +24,7 @@ import { primaryMetadata } from "./ast";
 import {
   layoutDocument,
   noteInkBottom,
+  stackTop,
   type PlacedItem,
   type PlacedLayer,
   type PlacedGroup,
@@ -34,7 +35,7 @@ import {
   type LyricMeasure,
 } from "./layout";
 import { BRACE_GLYPHS } from "./brace";
-import { applyDocOptions, applyUserOptions, contentWidth, metricsFor, puGraceMetrics, puGraceNotes, puSlurStyle, type PuMetrics, type PuUserOptions } from "./metrics";
+import { applyDocOptions, applyUserOptions, contentWidth, metricsFor, noteMarkGap, puGraceMetrics, puGraceNotes, puSlurStyle, type PuMetrics, type PuUserOptions } from "./metrics";
 import { ACCOMP_BRACKET, ACCIDENTAL_GLYPH, BARLINE_MARKS, BRACKET, DYNAMICS, ORNAMENTS, TERMS } from "./glyph";
 
 /**
@@ -564,24 +565,71 @@ export class PuPainter implements PagePainter {
     return Math.max(need, leftW + rightW + m.marginLeft + m.marginRight + m.digitInkHeight);
   }
 
+  /** 标题（含副标题）最后一行的**墨迹**底。落位同 paintHeader 画标题那段。 */
+  private titleInkBottom(meta: Metadata): number {
+    const m = this.metrics;
+    let bottom = 0;
+    meta.titles.forEach((title, i) => {
+      const font = new Font(m.fontFamily, i === 0 ? m.titleSize : m.subtitleSize, i === 0);
+      const y = m.titleY + (i === 0 ? 0 : m.titleSize * 0.2 + i * (m.subtitleSize * 1.35));
+      bottom = Math.max(bottom, y + font.charBound(title).bottom);
+    });
+    return bottom;
+  }
+
+  /**
+   * 调号拍号行相对其基线 keyY 的**墨迹**上下缘（拍号取分子墨迹顶、分母墨迹底；分数线对准「=」，
+   * 与 paintHeader 同一套落位）。没有拍号就只看调号字母。
+   */
+  private keyLineInk(meta: Metadata): { top: number; bottom: number } {
+    const m = this.metrics;
+    const headFont = new Font(m.fontFamily, m.headerSize);
+    const f = headFont.charBound("F");
+    let top = f.top, bottom = f.bottom;
+    const mt = meta.meters[0];
+    if (mt) {
+      const eq = headFont.charBound("=");
+      const meterY = (eq.top + eq.bottom) / 2 + m.underlineWidth / 2;
+      const r = jpTimeSigItems(mt.numerator, mt.denominator, {
+        height: m.barlineHeight, centerY: 0, ruleWidth: m.underlineWidth, color: INK, font: headFont,
+      });
+      const up = r.items[0] as TextFrame;
+      const lo = r.items[1] as TextFrame;
+      top = Math.min(top, meterY + up.y + up.font.charBound(up.text).top);
+      bottom = Math.max(bottom, meterY + lo.y + lo.font.charBound(lo.text).bottom);
+    }
+    return { top, bottom };
+  }
+
+  /**
+   * 调号拍号行的基线。左侧有 `TL:`/词曲块时排在那块**下方**（否则多行会叠在一起）；
+   * 没有时贴着标题：标题墨迹底 → 调号拍号墨迹顶只空**一行**（歌词字高），与首行、system 间距同口径
+   * （用户口径：离标题近一点）。原先固定在 keyMeterY（176），离标题两行多。
+   */
+  private keyLineY(meta: Metadata): number {
+    const m = this.metrics;
+    const leftLines = Math.max(meta.topLeft.length, meta.authors.length);
+    if (leftLines > 0) return m.authorY + leftLines * m.authorStep + m.headerSize * 0.6;
+    if (meta.titles.length === 0) return m.keyMeterY;
+    return this.titleInkBottom(meta) + m.lyricSize - this.keyLineInk(meta).top;
+  }
+
   /** 头部（标题/副标题/词曲/TL/TR/调号拍号）占到哪个 y——正文首行据此避让。 */
   private headerBottom(meta: Metadata): number {
     const m = this.metrics;
-    const titleBottom =
-      m.titleY +
-      (meta.titles.length > 1
-        ? m.titleSize * 0.2 + (meta.titles.length - 1) * m.subtitleSize * 1.35
-        : 0);
     const leftLines = Math.max(meta.topLeft.length, meta.authors.length);
     const rightLines = meta.topRight.length;
-    const blockBottom = m.authorY + Math.max(leftLines, rightLines, 1) * m.authorStep;
+    // 只有真有左右文字块时才算它的底；没有时不能拿 authorY 一行兜底，否则调号贴上标题也白贴
+    const lines = Math.max(leftLines, rightLines);
+    const blockBottom = lines > 0 ? m.authorY + (lines - 1) * m.authorStep + m.authorSize * 0.2 : 0;
     const hasTempoWords = meta.tempos.some((t) => typeof t === "string" && t !== "");
-    const keyBottom =
-      (leftLines > 0 ? m.authorY + leftLines * m.authorStep + m.headerSize * 0.6 : m.keyMeterY) +
-      (hasTempoWords ? m.headerSize * 2.2 : m.headerSize * 0.8);
-    // 还要让过第一组头顶的和弦/注释行（它画在首行音符基线之上 annotationY 处）
-    const clearance = Math.max(m.digitInkHeight * 1.4, -m.annotationY + m.annotationSize * 0.9);
-    return Math.max(titleBottom, blockBottom, keyBottom) + clearance;
+    const keyY = this.keyLineY(meta);
+    let keyBottom = keyY + this.keyLineInk(meta).bottom;
+    if (hasTempoWords) keyBottom = keyY + m.headerSize * 1.55 + m.headerSize * 0.85 * 0.15;
+    // 只报页首的**墨迹底**；「空一行」由 layout 量到首组真正的墨迹顶（和弦、W: 文字行、弧线都算），
+    // 见 layout.ts::layoutSong 的 firstTop。在这里按数字顶加一行，首组头顶有文字行时就被吃掉了
+    //（小兔子乖乖的「引子」贴上了拍号）。
+    return Math.max(this.titleInkBottom(meta), blockBottom, keyBottom);
   }
 
   private paintHeader(root: Group, songIndex: number, systemLeft: number): void {
@@ -617,12 +665,8 @@ export class PuPainter implements PagePainter {
       root.add(text(t, right - w, m.authorY + i * m.authorStep, topFont, INK));
     });
 
-    // 调号拍号排在左侧文字块**下方**，否则会和 TL 的多行叠在一起
-    const leftLines = Math.max(meta.topLeft.length, meta.authors.length);
-    const keyY =
-      leftLines > 0
-        ? m.authorY + leftLines * m.authorStep + m.headerSize * 0.6
-        : m.keyMeterY;
+    // 调号拍号行的基线（左侧文字块之下，或贴着标题空一行，见 keyLineY）
+    const keyY = this.keyLineY(meta);
 
     const headFont = new Font(m.fontFamily, m.headerSize);
     const tonic = meta.tonic ?? "1";
@@ -630,14 +674,27 @@ export class PuPainter implements PagePainter {
     const modeText = meta.mode
       ? meta.mode.replace(/^([A-G])([b#$♭♯])$/, "$2$1").replace(/b/g, "\u266D").replace(/#/g, "\u266F")
       : "";
-    const keyText = modeText ? `${tonic}=${modeText}` : "";
     let x = systemLeft;
-    if (keyText) {
-      root.add(text(keyText, x, keyY, headFont, INK));
-      x += headFont.measureText(keyText) + 8;
+    if (modeText) {
+      // `=` 两侧各让一点（连写「1=F」挤成一团，用户口径），三段分开画
+      const eqPad = m.headerSize * 0.2;
+      const eqX = x + headFont.measureText(tonic) + eqPad;
+      const modeX = eqX + headFont.measureText("=") + eqPad;
+      root.add(text(tonic, x, keyY, headFont, INK));
+      root.add(text("=", eqX, keyY, headFont, INK));
+      root.add(text(modeText, modeX, keyY, headFont, INK));
+      // 调号 → 拍号的**墨迹**间距 = 「=」→ 调号的墨迹间距（用户口径）；分数线左端就是拍号墨迹左缘
+      const eqInk = headFont.charBound("=");
+      const modeInk = headFont.charBound(modeText);
+      const inkGap = modeX + modeInk.left - (eqX + eqInk.right);
+      x = modeX + modeInk.right + inkGap;
     }
+    // 拍号的分数线与调号的「=」**视觉居中**：按「=」墨迹的竖直中心定分数线（用户口径）。
+    // jpTimeSigItems 把分数线描边中心放在 centerY − ruleWidth/2，这里补回那半个线宽。
+    const eq = headFont.charBound("=");
+    const meterY = keyY + (eq.top + eq.bottom) / 2 + m.underlineWidth / 2;
     for (const meter of meta.meters) {
-      x += this.paintMeter(root, x, keyY, meter, headFont) + 14;
+      x += this.paintMeter(root, x, meterY, meter, headFont) + 14;
     }
     // `J:` 里的文字部分（「深情地」「高亢、自由地」）排在调号拍号**下一行**，左对齐。
     // 数字部分是速度值，不显示在这里。
@@ -676,7 +733,7 @@ export class PuPainter implements PagePainter {
     const r = jpTimeSigItems(meter.numerator, meter.denominator, {
       height: this.metrics.barlineHeight,
       centerY: 0,
-      ruleWidth: 1.4,
+      ruleWidth: this.metrics.underlineWidth, // 分数线与减时线同粗（用户口径）
       color: INK,
       font,
     });
@@ -1012,7 +1069,7 @@ export class PuPainter implements PagePainter {
     this.paintGrace(g, note.graceAfter, x, baseline, 1);
 
     // `&xx` 记号
-    this.paintOrnaments(g, note.ornaments, x, baseline);
+    this.paintOrnaments(g, note.ornaments, x, baseline, stackTop(note, this.metrics));
 
     root.add(g);
     this.noteItems.set(note, { page: pageIndex, item: g });
@@ -1071,6 +1128,8 @@ export class PuPainter implements PagePainter {
     ornaments: readonly { name: string; level: number }[],
     x: number,
     baseline: number,
+    /** 音符上方堆叠顶（相对基线，含高八度点，见 layout.ts::stackTop）；小节线/增时线上的记号不传 */
+    top = -this.metrics.digitInkHeight / 2,
   ): void {
     if (ornaments.length === 0) return;
     const m = this.metrics;
@@ -1109,7 +1168,14 @@ export class PuPainter implements PagePainter {
       if (glyph) {
         const font = new Font("Bravura", this.digitFont.size * glyph.scale);
         const w = font.measureText(glyph.glyph);
-        g.add(text(glyph.glyph, x - w / 2, y, font, INK));
+        if (orn.name === "yc" || orn.name === "ycy") {
+          // 延长记号按**墨迹**贴着音符堆叠顶（含高八度点）放，净距与减时线、八度点同一个值
+          // （metrics.ts::alignNoteMarks）；走 laneOrnament 固定槽位离音符太远（用户口径）。
+          const ab = font.charBound(glyph.glyph);
+          g.add(text(glyph.glyph, x - w / 2, baseline + top - noteMarkGap(m) - ab.bottom, font, INK));
+        } else {
+          g.add(text(glyph.glyph, x - w / 2, y, font, INK));
+        }
         slot += 1;
         continue;
       }
