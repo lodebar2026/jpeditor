@@ -5,6 +5,8 @@ export { parsePu, parseMusicLine, parseLyricBody, type ParseOptions } from "./pa
 export { eachNote, eachNoteInElements, emptyMetadata, primaryMetadata } from "./ast";
 export { PuPainter } from "./painter";
 export { puToScore, type ToScoreOptions } from "./toscore";
+export { relayoutPuText } from "./relayout";
+export { puPhraseLines, type PuNewLine } from "./phrase";
 // 展开档应有几遍（两种格式共用的判据；回归脚本经 window.__pu 取用）
 export { countPasses } from "../jianpu/expand";
 export { puToMusicXml, type ToXmlOptions } from "./toxml";

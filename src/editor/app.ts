@@ -7,7 +7,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { jpwHighlighter } from "./highlight";
 import { puHighlighter } from "../pu/highlight";
 import { PuPainter } from "../pu/painter";
-import { parsePu, puToScore, sniffDialect, dialectSpec, type Dialect } from "../pu";
+import { parsePu, puToScore, relayoutPuText, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import type { Chord, Score } from "../score/score";
 import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
 import type { PuUserOptions } from "../pu/metrics";
@@ -21,6 +21,7 @@ import { Point, colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";
 import type { FitMetric } from "../score/phrase";
+import type { FitMeasure } from "../pu/phrase";
 import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
@@ -135,6 +136,8 @@ export class App implements OmrHost, PlaybackHost {
   private _phraseBtnEl: HTMLButtonElement | null = null;
   private _origLayoutText: string | null = null;
   private _phraseOn = false;
+  /** 文本谱：上一次重排**产出的**那份原文。文本与它不同了就说明用户自己动过手。 */
+  private _phraseText: string | null = null;
   private _hanziBtnEl: HTMLButtonElement | null = null;
   private _readOnlyCompartment = new Compartment();
   // render settings (app-level, not part of the .jpwabc document)
@@ -547,6 +550,14 @@ export class App implements OmrHost, PlaybackHost {
     }
     this._puDoc = { text, doc };
     this._puScoreCache = null; // 文本变了，Score 与 noteMap 都要重建
+    // 乐句重排：**用户手改过的文本就是新的「原样」基准**（切回按钮要还原到它）。
+    // 重排后又手改的，也按「这就是新的原样」算——否则一按「原样」就把用户后来的编辑抹了。
+    if (this._phraseOn && text !== this._phraseText) {
+      this._phraseOn = false;
+      this._setPhraseActive(false);
+    }
+    if (!this._phraseOn) this._origLayoutText = text;
+    this._setPhraseAvailable(true);
     this._puDialect = doc.dialect;
     this._syncFormatLabel();
     try {
@@ -679,7 +690,8 @@ export class App implements OmrHost, PlaybackHost {
       ),
     });
     if (format === "pu") {
-      // 文本谱走自己的排版器，简谱那侧的上下文工具（乐句重排 / 混排）不适用
+      // 混排是简谱那侧的上下文工具，文本谱不适用；乐句重排两种格式都有
+      // （文本谱走 `pu/relayout.ts`，重排的是原文本身），可用性由 reloadPu 定。
       this._disablePhrase();
       this.mixedXmlText = null;
       this._setMixedAvailable(false);
@@ -1035,6 +1047,10 @@ export class App implements OmrHost, PlaybackHost {
 
   /** Switch between the imported line layout and phrase-aware relayout. */
   setPhraseLayout(phrase: boolean): void {
+    if (this.docFormat === "pu") {
+      this._setPuPhraseLayout(phrase);
+      return;
+    }
     if (!this.mixedXmlText || !this._origLayoutText) return;
     if (this._phraseOn === phrase) return;
     // 乐句排版要看的是排版结果 → 先退出识别/混排叠加视图，回到简谱模式，否则 reload 直接返回不重排。
@@ -1056,6 +1072,58 @@ export class App implements OmrHost, PlaybackHost {
   }
 
   /**
+   * 文本谱的「按乐句重排」：**重排的是原文本身**（`pu/relayout.ts`），两档因此同时就位
+   * ——原样档一行 `Q:` 就是谱面一行，展开档的行边界由 `toscore.ts` 转成 `LineBreak`。
+   * 切回「原样」= 把重排前那份原文放回去（逐字相同，Ctrl+Z 也能整体撤销）。
+   */
+  private _setPuPhraseLayout(phrase: boolean): void {
+    if (this._phraseOn === phrase) return;
+    const base = this._origLayoutText;
+    if (!phrase) {
+      if (base === null) return;
+      this._phraseOn = false;
+      this._setPhraseActive(false);
+      this.setText(base);
+      return;
+    }
+    const text = this.getText();
+    const doc = this.puDoc();
+    if (!doc) {
+      this.setStatus("文本谱解析失败，无法按乐句重排");
+      return;
+    }
+    try {
+      const out = relayoutPuText(text, doc, { measure: this._puPhraseMeasure() });
+      if (out === text) {
+        this.setStatus("这份文本谱没有可重排的曲行");
+        return;
+      }
+      this._origLayoutText = text;
+      this._phraseText = out;
+      this._phraseOn = true;
+      this._setPhraseActive(true);
+      this.setText(out);
+    } catch (e) {
+      console.error("文本谱乐句重排失败", e);
+      this.setStatus("按乐句重排失败");
+    }
+  }
+
+  /**
+   * 文本谱的行长尺子。
+   *
+   * **只有展开档有**：那一档两种格式同走 `ExpandedPainter`，量它的 `JinpuPainter` 与真正排版的
+   * 是同一套坐标。原样档走的是 `PuPainter`——固定步进的另一套尺子、另一套字号，拿简谱那把尺子
+   * 去量会以为「两句并一行还宽绰」，排出来却要硬折（73《我主耶稣是生命源》一行 8 小节）。
+   * 没有尺子时 `phrase.ts` 按出厂的小节数目标断，也就是一句一行——印刷原版要的正是这个。
+   */
+  private _puPhraseMeasure(): FitMeasure | null {
+    if (this.layoutMode !== "expanded") return null;
+    // 量的必须是**断行模块自己那份 Score**（span 以 Chord 身份为键），所以给的是函数不是结果。
+    return (score) => this._fitOf(score, this.pageW, this._sizes.pptx.fontSize);
+  }
+
+  /**
    * 乐句排版的**真实坐标尺子**：空排一遍，量出版心宽与每个和弦的自然横向区间。
    *
    * 行长目标与「这一行放不放得下」都按它算（`phrase.ts::targetMeasForFit` / `FitMetric`），
@@ -1068,11 +1136,16 @@ export class App implements OmrHost, PlaybackHost {
    * 以 Chord 为键的 Map、只留最后一遍，按小节取 min/max 就成了整首的跨度。
    */
   private _phraseFit(score: Score): FitMetric {
-    const p = new JinpuPainter(this.fontSize);
+    return this._fitOf(score, this.layoutPage.w, this.fontSize);
+  }
+
+  /** 同上，纸宽与字号由调用方给（文本谱那条路的纸不在 `layoutPage` 里）。 */
+  private _fitOf(score: Score, width: number, fontSize: number): FitMetric {
+    const p = new JinpuPainter(fontSize);
     p.layout.options.smuflMeta = this.meta;
-    p.layout.options.lyricStack = this.fontSize; // 只要 > 0：不展开反复，一遍就够量
+    p.layout.options.lyricStack = fontSize; // 只要 > 0：不展开反复，一遍就够量
     score.clearSystemBreak();
-    return p.layout.measureNatural(score, this.layoutPage.w);
+    return p.layout.measureNatural(score, width);
   }
 
   /** 注册工具栏「简繁」按钮，供转换期间切换加载中状态。 */
