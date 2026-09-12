@@ -256,13 +256,22 @@ function keyText(song: Song): string | null {
   return `${degree}=${sp}`;
 }
 
+/** 字段值里的换行会把后续内容变成裸行（第二轮解析就当成音乐体了）。
+ *  MusicXML 的 `<creator>` 常把多行塞进一个字段（Finale 的习惯），所以一律按行拆成多条同名字段。 */
+function pushLines(L: string[], name: string, value: string): void {
+  for (const line of value.split(/\r?\n/)) {
+    const t = line.trim();
+    if (t) L.push(`${name}:${t}`);
+  }
+}
+
 /** 一首歌 → `.123` 文本。 */
 export function emitSong(song: Song): string {
   const L: string[] = [];
   if (song.work.number) L.push(`X:${song.work.number}`);
-  if (song.work.title !== undefined) L.push(`T:${song.work.title}`);
-  for (const st of song.work.subtitles) L.push(`T:${st}`);
-  for (const c of song.identification?.creators ?? []) L.push(`C:${c.text}`);
+  if (song.work.title !== undefined) pushLines(L, "T", song.work.title);
+  for (const st of song.work.subtitles) pushLines(L, "T", st);
+  for (const c of song.identification?.creators ?? []) pushLines(L, "C", c.text);
   const k = keyText(song);
   if (k) L.push(`K:${k}`);
   if (song.time) L.push(`M:${song.time.beats}/${song.time.beatType}`);
@@ -275,11 +284,12 @@ export function emitSong(song: Song): string {
   if (pt) {
     if (pt.indexLeft !== undefined) L.push(`I:indexleft ${pt.indexLeft}`);
     if (pt.indexRight !== undefined) L.push(`I:indexright ${pt.indexRight}`);
-    for (const t of pt.topLeft) L.push(`I:topleft ${t}`);
-    for (const t of pt.topRight) L.push(`I:topright ${t}`);
-    for (const t of pt.bottomLeft) L.push(`I:bottomleft ${t}`);
-    for (const t of pt.bottomCenter) L.push(`I:bottomcenter ${t}`);
-    for (const t of pt.bottomRight) L.push(`I:bottomright ${t}`);
+    for (const [key, arr] of [
+      ["topleft", pt.topLeft], ["topright", pt.topRight],
+      ["bottomleft", pt.bottomLeft], ["bottomcenter", pt.bottomCenter], ["bottomright", pt.bottomRight],
+    ] as const) {
+      for (const t of arr) for (const line of t.split(/\r?\n/)) if (line.trim()) L.push(`I:${key} ${line.trim()}`);
+    }
   }
   if (song.style?.sheetRef) L.push(`I:style ${song.style.sheetRef}`);
   if (song.linesPerPage) L.push(`I:linesperpage ${song.linesPerPage}`);
@@ -290,7 +300,7 @@ export function emitSong(song: Song): string {
   for (const r of song.remarks ?? []) {
     // `P:` 原文在解析期被塞进 remarks，原样还回去
     if (r.startsWith("P:")) L.push(r);
-    else L.push(`N:${r}`);
+    else pushLines(L, "N", r);
   }
 
   for (let i = 0; i < song.parts.length; i++) {
