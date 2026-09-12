@@ -1,0 +1,272 @@
+// 123 格式的字段表、中文别名与 `I:` 指令解析。
+//
+// 规范见 `docs/格式/123格式.md` §2（中文支持）、§3（头部字段）、§6.2（`I:playorder`）、
+// §9（`I:linebreak`）、§10（`I:style`）。
+//
+// **字段名一律归一成 ASCII 规范形**再往下走——中文别名只是入口，不进模型。
+// 这与 `pu/dialect.ts` 的取向一致：差异收在一张表里，不在下游写 if。
+
+import type { Diagnostic, Key, PlayPass, SourceSpan, Time } from "../model/doc";
+
+/** ASCII 规范形的字段名。 */
+export type FieldName =
+  | "X" | "T" | "C" | "M" | "L" | "Q" | "K" | "P" | "V"
+  | "N" | "Z" | "O" | "S" | "R" | "B" | "D" | "F" | "G" | "H"
+  | "I" | "U" | "W" | "w";
+
+/** 中文别名 → ASCII 规范形。语料里没有中文字段名的先例，这是本格式新增的入口形式。
+ *  `段：` 与 `歌词：` 都归到 `w`——段号由后缀数字给（`段1：` / `w1:`）。 */
+export const CJK_FIELD_ALIAS: Readonly<Record<string, FieldName>> = {
+  曲号: "X",
+  标题: "T",
+  副标题: "T",
+  词曲: "C",
+  作者: "C",
+  调: "K",
+  拍: "M",
+  速度: "Q",
+  声部: "V",
+  歌词: "w",
+  段: "w",
+  顺序: "P",
+  注: "N",
+  文字: "W",
+};
+
+/** 中文别名 → `I:` 子指令（`样式：x` 等价 `I:style x`）。 */
+export const CJK_INSTRUCTION_ALIAS: Readonly<Record<string, string>> = {
+  样式: "style",
+  演唱: "playorder",
+  断行: "linebreak",
+  每页行数: "linesperpage",
+};
+
+/** 一行头部字段的解析结果。 */
+export interface FieldLine {
+  name: FieldName;
+  /** `w1:` / `w1-2:` / `段2：` 的段号；无则 undefined */
+  verseFrom?: number;
+  verseTo?: number;
+  /** `w@3,1:` 的锚点（小节, 音符），1 基 */
+  anchor?: { measure: number; note: number };
+  /** `V:1` 的声部号 */
+  voice?: number;
+  value: string;
+  source: SourceSpan;
+}
+
+/** 字段行前缀。
+ *  ASCII：`X:` `T:` `w1-2@3,1:` `V:1` ——字段名单字母（`w` 区分大小写，其余不分）。
+ *  中文：`标题：` `段2：` ——先查别名表。
+ *  冒号 ASCII `:` 与全角 `：` 等价（语料里真有用全角的）。 */
+const ASCII_PREFIX = /^([A-Za-z])(\d+)?(?:-(\d+))?(?:@(\d+),(\d+))?\s*[:：]/;
+const CJK_PREFIX = /^([一-鿿]{1,4})(\d+)?(?:-(\d+))?(?:@(\d+),(\d+))?\s*[:：]/;
+
+/** 试着把一行读成头部字段。不是字段行则返回 null（交给音乐体）。 */
+export function parseFieldLine(
+  line: string,
+  lineNo: number,
+  offset: number,
+): FieldLine | null {
+  let m = ASCII_PREFIX.exec(line);
+  let name: FieldName | undefined;
+  if (m) {
+    const raw = m[1]!;
+    // `w` 与 `W` 是两个字段（对齐歌词 / 曲末歌词），其余大小写不敏感
+    name = (raw === "w" || raw === "W" ? raw : raw.toUpperCase()) as FieldName;
+  } else {
+    m = CJK_PREFIX.exec(line);
+    if (!m) return null;
+    name = CJK_FIELD_ALIAS[m[1]!];
+    if (name === undefined) return null;
+    // `副标题：` 仍归 T:，顺序决定它是副标题（规范 §3）
+  }
+  const f: FieldLine = {
+    name,
+    value: line.slice(m[0].length).trim(),
+    source: { line: lineNo, column: 0, offset, length: line.length },
+  };
+  if (m[2]) {
+    const n = Number(m[2]);
+    if (name === "V") f.voice = n;
+    else f.verseFrom = n;
+  }
+  if (m[3]) f.verseTo = Number(m[3]);
+  if (m[4] && m[5]) f.anchor = { measure: Number(m[4]), note: Number(m[5]) };
+  return f;
+}
+
+// ───────────────────────── K: 调号 ─────────────────────────
+
+/** 调号拼写 → fifths。升降号可前置（`bB`，简谱惯例）或后置（`Bb`，ABC 惯例），两种都认。 */
+const FIFTHS: Readonly<Record<string, number>> = {
+  C: 0, G: 1, D: 2, A: 3, E: 4, B: 5, "#F": 6, "#C": 7,
+  F: -1, bB: -2, bE: -3, bA: -4, bD: -5, bG: -6, bC: -7,
+};
+
+/** mode → 相对大调的 fifths 偏移。`K:Em` 的调号与 G 大调相同。 */
+const MODE_OFFSET: Readonly<Record<string, number>> = {
+  major: 0, ionian: 0,
+  minor: -3, aeolian: -3, m: -3,
+  mixolydian: -1, dorian: -2, phrygian: -4, lydian: 1, locrian: -5,
+};
+
+/** 主音唱名：大调主音是 `1`，小调主音是 `6`（语料里 `6=X` 确有，占 0.01%）。 */
+const MODE_TONIC_DEGREE: Readonly<Record<string, string>> = {
+  minor: "6", aeolian: "6", m: "6",
+  dorian: "2", phrygian: "3", lydian: "4", mixolydian: "5", locrian: "7",
+};
+
+/** 把升降号后置形归一成前置形（`Bb` → `bB`、`F#` → `#F`）。 */
+function normalizeSpelling(s: string): string {
+  const m = /^([A-G])([#b♯♭]?)$/.exec(s);
+  if (!m) return s;
+  const acc = m[2] === "♯" ? "#" : m[2] === "♭" ? "b" : m[2] ?? "";
+  return acc ? acc + m[1]! : m[1]!;
+}
+
+/**
+ * 解析 `K:` 的值。三种写法：
+ *   `K:1=F`     简谱首调形（主音唱名 = 音名）
+ *   `K:F`       ABC 标准形
+ *   `K:Em`      ABC 带 mode——**这正好表达「调号同 G 大调、主音是 6」**，
+ *               不必自造语法（规范 §3）
+ *   `K:none`    无调号
+ */
+export function parseKey(value: string): { key: Key; error?: string } {
+  const v = value.trim();
+  if (v === "" || /^none$/i.test(v)) return { key: { fifths: 0, spelling: "none" } };
+
+  // `1=F` / `6=c` 形：等号左边是主音唱名
+  const jp = /^([1-7])\s*=\s*([#b♯♭]?[A-Ga-g][#b♯♭]?)\s*(.*)$/.exec(v);
+  let tonicDegree: string | undefined;
+  let body: string;
+  if (jp) {
+    tonicDegree = jp[1];
+    body = jp[2]! + (jp[3] ? " " + jp[3] : "");
+  } else {
+    body = v;
+  }
+
+  // 音名 + 可选 mode：`bB`、`Bb`、`Em`、`F# mixolydian`
+  const m = /^([#b♯♭]?)([A-Ga-g])([#b♯♭]?)\s*([A-Za-z]*)$/.exec(body.trim());
+  if (!m) return { key: { fifths: 0 }, error: `看不懂的调号：${value}` };
+  const letter = m[2]!.toUpperCase();
+  const acc = (m[1] || m[3] || "").replace("♯", "#").replace("♭", "b");
+  const spelling = normalizeSpelling(acc + letter);
+  const base = FIFTHS[spelling];
+  if (base === undefined) return { key: { fifths: 0 }, error: `没有这个调：${spelling}` };
+
+  // mode 只取前三字母（ABC §3.1.14：「only the first three letters of each mode are parsed」），
+  // `m` 是 minor 的简写
+  const modeRaw = (m[4] ?? "").toLowerCase();
+  let modeKey = "";
+  if (modeRaw === "m") modeKey = "m";
+  else if (modeRaw) {
+    modeKey = Object.keys(MODE_OFFSET).find((k) => k.length > 1 && k.startsWith(modeRaw.slice(0, 3))) ?? "";
+  }
+  const offset = modeKey ? (MODE_OFFSET[modeKey] ?? 0) : 0;
+
+  const key: Key = { fifths: base + offset, spelling };
+  if (modeKey) key.mode = modeKey === "m" ? "minor" : modeKey;
+  // 主音唱名：源里写了就用源里的；没写而有 mode，按 mode 推（小调 = 6）
+  const degree = tonicDegree ?? (modeKey ? MODE_TONIC_DEGREE[modeKey] : undefined);
+  if (degree !== undefined && degree !== "1") key.tonicDegree = degree;
+  return { key };
+}
+
+// ───────────────────────── M: 拍号 ─────────────────────────
+
+export function parseTime(value: string): { time?: Time; error?: string } {
+  const v = value.trim();
+  if (/^C\|$/i.test(v)) return { time: { beats: 2, beatType: 2, symbol: "cut" } };
+  if (/^C$/i.test(v)) return { time: { beats: 4, beatType: 4, symbol: "common" } };
+  if (/^none$/i.test(v)) return {};
+  const m = /^(\d+)\s*\/\s*(\d+)$/.exec(v);
+  if (!m) return { error: `看不懂的拍号：${value}` };
+  return { time: { beats: Number(m[1]), beatType: Number(m[2]) } };
+}
+
+// ───────────────────────── Q: 速度 ─────────────────────────
+
+/** `Q:1/4=76` / `Q:76` / `Q:"欢快地"` / `Q:1/4=76 "欢快地"` */
+export function parseTempo(value: string): (number | string)[] {
+  const out: (number | string)[] = [];
+  const v = value.trim();
+  for (const m of v.matchAll(/"([^"]*)"/g)) out.push(m[1]!);
+  const bare = v.replace(/"[^"]*"/g, "");
+  const bpm = /(?:\d+\s*\/\s*\d+\s*=\s*)?(\d+)/.exec(bare);
+  if (bpm) out.unshift(Number(bpm[1]));
+  return out;
+}
+
+// ───────────────────────── I: 指令 ─────────────────────────
+
+export interface Instruction {
+  name: string;
+  value: string;
+}
+
+/** `I:style book.jpcss` → `{name:"style", value:"book.jpcss"}`。
+ *  中文 `样式：x` 由调用方先经 `CJK_INSTRUCTION_ALIAS` 归一。 */
+export function parseInstruction(value: string): Instruction {
+  const m = /^(\S+)\s*(.*)$/.exec(value.trim());
+  if (!m) return { name: "", value: "" };
+  return { name: m[1]!.toLowerCase(), value: m[2] ?? "" };
+}
+
+/** `I:linebreak` 的取值。ABC §6.1.1：`$` 是默认与推荐值，`<EOL>` 等价 `$`，`<none>` 等价 `!`。
+ *  123 只用 `$` 与 `<none>` 两档——正好对应「原始排版」与「按乐句重排」。 */
+export function parseLinebreak(value: string): "explicit" | "auto" {
+  const v = value.trim().toLowerCase();
+  if (v === "<none>" || v === "!" ) return "auto";
+  return "explicit";
+}
+
+/**
+ * `I:playorder` —— `.jpwabc` 的 `.Repeat` 段的等价物（规范 §6.2）。
+ *
+ *     I:playorder 1-4 v1 | 1-4 v2 page | 11.2-20 v4 | 11-20.1 v5
+ *
+ * 一遍一项，`|` 分隔。每项：`<起>[.<音符>]-<止>[.<音符>] [v<段号>] [page]`
+ *
+ * `fromElement`/`toElement`（skip/limit 的音符级端点）此处只记下**第几个音符**，
+ * 解析完音乐体后才能换成元素 id——由 `parse.ts` 回填。
+ */
+export interface RawPlayPass extends Omit<PlayPass, "fromElement" | "toElement"> {
+  /** 起点在该小节里的第几个音符（1 基）；无则从小节头 */
+  fromNoteIndex?: number;
+  /** 终点在该小节里的第几个音符（1 基）；无则到小节尾 */
+  toNoteIndex?: number;
+}
+
+export function parsePlayOrder(
+  value: string,
+  source: SourceSpan,
+  diagnostics: Diagnostic[],
+): RawPlayPass[] {
+  const out: RawPlayPass[] = [];
+  for (const seg of value.split("|")) {
+    const s = seg.trim();
+    if (!s) continue;
+    const m = /^(\d+)(?:\.(\d+))?\s*-\s*(\d+)(?:\.(\d+))?(.*)$/.exec(s);
+    if (!m) {
+      diagnostics.push({
+        severity: "warning",
+        code: "bad-playorder",
+        message: `看不懂的演唱顺序项：${s}`,
+        source,
+      });
+      continue;
+    }
+    const pass: RawPlayPass = { fromMeasure: Number(m[1]), toMeasure: Number(m[3]) };
+    if (m[2]) pass.fromNoteIndex = Number(m[2]);
+    if (m[4]) pass.toNoteIndex = Number(m[4]);
+    const rest = (m[5] ?? "").trim();
+    const verse = /\bv(\d+)\b/i.exec(rest);
+    if (verse) pass.verse = Number(verse[1]);
+    if (/\bpage\b/i.test(rest)) pass.pageBreakAfter = true;
+    out.push(pass);
+  }
+  return out;
+}
