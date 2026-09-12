@@ -95,6 +95,12 @@ function convertPart(jp: JpPart, index: number, ids: IdGen, marks: Mark[]): Part
     prevKeyFifths = fifths;
     prevTime = timeKey;
 
+    // MusicXML 的 `<print new-system/new-page>` 落在 `Measure.newSystem/newPage` 上
+    // （`.jpwabc` 那一路是独立的 `LineBreak` entry，见下面的循环）。
+    // **500 首 100% 的曲目都有 new-system**，原样排版全靠它，不能漏。
+    if (jm.newPage) mea.print = { newPage: true };
+    else if (jm.newSystem) mea.print = { newSystem: true };
+
     const left = barlineOf(jm, "left");
     if (left) (mea.barlines ??= []).push(left);
 
@@ -212,14 +218,20 @@ function convertPart(jp: JpPart, index: number, ids: IdGen, marks: Mark[]): Part
       }
     }
 
-    // 房号信息在 Measure 上（不在 BarlineEntry 上），补到本批小节的首尾
+    // Measure 级的右线：MusicXML 那一路的小节线与反复记在 `Measure.barline` /
+    // `repeatBackward` 上，没有 `BarlineEntry`，所以这里要补；`.jpwabc` 那一路已经由
+    // entries 切过小节，只需把房号补上。
     const right = barlineOf(jm, "right");
-    if (right?.ending) {
+    if (right) {
       const target = mea.elements.length ? mea : part.measures[part.measures.length - 1];
       if (target) {
         const rb = (target.barlines ?? []).find((x) => x.location === "right");
-        if (rb) rb.ending = right.ending;
-        else (target.barlines ??= []).push(right);
+        if (rb) {
+          if (right.ending) rb.ending = right.ending;
+          if (right.repeat && !rb.repeat) rb.repeat = right.repeat;
+        } else {
+          (target.barlines ??= []).push(right);
+        }
       }
     }
     if (mea.elements.length || mea.barlines?.length) part.measures.push(mea);

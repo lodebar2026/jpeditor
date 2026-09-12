@@ -58,7 +58,8 @@ async function boot() {
   const app = new App(meta, scorePane);
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown; __pptx: unknown };
+  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
+    __j123: unknown; __pptx: unknown };
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
   // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
@@ -77,6 +78,15 @@ async function boot() {
     import("./jpword/parse"), import("./score/jpwimport"), import("./pu"),
   ]).then(([book, painter, musicxml, phrase, applybreaks, jpscore, jpwfile, parse, jpwimport, pu]) => ({
     ...book, ...painter, ...musicxml, ...phrase, ...applybreaks, ...jpscore, ...jpwfile, ...parse, ...jpwimport, pu,
+  }));
+  // 123 格式与语义模型暴露，供 scripts/j123-migrate.mjs 跑 MusicXML 那一路——
+  // `loadMusicXml` 要 DOMParser，Node 侧没有，所以这条必须在浏览器里走（同 __book 的路子）。
+  win.__j123 = Promise.all([
+    import("./j123/parse"), import("./j123/emit"),
+    import("./model/fromscore"), import("./model/frompu"), import("./model/helpers"),
+    import("./score/musicxml"), import("./pu"),
+  ]).then(([parse, emit, fromscore, frompu, helpers, musicxml, pu]) => ({
+    ...parse, ...emit, ...fromscore, ...frompu, ...helpers, ...musicxml, pu,
   }));
   // MusicXML 导出（全量序列化 / 增量 patch / 版面注入）暴露，供 scripts/xml-roundtrip.mjs 回归。
   win.__xmlout = Promise.all([
