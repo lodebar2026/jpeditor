@@ -117,12 +117,16 @@ const MODE_TONIC_DEGREE: Readonly<Record<string, string>> = {
   dorian: "2", phrygian: "3", lydian: "4", mixolydian: "5", locrian: "7",
 };
 
-/** 把升降号后置形归一成前置形（`Bb` → `bB`、`F#` → `#F`）。 */
-function normalizeSpelling(s: string): string {
-  const m = /^([A-G])([#b♯♭]?)$/.exec(s);
-  if (!m) return s;
-  const acc = m[2] === "♯" ? "#" : m[2] === "♭" ? "b" : m[2] ?? "";
-  return acc ? acc + m[1]! : m[1]!;
+/** 把调号拼写归一成**前置 ASCII** 形（`Bb` → `bB`、`F#` → `#F`、`♭A` → `bA`）。
+ *
+ *  归一是幂等的前提：语料里大量使用音乐符号 `♭`(U+266D) / `♯`(U+266F)，
+ *  不归一就会出现「第一轮写 `K:1=♭A`、第二轮写 `K:1=bA`」的往返漂移。 */
+export function normalizeSpelling(s: string): string {
+  const t = s.trim().replace(/♯/g, "#").replace(/♭/g, "b");
+  const m = /^([#b]?)([A-Ga-g])([#b]?)$/.exec(t);
+  if (!m) return t;
+  const acc = m[1] || m[3] || "";
+  return acc + m[2]!.toUpperCase();
 }
 
 /**
@@ -155,7 +159,13 @@ export function parseKey(value: string): { key: Key; error?: string } {
   const acc = (m[1] || m[3] || "").replace("♯", "#").replace("♭", "b");
   const spelling = normalizeSpelling(acc + letter);
   const base = FIFTHS[spelling];
-  if (base === undefined) return { key: { fifths: 0 }, error: `没有这个调：${spelling}` };
+  if (base === undefined) {
+    // 认不出的调（语料里有 `1=bF` 这种非标准写法，bF 其实等于 E）——
+    // **保留原文拼写**，不要退成 C：退了就把信息丢了，而且往返不幂等
+    const key: Key = { fifths: 0, spelling };
+    if (tonicDegree !== undefined && tonicDegree !== "1") key.tonicDegree = tonicDegree;
+    return { key, error: `没有这个调：${spelling}（已保留原文）` };
+  }
 
   // mode 只取前三字母（ABC §3.1.14：「only the first three letters of each mode are parsed」），
   // `m` 是 minor 的简写

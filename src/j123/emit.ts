@@ -95,11 +95,22 @@ function graceText(ch: Chord): string {
 /** 一个声部的音乐体。按小节拼，符杠分组内连写。 */
 function partBody(part: Part, song: Song): string {
   const out: string[] = [];
+  // **只收两端都在本声部里的 Mark**：`song.marks` 是全曲共用的，而一条弧的两端
+  // 必须落在同一个声部才画得出来。不校验就会输出**不配对的 `(`**——那不只是往返不幂等，
+  // 是写出了非法的 123（解析回来会报「圆滑线里没有音符」）。
+  const own = new Set<number>();
+  for (const mea of part.measures) {
+    for (const el of mea.elements) {
+      own.add(el.id);
+      if (el.kind === "chord") for (const su of el.sustains ?? []) own.add(su.id);
+    }
+  }
   // Mark 按起止 id 建索引，便于在元素前后插 `(` `)` 与 `(N:`
   const slurStart = new Map<number, number>();
   const slurEnd = new Map<number, number>();
   const tupletStart = new Map<number, { actual: number; normal: number }>();
   for (const m of song.marks) {
+    if (!own.has(m.start) || !own.has(m.end)) continue;
     if (m.type === "slur") {
       slurStart.set(m.start, (slurStart.get(m.start) ?? 0) + 1);
       slurEnd.set(m.end, (slurEnd.get(m.end) ?? 0) + 1);
@@ -148,6 +159,8 @@ function measureBody(mea: Measure, mi: MarkIndex): string {
     let s = "";
     // 和弦符号前置（规范 §8.1）
     if (el.harmony?.text) s += `"${el.harmony.text}"`;
+    // 段落词/注记走 ABC §4.19 的注记写法（`^` = 标在上方）
+    if (ch?.sectionWord) s += `"^${ch.sectionWord}"`;
     if (el.notations?.fermata) s += "!fermata!";
     for (const a of el.notations?.articulations ?? []) s += `!${a}!`;
     const tp = mi.tupletStart.get(el.id);

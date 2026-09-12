@@ -28,6 +28,7 @@ import type {
   Song,
   Sustain,
 } from "./doc";
+import { normalizeSpelling } from "../j123/fields";
 import { IdGen, emptyDoc, emptySong } from "./helpers";
 
 /** `PuDoc` 的 BarlineType → `ScoreDoc` 的 bar-style + repeat。 */
@@ -107,6 +108,8 @@ function convertLine(line: ScoreLine, ids: IdGen, startMeasureNo: number): LineR
         if (!lastChord) break;
         const su: Sustain = { id: ids.next() };
         if (el.chord) su.harmony = { root: { step: "C", alter: 0 }, kind: "", text: el.chord };
+        // 注记也可能挂在增时线上（`pu/parse.ts::applyQuoted` 的 target 是 lastAttachable）
+        if (el.annotation) lastChord.sectionWord ??= el.annotation;
         if (el.source) su.source = el.source;
         (lastChord.sustains ??= []).push(su);
         lastChord.duration = durationFrom(
@@ -144,6 +147,8 @@ function convertLine(line: ScoreLine, ids: IdGen, startMeasureNo: number): LineR
         }
         if (beams > 0) ch.beams = Array.from({ length: beams }, () => "continue" as BeamVal);
         if (n.chord) ch.harmony = { root: { step: "C", alter: 0 }, kind: "", text: n.chord };
+        // `"(副歌)"` 这类音符上方的注记：`PuDoc` 存 `annotation`，模型里归 `sectionWord`
+        if (n.annotation) ch.sectionWord = n.annotation;
         const fermata = n.ornaments.some((o) => /^(yc|fermata)$/i.test(o.name));
         const arts = n.ornaments.filter((o) => !/^(yc|fermata)$/i.test(o.name)).map((o) => o.name);
         if (fermata || arts.length) {
@@ -302,7 +307,8 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
       song.identification = { creators: meta.authors.map((t) => ({ type: "composer", text: t })) };
     }
     if (meta.mode !== undefined) {
-      song.key = { fifths: 0, spelling: meta.mode };
+      // `meta.mode` 是谱面原文，语料里常写音乐符号 `♭A`——归一成 ASCII 才能往返幂等
+      song.key = { fifths: 0, spelling: normalizeSpelling(meta.mode) };
       if (meta.tonic !== undefined && meta.tonic !== "1") song.key.tonicDegree = meta.tonic;
     }
     const m0 = meta.meters[0];
@@ -341,6 +347,11 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
     const cross: CrossState = { pending: new Map() };
     for (const page of ps.pages) {
       for (const group of page.groups) {
+        // `W:` 说明性文字行（排在那组曲行上方）——`PuDoc` 放在 `VoiceGroup.texts`，
+        // 模型里归 `remarks`（emit 写成 `N:`）
+        for (const t of group.texts) {
+          if (t.text.trim()) (song.remarks ??= []).push(t.text.trim());
+        }
         for (const line of group.voices) {
           let part = byVoice.get(line.voice);
           if (!part) {
