@@ -278,10 +278,14 @@ function pushLines(L: string[], name: string, value: string): void {
   }
 }
 
-/** 一首歌 → `.123` 文本。 */
-export function emitSong(song: Song): string {
+/** 一首歌 → `.123` 文本。
+ *  @param fallbackNumber 没有曲号时用它补一个——**多曲文件必须给**，
+ *    因为 123 的多曲就是靠 `X:` 分隔（规范 §1，同 ABC tunebook）。
+ *    文本谱用 `-----` 分曲、大多没有曲号，不补的话几首会连成一片、读回只剩一首。 */
+export function emitSong(song: Song, fallbackNumber?: number): string {
   const L: string[] = [];
   if (song.work.number) L.push(`X:${song.work.number}`);
+  else if (fallbackNumber !== undefined) L.push(`X:${fallbackNumber}`);
   if (song.work.title !== undefined) pushLines(L, "T", song.work.title);
   for (const st of song.work.subtitles) pushLines(L, "T", st);
   for (const c of song.identification?.creators ?? []) pushLines(L, "C", c.text);
@@ -353,8 +357,10 @@ function playOrderText(song: Song): string {
     .join(" | ");
 }
 
-/** 整份文档 → `.123` 文本。多曲之间空一行。 */
+/** 整份文档 → `.123` 文本。多曲之间空一行，且**每首都带 `X:`**（分隔靠它）。 */
 export function emit123(doc: ScoreDoc): string {
   const head = "%123-1.0";
-  return [head, ...doc.songs.map(emitSong)].join("\n") + "\n";
+  const multi = doc.songs.length > 1;
+  const bodies = doc.songs.map((s, i) => emitSong(s, multi ? i + 1 : undefined));
+  return [head, ...bodies].join("\n\n") + "\n";
 }
