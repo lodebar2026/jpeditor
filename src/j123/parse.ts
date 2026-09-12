@@ -294,6 +294,11 @@ function buildMusicLine(
       el.harmony = { root: { step: "C", alter: 0 }, kind: "", text: pending.chord };
       pending.chord = undefined;
     }
+    if (pending.annotations.length) {
+      const text = pending.annotations.join(" ");
+      if (el.kind === "chord") el.sectionWord = text;
+      pending.annotations = [];
+    }
     if (pending.decos.length) {
       const fermata = pending.decos.some((d) => /^fermata$/i.test(d));
       const arts = pending.decos.filter((d) => !/^fermata$/i.test(d));
@@ -303,7 +308,6 @@ function buildMusicLine(
       };
       pending.decos = [];
     }
-    pending.annotations = [];
     pb.measure.elements.push(el);
     cur.last = el;
     // 回填还没拿到起点的开弧/开连音——它们的起点就是「`(` 之后的第一个元素」
@@ -414,7 +418,9 @@ function buildMusicLine(
         break;
 
       case "annotation":
-        pending.annotations.push(t.value ?? "");
+        // `"^文字"` / `"_文字"`（ABC §4.19 的注记，`^` 上方 `_` 下方）——
+        // 段落词（`（副歌）` 这类）就走这条，与 emit 对称
+        pending.annotations.push((t.value ?? "").replace(/^[\^_<>@]/, ""));
         break;
 
       case "deco":
