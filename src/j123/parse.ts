@@ -799,15 +799,21 @@ function applyField(
       break;
     }
     case "Q":
-      song.tempos = parseTempo(f.value);
+      // **追加不覆盖**：源里常有两条（`Q:1/4=130` 与 `Q:"热情地"`），
+      // 直接赋值会让后一条把前一条顶掉，往返一轮速度就丢了
+      song.tempos = [...(song.tempos ?? []), ...parseTempo(f.value)];
       break;
     case "V":
       startPart(f.voice ?? 1);
       break;
     case "w": {
       const { syllables, label } = parseLyricLine(f.value, f.verseFrom ?? 1, f.verseTo, f.source);
-      // 印刷段号不占音符格，挂在该段第一个音节上，由排版画在字前
-      if (label !== undefined && syllables[0]) syllables[0].verseLabel = label;
+      // 印刷段号不占音符格，挂在该段**第一个非空**音节上——空音节（`*`）不会被挂到元素上
+      // （`attachLyrics` 会跳过），label 跟着它一起丢
+      if (label !== undefined) {
+        const first = syllables.find((x) => x.text !== "");
+        if (first) first.verseLabel = label;
+      }
       pendingLyrics.push({ f, syl: syllables, ...(curPart ? { part: curPart } : {}) });
       break;
     }
