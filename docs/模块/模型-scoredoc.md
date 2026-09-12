@@ -12,7 +12,7 @@
 | 模型 | 现在 | 终局 |
 |---|---|---|
 | **`ScoreDoc`**（`src/model/doc.ts`） | 123 的原生模型 | **唯一语义模型**，其余向它汇聚 |
-| `Score`（`src/score/score.ts`） | 简谱排版/MIDI/乐句断句吃它，**装不下和弦/力度/多声部** | 退役；排版改吃 `ScoreDoc` |
+| `Score`（`src/score/score.ts`） | 简谱排版/MIDI/乐句断句吃它，**装不下力度/多声部**；和弦只在 MusicXML 进来那一路留得住 | 退役；排版改吃 `ScoreDoc` |
 | `MixedScore`（`src/mixed/model.ts`，2952 行） | 五线谱**语义 + 排版**混在一起（tenths） | 语义并入 `ScoreDoc`；`loader.ts` 只留排版 |
 | `PuDoc`（`src/pu/ast.ts`） | 文本谱 AST（扁平元素流 + 下标区间配对） | 退役；文本谱解析器改产 `ScoreDoc` |
 
