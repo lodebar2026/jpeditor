@@ -131,8 +131,15 @@ export function parseLyricLine(
     i = lm[0].length;
   }
 
+  /** 还没有前字可并的行首标点，攒着挂到下一个音节前面 */
+  let prefix = "";
+
   const mk = (text: string): Lyric => {
     const l: Lyric = { number: verseFrom, text };
+    if (prefix && text !== "") {
+      l.leadingPunctuation = prefix;
+      prefix = "";
+    }
     if (verseTo !== undefined && verseTo !== verseFrom) l.numberTo = verseTo;
     return l;
   };
@@ -203,10 +210,12 @@ export function parseLyricLine(
       i++;
       continue;
     }
-    // 独立的标点（前面没有字可并）——并到前一音节，没有就丢
+    // 标点并到前一音节；**前面没字可并时不能丢**——`《圣经》…` 行首那个 `《`
+    // 丢了就会让整行少一个字符、往返不稳
     if (isTrailingPunct(ch)) {
       const prev = out[out.length - 1];
       if (prev) prev.trailingPunctuation = (prev.trailingPunctuation ?? "") + ch;
+      else prefix += ch;
       i++;
       continue;
     }
@@ -255,6 +264,7 @@ function isTrailingPunct(ch: string): boolean {
 function isOpenQuote(ch: string): boolean {
   return ch === "“" || ch === "‘";
 }
+
 
 // ───────────────────────── 组装 ─────────────────────────
 
@@ -397,19 +407,55 @@ function buildMusicLine(
         break;
       }
 
-      case "spacer": {
-        const sp: Space = {
-          kind: "space",
+      case "rhythm": {
+        const ch: Chord = {
+          kind: "chord",
           id: ctx.ids.next(),
-          spacer: t.value === "x" ? "x" : "y",
+          notes: [],
+          rhythm: true,
+          duration: durationOf(t.beams ?? 0, t.dots ?? 0, 0),
           voice: 1,
           staff: 1,
           source: t.source,
         };
-        if (sp.spacer === "x") {
-          sp.duration = durationOf(t.beams ?? 0, t.dots ?? 0, 0);
-          if ((t.beams ?? 0) > 0) sp.beams = Array.from({ length: t.beams! }, () => "continue" as const);
+        if ((t.beams ?? 0) > 0) ch.beams = Array.from({ length: t.beams! }, () => "continue" as const);
+        attach(ch);
+        cur.sustainHost = ch;
+        pb.noteCount++;
+        break;
+      }
+
+      case "spacer": {
+        // **`x` 是不可见休止**：有时值、占对位格（对应文本谱的隐藏休止 `8`），
+        // 所以它是 `Chord`（rest + printObject=false）而不是 `Space`——
+        // 若做成 `Space`，`attachLyrics` 不给它配词而 emit 的对位槽又含它，歌词就会错一格。
+        // **`y` 才是 `Space`**：无时值、不占对位格，只为挂和弦（规范 §8.1）。
+        if (t.value === "x") {
+          const ch: Chord = {
+            kind: "chord",
+            id: ctx.ids.next(),
+            notes: [],
+            rest: {},
+            printObject: false,
+            duration: durationOf(t.beams ?? 0, t.dots ?? 0, 0),
+            voice: 1,
+            staff: 1,
+            source: t.source,
+          };
+          if ((t.beams ?? 0) > 0) ch.beams = Array.from({ length: t.beams! }, () => "continue" as const);
+          attach(ch);
+          cur.sustainHost = ch;
+          pb.noteCount++;
+          break;
         }
+        const sp: Space = {
+          kind: "space",
+          id: ctx.ids.next(),
+          spacer: "y",
+          voice: 1,
+          staff: 1,
+          source: t.source,
+        };
         attach(sp);
         cur.sustainHost = null;
         break;

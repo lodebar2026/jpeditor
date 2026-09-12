@@ -247,6 +247,10 @@ export interface Lyric {
   trailingPunctuation?: string;
   /** 印刷段号（`<1.>`）：印在该段歌词首字之前、**不占音符格**。语料 55.6% 这么写 */
   verseLabel?: string;
+  /** 字前的标点（行首的 `《`、`（` 这类没有前字可并的）。
+   *  **不能并进 `text`**——并进去会改变音节的字数，让 emit 的「多字并一格要包 `{}`」
+   *  判断在往返中翻来覆去。 */
+  leadingPunctuation?: string;
   source?: SourceSpan;
 }
 
@@ -320,6 +324,9 @@ export interface Chord {
   notations?: Notations;
   /** 段落词（「（副歌）」这类印在谱上的提示） */
   sectionWord?: string;
+  /** 节奏音符：**有声但无音高**（文本谱的 `X` / 番茄的 `9`）。
+   *  与休止不同（休止无声），也与不可见休止 `x` 不同（那个无声）。123 写成 `X`。 */
+  rhythm?: boolean;
   /** `print-object="no"`：不可见 */
   printObject?: boolean;
   source?: SourceSpan;

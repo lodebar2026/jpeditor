@@ -134,9 +134,12 @@ function convertLine(line: ScoreLine, ids: IdGen, startMeasureNo: number): LineR
           staff: 1,
           source: n.source,
         };
-        if (n.pitch === 0) {
+        if (n.sound === "rhythm") {
+          // 节奏音符（文本谱的 `X`、番茄的 `9`）：有声无音高，123 写 `X`
+          ch.rhythm = true;
+        } else if (n.pitch === 0) {
           ch.rest = {};
-          // 隐藏休止：`PuDoc` 用 hidden 标记，`ScoreDoc` 用 printObject=false
+          // 隐藏休止：`PuDoc` 用 hidden 标记，`ScoreDoc` 用 printObject=false（123 写 `x`）
           if (n.hidden) ch.printObject = false;
         } else {
           const note: { degree: { number: number; octaveShift: number; accidental?: NoteElement["accidental"] } } = {
