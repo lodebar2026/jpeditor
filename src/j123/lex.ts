@@ -16,6 +16,7 @@ import type { Accidental, SourceSpan } from "../model/doc";
 export type TokenKind =
   | "note"        // 1-7 / 0（休止）
   | "spacer"      // y（无时值占位）/ x（不可见休止）
+  | "rhythm"      // X（节奏音符：有声无音高）
   | "sustain"     // - 增时线
   | "barline"     // | || |] [| |: :| :: |:: ::| .| [|]
   | "ending"      // [1 / [1,3 / [1-3 / |1 / :|2
@@ -270,6 +271,16 @@ export function lexMusicLine(
         start,
         i - start,
       );
+      continue;
+    }
+
+    // 节奏音符 `X`（**大写**，有声无音高，同文本谱的 `X`）——小写 `x` 是不可见休止，两者有别
+    if (ch === "X") {
+      i++;
+      const t: Omit<Token, "source"> = { kind: "rhythm", text: "X" };
+      const mod = scanDuration(line, i);
+      if (mod) { i = mod.next; t.beams = mod.beams; t.dots = mod.dots; }
+      push(t, start, i - start);
       continue;
     }
 

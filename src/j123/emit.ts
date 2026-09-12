@@ -52,8 +52,11 @@ function elementText(el: Element, mi?: MarkIndex): string {
   }
   const ch = el;
   let s = "";
-  if (ch.rest) {
-    s = "0";
+  if (ch.rhythm) {
+    s = "X";
+  } else if (ch.rest) {
+    // `printObject === false` 是**不可见休止**，123 有专门的 `x`，写成 `0` 会丢掉「不可见」
+    s = ch.printObject === false ? "x" : "0";
   } else {
     const n = ch.notes[0];
     const d = n?.degree;
@@ -203,6 +206,8 @@ function lyricLines(part: Part): string[] {
   for (const mea of part.measures) {
     for (const el of mea.elements) {
       if (el.kind === "chord" && el.grace) continue;
+      // `y` 无时值、不占对位格（规范 §8.1 它只为挂和弦）；`x` 占（它是 Chord）
+      if (el.kind === "space" && el.spacer === "y") continue;
       slots.push(el);
     }
   }
@@ -251,7 +256,9 @@ function lyricLines(part: Part): string[] {
       // `1.圣` 这种并字（`.jpwabc` 的 `{1.[圣]}`）不包起来，读回时会被拆成多个音节、
       // 把后面所有字顶错一格，末尾还会溢出丢字。
       const needBrace = [...hit.text].length > 1 && /[\u3400-\u9fff]/u.test(hit.text);
-      body += (needBrace ? `{${hit.text}}` : hit.text) + (hit.trailingPunctuation ?? "");
+      body += (hit.leadingPunctuation ?? "") +
+        (needBrace ? `{${hit.text}}` : hit.text) +
+        (hit.trailingPunctuation ?? "");
       if (hit.extend) {
         body += "_";
         extendConsumes = true;

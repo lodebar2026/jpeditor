@@ -104,8 +104,9 @@ function toPuElements(el: Element): MusicElement[] {
   const deg = note?.degree;
   const n: NoteElement = {
     kind: "note",
-    pitch: (ch.rest ? 0 : (deg?.number ?? 0)) as NoteElement["pitch"],
-    sound: ch.rest ? "rest" : "note",
+    // 节奏音符在 `PuDoc` 里是 pitch 9 + sound "rhythm"（番茄写 `9`、诗歌本写 `X`）
+    pitch: (ch.rhythm ? 9 : ch.rest ? 0 : (deg?.number ?? 0)) as NoteElement["pitch"],
+    sound: ch.rhythm ? "rhythm" : ch.rest ? "rest" : "note",
     hidden: ch.printObject === false,
     lyricAnchor: !ch.rest,
     octave: deg?.octaveShift ?? 0,
