@@ -195,8 +195,17 @@ function attachLyrics(anchors: readonly Element[], lyrics: readonly PuLyricLine[
   }
 }
 
+/** 跨行记号的待合并状态。`PuDoc` 把一条跨行弧拆成两条（各带 continuation 标记），
+ *  而 123 里跨行弧就是**一对 `(` `)`**（中间夹着 `$` 换行），所以要合回一条——
+ *  不合的话 emit 会在续接行的行首多写一个 `(`，往返就错层。 */
+interface CrossState {
+  /** 按类型排队。**不能用 level 当 key**——`PuDoc` 跨行时会给续接那条重新编 level
+   *  （见过 3 → 1），拿 level 配对永远配不上。同类多条就按先后顺序配。 */
+  pending: Map<string, Mark[]>;
+}
+
 /** Mark：下标区间 → id 配对。 */
-function convertMarks(line: ScoreLine, r: LineResult, out: Mark[]): void {
+function convertMarks(line: ScoreLine, r: LineResult, out: Mark[], cross: CrossState): void {
   for (const m of line.marks) {
     // volta 在 `ScoreDoc` 里是 `Barline.ending`（MusicXML 口径），不是 Mark
     if (m.type === "volta") {
@@ -209,6 +218,21 @@ function convertMarks(line: ScoreLine, r: LineResult, out: Mark[]): void {
     const start = nearestId(r.idAt, m.start, 1);
     const end = nearestId(r.idAt, m.end, -1);
     if (start === undefined || end === undefined) continue;
+    const key = type;
+    // 续接行：把起点接回上一行那条，不再产生新的一条
+    if (m.continuationFromPrevious) {
+      const queue = cross.pending.get(key);
+      const head = queue?.shift();
+      if (head) {
+        head.end = end;
+        delete head.continuesToNext;
+        if (m.continuationToNext) {
+          head.continuesToNext = true;
+          (cross.pending.get(key) ?? []).push(head);
+        }
+        continue;
+      }
+    }
     const mk: Mark = { type, start, end };
     if (m.level) mk.level = m.level;
     if (type === "tuplet") {
@@ -216,8 +240,12 @@ function convertMarks(line: ScoreLine, r: LineResult, out: Mark[]): void {
       mk.tupletActual = Number.isFinite(actual) ? actual : 3;
       mk.tupletNormal = 2;
     }
-    if (m.continuationToNext) mk.continuesToNext = true;
-    if (m.continuationFromPrevious) mk.continuesFromPrevious = true;
+    if (m.continuationToNext) {
+      mk.continuesToNext = true;
+      const q = cross.pending.get(key);
+      if (q) q.push(mk);
+      else cross.pending.set(key, [mk]);
+    }
     out.push(mk);
   }
 }
@@ -310,6 +338,7 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
     // 声部：同一声部号在各 VoiceGroup（排版行）里的片段要接起来
     const byVoice = new Map<number, Part>();
     const marks: Mark[] = [];
+    const cross: CrossState = { pending: new Map() };
     for (const page of ps.pages) {
       for (const group of page.groups) {
         for (const line of group.voices) {
@@ -321,7 +350,7 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
           }
           const r = convertLine(line, ids, part.measures.length + 1);
           attachLyrics(r.anchors, line.lyrics);
-          convertMarks(line, r, marks);
+          convertMarks(line, r, marks, cross);
           // 行尾换行：`PuDoc` 的行就是排版行
           const last = r.measures[r.measures.length - 1];
           if (last) last.print = { newSystem: true };
