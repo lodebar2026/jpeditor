@@ -41,8 +41,10 @@ const ACC_TEXT: Readonly<Record<string, string>> = {
   "double-flat": "bb",
 };
 
-/** 一个和弦/占位符 → 音乐体文本（不含前置的和弦符号与装饰）。 */
-function elementText(el: Element): string {
+/** 一个和弦/占位符 → 音乐体文本（不含前置的和弦符号与装饰）。
+ *  `mi` 用来给**增时线**也挂上 `(` `)`——增时线有自己的 id，弧可以在它上起止
+ *  （`(6,_ 1_)` 这种写法里弧常以增时线收尾）。不查就会写出只有 `(` 没有 `)` 的非法 123。 */
+function elementText(el: Element, mi?: MarkIndex): string {
   if (el.kind === "space") {
     let s = el.spacer;
     if (el.spacer === "x" && el.duration) s += durationText(el.duration.dots, el.beams?.length ?? 0);
@@ -65,9 +67,11 @@ function elementText(el: Element): string {
     }
   }
   s += durationText(ch.duration.dots, ch.beams?.length ?? 0);
-  // 增时线
+  // 增时线（各自可带和弧的起止）
   for (const su of ch.sustains ?? []) {
+    s += "(".repeat(mi?.slurStart.get(su.id) ?? 0);
     s += su.harmony?.text ? ` "${su.harmony.text}"-` : "-";
+    s += ")".repeat(mi?.slurEnd.get(su.id) ?? 0);
   }
   return s;
 }
@@ -167,7 +171,7 @@ function measureBody(mea: Measure, mi: MarkIndex): string {
     // 简写 `(N:`；normal≠2 时必须写完整形 `(N:p:q`（**两个冒号**，见 lex.ts 的正则注释）
     if (tp) s += tp.normal === 2 ? `(${tp.actual}:` : `(${tp.actual}:${tp.normal}:${tp.actual}`;
     s += "(".repeat(mi.slurStart.get(el.id) ?? 0);
-    s += elementText(el);
+    s += elementText(el, mi);
     s += ")".repeat(mi.slurEnd.get(el.id) ?? 0);
 
     // 中间小节线按 `afterElements` 计数插入

@@ -247,7 +247,9 @@ function isCjk(ch: string): boolean {
 }
 
 function isTrailingPunct(ch: string): boolean {
-  return PU_LYRIC_PUNCTUATION.includes(ch) || "”’｡、".includes(ch);
+  // **引号也不占音符格**。直引号 `"` 分不出开闭，一律贴前字——位置上略有出入，
+  // 但对位是对的；而把它当成一个音节会让后面整行错位、末尾溢出丢字。
+  return PU_LYRIC_PUNCTUATION.includes(ch) || "”’｡、\"".includes(ch);
 }
 
 function isOpenQuote(ch: string): boolean {
