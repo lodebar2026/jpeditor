@@ -949,7 +949,7 @@ function applyMetadata(ctx: Ctx, meta: Metadata, key: string, value: string, col
  *   - 段号或段号区间 `1` / `1-2`
  *   - 声部名（番茄 `"女高"` / 有谱 `<女高>`）
  */
-const BODY_PREFIX = /^\s*([QCW])([!+-]?)(\d*)(?:-(\d+))?(?:"([^"]*)"|<([^>]*)>)?\s*[:：]/;
+export const BODY_PREFIX = /^\s*([QCW])([!+-]?)(\d*)(?:-(\d+))?(?:"([^"]*)"|<([^>]*)>)?\s*[:：]/;
 /** 头部前缀：字母或 FontSize/Margin + `:` */
 const META_PREFIX = /^\s*([A-Za-z]+)\s*[:：]/;
 /** 有谱的分曲线：整行都是连字符（其后是另一首） */
