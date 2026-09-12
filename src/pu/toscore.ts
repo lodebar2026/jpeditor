@@ -35,6 +35,7 @@ import type {
   Mark,
   NoteElement,
   PuDoc,
+  PuSong,
   ScoreLine,
 } from "./ast";
 
@@ -65,9 +66,12 @@ function marksEdgeAt(marks: readonly Mark[], index: number, type: Mark["type"]):
   ends: boolean;
 } {
   const hit = marksAt(marks, index, type);
+  // **跨行的续接端不是真端点**：一条弧被换行切成两个 Mark（`continuationFromPrevious` /
+  // `continuationToNext`），照直取两头会在行尾收一次、行首再开一次，Score 里就成了两条弧
+  // ——谱面上明明只有一条。多连音同理。
   return {
-    starts: hit.some((m) => m.start === index),
-    ends: hit.some((m) => m.end === index),
+    starts: hit.some((m) => m.start === index && !m.continuationFromPrevious),
+    ends: hit.some((m) => m.end === index && !m.continuationToNext),
   };
 }
 
@@ -148,6 +152,7 @@ function buildPart(
   fifths: number,
   noteMap?: Map<Chord, NoteElement>,
   renumberVerses = false,
+  pageEnds?: ReadonlySet<ScoreLine>,
 ): { part: Part; jumps: PendingJump[] } {
   const b: Builder = {
     part: new Part(),
@@ -305,8 +310,9 @@ function buildPart(
       if (takesLyric(el)) attachLyrics(lyrics, cursors, ch);
     });
 
-    // 行末换行（末行不加）
-    if (lineIdx < lines.length - 1 && b.measure) b.measure.lineBreak(false);
+    // 行末换行（末行不加）。源里的 `[fenye]` 落在这一行末尾时写成换页——展开档认
+    // `LineBreak.newPage`，不这么写它就只会按页高自己折，作者标的分页全丢。
+    if (lineIdx < lines.length - 1 && b.measure) b.measure.lineBreak(pageEnds?.has(line) ?? false);
   });
 
   doPairTuplet(b.tupletNotes);
@@ -421,6 +427,18 @@ export interface ToScoreOptions {
   forExpanded?: boolean;
 }
 
+/** 源里 `[fenye]` 分出的页边界：每一页里该声部的最后一条曲行（末页不算）。 */
+function pageEnds(song: PuSong, voice: number): Set<ScoreLine> {
+  const out = new Set<ScoreLine>();
+  song.pages.forEach((pg, i) => {
+    if (i === song.pages.length - 1) return;
+    let last: ScoreLine | null = null;
+    for (const g of pg.groups) for (const v of g.voices) if (v.voice === voice) last = v;
+    if (last) out.add(last);
+  });
+  return out;
+}
+
 /**
  * 文本谱 → Score。多声部会变成多个 Part（Part[0] 为主旋律）。
  * 返回 null 表示这份文档没有可用的曲行。
@@ -471,7 +489,8 @@ export function puToScore(doc: PuDoc, options: ToScoreOptions = {}): Score | nul
   for (const v of voices) {
     const lines = linesOfVoice(song, v);
     if (lines.length === 0) continue;
-    const built = buildPart(lines, time, key, key.fifths, options.noteMap, options.forExpanded);
+    const built = buildPart(lines, time, key, key.fifths, options.noteMap, options.forExpanded,
+      options.forExpanded ? pageEnds(song, v) : undefined);
     // 反复与跳转只看主旋律（parseRepeatInf 读的是 parts[0]）
     if (score.parts.length === 0) jumps = built.jumps;
     score.parts.push(built.part);

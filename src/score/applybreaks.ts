@@ -948,3 +948,54 @@ export function chooseLineLayout(
   write(evenLayout(part, phrase, cells, opt.fit));
   return "even";
 }
+
+/**
+ * **乐句行 → 换页行号**（`.jpwabc` 与文本谱共用同一套口径）。
+ *
+ * 从 `jpscore.ts::balanceVoicePages` 里抽出来的纯计算：两种源格式的「按乐句重排」都要按同一个
+ * 尺子分页，否则同一首歌导出 `.jpwabc` 与文本谱会分出不一样的页。写回是各写各的
+ * （`.jpwabc` 写 `$(true,0,0,true)`，文本谱另起一个 `ScorePage`），这里只管**算在哪儿换**。
+ *
+ * @param lines       乐句行总数
+ * @param sectionEnds 段末行号（1 基；主歌/副歌分界，见 `JpScore._pageLines`）
+ * @param pageLines   一页至多几行
+ * @returns 1 基行号集合：该行行尾换页（末行必定在内，段末收尾）
+ */
+export function pageBreakLines(
+  lines: number, sectionEnds: ReadonlySet<number>, pageLines: number,
+): Set<number> {
+  const pageAt = new Set<number>(); // 1 基乐句行号：其行尾为换页
+  if (lines <= 0) return pageAt;
+  // 主歌 / 副歌各自成段（sectionEnds 记的是段末行号），段内再按每页至多 pageLines 行分。
+  const rawBounds = [0, ...[...sectionEnds].filter((n) => n > 0 && n < lines).sort((a, b) => a - b), lines];
+  // 只有 1 行的段（如前奏 Intro）单独占一页太空 → 并入下一段（丢掉它的段界）。
+  const merged = [rawBounds[0]];
+  for (let i = 1; i < rawBounds.length; i++) {
+    if (i < rawBounds.length - 1 && rawBounds[i] - merged[merged.length - 1] < 2) continue;
+    merged.push(rawBounds[i]);
+  }
+  // **段界换页是「放不下才换」，不是逢段必换**（用户口径：「主歌和副歌无法在一页内排下时
+  // 才在副歌前换页」）。006《颂赞归与耶稣圣名》主歌 2 行 + 副歌 2 行正好一页，逢段必换
+  // 会把一遍拆成两页各 2 行；005《荣耀归与天父》主歌 4 行 + 副歌 4 行放不下，那才该换。
+  // 相邻的段能凑进同一页就并成一组，组界才是换页处。
+  const bounds = [merged[0]];
+  for (let i = 1; i < merged.length; i++) {
+    const start = bounds[bounds.length - 1];
+    // 把第 i 段也并进当前组就超出一页了 → 当前组到上一段末为止，本段另起一组。
+    if (merged[i] - start > pageLines && merged[i - 1] > start) bounds.push(merged[i - 1]);
+  }
+  const last = merged[merged.length - 1];
+  if (bounds[bounds.length - 1] !== last) bounds.push(last);
+  for (let s = 0; s + 1 < bounds.length; s++) {
+    const beg = bounds[s];
+    const len = bounds[s + 1] - beg;
+    for (let p = pageLines; p <= len - 1; p += pageLines) pageAt.add(beg + p);
+    pageAt.add(beg + len); // 段末收尾（分隔主歌/副歌、反复段）
+    // 末页仅剩 1 行的 4+1 情形把最后一个换页上移一行 → 3+2
+    if (len % pageLines === 1 && len >= pageLines + 1) {
+      pageAt.delete(beg + len - 1);
+      pageAt.add(beg + len - 2);
+    }
+  }
+  return pageAt;
+}
