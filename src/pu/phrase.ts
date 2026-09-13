@@ -4,9 +4,10 @@
 // `.jpwabc` 与文本谱共用同一套权重、同一套分页口径（`applybreaks.ts::pageBreakLines`）。
 // 这里只做两件 `.jpwabc` 那条路不需要的事：
 //
-//   1. **断点 → AST 位置**。Score 的断点是「第 n 小节之前」/「某个 Chord 之后」，
+//   1. **断点 → AST 位置**。断点是「第 n 小节之前」/「某个和弦之后」，
 //      而文本谱的行是 `ScoreLine`，落点得是「某个声部的第 k 个元素之前」。
-//      桥是 `scoreDocToScore` 的 `chordIds`（Chord → 元素 id）再经 `puToScoreDoc` 的 `elementIds` 回到原文元素。
+//      断句直接吃 `ScoreDoc` 拼出的输入（`phrasesong.ts`），桥是它的 `idOf`（和弦 → 元素 id）
+//      再经 `puToScoreDoc` 的 `elementIds` 回到原文元素。
 //   2. **多声部对齐**。断点只按主旋律（`parts[0]`）算，但合唱谱四个声部得在**同一拍位**
 //      断行，否则各声部行长不一、`layout.ts::alignVoices` 会把它们拧成一团。
 //      对齐按**累计时值**做，不按元素下标——各声部的元素个数本来就不一样。
@@ -15,12 +16,13 @@
 // 无 DOM 依赖。
 
 import { Fraction } from "../common/fraction";
-import { pageBreakLines } from "../score/applybreaks";
+import { chooseLineLayout, fitForInput, pageBreakLines, pairWithScore } from "../score/applybreaks";
 import { computePhraseBreaks, type FitMetric } from "../score/phrase";
-import { chooseLineLayout } from "../score/applybreaks";
-import type { Chord, Score } from "../score/score";
+import { chordsOf, type PhraseChord } from "../score/phraseinput";
+import type { Score } from "../score/score";
 import { elementQuarters, linesOfVoice, tupletRatios, voiceNumbers } from "./ast";
 import type { MusicElement, NoteElement, PuDoc, PuSong, ScoreLine } from "./ast";
+import { phrasePartOfSong } from "./phrasesong";
 import { scoreDocToScore } from "./toscore";
 import { puToScoreDoc } from "../model/frompu";
 import type { ElementId } from "../model/doc";
@@ -100,7 +102,7 @@ function indexAtTick(st: VoiceStream, tick: Fraction): number {
   return st.elements.length;
 }
 
-/** 量行长的尺子。**必须量本函数交给它的那份 Score**：`FitMetric.spans` 以 Chord 对象身份为键，
+/** 量行长的尺子（排版引擎仍吃 `Score`，到 R2 阶段 9 为止）。**必须量本函数交给它的那份 Score**：`FitMetric.spans` 以 Chord 对象身份为键，
  *  拿另一份 Score 量出来的 span 一个都对不上，`chooseLineLayout` 会以为「怎么都放得下」，
  *  于是一律并成两句一行（73《我主耶稣是生命源》一行 8 小节、排出来还得硬折）。 */
 export type FitMeasure = (score: Score) => FitMetric | null;
@@ -117,20 +119,19 @@ export function puPhraseLines(
 ): PuNewLine[] | null {
   const song = doc.songs[songIdx];
   if (!song) return null;
-  // Score 从 `ScoreDoc` 出；断点经「Chord → id → 原文元素」回到原文（重排改写的是原文本身）
+  // 断句输入从 `ScoreDoc` 出；断点经「和弦 → id → 原文元素」回到原文（重排改写的是原文本身）
   const elementIds = new Map<MusicElement, ElementId>();
   const sdoc = puToScoreDoc(doc, { elementIds });
-  const chordIds = new Map<Chord, ElementId>();
-  const score = scoreDocToScore(sdoc, { song: songIdx, chordIds, forExpanded: true });
+  const input = phrasePartOfSong(sdoc, songIdx);
+  if (!input) return null;
+  const part = input.part;
   const elementOf = new Map<ElementId, NoteElement>();
   for (const [el, id] of elementIds) if (el.kind === "note") elementOf.set(id, el);
-  const noteMap = new Map<Chord, NoteElement>();
-  for (const [ch, id] of chordIds) {
+  const noteMap = new Map<PhraseChord, NoteElement>();
+  for (const [ch, id] of input.idOf) {
     const el = elementOf.get(id);
     if (el) noteMap.set(ch, el);
   }
-  const part = score?.parts[0];
-  if (!part) return null;
 
   const voices = voiceNumbers(song);
   const streams = new Map<number, VoiceStream>();
@@ -144,17 +145,22 @@ export function puPhraseLines(
       if (el.kind === "note") where.set(el, { voice: st.voice, idx });
     });
   }
-  const firstChord = part.measures.flatMap((m) => m.entries).find((e) => noteMap.has(e as Chord));
-  const leadEl = firstChord ? noteMap.get(firstChord as Chord) : undefined;
+  const firstChord = part.measures.flatMap((m) => chordsOf(m)).find((c) => noteMap.has(c));
+  const leadEl = firstChord ? noteMap.get(firstChord) : undefined;
   const lead = streams.get((leadEl && where.get(leadEl)?.voice) ?? voices[0]!);
   if (!lead) return null;
 
   const breaks = computePhraseBreaks(part, { pageLines: PAGE_LINES });
-  const fit = opt.measure?.(score) ?? null;
-  if (fit) chooseLineLayout(part, breaks, 0, { fit });
+  if (opt.measure) {
+    const score = scoreDocToScore(sdoc, { song: songIdx, forExpanded: true });
+    const measured = score?.parts[0] ? opt.measure(score) : null;
+    if (score?.parts[0] && measured) {
+      chooseLineLayout(part, breaks, 0, { fit: fitForInput(measured, pairWithScore(score.parts[0], part)) });
+    }
+  }
 
-  // Score 断点 → 主旋律元素流下标（「在此元素之前起新行」）。
-  const idxOf = (ch: Chord): number | null => {
+  // 断点 → 主旋律元素流下标（「在此元素之前起新行」）。
+  const idxOf = (ch: PhraseChord): number | null => {
     const el = noteMap.get(ch);
     const at = el ? where.get(el) : undefined;
     return at && at.voice === lead.voice ? at.idx : null;
@@ -164,7 +170,7 @@ export function puPhraseLines(
   part.measures.forEach((m, mid) => {
     if (mid > 0 && breaks.measureBreaks.has(mid)) {
       // 小节边界：落在本小节第一个音符之前（小节线元素留在上一行行尾）
-      const first = m.entries.find((e) => noteMap.has(e as Chord)) as Chord | undefined;
+      const first = chordsOf(m).find((c) => noteMap.has(c));
       const raw = first ? idxOf(first) : null;
       const i = raw === null ? null : alignCut(lead.elements, raw);
       if (i !== null && i > 0) {
@@ -172,8 +178,7 @@ export function puPhraseLines(
         if (breaks.sectionStarts.has(mid)) sectionAt.add(i);
       }
     }
-    for (const e of m.entries) {
-      const ch = e as Chord;
+    for (const ch of chordsOf(m)) {
       if (!noteMap.has(ch)) continue;
       if (!breaks.midBreaks.has(ch) && !breaks.sectionCutChords.has(ch)) continue;
       const i = idxOf(ch);

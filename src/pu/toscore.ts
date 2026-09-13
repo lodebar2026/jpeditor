@@ -130,7 +130,7 @@ function applyEndingStart(mea: Measure, mark: Mark): void {
  * 《同一首歌》同一段曲下写了两行 `C1:`，内容其实是第 1、2 段：展开档一遍只挂一行词，
  * 两行同号就会画在同一位置相压，顺延之后各成一遍。段号不重复的行原样返回。
  */
-function distinctVerses(lyrics: readonly LyricLine[]): readonly LyricLine[] {
+export function distinctVerses(lyrics: readonly LyricLine[]): readonly LyricLine[] {
   let maxUsed = 0;
   const used = new Set<number>();
   return lyrics.map((l) => {
