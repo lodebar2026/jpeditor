@@ -7,6 +7,8 @@
 // **有损**：Score 装不下和弦符号、力度、多声部并排等文本谱特有的信息。
 // 需要完整保留时走 toxml.ts 的直出路径。
 
+import type { ElementId, ScoreDoc } from "../model/doc";
+import { docView } from "./slots";
 import { Fraction } from "../common/fraction";
 import { applyJpPitch, type JpKeyState } from "../score/jppitch";
 import { linesOfVoice, marksAt, nextSyllables, takesLyric, voiceNumbers } from "./ast";
@@ -445,7 +447,36 @@ function pageEnds(song: PuSong, voice: number): Set<ScoreLine> {
  */
 export function puToScore(doc: PuDoc, options: ToScoreOptions = {}): Score | null {
   const song = doc.songs[options.song ?? 0];
+  return song ? songToScore(song, options) : null;
+}
+
+export interface ScoreDocToScoreOptions {
+  /** 取第几首。默认第一首。 */
+  song?: number;
+  /** 见 `ToScoreOptions.forExpanded` */
+  forExpanded?: boolean;
+  /** 传入一个空 Map，转换时会填上 Chord → 元素 id。
+   *  播放高亮要用：播放器给的是 Chord，原样档谱面与双向定位认的是 id。 */
+  chordIds?: Map<Chord, ElementId>;
+}
+
+/** 文本谱/123/ABC 的 `ScoreDoc` → Score。经排版行视图（`pu/slots.ts::docView`），与原样档谱面同一份铺排。 */
+export function scoreDocToScore(doc: ScoreDoc, options: ScoreDocToScoreOptions = {}): Score | null {
+  const view = docView(doc);
+  const song = view.songs[options.song ?? 0];
   if (!song) return null;
+  const noteMap = options.chordIds ? new Map<Chord, NoteElement>() : undefined;
+  const score = songToScore(song, { ...(noteMap ? { noteMap } : {}), ...(options.forExpanded ? { forExpanded: true } : {}) });
+  if (noteMap && options.chordIds) {
+    for (const [ch, el] of noteMap) {
+      const id = view.idOf.get(el);
+      if (id !== undefined) options.chordIds.set(ch, id);
+    }
+  }
+  return score;
+}
+
+function songToScore(song: PuSong, options: ToScoreOptions): Score | null {
   const meta = song.metadata;
 
   const score = new Score();
