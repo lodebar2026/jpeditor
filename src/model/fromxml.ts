@@ -24,6 +24,7 @@ import type {
   Defaults,
   Direction,
   Element as DocElement,
+  HAlign,
   Harmony,
   Key,
   Lyric,
@@ -36,6 +37,7 @@ import type {
   Part,
   PartGroup,
   Pitch,
+  Position,
   Print,
   ScoreDoc,
   Song,
@@ -54,6 +56,32 @@ const num = (el: Element | null, tag: string): number | undefined => {
 };
 
 const serialize = (el: Element): string => new XMLSerializer().serializeToString(el);
+
+const attrNum = (el: Element, name: string): number | undefined => {
+  const t = el.getAttribute(name);
+  if (t === null || t === "") return undefined;
+  const v = Number(t);
+  return Number.isFinite(v) ? v : undefined;
+};
+
+/** 版面坐标属性；一个都没有时返回 `undefined`（不在模型里留空对象）。 */
+function readPos(el: Element): Position | undefined {
+  const p: Position = {};
+  const dx = attrNum(el, "default-x");
+  const dy = attrNum(el, "default-y");
+  const rx = attrNum(el, "relative-x");
+  const ry = attrNum(el, "relative-y");
+  if (dx !== undefined) p.defaultX = dx;
+  if (dy !== undefined) p.defaultY = dy;
+  if (rx !== undefined) p.relativeX = rx;
+  if (ry !== undefined) p.relativeY = ry;
+  return Object.keys(p).length ? p : undefined;
+}
+
+const readAlign = (el: Element, name: string): HAlign | undefined => {
+  const v = el.getAttribute(name);
+  return v === "left" || v === "center" || v === "right" ? v : undefined;
+};
 
 /** 收集 `parent` 下**不在 `known` 里**的直接子节点，序列化后原样留着。 */
 function rawOf(parent: Element, known: readonly string[]): string[] | undefined {
@@ -246,7 +274,12 @@ function readHarmony(el: Element): Harmony {
     kind: kindEl?.textContent ?? "",
   };
   const kt = kindEl?.getAttribute("text");
-  if (kt) h.kindText = kt;
+  // `text=""` 是「不印 kind 后缀」，与缺省不同（混排按 null / "" 分），空串也要留
+  if (kt !== null && kt !== undefined) h.kindText = kt;
+  const kh = kindEl ? readAlign(kindEl, "halign") : undefined;
+  if (kh) h.kindHalign = kh;
+  const pos = readPos(el);
+  if (pos) h.pos = pos;
   const bassEl = child(el, "bass");
   if (bassEl) {
     h.bass = {
@@ -278,6 +311,10 @@ function readLyrics(noteEl: Element): Lyric[] {
     if (child(l, "extend")) lr.extend = true;
     const el2 = childText(l, "elision");
     if (el2 !== null) lr.elision = el2;
+    const pos = readPos(l);
+    if (pos) lr.pos = pos;
+    const just = readAlign(l, "justify");
+    if (just) lr.justify = just;
     out.push(lr);
   }
   return out;
@@ -406,6 +443,14 @@ function readDirection(el: Element): Direction | null {
   if (pl === "above" || pl === "below") d.placement = pl;
   const st = el.getAttribute("staff");
   if (st) d.staff = Number(st);
+  const pos = readPos(first);
+  if (pos) d.pos = pos;
+  const just = readAlign(first, "justify");
+  if (just) d.justify = just;
+  const ha = readAlign(first, "halign");
+  if (ha) d.halign = ha;
+  const va = first.getAttribute("valign");
+  if (va) d.valign = va;
   switch (first.tagName) {
     case "dynamics":
       d.text = first.firstElementChild?.tagName ?? "";
@@ -484,6 +529,9 @@ function readMeasure(
   marks: MarkSink,
 ): Measure {
   const m: Measure = { number: el.getAttribute("number") ?? "", elements: [] };
+  const width = attrNum(el, "width");
+  if (width !== undefined) m.width = width;
+  if (el.getAttribute("implicit") === "yes") m.implicit = true;
   /** 和弦符号先攒着，挂到它后面第一个元素上（MusicXML 的 `<harmony>` 在音符之前）。
    *  一个长音中途换和弦时音符前会连着好几个（后面的带 offset），**全留着**——只留最后一个会丢和弦 */
   let pendingHarmonies: Harmony[] = [];
@@ -506,6 +554,17 @@ function readMeasure(
         if (staves !== undefined) a.staves = staves;
         const tr = child(c, "transpose");
         if (tr) a.transpose = readTranspose(tr);
+        const details = children(c, "staff-details");
+        if (details.length) {
+          a.staffDetails = details.map((sd) => {
+            const out: NonNullable<MeasureAttrs["staffDetails"]>[number] = {};
+            const n = sd.getAttribute("number");
+            if (n) out.staff = Number(n);
+            const po = sd.getAttribute("print-object");
+            if (po) out.printObject = po !== "no";
+            return out;
+          });
+        }
         m.attrs = { ...(m.attrs ?? {}), ...a };
         break;
       }
@@ -542,6 +601,17 @@ function readMeasure(
             if (t.getAttribute("type") === "stop") note.tie.stop = true;
           }
         }
+        const notePos = readPos(c);
+        const stemEl = child(c, "stem");
+        if (pitchEl) {
+          if (notePos) note.pos = notePos;
+          if (stemEl) {
+            const dir = stemEl.textContent?.trim();
+            if (dir === "up" || dir === "down" || dir === "none" || dir === "double") note.stem = dir;
+            const sy = attrNum(stemEl, "default-y");
+            if (sy !== undefined) note.stemY = sy;
+          }
+        }
         if (isChordNote && last) {
           last.notes.push(note);
           break;
@@ -557,8 +627,12 @@ function readMeasure(
           voice: num(c, "voice") ?? 1,
           staff: num(c, "staff") ?? 1,
         };
+        if (!pitchEl && notePos) ch.pos = notePos;
+        if (child(c, "cue")) ch.cue = true;
         const type = childText(c, "type");
         if (type) ch.duration.type = type as NoteType;
+        const typeSize = child(c, "type")?.getAttribute("size");
+        if (typeSize) ch.typeSize = typeSize;
         const tm = child(c, "time-modification");
         if (tm) {
           ch.duration.timeMod = {
