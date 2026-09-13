@@ -6,7 +6,7 @@
 import { Fraction } from "../common/fraction";
 import { Point } from "../common/geom";
 import { Font } from "../layout/font";
-import { SlurTieBase, type SlurStyle } from "../layout/layout";
+import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
 import { MIXED_PUNCT } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 

@@ -25,7 +25,7 @@
 // **不覆写字体与页面尺寸**：字号、纸张、标题/词曲字号仍由选项面板（`editor/settings.ts`）
 // 说了算，这里只固定那些本来就没有 UI 的**笔画类**常量。老的出厂默认值见 PPTX_PAGE。
 
-import type { LayoutOptions } from "./layout";
+import type { LayoutOptions } from "./options";
 
 /** `.jpwabc` 当前的排版输出档名（`pptx` = 展开、`normal` = 原样；名字沿用存量设置）。
  *  展开档两种格式都走 `jianpu/expanded.ts::ExpandedPainter`，笔画常量就是下面这一套。 */

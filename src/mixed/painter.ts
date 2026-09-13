@@ -6,7 +6,7 @@ import { MetaData } from "../smufl/smufl";
 import { Fraction } from "../common/fraction";
 import { Matrix33 } from "../common/geom";
 import { Font } from "../layout/font";
-import { Group, TextFrame } from "../layout/layout";
+import { Group, TextFrame } from "../layout/pageitem";
 import { renderPageSvg } from "../layout/painter";
 import type { ItemVisitor } from "../layout/walk";
 import { colorToCss } from "../common/geom";

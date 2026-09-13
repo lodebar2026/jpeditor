@@ -9,8 +9,8 @@
 // 各路的坐标换算留在自己的调用点（musicpp 的 `sc = staffHeight/40` 之类别漏进来）。
 
 import { Point, Rect } from "../common/geom";
-import { GraphicLine, GraphicPath, PageItem, TextFrame } from "./layout";
-import type { BarlineSpec } from "./layout";
+import { GraphicLine, GraphicPath, PageItem, TextFrame } from "./pageitem";
+import type { BarlineSpec } from "./entry";
 import * as S from "../score/score";
 import type { Font } from "./font";
 

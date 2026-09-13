@@ -12,7 +12,7 @@
 // 行内算完自然宽度后再整体拉伸/压缩到版心宽度（两端对齐）。
 
 import type { Dialect } from "./dialect";
-import { SlurTieBase, type SlurStyle } from "../layout/layout";
+import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
 import type { GraceMetrics, GraceNote } from "../common/gracenote";
 import type { NoteElement } from "./ast";
 

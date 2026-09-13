@@ -14,10 +14,10 @@
 import { Font } from "../layout/font";
 import { graceGeometry } from "../common/gracenote";
 import { Matrix33, Point, type Rect } from "../common/geom";
-import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFrame } from "../layout/layout";
+import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFrame } from "../layout/pageitem";
 import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
 import { jpBarlineItems, jpDot, jpTimeSigItems } from "../layout/jpglyph";
-import type { BarlineSpec } from "../layout/layout";
+import type { BarlineSpec } from "../layout/entry";
 import { BarStyle } from "../score/score";
 import { renderPageSvg } from "../layout/painter";
 import type { PagePainter } from "../layout/pagepainter";
