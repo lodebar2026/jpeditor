@@ -58,10 +58,13 @@ async function boot() {
   const app = new App(meta, scorePane);
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
+  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __mixedModel: unknown; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
     __j123: unknown; __pptx: unknown };
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
+  // 混排模型（`AccidentalStat` / `GlyphCodes`）暴露，供 scripts/jianpu-semantic-check.mjs 三方比简谱语义。
+  win.__mixedModel = Promise.all([import("./mixed/model"), import("./smufl/smufl")])
+    .then(([model, smufl]) => ({ ...model, GlyphCodes: smufl.GlyphCodes }));
   // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
   win.__omr = import("./omr");
   // ABC → MusicXML 移植版暴露（便于 scripts/abc-check.mjs 回归，同 __app 约定）。
@@ -87,13 +90,13 @@ async function boot() {
     import("./score/musicxml"), import("./pu"),
     import("./abcfamily/emitabc.entry"), import("./abc/abc2xml"),
     import("./model/fromxml"), import("./model/toxml"), import("./model/capability"),
-    import("./model/jianpuproject"),
+    import("./model/jianpuproject"), import("./model/jianpu"),
   ]).then((
     [parse, emit, fromscore, frompu, helpers, musicxml, pu, emitabc, abc2xml,
-     fromxml, toxml, capability, jianpuproject],
+     fromxml, toxml, capability, jianpuproject, jianpu],
   ) => ({
     ...parse, ...emit, ...fromscore, ...frompu, ...helpers, ...musicxml, pu,
-    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject,
+    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu,
   }));
   // `.jpwabc` ↔ Score ↔ MusicXML 的导入与版面注入暴露，供 scripts/xml-roundtrip.mjs 回归
   // （写出端只有 `model/toxml.ts`，在 `__j123` 里）。

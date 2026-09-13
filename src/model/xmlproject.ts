@@ -15,11 +15,11 @@
 // 挂在增时线上的歌词（文本谱 `-@`）与记号不写——MusicXML 里增时线不是独立的音符。
 
 import type {
-  Barline, Chord, Direction, Element, ElementId, Lyric, Mark, Measure, Notations, Part, Pitch,
+  Barline, Chord, Direction, Element, ElementId, Lyric, Mark, Measure, Notations, Part,
   SourceOrnament, Song,
 } from "./doc";
 import { Fraction, lcm } from "../common/fraction";
-import { jpPitch } from "../score/jppitch";
+import { AccidentalCarry } from "./jianpu";
 import { MusicCommon } from "../score/score";
 import { typeOfDuration } from "../score/xmlutil";
 import { DYNAMICS, TERMS } from "../pu/glyph";
@@ -427,8 +427,8 @@ function projectPart(
       }
       fifths = m.attrs.key.fifths;
     }
-    /** 小节内延续的临时记号（唱名 → 相对调号的半音） */
-    const carry: Record<number, number> = {};
+    /** 小节内延续的临时记号（简谱语义层，与 `assignDegrees` 同一份规则） */
+    const carry = new AccidentalCarry();
     const dirs: Direction[] = [];
     let pos = 0;
     for (const el of m.elements) {
@@ -444,7 +444,7 @@ function projectPart(
       }
       const ch = el;
       for (const n of ch.notes) {
-        if (!n.pitch && n.degree && n.degree.number > 0) n.pitch = pitchOf(n.degree, fifths, carry);
+        if (!n.pitch && n.degree && n.degree.number > 0) n.pitch = carry.pitch(n.degree, { fifths });
       }
       if (ch.grace) {
         ch.duration = { ...ch.duration, divisions: 0 };
@@ -498,24 +498,6 @@ function projectPart(
 function push(dirs: Direction[], offset: number, d: Direction): void {
   if (offset > 0) d.offset = offset;
   dirs.push(d);
-}
-
-/** 唱名 + 八度点 + 临时记号（小节内延续）→ 绝对音高。拼写字母取自调号（`jppitch.ts::jpPitch`）。 */
-function pitchOf(
-  degree: NonNullable<Chord["notes"][number]["degree"]>,
-  fifths: number,
-  carry: Record<number, number>,
-): Pitch {
-  switch (degree.accidental) {
-    case "sharp": carry[degree.number] = 1; break;
-    case "double-sharp": carry[degree.number] = 2; break;
-    case "flat": carry[degree.number] = -1; break;
-    case "double-flat": carry[degree.number] = -2; break;
-    case "natural": delete carry[degree.number]; break;
-    default: break;
-  }
-  const p = jpPitch(degree.number, degree.octaveShift, fifths);
-  return { step: p.step as Pitch["step"], alter: p.alter + (carry[degree.number] ?? 0), octave: p.octave };
 }
 
 /** 记号原名 → `<notations>` 与 `<direction>`；已经是 MusicXML 元素名的原样留下。 */

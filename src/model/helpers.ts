@@ -1,25 +1,17 @@
-// `ScoreDoc` 的遍历、查询、构造与音高互推。
+// `ScoreDoc` 的遍历、查询与构造。
 //
-// **音高换算一律复用 `score/jppitch.ts`**——那个文件的开头就立了规矩：
-// 「两份实现一旦漂移，导出→导入的往返数字就会错，故只留这一处」。本文件不另写一份正向换算。
-// 反向换算（绝对音高 → 简谱度数）目前在 `score.ts::Note.init` 里，与本文件的
-// `degreeFromPitch` 同构——见那个函数的注释。
+// 音高 ↔ 度数、临时记号延续这些**简谱语义**在 `jianpu.ts`（简谱语义层），不在这里。
 //
 // 无 DOM 依赖（Node CLI 要 import）。
 
-import { jpPitch, jpTonicOctaveShift, keyAlter, tonicStep } from "../score/jppitch";
 import type {
-  Accidental,
   Chord,
-  Degree,
   Element,
   ElementId,
-  Key,
   Lyric,
   Measure,
   Note,
   Part,
-  Pitch,
   ScoreDoc,
   Song,
   SourceSpan,
@@ -41,99 +33,6 @@ export class IdGen {
   /** 合并两份文档时把分配器推到安全位置 */
   bump(to: number): void {
     if (to >= this._next) this._next = to + 1;
-  }
-}
-
-// ───────────────────────── 音高互推 ─────────────────────────
-
-/** 简谱度数 → 绝对音高。**直接转调 `jppitch.ts::jpPitch`**，不重写。
- *  `accidental` 是面上的临时记号，叠在调号算出的 `alter` 之上。 */
-export function pitchFromDegree(degree: Degree, key: Key): Pitch | null {
-  if (degree.number === 0) return null; // 休止
-  const p = jpPitch(degree.number, degree.octaveShift, key.fifths);
-  let alter = p.alter;
-  switch (degree.accidental) {
-    case "sharp": alter = 1; break;
-    case "flat": alter = -1; break;
-    case "natural": alter = 0; break;
-    case "double-sharp": alter = 2; break;
-    case "double-flat": alter = -2; break;
-    default: break;
-  }
-  return { step: p.step as Pitch["step"], alter, octave: p.octave };
-}
-
-/** 绝对音高 → 简谱度数。
- *
- *  **与 `score.ts::Note.init` 同构**（算式逐行照搬：`b=(4f+28)%7`、
- *  `jpOctave=floor((wr-b)/7)-4`，再加 `jpTonicOctaveShift`）。那一份绑在 `Score` 的
- *  `Note` 类上、还夹着 `AccidentalStat` 状态机，没法直接复用。
- *  **R2 收尾时应把 `Note.init` 改为调用本函数，消掉这一份重复**——在此之前两处必须同源。
- *
- *  临时记号不在这里判（那要小节内的延续状态），由调用方给 `accidental`。 */
-export function degreeFromPitch(pitch: Pitch, key: Key, accidental?: Accidental): Degree {
-  const steps = "CDEFGAB";
-  const idx = steps.indexOf(pitch.step);
-  const wr = idx + pitch.octave * 7;
-  const b = tonicStep(key.fifths);
-  const p = idx + pitch.octave * 7 - b;
-  const number = (((p % 7) + 7) % 7) + 1;
-  let octaveShift = Math.floor((wr - b) / 7) - 4;
-  octaveShift += jpTonicOctaveShift(key.fifths);
-  const d: Degree = { number, octaveShift };
-  if (accidental) d.accidental = accidental;
-  return d;
-}
-
-const ACC_BY_OFFSET: Readonly<Record<number, Accidental>> = {
-  [-2]: "double-flat", [-1]: "flat", 0: "natural", 1: "sharp", 2: "double-sharp",
-};
-
-/** 按绝对音高给一个声部**重算**简谱度数，连同面上要印的临时记号。
- *
- *  简谱的升降号是**相对调号**的（`1=F` 里 `#4` 是 B 本位），且**在小节内按唱名延续**——
- *  所以不能照抄 MusicXML 的 `<accidental>`（那是绝对的，而且延续出来的音根本不写）：
- *  逐小节记下每个唱名当前相对调号偏了几个半音，音高与之不符的地方才补一个记号，
- *  写出的 123 读回来（`xmlproject.ts::pitchOf` 同一条延续规则）音高才对。
- *  来源印了记号（`accidental`）而偏移恰好没变的，照样写出来（提醒记号）。 */
-export function assignDegrees(part: Part, initialKey: Key): void {
-  let key = initialKey;
-  for (const m of part.measures) {
-    if (m.attrs?.key) key = m.attrs.key;
-    /** 唱名 → 相对调号的半音偏移（本小节内延续） */
-    const carry = new Map<number, number>();
-    for (const el of m.elements) {
-      if (el.kind !== "chord") continue;
-      for (const n of el.notes) {
-        if (!n.pitch) continue;
-        const d = degreeFromPitch(n.pitch, key);
-        const offset = n.pitch.alter - keyAlter("CDEFGAB".indexOf(n.pitch.step), key.fifths);
-        const expected = carry.get(d.number) ?? 0;
-        const acc = ACC_BY_OFFSET[offset];
-        if (acc && (offset !== expected || n.accidental)) d.accidental = acc;
-        carry.set(d.number, offset);
-        n.degree = d;
-      }
-    }
-  }
-}
-
-/** 用绝对音高补出简谱度数（已有度数的不动）。调号取小节的 `attrs.key`，没有就取本曲的（缺省 C 大调）。
- *  **只给音高、不给度数的来源（ABC、MusicXML）都要过这一步**——简谱排版、`emit123`、播放都按度数走。 */
-export function fillDegreesFromPitch(song: Song): void {
-  const key = song.key ?? { fifths: 0 };
-  for (const part of song.parts) {
-    let cur: Key = key;
-    for (const m of part.measures) {
-      if (m.attrs?.key) cur = m.attrs.key;
-      for (const el of m.elements) {
-        if (el.kind !== "chord") continue;
-        for (const n of el.notes) {
-          if (n.degree || !n.pitch) continue;
-          n.degree = degreeFromPitch(n.pitch, cur, n.accidental);
-        }
-      }
-    }
   }
 }
 

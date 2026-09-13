@@ -45,7 +45,8 @@ import type {
   Time,
   Transpose,
 } from "./doc";
-import { IdGen, assignDegrees, emptyDoc, emptySong } from "./helpers";
+import { IdGen, emptyDoc, emptySong } from "./helpers";
+import { assignDegrees } from "./jianpu";
 import { child, childText, children } from "../score/xmldom";
 
 const num = (el: Element | null, tag: string): number | undefined => {
@@ -775,7 +776,7 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
   const first = song.parts[0]?.measures.find((m) => m.attrs?.key || m.attrs?.time);
   if (first?.attrs?.key) song.key = first.attrs.key;
   if (first?.attrs?.time) song.time = first.attrs.time;
-  // 简谱度数与面上的临时记号：整个声部读完再按小节内延续规则算（`helpers.ts::assignDegrees`）
+  // 简谱度数与面上的临时记号：整个声部读完再按小节内延续规则算（简谱语义层 `jianpu.ts::assignDegrees`）
   for (const part of song.parts) assignDegrees(part, song.key ?? { fifths: 0 });
 
   song.marks = marks.marks;

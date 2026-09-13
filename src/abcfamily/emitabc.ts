@@ -3,9 +3,10 @@
 // **默认音长固定写 `L:1/8`**：写出端要幂等，就不能让默认音长随内容浮动——
 // 同一份 `ScoreDoc` 第二次写出必须逐字相同。读入端照样认任意 `L:`。
 
-import type { Chord, Element, Note, Song } from "../model/doc";
+import type { Chord, Element, Key, Note } from "../model/doc";
 import { AbcFamilyEmitter } from "./emit";
 import { DIVISIONS } from "./parsedialect";
+import { keySpelling } from "../model/jianpu";
 
 /** 写出端固定的默认音长：八分音符。 */
 const UNIT = DIVISIONS / 2;
@@ -105,12 +106,10 @@ export class EmitterAbc extends AbcFamilyEmitter {
   }
 
   /** 音名调号。带 mode 的（`Em`）照 ABC 写法还原。 */
-  protected keyText(song: Song): string | null {
-    const k = song.key;
-    if (!k) return null;
+  protected keyValue(k: Key): string {
     if (k.spelling === "none") return "none";
     // 123 那侧的拼写是前置形（`bB`/`#F`），ABC 是后置形（`Bb`/`F#`）
-    const sp = (k.spelling ?? "C").replace(/^([#b])([A-G])$/, "$2$1");
+    const sp = keySpelling(k, "mode").replace(/^([#b])([A-G])$/, "$2$1");
     const mode = k.mode && k.mode !== "major" && k.mode !== "ionian" ? k.mode.slice(0, 3) : "";
     return sp + (mode === "min" ? "m" : mode);
   }

@@ -19,12 +19,14 @@
 import type { ScoreDoc } from "./doc";
 import { eachChord, verseCount } from "./helpers";
 import { projectForJianpu } from "./jianpuproject";
+import { melodyLane } from "./jianpu";
 
 /** 一项「文档里可能用到、格式可能装不下」的特性。 */
 export type Feature =
   | "harmony"        // 和弦符号
   | "harmonyOffset"  // 落在长音中间、又不在整拍上的和弦（简谱挂不到增时线上）
-  | "multiVoice"     // 多声部
+  | "multiVoice"     // 多声部（多个 part）
+  | "noteStack"      // 同一声部里同时发声的几个音（五线谱的和弦内音、声部内第二 voice）
   | "dynamics"       // 力度与渐强渐弱
   | "playOrder"      // 演唱顺序（含 skip/limit）
   | "style"          // 样式表引用
@@ -44,6 +46,7 @@ export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
   harmony: "和弦符号",
   harmonyOffset: "长音中间不在整拍上的和弦（会提前到音符上）",
   multiVoice: "多声部",
+  noteStack: "同一声部里同时发声的音（和弦内音、声部内第二声部，只留简谱印的旋律）",
   dynamics: "力度与渐强渐弱",
   playOrder: "演唱顺序（房号跳转、第几遍配第几段词）",
   style: "样式表引用",
@@ -70,13 +73,15 @@ const allBut = (...gone: Feature[]): Set<Feature> => new Set(ALL.filter((f) => !
 export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> = {
   // 123 是按「装得下全部」设计的（`docs/格式/123格式.md`），实测 全语料只有 0.17% 表达不了，
   // 那些是转换层的账不是格式的账。
-  "123": allBut("harmonyOffset"),
+  // 音符堆 123 刻意不做（规范：和弦走符号，`.jpwabc` 的 `[1 3 5]` 语料 0 例）
+  "123": allBut("harmonyOffset", "noteStack"),
   // 标准 ABC：样式被规范标为 VOLATILE（§11，「not standardised」），所以 123 才把样式
   // 另走样式表；`I:playorder` 是 123 的扩展，标准 ABC 读不懂（虽然会忽略，等于丢）。
   abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset"),
   // `.jpwabc` 的语法**刻意不扩**（`docs/架构.md` A5 那条）：和弦与 slur 在
   // `scoreToJpwabc` 就丢了，成书对比里那条基准路因此被停用。
-  jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "style", "multiSong", "grace"),
+  // 音符堆：`Score.removeUnused` 只留最高音、删 voice > 1
+  jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "noteStack", "style", "multiSong", "grace"),
   // 文本谱：`scoreDocToScore` 丢和弦/力度/多声部（`docs/架构.md` §6.1 的表），
   // 但文本谱**原文**装得下和弦——这里算的是「另存为之后还在不在」，所以按解析器的能力写。
   pu: allBut("style", "playOrder", "dynamics", "harmonyOffset"),
@@ -102,6 +107,7 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
     }
     for (const part of song.parts) {
       for (const mea of part.measures) {
+        const lane = melodyLane(mea);
         for (const b of mea.barlines ?? []) if (b.ending) used.add("volta");
         // 力度与渐强渐弱走 `<direction>`
         for (const d of mea.directions ?? []) {
@@ -112,6 +118,7 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
           // MusicXML 读进来的和弦是结构化的、没有 text，所以按有无判
           if (el.harmony) used.add("harmony");
           if (el.kind === "chord") {
+            if (el.notes.length > 1 || (lane && (el.staff !== lane.staff || el.voice !== lane.voice))) used.add("noteStack");
             if (el.grace) used.add("grace");
             if (el.rhythm) used.add("rhythmNote");
             if (el.sectionWord) used.add("textLine");
