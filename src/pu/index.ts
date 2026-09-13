@@ -7,6 +7,7 @@ export { PuPainter } from "./painter";
 export { scoreDocToScore, type ToScoreOptions, type ScoreDocToScoreOptions } from "./toscore";
 export { relayoutPuText } from "./relayout";
 export { puPhraseLines, type PuNewLine } from "./phrase";
+export { phrasePartOfSong } from "./phrasesong";
 // 展开档应有几遍（两种格式共用的判据；回归脚本经 window.__pu 取用）
 export { countPasses } from "../jianpu/expand";
 export { docView, scoreDocToPu, type DocView, type SongView, type RowView, type SlotRef } from "./slots";
