@@ -6,7 +6,7 @@
 
 import { GlyphCodes } from "../smufl/smufl";
 import { Font } from "./font";
-import { Group, TextFrame } from "./layout";
+import { Group, TextFrame } from "./pageitem";
 import { Matrix33 } from "../common/geom";
 
 /** 和弦符号的一段：文字或 SMuFL 字形，可上标（1）/下标（-1）。 */

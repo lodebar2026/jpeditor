@@ -6,8 +6,8 @@
 import { zipSync, type Zippable } from "fflate";
 import * as opentype from "opentype.js";
 import { asset } from "../common/asset";
+import { BeamLine } from "../layout/entry";
 import {
-  BeamLine,
   GraphicLine,
   GraphicPath,
   Group,
@@ -17,7 +17,7 @@ import {
   SmuflText,
   TextFrame,
   type PathSeg,
-} from "../layout/layout";
+} from "../layout/pageitem";
 import { walkPageItem, type ItemVisitor } from "../layout/walk";
 
 

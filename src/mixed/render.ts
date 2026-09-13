@@ -7,7 +7,7 @@ import { Fraction } from "../common/fraction";
 import { Matrix33, Point } from "../common/geom";
 // `Slur` 这个名字在 model.ts 里是**跨度对象**（哪两个音符之间有弧），
 // layout.ts 里的是**画出来的那条弧**，所以起个别名区分。
-import { GraphicLine, GraphicPath, Group, Slur as SlurArc, TextFrame } from "../layout/layout";
+import { GraphicLine, GraphicPath, Group, Slur as SlurArc, TextFrame } from "../layout/pageitem";
 import { GlyphCodes } from "../smufl/smufl";
 import {
   AccidentalStat,

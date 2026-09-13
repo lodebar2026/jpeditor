@@ -9,7 +9,7 @@
 
 import type { MetaData } from "../smufl/smufl";
 import type { Score } from "../score/score";
-import { TextFrame, type Group } from "../layout/layout";
+import { TextFrame, type Group } from "../layout/pageitem";
 import { applyPptxStyle } from "../layout/pptxstyle";
 import { ScorePainter } from "../layout/painter";
 

@@ -7,9 +7,9 @@
 // 为什么导出 DrawList 而不是 SVG 字符串：SVG 要在 Node 侧反解嵌套 transform 与字体度量，
 // 等于把 painter 再写一遍；而页面树本来就只有三种叶子（GraphicPath / GraphicLine / TextFrame），
 // 照着 layout/walk.ts 的骨架递归扁平化一次就完事，逻辑一比一对应、不冒回归风险。
-import { GraphicPath, JpNumber, JpOctaveDot, Lyric, PageItem, SmuflText, TextFrame } from "../layout/layout";
+import { GraphicPath, JpNumber, JpOctaveDot, Lyric, PageItem, SmuflText, TextFrame } from "../layout/pageitem";
 import { Font } from "../layout/font";
-import type { LayoutOptions } from "../layout/layout";
+import type { LayoutOptions } from "../layout/options";
 import type { DrawItem, DrawPage, DrawText } from "./drawlist";
 import type { BookStyle, StyleRole } from "./bookstyle";
 import { JinpuPainter } from "../layout/painter";

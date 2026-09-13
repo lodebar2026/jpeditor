@@ -14,7 +14,7 @@
 //
 // 泛型 `M` 就是各家的坐标载体：SVG 那两路是父级 <g>、browser 是 Mat6、pptx 是 void。
 
-import { GraphicLine, GraphicPath, PageItem, TextFrame } from "./layout";
+import { GraphicLine, GraphicPath, PageItem, TextFrame } from "./pageitem";
 
 export interface ItemVisitor<M> {
   /**

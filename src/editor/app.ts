@@ -17,7 +17,7 @@ import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { fromJpw } from "../score/jpwimport";
 import { JinpuPainter } from "../layout/painter";
 import { PPTX_PAGE, type JpProfileName } from "../layout/pptxstyle";
-import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/layout";
+import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/pageitem";
 import { Point, colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
 import { loadMusicXml } from "../score/musicxml";

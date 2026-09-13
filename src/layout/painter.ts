@@ -6,14 +6,9 @@
 
 import { Point, Rect, colorToCss } from "../common/geom";
 import { Font } from "./font";
-import {
-  Group,
-  Layout,
-  NoteEntry,
-  PageItem,
-  TextFrame,
-  SmuflText,
-} from "./layout";
+import { Group, PageItem, TextFrame, SmuflText } from "./pageitem";
+import { NoteEntry } from "./entry";
+import { Layout } from "./layout";
 import { Chord, MusicCommon, Score } from "../score/score";
 import { jpTimeSigItems } from "./jpglyph";
 import type { PagePainter } from "./pagepainter";
