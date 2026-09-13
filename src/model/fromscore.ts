@@ -28,7 +28,8 @@ import type {
   Song,
   Sustain,
 } from "./doc";
-import { IdGen, emptyDoc, emptySong } from "./helpers";
+import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "./helpers";
+import type { BreakKind } from "./helpers";
 
 const DIVISIONS = 48;
 
@@ -80,6 +81,8 @@ function convertPart(jp: JpPart, index: number, ids: IdGen, marks: Mark[]): Part
   const part: Part = { id: `P${index + 1}`, measures: [] };
   let prevKeyFifths: number | null = null;
   let prevTime = "";
+  /** `LineBreak` 记在哪一小节**之后**，建完再翻成模型口径（`doc.ts::Print`） */
+  const breakAfterOf = new Map<Measure, BreakKind>();
 
   for (const jm of jp.measures) {
     let mea: Measure = { number: String(part.measures.length + 1), elements: [] };
@@ -116,7 +119,7 @@ function convertPart(jp: JpPart, index: number, ids: IdGen, marks: Mark[]): Part
         const target = mea.elements.length > 0
           ? mea
           : part.measures[part.measures.length - 1] ?? mea;
-        target.print = ent.newPage ? { newPage: true } : { newSystem: true };
+        breakAfterOf.set(target, ent.newPage ? "page" : "system");
         continue;
       }
       if (ent instanceof BarlineEntry) {
@@ -242,20 +245,28 @@ function convertPart(jp: JpPart, index: number, ids: IdGen, marks: Mark[]): Part
   // 留着它就永远不幂等。它携带的线并到后一小节前面即可。
   const merged: Measure[] = [];
   let carry: Barline[] = [];
+  let carryPrint: Measure["print"];
   for (const m of part.measures) {
     if (m.elements.length === 0) {
       for (const b of m.barlines ?? []) carry.push({ ...b, location: "left" });
-      // 空小节上的换行/换页要挂到**前一个**小节——`$` 的语义是「这一小节之后换行」，
-      // 跟着空小节一起丢掉的话，往返时换行位置会漂一格
-      if (m.print && merged.length) {
+      // 空小节**之后**的换行（`LineBreak`）挂到**前一个**小节——跟着空小节一起丢掉的话，
+      // 往返时换行位置会漂一格
+      const after = breakAfterOf.get(m);
+      if (after && merged.length) {
         const prev = merged[merged.length - 1]!;
-        prev.print = { ...(prev.print ?? {}), ...m.print };
+        if (breakAfterOf.get(prev) !== "page") breakAfterOf.set(prev, after);
       }
+      // 空小节**起**的新系统（MusicXML 的 `<print>`）顺延给下一个小节
+      if (m.print) carryPrint = { ...(carryPrint ?? {}), ...m.print };
       continue;
     }
     if (carry.length) {
       m.barlines = [...carry, ...(m.barlines ?? [])];
       carry = [];
+    }
+    if (carryPrint) {
+      m.print = { ...carryPrint, ...(m.print ?? {}) };
+      carryPrint = undefined;
     }
     merged.push(m);
   }
@@ -265,6 +276,7 @@ function convertPart(jp: JpPart, index: number, ids: IdGen, marks: Mark[]): Part
     last.barlines = [...(last.barlines ?? []), ...carry.map((b) => ({ ...b, location: "right" as const }))];
   }
   part.measures = merged;
+  breaksAfterToStart(part, breakAfterOf);
   for (let i = 0; i < part.measures.length; i++) part.measures[i]!.number = String(i + 1);
   return part;
 }

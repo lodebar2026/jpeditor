@@ -29,7 +29,8 @@ import type {
   Space,
   Sustain,
 } from "../model/doc";
-import { IdGen, degreeFromPitch, emptyDoc, emptySong } from "../model/helpers";
+import { IdGen, breaksAfterToStart, degreeFromPitch, emptyDoc, emptySong } from "../model/helpers";
+import type { BreakKind } from "../model/helpers";
 import {
   CJK_INSTRUCTION_ALIAS,
   parseFieldLine,
@@ -68,6 +69,8 @@ interface Ctx {
   len: DefaultLen;
   /** 见过显式 `L:` 没有——没见过时 `M:` 要按 ABC §3.1.7 反推默认音长。 */
   sawL: boolean;
+  /** `$` 记在哪一小节**之后**。一首收尾时经 `breaksAfterToStart` 翻成模型口径（`doc.ts::Print`） */
+  breakAfter: Map<Measure, BreakKind>;
 }
 
 function report(ctx: Ctx, code: string, message: string, source: SourceSpan): void {
@@ -662,7 +665,7 @@ function buildMusicLine(
         const target = pb.measure.elements.length > 0
           ? pb.measure
           : pb.part.measures[pb.part.measures.length - 1] ?? pb.measure;
-        target.print = t.value === "page" ? { newPage: true } : { newSystem: true };
+        ctx.breakAfter.set(target, t.value === "page" ? "page" : "system");
         break;
       }
 
@@ -818,6 +821,7 @@ export function parseAbcFamily(
     d: dialect,
     len: dialect.defaultLen(4, 4),
     sawL: false,
+    breakAfter: new Map(),
   };
 
   const lines = text.split(/\r?\n/);
@@ -859,6 +863,8 @@ export function parseAbcFamily(
     // 「两份实现一旦漂移，往返数字就会错」，所以不许在这里另写一份。
     // 反方向（度数 → 音高）留到 `ScoreDoc ↔ MusicXML` 直通那一轮一起补。
     if (ctx.d.id === "abc") fillDegreesFromPitch(song);
+    for (const part of song.parts) breaksAfterToStart(part, ctx.breakAfter);
+    ctx.breakAfter.clear();
     song.marks = marks;
     if (rawPlay.length) song.playOrder = resolvePlayOrder(song, rawPlay);
     doc.songs.push(song);
@@ -939,7 +945,7 @@ export function parseAbcFamily(
       const target = p.measure.elements.length > 0
         ? p.measure
         : p.part.measures[p.part.measures.length - 1];
-      if (target) target.print = { newSystem: true };
+      if (target && !ctx.breakAfter.has(target)) ctx.breakAfter.set(target, "system");
     }
   }
   finishSong();

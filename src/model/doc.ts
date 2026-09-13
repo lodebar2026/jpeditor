@@ -437,7 +437,13 @@ export interface Direction {
   source?: SourceSpan;
 }
 
-/** `<print>`：版面指示。123 的 `$`（换行）/ `$$`（换页）落在这里。 */
+/** `<print>`：版面指示。123 的 `$`（换行）/ `$$`（换页）落在这里。
+ *
+ *  **口径与 MusicXML 一致：`newSystem`/`newPage` 表示「本小节起新系统/新页」**。
+ *  源码里的 `$` 写在小节**之后**，解析器按「之后」收集、收尾时经
+ *  `helpers.ts::breaksAfterToStart` 统一翻成这个口径；写出端反向翻回去。
+ *  以前 123/文本谱/`.jpwabc` 那几路记「之后」、MusicXML 那一路记「起」，两套混用会把行结构错开一小节。
+ *  声部最后一小节之后的换行没有「下一小节」可挂，记在 `Part.endBreak`。 */
 export interface Print {
   newSystem?: boolean;
   newPage?: boolean;
@@ -473,6 +479,8 @@ export interface Part {
   /** [五线谱] 多谱表（钢琴谱） */
   staffCount?: number;
   measures: Measure[];
+  /** 最后一小节**之后**的换行/换页（123 行末的 `$`）。见 `Print` 的口径说明 */
+  endBreak?: "system" | "page";
   /** 见 `Measure.raw` */
   raw?: string[];
 }

@@ -22,6 +22,7 @@ import type {
   ScoreDoc,
   Song,
 } from "../model/doc";
+import { breakAfter } from "../model/helpers";
 
 export interface MarkIndex {
   slurStart: Map<number, number>;
@@ -303,7 +304,8 @@ export abstract class AbcFamilyEmitter {
       }
     }
 
-    for (const mea of part.measures) {
+    for (let i = 0; i < part.measures.length; i++) {
+      const mea = part.measures[i]!;
       // 左线可能有**多条**（`.jpwabc` 允许 `|:|` 连写），按顺序全部输出
       for (const left of (mea.barlines ?? []).filter((b) => b.location === "left")) {
         // 只有房号、没有实际线时不写线（`[1` 自己就是起点标记）
@@ -313,11 +315,10 @@ export abstract class AbcFamilyEmitter {
       out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }));
       const right = (mea.barlines ?? []).find((b) => b.location === "right");
       out.push(right ? barlineText(right) : "|");
-      const last = mea === part.measures[part.measures.length - 1];
-      if (!last || this.trailingBreak) {
-        if (mea.print?.newPage) out.push(this.breakText(true));
-        else if (mea.print?.newSystem) out.push(this.breakText(false));
-      }
+      // 模型记「下一小节起新系统」（`doc.ts::Print`），源码的 `$` 写在本小节之后
+      const last = i === part.measures.length - 1;
+      const brk = breakAfter(part, i);
+      if (brk && (!last || this.trailingBreak)) out.push(this.breakText(brk === "page"));
     }
     // 换行标记若是真换行，join 出来的两侧空格要收掉
     return out.filter((s) => s !== "").join(" ").replace(/ ?\n ?/g, "\n");
