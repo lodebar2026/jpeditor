@@ -76,6 +76,19 @@ export function phrasePartOfDoc(song: Song, partIndex = 0): PhraseDocView {
   return { part: { measures: measures as readonly PhraseMeasure[] }, idOf };
 }
 
+/** 跳转记号（Fine / D.C. / D.S. / To Coda）所在的小节下标（0 基）。**只取记号本身**，
+ *  `segno` / `coda` 是跳转的目标、不算（口径同 `rebuild.mjs` 读 `Score.playData.jumpTo`）。 */
+export function phraseJumpMeasures(song: Song, partIndex = 0): Set<number> {
+  const out = new Set<number>();
+  song.parts[partIndex]?.measures.forEach((m, i) => {
+    for (const d of m.directions ?? []) {
+      const s = d.sound;
+      if (s && (s.dacapo || s.dalsegno || s.fine || s.tocoda)) out.add(i);
+    }
+  });
+  return out;
+}
+
 /** 各声部各自累计的起拍（divisions）。倚音不占时值。 */
 function onsets(m: Measure): Map<Chord, number> {
   const pos = new Map<number, number>();
