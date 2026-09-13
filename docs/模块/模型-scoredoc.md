@@ -20,9 +20,9 @@
 
 | 模型 | 现在 | 终局 |
 |---|---|---|
-| **`ScoreDoc`**（`src/model/doc.ts`） | 文本谱/123/ABC/MusicXML 的排版与导出都吃它 | **唯一语义模型**，其余向它汇聚 |
-| `Score`（`src/score/score.ts`） | 简谱排版/MIDI/乐句断句吃它，**装不下力度/多声部**；和弦只在 MusicXML 进来那一路留得住 | 退役；排版改吃 `ScoreDoc` |
-| `MixedScore`（`src/mixed/model.ts`，2952 行） | 五线谱**语义 + 排版**混在一起（tenths） | 语义并入 `ScoreDoc`；`loader.ts` 只留排版 |
+| **`ScoreDoc`**（`src/model/doc.ts`） | 文本谱/123/ABC/MusicXML 的排版与导出都吃它 | **唯一的模型**；语义、MusicXML 版面坐标、断行都在这一层，断句也在这一层做 |
+| `Score`（`src/score/score.ts`） | 简谱排版/MIDI/乐句断句吃它，**装不下力度/多声部**；和弦只在 MusicXML 进来那一路留得住 | **删除**。过渡期只由 `ScoreDoc` 拼出以便双跑；终局简谱引擎直吃 `ScoreDoc`（见 [../待办.md](../待办.md) §3.1） |
+| `MixedScore`（`src/mixed/model.ts`，2952 行） | 五线谱**语义 + 排版**混在一起（tenths） | **删除模型**：语义字段去掉，版面态（`Sys`/`MPage`/`…Layout`）留作五线谱引擎内部结构、直接引用 `ScoreDoc` 元素；过渡期经 `mixed/fromdoc.ts` 拼出以便双跑 |
 | `PuDoc`（`src/pu/ast.ts`） | 只剩文本谱解析器产物（进 `ScoreDoc` 之前）与乐句重排（改写原文要列号） | 解析器直接产 `ScoreDoc` 后退役 |
 
 ## 入口
