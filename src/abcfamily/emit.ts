@@ -23,6 +23,7 @@ import type {
   Song,
 } from "../model/doc";
 import { breakAfter } from "../model/helpers";
+import { harmonyToText } from "../score/harmonyparse";
 
 export interface MarkIndex {
   slurStart: Map<number, number>;
@@ -348,7 +349,9 @@ export abstract class AbcFamilyEmitter {
       }
       let s = "";
       // 和弦符号前置（规范 §8.1）
-      if (el.harmony?.text) s += `"${el.harmony.text}"`;
+      // 从 MusicXML 读进来的和弦是结构化的（根音 + kind），没有原文就按结构拼出来
+      const chordText = el.harmony ? harmonyToText(el.harmony) : "";
+      if (chordText) s += `"${chordText}"`;
       // 段落词/注记走 ABC §4.19 的注记写法（`^` = 标在上方）
       // 增时线上的注记（文本谱 `- "…"`）123 挂不到 `-` 上，并到宿主音符写出（宿主自己没有时）
       const word = ch?.sectionWord ?? ch?.sustains?.find((su) => su.sectionWord !== undefined)?.sectionWord;

@@ -44,6 +44,27 @@ function numOf(parent: Element, tag: string): number {
   return t ? Number(t) || 0 : 0;
 }
 
+/** `ScoreDoc` 的结构化和弦（`model/doc.ts::Harmony`）→ 文本。口径同 `harmonyElemToText`，
+ *  升降号写 ASCII（`#`/`b`）——123/ABC 的和弦串认的是它。有原文 `text` 时直接用原文。 */
+export function harmonyToText(h: {
+  root: { step: string; alter: number };
+  kind: string;
+  kindText?: string;
+  bass?: { step: string; alter: number };
+  degrees?: { value: number; alter: number; type: "add" | "alter" | "subtract" }[];
+  text?: string;
+}): string {
+  if (h.text !== undefined) return h.text;
+  const sign = (v: number): string => (v > 0 ? "#".repeat(v) : v < 0 ? "b".repeat(-v) : "");
+  let out = h.root.step + sign(h.root.alter);
+  out += h.kindText?.trim() || KIND_SUFFIX[h.kind] || "";
+  for (const d of h.degrees ?? []) {
+    out += d.type === "subtract" ? `omit${d.value}` : d.type === "alter" ? `${sign(d.alter)}${d.value}` : `add${sign(d.alter)}${d.value}`;
+  }
+  if (h.bass) out += `/${h.bass.step}${sign(h.bass.alter)}`;
+  return out;
+}
+
 /** @returns 和弦文本；不是可用的和弦（无根音）时返回 null。 */
 export function harmonyElemToText(el: Element): string | null {
   const step = textOf(el, "root-step");

@@ -183,7 +183,7 @@ export function buildMusicXml(app: App): string {
 
 /** MusicXML 的共同收尾：解析校验 → 补版面 → 序列化 → 补回 XML 声明。
  *  XMLSerializer 不输出 XML 声明（DOCTYPE 会保留），不补回部分软件拒绝打开。 */
-function finishMusicXmlText(xml: string): string {
+export function finishMusicXmlText(xml: string): string {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   if (doc.querySelector("parsererror")) throw new Error("生成的 MusicXML 无法解析");
   annotateLayout(doc); // 分行沿用底本 <print>，版面参数用 A4 常量表
@@ -200,8 +200,13 @@ async function finishMusicXml(app: App, xml: string): Promise<void> {
   );
 }
 
-/** 文本谱/123/ABC → MusicXML。直接从 `ScoreDoc` 生成（不经 Score），和弦、力度、渐强渐弱都保住。 */
+/** 文本谱/123/ABC → MusicXML。直接从 `ScoreDoc` 生成（不经 Score），和弦、力度、渐强渐弱都保住。
+ *  `.musicxml` 那一档文档里就是 XML（原文或 `editScoreDoc` 整份重写过的），原样给出。 */
 export async function exportPuMusicXml(app: App): Promise<void> {
+  if (app.docFormat === "musicxml") {
+    await saveBytes(new TextEncoder().encode(app.getText()), `${baseName(app)}.musicxml`, MUSICXML_MIME);
+    return;
+  }
   const doc = app.currentScoreDoc();
   if (!doc) throw new Error("这份谱里没有可导出的曲行");
   await finishMusicXml(app, textScoreToMusicXml(doc));
@@ -287,6 +292,22 @@ const EXPORT_ITEMS: readonly ExportItem[] = [
   { label: "PPTX", available: isJp, run: exportPptx },
   { label: "MIDI", available: isJp, run: exportMidi },
   { label: "MusicXML", available: isJp, run: exportMusicXml },
+  // `.musicxml` 没有代码区：转成文本格式的**新文档**再编辑（原文件不动）
+  {
+    label: "转成 123 编辑",
+    available: (app) => app.docFormat === "musicxml",
+    run: (app) => app.convertToTextDoc("123"),
+  },
+  {
+    label: "转成 ABC 编辑",
+    available: (app) => app.docFormat === "musicxml",
+    run: (app) => app.convertToTextDoc("abc"),
+  },
+  {
+    label: "转成 JPWABC 编辑",
+    available: (app) => app.docFormat === "musicxml",
+    run: (app) => app.convertToTextDoc("jpwabc"),
+  },
   // 源格式之间的另存为。**保存前会列出目标格式装不下的东西**（`model/capability.ts`），
   // 确认了才写——这条路与上面那些「导出成别的媒介」不同，它换的是源格式本身。
   {

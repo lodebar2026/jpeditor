@@ -29,7 +29,7 @@ import type {
   Space,
   Sustain,
 } from "../model/doc";
-import { IdGen, breaksAfterToStart, degreeFromPitch, emptyDoc, emptySong } from "../model/helpers";
+import { IdGen, breaksAfterToStart, emptyDoc, emptySong, fillDegreesFromPitch } from "../model/helpers";
 import type { BreakKind } from "../model/helpers";
 import {
   CJK_INSTRUCTION_ALIAS,
@@ -701,22 +701,6 @@ function closeMeasure(ctx: Ctx, pb: PartBuild): void {
   pb.measure = { number: String(pb.measureNo), elements: [] };
   pb.noteCount = 0;
   void ctx;
-}
-
-/** 用绝对音高补出简谱度数。调号取本曲的 `K:`（缺省 C 大调）。 */
-function fillDegreesFromPitch(song: Song): void {
-  const key = song.key ?? { fifths: 0 };
-  for (const part of song.parts) {
-    for (const m of part.measures) {
-      for (const el of m.elements) {
-        if (el.kind !== "chord") continue;
-        for (const n of el.notes) {
-          if (n.degree || !n.pitch) continue;
-          n.degree = degreeFromPitch(n.pitch, m.attrs?.key ?? key, n.accidental);
-        }
-      }
-    }
-  }
 }
 
 /** 把 `I:playorder` 的「第几个音符」换成元素 id。 */
