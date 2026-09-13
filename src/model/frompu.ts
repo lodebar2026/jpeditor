@@ -29,7 +29,8 @@ import type {
   Sustain,
 } from "./doc";
 import { normalizeSpelling } from "../j123/fields";
-import { IdGen, emptyDoc, emptySong } from "./helpers";
+import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "./helpers";
+import type { BreakKind } from "./helpers";
 
 /** `PuDoc` 的 BarlineType → `ScoreDoc` 的 bar-style + repeat。 */
 function fromPuBarline(type: string): Barline {
@@ -348,6 +349,7 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
     const byVoice = new Map<number, Part>();
     const marks: Mark[] = [];
     const cross: CrossState = { pending: new Map() };
+    const breakAfterOf = new Map<Measure, BreakKind>();
     for (const page of ps.pages) {
       for (const group of page.groups) {
         // `W:` 说明性文字行（排在那组曲行上方）——`PuDoc` 放在 `VoiceGroup.texts`，
@@ -365,14 +367,15 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
           const r = convertLine(line, ids, part.measures.length + 1);
           attachLyrics(r.anchors, line.lyrics);
           convertMarks(line, r, marks, cross);
-          // 行尾换行：`PuDoc` 的行就是排版行
+          // 行尾换行：`PuDoc` 的行就是排版行。先按「之后」记，声部建完再翻口径
           const last = r.measures[r.measures.length - 1];
-          if (last) last.print = { newSystem: true };
+          if (last) breakAfterOf.set(last, "system");
           part.measures.push(...r.measures);
         }
       }
     }
     song.parts = [...byVoice.entries()].sort((a, b) => a[0] - b[0]).map(([, p]) => p);
+    for (const part of song.parts) breaksAfterToStart(part, breakAfterOf);
     song.marks = marks;
     doc.songs.push(song);
   }

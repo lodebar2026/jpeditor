@@ -153,11 +153,12 @@ function splitSystems(part: Part): Measure[][] {
   const rows: Measure[][] = [];
   let cur: Measure[] = [];
   for (const m of part.measures) {
-    cur.push(m);
-    if (m.print?.newSystem || m.print?.newPage) {
+    // 模型口径：带 `print` 的小节**起**新系统（`doc.ts::Print`）
+    if ((m.print?.newSystem || m.print?.newPage) && cur.length) {
       rows.push(cur);
       cur = [];
     }
+    cur.push(m);
   }
   if (cur.length) rows.push(cur);
   return rows.length ? rows : [[]];

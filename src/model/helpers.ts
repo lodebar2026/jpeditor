@@ -176,6 +176,46 @@ export function measureDuration(measure: Measure): number {
   return max;
 }
 
+// ───────────────────────── 换行口径 ─────────────────────────
+
+/** 换行种类。 */
+export type BreakKind = "system" | "page";
+
+/** 源码里「这一小节**之后**换行」→ 模型口径「下一小节**起**新系统」（见 `doc.ts::Print`）。
+ *
+ *  解析时按源码顺序只知道「之后」（`$` 写在小节线后面，下一小节还没建出来），
+ *  所以各解析器先把换行记进 `after`，整个声部建完后调这里一次性翻过去。
+ *  同一小节既有换行又有换页时换页为准。 */
+export function breaksAfterToStart(part: Part, after: ReadonlyMap<Measure, BreakKind>): void {
+  const ms = part.measures;
+  for (let i = 0; i < ms.length; i++) {
+    const kind = after.get(ms[i]!);
+    if (!kind) continue;
+    const next = ms[i + 1];
+    if (!next) {
+      if (part.endBreak !== "page") part.endBreak = kind;
+      continue;
+    }
+    const p = { ...(next.print ?? {}) };
+    if (kind === "page") {
+      p.newPage = true;
+      delete p.newSystem;
+    } else if (!p.newPage) {
+      p.newSystem = true;
+    }
+    next.print = p;
+  }
+}
+
+/** `breaksAfterToStart` 的反向：第 `i` 小节**之后**要不要换行（写出端用）。 */
+export function breakAfter(part: Part, i: number): BreakKind | null {
+  const next = part.measures[i + 1];
+  if (!next) return part.endBreak ?? null;
+  if (next.print?.newPage) return "page";
+  if (next.print?.newSystem) return "system";
+  return null;
+}
+
 // ───────────────────────── 构造 ─────────────────────────
 
 export const ZERO_SPAN: SourceSpan = { line: 0, column: 0, offset: 0, length: 0 };
