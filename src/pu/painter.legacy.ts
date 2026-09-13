@@ -1,3 +1,4 @@
+// 过渡件：阶段 3 改写前的 `PuPainter` 原样副本，只给 `scripts/pu-painter-dual.mjs` 双跑对照用。阶段 4 删。
 // 文本谱绘制：定位结构 → PageItem 树 → SVG。
 //
 // 复用本项目的 PageItem/Group/GraphicPath/GraphicLine/TextFrame 与 renderPageSvg，
@@ -6,10 +7,8 @@
 // 数字用系统字体按**墨迹居中**于步进锚点（字号由 digitInkHeight 反推），
 // 圆点与线段自绘——位置逐点对齐原版，字形则是规范字形。
 //
-// 入口只收 `ScoreDoc`：先经 `pu/slots.ts::docView` 线性化成排版行（排版几何都按行写成），再定位、绘制。
-//
-// 播放逐字高亮与双向定位：绘制时把每个音符与每个歌词音节的 PageItem 按**元素 id** 记进索引，
-// highlight() 直接按 id 取用，不必反查 SVG，也不依赖对象身份（重新解析一遍 id 不变）。
+// 播放逐字高亮：绘制时把每个音符与每个歌词音节的 PageItem 记进索引，
+// highlight() 直接按 AST 节点取用，不必反查 SVG。
 
 import { Font } from "../layout/font";
 import { graceGeometry } from "../common/gracenote";
@@ -21,10 +20,8 @@ import type { BarlineSpec } from "../layout/layout";
 import { BarStyle } from "../score/score";
 import { renderPageSvg } from "../layout/painter";
 import type { PagePainter } from "../layout/pagepainter";
-import type { Metadata, NoteElement } from "./ast";
-import { emptyMetadata } from "./ast";
-import type { ElementId, ScoreDoc } from "../model/doc";
-import { docView, type DocView } from "./slots";
+import type { LyricSyllable, Metadata, NoteElement, PuDoc } from "./ast";
+import { primaryMetadata } from "./ast";
 import {
   layoutDocument,
   noteInkBottom,
@@ -289,7 +286,7 @@ const PU_BARLINE_SPEC: Record<string, BarlineSpec | undefined> = {
  * 文本谱的「原样」档排版器（印刷原版的观感）。「展开」档不走这里：文本谱先转成 Score，
  * 与 `.jpwabc` 同走 `jianpu/expanded.ts::ExpandedPainter`。
  */
-export class PuPainter implements PagePainter {
+export class LegacyPuPainter implements PagePainter {
   metrics: PuMetrics;
   /** 与 JinpuPainter 同名，便于 buildPptx 等直接取用 */
   layout: { pages: Group[] } = { pages: [] };
@@ -297,16 +294,15 @@ export class PuPainter implements PagePainter {
   pageHeight = 0;
   nodeMap = new WeakMap<PageItem, SVGGElement>();
 
-  private doc: DocView | null = null;
+  private doc: PuDoc | null = null;
   private placed: PlacedScore | null = null;
   private digitFont!: Font;
   private _accFont: Font | null = null;
   /** 连续长图裁紧后，整页要平移多少（把墨迹推到左侧留白处） */
   private _pageShiftX = 0;
   /** 播放高亮索引：AST 节点 → 它所在页与 PageItem */
-  private noteItems = new Map<ElementId, { page: number; item: PageItem }>();
-  /** 键为 `${音符 id}:${段序}` */
-  private syllableItems = new Map<string, { page: number; item: PageItem }>();
+  private noteItems = new Map<NoteElement, { page: number; item: PageItem }>();
+  private syllableItems = new Map<LyricSyllable, { page: number; item: PageItem }>();
   private highlighted: PageItem[] = [];
 
   /** 编辑器面板上的手动设置（字号缩放 / 换纸 / 长图）。null = 全按档位的内置版式。 */
@@ -334,11 +330,10 @@ export class PuPainter implements PagePainter {
   }
 
   /** 这份文档在**不加手动字号**时的数字字号（pt）——面板拿它当「跟随版式」的默认值。 */
-  baseDigitFontSize(doc: ScoreDoc): number {
-    const view = docView(doc);
-    const meta0 = view.songs[0]?.metadata;
+  baseDigitFontSize(doc: PuDoc): number {
+    const meta0 = doc.songs[0]?.metadata;
     return digitFontSizeOf(
-      applyDocOptions(metricsFor(view.dialect), meta0?.fontSizes ?? [], meta0?.margins ?? []),
+      applyDocOptions(metricsFor(doc.dialect), meta0?.fontSizes ?? [], meta0?.margins ?? []),
     );
   }
 
@@ -352,8 +347,7 @@ export class PuPainter implements PagePainter {
   }
 
   /** 排一份文档并生成全部页面。 */
-  load(source: ScoreDoc): void {
-    const doc = docView(source);
+  load(doc: PuDoc): void {
     this.doc = doc;
     // 谱面自带的 `FontSize:` / `Margin:` 也要生效（真实语料里 `all=` 用得最多）
     const meta0 = doc.songs[0]?.metadata;
@@ -641,7 +635,7 @@ export class PuPainter implements PagePainter {
 
   private paintHeader(root: Group, songIndex: number, systemLeft: number): void {
     const m = this.metrics;
-    const meta = this.doc?.songs[songIndex]?.metadata ?? this.doc?.songs[0]?.metadata ?? emptyMetadata();
+    const meta = this.doc?.songs[songIndex]?.metadata ?? primaryMetadata(this.doc!);
     // 连续长图会按内容收窄页宽，所以居中/右对齐都要用**实际**页宽，不能用 metrics 里的纸张宽
     const centre = this.pageWidth / 2 - this._pageShiftX;
 
@@ -1079,8 +1073,7 @@ export class PuPainter implements PagePainter {
     this.paintOrnaments(g, note.ornaments, x, baseline, stackTop(note, this.metrics));
 
     root.add(g);
-    const id = this.doc?.idOf.get(note);
-    if (id !== undefined) this.noteItems.set(id, { page: pageIndex, item: g });
+    this.noteItems.set(note, { page: pageIndex, item: g });
   }
 
   /**
@@ -1364,8 +1357,7 @@ export class PuPainter implements PagePainter {
         rightEdge[verse] = Math.max(rightEdge[verse] ?? 0, x - bodyWidth / 2 + font.run(str).width);
       }
       root.add(g);
-      const owner = this.doc?.syllableOwner.get(syl);
-      if (owner !== undefined) this.syllableItems.set(`${owner}:${verse}`, { page: pageIndex, item: g });
+      this.syllableItems.set(syl, { page: pageIndex, item: g });
     });
   }
 
@@ -1380,17 +1372,20 @@ export class PuPainter implements PagePainter {
    * 高亮一个音符及其歌词音节（「动态谱」）。传 null 清除。
    * 返回它所在页号，便于调用方翻页。
    */
-  highlight(id: ElementId | null, verse = 0): number | null {
+  highlight(note: NoteElement | null, verse = 0): number | null {
     for (const item of this.highlighted) {
       this.nodeMap.get(item)?.classList.remove("playing");
     }
     this.highlighted = [];
-    if (id === null) return null;
-    const hit = this.noteItems.get(id);
+    if (!note) return null;
+    const hit = this.noteItems.get(note);
     if (!hit) return null;
     const targets: PageItem[] = [hit.item];
-    const sh = this.syllableItems.get(`${id}:${verse}`);
-    if (sh) targets.push(sh.item);
+    const syl = this.syllableOf(note, verse);
+    if (syl) {
+      const sh = this.syllableItems.get(syl);
+      if (sh) targets.push(sh.item);
+    }
     for (const item of targets) {
       this.nodeMap.get(item)?.classList.add("playing");
       this.highlighted.push(item);
@@ -1398,16 +1393,30 @@ export class PuPainter implements PagePainter {
     return hit.page;
   }
 
-  /** 按播放顺序列出全部音符的 id（第一声部为主旋律）。 */
-  playbackNotes(): ElementId[] {
-    const out: ElementId[] = [];
+  /** 某音符在第 verse 段的歌词音节。 */
+  syllableOf(note: NoteElement, verse = 0): LyricSyllable | null {
     for (const page of this.placed?.pages ?? []) {
       for (const group of page.groups) {
+        for (const voice of group.voices) {
+          for (const it of voice.items) {
+            if (it.element === note) return it.syllables[verse] ?? null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /** 按播放顺序列出全部音符（供播放器驱动高亮）。 */
+  playbackNotes(): NoteElement[] {
+    const out: NoteElement[] = [];
+    for (const page of this.placed?.pages ?? []) {
+      for (const group of page.groups) {
+        // 多声部时以第一声部为主旋律
         const voice = group.voices[0];
         if (!voice) continue;
         for (const it of voice.items) {
-          const id = it.element.kind === "note" ? this.doc?.idOf.get(it.element) : undefined;
-          if (id !== undefined) out.push(id);
+          if (it.element.kind === "note") out.push(it.element);
         }
       }
     }
@@ -1415,20 +1424,22 @@ export class PuPainter implements PagePainter {
   }
 
   /** 某音符的 SVG 节点（滚动到可视区用）。 */
-  noteGroupEl(id: ElementId): SVGGElement | null {
-    const hit = this.noteItems.get(id);
+  noteGroupEl(note: NoteElement): SVGGElement | null {
+    const hit = this.noteItems.get(note);
     return hit ? (this.nodeMap.get(hit.item) ?? null) : null;
   }
 
   /** 某音符第 verse 段歌词音节的 SVG 节点（编辑器的双向定位用，见 `editor/sync.ts`）。 */
-  syllableGroupEl(id: ElementId, verse = 0): SVGGElement | null {
-    const hit = this.syllableItems.get(`${id}:${verse}`);
+  syllableGroupEl(note: NoteElement, verse = 0): SVGGElement | null {
+    const syl = this.syllableOf(note, verse);
+    if (!syl) return null;
+    const hit = this.syllableItems.get(syl);
     return hit ? (this.nodeMap.get(hit.item) ?? null) : null;
   }
 
   /** 某音符在第几页（双向定位要翻页）。 */
-  pageOfNote(id: ElementId): number | null {
-    return this.noteItems.get(id)?.page ?? null;
+  pageOfNote(note: NoteElement): number | null {
+    return this.noteItems.get(note)?.page ?? null;
   }
 
   /** 定位结构（回归脚本核对几何用）。 */

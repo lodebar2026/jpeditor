@@ -5,9 +5,9 @@
 //
 // ## 为什么在这一层
 //
-// 索引建在 **AST 的 `source: SourceSpan`** 上——每个音符、每个歌词音节解析时就记了它在
-// 原文里的位置。`PuDoc` 与 `ScoreDoc` 都有这一份（123 经 `model/topu.ts` 转过来时照样带着），
-// 所以文本谱与 123 两档共用同一套代码。
+// 索引建在 **`ScoreDoc` 的 `source: SourceSpan`** 上——每个音符、每个歌词音节解析时就记了它在
+// 原文里的位置（文本谱经 `model/frompu.ts` 转来时照样带着）。文本谱、123、ABC 三档共用同一套代码。
+// 条目按**元素 id** 认，谱面那一侧（`PuPainter.noteGroupEl(id)` / 展开档经 Score 的和弦）也按 id 取。
 //
 // **不进 `PagePainter` 接口**：架构 §3.1 明写「高亮不在接口里——三者语义不同」。
 // 这里只用各排版器已有的公开取元素方法（`noteGroupEl` / `chordGroupEl`），
@@ -15,12 +15,11 @@
 //
 // ## 歌词音节怎么配到音符
 //
-// 与 `pu/layout.ts::assignLyrics` 同一条规则：一行曲里按 `takesLyric(el)` 走，
-// 逐个配 `line.syllables[cursor++]`。**这条规则不要在别处再写第四遍**——
-// `layout.ts`、`toscore.ts`、`toxml.ts` 已经各有一份，再漂移就对不上位了。
+// 走排版行视图（`pu/slots.ts::docView`）：音节配给哪个音符在视图里已经定好（`syllableOwner`），
+// 与排版器、`Score` 转换用的是**同一份**，不在这里另算。
 
-import type { LyricSyllable, MusicElement, NoteElement, PuDoc, SourceSpan } from "../pu";
-import { takesLyric } from "../pu/ast";
+import type { ElementId, ScoreDoc, SourceSpan } from "../model/doc";
+import { docView } from "../pu/slots";
 
 /** 索引里的一条：原文的一段 ↔ 谱面上的一个东西。 */
 export interface SyncEntry {
@@ -28,7 +27,7 @@ export interface SyncEntry {
   from: number;
   to: number;
   /** 挂在哪个音符上（歌词音节也归到它跟的那个音符） */
-  note: NoteElement;
+  id: ElementId;
   /** 命中的是第几段歌词（0 基）；命中的是音符本身时为 null */
   verse: number | null;
 }
@@ -39,47 +38,41 @@ const spanEnd = (s: SourceSpan): number => s.offset + s.length;
 export class SyncIndex {
   /** 按 `from` 升序；同起点时短的在前（歌词音节的区间比曲行短） */
   private entries: SyncEntry[] = [];
-  /** 音符 → 它自己那条（`verse === null`） */
-  private byNote = new Map<NoteElement, SyncEntry>();
+  /** 音符 id → 它自己那条（`verse === null`） */
+  private byNote = new Map<ElementId, SyncEntry>();
 
   get size(): number {
     return this.entries.length;
   }
 
-  /** 从 AST 重建。文本一变就要重建——偏移全变了。 */
-  build(doc: PuDoc): void {
+  /** 从模型重建。文本一变就要重建——偏移全变了。 */
+  build(doc: ScoreDoc): void {
+    const view = docView(doc);
     const out: SyncEntry[] = [];
     this.byNote.clear();
-    for (const song of doc.songs) {
+    for (const song of view.songs) {
       for (const page of song.pages) {
         for (const group of page.groups) {
-          for (const voice of group.voices) {
-            const anchors: MusicElement[] = voice.elements.filter(takesLyric);
-            for (const el of voice.elements) {
+          for (const row of group.voices) {
+            for (const el of row.elements) {
               if (el.kind !== "note") continue;
-              const e: SyncEntry = {
-                from: el.source.offset,
-                to: spanEnd(el.source),
-                note: el,
-                verse: null,
-              };
+              const id = view.idOf.get(el);
+              if (id === undefined) continue;
+              const e: SyncEntry = { from: el.source.offset, to: spanEnd(el.source), id, verse: null };
               // 零长区间（转换来的元素可能没有真实 span）不进索引：二分会退化成乱命中
               if (e.to > e.from) {
                 out.push(e);
-                this.byNote.set(el, e);
+                this.byNote.set(id, e);
               }
             }
-            // 歌词：与 `layout.ts::assignLyrics` 同一条配位规则
-            voice.lyrics.forEach((line, verse) => {
-              line.syllables.forEach((syl: LyricSyllable, i) => {
-                const anchor = anchors[i];
-                if (!anchor || anchor.kind !== "note") return;
-                if (syl.text.length === 0) return; // 空音节是「跳过一个音符」，没有原文可指
+            row.lyrics.forEach((line, verse) => {
+              for (const syl of line.syllables) {
+                if (syl.text.length === 0) continue; // 空音节是「跳过一个音符」，没有原文可指
+                const id = view.syllableOwner.get(syl);
+                if (id === undefined || view.elementOf.get(id)?.kind !== "note") continue;
                 const to = spanEnd(syl.source);
-                if (to > syl.source.offset) {
-                  out.push({ from: syl.source.offset, to, note: anchor, verse });
-                }
-              });
+                if (to > syl.source.offset) out.push({ from: syl.source.offset, to, id, verse });
+              }
             });
           }
         }
@@ -131,7 +124,7 @@ export class SyncIndex {
   }
 
   /** 一个音符对应的原文区间（谱面 → 文本用）。 */
-  spanOfNote(note: NoteElement): { from: number; to: number } | null {
-    return this.byNote.get(note) ?? null;
+  spanOfNote(id: ElementId): { from: number; to: number } | null {
+    return this.byNote.get(id) ?? null;
   }
 }

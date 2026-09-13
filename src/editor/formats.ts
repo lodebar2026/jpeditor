@@ -16,8 +16,8 @@ import { j123Highlighter } from "../j123/highlight";
 import { decodeJpwabc, encodeJpwabc } from "./fileio";
 import { parsePu } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
-import { scoreDocToPu } from "../pu/slots";
-import type { PuDoc } from "../pu";
+import { puToScoreDoc } from "../model/frompu";
+import type { ScoreDoc } from "../model/doc";
 
 /** 可编辑的源格式。阶段 4 加 `"musicxml"`。 */
 export type DocFormatId = "jpwabc" | "pu" | "123" | "abc";
@@ -44,9 +44,9 @@ export interface FormatCaps {
   mixed: boolean;
   /** 整篇简繁转换（`convertJpwabc` 认的是 `.Title`/`.Words` 段结构）。 */
   hanConvert: boolean;
-  /** 谱面经 `PuDoc` 那条路渲染（原样档走 `PuPainter`、展开档先转 `Score`）。
-   *  **过渡期的桥**：123 借它取排版，阶段 5 直通做完后这一位跟着 `topu.ts` 一起消失。 */
-  viaPuDoc: boolean;
+  /** 谱面走哪套排版：`scoredoc` = 解析成 `ScoreDoc` 后原样档走 `PuPainter`、展开档经 `scoreDocToScore`
+   *  （文本谱、123、ABC）；`jpwabc` = `.jpwabc` 自己的 `Score` 排版器。 */
+  layout: "scoredoc" | "jpwabc";
   /** 乐句重排（`pu/relayout.ts` 重排的是文本谱原文，认的是文本谱语法）。 */
   phraseRelayout: boolean;
 }
@@ -71,8 +71,8 @@ export interface FormatAdapter {
   caps: FormatCaps;
   /** 解析 → 排版 → 渲染。失败返回 false（文本保留不动）。 */
   reload(host: FormatHost, text: string): boolean;
-  /** 过渡期：这种格式怎么得到一份 `PuDoc`（`caps.viaPuDoc` 为真时必须给）。 */
-  toPuDoc?(text: string): PuDoc;
+  /** 这种格式怎么得到一份 `ScoreDoc`（`caps.layout === "scoredoc"` 时必须给）。 */
+  toScoreDoc?(text: string): ScoreDoc;
 }
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -90,7 +90,7 @@ const JPWABC: FormatAdapter = {
   label: () => "JPWABC",
   title: (host) => host.painterTitle.split("\n")[0] ?? "",
   profileKnob: "jp",
-  caps: { mixed: true, hanConvert: true, viaPuDoc: false, phraseRelayout: false },
+  caps: { mixed: true, hanConvert: true, layout: "jpwabc", phraseRelayout: false },
   reload: (host, text) => host.reloadJpwabc(text),
 };
 
@@ -113,12 +113,12 @@ const PU: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, viaPuDoc: true, phraseRelayout: true },
+  caps: { mixed: false, hanConvert: false, layout: "scoredoc", phraseRelayout: true },
   reload: (host, text) => host.reloadPu(text),
-  toPuDoc: parsePu,
+  toScoreDoc: (text) => puToScoreDoc(parsePu(text)),
 };
 
-/** 123 —— 简谱主格式。原生解析直出 `ScoreDoc`；排版在阶段 5 直通做完前借 `PuDoc` 那条路。
+/** 123 —— 简谱主格式。原生解析直出 `ScoreDoc`；排版直接吃 `ScoreDoc`。
  *  档位旋钮跟文本谱同一个（`puProfile`）：两者都走 `PuPainter`/`ExpandedPainter` 这一对。 */
 const J123: FormatAdapter = {
   id: "123",
@@ -137,9 +137,9 @@ const J123: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, viaPuDoc: true, phraseRelayout: false },
+  caps: { mixed: false, hanConvert: false, layout: "scoredoc", phraseRelayout: false },
   reload: (host, text) => host.reload123(text),
-  toPuDoc: (text) => scoreDocToPu(parse123(text)),
+  toScoreDoc: parse123,
 };
 
 /** ABC —— 与 123 同源的那一支（123 是 ABC 方言）。**原生解析直出 `ScoreDoc`**，
@@ -163,9 +163,9 @@ const ABC: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, viaPuDoc: true, phraseRelayout: false },
+  caps: { mixed: false, hanConvert: false, layout: "scoredoc", phraseRelayout: false },
   reload: (host, text) => host.reloadAbc(text),
-  toPuDoc: (text) => scoreDocToPu(parseAbc(text)),
+  toScoreDoc: parseAbc,
 };
 
 export const FORMATS: Record<DocFormatId, FormatAdapter> = {
