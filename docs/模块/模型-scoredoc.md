@@ -39,6 +39,8 @@
 | `src/model/frompu.ts` | ← `PuDoc`（**无损**：文本谱的全部排版信息都进来，`pu-scoredoc-check` 全语料逐字段还原零差异） |
 | `src/pu/slots.ts` | → **排版行视图**（`docView`）：线性化规则只写一次，排版器/`scoreDocToScore`/双向定位共用；行里每个符号带 `ElementId` |
 | `src/model/fromscore.ts` | ← `Score`（`.jpwabc` / MusicXML 迁移） |
+| `src/model/phrasedoc.ts` / `src/pu/phrasesong.ts` | 断句输入（MusicXML 形状 / 简谱形状），同一份小节视图也满足演唱顺序的输入 |
+| `src/model/playdoc.ts` / `src/pu/playsong.ts` | **演唱顺序**（`PlayData`）：反复、房号、跳转、多段歌词逐段、`Song.playOrder`；推理本体在 `score/playorder.ts`。`playorder-check --dual` 与 `Score` 那份双跑 |
 | `src/model/capability.ts` | **格式能力表**：每种格式装得下什么 + `planSave`（另存为会丢什么） |
 
 Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli`）。
