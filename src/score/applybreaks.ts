@@ -43,6 +43,46 @@ function insertAfter(m: Measure, c: Chord, newPage: boolean): void {
 }
 
 /**
+ * **过渡期**（`docs/待办.md` §3.1 阶段 5→9）：断句在 `ScoreDoc` 拼出的输入上跑，引擎仍吃 `Score`。
+ * 两份输入按小节、和弦次序配对（`scripts/phrase-dual-check.mjs` 保证逐项一致），对不上直接抛错，不静默。
+ * 返回「断句输入的和弦 → `Score` 的和弦」。阶段 9 引擎直吃 `ScoreDoc` 后删。
+ */
+export function pairWithScore(part: Part, input: PhrasePart): Map<PhraseChord, Chord> {
+  if (part.measures.length !== input.measures.length) {
+    throw new Error(`断句输入与 Score 小节数对不上：${input.measures.length} / ${part.measures.length}`);
+  }
+  const out = new Map<PhraseChord, Chord>();
+  part.measures.forEach((m, i) => {
+    const a = m.entries.filter((e): e is Chord => e instanceof Chord);
+    const b = chordsOf(input.measures[i]!);
+    if (a.length !== b.length) throw new Error(`断句输入与 Score 第 ${i + 1} 小节和弦数对不上：${b.length} / ${a.length}`);
+    b.forEach((c, k) => out.set(c, a[k]!));
+  });
+  return out;
+}
+
+/** `FitMetric` 换键：引擎按 `Score` 和弦量出来的，换成断句输入的和弦（`pairWithScore` 的反向）。 */
+export function fitForInput(fit: FitMetric, pair: ReadonlyMap<PhraseChord, Chord>): FitMetric {
+  const spans = new Map<PhraseChord, { x0: number; x1: number }>();
+  for (const [c, sc] of pair) {
+    const sp = fit.spans.get(sc);
+    if (sp) spans.set(c, sp);
+  }
+  return { width: fit.width, spans };
+}
+
+/** 在断句输入上算出的断点写回 `Score`（换键后照 `applyPhraseBreaks`）。 */
+export function applyPhraseBreaksToScore(part: Part, breaks: PhraseBreaks, pair: ReadonlyMap<PhraseChord, Chord>,
+  opt: ApplyBreakOptions = {}): ApplyBreakResult {
+  const map = <T>(set: ReadonlySet<PhraseChord>): Set<T> => new Set([...set].map((c) => pair.get(c) as T));
+  return applyPhraseBreaks(part, {
+    ...breaks,
+    midBreaks: map(breaks.midBreaks),
+    sectionCutChords: map(breaks.sectionCutChords),
+  }, opt);
+}
+
+/**
  * @param part   一般是 score.parts[0]
  * @param breaks computePhraseBreaks(part) 的结果
  */

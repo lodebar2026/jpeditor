@@ -494,6 +494,8 @@ function readDirection(el: Element): Direction | null {
     if (sg) s.segno = sg;
     const cd = sound.getAttribute("coda");
     if (cd) s.coda = cd;
+    const tc = sound.getAttribute("tocoda");
+    if (tc) s.tocoda = tc;
     const tp = sound.getAttribute("tempo");
     if (tp) s.tempo = Number(tp);
     if (Object.keys(s).length) d.sound = s;
