@@ -4,10 +4,12 @@
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { jpwHighlighter } from "./highlight";
-import { puHighlighter } from "../pu/highlight";
 import { PuPainter } from "../pu/painter";
 import { parsePu, puToScore, relayoutPuText, sniffDialect, dialectSpec, type Dialect } from "../pu";
+import { parse123, parseAbc } from "../j123/parse";
+import { eachChord } from "../model/helpers";
+import { scoreDocToPu } from "../model/topu";
+import type { ScoreDoc } from "../model/doc";
 import type { Chord, Score } from "../score/score";
 import type { NoteElement as PuNoteElement, PuDoc } from "../pu";
 import type { PuUserOptions } from "../pu/metrics";
@@ -25,8 +27,17 @@ import type { FitMeasure } from "../pu/phrase";
 import { abcToMusicXml } from "../abc/abc2xml";
 import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
-import { decodeJpwabc, encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
-import { DOC_EXT, acceptAttr, isPuFile } from "../common/filetypes";
+import { isTauriRuntime, saveBytes } from "./fileio";
+import { DOC_EXT, acceptAttr, is123File, isPuFile } from "../common/filetypes";
+import { formatOf, type DocFormatId, type FormatAdapter, type FormatHost } from "./formats";
+import { SyncIndex, type SyncEntry } from "./sync";
+import { describeLosses, planSave, type TargetFormat } from "../model/capability";
+import { showConfirmDialog } from "./dialogs";
+import { buildMusicXml } from "./export";
+import { emit123 } from "../j123/emit";
+import { emitAbc } from "../abcfamily/emitabc.entry";
+import { puToScoreDoc } from "../model/frompu";
+import { scoreToScoreDoc } from "../model/fromscore";
 import { MixedPainter } from "../mixed/painter";
 import { PlaybackController, type PlaybackHost } from "./playback";
 import { OmrController, type OmrHost } from "./omrctl";
@@ -85,7 +96,7 @@ export type ViewMode = JianpuLayoutMode | "staff" | "mixed";
 
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 
-export class App implements OmrHost, PlaybackHost {
+export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 简谱排版器：展开档是 ExpandedPainter（两种格式共用），`.jpwabc` 原样档是 JinpuPainter。
    *  文本谱原样档另走 `_puPainter`，那时这个闲着。 */
   painter: ExpandedPainter | JinpuPainter;
@@ -95,8 +106,9 @@ export class App implements OmrHost, PlaybackHost {
   pageIndex = 0;
   filePath: string | null = null;
   mode: "jp" | "mixed" | "recognize" = "jp";
-  /** 当前编辑的是哪种源格式：`.jpwabc` 还是文本谱（番茄 / 诗歌本）。 */
-  docFormat: "jpwabc" | "pu" = "jpwabc";
+  /** 当前编辑的是哪种源格式。每种格式的差异全在 `editor/formats.ts` 的适配器表里，
+   *  **不要在这里再长出 `docFormat === …` 的三目式**。 */
+  docFormat: DocFormatId = "jpwabc";
   /** 文本谱当前的排版输出：`slide` = 展开、`print` = 原样（名字沿用存量设置）。 */
   puProfile: "print" | "slide" = "slide";
   /** 简谱版面档：`normal` = 当前观感；`pptx` = 排版重构之前的笔画（导出 PPTX 用的那一档）。 */
@@ -118,7 +130,20 @@ export class App implements OmrHost, PlaybackHost {
     score: Score | null;
     noteMap: Map<Chord, PuNoteElement>;
   } | null = null;
-  private _puHighlightCompartment = new Compartment();
+  private _highlightCompartment = new Compartment();
+
+  // ---- 双向定位（代码区光标 ↔ 谱面元素，见 editor/sync.ts）----
+  private _sync = new SyncIndex();
+  /** 谱面 `<g>` → 索引条目（点谱面时从事件目标往上找） */
+  private _syncEls = new Map<Element, SyncEntry>();
+  /** 条目 → 谱面 `<g>`（光标移动时直接取） */
+  private _syncElOf = new Map<SyncEntry, SVGGElement>();
+  /** 当前被光标点亮的那些 `<g>` */
+  private _syncMarked: Element[] = [];
+  /** 防回环：两条方向互相触发时，被动的那一侧不要再反推一次 */
+  private _syncing = false;
+  /** 展开档：AST 音符 → Score 和弦（`_puScoreCache.noteMap` 的反向） */
+  private _noteToChord: Map<PuNoteElement, Chord> | null = null;
 
   mixedXmlText: string | null = null;
   private _mixedPainter: MixedPainter | null = null;
@@ -314,7 +339,7 @@ export class App implements OmrHost, PlaybackHost {
     this._applyPageBg();
     this._syncViewModeButtons();
     this.saveSettings();
-    if (this.docFormat !== "pu") this.reload(this.getText());
+    if (this.adapter.profileKnob === "jp") this.reload(this.getText());
   }
 
   /** Apply page-size / font-size / title-size / credit-size / color render settings and re-render. */
@@ -451,6 +476,9 @@ export class App implements OmrHost, PlaybackHost {
         this.omr.remapMeta((m) => mapMeta(m, u.changes));
         this.scheduleReload();
       }
+      // 光标/选区一动就同步到谱面。文档改了不在这里同步——索引还是旧偏移，
+      // 等 reload 重建完索引再由 _buildSync 刷一次。
+      if (u.selectionSet && !u.docChanged) this._syncCursorToScore();
     });
     this.view = new EditorView({
       parent,
@@ -460,7 +488,7 @@ export class App implements OmrHost, PlaybackHost {
           lineNumbers(),
           history(),
           keymap.of([...defaultKeymap, ...historyKeymap]),
-          this._puHighlightCompartment.of(jpwHighlighter),
+          this._highlightCompartment.of(this.adapter.highlighter),
           updateListener,
           this._readOnlyCompartment.of(EditorState.readOnly.of(false)),
           EditorView.lineWrapping,
@@ -501,7 +529,11 @@ export class App implements OmrHost, PlaybackHost {
   reload(text: string): boolean {
     // 混排/识别模式：谱面区显示各自专属视图，编辑文本不重排冲掉它。
     if (this.mode !== "jp") return true;
-    if (this.docFormat === "pu") return this.reloadPu(text);
+    return this.adapter.reload(this, text);
+  }
+
+  /** FormatHost：`.jpwabc` 解析 → 排版 → 渲染。 */
+  reloadJpwabc(text: string): boolean {
     let f: JpwFile | null;
     try {
       f = JpwFile.fromString(text);
@@ -534,7 +566,7 @@ export class App implements OmrHost, PlaybackHost {
 
   /** 文本谱（番茄 / 诗歌本）：解析 → 排版 → 渲染。展开档先转成 Score、与 `.jpwabc` 同一个排版器；
    *  原样档走文本谱专用的 PuPainter（印刷原版的观感）。 */
-  private reloadPu(text: string): boolean {
+  reloadPu(text: string): boolean {
     let doc;
     try {
       doc = parsePu(text);
@@ -550,6 +582,7 @@ export class App implements OmrHost, PlaybackHost {
     }
     this._puDoc = { text, doc };
     this._puScoreCache = null; // 文本变了，Score 与 noteMap 都要重建
+    this._noteToChord = null;
     // 乐句重排：**用户手改过的文本就是新的「原样」基准**（切回按钮要还原到它）。
     // 重排后又手改的，也按「这就是新的原样」算——否则一按「原样」就把用户后来的编辑抹了。
     if (this._phraseOn && text !== this._phraseText) {
@@ -560,13 +593,110 @@ export class App implements OmrHost, PlaybackHost {
     this._setPhraseAvailable(true);
     this._puDialect = doc.dialect;
     this._syncFormatLabel();
+    if (!this._layoutViaPu(doc, "文本谱")) return false;
+    // 解析告警不拦排版，但要让用户看得见（谱面往往仍然是对的）
+    this._reportDiagnostics(dialectSpec(doc.dialect).name, doc.diagnostics);
+    return true;
+  }
+
+  /** FormatHost：`.123`（简谱主格式）解析 → 排版 → 渲染。
+   *
+   *  原生解析直出 `ScoreDoc`，**排版是借的**：过渡期经 `model/topu.ts` 转成 `PuDoc`，
+   *  与文本谱共用同一对排版器（原样档 `PuPainter` / 展开档 `ExpandedPainter`）。
+   *  阶段 5 的 `ScoreDoc ↔ MusicXML` 直通做完后这座桥连同 `topu.ts` 一起拆掉。 */
+  reload123(text: string): boolean {
+    let doc: ScoreDoc;
+    try {
+      doc = parse123(text);
+    } catch (e) {
+      console.error("123 解析失败", e);
+      this.setStatus("123 解析失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    const fatal = doc.diagnostics.find((d) => d.severity === "error");
+    if (fatal) {
+      this.setStatus(`123 无法解析：第 ${fatal.source.line + 1} 行 ${fatal.message}`);
+      return false;
+    }
+    let pu: PuDoc;
+    try {
+      pu = scoreDocToPu(doc);
+    } catch (e) {
+      console.error("123 转排版模型失败", e);
+      this.setStatus("123 转排版模型失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    this._puDoc = { text, doc: pu };
+    this._puScoreCache = null; // 文本变了，Score 与 noteMap 都要重建
+    this._noteToChord = null;
+    // 乐句重排认的是文本谱语法（`pu/relayout.ts` 重排的是原文本身），123 这一档不给
+    this._disablePhrase();
+    this._syncFormatLabel();
+    if (!this._layoutViaPu(pu, "123")) return false;
+    this._reportDiagnostics("123", doc.diagnostics);
+    return true;
+  }
+
+  /** FormatHost：`.abc` 解析 → 排版 → 渲染。
+   *
+   *  **原生解析直出 `ScoreDoc`**（`parseAbc`），不经 `abc2xml → MusicXML` 转一手——
+   *  那条路把源字符偏移丢光了，双向定位最多到小节级、往返也只能「原文或全量重写」二选一。
+   *  原生解析读不出音符时**自动回落 abc2xml**（只读，提示降级），沿用项目既有的兜底模式。 */
+  reloadAbc(text: string): boolean {
+    let doc: ScoreDoc;
+    try {
+      doc = parseAbc(text);
+    } catch (e) {
+      console.error("ABC 解析失败", e);
+      return this._reloadAbcFallback(text, e instanceof Error ? e.message : String(e));
+    }
+    const notes = doc.songs.reduce((n, song) => n + [...eachChord(song)].length, 0);
+    if (notes === 0) return this._reloadAbcFallback(text, "原生解析没读出音符");
+    let pu: PuDoc;
+    try {
+      pu = scoreDocToPu(doc);
+    } catch (e) {
+      console.error("ABC 转排版模型失败", e);
+      return this._reloadAbcFallback(text, e instanceof Error ? e.message : String(e));
+    }
+    this._puDoc = { text, doc: pu };
+    this._puScoreCache = null;
+    this._noteToChord = null;
+    this._disablePhrase();
+    this._syncFormatLabel();
+    if (!this._layoutViaPu(pu, "ABC")) return false;
+    this._reportDiagnostics("ABC", doc.diagnostics);
+    return true;
+  }
+
+  /** 原生 ABC 读不动时回落 `abc2xml`：转成 MusicXML 走既有那条路，谱面照样看得到，
+   *  但双向定位降到小节级、存回原文只能原样。**只在这条路上提示降级**。 */
+  private _reloadAbcFallback(text: string, why: string): boolean {
+    try {
+      const xml = abcToMusicXml(text);
+      const score = loadMusicXml(xml);
+      this.mixedXmlText = xml;
+      this._layoutScore(score, null);
+      this.renderPages();
+      this.setStatus(`ABC 原生解析未成功（${why}），已回落 abc2xml——谱面可看，定位只到小节`);
+      return true;
+    } catch (e) {
+      console.error("ABC 回落也失败", e);
+      this.setStatus("ABC 解析失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+  }
+
+  /** 经 `PuDoc` 那条路排版并铺页（文本谱与 123 共用）：
+   *  展开档先转 `Score`、与 `.jpwabc` 同一个排版器；原样档走 `PuPainter`（印刷原版的观感）。 */
+  private _layoutViaPu(doc: PuDoc, what: string): boolean {
     try {
       if (this.layoutMode === "expanded") {
         this._puPainter = null;
         // 试听、点选与高亮认的都是这同一份 Score 对象（puScore 有缓存）
         const score = this.puScore();
         if (!score) {
-          this.setStatus("这份文本谱里没有可排的曲行");
+          this.setStatus(`这份${what}里没有可排的曲行`);
           return false;
         }
         this._layoutScore(score, null);
@@ -576,21 +706,165 @@ export class App implements OmrHost, PlaybackHost {
         this._puPainter.load(doc);
       }
     } catch (e) {
-      console.error("文本谱排版失败", e);
-      this.setStatus("文本谱排版失败：" + (e instanceof Error ? e.message : String(e)));
+      console.error(`${what}排版失败`, e);
+      this.setStatus(`${what}排版失败：` + (e instanceof Error ? e.message : String(e)));
       return false;
     }
     if (this._puPainter) this.renderPuPages();
     else this.renderPages();
-    // 解析告警不拦排版，但要让用户看得见（谱面往往仍然是对的）
-    const warns = doc.diagnostics.length;
-    this.setStatus(
-      warns === 0
-        ? ""
-        : `${dialectSpec(doc.dialect).name}：${warns} 处需要留意` +
-            `（第 ${doc.diagnostics[0]!.source.line + 1} 行 ${doc.diagnostics[0]!.message}）`,
-    );
+    this._buildSync(doc);
     return true;
+  }
+
+  // ---------------- 双向定位（代码区光标 ↔ 谱面元素）----------------
+
+  /** 重建索引与「条目 ↔ 谱面 `<g>`」两张反查表。**每次重排后都要建**——页面节点全换了。 */
+  private _buildSync(doc: PuDoc): void {
+    this._sync.build(doc);
+    this._syncEls.clear();
+    this._syncElOf.clear();
+    this._syncMarked = [];
+    for (const entry of this._sync.all()) {
+      const el = this._syncGroupEl(entry);
+      if (!el) continue;
+      this._syncElOf.set(entry, el);
+      // 展开档里音符与它的歌词共用一个 `<g>`，先来的音符条目占住它（`all()` 已排好序）
+      if (!this._syncEls.has(el)) this._syncEls.set(el, entry);
+    }
+    this._syncCursorToScore();
+  }
+
+  /** 一个条目对应的谱面 `<g>`：原样档问 `PuPainter`，展开档经 Score 的和弦问排版器。 */
+  private _syncGroupEl(entry: SyncEntry): SVGGElement | null {
+    const p = this._puPainter;
+    if (p) {
+      return entry.verse === null
+        ? p.noteGroupEl(entry.note)
+        : p.syllableGroupEl(entry.note, entry.verse);
+    }
+    const chord = this._chordOfNote(entry.note);
+    return chord ? this.painter.chordGroupEl(chord, entry.verse ?? 0) : null;
+  }
+
+  /** 展开档：AST 音符 → Score 和弦（`puScore` 建的 noteMap 的反向，用时才建）。 */
+  private _chordOfNote(note: PuNoteElement): Chord | null {
+    if (!this._noteToChord) {
+      const m = new Map<PuNoteElement, Chord>();
+      // puScore() 会填 _puScoreCache；展开档下它与谱面是同一份 Score
+      this.puScore();
+      for (const [chord, n] of this._puScoreCache?.noteMap ?? []) if (!m.has(n)) m.set(n, chord);
+      this._noteToChord = m;
+    }
+    return this._noteToChord.get(note) ?? null;
+  }
+
+  /** 文本 → 谱面：光标/选区落在哪些音符上，就给哪些 `<g>` 加 `cursor-at`。
+   *  **走 CSS 类、不重渲染**（沿用编辑器既有判据）。 */
+  private _syncCursorToScore(): void {
+    if (this._syncing) return;
+    for (const el of this._syncMarked) el.classList.remove("cursor-at");
+    this._syncMarked = [];
+    if (!this.adapter.caps.viaPuDoc || this.mode !== "jp") return;
+    const sel = this.view.state.selection.main;
+    const entries = this._sync.range(sel.from, sel.to);
+    if (entries.length === 0) return;
+    for (const entry of entries) {
+      const el = this._syncElOf.get(entry);
+      if (!el) continue;
+      el.classList.add("cursor-at");
+      this._syncMarked.push(el);
+      // 光标停在音符上时，它的第一段歌词也一起亮（与播放高亮同一套观感）
+      if (entry.verse === null && this._puPainter) {
+        const syl = this._puPainter.syllableGroupEl(entry.note, 0);
+        if (syl) {
+          syl.classList.add("cursor-at");
+          this._syncMarked.push(syl);
+        }
+      }
+    }
+    this._scrollSyncIntoView(this._syncMarked[0], entries[0]!);
+  }
+
+  /** 谱面 → 文本：把光标放到这个条目对应的原文区间上。 */
+  private _syncScoreToCursor(entry: SyncEntry): void {
+    const span = entry.verse === null
+      ? this._sync.spanOfNote(entry.note)
+      : { from: entry.from, to: entry.to };
+    if (!span) return;
+    this._syncing = true;
+    try {
+      this.view.dispatch({
+        selection: { anchor: span.from, head: span.to },
+        scrollIntoView: true,
+      });
+    } finally {
+      this._syncing = false;
+    }
+    // 谱面这一侧的高亮照旧自己刷一次（上面被 _syncing 挡掉了）
+    this._syncMarkOnly(entry);
+  }
+
+  /** 只点亮这一个条目（谱面点选时用；文本那侧已经跳好了，不必再反推）。 */
+  private _syncMarkOnly(entry: SyncEntry): void {
+    for (const el of this._syncMarked) el.classList.remove("cursor-at");
+    this._syncMarked = [];
+    const el = this._syncElOf.get(entry);
+    if (!el) return;
+    el.classList.add("cursor-at");
+    this._syncMarked.push(el);
+  }
+
+  /** 需要的话翻页并滚动到可视区（复用播放高亮那一套做法）。 */
+  private _scrollSyncIntoView(el: Element | undefined, entry: SyncEntry): void {
+    if (!el) return;
+    const page = this._puPainter?.pageOfNote(entry.note) ?? null;
+    if (page !== null && page !== this.pageIndex) this.pageIndex = page;
+    el.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  // ---- 下面三个供脚本化测试（`window.__app`，见 scripts/sync-check.mjs）----
+  /** 索引里的全部条目，只给可序列化的那几个字段。 */
+  syncEntries(): Array<{ from: number; to: number; verse: number | null }> {
+    return this._sync.all().map((e) => ({ from: e.from, to: e.to, verse: e.verse }));
+  }
+
+  /** 某条目对应的谱面 `<g>`（按 `from` + `verse` 认，跨 evaluate 边界不能靠对象身份）。 */
+  syncElAt(from: number, verse: number | null): SVGGElement | null {
+    for (const [entry, el] of this._syncElOf) {
+      if (entry.from === from && entry.verse === verse) return el;
+    }
+    return null;
+  }
+
+  /** 谱面 `<g>` → 条目（反查表命中与否）。 */
+  syncEntryOfEl(el: Element): { from: number; to: number; verse: number | null } | null {
+    const e = this._syncEls.get(el);
+    return e ? { from: e.from, to: e.to, verse: e.verse } : null;
+  }
+
+  /** 谱面上点到的 `<g>` → 索引条目（从事件目标往上找最近的那个）。 */
+  private _syncEntryAt(target: EventTarget | null): SyncEntry | null {
+    let el = target instanceof Element ? target : null;
+    while (el) {
+      const hit = this._syncEls.get(el);
+      if (hit) return hit;
+      el = el.parentElement ?? (el.parentNode as Element | null);
+      if (el && el.nodeType !== 1) return null;
+    }
+    return null;
+  }
+
+  /** 解析诊断 → 状态栏。不拦排版：谱面往往仍然是对的，但要让用户看得见。 */
+  private _reportDiagnostics(
+    what: string,
+    diags: readonly { message: string; source: { line: number } }[],
+  ): void {
+    this.setStatus(
+      diags.length === 0
+        ? ""
+        : `${what}：${diags.length} 处需要留意` +
+            `（第 ${diags[0]!.source.line + 1} 行 ${diags[0]!.message}）`,
+    );
   }
 
   private renderPuPages(): void {
@@ -604,6 +878,8 @@ export class App implements OmrHost, PlaybackHost {
         const { w, h } = painter.pageSize(i);
         return `${w} / ${h}`;
       },
+      // 原样档没有几何拾取（PuPainter 不做 pickPage），双向定位靠事件冒泡找 `<g>`
+      onPage: (svg) => svg.addEventListener("click", (ev) => this._onSyncClick(ev)),
     });
   }
 
@@ -615,29 +891,32 @@ export class App implements OmrHost, PlaybackHost {
     this._applyPageBg(); // 同 setJpProfile：配色两档各记各的，纸底那层不经排版器
     this._syncViewModeButtons();
     this.saveSettings();
-    if (this.docFormat === "pu") this.reload(this.getText());
+    if (this.adapter.profileKnob === "pu") this.reload(this.getText());
   }
 
   /** 当前档下切「展开」/「原样」该做什么——按文档格式分派：文本谱换整套 metrics
    *  （print/slide），简谱只换笔画常量（normal/pptx）。 */
   setProfile(slide: boolean): void {
-    if (this.docFormat === "pu") this.setPuProfile(slide ? "slide" : "print");
+    if (this.adapter.profileKnob === "pu") this.setPuProfile(slide ? "slide" : "print");
     else this.setJpProfile(slide ? "pptx" : "normal");
   }
 
   /** 当前是哪一种排版输出（文本谱看 puProfile，简谱看 jpProfile——那两个只是引擎内部的尺寸档名）。 */
   get layoutMode(): JianpuLayoutMode {
-    const slide = this.docFormat === "pu" ? this.puProfile === "slide" : this.jpProfile === "pptx";
+    const slide =
+      this.adapter.profileKnob === "pu" ? this.puProfile === "slide" : this.jpProfile === "pptx";
     return slide ? "expanded" : "original";
   }
 
-  /** 当前文本谱的 AST（MusicXML 直出用；与排版器共用同一份对象）。 */
+  /** 当前文档的 `PuDoc`（MusicXML 直出与展开档转 Score 用；与排版器共用同一份对象）。
+   *  文本谱是直接解析得到的，123 是经 `topu.ts` 转来的——都由各自的适配器给。 */
   puDoc(): PuDoc | null {
-    if (this.docFormat !== "pu") return null;
+    const toPuDoc = this.adapter.toPuDoc;
+    if (!toPuDoc) return null;
     const text = this.getText();
     if (this._puDoc?.text === text) return this._puDoc.doc;
     try {
-      const doc = parsePu(text);
+      const doc = toPuDoc(text);
       this._puDoc = { text, doc };
       return doc;
     } catch {
@@ -650,7 +929,7 @@ export class App implements OmrHost, PlaybackHost {
    *  `forExpanded`：展开档那一份（带歌词的声部换到最前、同号歌词顺延，见 `ToScoreOptions.forExpanded`）。
    *  默认跟当前档走——展开档里谱面、试听与高亮必须是**同一份** Score 对象（高亮按 Chord 身份认）。 */
   puScore(forExpanded = this.layoutMode === "expanded"): Score | null {
-    if (this.docFormat !== "pu") return null;
+    if (!this.adapter.caps.viaPuDoc) return null;
     const text = this.getText();
     let score: Score | null = null;
     const noteMap = new Map<Chord, PuNoteElement>();
@@ -658,7 +937,9 @@ export class App implements OmrHost, PlaybackHost {
     try {
       // **必须复用排版时那份 AST**：PuPainter 的高亮索引是按节点对象身份建的，
       // 重新 parse 一遍会得到另一批对象，播放高亮就永远找不到。
-      doc = this.puDoc() ?? parsePu(text);
+      const cached = this.puDoc();
+      if (!cached) return null;
+      doc = cached;
       const c = this._puScoreCache;
       if (c && c.text === text && c.doc === doc && c.forExpanded === forExpanded) return c.score;
       score = puToScore(doc, { noteMap, forExpanded });
@@ -667,6 +948,7 @@ export class App implements OmrHost, PlaybackHost {
       return null;
     }
     this._puScoreCache = { text, doc, score, noteMap, forExpanded };
+    this._noteToChord = null;
     return score;
   }
 
@@ -676,20 +958,34 @@ export class App implements OmrHost, PlaybackHost {
     return this._breakDesc;
   }
 
+  /** 当前源格式的适配器（高亮 / 编解码 / 标签 / 档位旋钮 / 能力位全走它）。 */
+  get adapter(): FormatAdapter {
+    return formatOf(this.docFormat);
+  }
+
+  // ---------------- FormatHost ----------------
+  /** FormatHost：文本谱方言短名，供代码区标签用。 */
+  get puDialectName(): string | null {
+    return this._puDialect === null ? null : dialectSpec(this._puDialect).shortName;
+  }
+
+  /** FormatHost：谱面排版器认得的标题。 */
+  get painterTitle(): string {
+    return this.painter.score.title;
+  }
+
   get puPainter(): PuPainter | null {
-    return this.docFormat === "pu" ? this._puPainter : null;
+    return this.adapter.caps.viaPuDoc ? this._puPainter : null;
   }
 
   /** 切换编辑的源格式：换高亮、清掉另一路的状态。 */
-  private _setDocFormat(format: "jpwabc" | "pu"): void {
+  private _setDocFormat(format: DocFormatId): void {
     if (this.docFormat === format) return;
     this.docFormat = format;
     this.view.dispatch({
-      effects: this._puHighlightCompartment.reconfigure(
-        format === "pu" ? puHighlighter : jpwHighlighter,
-      ),
+      effects: this._highlightCompartment.reconfigure(this.adapter.highlighter),
     });
-    if (format === "pu") {
+    if (!this.adapter.caps.mixed) {
       // 混排是简谱那侧的上下文工具，文本谱不适用；乐句重排两种格式都有
       // （文本谱走 `pu/relayout.ts`，重排的是原文本身），可用性由 reloadPu 定。
       this._disablePhrase();
@@ -700,6 +996,7 @@ export class App implements OmrHost, PlaybackHost {
       this._puDialect = null;
       this._puDoc = null;
       this._puScoreCache = null;
+      this._noteToChord = null;
     }
     // 两种格式各记一个档位（jpProfile / puProfile），换格式可能就换了档
     this._rebuildPainter();
@@ -756,6 +1053,9 @@ export class App implements OmrHost, PlaybackHost {
 
   // ---------------- picking / selection ----------------
   private onPageClick(pageIndex: number, svg: SVGSVGElement, ev: MouseEvent): void {
+    // 双向定位先走一遍：它按 `<g>` 认（事件冒泡即可），**不依赖几何拾取**——
+    // 两个档因此共用同一条路径，也不受 pickPage 拾取不到时的早退影响。
+    this._onSyncClick(ev);
     const ctm = svg.getScreenCTM();
     if (!ctm) return;
     const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
@@ -779,6 +1079,14 @@ export class App implements OmrHost, PlaybackHost {
       this._selectedVerse = ne.verse;
     }
     this.setStatus(describePick(picked));
+  }
+
+  /** 谱面被点击 → 代码区光标跳到对应原文。找不到对应条目就什么都不做
+   *  （点在标题、小节线上都算找不到）。 */
+  private _onSyncClick(ev: Event): void {
+    if (!this.adapter.caps.viaPuDoc) return;
+    const entry = this._syncEntryAt(ev.target);
+    if (entry) this._syncScoreToCursor(entry);
   }
 
   private deselect(): void {
@@ -814,7 +1122,7 @@ export class App implements OmrHost, PlaybackHost {
 
   /** PlaybackHost：当前该播哪份 Score（文本谱要先转一遍）。 */
   playableScore(): Score | null {
-    return this.docFormat === "pu" ? this.puScore() : this.painter.score;
+    return this.adapter.caps.viaPuDoc ? this.puScore() : this.painter.score;
   }
 
   /** PlaybackHost：谱面标注的速度 ♩=NN（0 = 未标注，试听按默认 90）。 */
@@ -839,7 +1147,7 @@ export class App implements OmrHost, PlaybackHost {
   highlightPlaying(chord: Chord | null, pass: number): void {
     // 文本谱原样档：播放器给的是 Chord，「原版」谱面按 AST 节点索引，靠 noteMap 搭桥。
     // 展开档与 .jpwabc 同一个排版器，照下面按 Chord 高亮。
-    if (this.docFormat === "pu" && this.layoutMode === "original") {
+    if (this.adapter.caps.viaPuDoc && this.layoutMode === "original") {
       const painter = this._puPainter;
       if (!painter) return;
       const note = chord ? this._puScoreCache?.noteMap.get(chord) : null;
@@ -880,26 +1188,29 @@ export class App implements OmrHost, PlaybackHost {
   importBytes(bytes: Uint8Array, name: string): void {
     // 任何新导入都使上一次的识别叠加产物失效（识别结果由 OmrController 在本调用之后重设）。
     this.omr.clear();
-    // ABC 记谱：先用移植版 abc2xml 转成 MusicXML，再复用现有 MusicXML 导入路径。
+    // ABC 记谱：**原文就是源格式**，原生解析直接进编辑器（`reloadAbc`），不再转 MusicXML。
+    // 原生解析读不动时由 `reloadAbc` 自己回落 abc2xml，这里不预先转。
     if (/\.abc$/i.test(name)) {
-      const abcText = new TextDecoder(
-        bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
-      ).decode(bytes);
-      try {
-        const xml = abcToMusicXml(abcText);
-        bytes = new TextEncoder().encode(xml);
-        name = name.replace(/\.abc$/i, ".musicxml");
-      } catch (e) {
-        console.error("ABC 转换失败", e);
-        this.setStatus("ABC 转换失败：" + (e instanceof Error ? e.message : String(e)));
-        return;
-      }
+      this.mixedXmlText = null;
+      this._mixedPainter = null;
+      this._setMixedAvailable(false);
+      this._setMode("jp");
+      this._setDocFormat("abc");
+      this.setText(formatOf("abc").decode(bytes));
+      return;
+    }
+    // 123（简谱主格式）：原文就是源格式，直接进编辑器，不做任何转换。
+    if (is123File(name)) {
+      this.mixedXmlText = null;
+      this._mixedPainter = null;
+      this._setMode("jp");
+      this._setDocFormat("123");
+      this.setText(formatOf("123").decode(bytes));
+      return;
     }
     // 文本谱（番茄 / 诗歌本）：原文就是源格式，直接进编辑器，不做任何转换。
     if (isPuFile(name)) {
-      const puText = new TextDecoder(
-        bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
-      ).decode(bytes);
+      const puText = formatOf("pu").decode(bytes);
       const sniffed = sniffDialect(puText);
       if (sniffed.dialect === null) {
         // `.txt` 太泛，认不出宁可不动——硬解只会得到一首乱谱
@@ -929,7 +1240,6 @@ export class App implements OmrHost, PlaybackHost {
         // 仍填充编辑器的简谱转换文本，便于切回「简谱」（best-effort）
         try {
           const score = loadMusicXml(xml);
-          this.filePath = null;
           this._applyImportedJp(scoreToJpwabc(score));
         } catch (e) {
           console.error("jp import (for toggle) failed", e);
@@ -940,7 +1250,8 @@ export class App implements OmrHost, PlaybackHost {
 
       const score = loadMusicXml(xml);
       this._syncViewModeButtons();
-      this.filePath = null; // imported; save as new .jpwabc
+      // **`.musicxml` 打开和保存都是 musicxml**：编辑的是简谱转换文本，盘上那份仍是 XML 底本，
+      // 保存时按底本 patch 写回同一个文件（见 `writeTo`）。所以这里不清 `filePath`。
       const { text, meta } = scoreToJpwabcWithMeta(score);
       this._lastImportMeta = meta; // 供 OmrController 接管为它的点选映射
       this._applyImportedJp(text);
@@ -951,7 +1262,7 @@ export class App implements OmrHost, PlaybackHost {
       this._setMixedAvailable(false);
       this._disablePhrase();
       this._setMode("jp");
-      this.setText(decodeJpwabc(bytes));
+      this.setText(formatOf("jpwabc").decode(bytes));
     }
   }
 
@@ -1047,7 +1358,7 @@ export class App implements OmrHost, PlaybackHost {
 
   /** Switch between the imported line layout and phrase-aware relayout. */
   setPhraseLayout(phrase: boolean): void {
-    if (this.docFormat === "pu") {
+    if (this.adapter.caps.phraseRelayout) {
       this._setPuPhraseLayout(phrase);
       return;
     }
@@ -1159,7 +1470,7 @@ export class App implements OmrHost, PlaybackHost {
    */
   async convertHanzi(dir: "auto" | HanDirection): Promise<void> {
     if (this.mode !== "jp") return;
-    if (this.docFormat === "pu") {
+    if (!this.adapter.caps.hanConvert) {
       // convertJpwabc 认的是 .Title/.Words 段结构，文本谱是另一套语法
       this.setStatus("文本谱暂不支持整篇简繁转换");
       return;
@@ -1341,9 +1652,7 @@ export class App implements OmrHost, PlaybackHost {
 
   /** 代码区右上角的格式标签。 */
   private _formatLabel(): string {
-    if (this.docFormat !== "pu") return "JPWABC";
-    if (this._puDialect === null) return "文本谱";
-    return `文本谱·${dialectSpec(this._puDialect).shortName}`;
+    return this.adapter.label(this);
   }
 
   private _syncFormatLabel(): void {
@@ -1391,7 +1700,7 @@ export class App implements OmrHost, PlaybackHost {
       const { readFile } = await import("@tauri-apps/plugin-fs");
       const bytes = await readFile(path);
       this.importBytes(bytes, path);
-      if (!/\.(xml|musicxml)$/i.test(path)) this.filePath = path;
+      this.filePath = path;
       return true;
     } catch {
       // 文件已被移动/删除/不可读 — 忘掉它，回退到示例
@@ -1408,15 +1717,16 @@ export class App implements OmrHost, PlaybackHost {
         multiple: false,
         filters: [
           {
-            name: "简谱 / 文本谱 / MusicXML / ABC",
-            extensions: ["jpwabc", "JPWABC", "pu", "fq", "jps", "txt", "xml", "musicxml", "abc"],
+            name: "简谱 / 123 / 文本谱 / MusicXML / ABC",
+            // 白名单只在 `common/filetypes.ts` 写一次；`.jpwabc` 另给大写形（部分系统区分）
+            extensions: [...DOC_EXT, "JPWABC"],
           },
         ],
       });
       if (typeof sel !== "string") return false;
       const bytes = await readFile(sel);
       this.importBytes(bytes, sel);
-      if (!/\.(xml|musicxml|abc)$/i.test(sel)) this.filePath = sel;
+      this.filePath = sel;
       this.rememberLastFile(sel);
       return true;
     }
@@ -1438,7 +1748,7 @@ export class App implements OmrHost, PlaybackHost {
         if (!file) { finish(false); return; }
         const buf = new Uint8Array(await file.arrayBuffer());
         this.importBytes(buf, file.name);
-        if (!/\.(xml|musicxml|abc)$/i.test(file.name)) this.filePath = file.name;
+        this.filePath = file.name;
         finish(true);
       };
       window.addEventListener("focus", () => setTimeout(() => {
@@ -1450,6 +1760,7 @@ export class App implements OmrHost, PlaybackHost {
 
   async saveFile(): Promise<void> {
     if (this.filePath && isTauriRuntime()) {
+      // 存回原文件 = 原格式进原格式出，不会丢东西，不必问
       await this.writeTo(this.filePath);
       return;
     }
@@ -1464,34 +1775,86 @@ export class App implements OmrHost, PlaybackHost {
     this.rememberLastFile(dest);
   }
 
-  /** 存盘用的文件名：文本谱存 `.pu`，其余存 `.jpwabc`。 */
-  private defaultSaveName(): string {
-    const base = this.documentTitle() || "未命名";
-    return base + (this.docFormat === "pu" ? ".pu" : ".jpwabc");
-  }
-
-  /** 当前文档的标题（文本谱取头部第一条 T:/B:）。 */
-  private documentTitle(): string {
-    if (this.docFormat === "pu") {
-      const first = this.getText()
-        .split(/\r?\n/)
-        .map((l) => /^\s*[TB]\s*[:：](.*)$/.exec(l))
-        .find((m) => m !== null);
-      return first ? first[1]!.trim() : "";
+  /** 跨格式另存为：**先算会丢什么，列给用户，确认了再写**（`model/capability.ts`）。
+   *  同格式存回不走这条——那是原文进原文出。 */
+  async saveAsFormat(target: TargetFormat): Promise<void> {
+    const doc = this.scoreDoc();
+    if (doc) {
+      const losses = planSave(doc, target);
+      if (losses.length) {
+        const ok = await showConfirmDialog("另存为会丢东西", describeLosses(target, losses));
+        if (!ok) return;
+      }
     }
-    return this.painter.score.title.split("\n")[0] ?? "";
+    const text = this.convertTo(target);
+    if (text === null) {
+      this.setStatus(`暂不支持另存为 ${target}`);
+      return;
+    }
+    const adapter = target === "musicxml" ? null : formatOf(target);
+    const bytes = adapter ? adapter.encode(text) : new TextEncoder().encode(text);
+    const ext = adapter ? adapter.defaultExt : ".musicxml";
+    const dest = await saveBytes(bytes, (this.documentTitle() || "未命名") + ext);
+    if (!dest) return;
+    this.setStatus(`已另存为 ${ext}`);
   }
 
-  /** 文本谱是纯文本源格式，存 UTF-8 原文；`.jpwabc` 仍按 JP-Word 的 UTF-16LE+BOM。 */
+  /** 当前文档的 `ScoreDoc`（能力表与丢失清单要用）。拿不到就返回 null。 */
+  scoreDoc(): ScoreDoc | null {
+    const text = this.getText();
+    try {
+      if (this.docFormat === "123") return parse123(text);
+      if (this.docFormat === "abc") return parseAbc(text);
+      if (this.docFormat === "pu") {
+        const pu = this.puDoc();
+        return pu ? puToScoreDoc(pu) : null;
+      }
+      const f = JpwFile.fromString(text);
+      const score = f ? fromJpw(f) : null;
+      return score ? scoreToScoreDoc(score) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 当前文档 → 目标格式的文本。转不了返回 null。 */
+  private convertTo(target: TargetFormat): string | null {
+    if (target === this.docFormat) return this.getText();
+    const doc = this.scoreDoc();
+    if (!doc) return null;
+    if (target === "123") return emit123(doc);
+    if (target === "abc") return emitAbc(doc);
+    return null; // jpwabc / pu / musicxml 各有既有的导出路径，见 editor/export.ts
+  }
+
+  /** 存盘用的文件名：扩展名由适配器给。 */
+  private defaultSaveName(): string {
+    return (this.documentTitle() || "未命名") + this.adapter.defaultExt;
+  }
+
+  /** 当前文档的标题（取法因格式而异，见适配器的 `title`）。 */
+  private documentTitle(): string {
+    return this.adapter.title(this);
+  }
+
+  /** 存盘编码：文本谱等是 UTF-8 原文，`.jpwabc` 是 JP-Word 的 UTF-16LE+BOM。 */
   private encodeForSave(): Uint8Array {
-    return this.docFormat === "pu"
-      ? new TextEncoder().encode(this.getText())
-      : encodeJpwabc(this.getText());
+    return this.adapter.encode(this.getText());
+  }
+
+  /** 盘上那份文件是不是 MusicXML。**通常与 `docFormat` 一致，`.musicxml` 那一档例外**：
+   *  编辑器里编的是简谱转换文本，盘上是 XML 底本。 */
+  private get onDiskIsXml(): boolean {
+    return this.filePath !== null && /\.(xml|musicxml)$/i.test(this.filePath);
   }
 
   private async writeTo(path: string): Promise<void> {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
-    await writeFile(path, this.encodeForSave());
+    // `.musicxml` 存回原文件：未改动写原文、改动走底本 patch、patch 失败兜底全量重生成
+    const bytes = this.onDiskIsXml
+      ? new TextEncoder().encode(buildMusicXml(this))
+      : this.encodeForSave();
+    await writeFile(path, bytes);
   }
 
   /** Load dropped file content (already decoded). */

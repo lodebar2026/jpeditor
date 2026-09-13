@@ -3,7 +3,7 @@ import { MetaData } from "./smufl/smufl";
 import { ensureFontsReady } from "./common/measure";
 import { asset } from "./common/asset";
 import { App, type ViewMode } from "./editor/app";
-import { IMAGE_EXT, IMAGE_ACCEPT, isDocFile, isImageFile, isConvertedFile } from "./common/filetypes";
+import { IMAGE_EXT, IMAGE_ACCEPT, isDocFile, isImageFile } from "./common/filetypes";
 import { showOptionsDialog, showHanConvDialog } from "./editor/dialogs";
 import { showExportDialog } from "./editor/export";
 import { showHelpDialog } from "./editor/help";
@@ -85,8 +85,14 @@ async function boot() {
     import("./j123/parse"), import("./j123/emit"),
     import("./model/fromscore"), import("./model/frompu"), import("./model/helpers"),
     import("./score/musicxml"), import("./pu"),
-  ]).then(([parse, emit, fromscore, frompu, helpers, musicxml, pu]) => ({
+    import("./abcfamily/emitabc.entry"), import("./abc/abc2xml"),
+    import("./model/fromxml"), import("./model/toxml"), import("./model/capability"),
+  ]).then((
+    [parse, emit, fromscore, frompu, helpers, musicxml, pu, emitabc, abc2xml,
+     fromxml, toxml, capability],
+  ) => ({
     ...parse, ...emit, ...fromscore, ...frompu, ...helpers, ...musicxml, pu,
+    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability,
   }));
   // MusicXML 导出（全量序列化 / 增量 patch / 版面注入）暴露，供 scripts/xml-roundtrip.mjs 回归。
   win.__xmlout = Promise.all([
@@ -415,7 +421,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
         if (!isDocFile(path)) return;
         const bytes = await readFile(path);
         app.importBytes(bytes, path);
-        if (!isConvertedFile(path)) app.filePath = path;
+        app.filePath = path;
         app.rememberLastFile(path);
         hooks.onOpened();
       }

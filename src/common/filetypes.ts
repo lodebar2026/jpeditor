@@ -4,19 +4,24 @@
 
 /** 文本谱（番茄 / 诗歌本）。`.txt` 太泛，进来后还要靠 sniffDialect 二次确认。 */
 export const PU_EXT = ["pu", "fq", "jps", "txt"] as const;
+/** 123 格式（简谱主格式，ABC 方言）。UTF-8，一首一文件。 */
+export const J123_EXT = ["123"] as const;
 /** 乐谱文档（编辑器直接打开的）。 */
-export const DOC_EXT = ["jpwabc", ...PU_EXT, "xml", "musicxml", "abc"] as const;
+export const DOC_EXT = [
+  "jpwabc", ...J123_EXT, ...PU_EXT, "xml", "musicxml", "abc",
+] as const;
+// **以前这里有个 `CONVERTED_EXT`**：`.xml`/`.musicxml`/`.abc` 导入后要强制另存为别的格式，
+// 所以不记文件路径。现在五种源格式都原生打开、存回原格式，这个概念没有了。
+
 /** 走 OMR 识别的图片 / PDF。 */
 export const IMAGE_EXT = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "pdf"] as const;
-/** 导入后不当作「当前文件路径」的那些（另存为要换格式，不能覆盖原文件）。 */
-export const CONVERTED_EXT = ["xml", "musicxml", "abc"] as const;
 
 const re = (exts: readonly string[]): RegExp => new RegExp(`\\.(${exts.join("|")})$`, "i");
 
 export const isPuFile = (name: string): boolean => re(PU_EXT).test(name);
+export const is123File = (name: string): boolean => re(J123_EXT).test(name);
 export const isDocFile = (name: string): boolean => re(DOC_EXT).test(name);
 export const isImageFile = (name: string): boolean => re(IMAGE_EXT).test(name);
-export const isConvertedFile = (name: string): boolean => re(CONVERTED_EXT).test(name);
 
 /** `<input type=file accept>` 用的串。 */
 export const acceptAttr = (exts: readonly string[]): string => exts.map((e) => `.${e}`).join(",");

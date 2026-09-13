@@ -458,6 +458,10 @@ export interface Measure {
   barlines?: Barline[];
   directions?: Direction[];
   print?: Print;
+  /** **读不懂的原样留着**：`fromxml.ts` 把本小节里它不认识的子节点序列化成字符串挂这儿，
+   *  `toxml.ts` 原位吐回去。保存策略是「改动过就全量重写」，全量重写不丢东西**靠的就是这个**，
+   *  不是 patch（见 `docs/待办.md` §1 机制 A）。 */
+  raw?: string[];
   source?: SourceSpan;
 }
 
@@ -469,6 +473,8 @@ export interface Part {
   /** [五线谱] 多谱表（钢琴谱） */
   staffCount?: number;
   measures: Measure[];
+  /** 见 `Measure.raw` */
+  raw?: string[];
 }
 
 // ───────────────────────── 跨元素的东西 ─────────────────────────
@@ -577,7 +583,7 @@ export interface Song {
 
 export interface ScoreDoc {
   /** 产出它的源格式，用于诊断与导出默认 */
-  sourceFormat: "123" | "musicxml" | "jpwabc" | "pu" | "omr";
+  sourceFormat: "123" | "abc" | "musicxml" | "jpwabc" | "pu" | "omr";
   /** 源文本（有的话）。点选定位要回指原文 */
   source?: string;
   songs: Song[];
