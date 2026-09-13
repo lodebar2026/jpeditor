@@ -449,13 +449,17 @@ function measureXml(
     }
     o.push(d + 1, "</attributes>");
   }
-  for (const dir of m.directions ?? []) directionXml(o, d + 1, dir);
+  // 记号按 afterElements 插回原位（缺省在小节开头；超出元素个数的落到小节末）
+  const count = m.elements.length;
+  const dirAt = (dir: Direction): number => Math.min(dir.afterElements ?? 0, count);
+  for (const dir of m.directions ?? []) if (dirAt(dir) === 0) directionXml(o, d + 1, dir);
   let i = 0;
   for (const el of m.elements) {
     // 小节中间的小节线按 afterElements 插回去，丢了会把两个小节并成一个
     for (const b of m.barlines ?? []) {
       if (b.location === "middle" && b.afterElements === i) barlineXml(o, d + 1, b);
     }
+    if (i > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === i) directionXml(o, d + 1, dir);
     if (el.kind === "chord") {
       if (el.harmony) harmonyXml(o, d + 1, el.harmony);
       for (const h of el.laterHarmonies ?? []) harmonyXml(o, d + 1, h);
@@ -477,6 +481,7 @@ function measureXml(
     }
     i += 1;
   }
+  if (count > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === count) directionXml(o, d + 1, dir);
   for (const raw of m.raw ?? []) o.raw(d + 1, raw);
   for (const b of m.barlines ?? []) if (b.location === "right") barlineXml(o, d + 1, b);
   o.push(d, "</measure>");
