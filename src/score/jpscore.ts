@@ -66,7 +66,7 @@ class LyricProcessor {
 
   // 乐句模式下 .Voice 会在这些和弦后插入行内 $(true)；re-parse 时（assignLrcSeg）会把
   // 小节中间的 LineBreak 当作 mid++/nid=0，故此处须同步递增，否则歌词锚点 @measure,noteIndex 错位。
-  constructor(public part: Part, private midBreaks: Set<Chord> | null = null) {}
+  constructor(public part: Part, private midBreaks: ReadonlySet<object> | null = null) {}
 
   lines(res: string[]): void {
     for (const [k, v] of this.texts) {

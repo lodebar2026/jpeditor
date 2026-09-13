@@ -3,7 +3,7 @@
 // 返回 measureBreaks（作为「新行起点」的小节下标，与 Measure.newSystem 同义）与 midBreaks
 // （在弱起谱里乐句尾——休止/长音——被并进下一小节时，改在该「行内」和弦后换行；含标点/句号处）。
 
-import { Chord, Part } from "./score";
+import { chordsOf, type PhraseChord, type PhrasePart } from "./phraseinput";
 import { BarStyle } from "./enums";
 import { Fraction } from "../common/fraction";
 
@@ -22,7 +22,7 @@ export interface FitMetric {
   /** 版心宽度。 */
   width: number;
   /** 每个和弦的自然横向区间。 */
-  spans: Map<Chord, { x0: number; x1: number }>;
+  spans: Map<PhraseChord, { x0: number; x1: number }>;
 }
 
 /**
@@ -32,7 +32,7 @@ export interface FitMetric {
  */
 export interface CutCandidate {
   /** 在该和弦**之后**断行。 */
-  chord: Chord;
+  chord: PhraseChord;
   mi: number;
   /** 收在小节线上（写 `measureBreaks`）；否则是行内断点（写 `midBreaks`）。 */
   isLast: boolean;
@@ -61,12 +61,12 @@ export interface CutCandidate {
 
 export interface PhraseBreaks {
   measureBreaks: Set<number>; // 小节边界换行：在该下标小节前起新行
-  midBreaks: Set<Chord>;      // 行内换行：在该和弦（乐句尾休止/长音）之后换行，不加小节线
+  midBreaks: Set<PhraseChord>;      // 行内换行：在该和弦（乐句尾休止/长音）之后换行，不加小节线
   /** 段落（Intro/Verse/Chorus/Coda…）起点的小节下标：这些小节前不但换行，还**另起一页**
    *  ——否则主歌与副歌会挤在同一页上。measureBreaks 是其超集。 */
   sectionStarts: Set<number>;
   /** 段界落在小节内部（弧闭合处）时的断点和弦：在该和弦后换行**并另起一页**。midBreaks 是其超集。 */
-  sectionCutChords: Set<Chord>;
+  sectionCutChords: Set<PhraseChord>;
   /** 是否已为「副歌起点」安排了段界（含弱起顺延）。jpscore 据此不再自行在副歌首音处断行。 */
   refrainCut: boolean;
   /**
@@ -85,7 +85,7 @@ export interface PhraseBreaks {
    *  `measureBreaks` / `midBreaks` 同义）。断句本身不产生它们——它们是「这一行放不下」
    *  才切出来的。`describeLines` 据此给 `LineInfo.fromCut` 打记号，`scripts/line-check.mjs`
    *  的 D2 据此豁免（拆分导致的弱起不一致不算错误）。 */
-  capacityCuts: Set<Chord | number>;
+  capacityCuts: Set<PhraseChord | number>;
   /** **不许删的断点**（小节下标，语义同 `measureBreaks`）：跳转记号（Fine / D.C. / D.S. /
    *  To Coda）所在的小节末。`measureBreaks` 的子集。后续的并行/补刀（`chooseLineLayout`）
    *  一律绕开它们——记号是给唱的人看路标的，印在一行的中段读不出来。 */
@@ -98,7 +98,7 @@ export const PUNCT_END = /[。！？…；]$/;
 export const PUNCT_MID = /[，、：]$/;
 
 /** 一个和弦上的「主歌词」（第 1 段或副歌那一条）。断句判据与逐行报告共用同一份取法。 */
-export function mainLyricText(c: Chord): string {
+export function mainLyricText(c: PhraseChord): string {
   const nt = c.notes[0];
   const l = nt?.lyrics.find((x) => x.number === 1 || x.refrain) ?? nt?.lyrics[0];
   return l?.text ?? "";
@@ -108,7 +108,7 @@ export function mainLyricText(c: Chord): string {
 export const HEAD_FP_LEN = 8;
 
 /** 一个和弦的旋律键（音级+八度，休止记 R）。与 `measureFp` 同一套写法。 */
-export function noteKeyOf(c: Chord): string {
+export function noteKeyOf(c: PhraseChord): string {
   const nt = c.notes[0];
   return !nt || c.rest ? "R" : nt.number + ":" + nt.jpOctave;
 }
@@ -125,7 +125,7 @@ export function noteKeyOf(c: Chord): string {
  *
  * 不足 `HEAD_FP_LEN` 个音返回空串（不参与比对）。
  */
-export function headFpOf(chords: Chord[]): string {
+export function headFpOf(chords: PhraseChord[]): string {
   let i = 0;
   while (i < chords.length && chords[i].rest) i++;
   const notes = chords.slice(i, i + HEAD_FP_LEN);
@@ -161,7 +161,7 @@ export function punctScore(text: string): number {
  * 与 `mainLyricText` 的分工：那个取的是**要显示的**主歌词（行首/行末报什么字），
  * 这个只管**标点判定**，两者别混。
  */
-export function lyricPunctScore(c: Chord): number {
+export function lyricPunctScore(c: PhraseChord): number {
   const ps: number[] = [];
   for (const nt of c.notes) for (const l of nt.lyrics) if (l.text) ps.push(punctScore(l.text));
   if (!ps.length) return 0;
@@ -170,7 +170,7 @@ export function lyricPunctScore(c: Chord): number {
 }
 
 /** 一个和弦是不是**句末**（口径同 `lyricPunctScore`：多数段在这里收句才算）。 */
-export function lyricIsSentenceEnd(c: Chord): boolean {
+export function lyricIsSentenceEnd(c: PhraseChord): boolean {
   let end = 0;
   let n = 0;
   for (const nt of c.notes) for (const l of nt.lyrics) {
@@ -218,14 +218,10 @@ const LONG_NOTE_BEATS = 3;
 //  按音符判会把断点定在那个字之前、把小节劈开；原书是整小节整小节地换行）。
 const INTRO_MIN_MEAS = 2;
 const DASH_W = 0.7;
-const cellsOf = (c: Chord): number => 1 + Math.max(0, Math.floor(c.beats) - 1) * DASH_W;
-
-function chordsOf(m: { entries: unknown[] }): Chord[] {
-  return m.entries.filter((e): e is Chord => e instanceof Chord);
-}
+const cellsOf = (c: PhraseChord): number => 1 + Math.max(0, Math.floor(c.beats) - 1) * DASH_W;
 
 // 小节旋律指纹：各和弦「音级+八度」（休止记 R），供重复段检测与平行断行复用。
-function measureFp(chords: Chord[]): string {
+function measureFp(chords: PhraseChord[]): string {
   return chords
     .map((c) => {
       const nt = c.notes[0];
@@ -344,7 +340,7 @@ export interface PhraseOptions {
  *
  * 「一小节几格」随拍号与音符密度而变（005 每小节 3.2 格、001 每小节 4 格），所以要按本曲实测。
  */
-export function targetMeasForCells(part: Part, cells: number): number {
+export function targetMeasForCells(part: PhrasePart, cells: number): number {
   let tot = 0;
   let nm = 0;
   for (const m of part.measures) {
@@ -355,7 +351,7 @@ export function targetMeasForCells(part: Part, cells: number): number {
   return Math.max(3, Math.min(12, Math.round(cells / Math.max(0.5, tot / nm))));
 }
 
-export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): PhraseBreaks {
+export function computePhraseBreaks(part: PhrasePart, opts: PhraseOptions = {}): PhraseBreaks {
   const TARGET_MEAS = opts.targetMeas ?? DEF_TARGET_MEAS;
   const MIN_MEAS = opts.minMeas ?? DEF_MIN_MEAS;
   // 目标行长由容量折算过来（成书那条路）时，上限跟着目标走——固定的 7 / 8 小节是按
@@ -438,11 +434,11 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const measures = part.measures;
   const n = measures.length;
   const measureBreaks = new Set<number>();
-  const midBreaks = new Set<Chord>();
+  const midBreaks = new Set<PhraseChord>();
   const sectionStarts = new Set<number>();
   const cutList: CutCandidate[] = [];
-  const capacityCuts = new Set<Chord | number>();
-  const sectionCutChords = new Set<Chord>();
+  const capacityCuts = new Set<PhraseChord | number>();
+  const sectionCutChords = new Set<PhraseChord>();
   const forced = new Set<number>();
   let refrainCut = false;
   if (n <= 1) return { measureBreaks, midBreaks, sectionStarts, sectionCutChords, refrainCut, forced, cuts: cutList, capacityCuts };
@@ -485,7 +481,7 @@ export function computePhraseBreaks(part: Part, opts: PhraseOptions = {}): Phras
   const measureDur = chordsPer.map((cs) => cs.reduce((s, c) => s + (c.duration?.toFloat() ?? 0), 0) || 1);
 
   // 把所有和弦拍平成有序序列，逐和弦记：所在小节、是否小节末、以「小节数」为单位的结束位置（可含小数）。
-  interface CInfo { chord: Chord; mi: number; isLast: boolean; isFirst: boolean; pos: number; }
+  interface CInfo { chord: PhraseChord; mi: number; isLast: boolean; isFirst: boolean; pos: number; }
   const flat: CInfo[] = [];
   for (let i = 0; i < n; i++) {
     const cs = chordsPer[i];

@@ -10,6 +10,7 @@
 //
 // 无 DOM 依赖。
 import { Chord, LineBreak, Measure, Part } from "./score";
+import { chordsOf, type PhraseChord, type PhrasePart } from "./phraseinput";
 import { headFpOf, lyricPunctScore, mainLyricText, type CutCandidate, type FitMetric, type PhraseBreaks } from "./phrase";
 
 export type { FitMetric };
@@ -30,10 +31,6 @@ export interface ApplyBreakOptions {
 export interface ApplyBreakResult {
   lines: number;
   pages: number;
-}
-
-function chordsOf(m: Measure): Chord[] {
-  return m.entries.filter((e): e is Chord => e instanceof Chord);
 }
 
 function insertAfter(m: Measure, c: Chord, newPage: boolean): void {
@@ -73,7 +70,8 @@ export function applyPhraseBreaks(part: Part, breaks: PhraseBreaks, opt: ApplyBr
 
   for (let i = 0; i < ms.length; i++) {
     const m = ms[i];
-    for (const c of chordsOf(m)) {
+    for (const c of m.entries) {
+      if (!(c instanceof Chord)) continue;
       if (!useMidBreaks) break;
       if (!breaks.midBreaks.has(c) && !breaks.sectionCutChords.has(c)) continue;
       brk((page) => insertAfter(m, c, page), sectionNewPage && breaks.sectionCutChords.has(c));
@@ -99,7 +97,7 @@ export function applyPhraseBreaks(part: Part, breaks: PhraseBreaks, opt: ApplyBr
  * @param useMidBreaks 调用方是否会采用行内断点（与 applyPhraseBreaks 的同名选项保持一致）。
  *        不采用时行内断点不切行，这里也不能把它当行边界、更不能往那儿落刀。
  */
-export function enforceLineCapacity(part: Part, breaks: PhraseBreaks, cells: number, targetMeas = 4,
+export function enforceLineCapacity(part: PhrasePart, breaks: PhraseBreaks, cells: number, targetMeas = 4,
                                     useMidBreaks = true, fit?: FitMetric): void {
   applyCapacityCuts(part, breaks, cells, { targetMeas, useMidBreaks, avoidSpans: false, fit });
 }
@@ -150,22 +148,22 @@ interface CutPos { cand: CutCandidate; i: number }
 
 /** 全曲拍平的和弦序列 + 前缀量（格数/时值）。补刀入口建一次，逐行共用。 */
 interface FlatBook {
-  chords: Chord[];
+  chords: PhraseChord[];
   /** 每个和弦是不是所在小节的最后一个（`tidyLineHeads` 找行首残小节要用）。 */
   isLast: boolean[];
-  idxOf: Map<Chord, number>;
+  idxOf: Map<PhraseChord, number>;
   cellUpto: number[];
   durUpto: number[];
 }
 
-function flattenBook(part: Part): FlatBook {
-  const chords: Chord[] = [];
+function flattenBook(part: PhrasePart): FlatBook {
+  const chords: PhraseChord[] = [];
   const isLast: boolean[] = [];
   for (const m of part.measures) {
     const cs = chordsOf(m);
     cs.forEach((c, k) => { chords.push(c); isLast.push(k === cs.length - 1); });
   }
-  const idxOf = new Map<Chord, number>();
+  const idxOf = new Map<PhraseChord, number>();
   chords.forEach((c, i) => idxOf.set(c, i));
   const cellUpto = [0];
   const durUpto = [0];
@@ -176,7 +174,7 @@ function flattenBook(part: Part): FlatBook {
   return { chords, isLast, idxOf, cellUpto, durUpto };
 }
 
-function pickCuts(part: Part, book: FlatBook, line: LineInfo, k: number, breaks: PhraseBreaks,
+function pickCuts(part: PhrasePart, book: FlatBook, line: LineInfo, k: number, breaks: PhraseBreaks,
                   f: Fit, useMidBreaks: boolean, avoidSpans: boolean, allowSoft = true): CutCandidate[] {
   if (k <= 1) return [];
   const { durUpto, idxOf } = book;
@@ -286,7 +284,7 @@ const value = (c: CutCandidate): number =>
  *    （`splitLongest` 实测：142《圣灵请来》被连拆四轮成了 8 行）。真还超容量，
  *    交给 `scripts/rebuild.mjs` 的容量收敛循环下一轮。
  */
-export function applyCapacityCuts(part: Part, breaks: PhraseBreaks, cells: number,
+export function applyCapacityCuts(part: PhrasePart, breaks: PhraseBreaks, cells: number,
                                   opt: { targetMeas?: number; useMidBreaks: boolean; avoidSpans: boolean; fit?: FitMetric }): void {
   const ms = part.measures;
   const { useMidBreaks, avoidSpans } = opt;
@@ -532,7 +530,7 @@ export interface LineInfo {
   /** 行首的旋律指纹（`phrase.ts::headFpOf`）：两行相同 = 平行乐句开头。 */
   headFp: string;
   mi: number | null;
-  chord: Chord | null;
+  chord: PhraseChord | null;
   /** 段界（另起一页）不可合并。 */
   section: boolean;
   /** 这一行覆盖的和弦在**全曲拍平序列**里的下标区间（含端点）。补刀要在行内部找落点。 */
@@ -546,7 +544,7 @@ export interface LineInfo {
 }
 
 /** 一个和弦占多少格（一个音符 1 格，长音的每根增时线各占 1 格）。 */
-const cellsOfChord = (c: Chord): number => Math.max(1, Math.floor(c.beats) || 1);
+const cellsOfChord = (c: PhraseChord): number => Math.max(1, Math.floor(c.beats) || 1);
 
 /**
  * 按断点把 part 切成行，并把**判断版面好坏要用的事实**一并算出来
@@ -555,8 +553,8 @@ const cellsOfChord = (c: Chord): number => Math.max(1, Math.floor(c.beats) || 1)
  * `mergeShortLines` / `tidyLineHeads` / `scripts/rebuild.mjs` 的逐行报告共用这一份——
  * 各数各的就会出现「检查脚本说没问题、排出来还是难看」。
  */
-export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: boolean): LineInfo[] {
-  interface FC { chord: Chord; mi: number; k: number; isLast: boolean }
+export function describeLines(part: PhrasePart, breaks: PhraseBreaks, useMidBreaks: boolean): LineInfo[] {
+  interface FC { chord: PhraseChord; mi: number; k: number; isLast: boolean }
   const flat: FC[] = [];
   part.measures.forEach((m, i) => {
     const cs = chordsOf(m);
@@ -564,7 +562,7 @@ export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: bo
   });
   const out: LineInfo[] = [];
   let start = 0;
-  const emit = (end: number, mi: number | null, chord: Chord | null, section: boolean): void => {
+  const emit = (end: number, mi: number | null, chord: PhraseChord | null, section: boolean): void => {
     const seg = flat.slice(start, end + 1);
     if (!seg.length) return;
     const from = start;
@@ -641,7 +639,7 @@ export function describeLines(part: Part, breaks: PhraseBreaks, useMidBreaks: bo
  * 给 `scripts/rebuild.mjs` 的逐行事实用——`scripts/line-check.mjs` 判「这一行是不是太短 / 放不放得下」
  * 也要按真实宽度，不能按格数（用户口径，见 `FitMetric`）。
  */
-export function measureLines(part: Part, lines: LineInfo[], fit?: FitMetric): { width: number; widths: number[] } {
+export function measureLines(part: PhrasePart, lines: LineInfo[], fit?: FitMetric): { width: number; widths: number[] } {
   const f = new Fit(fit, 0).bind(flattenBook(part));
   return { width: f.capacity, widths: lines.map((l) => f.ofLine(l)) };
 }
@@ -657,7 +655,7 @@ export function measureLines(part: Part, lines: LineInfo[], fit?: FitMetric): { 
  *
  * @param cells 退化时的容量（格数）；有 `fit` 时一律按**真实坐标**判「并过去放不放得下」
  */
-export function tidyLineHeads(part: Part, breaks: PhraseBreaks,
+export function tidyLineHeads(part: PhrasePart, breaks: PhraseBreaks,
                               opt: { useMidBreaks?: boolean; cells?: number; fit?: FitMetric } = {}): number {
   const useMidBreaks = opt.useMidBreaks ?? true;
   const f = new Fit(opt.fit, opt.cells ?? 0).bind(flattenBook(part));
@@ -699,7 +697,7 @@ export function tidyLineHeads(part: Part, breaks: PhraseBreaks,
  *
  * @returns 推走的休止行数
  */
-export function tidyLineTails(part: Part, breaks: PhraseBreaks,
+export function tidyLineTails(part: PhrasePart, breaks: PhraseBreaks,
                               opt: { useMidBreaks?: boolean; cells?: number; fit?: FitMetric } = {}): number {
   const useMidBreaks = opt.useMidBreaks ?? true;
   const f = new Fit(opt.fit, opt.cells ?? 0).bind(flattenBook(part));
@@ -751,7 +749,7 @@ export function tidyLineTails(part: Part, breaks: PhraseBreaks,
  *
  * @returns 并掉的断点数
  */
-export function mergePairsUniform(part: Part, breaks: PhraseBreaks, useMidBreaks: boolean): number {
+export function mergePairsUniform(part: PhrasePart, breaks: PhraseBreaks, useMidBreaks: boolean): number {
   const lines = describeLines(part, breaks, useMidBreaks);
   // **先看能不能全首一致地并**：一半并一半不并，行长反而更不齐——020《向主歌唱》
   // 前四行各 4~5 小节没并、末两行并成 8 小节，那一行就明显比谁都长。
@@ -813,7 +811,7 @@ function cloneBreaks(b: PhraseBreaks): PhraseBreaks {
 }
 
 /** 在第 mi 小节**之前**断行会不会切断一条圆滑线／连音线／反复房。 */
-function cutsThroughSpan(part: Part, mi: number): boolean {
+function cutsThroughSpan(part: PhrasePart, mi: number): boolean {
   const ms = part.measures;
   if (mi <= 0 || mi >= ms.length) return false;
   // 反复房：房整体不可拆，只有房的收尾处才能断
@@ -845,7 +843,7 @@ function cutsThroughSpan(part: Part, mi: number): boolean {
  *   2. 补出来的**碎行**（只剩一小节）并回上一行。
  * 段界（主歌↔副歌）自始至终保留——「尽量主歌副歌不同行」。
  */
-function evenLayout(part: Part, breaks: PhraseBreaks, cells: number, fit?: FitMetric): PhraseBreaks {
+function evenLayout(part: PhrasePart, breaks: PhraseBreaks, cells: number, fit?: FitMetric): PhraseBreaks {
   const out = cloneBreaks(breaks);
   if (cells <= 0 || !part.measures.length) return out;
   applyCapacityCuts(part, out, cells, { useMidBreaks: true, avoidSpans: true, fit });
@@ -866,7 +864,7 @@ function evenLayout(part: Part, breaks: PhraseBreaks, cells: number, fit?: FitMe
  * @param cells 退化时的容量（格数）；有 `fit` 时按**真实坐标**判「并过去放不放得下」
  * @returns 并掉的断点数
  */
-export function mergeSliverLines(part: Part, breaks: PhraseBreaks, useMidBreaks: boolean, cells = 0,
+export function mergeSliverLines(part: PhrasePart, breaks: PhraseBreaks, useMidBreaks: boolean, cells = 0,
                                  fit?: FitMetric): number {
   const lines = describeLines(part, breaks, useMidBreaks);
   const f = new Fit(fit, cells).bind(flattenBook(part));
@@ -904,7 +902,7 @@ export function mergeSliverLines(part: Part, breaks: PhraseBreaks, useMidBreaks:
  * @returns 选中的档
  */
 export function chooseLineLayout(
-  part: Part,
+  part: PhrasePart,
   breaks: PhraseBreaks,
   cells: number,
   opt: { useMidBreaks?: boolean; allowPairs?: boolean; fit?: FitMetric } = {},
