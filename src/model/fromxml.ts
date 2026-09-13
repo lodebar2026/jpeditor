@@ -581,6 +581,7 @@ function readMeasure(
       }
       case "direction": {
         const d = readDirection(c);
+        if (d && m.elements.length > 0) d.afterElements = m.elements.length;
         if (d) (m.directions ??= []).push(d);
         break;
       }

@@ -539,6 +539,10 @@ export interface MeasureAttrs {
 export interface Direction {
   /** 相对小节起点的 divisions 偏移 */
   offset?: number;
+  /** 它排在本小节第几个元素之后（MusicXML 源里 `<direction>` 前面有几个音符，同 `Barline.afterElements`）。
+   *  缺省 = 小节开头。`<direction>` 的拍位就是游标当时的位置：`Fine` / `D.S.` / segno 常写在小节末尾，
+   *  丢了它，演唱顺序的跳转落点（segno/coda 的小节内位置）和写回的位置都不对 */
+  afterElements?: number;
   /** dynamics / wedge / words / metronome / segno / coda / pedal / octave-shift / rehearsal */
   type: string;
   /** 力度名（`f` / `mf`…）或文字内容 */
