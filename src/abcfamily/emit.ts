@@ -16,6 +16,7 @@ import type {
   Barline,
   Chord,
   Element,
+  Key,
   Measure,
   Note,
   Part,
@@ -23,7 +24,7 @@ import type {
   Song,
 } from "../model/doc";
 import { breakAfter } from "../model/helpers";
-import { harmonyToText } from "../score/harmonyparse";
+import { harmonyText } from "../model/jianpu";
 
 export interface MarkIndex {
   slurStart: Map<number, number>;
@@ -183,8 +184,12 @@ export abstract class AbcFamilyEmitter {
   /** 时值怎么写（跟在音后面）。123 是 `_`/`.`，ABC 是分数。 */
   protected abstract durationText(el: Element): string;
 
-  /** 调号怎么写。123 是首调 `1=F`，ABC 是音名 `F` / `Em`。 */
-  protected abstract keyText(song: Song): string | null;
+  /** 调号怎么写。123 是首调 `1=F`，ABC 是音名 `F` / `Em`。头部 `K:` 与曲中转调 `[K:]` 共用。 */
+  protected abstract keyValue(k: Key): string;
+
+  protected keyText(song: Song): string | null {
+    return song.key ? this.keyValue(song.key) : null;
+  }
 
   /** 头部里方言特有的行（ABC 的 `L:`）。默认没有。 */
   protected headerExtra(song: Song): string[] {
@@ -212,6 +217,18 @@ export abstract class AbcFamilyEmitter {
   /** 节奏音符 `X`（123 扩展）。 */
   protected rhythmText(): string {
     return "X";
+  }
+
+  /** 这个元素写不写。默认全写；123 只写简谱印的那一路（见 `emit123.ts`）。 */
+  protected emits(el: Element, mea: Measure): boolean {
+    void el;
+    void mea;
+    return true;
+  }
+
+  /** 一个和弦写哪几个音。默认全写；123 没有音符堆，只写简谱印的那个音。 */
+  protected chordNotes(ch: Chord): Note[] {
+    return ch.notes;
   }
 
   /** 同时发声的几个音怎么包。123 靠多声部表达、不包；ABC 是 `[CEG]`。 */
@@ -271,7 +288,8 @@ export abstract class AbcFamilyEmitter {
     } else if (ch.rest) {
       s = this.restText(ch);
     } else {
-      s = this.chordGroupText(ch.notes.map((n) => this.noteText(n)).join(""), ch.notes.length);
+      const notes = this.chordNotes(ch);
+      s = this.chordGroupText(notes.map((n) => this.noteText(n)).join(""), notes.length);
     }
     s += this.durationText(ch);
     s += this.tieText(ch);
@@ -293,6 +311,7 @@ export abstract class AbcFamilyEmitter {
     const own = new Set<number>();
     for (const mea of part.measures) {
       for (const el of mea.elements) {
+        if (!this.emits(el, mea)) continue;
         own.add(el.id);
         if (el.kind === "chord") for (const su of el.sustains ?? []) own.add(su.id);
       }
@@ -311,6 +330,11 @@ export abstract class AbcFamilyEmitter {
       }
     }
 
+    // 曲中转调/转拍号写成行内 `[K:]` `[M:]`（解析端 `j123/parse.ts` 的 inlineField 认得）。
+    // 以前不写：MusicXML 里 A♭ 转 A 的谱（019《拥戴祂为王》）转成 123 后后半首整体差半音
+    let key = song.key ? this.keyValue(song.key) : "";
+    const timeOf = (t: { beats: number; beatType: number } | undefined): string => (t ? `${t.beats}/${t.beatType}` : "");
+    let time = timeOf(song.time);
     for (let i = 0; i < part.measures.length; i++) {
       const mea = part.measures[i]!;
       // 左线可能有**多条**（`.jpwabc` 允许 `|:|` 连写），按顺序全部输出
@@ -322,6 +346,12 @@ export abstract class AbcFamilyEmitter {
         if (left.style !== undefined) out.push(barlineText(left));
         if (left === lastEnding) out.push(`[${left.ending!.numbers.join(",")}`);
       }
+      const k = mea.attrs?.key ? this.keyValue(mea.attrs.key) : key;
+      if (k !== key) out.push(`[K:${k}]`);
+      key = k;
+      const t = mea.attrs?.time ? timeOf(mea.attrs.time) : time;
+      if (t !== time) out.push(`[M:${t}]`);
+      time = t;
       out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }));
       const right = (mea.barlines ?? []).find((b) => b.location === "right");
       out.push(right ? barlineText(right) : "|");
@@ -343,6 +373,7 @@ export abstract class AbcFamilyEmitter {
     const mid = (mea.barlines ?? []).filter((b) => b.location === "middle");
     let midIdx = 0;
     for (const el of mea.elements) {
+      if (!this.emits(el, mea)) continue;
       const ch = el.kind === "chord" ? el : null;
       if (ch?.continued) continue; // 同 `lyricLines`
       // 倚音单独成块、紧贴后一个音符
@@ -354,7 +385,7 @@ export abstract class AbcFamilyEmitter {
       let s = "";
       // 和弦符号前置（规范 §8.1）
       // 从 MusicXML 读进来的和弦是结构化的（根音 + kind），没有原文就按结构拼出来
-      const chordText = el.harmony ? harmonyToText(el.harmony) : "";
+      const chordText = el.harmony ? harmonyText(el.harmony) : "";
       if (chordText) s += `"${chordText}"`;
       // 段落词/注记走 ABC §4.19 的注记写法（`^` = 标在上方）
       // 增时线上的注记（文本谱 `- "…"`）123 挂不到 `-` 上，并到宿主音符写出（宿主自己没有时）

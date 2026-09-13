@@ -19,7 +19,7 @@ import { parse123, parseAbc } from "../j123/parse";
 import { puToScoreDoc } from "../model/frompu";
 import type { ScoreDoc } from "../model/doc";
 import { loadScoreDoc } from "../model/fromxml";
-import { fillDegreesFromPitch } from "../model/helpers";
+import { fillDegreesFromPitch } from "../model/jianpu";
 
 /** 可打开的源格式。`musicxml` 没有代码区（`caps.textEditor === false`），只看谱面、转成文本格式再编辑。 */
 export type DocFormatId = "jpwabc" | "pu" | "123" | "abc" | "musicxml";

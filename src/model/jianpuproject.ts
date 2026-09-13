@@ -15,17 +15,11 @@
 // 回归 `scripts/jianpu-shape-check.mjs` 逐音比对。
 
 import type { Chord, Element, ElementId, Harmony, Measure, Song } from "./doc";
-import { harmonyToText } from "../score/harmonyparse";
+import { harmonyText, jianpuShape, nominalQuarters } from "./jianpu";
 import { isXmlShaped } from "./xmlproject";
 
 /** 简谱来源的时值单位：一个四分音符 = 48（与 `frompu.ts` / `j123` / `xmlproject.ts` 同口径） */
 const Q = 48;
-
-/** `<type>` → 以四分音符为 1 的名义时值 */
-const TYPE_QUARTERS: Readonly<Record<string, number>> = {
-  maxima: 32, long: 16, breve: 8, whole: 4, half: 2, quarter: 1,
-  eighth: 1 / 2, "16th": 1 / 4, "32nd": 1 / 8, "64th": 1 / 16, "128th": 1 / 32, "256th": 1 / 64,
-};
 
 const cache = new WeakMap<Song, Song>();
 
@@ -78,45 +72,7 @@ function maxId(song: Song): number {
   return max;
 }
 
-/** 这个元素的名义时值（四分音符为 1）：优先 `<type>` + 附点，没有 type（整小节休止等）才按 divisions 折算。 */
-function nominalQuarters(el: Element, divisions: number): number {
-  const d = el.kind === "chord" ? el.duration : el.duration;
-  if (!d) return 0;
-  const base = d.type ? TYPE_QUARTERS[d.type] : undefined;
-  if (base !== undefined) {
-    let q = base;
-    let add = base;
-    for (let k = 0; k < d.dots; k++) {
-      add /= 2;
-      q += add;
-    }
-    return q;
-  }
-  let q = d.divisions / divisions;
-  if (d.timeMod) q = (q * d.timeMod.actual) / d.timeMod.normal;
-  return q;
-}
-
-/** 名义时值 → 简谱写法：减时线条数、附点数、增时线条数。 */
-function jianpuShape(q: number): { beams: number; dots: number; sustains: number } {
-  if (q >= 1) {
-    // 四分以上：一个四分（或附点四分）本体 + 若干增时线。附点二分 = `5 - -`
-    const sustains = Math.max(0, Math.floor(q + 1e-9) - 1);
-    const body = q - sustains;
-    const dots = body >= 1.75 - 1e-9 ? 2 : body >= 1.5 - 1e-9 ? 1 : 0;
-    return { beams: 0, dots, sustains };
-  }
-  // 四分以下：减时线条数由基本时值定，附点照记
-  for (const dots of [0, 1, 2]) {
-    const factor = dots === 0 ? 1 : dots === 1 ? 1.5 : 1.75;
-    const base = q / factor;
-    const beams = Math.log2(1 / base);
-    if (Math.abs(beams - Math.round(beams)) < 1e-6) return { beams: Math.round(beams), dots, sustains: 0 };
-  }
-  return { beams: Math.max(1, Math.round(Math.log2(1 / q))), dots: 0, sustains: 0 };
-}
-
-const textOf = (h: Harmony): Harmony => (h.text !== undefined ? h : { ...h, text: harmonyToText(h) });
+const textOf = (h: Harmony): Harmony => (h.text !== undefined ? h : { ...h, text: harmonyText(h) });
 
 /** @returns 小节末尾挂不进本小节、要顺延给下一小节第一个音的和弦 */
 function projectMeasure(m: Measure, divisions: number, newId: () => ElementId, carryIn: Harmony[]): Harmony[] {

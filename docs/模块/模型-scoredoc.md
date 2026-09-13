@@ -30,7 +30,8 @@
 | 文件 | 作用 |
 |---|---|
 | `src/model/doc.ts` | 类型定义（774 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
-| `src/model/helpers.ts` | 遍历/查询/构造 + **音高互推** |
+| `src/model/helpers.ts` | 遍历/查询/构造 |
+| `src/model/jianpu.ts` | **简谱语义层**：音高↔度数、相对调号临时记号延续（`AccidentalCarry`，两个方向共用）、`attrsAt`、减时线/增时线/附点（`jianpuShape`）、和弦原文、旋律取音、延音线/跨元素记号按 id 找对端 |
 | `src/model/fromxml.ts` | ← MusicXML（**直通**，读不懂的挂 `Measure.raw` 原样留着） |
 | `src/model/toxml.ts` | → MusicXML（**唯一写出端**，全量序列化） |
 | `src/model/xmlproject.ts` | 简谱来源 → MusicXML 形状的投影（音高、divisions、记号原名、跨行小节…），`toxml.ts` 先过它 |
@@ -52,10 +53,12 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 ## 关键判据
 
 - **绝对音高与简谱度数并存、可互推**。`Note.pitch`（MusicXML 侧）+ `Note.degree`（123 侧），
-  换算走 `helpers.ts::pitchFromDegree` / `degreeFromPitch`，而 `pitchFromDegree` **直接转调
+  换算走简谱语义层 `jianpu.ts::pitchFromDegree` / `degreeFromPitch`，正向**直接转调
   `score/jppitch.ts::jpPitch`**——那个文件开头就立了规矩「两份实现一旦漂移，往返数字就会错，故只留这一处」。
-  反向换算目前与 `score.ts::Note.init` 同构（算式逐行照搬），**R2 收尾时应把 `init` 改为调用
-  `degreeFromPitch`，消掉这份重复**。
+  `score.ts::Note.init` 与混排 `MNote.octaveJp` 目前仍各算一份（`jianpu-semantic-check` 三方逐音比过同源），
+  **阶段 3 / 阶段 6 分别改调语义层**（`docs/待办.md` §3.1）。
+- **临时记号只按音高延续判，不照抄来源的提醒记号**；旋律音与全部音各一份延续状态，任一要印就印
+  （判据与定性清单在 `jianpu.ts` 文件头）。
   已验：`fifths -7..7` 的无点「1」与 `jppitch.ts` 注释记载的值逐个吻合（bB=58、bA=68、#C=61、
   bD=61、#F=bG=66、bE=63、bC=59；A 调不降八度、B 调降八度）。
 - **元素一律带稳定 `id`**（`IdGen` 分配）。`Mark`、歌词锚点、`playOrder` 的 skip/limit 全部引用 id——

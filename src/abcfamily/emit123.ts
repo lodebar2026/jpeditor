@@ -1,9 +1,9 @@
 // 123 方言的写出端。只回答基类问的那几个问题，其余全在 `emit.ts`。
 
-import type { Chord, Element, Note, Song } from "../model/doc";
+import type { Chord, Element, Key, Measure, Note, Song } from "../model/doc";
 import { AbcFamilyEmitter, type MarkIndex } from "./emit";
 import { projectForJianpu } from "../model/jianpuproject";
-import { harmonyToText } from "../score/harmonyparse";
+import { harmonyText, keySpelling, melodyLane, topNote } from "../model/jianpu";
 
 const ACC_TEXT: Readonly<Record<string, string>> = {
   sharp: "#",
@@ -16,6 +16,20 @@ const ACC_TEXT: Readonly<Record<string, string>> = {
 export class Emitter123 extends AbcFamilyEmitter {
   protected readonly versionLine = "%123-1.0";
   protected override readonly tiesAsSlurs = true;
+
+  /** 123 没有音符堆（规范：和弦走符号 `"Am7"`，不做 `[1 3 5]`），一个声部也只有一路：
+   *  只写简谱印的那一路（`melodyLane`）、那一路里每个和弦最高的音。其余的由 `planSave` 报「noteStack」丢失。
+   *  以前挨着写成 `35`，读回来成了两个先后的音，时值翻倍（Praise as One/万古磐石 42 个音读回 84 个）。 */
+  protected override emits(el: Element, mea: Measure): boolean {
+    if (el.kind !== "chord") return true;
+    const lane = melodyLane(mea);
+    return !lane || (el.staff === lane.staff && el.voice === lane.voice);
+  }
+
+  protected override chordNotes(ch: Chord): Note[] {
+    const top = topNote(ch);
+    return top ? [top] : [];
+  }
 
   /** MusicXML 读进来的歌先投成简谱形状：123 的 `-` 是增时线、`_` 是减时线，照 MusicXML 的 type/beam 直写会写错时值 */
   override emitSong(song: Song, fallbackNumber?: number): string {
@@ -52,18 +66,16 @@ export class Emitter123 extends AbcFamilyEmitter {
     let s = "";
     for (const su of ch.sustains ?? []) {
       s += "(".repeat(mi?.slurStart.get(su.id) ?? 0);
-      s += su.harmony ? ` "${harmonyToText(su.harmony)}"-` : "-";
+      s += su.harmony ? ` "${harmonyText(su.harmony)}"-` : "-";
       s += ")".repeat(mi?.slurEnd.get(su.id) ?? 0);
     }
     return s;
   }
 
   /** 主音唱名非 1 时写简谱首调形（`6=E`），否则写 `1=X`。 */
-  protected keyText(song: Song): string | null {
-    const k = song.key;
-    if (!k) return null;
+  protected keyValue(k: Key): string {
     if (k.spelling === "none") return "none";
-    const sp = k.spelling ?? "C";
+    const sp = keySpelling(k);
     const degree = k.tonicDegree ?? "1";
     return `${degree}=${sp}`;
   }

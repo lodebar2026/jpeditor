@@ -29,7 +29,8 @@ import type {
   Space,
   Sustain,
 } from "../model/doc";
-import { IdGen, breaksAfterToStart, emptyDoc, emptySong, fillDegreesFromPitch } from "../model/helpers";
+import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "../model/helpers";
+import { fillDegreesFromPitch } from "../model/jianpu";
 import type { BreakKind } from "../model/helpers";
 import {
   CJK_INSTRUCTION_ALIAS,
