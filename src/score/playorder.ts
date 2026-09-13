@@ -190,7 +190,7 @@ export function playOrderByVerses(measureCount: number, passes: number): PlayIte
 }
 
 /** 显式给定的演唱顺序（`.Repeat` 段，原 `Score.doRepeat`）。`part0` 用来把 skip 换成小节内位置。 */
-export function playOrderFromSpec(repeat: RepeatSpec, part0: PlayPart | undefined): PlayItem[] {
+export function playOrderFromSpec(repeat: { readonly items: readonly RepeatSpecItem[] }, part0: PlayPart | undefined): PlayItem[] {
   const out: PlayItem[] = [];
   for (const it of repeat.items) {
     const pit = new PlayItem();

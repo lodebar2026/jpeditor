@@ -10,7 +10,8 @@
 
 import { Fraction } from "../common/fraction";
 import type { BarStyle, StartStopDiscontinue } from "../score/enums";
-import { SECTION_WORD_RE, type PhraseChord, type PhraseMeasure, type PhrasePart } from "../score/phraseinput";
+import { SECTION_WORD_RE, type PhraseChord, type PhraseMeasure } from "../score/phraseinput";
+import type { PlayMeasure } from "../score/playorder";
 import type { Chord, ElementId, Measure, Song } from "./doc";
 import { topNote } from "./jianpu";
 
@@ -35,14 +36,19 @@ interface MeasureOut {
   repeatForward: boolean;
   keyChange: boolean;
   endingLeft: boolean;
+  /** 房号适用的遍数（演唱顺序用，`score/playorder.ts::PlayMeasure`） */
+  endingNum: Set<number> | null;
   endingRight: StartStopDiscontinue | null;
   sectionMark: string | null;
   /** 小节起点（findRefrain 用） */
   position: Fraction;
+  /** 末和弦的终点。没有和弦时抛错（同 `Score.Measure.duration`） */
+  readonly duration: Fraction;
 }
 
 export interface PhraseDocView {
-  part: PhrasePart;
+  /** 同时满足演唱顺序的输入（`score/playorder.ts::PlayPart`） */
+  part: { readonly measures: readonly (PhraseMeasure & PlayMeasure)[] };
   /** 断句输入的和弦 → 元素 id */
   idOf: Map<PhraseChord, ElementId>;
 }
@@ -73,7 +79,7 @@ export function phrasePartOfDoc(song: Song, partIndex = 0): PhraseDocView {
     at = at.plus(measureEnd(m, div));
   }
   findRefrain(measures);
-  return { part: { measures: measures as readonly PhraseMeasure[] }, idOf };
+  return { part: { measures }, idOf };
 }
 
 /** 跳转记号（Fine / D.C. / D.S. / To Coda）所在的小节下标（0 基）。**只取记号本身**，
@@ -125,17 +131,27 @@ function measureOf(
     repeatForward: false,
     keyChange: m.attrs?.key !== undefined,
     endingLeft: false,
+    endingNum: null,
     endingRight: null,
     sectionMark: null,
     position,
+    get duration(): Fraction {
+      const last = this.entries[this.entries.length - 1];
+      if (!last) throw new Error("measure has no chord");
+      return last.position.plus(last.duration);
+    },
   };
   for (const b of m.barlines ?? []) {
     if (b.style !== undefined && b.location !== "left") out.barline = b.style as BarStyle;
     if (b.repeat === "backward") out.repeatBackward = true;
     else if (b.repeat === "forward") out.repeatForward = true;
     if (b.ending) {
-      if (b.location === "left") out.endingLeft = true;
-      else out.endingRight = b.ending.type as StartStopDiscontinue;
+      if (b.location === "left") {
+        // 同 `parseBarline`：房号文本里的数字才是遍数，文本没有数字才用 `number` 属性
+        out.endingLeft = true;
+        const digits = b.ending.text?.match(/\d+/g);
+        out.endingNum = new Set(digits ? digits.map((d) => parseInt(d, 10)) : b.ending.numbers);
+      } else out.endingRight = b.ending.type as StartStopDiscontinue;
     }
   }
   for (const d of m.directions ?? []) {
