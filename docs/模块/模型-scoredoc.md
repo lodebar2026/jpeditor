@@ -11,7 +11,8 @@
 `degree`+`pitch` 并存、元素稳定 `id` 带 `SourceSpan`，这几条正是双向光标同步的地基。
 围绕它的四层机制里，**格式适配器表**（`editor/formats.ts`）、**格式能力表**
 （`model/capability.ts`）、**双向定位**（`editor/sync.ts`）已落地；
-**底本与保存策略**只落了一半——直通有了，但 `.musicxml` 存盘还走 patch，原因见下面的「已知限制」。
+**底本与保存策略**也已落地：`.musicxml` 打开无代码区，改动经 `toxml.ts` 整份重写，不再 patch。
+文本谱/123/ABC 的排版、`Score`、MusicXML 导出、双向定位、试听高亮都直接吃它。
 
 ## 四个模型的分工与终局
 
@@ -19,10 +20,10 @@
 
 | 模型 | 现在 | 终局 |
 |---|---|---|
-| **`ScoreDoc`**（`src/model/doc.ts`） | 123 的原生模型 | **唯一语义模型**，其余向它汇聚 |
+| **`ScoreDoc`**（`src/model/doc.ts`） | 文本谱/123/ABC/MusicXML 的排版与导出都吃它 | **唯一语义模型**，其余向它汇聚 |
 | `Score`（`src/score/score.ts`） | 简谱排版/MIDI/乐句断句吃它，**装不下力度/多声部**；和弦只在 MusicXML 进来那一路留得住 | 退役；排版改吃 `ScoreDoc` |
 | `MixedScore`（`src/mixed/model.ts`，2952 行） | 五线谱**语义 + 排版**混在一起（tenths） | 语义并入 `ScoreDoc`；`loader.ts` 只留排版 |
-| `PuDoc`（`src/pu/ast.ts`） | 文本谱 AST（扁平元素流 + 下标区间配对） | 退役；文本谱解析器改产 `ScoreDoc` |
+| `PuDoc`（`src/pu/ast.ts`） | 只剩文本谱解析器产物（进 `ScoreDoc` 之前）与乐句重排（改写原文要列号） | 解析器直接产 `ScoreDoc` 后退役 |
 
 ## 入口
 
@@ -32,8 +33,8 @@
 | `src/model/helpers.ts` | 遍历/查询/构造 + **音高互推** |
 | `src/model/fromxml.ts` | ← MusicXML（**直通**，读不懂的挂 `Measure.raw` 原样留着） |
 | `src/model/toxml.ts` | → MusicXML（**直通**，全量序列化） |
-| `src/model/topu.ts` | → `PuDoc`（**临时桥**，借现成的排版与导出） |
-| `src/model/frompu.ts` | ← `PuDoc`（文本谱语料迁移） |
+| `src/model/frompu.ts` | ← `PuDoc`（**无损**：文本谱的全部排版信息都进来，`pu-scoredoc-check` 全语料逐字段还原零差异） |
+| `src/pu/slots.ts` | → **排版行视图**（`docView`）：线性化规则只写一次，排版器/`scoreDocToScore`/`textScoreToMusicXml`/双向定位共用；行里每个符号带 `ElementId` |
 | `src/model/fromscore.ts` | ← `Score`（`.jpwabc` / MusicXML 迁移） |
 | `src/model/capability.ts` | **格式能力表**：每种格式装得下什么 + `planSave`（另存为会丢什么） |
 
@@ -67,6 +68,13 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
   真实语料 1035 份的填充率也在那里）。
 - **`Measure.raw` 是「全量重写不丢东西」的支点**：`fromxml.ts` 不认识的子节点序列化后挂在它上面，
   `toxml.ts` 原位吐回去。没有它，全量重写就只能退回 patch。
+- **换行口径是 MusicXML 的**：`Print.newSystem/newPage` 表示「本小节**起**新系统」。源码的 `$` 写在小节之后，
+  解析器先按「之后」收集、收尾经 `helpers.ts::breaksAfterToStart` 翻过来；写出端用 `breakAfter` 反向。
+  最后一小节之后的换行记 `Part.endBreak`。
+- **文本谱专有字段**（`doc.ts` 里注释写明「文本谱」的那些：`SourceOrnament`、`InlineItem`、`Print.system/texts/lyricLines`、
+  `Chord.continued`、`Mark.startLead/endTrail/leadInPreviousLine/continuationLevels`、`Ending.startOffset/endOffset/pair`…）
+  **是排版信息，不是给导出用的**：没有它们谱面就少画或画错（例如弧线端点落在小节线上时 `Score` 认为没收口，弧会接到下一行）。
+  改 `frompu.ts` 后必须跑 `pu-scoredoc-check`。
 - **`source: SourceSpan` 不是可有可无的**：编辑器的双向光标/选择同步（`editor/sync.ts`）
   按它建「源文本偏移 → 元素 id」的索引。新增元素类型时**一定要把 span 填对**。
 
@@ -74,16 +82,14 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 
 ```bash
 npm run build:cli
+PU_CORPUS=<文本谱语料根> node scripts/pu-scoredoc-check.mjs     # PuDoc → ScoreDoc → PuDoc 逐字段零差异
 PU_CORPUS=<文本谱语料根> HYMN500=<500首语料根> node scripts/j123-migrate.mjs
+npm run build && HYMN500=<500首语料根> node scripts/musicxml-open-check.mjs   # .musicxml 打开/转换/重写
 ```
 
 ## 已知限制
 
-- `topu.ts` 是临时桥，有损：`playOrder` 的 skip/limit、曲号、样式引用、五线谱侧字段转不过去
 - `fromscore.ts` 受 `Score` 限制：和弦/力度/多声部在上游就没有（不是这里丢的）
-- **直通已就位但还没接到保存路径上**：`.musicxml` 存盘仍走 `patchMusicXml`。
-  原因不是直通不行，而是**编辑链路还不是 `ScoreDoc` 原生的**——编辑器里编的是简谱转换文本，
-  保存时手上的模型是「`jpwabc` → `Score`」，`Score` 装不下和弦，
-  走全量重写反而会洗掉底本里的和弦。判据与翻转时机见 [../待办.md](../待办.md) §1.2。
-- `topu.ts` 这座临时桥还在：编辑器里 `.123` 与 `.abc` 的排版都借它
-  （适配器的 `FormatCaps.viaPuDoc` 标着它）。拆它属于 R2 后续。
+- 123 写不出承接前音的增时线（`Chord.continued`），见 [../待办.md](../待办.md) §1.1
+- MusicXML 写出端有两份：文本谱来源走 `pu/toxml.ts::textScoreToMusicXml`（经排版行视图），
+  MusicXML 来源走 `model/toxml.ts`。合并的判据见 [../待办.md](../待办.md) §1.1
