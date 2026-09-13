@@ -1428,6 +1428,19 @@ export class PuPainter implements PagePainter {
     return hit ? (this.nodeMap.get(hit.item) ?? null) : null;
   }
 
+  /** 某音符第 verse 段歌词音节的 SVG 节点（编辑器的双向定位用，见 `editor/sync.ts`）。 */
+  syllableGroupEl(note: NoteElement, verse = 0): SVGGElement | null {
+    const syl = this.syllableOf(note, verse);
+    if (!syl) return null;
+    const hit = this.syllableItems.get(syl);
+    return hit ? (this.nodeMap.get(hit.item) ?? null) : null;
+  }
+
+  /** 某音符在第几页（双向定位要翻页）。 */
+  pageOfNote(note: NoteElement): number | null {
+    return this.noteItems.get(note)?.page ?? null;
+  }
+
   /** 定位结构（回归脚本核对几何用）。 */
   placedPages(): PlacedPage[] {
     return this.placed?.pages ?? [];

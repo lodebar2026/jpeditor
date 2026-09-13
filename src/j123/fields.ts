@@ -91,6 +91,12 @@ export function parseFieldLine(
     if (name === "V") f.voice = n;
     else f.verseFrom = n;
   }
+  // `V:` 的声部号写在**冒号之后**（`V:1`、`V:2 name="Bass"`，ABC §3.1.20 与规范 §7 都是这样），
+  // 不像 `w1:` 那样写在前面。只认前缀数字会让 `V:1`/`V:2` 全归声部 1、几个声部拼成一串。
+  if (name === "V" && f.voice === undefined) {
+    const v = /^(\d+)/.exec(f.value);
+    if (v) f.voice = Number(v[1]);
+  }
   if (m[3]) f.verseTo = Number(m[3]);
   if (m[4] && m[5]) f.anchor = { measure: Number(m[4]), note: Number(m[5]) };
   return f;

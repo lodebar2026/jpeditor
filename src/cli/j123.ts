@@ -10,6 +10,8 @@ export * from "../model/doc";
 export * from "../j123/lex";
 export * from "../j123/parse";
 export * from "../j123/emit";
+export { emitAbc } from "../abcfamily/emitabc.entry";
+export * from "../model/capability";
 export * from "../j123/fields";
 export * from "../model/helpers";
 export { scoreDocToPu } from "../model/topu";

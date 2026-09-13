@@ -21,7 +21,6 @@ import type {
   Lyric,
   Mark,
   Measure,
-  Note,
   Part,
   PlayPass,
   ScoreDoc,
@@ -30,12 +29,11 @@ import type {
   Space,
   Sustain,
 } from "../model/doc";
-import { IdGen, emptyDoc, emptySong } from "../model/helpers";
+import { IdGen, degreeFromPitch, emptyDoc, emptySong } from "../model/helpers";
 import {
   CJK_INSTRUCTION_ALIAS,
   parseFieldLine,
   parseInstruction,
-  parseKey,
   parseLinebreak,
   parsePlayOrder,
   parseTempo,
@@ -43,7 +41,10 @@ import {
   type FieldLine,
   type RawPlayPass,
 } from "./fields";
-import { lexMusicLine, type Token } from "./lex";
+import type { Token } from "../abcfamily/types";
+import {
+  DIALECT_123, DIALECT_ABC, typeAndDots, type DefaultLen, type ParseDialect,
+} from "../abcfamily/parsedialect";
 
 /** 一个声部在组装期的累积状态。 */
 interface PartBuild {
@@ -61,6 +62,12 @@ interface Ctx {
   diagnostics: Diagnostic[];
   lineNo: number;
   lineOffset: number;
+  /** 方言钩子：时值、音符、调号、`-` 的语义。组装逻辑本身两种方言共用。 */
+  d: ParseDialect;
+  /** ABC 的 `L:` 默认音长（123 用不到，恒为 1/4）。 */
+  len: DefaultLen;
+  /** 见过显式 `L:` 没有——没见过时 `M:` 要按 ABC §3.1.7 反推默认音长。 */
+  sawL: boolean;
 }
 
 function report(ctx: Ctx, code: string, message: string, source: SourceSpan): void {
@@ -88,25 +95,7 @@ function barlineFrom(value: string, times: number | undefined, source: SourceSpa
   return b;
 }
 
-/** 减时线/附点 → divisions。基准：四分音符 = `DIVISIONS`，够表达到 64 分音符与三连音。 */
-const DIVISIONS = 48;
-
-const TYPE_BY_BEAMS = ["quarter", "eighth", "16th", "32nd", "64th", "128th", "256th"] as const;
-
-function durationOf(beams: number, dots: number, sustains: number): Chord["duration"] {
-  let base = DIVISIONS >> Math.min(beams, 6);
-  let total = base;
-  // 附点：每个附点加上前一档的一半
-  let add = base;
-  for (let k = 0; k < dots; k++) {
-    add = Math.floor(add / 2);
-    total += add;
-  }
-  // 增时线：每条加一个四分音符（简谱语义：`-` 延长一拍）
-  total += sustains * DIVISIONS;
-  const type = TYPE_BY_BEAMS[Math.min(beams, TYPE_BY_BEAMS.length - 1)]!;
-  return { divisions: total, type, dots };
-}
+// 时值换算（`DIVISIONS` 与两种方言各自的算法）在 `abcfamily/parsedialect.ts`。
 
 /** 歌词行 → 音节数组。
  *
@@ -297,6 +286,33 @@ function buildMusicLine(
     /** 刚按计数收掉一个多连音——紧随的 `)` 是写谱人的习惯写法，静默消费、不报「多余」 */
     justClosedTuplet: boolean;
   } = { last: null, sustainHost: null, justClosedTuplet: false };
+  /** ABC：上一个 `-` 还没配到下一个音符（tie 的 stop 端） */
+  let pendingTie = false;
+  /** ABC：上一个 `>`/`<` 还欠着——正数表示下一个音符要减半、上一个加附点 */
+  let pendingBroken = 0;
+  /** ABC：结算欠着的 tie 与破碎节奏。123 永远不会触发（那两种 token 不产生）。 */
+  const applyTieAndBroken = (ch: Chord): void => {
+    if (pendingTie) {
+      for (const n of ch.notes) n.tie = { ...(n.tie ?? {}), stop: true };
+      pendingTie = false;
+    }
+    if (pendingBroken !== 0 && cur.sustainHost) {
+      // `>` n 个：前音 ×(2-2^-n)、后音 ×2^-n；`<` 反过来
+      const k = Math.abs(pendingBroken);
+      const f = 1 / (1 << k);
+      const prev = cur.sustainHost;
+      const long = pendingBroken > 0 ? prev : ch;
+      const short = pendingBroken > 0 ? ch : prev;
+      const lo = Math.round(long.duration.divisions * (2 - f));
+      const sh = Math.round(short.duration.divisions * f);
+      // **type/dots 必须跟着 divisions 重算**：只改 divisions 会写出 `B/` 却读回
+      // 「八分音符 12 divisions」，往返一轮就变形
+      long.duration = { ...long.duration, divisions: lo, ...typeAndDots(lo) };
+      short.duration = { ...short.duration, divisions: sh, ...typeAndDots(sh) };
+      pendingBroken = 0;
+    }
+  };
+
   /** 同一符杠组的编号：没有空白相隔的相邻音符同组 */
   let beamGroup = 0;
   let sawSpaceSinceLastNote = true;
@@ -339,12 +355,12 @@ function buildMusicLine(
         cur.justClosedTuplet = false;
         if (sawSpaceSinceLastNote) beamGroup++;
         sawSpaceSinceLastNote = false;
-        const rest = t.degree === 0;
+        const rest = ctx.d.isRest(t);
         const ch: Chord = {
           kind: "chord",
           id: ctx.ids.next(),
           notes: [],
-          duration: durationOf(t.beams ?? 0, t.dots ?? 0, 0),
+          duration: ctx.d.duration(t, ctx.len),
           voice: 1,
           staff: 1,
           source: t.source,
@@ -352,17 +368,13 @@ function buildMusicLine(
         if (rest) {
           ch.rest = {};
         } else {
-          const n: Note = { degree: { number: t.degree!, octaveShift: t.octave ?? 0 } };
-          if (t.accidental) {
-            n.degree!.accidental = t.accidental;
-            n.accidental = t.accidental;
-          }
-          ch.notes.push(n);
+          ch.notes.push(ctx.d.note(t));
         }
         if ((t.beams ?? 0) > 0) {
           ch.beams = Array.from({ length: t.beams! }, () => "continue" as const);
           ch.beamGroup = beamGroup;
         }
+        applyTieAndBroken(ch);
         attach(ch);
         cur.sustainHost = ch;
         pb.noteCount++;
@@ -402,10 +414,66 @@ function buildMusicLine(
           pending.chord = undefined;
         }
         (host.sustains ??= []).push(s);
-        host.duration = durationOf(host.beams?.length ?? 0, host.duration.dots, host.sustains.length);
+        host.duration = ctx.d.reduration(host, ctx.len);
         sawSpaceSinceLastNote = false;
         break;
       }
+
+      // ── 下面四种只有标准 ABC 会产生（123 的休止走 note(degree=0)、`-` 是增时线）──
+
+      case "rest": {
+        const ch: Chord = {
+          kind: "chord",
+          id: ctx.ids.next(),
+          notes: [],
+          rest: {},
+          duration: ctx.d.duration(t, ctx.len),
+          voice: 1,
+          staff: 1,
+          source: t.source,
+        };
+        applyTieAndBroken(ch);
+        attach(ch);
+        cur.sustainHost = ch;
+        pb.noteCount++;
+        break;
+      }
+
+      case "chordGroup": {
+        // `[CEG]`：同时发声的几个音 —— `ScoreDoc.Chord.notes[]` 本来就装得下
+        const ch: Chord = {
+          kind: "chord",
+          id: ctx.ids.next(),
+          notes: (t.notes ?? []).map((g) => ctx.d.note(g)),
+          duration: ctx.d.duration(
+            { ...t, num: t.num ?? (t.notes?.[0]?.num ?? 1), den: t.den ?? (t.notes?.[0]?.den ?? 1) },
+            ctx.len,
+          ),
+          voice: 1,
+          staff: 1,
+          source: t.source,
+        };
+        applyTieAndBroken(ch);
+        attach(ch);
+        cur.sustainHost = ch;
+        pb.noteCount++;
+        break;
+      }
+
+      case "tie":
+        // ABC 的 `-`：给前一个和弦的音打 start，下一个音打 stop
+        if (cur.sustainHost) {
+          for (const n of cur.sustainHost.notes) n.tie = { ...(n.tie ?? {}), start: true };
+          pendingTie = true;
+        } else {
+          report(ctx, "orphan-tie", "延音线前面没有音符", t.source);
+        }
+        break;
+
+      case "broken":
+        // `a>b`：前音附点、后音减半（ABC §4.4）。欠着，等下一个音符来结算
+        pendingBroken = t.broken ?? 1;
+        break;
 
       case "rhythm": {
         const ch: Chord = {
@@ -413,7 +481,7 @@ function buildMusicLine(
           id: ctx.ids.next(),
           notes: [],
           rhythm: true,
-          duration: durationOf(t.beams ?? 0, t.dots ?? 0, 0),
+          duration: ctx.d.duration(t, ctx.len),
           voice: 1,
           staff: 1,
           source: t.source,
@@ -437,7 +505,7 @@ function buildMusicLine(
             notes: [],
             rest: {},
             printObject: false,
-            duration: durationOf(t.beams ?? 0, t.dots ?? 0, 0),
+            duration: ctx.d.duration(t, ctx.len),
             voice: 1,
             staff: 1,
             source: t.source,
@@ -479,11 +547,9 @@ function buildMusicLine(
         const ch: Chord = {
           kind: "chord",
           id: ctx.ids.next(),
-          notes: (t.notes ?? []).map((g) => ({
-            degree: { number: g.degree ?? 1, octaveShift: g.octave ?? 0 },
-          })),
+          notes: (t.notes ?? []).map((g) => ctx.d.note(g)),
           duration: { divisions: 0, dots: 0 },
-          grace: {},
+          grace: t.acciaccatura ? { slash: true } : {},
           voice: 1,
           staff: 1,
           source: t.source,
@@ -607,7 +673,7 @@ function buildMusicLine(
         const val = m[2] ?? "";
         pb.measure.attrs ??= {};
         if (name === "K") {
-          const r = parseKey(val);
+          const r = ctx.d.parseKey(val);
           if (r.error) report(ctx, "bad-key", r.error, t.source);
           pb.measure.attrs.key = r.key;
         } else if (name === "M") {
@@ -632,6 +698,22 @@ function closeMeasure(ctx: Ctx, pb: PartBuild): void {
   pb.measure = { number: String(pb.measureNo), elements: [] };
   pb.noteCount = 0;
   void ctx;
+}
+
+/** 用绝对音高补出简谱度数。调号取本曲的 `K:`（缺省 C 大调）。 */
+function fillDegreesFromPitch(song: Song): void {
+  const key = song.key ?? { fifths: 0 };
+  for (const part of song.parts) {
+    for (const m of part.measures) {
+      for (const el of m.elements) {
+        if (el.kind !== "chord") continue;
+        for (const n of el.notes) {
+          if (n.degree || !n.pitch) continue;
+          n.degree = degreeFromPitch(n.pitch, m.attrs?.key ?? key, n.accidental);
+        }
+      }
+    }
+  }
 }
 
 /** 把 `I:playorder` 的「第几个音符」换成元素 id。 */
@@ -705,11 +787,38 @@ export interface ParseOptions {
 
 /** `.123` 文本 → `ScoreDoc`。 */
 export function parse123(text: string, options: ParseOptions = {}): ScoreDoc {
+  return parseAbcFamily(text, DIALECT_123, options);
+}
+
+/** `.abc` 文本 → `ScoreDoc`（**原生解析**，不经 MusicXML）。
+ *
+ *  为什么不复用 `abc/abc2xml.ts`：那条路把源字符偏移丢光了，编辑器的双向定位最多到小节级、
+ *  往返也只能「原文或全量重写」二选一。见 `docs/模块/源格式-abc家族.md`。
+ *  `abc2xml` 仍留着做对照基准与 fallback。 */
+export function parseAbc(text: string, options: ParseOptions = {}): ScoreDoc {
+  return parseAbcFamily(text, DIALECT_ABC, options);
+}
+
+/** ABC 家族的通用解析：**组装逻辑两种方言共用**，差异全在 `dialect` 那几个钩子里。
+ *  见 `docs/模块/源格式-abc家族.md`。 */
+export function parseAbcFamily(
+  text: string,
+  dialect: ParseDialect,
+  options: ParseOptions = {},
+): ScoreDoc {
   void options;
-  const doc = emptyDoc("123");
+  const doc = emptyDoc(dialect.id);
   doc.source = text;
   const ids = new IdGen();
-  const ctx: Ctx = { ids, diagnostics: doc.diagnostics, lineNo: 0, lineOffset: 0 };
+  const ctx: Ctx = {
+    ids,
+    diagnostics: doc.diagnostics,
+    lineNo: 0,
+    lineOffset: 0,
+    d: dialect,
+    len: dialect.defaultLen(4, 4),
+    sawL: false,
+  };
 
   const lines = text.split(/\r?\n/);
   let song: Song | null = null;
@@ -745,6 +854,11 @@ export function parse123(text: string, options: ParseOptions = {}): ScoreDoc {
       }
     }
     pendingLyrics = [];
+    // **ABC 只给绝对音高，简谱那一侧要度数**（排版、`emit123`、播放都按度数走）。
+    // 换算走 `helpers.ts::degreeFromPitch`——那一处与 `jppitch.ts` 同源，
+    // 「两份实现一旦漂移，往返数字就会错」，所以不许在这里另写一份。
+    // 反方向（度数 → 音高）留到 `ScoreDoc ↔ MusicXML` 直通那一轮一起补。
+    if (ctx.d.id === "abc") fillDegreesFromPitch(song);
     song.marks = marks;
     if (rawPlay.length) song.playOrder = resolvePlayOrder(song, rawPlay);
     doc.songs.push(song);
@@ -815,9 +929,18 @@ export function parse123(text: string, options: ParseOptions = {}): ScoreDoc {
     const s = ensureSong();
     void s;
     const p = ensurePart();
-    const lex = lexMusicLine(raw, ln, lineOffset, 0);
+    const lex = ctx.d.lex(raw, ln, lineOffset, 0);
     for (const e of lex.errors) report(ctx, "lex", e.message, e.source);
     buildMusicLine(ctx, p, lex.tokens, marks, openSlurs, openTuplets, pending, openEnding);
+    // ABC §6.1：**代码里的换行就是谱面换行**（默认 `I:linebreak <EOL>`）。
+    // 123 不吃这一条——它用显式的 `$`，简谱一行常写得很长，不该被源码折行绑死。
+    // 语义同 `$`：「这一小节之后换行」，所以挂在刚收尾的那一个上。
+    if (ctx.d.lineEndIsBreak) {
+      const target = p.measure.elements.length > 0
+        ? p.measure
+        : p.part.measures[p.part.measures.length - 1];
+      if (target) target.print = { newSystem: true };
+    }
   }
   finishSong();
   return doc;
@@ -841,7 +964,7 @@ function applyField(
       (song.identification ??= { creators: [] }).creators.push({ type: "composer", text: f.value });
       break;
     case "K": {
-      const r = parseKey(f.value);
+      const r = ctx.d.parseKey(f.value);
       if (r.error) report(ctx, "bad-key", r.error, f.source);
       song.key = r.key;
       break;
@@ -849,7 +972,22 @@ function applyField(
     case "M": {
       const r = parseTime(f.value);
       if (r.error) report(ctx, "bad-time", r.error, f.source);
-      else if (r.time) song.time = r.time;
+      else if (r.time) {
+        song.time = r.time;
+        // ABC §3.1.7：没写 `L:` 时默认音长由 `M:` 推出来
+        if (!ctx.sawL) ctx.len = ctx.d.defaultLen(r.time.beats, r.time.beatType);
+      }
+      break;
+    }
+    case "L": {
+      // ABC 的默认音长 `L:1/8`。123 里可省（时值由 `_`/`-`/`.` 相对表达），故只有 ABC 用
+      const m = /^(\d+)\s*\/\s*(\d+)$/.exec(f.value.trim());
+      if (m) {
+        ctx.len = { num: Number(m[1]), den: Number(m[2]) };
+        ctx.sawL = true;
+      } else {
+        report(ctx, "bad-length", `看不懂的默认音长：${f.value}`, f.source);
+      }
       break;
     }
     case "Q":

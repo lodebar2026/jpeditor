@@ -456,6 +456,13 @@ button:focus-visible, select:focus-visible {
 .score-page g.selected { cursor: pointer; }
 .score-page text, .score-page path, .score-page line { cursor: default; }
 
+/* 双向定位 — 代码区光标所在的音符/歌词（见 editor/sync.ts）。
+   与「选中」「正在发声」分三套颜色，同时出现时看得出谁是谁；
+   一律走 CSS 类、不重渲染。**排在 .playing 之前**：同特异度下后写的赢，
+   试听时正在发声的那个要盖过光标色。 */
+.score-page g.cursor-at [fill]:not([fill="none"]) { fill: #12b886; }
+.score-page g.cursor-at [stroke] { stroke: #12b886; }
+
 /* playback cursor — highlight the currently sounding note */
 .score-page g.playing [fill]:not([fill="none"]) { fill: #e8590c; }
 .score-page g.playing [stroke] { stroke: #e8590c; }

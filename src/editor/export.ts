@@ -97,7 +97,7 @@ async function svgToBytes(svg: SVGSVGElement, scale: number, bg = "#fff"): Promi
 }
 
 function baseName(app: App): string {
-  if (app.docFormat === "pu") {
+  if (app.adapter.caps.viaPuDoc) {
     const t = app.puScore()?.title.split("\n")[0];
     if (t) return t;
   }
@@ -113,7 +113,7 @@ export async function exportCurrentPagePng(app: App): Promise<void> {
 }
 
 export async function exportMidi(app: App): Promise<void> {
-  const score = app.docFormat === "pu" ? app.puScore() : app.painter.score;
+  const score = app.adapter.caps.viaPuDoc ? app.puScore() : app.painter.score;
   if (!score) throw new Error("这份文本谱里没有可导出的曲行");
   const bytes = scoreToMidi(score, app.playback.options());
   await saveBytes(bytes, `${baseName(app)}.mid`, "audio/midi");
@@ -135,10 +135,10 @@ export async function exportPptx(app: App): Promise<void> {
  *  否则导出的投影片会带着原样档的字号与颜色。 */
 export function pptxPainter(app: App): ExpandedPainter {
   if (app.painter instanceof ExpandedPainter) return app.painter;
-  const score = app.docFormat === "pu" ? app.puScore(true) : app.painter.score;
+  const score = app.adapter.caps.viaPuDoc ? app.puScore(true) : app.painter.score;
   if (!score) throw new Error("这份文本谱里没有可导出的曲行");
   const p = new ExpandedPainter(app.expandedOptions());
-  p.load(score, app.docFormat === "pu" ? null : app.breakDesc);
+  p.load(score, app.adapter.caps.viaPuDoc ? null : app.breakDesc);
   return p;
 }
 
@@ -147,11 +147,18 @@ const MUSICXML_MIME = "application/vnd.recordare.musicxml+xml";
 /** 导出 MusicXML。有底本（OMR/ABC/导入的 musicxml）就在底本上做增量修改，只有纯 .jpwabc
  *  才整体重生成——.jpwabc 承载的信息比 MusicXML 少，重生成等于把底本降采样。 */
 export async function exportMusicXml(app: App): Promise<void> {
+  await saveBytes(
+    new TextEncoder().encode(buildMusicXml(app)),
+    `${baseName(app)}.musicxml`,
+    MUSICXML_MIME,
+  );
+}
+
+/** 当前文档 → MusicXML 文本。**保存回 `.musicxml` 原文件与「导出 MusicXML」共用这一条**，
+ *  四条路径见本文件顶部的说明（未改动零损耗 / patch / 兜底全量 / 无底本全量）。 */
+export function buildMusicXml(app: App): string {
   const base = app.mixedXmlText;
-  if (app.mode === "mixed" && base) { // 混排：底本即五线谱原文，原样给出
-    await saveBytes(new TextEncoder().encode(base), `${baseName(app)}.musicxml`, MUSICXML_MIME);
-    return;
-  }
+  if (app.mode === "mixed" && base) return base; // 混排：底本即五线谱原文，原样给出
   let xml: string;
   if (base && app.importUnchanged) {
     xml = base; // 一字未改：零损耗
@@ -171,18 +178,26 @@ export async function exportMusicXml(app: App): Promise<void> {
   } else {
     xml = scoreToMusicXml(app.painter.score);
   }
-  await finishMusicXml(app, xml);
+  return finishMusicXmlText(xml);
 }
 
-/** MusicXML 导出的共同收尾：解析校验 → 补版面 → 序列化 → 补回 XML 声明 → 落盘。
+/** MusicXML 的共同收尾：解析校验 → 补版面 → 序列化 → 补回 XML 声明。
  *  XMLSerializer 不输出 XML 声明（DOCTYPE 会保留），不补回部分软件拒绝打开。 */
-async function finishMusicXml(app: App, xml: string): Promise<void> {
+function finishMusicXmlText(xml: string): string {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   if (doc.querySelector("parsererror")) throw new Error("生成的 MusicXML 无法解析");
   annotateLayout(doc); // 分行沿用底本 <print>，版面参数用 A4 常量表
   let out = new XMLSerializer().serializeToString(doc);
   if (!out.startsWith("<?xml")) out = `<?xml version="1.0" encoding="UTF-8"?>\n${out}`;
-  await saveBytes(new TextEncoder().encode(out), `${baseName(app)}.musicxml`, MUSICXML_MIME);
+  return out;
+}
+
+async function finishMusicXml(app: App, xml: string): Promise<void> {
+  await saveBytes(
+    new TextEncoder().encode(finishMusicXmlText(xml)),
+    `${baseName(app)}.musicxml`,
+    MUSICXML_MIME,
+  );
 }
 
 /** 文本谱 → MusicXML。直接从 AST 生成（不经 Score），和弦、力度、渐强渐弱都保住。 */
@@ -252,7 +267,8 @@ interface ExportItem {
 }
 
 const isMixed = (app: App): boolean => app.mode === "mixed";
-const isPu = (app: App): boolean => app.docFormat === "pu" && !isMixed(app);
+/** 走 `PuDoc` 那条路的格式（文本谱与 123）：导出项与简谱那档不同。 */
+const isPu = (app: App): boolean => app.adapter.caps.viaPuDoc && !isMixed(app);
 const isJp = (app: App): boolean => !isPu(app) && !isMixed(app);
 
 /** 顺序即对话框里的顺序。 */
@@ -271,6 +287,18 @@ const EXPORT_ITEMS: readonly ExportItem[] = [
   { label: "PPTX", available: isJp, run: exportPptx },
   { label: "MIDI", available: isJp, run: exportMidi },
   { label: "MusicXML", available: isJp, run: exportMusicXml },
+  // 源格式之间的另存为。**保存前会列出目标格式装不下的东西**（`model/capability.ts`），
+  // 确认了才写——这条路与上面那些「导出成别的媒介」不同，它换的是源格式本身。
+  {
+    label: "123（简谱源格式）",
+    available: (app) => !isMixed(app) && app.docFormat !== "123",
+    run: (app) => app.saveAsFormat("123"),
+  },
+  {
+    label: "ABC（记谱源格式）",
+    available: (app) => !isMixed(app) && app.docFormat !== "abc",
+    run: (app) => app.saveAsFormat("abc"),
+  },
 ];
 
 export function showExportDialog(app: App): void {
@@ -283,7 +311,7 @@ export function showExportDialog(app: App): void {
   // 文本谱这一档不加后缀：「导出 · 文本谱」会被读成「导出成文本谱」，而条目里
   // 一个文本谱格式都没有。
   title.textContent =
-    app.docFormat === "pu" ? "导出" : app.mode === "mixed" ? "导出 · 五线谱" : "导出 · 简谱";
+    app.adapter.caps.viaPuDoc ? "导出" : app.mode === "mixed" ? "导出 · 五线谱" : "导出 · 简谱";
   const list = document.createElement("div");
   list.style.cssText = "display:flex;flex-direction:column;gap:8px";
   const error = document.createElement("div");

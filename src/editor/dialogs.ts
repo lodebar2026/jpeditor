@@ -135,13 +135,14 @@ export function showOptionsDialog(app: App): void {
   const isMixed = app.mode === "mixed"; // 五线谱 / 混排：走 MixedPainter
   /** 展开档：两种格式同一个排版器（ExpandedPainter），摆同一组设置。 */
   const isPpt = !isMixed && view === "expanded";
-  /** 文本谱**原样档**：走它自己的排版器（PuPainter），版面由量好的 metrics 定。 */
-  const isPu = !isMixed && !isPpt && app.docFormat === "pu";
+  /** 走 `PuPainter` 的**原样档**（文本谱与 123）：版面由量好的 metrics 定。 */
+  const isPu = !isMixed && !isPpt && app.adapter.caps.viaPuDoc;
   /** 简谱排版器那条路（展开档或 .jpwabc 原样档）——下面绝大多数项只有它吃。 */
   const isJp = !isMixed && !isPu;
   const isJianpu = isJp && view === "original";
-  /** 「每页行数」写进 `.jpwabc` 的 `.Layout` 段，文本谱没有这个段。 */
-  const hasLayoutSection = isPpt && app.docFormat !== "pu";
+  /** 「每页行数」写进 `.jpwabc` 的 `.Layout` 段，文本谱与 123 没有这个段
+   *  （123 是 `I:linesperpage`，等阶段 5 直通后再接）。 */
+  const hasLayoutSection = isPpt && app.docFormat === "jpwabc";
 
   const num = (value: number, min: number, max: number): HTMLInputElement => {
     const el = document.createElement("input");
