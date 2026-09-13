@@ -29,7 +29,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `src/model/doc.ts` | 类型定义（571 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
+| `src/model/doc.ts` | 类型定义（774 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
 | `src/model/helpers.ts` | 遍历/查询/构造 + **音高互推** |
 | `src/model/fromxml.ts` | ← MusicXML（**直通**，读不懂的挂 `Measure.raw` 原样留着） |
 | `src/model/toxml.ts` | → MusicXML（**唯一写出端**，全量序列化） |
@@ -70,6 +70,13 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
   真实语料 1035 份的填充率也在那里）。
 - **`Measure.raw` 是「全量重写不丢东西」的支点**：`fromxml.ts` 不认识的子节点序列化后挂在它上面，
   `toxml.ts` 原位吐回去。没有它，全量重写就会丢东西。
+- **版面坐标也在模型里**（R2 收尾阶段 1）：`raw` 只留认不出的**子节点**、不留属性，`<stem>` 这种 `<note>` 的子节点也管不到，
+  所以坐标另立字段——`Position`（`default-x/-y`、`relative-x/-y`）挂在 `Note` / `Chord`（无音的休止）/ `Lyric` / `Harmony` /
+  `Direction` 上，外加 `Measure.width/implicit`、`Note.stem/stemY`、`Chord.cue/typeSize`、`Lyric.justify`、`Harmony.kindHalign`、
+  `Direction.justify/halign/valign`、`MeasureAttrs.staffDetails`。**只为往返，排版不读**；简谱来源不填，导出字节不变。
+  `layout-attr-check` 568 份「改一个音 → 整份重写」这几类逐份计数一致；它另列的「仍丢」表（字体族、slur 贝塞尔与 placement、
+  fermata/ending 坐标、`<defaults>` 字体、小节级 `<sound tempo>`…）是还没进模型的。
+- `Harmony.kindText` 的**空串要留**：`<kind text="">` 是「不印后缀」，与缺省不同（混排按 `null` / `""` 分）。
 - **换行口径是 MusicXML 的**：`Print.newSystem/newPage` 表示「本小节**起**新系统」。源码的 `$` 写在小节之后，
   解析器先按「之后」收集、收尾经 `helpers.ts::breaksAfterToStart` 翻过来；写出端用 `breakAfter` 反向。
   最后一小节之后的换行记 `Part.endBreak`。
@@ -87,6 +94,7 @@ npm run build:cli
 PU_CORPUS=<文本谱语料根> node scripts/pu-scoredoc-check.mjs     # PuDoc → ScoreDoc → PuDoc 逐字段零差异
 PU_CORPUS=<文本谱语料根> HYMN500=<500首语料根> node scripts/j123-migrate.mjs
 npm run build && HYMN500=<500首语料根> node scripts/musicxml-open-check.mjs   # .musicxml 打开/转换/重写
+HYMN500=<500首语料根> node scripts/layout-attr-check.mjs    # 改一个音整份重写，版面坐标逐份不丢、重写是定点
 ```
 
 ## 已知限制

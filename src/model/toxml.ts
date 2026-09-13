@@ -26,6 +26,7 @@ import type {
   Measure,
   Note,
   Part,
+  Position,
   Print,
   ScoreDoc,
   Song,
@@ -53,6 +54,17 @@ class Out {
   toString(): string {
     return this.lines.join("\n");
   }
+}
+
+/** 版面坐标 → 属性串（带前导空格；没有则空串）。见 `doc.ts::Position`。 */
+function posAttrs(pos: Position | undefined): string {
+  if (!pos) return "";
+  const a: string[] = [];
+  if (pos.defaultX !== undefined) a.push(`default-x="${pos.defaultX}"`);
+  if (pos.defaultY !== undefined) a.push(`default-y="${pos.defaultY}"`);
+  if (pos.relativeX !== undefined) a.push(`relative-x="${pos.relativeX}"`);
+  if (pos.relativeY !== undefined) a.push(`relative-y="${pos.relativeY}"`);
+  return a.length ? " " + a.join(" ") : "";
 }
 
 const tag = (name: string, text: string | number): string =>
@@ -148,12 +160,14 @@ function harmonyXml(o: Out, d: number, h: Harmony): void {
     o.push(d, chordTextXml(h.text, h.offset ?? 0));
     return;
   }
-  o.push(d, "<harmony>");
+  o.push(d, `<harmony${posAttrs(h.pos)}>`);
   o.push(d + 1, "<root>");
   o.push(d + 2, tag("root-step", h.root.step));
   if (h.root.alter) o.push(d + 2, tag("root-alter", h.root.alter));
   o.push(d + 1, "</root>");
-  o.push(d + 1, h.kindText ? `<kind text="${escAttr(h.kindText)}">${esc(h.kind)}</kind>` : tag("kind", h.kind));
+  const kindAttrs =
+    (h.kindText !== undefined ? ` text="${escAttr(h.kindText)}"` : "") + (h.kindHalign ? ` halign="${h.kindHalign}"` : "");
+  o.push(d + 1, `<kind${kindAttrs}>${esc(h.kind)}</kind>`);
   if (h.bass) {
     o.push(d + 1, "<bass>");
     o.push(d + 2, tag("bass-step", h.bass.step));
@@ -172,7 +186,8 @@ function harmonyXml(o: Out, d: number, h: Harmony): void {
 }
 
 function lyricXml(o: Out, d: number, l: Lyric): void {
-  o.push(d, `<lyric number="${l.refrain ? "chorus" : l.number}">`);
+  const just = l.justify ? ` justify="${l.justify}"` : "";
+  o.push(d, `<lyric number="${l.refrain ? "chorus" : l.number}"${posAttrs(l.pos)}${just}>`);
   if (l.syllabic) o.push(d + 1, tag("syllabic", l.syllabic));
   o.push(d + 1, tag("text", (l.leadingPunctuation ?? "") + l.text + (l.trailingPunctuation ?? "")));
   if (l.extend) o.push(d + 1, "<extend/>");
@@ -228,9 +243,10 @@ function notationsXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[
 /** 一个 `Chord` → 一条或多条 `<note>`（和弦音从第二个起带 `<chord/>`）。 */
 function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): void {
   const writeOne = (note: Note | null, isChordNote: boolean, withNotations: boolean): void => {
-    const attrs = ch.printObject === false ? ' print-object="no"' : "";
+    const attrs = posAttrs(note?.pos ?? ch.pos) + (ch.printObject === false ? ' print-object="no"' : "");
     o.push(d, `<note${attrs}>`);
     if (ch.grace) o.push(d + 1, ch.grace.slash ? '<grace slash="yes"/>' : "<grace/>");
+    if (ch.cue) o.push(d + 1, "<cue/>");
     if (isChordNote) o.push(d + 1, "<chord/>");
     if (ch.rest) {
       if (ch.rest.measure) o.push(d + 1, '<rest measure="yes"/>');
@@ -256,7 +272,9 @@ function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): 
       if (t) o.push(d + 1, `<tie type="${t}"/>`);
     }
     o.push(d + 1, tag("voice", ch.voice));
-    if (ch.duration.type) o.push(d + 1, tag("type", ch.duration.type));
+    if (ch.duration.type) {
+      o.push(d + 1, ch.typeSize ? `<type size="${escAttr(ch.typeSize)}">${ch.duration.type}</type>` : tag("type", ch.duration.type));
+    }
     for (let i = 0; i < ch.duration.dots; i++) o.push(d + 1, "<dot/>");
     if (note?.accidental) o.push(d + 1, tag("accidental", note.accidental));
     if (ch.duration.timeMod) {
@@ -264,6 +282,10 @@ function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): 
       o.push(d + 2, tag("actual-notes", ch.duration.timeMod.actual));
       o.push(d + 2, tag("normal-notes", ch.duration.timeMod.normal));
       o.push(d + 1, "</time-modification>");
+    }
+    if (note?.stem) {
+      const sy = note.stemY !== undefined ? ` default-y="${note.stemY}"` : "";
+      o.push(d + 1, `<stem${sy}>${note.stem}</stem>`);
     }
     if (ch.rhythm && !isChordNote) o.push(d + 1, tag("notehead", "slash"));
     if (ch.staff > 1) o.push(d + 1, tag("staff", ch.staff));
@@ -285,13 +307,19 @@ function directionXml(o: Out, d: number, dir: Direction): void {
   const pl = dir.placement ? ` placement="${dir.placement}"` : "";
   o.push(d, `<direction${pl}>`);
   o.push(d + 1, "<direction-type>");
+  // 版面属性只挂在读得回来的那几种子元素上（fromxml 取的是首个子元素）
+  const lay =
+    posAttrs(dir.pos) +
+    (dir.justify ? ` justify="${dir.justify}"` : "") +
+    (dir.halign ? ` halign="${dir.halign}"` : "") +
+    (dir.valign ? ` valign="${escAttr(dir.valign)}"` : "");
   switch (dir.type) {
     case "dynamics":
-      o.push(d + 2, `<dynamics><${dir.text || "mf"}/></dynamics>`);
+      o.push(d + 2, `<dynamics${lay}><${dir.text || "mf"}/></dynamics>`);
       break;
     case "words":
     case "rehearsal":
-      o.push(d + 2, `<${dir.type}>${esc(dir.text ?? "")}</${dir.type}>`);
+      o.push(d + 2, `<${dir.type}${lay}>${esc(dir.text ?? "")}</${dir.type}>`);
       break;
     case "wedge":
       o.push(
@@ -385,7 +413,8 @@ function measureXml(
   marksByStart: Map<number, Mark[]>,
   marksByEnd: Map<number, Mark[]>,
 ): void {
-  o.push(d, `<measure number="${escAttr(m.number)}">`);
+  const mAttrs = (m.implicit ? ' implicit="yes"' : "") + (m.width !== undefined ? ` width="${m.width}"` : "");
+  o.push(d, `<measure number="${escAttr(m.number)}"${mAttrs}>`);
   // 顺序是硬要求：print → 左线 → attributes → direction → (harmony/note)* → 右线
   if (m.print) printXml(o, d + 1, m.print);
   for (const b of m.barlines ?? []) if (b.location === "left") barlineXml(o, d + 1, b);
@@ -401,6 +430,11 @@ function measureXml(
       if (c.line !== undefined) o.push(d + 3, tag("line", c.line));
       if (c.octaveChange !== undefined) o.push(d + 3, tag("clef-octave-change", c.octaveChange));
       o.push(d + 2, "</clef>");
+    }
+    for (const sd of m.attrs.staffDetails ?? []) {
+      const a = (sd.staff ? ` number="${sd.staff}"` : "") +
+        (sd.printObject !== undefined ? ` print-object="${sd.printObject ? "yes" : "no"}"` : "");
+      o.push(d + 2, `<staff-details${a}/>`);
     }
     if (m.attrs.transpose) {
       o.push(d + 2, "<transpose>");
