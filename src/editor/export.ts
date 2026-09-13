@@ -5,7 +5,7 @@ import { buildPptx } from "./pptx";
 import { ExpandedPainter } from "../jianpu/expanded";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { scoreToJpwabc } from "../score/jpscore";
-import { puToMusicXml } from "../pu";
+import { textScoreToMusicXml } from "../pu";
 import { asset } from "../common/asset";
 import { scoreToMusicXml } from "../score/musicxmlout";
 import { patchMusicXml } from "../score/musicxmlpatch";
@@ -97,7 +97,7 @@ async function svgToBytes(svg: SVGSVGElement, scale: number, bg = "#fff"): Promi
 }
 
 function baseName(app: App): string {
-  if (app.adapter.caps.viaPuDoc) {
+  if (app.adapter.caps.layout === "scoredoc") {
     const t = app.puScore()?.title.split("\n")[0];
     if (t) return t;
   }
@@ -113,7 +113,7 @@ export async function exportCurrentPagePng(app: App): Promise<void> {
 }
 
 export async function exportMidi(app: App): Promise<void> {
-  const score = app.adapter.caps.viaPuDoc ? app.puScore() : app.painter.score;
+  const score = app.adapter.caps.layout === "scoredoc" ? app.puScore() : app.painter.score;
   if (!score) throw new Error("这份文本谱里没有可导出的曲行");
   const bytes = scoreToMidi(score, app.playback.options());
   await saveBytes(bytes, `${baseName(app)}.mid`, "audio/midi");
@@ -135,10 +135,10 @@ export async function exportPptx(app: App): Promise<void> {
  *  否则导出的投影片会带着原样档的字号与颜色。 */
 export function pptxPainter(app: App): ExpandedPainter {
   if (app.painter instanceof ExpandedPainter) return app.painter;
-  const score = app.adapter.caps.viaPuDoc ? app.puScore(true) : app.painter.score;
+  const score = app.adapter.caps.layout === "scoredoc" ? app.puScore(true) : app.painter.score;
   if (!score) throw new Error("这份文本谱里没有可导出的曲行");
   const p = new ExpandedPainter(app.expandedOptions());
-  p.load(score, app.adapter.caps.viaPuDoc ? null : app.breakDesc);
+  p.load(score, app.adapter.caps.layout === "scoredoc" ? null : app.breakDesc);
   return p;
 }
 
@@ -200,11 +200,11 @@ async function finishMusicXml(app: App, xml: string): Promise<void> {
   );
 }
 
-/** 文本谱 → MusicXML。直接从 AST 生成（不经 Score），和弦、力度、渐强渐弱都保住。 */
+/** 文本谱/123/ABC → MusicXML。直接从 `ScoreDoc` 生成（不经 Score），和弦、力度、渐强渐弱都保住。 */
 export async function exportPuMusicXml(app: App): Promise<void> {
-  const puDoc = app.puDoc();
-  if (!puDoc) throw new Error("这份文本谱里没有可导出的曲行");
-  await finishMusicXml(app, puToMusicXml(puDoc));
+  const doc = app.currentScoreDoc();
+  if (!doc) throw new Error("这份谱里没有可导出的曲行");
+  await finishMusicXml(app, textScoreToMusicXml(doc));
 }
 
 /** 文本谱 → `.jpwabc`。JP-Word 的 .Voice 只有单声部，多声部时只导第一声部。 */
@@ -268,7 +268,7 @@ interface ExportItem {
 
 const isMixed = (app: App): boolean => app.mode === "mixed";
 /** 走 `PuDoc` 那条路的格式（文本谱与 123）：导出项与简谱那档不同。 */
-const isPu = (app: App): boolean => app.adapter.caps.viaPuDoc && !isMixed(app);
+const isPu = (app: App): boolean => app.adapter.caps.layout === "scoredoc" && !isMixed(app);
 const isJp = (app: App): boolean => !isPu(app) && !isMixed(app);
 
 /** 顺序即对话框里的顺序。 */
@@ -311,7 +311,7 @@ export function showExportDialog(app: App): void {
   // 文本谱这一档不加后缀：「导出 · 文本谱」会被读成「导出成文本谱」，而条目里
   // 一个文本谱格式都没有。
   title.textContent =
-    app.adapter.caps.viaPuDoc ? "导出" : app.mode === "mixed" ? "导出 · 五线谱" : "导出 · 简谱";
+    app.adapter.caps.layout === "scoredoc" ? "导出" : app.mode === "mixed" ? "导出 · 五线谱" : "导出 · 简谱";
   const list = document.createElement("div");
   list.style.cssText = "display:flex;flex-direction:column;gap:8px";
   const error = document.createElement("div");

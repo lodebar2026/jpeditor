@@ -136,7 +136,7 @@ export function showOptionsDialog(app: App): void {
   /** 展开档：两种格式同一个排版器（ExpandedPainter），摆同一组设置。 */
   const isPpt = !isMixed && view === "expanded";
   /** 走 `PuPainter` 的**原样档**（文本谱与 123）：版面由量好的 metrics 定。 */
-  const isPu = !isMixed && !isPpt && app.adapter.caps.viaPuDoc;
+  const isPu = !isMixed && !isPpt && app.adapter.caps.layout === "scoredoc";
   /** 简谱排版器那条路（展开档或 .jpwabc 原样档）——下面绝大多数项只有它吃。 */
   const isJp = !isMixed && !isPu;
   const isJianpu = isJp && view === "original";
