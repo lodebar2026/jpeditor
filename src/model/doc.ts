@@ -68,6 +68,8 @@ export interface Work {
   /** MusicXML 的 `<movement-title>` */
   movementTitle?: string;
   subtitles: string[];
+  /** 文本谱 `V:` 版本号原文 */
+  version?: string;
 }
 
 /** ← 123 的 `C:` / 文本谱 `Z:` / MusicXML `<identification><creator>` */
@@ -138,6 +140,8 @@ export interface Key {
   spelling?: string;
   /** 简谱主音唱名，缺省 "1" */
   tonicDegree?: string;
+  /** 调号在谱面上的**原文**（文本谱写 `♭A`，`spelling` 归一成 `bA`）。排版照原文印 */
+  display?: string;
   /** `<key>` 的显式临时记号（`K:D exp _b _e ^f`） */
   explicitAccidentals?: { step: string; alter: number }[];
 }
@@ -251,6 +255,9 @@ export interface Lyric {
    *  **不能并进 `text`**——并进去会改变音节的字数，让 emit 的「多字并一格要包 `{}`」
    *  判断在往返中翻来覆去。 */
   leadingPunctuation?: string;
+  /** 文本谱同一行曲下**同一段号出现多行歌词**（收尾改写）时，这个字属于 `Print.lyricLines` 的第几行。
+   *  只在有歧义时写 */
+  lineIndex?: number;
   source?: SourceSpan;
 }
 
@@ -267,6 +274,25 @@ export interface Notations {
   glissando?: boolean;
 }
 
+/** 简谱记号**原名**（文本谱的 `&xx`，`level` = 紧跟的 `+` 个数，抬高位置/区分变体）。
+ *
+ *  为什么不只存 `Notations`：简谱记号有六十来种，排版要照原名画、按 level 抬高，
+ *  而 MusicXML 那一侧只认得其中一部分（fermata / 力度 / 跳转…）。所以两份并存：
+ *  `ornaments` 是排版依据，`notations` / `Measure.directions` 是它的语义投影（导出、123 用）。 */
+export interface SourceOrnament {
+  name: string;
+  level: number;
+}
+
+/** 文本谱里**夹在符号之间**、自己不占时值的东西，挂在紧随其后的那个符号上（行末的挂 `Measure.trailing`）。
+ *
+ *  - `boundary`：`~` 强制连进一拍 / `^` 强制切开，只影响减时线连断
+ *  - `layer`：`{bz…}` 临时伴奏（上方小字一行）/ `{dsb…}` 临时多声部（并排块），
+ *    内容是一段自带小节与记号的独立元素流，排在宿主符号处 */
+export type InlineItem =
+  | { kind: "boundary"; behavior: "join" | "split"; source?: SourceSpan }
+  | { kind: "layer"; role: "accompaniment" | "voice"; measures: Measure[]; marks: Mark[]; source?: SourceSpan };
+
 // ───────────────────────── 元素 ─────────────────────────
 
 /** 增时线（简谱的 `-`）。
@@ -279,6 +305,16 @@ export interface Sustain {
   id: ElementId;
   harmony?: Harmony;
   notations?: Notations;
+  /** 见 `SourceOrnament` */
+  ornaments?: SourceOrnament[];
+  /** 增时线上方的注记（文本谱 `- "…"`） */
+  sectionWord?: string;
+  /** 是否跟歌词。缺省不跟；文本谱 `-@` 为 true */
+  lyricAnchor?: boolean;
+  /** `-@` 跟的那个字 */
+  lyrics?: Lyric[];
+  /** 见 `InlineItem` */
+  before?: InlineItem[];
   source?: SourceSpan;
 }
 
@@ -288,6 +324,8 @@ export interface GraceInfo {
   slash?: boolean;
   stealTimePrevious?: number;
   stealTimeFollowing?: number;
+  /** 后倚音（文本谱 `"hyy:…"` / `[h…]`）：排在主音**之后** */
+  after?: boolean;
 }
 
 /** 休止信息。`<rest measure="yes">` 是整小节休止。 */
@@ -295,6 +333,8 @@ export interface RestInfo {
   measure?: boolean;
   /** 休止也可以定在某个音高上（`<rest><display-step>`） */
   displayPitch?: Pitch;
+  /** 文本谱里休止符上带的八度点（`0'`，语料里真有），排版照画 */
+  octaveShift?: number;
 }
 
 /** 一个时间位置上的内容：一个音、一组同时发声的音（和弦音）、或一个休止。
@@ -329,6 +369,16 @@ export interface Chord {
   rhythm?: boolean;
   /** `print-object="no"`：不可见 */
   printObject?: boolean;
+  /** 是否参与歌词对位。**缺省 = 非休止**；只在与缺省不同时写（文本谱的 `0@`、隐藏休止 `8`/`9`） */
+  lyricAnchor?: boolean;
+  /** 见 `SourceOrnament` */
+  ornaments?: SourceOrnament[];
+  /** **承接前音的延长**：小节线/换行之后开头的增时线（文本谱 `5 - | - -`）。
+   *  这个和弦本身印成一条增时线、不印符头，音高照抄前音，导出 MusicXML 时与前音以 tie 相连。
+   *  123 目前写不出这种写法（`$`/小节线后的 `-` 读作孤立增时线），写出端跳过它 */
+  continued?: boolean;
+  /** 见 `InlineItem` */
+  before?: InlineItem[];
   source?: SourceSpan;
 }
 
@@ -384,6 +434,20 @@ export interface Ending {
   numbers: number[];
   text?: string;
   type: "start" | "stop" | "discontinue";
+  /** 抬高级别（文本谱 `[+1`），挂在 start 上 */
+  level?: number;
+  /** 跨行时后续各行那一段的抬高级别（文本谱续行会重新编 level），挂在 start 上 */
+  continuationLevels?: number[];
+  /** 文本谱把 `[` 写在**上一行行尾**（最后一根小节线之后）：上一行留一段空的起头。挂在 start 上 */
+  leadInPreviousLine?: boolean;
+  /** start 与 stop 的配对号。文本谱解析器会留下跨行永不收口的房号、与后面的房号**重叠**，按先后配不对 */
+  pair?: number;
+  /** 行尾起头、但后面**再没有续行**接上的房号（解析器留下的）：挂在本行末小节一条无样式的右线上，只画那段空起头 */
+  danglingLead?: boolean;
+  /** 原文没写房号文字（`numbers` 是缺省补的 1），排版不印数字。挂在 start 上 */
+  captionless?: boolean;
+  /** 起止倒置的空房号（原文 `[1` 紧跟着就收了）：只有 start，不画线段。挂在 start 上 */
+  collapsed?: boolean;
 }
 
 export interface Barline {
@@ -396,6 +460,18 @@ export interface Barline {
   ending?: Ending;
   /** 小节线上的跳转记号：segno / coda / fine / D.C. / D.S.（123 的 `!xx!`） */
   jump?: string;
+  /** 文本谱 `:|:`（左右都反复）：`repeat` 记 backward，这一位补上 forward */
+  alsoForward?: boolean;
+  /** 不显形**也不占宽**（文本谱 `|/`）。`style: "none"` 单独出现是不显形但占宽（`|*`） */
+  noWidth?: boolean;
+  /** 小节线上的记号原名（`&fine` `&dc` `&ds` `&sbf`…），见 `SourceOrnament` */
+  ornaments?: SourceOrnament[];
+  /** 小节线上标注的临时拍号（文本谱 `"p:3/4"`），自下一小节起生效 */
+  time?: Time;
+  /** 小节线上的注记文字 */
+  annotation?: string;
+  /** 见 `InlineItem` */
+  before?: InlineItem[];
   /** `location === "middle"` 时：它排在本小节第几个元素之后。
    *  不可见小节线 `[|]` 常落在小节中间，丢了位置就会把两个小节并成一个 */
   afterElements?: number;
@@ -452,6 +528,29 @@ export interface Print {
   staffSpacing?: number;
   /** `<measure-numbering>` */
   measureNumbering?: string;
+  /** 本系统是全曲第几个系统（0 基）。文本谱**一组不一定含全部声部**，多声部时靠它把各声部的行对回同一组 */
+  system?: number;
+  /** 印在本系统上方的说明文字行（文本谱 `W:`）。挂在该系统第一个声部的首小节 */
+  texts?: string[];
+  /** 本行的声部名（文本谱每行都可以写 `Q1<女高>`）；`Part.name` 只是第一行的 */
+  caption?: string;
+  /** 文本谱 `Q!:` / `Q-:` / `Q+:` 的后缀原文（语义未明，保留） */
+  variant?: "!" | "-" | "+";
+  /** 本行挂的歌词行版式：段号区间、印刷段号、段号与字的间隙、联合括号、音节个数。
+   *  字本身挂在各元素的 `lyrics` 上；这里只记「行」这一级才有的东西，排版要原样还原 */
+  lyricLines?: LyricLineInfo[];
+}
+
+/** 见 `Print.lyricLines` */
+export interface LyricLineInfo {
+  verseFrom: number;
+  verseTo: number;
+  annotation?: string;
+  /** 段号与歌词之间的间隙（字宽百分比，文本谱 `%50`） */
+  annotationGap: number;
+  joinBrace?: boolean;
+  /** 原文里这一行有几个音节（含空音节）。多于对位格时多出的排版不用 */
+  count: number;
 }
 
 export interface Measure {
@@ -464,6 +563,8 @@ export interface Measure {
   barlines?: Barline[];
   directions?: Direction[];
   print?: Print;
+  /** 行末（最后一个符号之后）的 `InlineItem` */
+  trailing?: InlineItem[];
   /** **读不懂的原样留着**：`fromxml.ts` 把本小节里它不认识的子节点序列化成字符串挂这儿，
    *  `toxml.ts` 原位吐回去。保存策略是「改动过就全量重写」，全量重写不丢东西**靠的就是这个**，
    *  不是 patch（见 `docs/待办.md` §1 机制 A）。 */
@@ -509,6 +610,14 @@ export interface Mark {
   placement?: "above" | "below";
   /** 虚线弧（ABC 的 `.(cde)`，规范自称多段歌词时有用） */
   dashed?: boolean;
+  /** 渐强/渐弱（`type === "wedge"` 时） */
+  wedgeType?: "crescendo" | "diminuendo";
+  /** 跨行时后续各行那一段的 level（文本谱续行会重新编号，见过 3 → 1） */
+  continuationLevels?: number[];
+  /** 起止倒置的空记号（文本谱 `(` 写在行末最后一个符号之后、本行就收了）：`start`=`end`=那个符号，排版不画 */
+  collapsed?: boolean;
+  /** 起点写在**上一行行尾**（最后一个符号之后）：上一行留一段空的起头，`start` 是续行的首个符号 */
+  leadInPreviousLine?: boolean;
   /** 三连音等的显示数字 */
   tupletActual?: number;
   tupletNormal?: number;
@@ -571,6 +680,8 @@ export interface Song {
   /** 首调号与拍号的初值（曲中变更走 `Measure.attrs`） */
   key?: Key;
   time?: Time;
+  /** 头部的其余拍号（文本谱 `P: 4/4 3/4`，第一个在 `time`） */
+  extraTimes?: Time[];
   /** 速度：数字为 BPM，字符串为文字术语（「欢快地」）。两者可并存 */
   tempos?: (number | string)[];
   /** [五线谱] */
@@ -592,6 +703,8 @@ export interface Song {
 export interface ScoreDoc {
   /** 产出它的源格式，用于诊断与导出默认 */
   sourceFormat: "123" | "abc" | "musicxml" | "jpwabc" | "pu" | "omr";
+  /** 文本谱方言（`pu/dialect.ts::Dialect`）。排版取度量用 */
+  puDialect?: string;
   /** 源文本（有的话）。点选定位要回指原文 */
   source?: string;
   songs: Song[];

@@ -8,8 +8,11 @@
 //
 // ## 它什么时候删
 //
-// R2 收尾时把 `PuPainter` / `toxml` / `toscore` 直接改吃 `ScoreDoc`，然后删掉本文件。
-// 在此之前**不要往这里加功能**——加功能意味着把 `PuDoc` 的寿命延长。
+// R2 收尾时把 `PuPainter` / `toxml` / `toscore` 直接改吃 `ScoreDoc`，然后删掉本文件
+// （`docs/待办.md` §1.1）。过渡期它还兼任 `frompu.ts` 的**逆**：
+// `scripts/pu-scoredoc-check.mjs` 用 `PuDoc → ScoreDoc → PuDoc` 比对来证明 `ScoreDoc` 无损。
+// 所以文本谱来源的专有字段（`doc.ts` 里标了「文本谱」的那些）这里要**逐一还原**；
+// 没有这些字段的文档（123、ABC）走原来的缺省。
 //
 // ## 已知有损（转过去就丢，所以这几样只在 `ScoreDoc` 与 `.123` 里活着）
 //
@@ -18,7 +21,7 @@
 // - **样式引用** `I:style`：`Metadata.options` 只能存原文，语义归样式层
 // - 五线谱侧的一切（`clef` / `staves` / `transpose` / `pedal` / `partGroups` / `defaults`）
 //
-// `dialect` 填 `"shige"` 只是为了让下游取到一份印刷观感的度量（`metricsFor`），
+// `dialect` 缺省填 `"shige"` 只是为了让下游取到一份印刷观感的度量（`metricsFor`），
 // **不表示 123 是诗歌本方言**。
 
 import type {
@@ -30,6 +33,7 @@ import type {
   Metadata,
   MusicElement,
   NoteElement,
+  Ornament,
   PuDoc,
   PuSong,
   ScoreLine,
@@ -37,17 +41,22 @@ import type {
   SustainElement,
   VoiceGroup,
 } from "../pu/ast";
+import type { Dialect } from "../pu/dialect";
 import type {
   Barline,
   Chord,
-  Element,
   ElementId,
-  Lyric,
+  InlineItem,
+  LyricLineInfo,
+  Mark,
   Measure,
   Part,
   ScoreDoc,
+  SourceOrnament,
   Song,
   SourceSpan,
+  Space,
+  Sustain,
 } from "./doc";
 
 const ZERO: SourceSpan = { line: 0, column: 0, offset: 0, length: 0 };
@@ -55,9 +64,9 @@ const ZERO: SourceSpan = { line: 0, column: 0, offset: 0, length: 0 };
 /** 小节线样式 + 反复 → `PuDoc` 的 BarlineType。 */
 function puBarlineType(b: Barline): BarlineType {
   if (b.repeat === "forward") return "repeat-start";
-  if (b.repeat === "backward") return "repeat-end";
+  if (b.repeat === "backward") return b.alsoForward ? "repeat-both" : "repeat-end";
   switch (b.style) {
-    case "none": return "invisible";
+    case "none": return b.noWidth ? "hidden" : "invisible";
     case "light-light": return "double";
     case "light-heavy": return "end";
     case "heavy-light": return "double";
@@ -66,185 +75,178 @@ function puBarlineType(b: Barline): BarlineType {
   }
 }
 
-/** 时值：`ScoreDoc` 用 divisions，`PuDoc` 用**分母**（4=四分、8=八分）。
- *  由减时线层数直接算，比从 divisions 反推可靠——divisions 里已经并进了增时线。 */
-function puDuration(ch: Chord): number {
-  return 4 << (ch.beams?.length ?? 0);
+const puOrnaments = (os: readonly SourceOrnament[] | undefined): Ornament[] =>
+  (os ?? []).map((o) => ({ name: o.name, level: o.level, source: ZERO }));
+
+/** 和弦上的记号：有原名就照原名（文本谱来源），否则由语义投影推（123 来源）。 */
+function chordOrnaments(ch: Chord): Ornament[] {
+  if (ch.ornaments) return puOrnaments(ch.ornaments);
+  const out: Ornament[] = [];
+  if (ch.notations?.fermata) out.push({ name: "yc", level: 0, source: ZERO });
+  for (const a of ch.notations?.articulations ?? []) out.push({ name: a, level: 0, source: ZERO });
+  return out;
 }
 
-/** 一个 `ScoreDoc` 元素 → 若干 `PuDoc` 元素（增时线要展开成独立的 SustainElement）。 */
-function toPuElements(el: Element): MusicElement[] {
-  const out: MusicElement[] = [];
-  if (el.kind === "space") {
-    // `y`（无时值占位）与 `x`（不可见休止）都落成**隐藏音符**：
-    // `PuDoc` 没有无时值占位，`hidden` 的 0 是最接近的东西。
-    // `y` 不参与对位（`lyricAnchor: false`），与诗歌本的 `9` 同口径。
-    const n: NoteElement = {
-      kind: "note",
-      pitch: 0,
-      sound: "rest",
-      hidden: true,
-      lyricAnchor: el.spacer === "x",
-      octave: 0,
-      duration: el.spacer === "x" ? 4 << (el.beams?.length ?? 0) : 4,
-      dots: el.duration?.dots ?? 0,
-      ornaments: [],
-      graceBefore: [],
-      graceAfter: [],
-      code: el.spacer,
-      source: el.source ?? ZERO,
-    };
-    if (el.harmony?.text) n.chord = el.harmony.text;
-    out.push(n);
-    return out;
-  }
-
-  const ch = el;
-  const note = ch.notes[0];
-  const deg = note?.degree;
+/** 一个和弦 → 文本谱音符（主音或倚音）。 */
+function noteOf(ch: Chord, graceBefore: NoteElement[]): NoteElement {
+  const deg = ch.notes[0]?.degree;
+  const beams = ch.beams?.length;
   const n: NoteElement = {
     kind: "note",
     // 节奏音符在 `PuDoc` 里是 pitch 9 + sound "rhythm"（番茄写 `9`、诗歌本写 `X`）
     pitch: (ch.rhythm ? 9 : ch.rest ? 0 : (deg?.number ?? 0)) as NoteElement["pitch"],
     sound: ch.rhythm ? "rhythm" : ch.rest ? "rest" : "note",
     hidden: ch.printObject === false,
-    lyricAnchor: !ch.rest,
-    octave: deg?.octaveShift ?? 0,
-    duration: puDuration(ch),
+    // 倚音不占对位格；123 来源的倚音没有这一位
+    lyricAnchor: ch.lyricAnchor ?? (ch.grace ? false : !ch.rest),
+    octave: deg?.octaveShift ?? ch.rest?.octaveShift ?? 0,
+    // 123 的倚音不记减时线，按八分画
+    duration: beams === undefined && ch.grace ? 8 : 4 << (beams ?? 0),
     dots: ch.duration.dots,
-    ornaments: [],
-    graceBefore: (ch.grace ? [] : graceOf(ch)),
+    ornaments: chordOrnaments(ch),
+    graceBefore,
     graceAfter: [],
     code: "",
     source: ch.source ?? ZERO,
   };
   if (deg?.accidental) n.accidental = deg.accidental;
-  if (ch.harmony?.text) n.chord = ch.harmony.text;
-  if (ch.notations?.fermata) n.ornaments.push({ name: "yc", level: 0, source: ZERO });
-  for (const a of ch.notations?.articulations ?? []) {
-    n.ornaments.push({ name: a, level: 0, source: ZERO });
-  }
-  out.push(n);
-
-  // 增时线展开：`PuDoc` 里它们是独立元素
-  for (const su of ch.sustains ?? []) {
-    const s: SustainElement = {
-      kind: "sustain",
-      duration: 4,
-      lyricAnchor: false,
-      ornaments: [],
-      code: "-",
-      source: su.source ?? ZERO,
-    };
-    if (su.harmony?.text) s.chord = su.harmony.text;
-    out.push(s);
-  }
-  return out;
+  if (ch.harmony?.text !== undefined) n.chord = ch.harmony.text;
+  if (ch.sectionWord !== undefined) n.annotation = ch.sectionWord;
+  return n;
 }
 
-/** 倚音：`ScoreDoc` 把倚音做成独立的 `grace` 和弦，`PuDoc` 挂在主音符的 `graceBefore` 上。
- *  这里只处理「紧跟在倚音之后的那个音符」，由调用方先把倚音摘出来。 */
-function graceOf(_ch: Chord): NoteElement[] {
-  return [];
+function sustainOf(src: {
+  harmony?: Chord["harmony"];
+  sectionWord?: string;
+  ornaments?: SourceOrnament[];
+  lyricAnchor?: boolean;
+  source?: SourceSpan;
+}): SustainElement {
+  const s: SustainElement = {
+    kind: "sustain",
+    duration: 4,
+    lyricAnchor: src.lyricAnchor ?? false,
+    ornaments: puOrnaments(src.ornaments),
+    code: "-",
+    source: src.source ?? ZERO,
+  };
+  if (src.harmony?.text !== undefined) s.chord = src.harmony.text;
+  if (src.sectionWord !== undefined) s.annotation = src.sectionWord;
+  return s;
 }
 
-/** 按 `print.newSystem` / `newPage` 把一个声部的小节切成排版行。 */
-function splitSystems(part: Part): Measure[][] {
-  const rows: Measure[][] = [];
-  let cur: Measure[] = [];
-  for (const m of part.measures) {
-    // 模型口径：带 `print` 的小节**起**新系统（`doc.ts::Print`）
-    if ((m.print?.newSystem || m.print?.newPage) && cur.length) {
-      rows.push(cur);
-      cur = [];
-    }
-    cur.push(m);
-  }
-  if (cur.length) rows.push(cur);
-  return rows.length ? rows : [[]];
-}
+type Anchor = Chord | Sustain | Space;
 
+/** 把一段小节铺成扁平元素流时要带出去的东西。 */
 interface RowBuild {
   elements: MusicElement[];
   /** 元素 id → 行内下标。`PuDoc` 的 Mark 用下标区间配对 */
   indexOf: Map<ElementId, number>;
-  /** 参与对位的元素下标（按顺序），歌词按它铺 */
-  anchors: number[];
-  /** 挂在各锚点上的歌词（按段号） */
-  lyricsAt: Map<number, Lyric[]>;
-  /** 房号区间：`PuDoc` 用 Mark volta 表达，而 `ScoreDoc` 用 `Barline.ending`（MusicXML 口径），
-   *  这里按行收集起止下标 */
-  voltas: { numbers: number[]; start: number; end: number }[];
+  /** 参与对位的元素（按顺序），歌词按它铺 */
+  anchors: Anchor[];
+  /** 小节 → [首元素下标, 末元素下标（含右小节线）] */
+  measureSpan: Map<Measure, { first: number; last: number }>;
+}
+
+function pushInline(row: RowBuild, items: readonly InlineItem[] | undefined): void {
+  for (const it of items ?? []) {
+    if (it.kind === "boundary") {
+      row.elements.push({
+        kind: "beat-boundary",
+        behavior: it.behavior,
+        code: it.behavior === "join" ? "~" : "^",
+        source: it.source ?? ZERO,
+      });
+    } else {
+      const sub = buildRow(it.measures);
+      row.elements.push({
+        kind: "inline-layer",
+        role: it.role,
+        elements: sub.elements,
+        marks: [...segmentMarks(it.marks, [sub], 0), ...rowVoltas([it.measures], [sub])[0]!],
+        code: "",
+        source: it.source ?? ZERO,
+      });
+    }
+  }
 }
 
 function buildRow(measures: readonly Measure[]): RowBuild {
-  const row: RowBuild = { elements: [], indexOf: new Map(), anchors: [], lyricsAt: new Map(), voltas: [] };
-  /** 开着的房号：遇到 ending stop 或行尾时收 */
-  let openVolta: { numbers: number[]; start: number } | null = null;
+  const row: RowBuild = { elements: [], indexOf: new Map(), anchors: [], measureSpan: new Map() };
   for (const mea of measures) {
-    const left = (mea.barlines ?? []).find((b) => b.location === "left");
+    const first = row.elements.length;
     // **左小节线不输出为元素**：`PuDoc` 里 barline 元素就是小节分隔，行首再来一根会凭空
     // 多出一个空小节（`toscore.ts` 随即 `measure has no chord` 抛错）。
     // 它携带的信息已由「前一小节的右线」与房号的 volta mark 承载。
-    if (left?.ending?.type === "start") {
-      openVolta = { numbers: left.ending.numbers, start: row.elements.length };
-    }
     let pendingGrace: NoteElement[] = [];
+    let lastNote: NoteElement | null = null;
     for (const el of mea.elements) {
-      // 倚音先攒着，挂到下一个实音符的 graceBefore
-      if (el.kind === "chord" && el.grace) {
-        for (const gn of el.notes) {
-          pendingGrace.push({
-            kind: "note",
-            pitch: (gn.degree?.number ?? 1) as NoteElement["pitch"],
-            sound: "note",
-            hidden: false,
-            lyricAnchor: false,
-            octave: gn.degree?.octaveShift ?? 0,
-            duration: 8,
-            dots: 0,
-            ornaments: [],
-            graceBefore: [],
-            graceAfter: [],
-            code: "",
-            source: el.source ?? ZERO,
-          });
+      if (el.kind === "space") {
+        // `y`（无时值占位）与 `x`（不可见休止）都落成**隐藏音符**：
+        // `PuDoc` 没有无时值占位，`hidden` 的 0 是最接近的东西。
+        // `y` 不参与对位（`lyricAnchor: false`），与诗歌本的 `9` 同口径。
+        const n: NoteElement = {
+          kind: "note",
+          pitch: 0,
+          sound: "rest",
+          hidden: true,
+          lyricAnchor: el.spacer === "x",
+          octave: 0,
+          duration: el.spacer === "x" ? 4 << (el.beams?.length ?? 0) : 4,
+          dots: el.duration?.dots ?? 0,
+          ornaments: [],
+          graceBefore: [],
+          graceAfter: [],
+          code: el.spacer,
+          source: el.source ?? ZERO,
+        };
+        if (el.harmony?.text) n.chord = el.harmony.text;
+        if (pendingGrace.length) {
+          n.graceBefore = pendingGrace;
+          pendingGrace = [];
         }
+        row.indexOf.set(el.id, row.elements.length);
+        row.elements.push(n);
+        if (n.lyricAnchor) row.anchors.push(el);
         continue;
       }
-      const made = toPuElements(el);
-      if (pendingGrace.length && made[0]?.kind === "note") {
-        (made[0] as NoteElement).graceBefore = pendingGrace;
+      const ch = el;
+      // 倚音：前倚音攒着挂到下一个主音，后倚音挂回刚才那个主音
+      if (ch.grace) {
+        const g = noteOf(ch, []);
+        if (ch.grace.after && lastNote) lastNote.graceAfter.push(g);
+        else pendingGrace.push(g);
+        continue;
+      }
+      pushInline(row, ch.before);
+      let head: MusicElement;
+      if (ch.continued) {
+        head = sustainOf({ ...ch, lyricAnchor: ch.lyricAnchor ?? !ch.rest });
+      } else {
+        head = noteOf(ch, pendingGrace);
         pendingGrace = [];
+        lastNote = head;
       }
-      for (let k = 0; k < made.length; k++) {
-        const idx = row.elements.length;
-        row.elements.push(made[k]!);
-        if (k === 0) row.indexOf.set(el.id, idx);
-        const m = made[k]!;
-        if ((m.kind === "note" || m.kind === "sustain") && m.lyricAnchor) {
-          row.anchors.push(idx);
-          if (k === 0 && el.lyrics?.length) row.lyricsAt.set(row.anchors.length - 1, el.lyrics);
-        }
-      }
-      // 增时线的 id 也要能被 Mark 引用
-      if (el.kind === "chord") {
-        let off = 1;
-        for (const su of el.sustains ?? []) {
-          row.indexOf.set(su.id, row.elements.length - (el.sustains!.length - off));
-          off++;
-        }
+      row.indexOf.set(ch.id, row.elements.length);
+      row.elements.push(head);
+      if (head.lyricAnchor) row.anchors.push(ch);
+      // 增时线展开：`PuDoc` 里它们是独立元素
+      for (const su of ch.sustains ?? []) {
+        pushInline(row, su.before);
+        row.indexOf.set(su.id, row.elements.length);
+        const s = sustainOf(su);
+        row.elements.push(s);
+        if (s.lyricAnchor) row.anchors.push(su);
       }
     }
+    // 只有房号、没有线的「右线」是行末补出来挂 ending 的，原文那里没有小节线
     const right = (mea.barlines ?? []).find((b) => b.location === "right");
-    if (right) row.elements.push(puBar(right));
-    if (right?.ending?.type === "stop" && openVolta) {
-      row.voltas.push({ numbers: openVolta.numbers, start: openVolta.start, end: row.elements.length - 1 });
-      openVolta = null;
+    if (right && right.style !== undefined) {
+      pushInline(row, right.before);
+      row.elements.push(puBar(right));
     }
-  }
-  if (openVolta) {
-    row.voltas.push({ numbers: openVolta.numbers, start: openVolta.start, end: row.elements.length - 1 });
+    pushInline(row, mea.trailing);
+    row.measureSpan.set(mea, { first, last: Math.max(first, row.elements.length - 1) });
   }
   return row;
 }
@@ -253,19 +255,53 @@ function puBar(b: Barline): BarlineElement {
   const e: BarlineElement = {
     kind: "barline",
     type: puBarlineType(b),
-    ornaments: [],
+    ornaments: b.ornaments ? puOrnaments(b.ornaments) : [],
     code: "|",
     source: b.source ?? ZERO,
   };
-  if (b.jump) e.ornaments.push({ name: b.jump, level: 0, source: ZERO });
+  if (!b.ornaments && b.jump) e.ornaments.push({ name: b.jump, level: 0, source: ZERO });
+  if (b.time) {
+    e.temporaryMeter = {
+      numerator: b.time.beats,
+      denominator: b.time.beatType,
+      parenthesized: b.time.parenthesized ?? false,
+    };
+  }
+  if (b.annotation !== undefined) e.annotation = b.annotation;
   return e;
 }
 
-/** 行内的歌词：按段号铺成 `LyricLine`。空锚点填空串（`PuDoc` 用空串表示「跳过一个音符」）。 */
-function rowLyrics(row: RowBuild): PuLyricLine[] {
+/** 行内的歌词。有 `print.lyricLines`（文本谱来源）就照它的版式还原；否则按段号铺，全空的行不产生。 */
+function rowLyrics(row: RowBuild, infos: readonly LyricLineInfo[] | undefined): PuLyricLine[] {
+  if (infos) {
+    return infos.map((info, lineIdx) => {
+      const syllables: LyricSyllable[] = [];
+      for (let a = 0; a < Math.min(info.count, row.anchors.length); a++) {
+        const hit = (row.anchors[a]!.lyrics ?? []).find(
+          (l) =>
+            l.number === info.verseFrom &&
+            (l.numberTo ?? l.number) === info.verseTo &&
+            (l.lineIndex === undefined || l.lineIndex === lineIdx),
+        );
+        const syl: LyricSyllable = { text: hit?.text ?? "", source: hit?.source ?? ZERO };
+        if (hit?.trailingPunctuation) syl.trailingPunctuation = hit.trailingPunctuation;
+        syllables.push(syl);
+      }
+      const line: PuLyricLine = {
+        verseFrom: info.verseFrom,
+        verseTo: info.verseTo,
+        annotationGap: info.annotationGap,
+        syllables,
+        source: ZERO,
+      };
+      if (info.annotation !== undefined) line.annotation = info.annotation;
+      if (info.joinBrace) line.joinBrace = true;
+      return line;
+    });
+  }
   const verses = new Set<number>();
-  for (const ls of row.lyricsAt.values()) {
-    for (const l of ls) {
+  for (const a of row.anchors) {
+    for (const l of a.lyrics ?? []) {
       for (let v = l.number; v <= (l.numberTo ?? l.number); v++) verses.add(v);
     }
   }
@@ -273,9 +309,8 @@ function rowLyrics(row: RowBuild): PuLyricLine[] {
   for (const v of [...verses].sort((a, b) => a - b)) {
     const syllables: LyricSyllable[] = [];
     let label: string | undefined;
-    for (let a = 0; a < row.anchors.length; a++) {
-      const ls = row.lyricsAt.get(a) ?? [];
-      const hit = ls.find((l) => v >= l.number && v <= (l.numberTo ?? l.number));
+    for (const a of row.anchors) {
+      const hit = (a.lyrics ?? []).find((l) => v >= l.number && v <= (l.numberTo ?? l.number));
       if (hit?.verseLabel !== undefined) label = hit.verseLabel;
       const syl: LyricSyllable = { text: hit?.text ?? "", source: hit?.source ?? ZERO };
       if (hit?.trailingPunctuation) syl.trailingPunctuation = hit.trailingPunctuation;
@@ -283,56 +318,141 @@ function rowLyrics(row: RowBuild): PuLyricLine[] {
     }
     // 全空就不产生这一行
     if (!syllables.some((s) => s.text !== "")) continue;
-    const line: PuLyricLine = {
-      verseFrom: v,
-      verseTo: v,
-      annotationGap: 20,
-      syllables,
-      source: ZERO,
-    };
+    const line: PuLyricLine = { verseFrom: v, verseTo: v, annotationGap: 20, syllables, source: ZERO };
     if (label !== undefined) line.annotation = label;
     out.push(line);
   }
   return out;
 }
 
-/** Mark：id 配对 → 行内下标区间。跨行的 Mark 截断在行边界，并打上续接标记。 */
-function rowMarks(song: Song, rows: readonly RowBuild[], rowIdx: number): PuMark[] {
+/** Mark：id 配对 → 第 `rowIdx` 行的下标区间。跨行的截断在行边界、打上续接标记，
+ *  续行那一段的 level 取 `continuationLevels`。 */
+function segmentMarks(marks: readonly Mark[], rows: readonly RowBuild[], rowIdx: number): PuMark[] {
   const row = rows[rowIdx]!;
+  const rowOf = (id: ElementId): number => rows.findIndex((r) => r.indexOf.has(id));
   const out: PuMark[] = [];
-  for (const m of song.marks) {
+  for (const m of marks) {
+    // tie 在简谱里与圆滑线同形，归 slur；pedal/octaveShift/lyricExtend 没有对应物
+    const type: PuMark["type"] | null =
+      m.type === "slur" || m.type === "tied" ? "slur"
+        : m.type === "tuplet" ? "tuplet"
+          : m.type === "wedge" ? (m.wedgeType === "diminuendo" ? "decrescendo" : "crescendo")
+            : null;
+    if (type === null) continue;
+    // 起点写在上一行行尾的：上一行补一段空的起头
+    if (m.leadInPreviousLine && rows[rowIdx + 1]?.indexOf.has(m.start)) {
+      out.push({
+        type, start: row.elements.length, end: Math.max(0, row.elements.length - 1),
+        level: m.level ?? 0, source: ZERO, continuationToNext: true,
+      });
+      continue;
+    }
     const a = row.indexOf.get(m.start);
     const b = row.indexOf.get(m.end);
-    if (a === undefined && b === undefined) continue;
-    // `PuDoc` 的 MarkType 只有 slur/tuplet/crescendo/decrescendo/volta。
-    // tie 在简谱里与圆滑线同形，归 slur；wedge/pedal/octaveShift/lyricExtend 没有对应物——
-    // 渐强渐弱在 `ScoreDoc` 里是 `Direction`（MusicXML 口径），本轮不转。
-    const type: PuMark["type"] | null =
-      m.type === "slur" || m.type === "tied" ? "slur" : m.type === "tuplet" ? "tuplet" : null;
-    if (type === null) continue;
+    const startRow = a !== undefined ? rowIdx : rowOf(m.start);
+    const endRow = b !== undefined ? rowIdx : rowOf(m.end);
+    if (a === undefined && b === undefined) {
+      // 两端都不在本行：只有跨过本行的才画（中间整行都在弧下）
+      if (startRow < 0 || endRow < 0 || rowIdx < startRow || rowIdx > endRow) continue;
+    }
+    if (m.collapsed) {
+      if (a !== undefined) out.push({ type, start: a + 1, end: a, level: m.level ?? 0, source: ZERO });
+      continue;
+    }
+    const seg = (startRow >= 0 ? rowIdx - startRow : 0) + (m.leadInPreviousLine ? 1 : 0);
     const pm: PuMark = {
       type,
       start: a ?? 0,
-      end: b ?? row.elements.length - 1,
-      level: m.level ?? 0,
+      end: b ?? Math.max(0, row.elements.length - 1),
+      level: seg === 0 ? (m.level ?? 0) : (m.continuationLevels?.[seg - 1] ?? m.level ?? 0),
       source: ZERO,
     };
-    if (a === undefined) pm.continuationFromPrevious = true;
+    if (a === undefined || m.continuesFromPrevious || (m.leadInPreviousLine && seg === 1)) pm.continuationFromPrevious = true;
     if (b === undefined) pm.continuationToNext = true;
-    if (m.tupletActual) pm.caption = String(m.tupletActual);
+    if (m.tupletActual !== undefined) pm.caption = String(m.tupletActual);
     out.push(pm);
   }
-  // 房号：`Barline.ending` → Mark volta（`PuDoc` 的排版器靠它画跳房子）
-  for (const v of row.voltas) {
-    out.push({
-      type: "volta",
-      start: v.start,
-      end: v.end,
-      level: 0,
-      caption: v.numbers.join("."),
-      source: ZERO,
-    });
+  return out;
+}
+
+const captionOfEnding = (e: NonNullable<Barline["ending"]>): string | undefined =>
+  e.captionless ? undefined : (e.text ?? e.numbers.join("."));
+
+/** 房号：`Barline.ending` → Mark volta（`PuDoc` 的排版器靠它画跳房子）。跨行的拆成各行一段。 */
+function rowVoltas(measuresByRow: readonly (readonly Measure[])[], rows: readonly RowBuild[]): PuMark[][] {
+  const out: PuMark[][] = rows.map(() => []);
+  interface Open {
+    ending: NonNullable<Barline["ending"]>;
+    startRow: number;
+    start: number;
+    fromPrev: boolean;
   }
+  /** 开着的房号。一般至多一个；文本谱解析器会留下跨行不收口的、与后面的重叠 */
+  let open: Open[] = [];
+  const levelOf = (o: Open, r: number): number => {
+    const seg = r - o.startRow;
+    return seg === 0 ? (o.ending.level ?? 0) : (o.ending.continuationLevels?.[seg - 1] ?? 0);
+  };
+  const mark = (o: Open, r: number, end: number): PuMark => {
+    const pm: PuMark = { type: "volta", start: o.start, end, level: levelOf(o, r), source: ZERO };
+    const caption = captionOfEnding(o.ending);
+    if (caption !== undefined) pm.caption = caption;
+    if (o.fromPrev) pm.continuationFromPrevious = true;
+    return pm;
+  };
+  measuresByRow.forEach((measures, r) => {
+    const row = rows[r]!;
+    open = open.map((o) => ({ ...o, start: 0, fromPrev: true }));
+    for (const mea of measures) {
+      const span = row.measureSpan.get(mea)!;
+      for (const b of mea.barlines ?? []) {
+        if (b.location !== "left" || b.ending?.type !== "start") continue;
+        const e = b.ending;
+        const caption = captionOfEnding(e);
+        if (e.collapsed) {
+          const pm: PuMark = { type: "volta", start: span.first, end: span.first - 1, level: e.level ?? 0, source: ZERO };
+          if (caption !== undefined) pm.caption = caption;
+          out[r]!.push(pm);
+          continue;
+        }
+        if (e.leadInPreviousLine && r > 0) {
+          const prev = rows[r - 1]!;
+          const pm: PuMark = {
+            type: "volta", start: prev.elements.length, end: Math.max(0, prev.elements.length - 1),
+            level: e.level ?? 0, source: ZERO, continuationToNext: true,
+          };
+          if (caption !== undefined) pm.caption = caption;
+          out[r - 1]!.push(pm);
+          open.push({ ending: e, startRow: r - 1, start: 0, fromPrev: true });
+          continue;
+        }
+        open.push({ ending: e, startRow: r, start: span.first, fromPrev: false });
+      }
+      for (const right of mea.barlines ?? []) {
+        if (right.location === "right" && right.ending?.danglingLead) {
+          const pm: PuMark = {
+            type: "volta", start: row.elements.length, end: Math.max(0, row.elements.length - 1),
+            level: right.ending.level ?? 0, source: ZERO, continuationToNext: true,
+          };
+          const caption = captionOfEnding(right.ending);
+          if (caption !== undefined) pm.caption = caption;
+          out[r]!.push(pm);
+          continue;
+        }
+        if (right.location !== "right" || !right.ending || right.ending.type === "start" || !open.length) continue;
+        const stop = right.ending;
+        // 有配对号按号收，否则收最近开的那个
+        let k = stop.pair !== undefined ? open.findIndex((o) => o.ending.pair === stop.pair) : -1;
+        if (k < 0) k = open.length - 1;
+        const o = open[k]!;
+        const pm = mark(o, r, span.last);
+        if (stop.type === "discontinue") pm.openEnd = true;
+        out[r]!.push(pm);
+        open.splice(k, 1);
+      }
+    }
+    for (const o of open) out[r]!.push({ ...mark(o, r, Math.max(0, row.elements.length - 1)), continuationToNext: true });
+  });
   return out;
 }
 
@@ -354,17 +474,16 @@ function toMetadata(song: Song): Metadata {
   };
   if (song.work.title !== undefined) meta.titles.push(song.work.title);
   meta.titles.push(...song.work.subtitles);
+  if (song.work.version !== undefined) meta.version = song.work.version;
   for (const c of song.identification?.creators ?? []) meta.authors.push(c.text);
   if (song.key) {
-    if (song.key.spelling && song.key.spelling !== "none") meta.mode = song.key.spelling;
+    if (song.key.display !== undefined) meta.mode = song.key.display;
+    else if (song.key.spelling && song.key.spelling !== "none") meta.mode = song.key.spelling;
     if (song.key.tonicDegree && song.key.tonicDegree !== "1") meta.tonic = song.key.tonicDegree;
   }
-  if (song.time) {
-    meta.meters.push({
-      numerator: song.time.beats,
-      denominator: song.time.beatType,
-      parenthesized: song.time.parenthesized ?? false,
-    });
+  for (const t of [song.time, ...(song.extraTimes ?? [])]) {
+    if (!t) continue;
+    meta.meters.push({ numerator: t.beats, denominator: t.beatType, parenthesized: t.parenthesized ?? false });
   }
   for (const t of song.tempos ?? []) meta.tempos.push(t);
   meta.remarks.push(...(song.remarks ?? []));
@@ -387,45 +506,94 @@ function toMetadata(song: Song): Metadata {
   return meta;
 }
 
+interface SystemRow {
+  /** `print.system`（文本谱来源才有） */
+  system: number | undefined;
+  measures: Measure[];
+}
+
+/** 一个声部按系统切开（模型口径：带 `print` 的小节**起**新系统，见 `doc.ts::Print`）。 */
+function splitSystems(part: Part): SystemRow[] {
+  const rows: SystemRow[] = [];
+  let cur: Measure[] = [];
+  let sys: number | undefined;
+  for (const m of part.measures) {
+    if (m.print?.newSystem || m.print?.newPage) {
+      if (cur.length) rows.push({ system: sys, measures: cur });
+      cur = [];
+      sys = m.print.system;
+    }
+    cur.push(m);
+  }
+  if (cur.length) rows.push({ system: sys, measures: cur });
+  return rows.length ? rows : [{ system: undefined, measures: [] }];
+}
+
 function toPuSong(song: Song, index: number): PuSong {
-  // 各声部按系统行切开，第 i 行的各声部组成一个 VoiceGroup（同时发声、上下堆叠）
   const perPart = song.parts.map((p) => splitSystems(p));
-  const rowCount = Math.max(1, ...perPart.map((r) => r.length));
-  const groups: VoiceGroup[] = [];
-  for (let r = 0; r < rowCount; r++) {
-    const builds: RowBuild[] = [];
+  /** 文本谱来源：一组不一定含全部声部，按 `print.system` 对回同一组；其余按行序号 */
+  const bySystem = perPart.some((rows) => rows.some((r) => r.system !== undefined));
+  const voiceOf = (pi: number): number => {
+    const m = bySystem ? /^P(\d+)$/.exec(song.parts[pi]!.id) : null;
+    return m ? Number(m[1]) : pi + 1;
+  };
+  // 各声部的全部行先建好——跨行记号要看别的行有没有端点
+  const builds = perPart.map((rows) => rows.map((row) => buildRow(row.measures)));
+  const voltas = perPart.map((rows, pi) => rowVoltas(rows.map((r) => r.measures), builds[pi]!));
+
+  const systems = new Map<number, { pi: number; r: number }[]>();
+  perPart.forEach((rows, pi) => {
+    rows.forEach((row, r) => {
+      const key = bySystem ? (row.system ?? r) : r;
+      let list = systems.get(key);
+      if (!list) systems.set(key, (list = []));
+      list.push({ pi, r });
+    });
+  });
+
+  const pages: ScorePage[] = [];
+  let page: ScorePage = { index: 0, groups: [] };
+  for (const key of [...systems.keys()].sort((a, b) => a - b)) {
     const voices: ScoreLine[] = [];
-    for (let pi = 0; pi < song.parts.length; pi++) {
-      const measures = perPart[pi]![r];
-      if (!measures) continue;
-      const build = buildRow(measures);
-      builds.push(build);
+    let texts: string[] = [];
+    let newPage = false;
+    for (const { pi, r } of systems.get(key)!) {
+      const part = song.parts[pi]!;
+      const build = builds[pi]![r]!;
+      const p = perPart[pi]![r]!.measures[0]?.print;
+      if (bySystem && p?.newPage) newPage = true;
+      if (p?.texts) texts = p.texts;
       const line: ScoreLine = {
-        voice: pi + 1,
+        voice: voiceOf(pi),
         elements: build.elements,
-        marks: [],
-        lyrics: rowLyrics(build),
+        marks: [...segmentMarks(song.marks, builds[pi]!, r), ...voltas[pi]![r]!],
+        lyrics: rowLyrics(build, p?.lyricLines),
         raw: "",
         source: ZERO,
       };
-      const name = song.parts[pi]!.name;
-      if (name !== undefined) line.caption = name;
+      const caption = bySystem ? p?.caption : part.name;
+      if (caption !== undefined) line.caption = caption;
+      if (p?.variant !== undefined) line.variant = p.variant;
       voices.push(line);
     }
-    // Mark 要在所有行建完之后再填（跨行续接要看别的行有没有端点）
-    for (let k = 0; k < voices.length; k++) {
-      voices[k]!.marks = rowMarks(song, builds, k);
+    if (newPage && page.groups.length) {
+      pages.push(page);
+      page = { index: pages.length, groups: [] };
     }
-    groups.push({ index: r, texts: [], voices });
+    page.groups.push({
+      index: page.groups.length,
+      texts: texts.map((t) => ({ text: t, source: ZERO })),
+      voices,
+    } satisfies VoiceGroup);
   }
-  const pages: ScorePage[] = [{ index: 0, groups }];
+  pages.push(page);
   return { index, metadata: toMetadata(song), pages };
 }
 
 /** `ScoreDoc` → `PuDoc`。见文件头的「已知有损」。 */
 export function scoreDocToPu(doc: ScoreDoc): PuDoc {
   return {
-    dialect: "shige",
+    dialect: (doc.puDialect ?? "shige") as Dialect,
     source: doc.source ?? "",
     songs: doc.songs.map(toPuSong),
     diagnostics: doc.diagnostics,

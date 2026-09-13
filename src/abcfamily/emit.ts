@@ -56,6 +56,8 @@ function lyricLines(part: Part, sep: string): string[] {
   for (const mea of part.measures) {
     for (const el of mea.elements) {
       if (el.kind === "chord" && el.grace) continue;
+      // 承接前音的延长（文本谱小节线后的 `-`）123 写不出来，整个跳过（见 `doc.ts::Chord.continued`）
+      if (el.kind === "chord" && el.continued) continue;
       // `y` 无时值、不占对位格（规范 §8.1 它只为挂和弦）；`x` 占（它是 Chord）
       if (el.kind === "space" && el.spacer === "y") continue;
       slots.push(el);
@@ -307,10 +309,13 @@ export abstract class AbcFamilyEmitter {
     for (let i = 0; i < part.measures.length; i++) {
       const mea = part.measures[i]!;
       // 左线可能有**多条**（`.jpwabc` 允许 `|:|` 连写），按顺序全部输出
-      for (const left of (mea.barlines ?? []).filter((b) => b.location === "left")) {
+      const lefts = (mea.barlines ?? []).filter((b) => b.location === "left");
+      // 123 一处只能起一个房号；文本谱解析器会留下与新房号重叠的不收口房号，只写最后一个（读回也只认它）
+      const lastEnding = lefts.filter((b) => b.ending?.type === "start").pop();
+      for (const left of lefts) {
         // 只有房号、没有实际线时不写线（`[1` 自己就是起点标记）
         if (left.style !== undefined) out.push(barlineText(left));
-        if (left.ending?.type === "start") out.push(`[${left.ending.numbers.join(",")}`);
+        if (left === lastEnding) out.push(`[${left.ending!.numbers.join(",")}`);
       }
       out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }));
       const right = (mea.barlines ?? []).find((b) => b.location === "right");
@@ -334,6 +339,7 @@ export abstract class AbcFamilyEmitter {
     let midIdx = 0;
     for (const el of mea.elements) {
       const ch = el.kind === "chord" ? el : null;
+      if (ch?.continued) continue; // 同 `lyricLines`
       // 倚音单独成块、紧贴后一个音符
       if (ch?.grace) {
         pieces.push(this.graceText(ch));
@@ -344,7 +350,9 @@ export abstract class AbcFamilyEmitter {
       // 和弦符号前置（规范 §8.1）
       if (el.harmony?.text) s += `"${el.harmony.text}"`;
       // 段落词/注记走 ABC §4.19 的注记写法（`^` = 标在上方）
-      if (ch?.sectionWord) s += `"^${ch.sectionWord}"`;
+      // 增时线上的注记（文本谱 `- "…"`）123 挂不到 `-` 上，并到宿主音符写出（宿主自己没有时）
+      const word = ch?.sectionWord ?? ch?.sustains?.find((su) => su.sectionWord !== undefined)?.sectionWord;
+      if (word) s += `"^${word}"`;
       if (el.notations?.fermata) s += "!fermata!";
       for (const a of el.notations?.articulations ?? []) s += `!${a}!`;
       const tp = mi.tupletStart.get(el.id);
@@ -415,6 +423,14 @@ export abstract class AbcFamilyEmitter {
       if (r.startsWith("P:")) L.push(r);
       else pushLines(L, "N", r);
     }
+    // 系统上方的说明文字行（文本谱 `W:`）：123 没有带位置的文字行，按出现顺序落成 `N:`
+    const texts: { system: number; text: string }[] = [];
+    for (const part of song.parts) {
+      for (const mea of part.measures) {
+        for (const t of mea.print?.texts ?? []) texts.push({ system: mea.print?.system ?? 0, text: t.trim() });
+      }
+    }
+    for (const t of texts.sort((a, b) => a.system - b.system)) if (t.text) pushLines(L, "N", t.text);
 
     for (let i = 0; i < song.parts.length; i++) {
       const part = song.parts[i]!;
