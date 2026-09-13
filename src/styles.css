@@ -204,6 +204,9 @@ button:focus-visible, select:focus-visible {
 #body { flex: 1 1 auto; min-height: 0; position: relative; display: flex; background: var(--canvas); }
 .workspace-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 #code-pane-shell { flex: 0 0 38%; border-right: 1px solid var(--border); background: var(--panel); }
+/* 没有代码区的格式（.musicxml）：只看谱面，要编辑先转成文本格式 */
+#body.no-code #code-pane-shell { display: none !important; }
+#body.no-code #score-pane-shell { display: block !important; }
 #score-pane-shell { position: relative; flex: 1 1 auto; background: var(--canvas); }
 .pane-heading {
   flex: 0 0 34px;

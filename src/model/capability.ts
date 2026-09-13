@@ -106,7 +106,8 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
         }
         for (const el of mea.elements) {
           if (el.kind === "space" && el.spacer === "x") used.add("invisibleRest");
-          if (el.harmony?.text) used.add("harmony");
+          // MusicXML 读进来的和弦是结构化的、没有 text，所以按有无判
+          if (el.harmony) used.add("harmony");
           if (el.kind === "chord") {
             if (el.grace) used.add("grace");
             if (el.rhythm) used.add("rhythmNote");
@@ -118,7 +119,7 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
       }
     }
     for (const { chord } of eachChord(song)) {
-      for (const su of chord.sustains ?? []) if (su.harmony?.text) used.add("harmony");
+      for (const su of chord.sustains ?? []) if (su.harmony) used.add("harmony");
     }
   }
   return used;

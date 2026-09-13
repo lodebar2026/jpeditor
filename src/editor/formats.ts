@@ -18,9 +18,11 @@ import { parsePu } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
 import { puToScoreDoc } from "../model/frompu";
 import type { ScoreDoc } from "../model/doc";
+import { loadScoreDoc } from "../model/fromxml";
+import { fillDegreesFromPitch } from "../model/helpers";
 
-/** 可编辑的源格式。阶段 4 加 `"musicxml"`。 */
-export type DocFormatId = "jpwabc" | "pu" | "123" | "abc";
+/** 可打开的源格式。`musicxml` 没有代码区（`caps.textEditor === false`），只看谱面、转成文本格式再编辑。 */
+export type DocFormatId = "jpwabc" | "pu" | "123" | "abc" | "musicxml";
 
 /** 适配器向 App 要的那些能力（**列全**，加一条就想想是不是该留在 App 里）。 */
 export interface FormatHost {
@@ -37,9 +39,13 @@ export interface FormatHost {
   reload123(text: string): boolean;
   /** `.abc` 重排/重渲染。 */
   reloadAbc(text: string): boolean;
+  /** `.musicxml` 重排/重渲染。 */
+  reloadMusicXml(text: string): boolean;
 }
 
 export interface FormatCaps {
+  /** 有没有代码区。`.musicxml` 没有：打开只进谱面视图（五线谱编辑那一路），要编辑先转成文本格式（新文档）。 */
+  textEditor: boolean;
   /** 有没有五线谱/混排这一路（混排是简谱那侧的上下文工具，文本谱与 123 不适用）。 */
   mixed: boolean;
   /** 整篇简繁转换（`convertJpwabc` 认的是 `.Title`/`.Words` 段结构）。 */
@@ -90,7 +96,7 @@ const JPWABC: FormatAdapter = {
   label: () => "JPWABC",
   title: (host) => host.painterTitle.split("\n")[0] ?? "",
   profileKnob: "jp",
-  caps: { mixed: true, hanConvert: true, layout: "jpwabc", phraseRelayout: false },
+  caps: { mixed: true, hanConvert: true, textEditor: true, layout: "jpwabc", phraseRelayout: false },
   reload: (host, text) => host.reloadJpwabc(text),
 };
 
@@ -113,7 +119,7 @@ const PU: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, layout: "scoredoc", phraseRelayout: true },
+  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true },
   reload: (host, text) => host.reloadPu(text),
   toScoreDoc: (text) => puToScoreDoc(parsePu(text)),
 };
@@ -137,7 +143,7 @@ const J123: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, layout: "scoredoc", phraseRelayout: false },
+  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: false },
   reload: (host, text) => host.reload123(text),
   toScoreDoc: parse123,
 };
@@ -163,9 +169,35 @@ const ABC: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, layout: "scoredoc", phraseRelayout: false },
+  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: false },
   reload: (host, text) => host.reloadAbc(text),
   toScoreDoc: parseAbc,
+};
+
+/** MusicXML —— 五线谱主格式。**没有代码区**：编辑器文档里存的就是 XML 原文（不显示），
+ *  谱面由 `ScoreDoc` 出（`fromxml.ts` 读全、读不懂的原样挂 `raw`）。存回原文件：没改过就是原文，
+ *  经 `App.editScoreDoc` 改过的已经整份重写成 `toxml.ts` 的产物。 */
+const MUSICXML: FormatAdapter = {
+  id: "musicxml",
+  defaultExt: ".musicxml",
+  highlighter: [],
+  decode: (bytes) =>
+    new TextDecoder(bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8").decode(stripBom(bytes)),
+  encode: utf8,
+  label: () => "MusicXML",
+  title: (host) => {
+    const m = /<(?:work-title|movement-title)>([^<]*)</.exec(host.getText());
+    return m ? m[1]!.trim() : "";
+  },
+  profileKnob: "pu",
+  caps: { textEditor: false, layout: "scoredoc", phraseRelayout: false, mixed: true, hanConvert: false },
+  reload: (host, text) => host.reloadMusicXml(text),
+  // MusicXML 只给绝对音高，简谱排版要度数
+  toScoreDoc: (text) => {
+    const doc = loadScoreDoc(text);
+    for (const song of doc.songs) fillDegreesFromPitch(song);
+    return doc;
+  },
 };
 
 export const FORMATS: Record<DocFormatId, FormatAdapter> = {
@@ -173,6 +205,7 @@ export const FORMATS: Record<DocFormatId, FormatAdapter> = {
   pu: PU,
   "123": J123,
   abc: ABC,
+  musicxml: MUSICXML,
 };
 
 export const formatOf = (id: DocFormatId): FormatAdapter => FORMATS[id];

@@ -39,16 +39,14 @@ export interface OmrHost {
   stopPlayback(): void;
   /** 重新解析并排版（退出识别模式时回到排版稿）。 */
   reload(text: string): void;
-  /** 走 MusicXML/jpwabc 导入路径落地产物。 */
-  importBytes(bytes: Uint8Array, name: string): void;
   /**
-   * 五线谱识别产物落地：MusicXML → **混排视图**。
-   *
-   * 不能走 `importBytes`：那条路对单声部 MusicXML 会转成简谱 Score，
-   * 而五线谱的和弦、多声部、slur 在 `.jpwabc`/Score 里装不下
-   * （单声部时它直接抛 `measure has no chord`）。
+   * 五线谱识别产物落地：与打开 `.musicxml` 同一个模式（无代码区），默认进**混排视图**。
+   * 不走 `importOmrMusicXml`：五线谱的和弦、多声部、slur 在 `.jpwabc`/Score 里装不下。
+   * 返回 false 表示简谱那一侧转不出来（不影响混排预览）。
    */
   adoptStaffXml(xml: string): boolean;
+  /** 简谱识别产物（MusicXML 底本）落地：转成可编辑的 `.jpwabc` 文本，并产出点选映射 `lastImportMeta`。 */
+  importOmrMusicXml(xml: string): void;
 
   /** 清空 #score-pane 与翻页状态（各预览铺页前都要做）。 */
   clearPages(): void;
@@ -244,8 +242,8 @@ export class OmrController {
   private emit(rec: RecognizedScore, bin: Binary): void {
     const out = omrEmitter(this.format).emit(rec);
     if (out.kind === "musicxml") {
-      // importBytes 开头会 clear()，故必须先导入、后回填本次产物。
-      this.host.importBytes(new TextEncoder().encode(out.text), "omr.musicxml");
+      // importOmrMusicXml 开头会 clear()，故必须先导入、后回填本次产物。
+      this.host.importOmrMusicXml(out.text);
       this.meta = this.host.lastImportMeta; // 接管导入时序列化产出的代码区间映射
     } else {
       this.clear();

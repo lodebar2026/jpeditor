@@ -85,6 +85,25 @@ export function degreeFromPitch(pitch: Pitch, key: Key, accidental?: Accidental)
   return d;
 }
 
+/** 用绝对音高补出简谱度数（已有度数的不动）。调号取小节的 `attrs.key`，没有就取本曲的（缺省 C 大调）。
+ *  **只给音高、不给度数的来源（ABC、MusicXML）都要过这一步**——简谱排版、`emit123`、播放都按度数走。 */
+export function fillDegreesFromPitch(song: Song): void {
+  const key = song.key ?? { fifths: 0 };
+  for (const part of song.parts) {
+    let cur: Key = key;
+    for (const m of part.measures) {
+      if (m.attrs?.key) cur = m.attrs.key;
+      for (const el of m.elements) {
+        if (el.kind !== "chord") continue;
+        for (const n of el.notes) {
+          if (n.degree || !n.pitch) continue;
+          n.degree = degreeFromPitch(n.pitch, cur, n.accidental);
+        }
+      }
+    }
+  }
+}
+
 // ───────────────────────── 遍历 ─────────────────────────
 
 export function* eachPart(song: Song): Generator<Part> {

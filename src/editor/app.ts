@@ -32,7 +32,8 @@ import { formatOf, type DocFormatId, type FormatAdapter, type FormatHost } from 
 import { SyncIndex, type SyncEntry } from "./sync";
 import { describeLosses, planSave, type TargetFormat } from "../model/capability";
 import { showConfirmDialog } from "./dialogs";
-import { buildMusicXml } from "./export";
+import { buildMusicXml, finishMusicXmlText } from "./export";
+import { scoreDocToMusicXml } from "../model/toxml";
 import { emit123 } from "../j123/emit";
 import { emitAbc } from "../abcfamily/emitabc.entry";
 import { puToScoreDoc } from "../model/frompu";
@@ -996,6 +997,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this._puScoreCache = null;
       this._noteToChord = null;
     }
+    // 没有代码区的格式（`.musicxml`）把代码区收起来
+    document.getElementById("body")?.classList.toggle("no-code", !this.adapter.caps.textEditor);
     // 两种格式各记一个档位（jpProfile / puProfile），换格式可能就换了档
     this._rebuildPainter();
     this._syncViewModeButtons();
@@ -1223,36 +1226,21 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       return;
     }
     if (/\.(xml|musicxml)$/i.test(name)) {
-      const xml = new TextDecoder(
-        bytes[0] === 0xff || bytes[0] === 0xfe ? "utf-16" : "utf-8",
-      ).decode(bytes);
-      this._setDocFormat("jpwabc");
+      // MusicXML：**没有代码区**，只进谱面视图（五线谱/混排，或由 `ScoreDoc` 排出的简谱）。
+      // 编辑器文档里存的就是 XML 原文（不显示）：存回原文件时没改过就是原文，零损耗。
+      // 要编辑就「转成文本格式」，那是另一份新文档（`convertToTextDoc`）。
+      const xml = formatOf("musicxml").decode(bytes);
+      this._mixedPainter = null;
+      this._setDocFormat("musicxml");
       this.mixedXmlText = xml;
-      this._mixedPainter = null; // reset so next showStaffPreview re-loads
       this._setMixedAvailable(true);
-
       // 多声部（SATB 等）歌谱默认进入混排模式
-      const autoMixed = this.mode !== "mixed" && isMultiPartXml(xml);
-      if (this.mode === "mixed" || autoMixed) {
-        if (autoMixed) this._setMode("mixed");
-        // 仍填充编辑器的简谱转换文本，便于切回「简谱」（best-effort）
-        try {
-          const score = loadMusicXml(xml);
-          this._applyImportedJp(scoreToJpwabc(score));
-        } catch (e) {
-          console.error("jp import (for toggle) failed", e);
-        }
-        void this._renderMixedPages();
-        return;
-      }
-
-      const score = loadMusicXml(xml);
-      this._syncViewModeButtons();
-      // **`.musicxml` 打开和保存都是 musicxml**：编辑的是简谱转换文本，盘上那份仍是 XML 底本，
-      // 保存时按底本 patch 写回同一个文件（见 `writeTo`）。所以这里不清 `filePath`。
-      const { text, meta } = scoreToJpwabcWithMeta(score);
-      this._lastImportMeta = meta; // 供 OmrController 接管为它的点选映射
-      this._applyImportedJp(text);
+      const toMixed = this.mode === "mixed" || isMultiPartXml(xml);
+      if (toMixed) this._setMode("mixed");
+      else this._setMode("jp");
+      this.setText(xml);
+      if (toMixed) void this._renderMixedPages();
+      return;
     } else {
       this._setDocFormat("jpwabc");
       this.mixedXmlText = null;
@@ -1264,34 +1252,121 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
   }
 
-  /** 导入 MusicXML/OMR 得到的默认（原始排版）文本：缓存以便乐句排版无损切回，并启用切换按钮。 */
   /**
-   * 五线谱识别产物落地：MusicXML → 混排视图（`OmrHost.adoptStaffXml`）。
+   * 简谱识别产物落地（`OmrHost.importOmrMusicXml`）：MusicXML 底本 + 可编辑的 `.jpwabc` 转换文本。
    *
-   * 与 `importBytes` 的 `.musicxml` 分支的差别：那条对单声部会转成简谱 Score
-   * （`loadMusicXml` → `scoreToJpwabc`），而五线谱识别的产物带和弦、多声部、slur，
-   * `.jpwabc`/Score 装不下——单声部时它直接抛 `measure has no chord`。
-   * 这里**一律进混排**，编辑器文本那份只做 best-effort（转不出来就留空，不影响预览）。
+   * 与用户打开 `.musicxml` 不同：识别核对要在代码区里改简谱文本、点选定位靠转换时产出的区间映射
+   * （`lastImportMeta`），导出 MusicXML 时在底本上 patch（`export.ts::buildMusicXml`）。
    */
-  adoptStaffXml(xml: string): boolean {
+  importOmrMusicXml(xml: string): void {
+    this.omr.clear();
     this._setDocFormat("jpwabc");
     this.mixedXmlText = xml;
+    this._mixedPainter = null; // reset so next showStaffPreview re-loads
+    this._setMixedAvailable(true);
+    this._setMode("jp");
+    const score = loadMusicXml(xml);
+    this._syncViewModeButtons();
+    const { text, meta } = scoreToJpwabcWithMeta(score);
+    this._lastImportMeta = meta; // 供 OmrController 接管为它的点选映射
+    this._applyImportedJp(text);
+  }
+
+  /**
+   * 五线谱识别产物落地：与打开 `.musicxml` 同一个模式（无代码区、谱面由 XML 出），默认进混排。
+   * 五线谱识别的产物带和弦、多声部、slur，`.jpwabc` 装不下，所以不再转简谱文本。
+   */
+  adoptStaffXml(xml: string): boolean {
     this._mixedPainter = null;
+    this._setDocFormat("musicxml");
+    this.mixedXmlText = xml;
     this._setMixedAvailable(true);
     this._setMode("mixed");
     this.filePath = null;
-    let jpOk = true;
-    try {
-      this._applyImportedJp(scoreToJpwabc(loadMusicXml(xml)));
-    } catch (e) {
-      // 简谱转换失败不影响混排预览——五线谱本来就未必装得进简谱。
-      // **不动编辑器里的文本**（那可能是用户没存的稿子），只把这件事回报给调用方。
-      jpOk = false;
-      console.warn("五线谱 → 简谱文本转换失败（不影响混排预览）", e);
-    }
+    this.setText(xml);
     void this._renderMixedPages();
-    return jpOk;
+    return true;
   }
+
+  /** FormatHost：`.musicxml` 读成 `ScoreDoc` → 简谱档排版（五线谱/混排档另由 `MixedPainter` 吃原文）。 */
+  reloadMusicXml(text: string): boolean {
+    this.mixedXmlText = text;
+    this._mixedPainter = null;
+    let doc: ScoreDoc;
+    try {
+      doc = formatOf("musicxml").toScoreDoc!(text);
+    } catch (e) {
+      console.error("MusicXML 读取失败", e);
+      this.setStatus("MusicXML 读取失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+    const notes = doc.songs.reduce((n, song) => n + [...eachChord(song)].length, 0);
+    if (notes === 0) {
+      this.setStatus("这份 MusicXML 里没有音符");
+      return false;
+    }
+    this._scoreDoc = { text, doc, pu: null };
+    this._puScoreCache = null;
+    this._noteToChord = null;
+    this._disablePhrase();
+    this._syncFormatLabel();
+    if (!this._layoutScoreDoc(doc, "MusicXML")) return false;
+    this._reportDiagnostics("MusicXML", doc.diagnostics);
+    return true;
+  }
+
+  /**
+   * 改动 `.musicxml` 的模型（五线谱编辑的入口）：改完**整份重写**成 XML 放回文档，谱面跟着重排。
+   * 存回原文件写的就是这份——`fromxml.ts` 把读不懂的原样挂在 `raw` 上，全量重写不丢东西
+   * （`xml-direct-check.mjs`：568 份十类关键元素一个没掉），所以不再走底本 patch。
+   */
+  editScoreDoc(mutate: (doc: ScoreDoc) => void): boolean {
+    if (this.docFormat !== "musicxml") return false;
+    const doc = this.currentScoreDoc();
+    if (!doc) return false;
+    mutate(doc);
+    this.setText(finishMusicXmlText(scoreDocToMusicXml(doc)));
+    if (this.mode === "mixed") void this._renderMixedPages();
+    return true;
+  }
+
+  /**
+   * 把当前 `.musicxml` **转成文本格式的新文档**再编辑：先列出目标格式装不下的东西，确认后
+   * 换成该格式、清掉文件路径（原 `.musicxml` 不动），代码区出现。
+   */
+  async convertToTextDoc(target: "123" | "abc" | "jpwabc"): Promise<void> {
+    if (this.docFormat !== "musicxml") return;
+    const doc = this.currentScoreDoc();
+    const xml = this.getText();
+    if (!doc) {
+      this.setStatus("这份 MusicXML 读不出来，无法转换");
+      return;
+    }
+    const losses = planSave(doc, target);
+    if (losses.length) {
+      const ok = await showConfirmDialog("转换会丢东西", describeLosses(target, losses));
+      if (!ok) return;
+    }
+    let text: string;
+    try {
+      // `.jpwabc` 走既有的 MusicXML → Score → jpwabc（那条路对 500 首实测过）
+      text = target === "123" ? emit123(doc) : target === "abc" ? emitAbc(doc) : scoreToJpwabc(loadMusicXml(xml));
+    } catch (e) {
+      console.error("转换失败", e);
+      this.setStatus("转换失败：" + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    this.mixedXmlText = null;
+    this._mixedPainter = null;
+    this._setMixedAvailable(false);
+    this._setMode("jp");
+    this._setDocFormat(target);
+    this.filePath = null;
+    this.setText(text);
+    this.setStatus(`已转成 ${target} 新文档（未保存，原 MusicXML 未改动）`);
+  }
+
+  /** 导入 MusicXML/OMR 得到的默认（原始排版）文本：缓存以便乐句排版无损切回，并启用切换按钮。 */
 
   private _applyImportedJp(text: string): void {
     this._origLayoutText = text;
@@ -1835,18 +1910,20 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this.adapter.encode(this.getText());
   }
 
-  /** 盘上那份文件是不是 MusicXML。**通常与 `docFormat` 一致，`.musicxml` 那一档例外**：
-   *  编辑器里编的是简谱转换文本，盘上是 XML 底本。 */
+  /** 盘上那份文件是不是 MusicXML（识别核对另存到 XML 路径时，编辑器里是简谱转换文本、盘上是 XML 底本）。 */
   private get onDiskIsXml(): boolean {
     return this.filePath !== null && /\.(xml|musicxml)$/i.test(this.filePath);
   }
 
   private async writeTo(path: string): Promise<void> {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
-    // `.musicxml` 存回原文件：未改动写原文、改动走底本 patch、patch 失败兜底全量重生成
-    const bytes = this.onDiskIsXml
-      ? new TextEncoder().encode(buildMusicXml(this))
-      : this.encodeForSave();
+    // `.musicxml` 那一档：文档里就是 XML（未改动是原文，改过的已由 `editScoreDoc` 整份重写）。
+    // 其余格式存到 XML 路径上（识别核对的 `.jpwabc` 转换文本）：底本 patch，失败兜底全量重生成。
+    const bytes = this.docFormat === "musicxml"
+      ? this.encodeForSave()
+      : this.onDiskIsXml
+        ? new TextEncoder().encode(buildMusicXml(this))
+        : this.encodeForSave();
     await writeFile(path, bytes);
   }
 
