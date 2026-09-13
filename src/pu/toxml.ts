@@ -7,6 +7,8 @@
 // 音高与时值的换算复用主谱面那套（spellPitch / typeOfDuration / MusicCommon），
 // 两条路得出的结果才对得上。
 
+import type { ScoreDoc } from "../model/doc";
+import { docView } from "./slots";
 import { Fraction, lcm } from "../common/fraction";
 import { Key, MusicCommon } from "../score/score";
 import { spellPitch, typeOfDuration } from "../score/musicxmlout";
@@ -219,10 +221,23 @@ export interface ToXmlOptions {
   song?: number;
 }
 
-/** 文本谱 → MusicXML。多声部输出为多个 `<part>`。 */
+/** 文本谱/123/ABC 的 `ScoreDoc` → MusicXML。多声部输出为多个 `<part>`。
+ *  走排版行视图（`pu/slots.ts::docView`）：记号、弧线、房号、歌词的导出口径与原样档谱面同源。
+ *  MusicXML 读进来的文档（带绝对音高、`raw` 原样节点）走 `model/toxml.ts::scoreDocToMusicXml`。 */
+export function textScoreToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): string {
+  const song = docView(doc).songs[options.song ?? 0];
+  if (!song) throw new Error("这份谱里没有可导出的曲行");
+  return songXml(song);
+}
+
+/** 过渡期对照用：解析器直出的 `PuDoc` → MusicXML（`scripts/toscore-dual.mjs`）。阶段 4 删。 */
 export function puToMusicXml(doc: PuDoc, options: ToXmlOptions = {}): string {
   const song = doc.songs[options.song ?? 0];
   if (!song) throw new Error("这份文本谱里没有可导出的曲行");
+  return songXml(song);
+}
+
+function songXml(song: PuSong): string {
   const meta = song.metadata;
 
   const key = new Key();

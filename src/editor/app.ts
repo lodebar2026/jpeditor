@@ -8,7 +8,7 @@ import { PuPainter } from "../pu/painter";
 import { parsePu, puToScore, relayoutPuText, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
 import { eachChord } from "../model/helpers";
-import { scoreDocToPu } from "../model/topu";
+import { scoreDocToPu } from "../pu/slots";
 import type { ScoreDoc } from "../model/doc";
 import type { Chord, Score } from "../score/score";
 import type { NoteElement as PuNoteElement, PuDoc } from "../pu";

@@ -14,11 +14,12 @@ export { emitAbc } from "../abcfamily/emitabc.entry";
 export * from "../model/capability";
 export * from "../j123/fields";
 export * from "../model/helpers";
-export { scoreDocToPu } from "../model/topu";
+export { scoreDocToPu } from "../pu/slots";
 export { puToScoreDoc } from "../model/frompu";
 export { scoreToScoreDoc } from "../model/fromscore";
-export { puToMusicXml } from "../pu/toxml";
-export { puToScore } from "../pu/toscore";
+export { puToMusicXml, textScoreToMusicXml } from "../pu/toxml";
+export { puToScore, scoreDocToScore } from "../pu/toscore";
+export { scoreToJpwabc } from "../score/jpscore";
 // 文本谱与 Score 侧：迁移工具要拿它们当输入
 export { parsePu, sniffDialect } from "../pu";
 export type { PuDoc } from "../pu";

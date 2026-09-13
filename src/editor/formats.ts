@@ -16,7 +16,7 @@ import { j123Highlighter } from "../j123/highlight";
 import { decodeJpwabc, encodeJpwabc } from "./fileio";
 import { parsePu } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
-import { scoreDocToPu } from "../model/topu";
+import { scoreDocToPu } from "../pu/slots";
 import type { PuDoc } from "../pu";
 
 /** 可编辑的源格式。阶段 4 加 `"musicxml"`。 */

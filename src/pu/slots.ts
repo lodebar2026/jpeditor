@@ -1,25 +1,20 @@
-// `ScoreDoc` → `PuDoc`：**临时桥**。
+// `ScoreDoc` → **排版行视图**：文本谱排版器、`ScoreDoc → Score`、双向定位共用的那一份铺排。
 //
-// ## 它为什么存在
+// ## 为什么要有这一层
 //
-// 123 需要排版、MusicXML 导出、MIDI、按乐句重排，而这些现成实现全都吃 `PuDoc`
-// （`pu/painter.ts` 排版、`pu/toxml.ts` 无损导出 MusicXML、`pu/toscore.ts` → `Score` → MIDI）。
-// 与其为 123 重写一遍，先转成 `PuDoc` 借用——这是本轮不重写下游的唯一办法。
+// 文本谱「原样」档不自动断行：一个系统就是一行，行内按符号逐个步进、记号按行内区间画。
+// 所以排版必须先把 `ScoreDoc`（声部 → 小节 → 元素，id 配对）**线性化成一行一行的符号流**——
+// 这是排版的事，不是模型的事，任何记谱排版器都要做这一步。以前这一步混在文本谱 AST 里
+// （`PuDoc` 本身就是扁平流），现在 `ScoreDoc` 是唯一语义模型，线性化规则就收在这里，**只写一次**：
 //
-// ## 它什么时候删
+// - 行内顺序：夹层（`before`）→ 主音 / 承接前音的增时线 → 各增时线（带各自夹层）→ 有样式的右小节线（带夹层）→ 行末夹层；
+//   倚音折进宿主音符；左小节线不出现（它的信息由前一小节右线与房号承载）。
+// - 行里每个符号都带 `refs[i]`：它的 `ElementId` 与引用的 `ScoreDoc` 对象。播放高亮、双向定位一律按 id 认。
+// - 跨行记号按行切段（续接标记、续行 level）、房号由 `Barline.ending` 还原成行内区间、歌词按行级版式铺回。
 //
-// R2 收尾时把 `PuPainter` / `toxml` / `toscore` 直接改吃 `ScoreDoc`，然后删掉本文件
-// （`docs/待办.md` §1.1）。过渡期它还兼任 `frompu.ts` 的**逆**：
-// `scripts/pu-scoredoc-check.mjs` 用 `PuDoc → ScoreDoc → PuDoc` 比对来证明 `ScoreDoc` 无损。
-// 所以文本谱来源的专有字段（`doc.ts` 里标了「文本谱」的那些）这里要**逐一还原**；
-// 没有这些字段的文档（123、ABC）走原来的缺省。
-//
-// ## 已知有损（转过去就丢，所以这几样只在 `ScoreDoc` 与 `.123` 里活着）
-//
-// - `playOrder` 的 **skip/limit**（音符级端点）：`PuDoc` 没有这个概念，`Score.RepeatSpec` 才有
-// - **曲号** `X:`：`Metadata` 没有这个字段
-// - **样式引用** `I:style`：`Metadata.options` 只能存原文，语义归样式层
-// - 五线谱侧的一切（`clef` / `staves` / `transpose` / `pedal` / `partGroups` / `defaults`）
+// 视图里符号的形状沿用 `pu/ast.ts` 的元素类型（排版器与导出的几何代码按这些字段写成，原样复用），
+// 但**入口只收 `ScoreDoc`**。`scripts/pu-scoredoc-check.mjs` 用 `scoreDocToPu` 把视图拼回 `PuDoc`，
+// 与解析器直出的逐字段比对，证明这份铺排对 全语料文本谱无损。
 //
 // `dialect` 缺省填 `"shige"` 只是为了让下游取到一份印刷观感的度量（`metricsFor`），
 // **不表示 123 是诗歌本方言**。
@@ -40,8 +35,8 @@ import type {
   ScorePage,
   SustainElement,
   VoiceGroup,
-} from "../pu/ast";
-import type { Dialect } from "../pu/dialect";
+} from "./ast";
+import type { Dialect } from "./dialect";
 import type {
   Barline,
   Chord,
@@ -57,7 +52,7 @@ import type {
   SourceSpan,
   Space,
   Sustain,
-} from "./doc";
+} from "../model/doc";
 
 const ZERO: SourceSpan = { line: 0, column: 0, offset: 0, length: 0 };
 
@@ -137,9 +132,22 @@ function sustainOf(src: {
 
 type Anchor = Chord | Sustain | Space;
 
+/** 行里一个符号的来源。 */
+export interface SlotRef {
+  /** 元素 id（音符和弦、承接增时线的和弦、增时线、`Space`）；小节线与夹层没有 */
+  id?: ElementId;
+  chord?: Chord;
+  space?: Space;
+  sustain?: Sustain;
+  barline?: Barline;
+  measure: Measure;
+}
+
 /** 把一段小节铺成扁平元素流时要带出去的东西。 */
 interface RowBuild {
   elements: MusicElement[];
+  /** 与 `elements` 平行 */
+  refs: SlotRef[];
   /** 元素 id → 行内下标。`PuDoc` 的 Mark 用下标区间配对 */
   indexOf: Map<ElementId, number>;
   /** 参与对位的元素（按顺序），歌词按它铺 */
@@ -148,8 +156,9 @@ interface RowBuild {
   measureSpan: Map<Measure, { first: number; last: number }>;
 }
 
-function pushInline(row: RowBuild, items: readonly InlineItem[] | undefined): void {
+function pushInline(row: RowBuild, items: readonly InlineItem[] | undefined, measure: Measure): void {
   for (const it of items ?? []) {
+    row.refs.push({ measure });
     if (it.kind === "boundary") {
       row.elements.push({
         kind: "beat-boundary",
@@ -172,7 +181,7 @@ function pushInline(row: RowBuild, items: readonly InlineItem[] | undefined): vo
 }
 
 function buildRow(measures: readonly Measure[]): RowBuild {
-  const row: RowBuild = { elements: [], indexOf: new Map(), anchors: [], measureSpan: new Map() };
+  const row: RowBuild = { elements: [], refs: [], indexOf: new Map(), anchors: [], measureSpan: new Map() };
   for (const mea of measures) {
     const first = row.elements.length;
     // **左小节线不输出为元素**：`PuDoc` 里 barline 元素就是小节分隔，行首再来一根会凭空
@@ -207,6 +216,7 @@ function buildRow(measures: readonly Measure[]): RowBuild {
         }
         row.indexOf.set(el.id, row.elements.length);
         row.elements.push(n);
+        row.refs.push({ id: el.id, space: el, measure: mea });
         if (n.lyricAnchor) row.anchors.push(el);
         continue;
       }
@@ -218,7 +228,7 @@ function buildRow(measures: readonly Measure[]): RowBuild {
         else pendingGrace.push(g);
         continue;
       }
-      pushInline(row, ch.before);
+      pushInline(row, ch.before, mea);
       let head: MusicElement;
       if (ch.continued) {
         head = sustainOf({ ...ch, lyricAnchor: ch.lyricAnchor ?? !ch.rest });
@@ -229,24 +239,36 @@ function buildRow(measures: readonly Measure[]): RowBuild {
       }
       row.indexOf.set(ch.id, row.elements.length);
       row.elements.push(head);
+      row.refs.push({ id: ch.id, chord: ch, measure: mea });
       if (head.lyricAnchor) row.anchors.push(ch);
       // 增时线展开：`PuDoc` 里它们是独立元素
       for (const su of ch.sustains ?? []) {
-        pushInline(row, su.before);
+        pushInline(row, su.before, mea);
         row.indexOf.set(su.id, row.elements.length);
         const s = sustainOf(su);
         row.elements.push(s);
+        row.refs.push({ id: su.id, chord: ch, sustain: su, measure: mea });
         if (s.lyricAnchor) row.anchors.push(su);
       }
     }
     // 只有房号、没有线的「右线」是行末补出来挂 ending 的，原文那里没有小节线
     const right = (mea.barlines ?? []).find((b) => b.location === "right");
     if (right && right.style !== undefined) {
-      pushInline(row, right.before);
+      pushInline(row, right.before, mea);
       row.elements.push(puBar(right));
+      row.refs.push({ barline: right, measure: mea });
     }
-    pushInline(row, mea.trailing);
-    row.measureSpan.set(mea, { first, last: Math.max(first, row.elements.length - 1) });
+    pushInline(row, mea.trailing, mea);
+    // 跨度只数有归属的符号与小节线（夹层不算），房号的起止偏移以此为基准（`Ending.startOffset/endOffset`）
+    let f = -1;
+    let l = -1;
+    for (let i = first; i < row.elements.length; i++) {
+      const ref = row.refs[i]!;
+      if (ref.id === undefined && !ref.barline) continue;
+      if (f < 0) f = i;
+      l = i;
+    }
+    row.measureSpan.set(mea, f < 0 ? { first, last: Math.max(first, row.elements.length - 1) } : { first: f, last: l });
   }
   return row;
 }
@@ -342,7 +364,7 @@ function segmentMarks(marks: readonly Mark[], rows: readonly RowBuild[], rowIdx:
     // 起点写在上一行行尾的：上一行补一段空的起头
     if (m.leadInPreviousLine && rows[rowIdx + 1]?.indexOf.has(m.start)) {
       out.push({
-        type, start: row.elements.length, end: Math.max(0, row.elements.length - 1),
+        type, start: row.elements.length - (m.leadBack ?? 0), end: Math.max(0, row.elements.length - 1),
         level: m.level ?? 0, source: ZERO, continuationToNext: true,
       });
       continue;
@@ -362,8 +384,8 @@ function segmentMarks(marks: readonly Mark[], rows: readonly RowBuild[], rowIdx:
     const seg = (startRow >= 0 ? rowIdx - startRow : 0) + (m.leadInPreviousLine ? 1 : 0);
     const pm: PuMark = {
       type,
-      start: a ?? 0,
-      end: b ?? Math.max(0, row.elements.length - 1),
+      start: a !== undefined ? a - (m.startLead ?? 0) : 0,
+      end: b !== undefined ? b + (m.endTrail ?? 0) : Math.max(0, row.elements.length - 1),
       level: seg === 0 ? (m.level ?? 0) : (m.continuationLevels?.[seg - 1] ?? m.level ?? 0),
       source: ZERO,
     };
@@ -426,7 +448,7 @@ function rowVoltas(measuresByRow: readonly (readonly Measure[])[], rows: readonl
           open.push({ ending: e, startRow: r - 1, start: 0, fromPrev: true });
           continue;
         }
-        open.push({ ending: e, startRow: r, start: span.first, fromPrev: false });
+        open.push({ ending: e, startRow: r, start: span.first + (e.startOffset ?? 0), fromPrev: false });
       }
       for (const right of mea.barlines ?? []) {
         if (right.location === "right" && right.ending?.danglingLead) {
@@ -445,7 +467,7 @@ function rowVoltas(measuresByRow: readonly (readonly Measure[])[], rows: readonl
         let k = stop.pair !== undefined ? open.findIndex((o) => o.ending.pair === stop.pair) : -1;
         if (k < 0) k = open.length - 1;
         const o = open[k]!;
-        const pm = mark(o, r, span.last);
+        const pm = mark(o, r, span.last + (stop.endOffset ?? 0));
         if (stop.type === "discontinue") pm.openEnd = true;
         out[r]!.push(pm);
         open.splice(k, 1);
@@ -529,7 +551,42 @@ function splitSystems(part: Part): SystemRow[] {
   return rows.length ? rows : [{ system: undefined, measures: [] }];
 }
 
-function toPuSong(song: Song, index: number): PuSong {
+/** 一行（一个声部在一个系统里的那一段）。形状同 `ScoreLine`，另带来源。 */
+export interface RowView extends ScoreLine {
+  part: Part;
+  measures: Measure[];
+  /** 与 `elements` 平行 */
+  refs: SlotRef[];
+}
+
+export interface SystemView extends VoiceGroup {
+  /** 全曲第几个系统 */
+  system: number;
+  voices: RowView[];
+}
+
+export interface PageView extends ScorePage {
+  groups: SystemView[];
+}
+
+export interface SongView extends PuSong {
+  song: Song;
+  pages: PageView[];
+}
+
+export interface DocView {
+  dialect: Dialect;
+  doc: ScoreDoc;
+  songs: SongView[];
+  /** 行里的符号 → 它的 id（高亮、定位用） */
+  idOf: Map<MusicElement, ElementId>;
+  /** id → 行里的符号（一个 id 只对应一个符号） */
+  elementOf: Map<ElementId, MusicElement>;
+  /** 歌词音节 → 它跟的那个符号的 id */
+  syllableOwner: Map<LyricSyllable, ElementId>;
+}
+
+function toPuSong(song: Song, index: number): SongView {
   const perPart = song.parts.map((p) => splitSystems(p));
   /** 文本谱来源：一组不一定含全部声部，按 `print.system` 对回同一组；其余按行序号 */
   const bySystem = perPart.some((rows) => rows.some((r) => r.system !== undefined));
@@ -551,10 +608,10 @@ function toPuSong(song: Song, index: number): PuSong {
     });
   });
 
-  const pages: ScorePage[] = [];
-  let page: ScorePage = { index: 0, groups: [] };
+  const pages: PageView[] = [];
+  let page: PageView = { index: 0, groups: [] };
   for (const key of [...systems.keys()].sort((a, b) => a - b)) {
-    const voices: ScoreLine[] = [];
+    const voices: RowView[] = [];
     let texts: string[] = [];
     let newPage = false;
     for (const { pi, r } of systems.get(key)!) {
@@ -563,7 +620,10 @@ function toPuSong(song: Song, index: number): PuSong {
       const p = perPart[pi]![r]!.measures[0]?.print;
       if (bySystem && p?.newPage) newPage = true;
       if (p?.texts) texts = p.texts;
-      const line: ScoreLine = {
+      const line: RowView = {
+        part,
+        measures: perPart[pi]![r]!.measures,
+        refs: build.refs,
         voice: voiceOf(pi),
         elements: build.elements,
         marks: [...segmentMarks(song.marks, builds[pi]!, r), ...voltas[pi]![r]!],
@@ -582,20 +642,56 @@ function toPuSong(song: Song, index: number): PuSong {
     }
     page.groups.push({
       index: page.groups.length,
+      system: key,
       texts: texts.map((t) => ({ text: t, source: ZERO })),
       voices,
-    } satisfies VoiceGroup);
+    });
   }
   pages.push(page);
-  return { index, metadata: toMetadata(song), pages };
+  return { index, song, metadata: toMetadata(song), pages };
 }
 
-/** `ScoreDoc` → `PuDoc`。见文件头的「已知有损」。 */
-export function scoreDocToPu(doc: ScoreDoc): PuDoc {
-  return {
+const views = new WeakMap<ScoreDoc, DocView>();
+
+/** 一份 `ScoreDoc` 的排版行视图。**同一份文档只建一次**：排版器、`scoreDocToScore`、双向定位拿到的是同一批对象。 */
+export function docView(doc: ScoreDoc): DocView {
+  const hit = views.get(doc);
+  if (hit) return hit;
+  const view: DocView = {
     dialect: (doc.puDialect ?? "shige") as Dialect,
-    source: doc.source ?? "",
+    doc,
     songs: doc.songs.map(toPuSong),
-    diagnostics: doc.diagnostics,
+    idOf: new Map(),
+    elementOf: new Map(),
+    syllableOwner: new Map(),
   };
+  for (const sv of view.songs) {
+    for (const pg of sv.pages) {
+      for (const g of pg.groups) {
+        for (const row of g.voices) {
+          row.elements.forEach((el, i) => {
+            const id = row.refs[i]!.id;
+            if (id === undefined) return;
+            view.idOf.set(el, id);
+            if (!view.elementOf.has(id)) view.elementOf.set(id, el);
+          });
+          const anchors = row.elements.filter((el) => (el.kind === "note" || el.kind === "sustain") && el.lyricAnchor);
+          for (const line of row.lyrics) {
+            line.syllables.forEach((syl, k) => {
+              const owner = anchors[k] && view.idOf.get(anchors[k]!);
+              if (owner !== undefined) view.syllableOwner.set(syl, owner);
+            });
+          }
+        }
+      }
+    }
+  }
+  views.set(doc, view);
+  return view;
+}
+
+/** 视图拼回 `PuDoc`。**只给校验脚本用**（`scripts/pu-scoredoc-check.mjs`），产品代码一律用 `docView`。 */
+export function scoreDocToPu(doc: ScoreDoc): PuDoc {
+  const v = docView(doc);
+  return { dialect: v.dialect, source: doc.source ?? "", songs: v.songs, diagnostics: doc.diagnostics };
 }

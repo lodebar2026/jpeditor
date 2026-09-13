@@ -154,6 +154,8 @@ interface LineResult {
   measureAt: Map<number, number>;
   /** 参与对位的元素（按顺序），歌词按它铺回去 */
   anchors: (Chord | Sustain)[];
+  /** 这一行元素流的长度 */
+  length: number;
 }
 
 /** 跨行承接状态：行首的 `-` 要照抄的前音 */
@@ -288,7 +290,7 @@ function convertLine(
     pending = [];
   }
   flush();
-  return { measures, idAt, measureAt, anchors };
+  return { measures, idAt, measureAt, anchors, length: elements.length };
 }
 
 /** 歌词铺回音符：`PuDoc` 按行存音节序列，`ScoreDoc` 挂在元素上；行这一级的版式记进 `print.lyricLines`。 */
@@ -363,16 +365,24 @@ function convertMarks(
     const type: Mark["type"] = m.type === "slur" ? "slur" : m.type === "tuplet" ? "tuplet" : "wedge";
     const start = nearestId(r.idAt, m.start, 1);
     const end = nearestId(r.idAt, m.end, -1);
+    /** 端点离最近符号的偏移（`Mark.startLead/endTrail`） */
+    const lead = start === undefined ? 0 : nearestIndex(r.idAt, m.start, 1)! - m.start;
+    const trail = end === undefined ? 0 : m.end - nearestIndex(r.idAt, m.end, -1)!;
+    const setTrail = (mk: Mark): void => {
+      if (trail > 0 && !m.continuationToNext) mk.endTrail = trail;
+      else delete mk.endTrail;
+    };
     const key = m.type;
     if (start === undefined && m.continuationToNext && !m.continuationFromPrevious) {
       // 起点在行尾：本行没有符号可挂，占个位，等续行来了再定起点（`Mark.leadInPreviousLine`）
-      const lead: Mark = { type, start: -1, end: -1, leadInPreviousLine: true, continuesToNext: true };
-      if (m.level) lead.level = m.level;
-      if (m.type === "crescendo") lead.wedgeType = "crescendo";
-      if (m.type === "decrescendo") lead.wedgeType = "diminuendo";
+      const lm: Mark = { type, start: -1, end: -1, leadInPreviousLine: true, continuesToNext: true };
+      if (m.level) lm.level = m.level;
+      if (r.length - m.start > 0) lm.leadBack = r.length - m.start;
+      if (m.type === "crescendo") lm.wedgeType = "crescendo";
+      if (m.type === "decrescendo") lm.wedgeType = "diminuendo";
       const q = cross.pending.get(key);
-      if (q) q.push(lead);
-      else cross.pending.set(key, [lead]);
+      if (q) q.push(lm);
+      else cross.pending.set(key, [lm]);
       continue;
     }
     if (start === undefined && end !== undefined && m.start > m.end && !m.continuationToNext && !m.continuationFromPrevious) {
@@ -391,9 +401,11 @@ function convertMarks(
       if (head) {
         if (head.start === -1) {
           head.start = start;
+          if (lead > 0) head.startLead = lead;
           out.push(head);
         }
         head.end = end;
+        setTrail(head);
         delete head.continuesToNext;
         (head.continuationLevels ??= []).push(m.level);
         if (m.continuationToNext) {
@@ -404,6 +416,8 @@ function convertMarks(
       }
     }
     const mk: Mark = { type, start, end };
+    if (lead > 0 && !m.continuationFromPrevious) mk.startLead = lead;
+    setTrail(mk);
     if (m.level) mk.level = m.level;
     if (m.type === "crescendo") mk.wedgeType = "crescendo";
     if (m.type === "decrescendo") mk.wedgeType = "diminuendo";
@@ -424,6 +438,15 @@ function convertMarks(
   }
 }
 
+/** 同 `nearestId`，返回的是下标。 */
+function nearestIndex(idAt: Map<number, ElementId>, from: number, dir: 1 | -1): number | undefined {
+  for (let i = from; i >= 0 && i < from + 64; i += dir) {
+    if (idAt.has(i)) return i;
+    if (dir === -1 && i === 0) break;
+  }
+  return undefined;
+}
+
 /** 下标可能落在 barline（没有 id）上，按方向找最近的有 id 的元素。 */
 function nearestId(idAt: Map<number, ElementId>, from: number, dir: 1 | -1): ElementId | undefined {
   for (let i = from; i >= 0 && i < from + 64; i += dir) {
@@ -432,6 +455,16 @@ function nearestId(idAt: Map<number, ElementId>, from: number, dir: 1 | -1): Ele
     if (dir === -1 && i === 0) break;
   }
   return undefined;
+}
+
+/** 第 k 小节在行里的首/末下标（只数有归属的符号与小节线，与 `pu/slots.ts` 的小节跨度同口径） */
+function measureEdge(r: LineResult, k: number, which: "first" | "last"): number | undefined {
+  let hit: number | undefined;
+  for (const [i, mk] of r.measureAt) {
+    if (mk !== k) continue;
+    if (hit === undefined || (which === "first" ? i < hit : i > hit)) hit = i;
+  }
+  return hit;
 }
 
 /** 下标 → 所在小节。落在无 id 的东西上时按方向找最近有归属的。 */
@@ -503,6 +536,8 @@ function applyVolta(r: LineResult, m: PuMark, measures: Measure[], voltas: { ope
       return;
     }
     start = makeStart(caption, m.level);
+    const first = measureEdge(r, k!, "first");
+    if (first !== undefined && m.start !== first) start.startOffset = m.start - first;
     putStart(mea, start);
     const kEnd = m.continuationToNext ? undefined : nearestMeasure(r, m.end, -1);
     if (kEnd !== undefined && kEnd < k!) {
@@ -519,6 +554,8 @@ function applyVolta(r: LineResult, m: PuMark, measures: Measure[], voltas: { ope
   if (!mea) return;
   start.pair ??= ++voltaPair;
   const ending: NonNullable<Barline["ending"]> = { numbers: start.numbers, type: stopType, text: start.text ?? caption, pair: start.pair };
+  const last = measureEdge(r, k!, "last");
+  if (last !== undefined && m.end !== last) ending.endOffset = m.end - last;
   const right = (mea.barlines ?? []).find((b) => b.location === "right");
   if (right && !right.ending) right.ending = ending;
   else (mea.barlines ??= []).push({ location: "right", ending });

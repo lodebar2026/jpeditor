@@ -440,6 +440,10 @@ export interface Ending {
   continuationLevels?: number[];
   /** 文本谱把 `[` 写在**上一行行尾**（最后一根小节线之后）：上一行留一段空的起头。挂在 start 上 */
   leadInPreviousLine?: boolean;
+  /** 文本谱房号起点相对「该小节第一个符号」的偏移（写在前一根小节线上为 -1）。挂在 start 上 */
+  startOffset?: number;
+  /** 文本谱房号终点相对「该小节最后一个符号（含右小节线）」的偏移。挂在 stop 上 */
+  endOffset?: number;
   /** start 与 stop 的配对号。文本谱解析器会留下跨行永不收口的房号、与后面的房号**重叠**，按先后配不对 */
   pair?: number;
   /** 行尾起头、但后面**再没有续行**接上的房号（解析器留下的）：挂在本行末小节一条无样式的右线上，只画那段空起头 */
@@ -614,10 +618,17 @@ export interface Mark {
   wedgeType?: "crescendo" | "diminuendo";
   /** 跨行时后续各行那一段的 level（文本谱续行会重新编号，见过 3 → 1） */
   continuationLevels?: number[];
+  /** 文本谱记号起点写在小节线/`~`/夹层上（`[|](5`）：原起点在 `start` 那个符号之前第几个位置。
+   *  **不能归并到最近的音符**——`Score` 只在音符上认端点，落在小节线上的端点等于没收口，弧会接到下一行 */
+  startLead?: number;
+  /** 同上，终点写在 `end` 那个符号之后第几个位置（`(5_ [|]`） */
+  endTrail?: number;
   /** 起止倒置的空记号（文本谱 `(` 写在行末最后一个符号之后、本行就收了）：`start`=`end`=那个符号，排版不画 */
   collapsed?: boolean;
   /** 起点写在**上一行行尾**（最后一个符号之后）：上一行留一段空的起头，`start` 是续行的首个符号 */
   leadInPreviousLine?: boolean;
+  /** `leadInPreviousLine` 时，上一行那段起头离行尾差几个位置（写在最后一根小节线上为 1） */
+  leadBack?: number;
   /** 三连音等的显示数字 */
   tupletActual?: number;
   tupletNormal?: number;
