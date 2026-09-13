@@ -33,16 +33,29 @@ interface ChordOut {
   tupletEnd: boolean;
   tuplet: boolean;
 }
-interface MeasureOut {
+export interface MeasureOut {
   entries: ChordOut[];
   barline: BarStyle | null;
   repeatBackward: boolean;
   repeatForward: boolean;
   keyChange: boolean;
   endingLeft: boolean;
+  /** 房号适用的遍数（演唱顺序用，同 `toscore.ts::applyEndingStart`） */
+  endingNum: Set<number> | null;
   endingRight: StartStopDiscontinue | null;
   sectionMark: string | null;
+  /** 末和弦的终点。没有和弦时抛错（同 `Score.Measure.duration`） */
+  readonly duration: Fraction;
 }
+
+/** 跳转记号（`&dc` / `&ds` / `&fine` / `&ty` / `&hs`）挂在哪一小节（同 `toscore.ts::PendingJump`）。 */
+export interface JumpOut {
+  name: string;
+  measure: number;
+  onBarline: boolean;
+}
+
+const JUMP_NAMES = new Set(["dc", "ds", "fine", "ty", "hs"]);
 
 export interface PhraseSongView {
   part: PhrasePart;
@@ -62,7 +75,7 @@ export function phrasePartOfSong(doc: ScoreDoc, songIdx = 0): PhraseSongView | n
     const lines = linesOfVoice(song, v);
     if (lines.length === 0) continue;
     const idOf = new Map<PhraseChord, ElementId>();
-    const measures = buildMeasures(lines, (ch, el) => {
+    const { measures } = buildMeasures(lines, (ch, el) => {
       const id = view.idOf.get(el);
       if (id !== undefined) idOf.set(ch, id);
     });
@@ -86,33 +99,51 @@ function chordDuration(ch: ChordOut): Fraction {
   return dur.divInt(1 << ch.beams);
 }
 
-function buildMeasures(lines: readonly ScoreLine[], onChord: (ch: ChordOut, el: NoteElement) => void): MeasureOut[] {
+/** 一个声部的曲行 → 小节序列。`renumberVerses` 同 `toscore.ts::buildPart`（展开档那一份才顺延同号歌词）。 */
+export function buildMeasures(
+  lines: readonly ScoreLine[],
+  onChord: (ch: ChordOut, el: NoteElement) => void,
+  renumberVerses = true,
+): { measures: MeasureOut[]; jumps: JumpOut[] } {
   const measures: MeasureOut[] = [];
+  const jumps: JumpOut[] = [];
   let measure: MeasureOut | null = null;
   let newMeasureNeeded = true;
   let lastChord: ChordOut | null = null;
   let pendingRepeatForward = false;
-  let pendingEnding = false;
+  let pendingEnding: Mark | null = null;
   const tupletNotes: ChordOut[] = [];
   const open = (): MeasureOut => {
-    measure = {
+    const m: MeasureOut = {
       entries: [], barline: null, repeatBackward: false, repeatForward: false, keyChange: false,
-      endingLeft: false, endingRight: null, sectionMark: null,
+      endingLeft: false, endingNum: null, endingRight: null, sectionMark: null,
+      get duration(): Fraction {
+        const last = this.entries[this.entries.length - 1];
+        if (!last?.duration) throw new Error("measure has no chord");
+        return last.position.plus(last.duration);
+      },
     };
-    measures.push(measure);
-    return measure;
+    measure = m;
+    measures.push(m);
+    return m;
   };
 
   for (const line of lines) {
-    const lyrics: readonly LyricLine[] = distinctVerses(line.lyrics);
+    const lyrics: readonly LyricLine[] = renumberVerses ? distinctVerses(line.lyrics) : line.lyrics;
     const cursors = lyrics.map(() => 0);
     const voltas = line.marks.filter((mk) => mk.type === "volta");
     line.elements.forEach((el, index) => {
-      for (const mk of voltas) if (mk.start === index && !mk.continuationFromPrevious) pendingEnding = true;
+      for (const mk of voltas) if (mk.start === index && !mk.continuationFromPrevious) pendingEnding = mk;
       const endsVolta = voltas.filter((mk) => mk.end === index && !mk.continuationToNext);
       const closeVolta = (mea: MeasureOut | null): void => {
         if (!mea) return;
         for (const mk of endsVolta) mea.endingRight = mk.openEnd ? StartStopDiscontinue.DISCONTINUE : StartStopDiscontinue.STOP;
+      };
+      const noteJumps = (mea: MeasureOut, onBarline: boolean): void => {
+        if (!("ornaments" in el)) return;
+        for (const orn of el.ornaments) {
+          if (JUMP_NAMES.has(orn.name)) jumps.push({ name: orn.name, measure: measures.indexOf(mea), onBarline });
+        }
       };
       const attach = (ch: ChordOut): void => {
         for (const { verse, text } of nextSyllables(lyrics, cursors)) ch.notes[0]!.lyrics.push({ text, number: verse, refrain: false });
@@ -121,6 +152,7 @@ function buildMeasures(lines: readonly ScoreLine[], onChord: (ch: ChordOut, el: 
       if (el.kind === "beat-boundary" || el.kind === "inline-layer") return;
       if (el.kind === "sustain") {
         closeVolta(measure);
+        if (measure) noteJumps(measure, false);
         if (lastChord) {
           lastChord.beats += 1;
           lastChord.duration = chordDuration(lastChord);
@@ -131,6 +163,7 @@ function buildMeasures(lines: readonly ScoreLine[], onChord: (ch: ChordOut, el: 
       if (el.kind === "barline") {
         const mea: MeasureOut = measure ?? open();
         closeVolta(mea);
+        noteJumps(mea, true);
         switch (el.type) {
           case "normal": mea.barline = BarStyle.REGULAR; break;
           case "double": mea.barline = BarStyle.LIGHT_LIGHT; break;
@@ -159,9 +192,12 @@ function buildMeasures(lines: readonly ScoreLine[], onChord: (ch: ChordOut, el: 
       }
       if (pendingEnding) {
         mea.endingLeft = true;
-        pendingEnding = false;
+        const digits = (pendingEnding.caption ?? "").trim().match(/\d+/g);
+        mea.endingNum = digits ? new Set(digits.map((d) => parseInt(d, 10))) : null;
+        pendingEnding = null;
       }
       closeVolta(mea);
+      noteJumps(mea, false);
 
       const number = el.sound === "rhythm" ? "0" : String(el.pitch);
       const ch: ChordOut = {
@@ -211,5 +247,5 @@ function buildMeasures(lines: readonly ScoreLine[], onChord: (ch: ChordOut, el: 
       pos = pos.plus(dur);
     }
   }
-  return measures;
+  return { measures, jumps };
 }
