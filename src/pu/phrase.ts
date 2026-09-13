@@ -6,7 +6,7 @@
 //
 //   1. **断点 → AST 位置**。Score 的断点是「第 n 小节之前」/「某个 Chord 之后」，
 //      而文本谱的行是 `ScoreLine`，落点得是「某个声部的第 k 个元素之前」。
-//      桥是 `puToScore` 的 `noteMap`（Chord → AST 音符）。
+//      桥是 `scoreDocToScore` 的 `chordIds`（Chord → 元素 id）再经 `puToScoreDoc` 的 `elementIds` 回到原文元素。
 //   2. **多声部对齐**。断点只按主旋律（`parts[0]`）算，但合唱谱四个声部得在**同一拍位**
 //      断行，否则各声部行长不一、`layout.ts::alignVoices` 会把它们拧成一团。
 //      对齐按**累计时值**做，不按元素下标——各声部的元素个数本来就不一样。
@@ -21,7 +21,9 @@ import { chooseLineLayout } from "../score/applybreaks";
 import type { Chord, Score } from "../score/score";
 import { elementQuarters, linesOfVoice, tupletRatios, voiceNumbers } from "./ast";
 import type { MusicElement, NoteElement, PuDoc, PuSong, ScoreLine } from "./ast";
-import { puToScore } from "./toscore";
+import { scoreDocToScore } from "./toscore";
+import { puToScoreDoc } from "../model/frompu";
+import type { ElementId } from "../model/doc";
 
 /** 乐句排版时一页排几行。与 `jpscore.ts::PAGE_LINES` 同义，两种格式必须是同一个数。 */
 const PAGE_LINES = 4;
@@ -115,8 +117,18 @@ export function puPhraseLines(
 ): PuNewLine[] | null {
   const song = doc.songs[songIdx];
   if (!song) return null;
+  // Score 从 `ScoreDoc` 出；断点经「Chord → id → 原文元素」回到原文（重排改写的是原文本身）
+  const elementIds = new Map<MusicElement, ElementId>();
+  const sdoc = puToScoreDoc(doc, { elementIds });
+  const chordIds = new Map<Chord, ElementId>();
+  const score = scoreDocToScore(sdoc, { song: songIdx, chordIds, forExpanded: true });
+  const elementOf = new Map<ElementId, NoteElement>();
+  for (const [el, id] of elementIds) if (el.kind === "note") elementOf.set(id, el);
   const noteMap = new Map<Chord, NoteElement>();
-  const score = puToScore(doc, { song: songIdx, noteMap, forExpanded: true });
+  for (const [ch, id] of chordIds) {
+    const el = elementOf.get(id);
+    if (el) noteMap.set(ch, el);
+  }
   const part = score?.parts[0];
   if (!part) return null;
 

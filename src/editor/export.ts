@@ -267,7 +267,7 @@ interface ExportItem {
 }
 
 const isMixed = (app: App): boolean => app.mode === "mixed";
-/** 走 `PuDoc` 那条路的格式（文本谱与 123）：导出项与简谱那档不同。 */
+/** 走 `ScoreDoc` 排版的格式（文本谱、123、ABC）：导出项与简谱那档不同。 */
 const isPu = (app: App): boolean => app.adapter.caps.layout === "scoredoc" && !isMixed(app);
 const isJp = (app: App): boolean => !isPu(app) && !isMixed(app);
 
