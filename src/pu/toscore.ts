@@ -9,6 +9,8 @@
 
 import type { ElementId, ScoreDoc } from "../model/doc";
 import { docView } from "./slots";
+import { distinctVerses } from "./phrasesong";
+import { playDataOfSong } from "./playsong";
 import { Fraction } from "../common/fraction";
 import { applyJpPitch, type JpKeyState } from "../score/jppitch";
 import { linesOfVoice, marksAt, nextSyllables, takesLyric, voiceNumbers } from "./ast";
@@ -23,13 +25,9 @@ import {
   Measure,
   MusicCommon,
   Note,
-  JumpSpec,
   Part,
-  PlayItem,
-  PlaySpecKind,
   Score,
   Time,
-  TimePosition,
 } from "../score/score";
 import { StartStopDiscontinue } from "../score/enums";
 import type {
@@ -76,16 +74,6 @@ function marksEdgeAt(marks: readonly Mark[], index: number, type: Mark["type"]):
   };
 }
 
-
-/** 跳转记号（`&dc` / `&ds` / `&fine` / `&ty` / `&hs`）先记下挂在哪一小节，时值定稿后再换算成位置。 */
-interface PendingJump {
-  name: string;
-  measure: Measure;
-  onBarline: boolean;
-}
-
-const JUMP_NAMES = new Set(["dc", "ds", "fine", "ty", "hs"]);
-
 interface Builder {
   part: Part;
   measure: Measure | null;
@@ -99,7 +87,6 @@ interface Builder {
   pendingRepeatForward: boolean;
   /** 跳房子起点已过、等下一个音符开出（或落进）的那一小节来挂房号 */
   pendingEnding: Mark | null;
-  jumps: PendingJump[];
 }
 
 function newMeasure(b: Builder, time: Time, key: Key): Measure {
@@ -125,26 +112,6 @@ function applyEndingStart(mea: Measure, mark: Mark): void {
   mea.endingNum = digits ? mea.parseEndingNum(digits.join(",")) : null;
 }
 
-/**
- * 同一条曲行下**段号重复**的歌词行，依次顺延到下一个空闲段号（展开档用，见 `ToScoreOptions.forExpanded`）。
- * 《同一首歌》同一段曲下写了两行 `C1:`，内容其实是第 1、2 段：展开档一遍只挂一行词，
- * 两行同号就会画在同一位置相压，顺延之后各成一遍。段号不重复的行原样返回。
- */
-export function distinctVerses(lyrics: readonly LyricLine[]): readonly LyricLine[] {
-  let maxUsed = 0;
-  const used = new Set<number>();
-  return lyrics.map((l) => {
-    let shift = 0;
-    for (let v = l.verseFrom; v <= l.verseTo; v++) {
-      if (used.has(v)) shift = Math.max(shift, maxUsed + 1 - l.verseFrom);
-    }
-    const from = l.verseFrom + shift;
-    const to = l.verseTo + shift;
-    for (let v = from; v <= to; v++) used.add(v);
-    maxUsed = Math.max(maxUsed, to);
-    return shift === 0 ? l : { ...l, verseFrom: from, verseTo: to };
-  });
-}
 
 function buildPart(
   lines: readonly ScoreLine[],
@@ -154,7 +121,7 @@ function buildPart(
   noteMap?: Map<Chord, NoteElement>,
   renumberVerses = false,
   pageEnds?: ReadonlySet<ScoreLine>,
-): { part: Part; jumps: PendingJump[] } {
+): Part {
   const b: Builder = {
     part: new Part(),
     measure: null,
@@ -166,7 +133,6 @@ function buildPart(
     lastChord: null,
     pendingRepeatForward: false,
     pendingEnding: null,
-    jumps: [],
   };
 
   lines.forEach((line, lineIdx) => {
@@ -187,18 +153,11 @@ function buildPart(
           mea.endingRight = mk.openEnd ? StartStopDiscontinue.DISCONTINUE : StartStopDiscontinue.STOP;
         }
       };
-      const noteJumps = (mea: Measure, onBarline: boolean): void => {
-        if (!("ornaments" in el)) return;
-        for (const orn of el.ornaments) {
-          if (JUMP_NAMES.has(orn.name)) b.jumps.push({ name: orn.name, measure: mea, onBarline });
-        }
-      };
 
       if (el.kind === "beat-boundary" || el.kind === "inline-layer") return;
 
       if (el.kind === "sustain") {
         closeVolta(b.measure);
-        if (b.measure) noteJumps(b.measure, false);
         // 增时线并进前一个音符的时值
         if (b.lastChord) {
           b.lastChord.beats += 1;
@@ -211,7 +170,6 @@ function buildPart(
       if (el.kind === "barline") {
         const mea = b.measure ?? newMeasure(b, time, key);
         closeVolta(mea);
-        noteJumps(mea, true);
         const ent = new BarlineEntry(mea);
         // 反复：`|:` 在 .jpwabc 里是挂到**下一小节**的 repeatForward 上的
         //（Measure.barline 写 HEAVY_LIGHT 会让 jpscore 的 makeBarline 直接抛错）。
@@ -268,7 +226,6 @@ function buildPart(
         b.pendingEnding = null;
       }
       closeVolta(mea);
-      noteJumps(mea, false);
 
       const ch = new Chord(mea);
       const nt = new Note(ch);
@@ -318,55 +275,9 @@ function buildPart(
 
   doPairTuplet(b.tupletNotes);
   applyTupletDurations(b.part);
-  return { part: b.part, jumps: b.jumps };
+  return b.part;
 }
 
-/**
- * 跳转记号换算成播放位置（口径同 MusicXML 导入端 `parseSound`，由 RepeatProcessor 消费）：
- * - 「从这里跳走」的（`&dc` / `&ds` / `&fine` / 第一处 `&ty` 即 To Coda）记在**本小节末**；
- * - 「跳到这里」的（`&hs` 花 S = D.S. 的目标、第二处 `&ty` = 尾声起点）：挂在小节线上就是
- *   **下一小节开头**（`doJump` 从目标小节整节重放），挂在音符上就是本小节开头。
- * 谱面写了 `&ds` 却没有 `&hs`（世上所有的民族）时，RepeatProcessor 找不到记号就回曲首，等同 D.C.。
- */
-function applyJumps(score: Score, jumps: readonly PendingJump[]): void {
-  const pd = score.playData;
-  const count = score.parts[0]?.measures.length ?? 0;
-  const end = (mea: Measure): TimePosition => new TimePosition(mea.index, mea.duration);
-  const target = (j: PendingJump): TimePosition =>
-    j.onBarline && j.measure.index + 1 < count
-      ? new TimePosition(j.measure.index + 1, new Fraction(0))
-      : new TimePosition(j.measure.index, new Fraction(0));
-  const codas = jumps.filter((j) => j.name === "ty");
-  for (const j of jumps) {
-    switch (j.name) {
-      case "dc":
-        pd.jumpTo.set(end(j.measure), new JumpSpec(PlaySpecKind.Dacapo));
-        break;
-      case "fine":
-        pd.jumpTo.set(end(j.measure), new JumpSpec(PlaySpecKind.Fine));
-        break;
-      case "ds": {
-        const s = new JumpSpec(PlaySpecKind.DalSegno);
-        s.value = "1";
-        pd.jumpTo.set(end(j.measure), s);
-        break;
-      }
-      case "hs":
-        pd.segno.set("1", target(j));
-        break;
-      case "ty":
-        // 两处尾声记号：前一处是 To Coda，后一处是尾声的起点；只有一处就只当起点
-        if (codas.length >= 2 && j === codas[0]) {
-          const s = new JumpSpec(PlaySpecKind.ToCoda);
-          s.value = "1";
-          pd.jumpTo.set(end(j.measure), s);
-        } else {
-          pd.coda.set("1", target(j));
-        }
-        break;
-    }
-  }
-}
 
 /** 时值：beats × (附点) ÷ 2^减时线。多连音的 2/3 在 applyTupletDurations 里再乘。 */
 function chordDuration(ch: Chord): Fraction {
@@ -462,6 +373,13 @@ export function scoreDocToScore(doc: ScoreDoc, options: ScoreDocToScoreOptions =
   if (!song) return null;
   const noteMap = options.chordIds ? new Map<Chord, NoteElement>() : undefined;
   const score = songToScore(song, { ...(noteMap ? { noteMap } : {}), ...(options.forExpanded ? { forExpanded: true } : {}) });
+  if (!score) return null;
+  // 演唱顺序（反复、房号、D.C./D.S.、多段歌词逐段一遍、文档自带的 playOrder）由 ScoreDoc 推，见 `playsong.ts`
+  const pd = playDataOfSong(doc, options.song ?? 0, options.forExpanded ? { forExpanded: true } : {});
+  if (pd) {
+    pd.tempo = score.playData.tempo;
+    score.playData = pd;
+  }
   if (noteMap && options.chordIds) {
     for (const [ch, el] of noteMap) {
       const id = view.idOf.get(el);
@@ -511,41 +429,12 @@ function songToScore(song: PuSong, options: ToScoreOptions): Score | null {
     const lead = voices.find((v) => linesOfVoice(song, v).some((l) => l.lyrics.length > 0));
     if (lead !== undefined) voices = [lead, ...voices.filter((v) => v !== lead)];
   }
-  let jumps: PendingJump[] = [];
   for (const v of voices) {
     const lines = linesOfVoice(song, v);
     if (lines.length === 0) continue;
-    const built = buildPart(lines, time, key, key.fifths, options.noteMap, options.forExpanded,
-      options.forExpanded ? pageEnds(song, v) : undefined);
-    // 反复与跳转只看主旋律（parseRepeatInf 读的是 parts[0]）
-    if (score.parts.length === 0) jumps = built.jumps;
-    score.parts.push(built.part);
+    score.parts.push(buildPart(lines, time, key, key.fifths, options.noteMap, options.forExpanded,
+      options.forExpanded ? pageEnds(song, v) : undefined));
   }
   if (score.parts.length === 0) return null;
-  applyJumps(score, jumps);
-
-  // 播放 / 展开序列：与 MusicXML 导入同一套推理（反复、房号、D.C./D.S.、多段歌词逐段一遍，
-  // 见 Score.parseRepeatInf）。推不出来（结构太怪）才退回下面「整曲按段数逐遍」的老办法。
-  try {
-    score.parseRepeatInf();
-    if (score.playData.measures.length > 0) return score;
-  } catch (e) {
-    console.warn("文本谱反复推理失败，按段数逐遍", e);
-  }
-  score.playData.measures = [];
-  // 段数 = 歌词最多的那一行的段号上限；据此生成播放遍数
-  let passes = 0;
-  for (const line of linesOfVoice(song, voices[0]!)) {
-    for (const l of line.lyrics) passes = Math.max(passes, l.verseTo);
-  }
-  const main = score.parts[0]!;
-  for (let p = 0; p < Math.max(1, passes); p += 1) {
-    const item = new PlayItem();
-    item.pass = p + 1;
-    item.mid = 0;
-    item.end = main.measures.length;
-    score.playData.measures.push(item);
-  }
-  score.playData.isSimpple = true;
   return score;
 }

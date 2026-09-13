@@ -13,7 +13,6 @@ import type { PhraseChord, PhraseMeasure, PhrasePart } from "../score/phraseinpu
 import { linesOfVoice, marksAt, nextSyllables, takesLyric, voiceNumbers } from "./ast";
 import type { LyricLine, Mark, NoteElement, ScoreLine } from "./ast";
 import { docView } from "./slots";
-import { distinctVerses } from "./toscore";
 
 interface LyricOut { text: string; number: number; refrain: boolean }
 interface NoteOut { number: string; jpOctave: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
@@ -82,6 +81,27 @@ export function phrasePartOfSong(doc: ScoreDoc, songIdx = 0): PhraseSongView | n
     return { part: { measures: measures as readonly PhraseMeasure[] }, idOf };
   }
   return null;
+}
+
+/**
+ * 同一条曲行下**段号重复**的歌词行，依次顺延到下一个空闲段号（展开档用，见 `ToScoreOptions.forExpanded`）。
+ * 《同一首歌》同一段曲下写了两行 `C1:`，内容其实是第 1、2 段：展开档一遍只挂一行词，
+ * 两行同号就会画在同一位置相压，顺延之后各成一遍。段号不重复的行原样返回。
+ */
+export function distinctVerses(lyrics: readonly LyricLine[]): readonly LyricLine[] {
+  let maxUsed = 0;
+  const used = new Set<number>();
+  return lyrics.map((l) => {
+    let shift = 0;
+    for (let v = l.verseFrom; v <= l.verseTo; v++) {
+      if (used.has(v)) shift = Math.max(shift, maxUsed + 1 - l.verseFrom);
+    }
+    const from = l.verseFrom + shift;
+    const to = l.verseTo + shift;
+    for (let v = from; v <= to; v++) used.add(v);
+    maxUsed = Math.max(maxUsed, to);
+    return shift === 0 ? l : { ...l, verseFrom: from, verseTo: to };
+  });
 }
 
 /** 同 `toscore.ts::marksEdgeAt`：跨行的续接端不是真端点。 */
