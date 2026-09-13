@@ -41,7 +41,8 @@
 ## 回归
 
 ```bash
-node scripts/measure-all.mjs      # 批量实测准确率（音符/slur-tie/歌词/标题/词曲/对位 多档）
+node scripts/measure-all.mjs      # 批量实测准确率（音符/slur-tie/歌词/标题/词曲/对位/和弦 多档；GT 是各曲目录下的 gt.123）
+node scripts/gt-to-123.mjs        # 新增曲目时把 .jpwabc / gt.shige.pu（和弦取 gt.tomato.pu）生成 gt.123
 node scripts/bench-lyrics.mjs     # 歌词逐音节对齐（按 verse 汉字 CER）
 node scripts/bench-diff.mjs       # 识别 ↔ GT 的音符 token 逐项 diff
 node scripts/bench-meta.mjs       # 页眉元信息对 GT

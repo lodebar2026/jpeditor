@@ -2,10 +2,10 @@
 // 简谱数字→音高：可动 do，按 fifths 求调主音，数字 1-7 映射到自然音级，叠加八度点与升降。
 import type { RecognizedScore, JpNum, StaffRow } from "./types";
 import { rright } from "./types";
-// 简谱数字→音高拼写：与 MusicXML 导出（score/musicxmlout.ts）共用同一份换算，见该文件说明。
+// 简谱数字→音高拼写：与 MusicXML 写出端的投影（model/xmlproject.ts）共用 jppitch.ts 同一份换算。
 import { jpPitch } from "../score/jppitch";
 import { harmonyXml } from "../score/harmonyxml";
-import { typeOfDuration } from "../score/musicxmlout";
+import { typeOfDuration } from "../score/xmlutil";
 import { Fraction } from "../common/fraction";
 import {
   barlineXml, beamXml as beamElementsXml, creditWordsXml, escapeXml, lyricElementXml,
@@ -26,7 +26,7 @@ function pitchOf(num: JpNum, fifths: number): { step: string; alter: number; oct
 // <divisions> 直接用这个常量输出。
 const QUARTER = 48;
 
-// 时值 → <type> + 附点数：与 Score 那路（score/musicxmlout.ts::typeOfDuration）共用同一份实现。
+// 时值 → <type> + 附点数：与写出端的投影（model/xmlproject.ts）共用 xmlutil.ts::typeOfDuration。
 // **附点不只来自简谱附点**：增时线把音延长到 3 拍(如 3/4 的 5--)即「附点二分」、6 拍即「附点全」
 // ——必须吐成 type=half/whole + <dot/>，否则下游导入器(score/musicxml.ts::parseDuration)只按 type
 // 定 beats(half→2)，会把 5-- 还原成 5-(少一根增时线)。
@@ -65,7 +65,7 @@ interface ArcPairs {
 }
 
 /**
- * 全曲把 slur/tie 配成对，与 score/musicxmlout.ts::pairSlurTies 同一套规则。
+ * 全曲把 slur/tie 配成对。
  *
  * 识别难免出错：《主祢真伟大》识别出的 slur 虽然 start/stop 各 5 个，配对却错位（嵌套到深度 2
  * 且最后剩一个没闭合）——一条弧的 stop 被算给了错误的 start，MuseScore 就画出一条横跨很远的
@@ -146,7 +146,7 @@ function notationsXml(num: JpNum, arcs: ArcPairs): string {
   if (num.fermata) ns.push(`<fermata/>`);
   // 上波音 ∿ = MusicXML 的 inverted-mordent（带竖杠的那个才是 mordent）。
   if (num.ornament === "upper-mordent") ns.push(`<ornaments><inverted-mordent/></ornaments>`);
-  // 顿音 ▼ = staccato（与文本谱 `&dy` 同一口径，见 pu/toxml.ts 的记号表）。
+  // 顿音 ▼ = staccato（与文本谱 `&dy` 同一口径，见 model/xmlproject.ts 的记号表）。
   if (num.articulation === "staccato") ns.push(`<articulations><staccato/></articulations>`);
   if (num.tuplet?.start) ns.push(`<tuplet type="start" bracket="yes"/>`);
   if (num.tuplet?.stop) ns.push(`<tuplet type="stop"/>`);
@@ -157,7 +157,7 @@ function notationsXml(num: JpNum, arcs: ArcPairs): string {
  * 符杠（`<beam>`）：简谱的减时线就是五线谱的符杠，一拍之内相邻的减时线音符连成一组。
  * 不写的话下游软件会按自己的规则猜，跨拍/弱起处容易与原图不一致。
  *
- * 与 score/musicxmlout.ts::collectBeams 同一套规则（那边分组复用 Measure.autoBeamGroup，
+ * 与 model/fromscore.ts::collectBeams 同一套规则（那边分组复用 Measure.autoBeamGroup，
  * 这里输入是 JpNum 只能自己按拍切）：逐层找连续段，长度 ≥2 → begin/continue/end，
  * 单个 → hook（组内前面还有音就朝后勾）。
  */

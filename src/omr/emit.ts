@@ -17,11 +17,11 @@ import { DIALECTS, type Dialect } from "../pu/dialect";
 import type { JpwMeta } from "../score/jpscore";
 
 /** 识别结果的输出格式。文本谱两种方言各算一种。 */
-export type OmrFormat = "jpwabc" | Dialect;
+export type OmrFormat = "123" | Dialect;
 
 export interface EmittedScore {
   /** 产物怎么落到编辑器里：
-   *  - `musicxml`：交现有的 MusicXML 导入路径（那条路自己会产出 meta，故这里 meta 为 null）；
+   *  - `musicxml`：交 `App.importOmrMusicXml`（MusicXML 底本 → 123 核对文本，它自己产出 meta，故这里 meta 为 null）；
    *  - `pu`：文本谱原文，直接设进编辑器，meta 由 emitter 给出。 */
   kind: "musicxml" | "pu";
   text: string;
@@ -38,8 +38,8 @@ export interface ScoreEmitter {
 /** 顺序即下拉里的顺序；第一项是默认。 */
 export const OMR_EMITTERS: readonly ScoreEmitter[] = [
   {
-    id: "jpwabc",
-    label: "简谱 jpwabc",
+    id: "123",
+    label: "简谱 123",
     emit: (rec) => ({ kind: "musicxml", text: toMusicXml(rec), meta: null }),
   },
   ...(Object.values(DIALECTS).map((d) => ({

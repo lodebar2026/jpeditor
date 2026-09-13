@@ -7,7 +7,7 @@
 //
 // 无 DOM 依赖（Node CLI 要 import）。
 
-import { jpPitch, jpTonicOctaveShift, tonicStep } from "../score/jppitch";
+import { jpPitch, jpTonicOctaveShift, keyAlter, tonicStep } from "../score/jppitch";
 import type {
   Accidental,
   Chord,
@@ -83,6 +83,39 @@ export function degreeFromPitch(pitch: Pitch, key: Key, accidental?: Accidental)
   const d: Degree = { number, octaveShift };
   if (accidental) d.accidental = accidental;
   return d;
+}
+
+const ACC_BY_OFFSET: Readonly<Record<number, Accidental>> = {
+  [-2]: "double-flat", [-1]: "flat", 0: "natural", 1: "sharp", 2: "double-sharp",
+};
+
+/** 按绝对音高给一个声部**重算**简谱度数，连同面上要印的临时记号。
+ *
+ *  简谱的升降号是**相对调号**的（`1=F` 里 `#4` 是 B 本位），且**在小节内按唱名延续**——
+ *  所以不能照抄 MusicXML 的 `<accidental>`（那是绝对的，而且延续出来的音根本不写）：
+ *  逐小节记下每个唱名当前相对调号偏了几个半音，音高与之不符的地方才补一个记号，
+ *  写出的 123 读回来（`xmlproject.ts::pitchOf` 同一条延续规则）音高才对。
+ *  来源印了记号（`accidental`）而偏移恰好没变的，照样写出来（提醒记号）。 */
+export function assignDegrees(part: Part, initialKey: Key): void {
+  let key = initialKey;
+  for (const m of part.measures) {
+    if (m.attrs?.key) key = m.attrs.key;
+    /** 唱名 → 相对调号的半音偏移（本小节内延续） */
+    const carry = new Map<number, number>();
+    for (const el of m.elements) {
+      if (el.kind !== "chord") continue;
+      for (const n of el.notes) {
+        if (!n.pitch) continue;
+        const d = degreeFromPitch(n.pitch, key);
+        const offset = n.pitch.alter - keyAlter("CDEFGAB".indexOf(n.pitch.step), key.fifths);
+        const expected = carry.get(d.number) ?? 0;
+        const acc = ACC_BY_OFFSET[offset];
+        if (acc && (offset !== expected || n.accidental)) d.accidental = acc;
+        carry.set(d.number, offset);
+        n.degree = d;
+      }
+    }
+  }
 }
 
 /** 用绝对音高补出简谱度数（已有度数的不动）。调号取小节的 `attrs.key`，没有就取本曲的（缺省 C 大调）。

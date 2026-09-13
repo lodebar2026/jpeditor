@@ -31,6 +31,8 @@ import type {
   Song,
   Time,
 } from "./doc";
+import { harmonyXml as chordTextXml } from "../score/harmonyxml";
+import { projectForMusicXml } from "./xmlproject";
 
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -141,6 +143,11 @@ function writeCredit(o: Out, d: number, c: Credit): void {
 // ───────────────────────── 音符 ─────────────────────────
 
 function harmonyXml(o: Out, d: number, h: Harmony): void {
+  // 简谱来源只有和弦原文（`"Cm7"`），结构交给和弦文字解析
+  if (!h.kind && h.text) {
+    o.push(d, chordTextXml(h.text, h.offset ?? 0));
+    return;
+  }
   o.push(d, "<harmony>");
   o.push(d + 1, "<root>");
   o.push(d + 2, tag("root-step", h.root.step));
@@ -160,11 +167,12 @@ function harmonyXml(o: Out, d: number, h: Harmony): void {
     o.push(d + 2, tag("degree-type", g.type));
     o.push(d + 1, "</degree>");
   }
+  if (h.offset) o.push(d + 1, tag("offset", h.offset));
   o.push(d, "</harmony>");
 }
 
 function lyricXml(o: Out, d: number, l: Lyric): void {
-  o.push(d, `<lyric number="${l.number}">`);
+  o.push(d, `<lyric number="${l.refrain ? "chorus" : l.number}">`);
   if (l.syllabic) o.push(d + 1, tag("syllabic", l.syllabic));
   o.push(d + 1, tag("text", (l.leadingPunctuation ?? "") + l.text + (l.trailingPunctuation ?? "")));
   if (l.extend) o.push(d + 1, "<extend/>");
@@ -233,8 +241,13 @@ function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): 
       if (note.pitch.alter) o.push(d + 2, tag("alter", note.pitch.alter));
       o.push(d + 2, tag("octave", note.pitch.octave));
       o.push(d + 1, "</pitch>");
+    } else if (ch.rhythm) {
+      // 节奏音符（有声无音高）：斜线符头
+      o.push(d + 1, "<unpitched>");
+      o.push(d + 2, tag("display-step", "B"));
+      o.push(d + 2, tag("display-octave", 4));
+      o.push(d + 1, "</unpitched>");
     } else {
-      // 既没有音高也不是休止（简谱的节奏音符）——MusicXML 没有这个概念，写成不发音的休止
       o.push(d + 1, "<rest/>");
     }
     // 倚音没有 duration（MusicXML 规定）
@@ -252,11 +265,10 @@ function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): 
       o.push(d + 2, tag("normal-notes", ch.duration.timeMod.normal));
       o.push(d + 1, "</time-modification>");
     }
+    if (ch.rhythm && !isChordNote) o.push(d + 1, tag("notehead", "slash"));
     if (ch.staff > 1) o.push(d + 1, tag("staff", ch.staff));
-    for (const b of ch.beams ?? []) {
-      const i = (ch.beams ?? []).indexOf(b) + 1;
-      o.push(d + 1, `<beam number="${i}">${esc(b)}</beam>`);
-    }
+    // number 是层号：按下标算，不能 indexOf（两层同为 begin 时会都写成 1）
+    (ch.beams ?? []).forEach((b, i) => o.push(d + 1, `<beam number="${i + 1}">${esc(b)}</beam>`));
     if (withNotations) notationsXml(o, d + 1, ch, starts, stops);
     if (withNotations) for (const l of ch.lyrics ?? []) lyricXml(o, d + 1, l);
     o.push(d, "</note>");
@@ -293,6 +305,14 @@ function directionXml(o: Out, d: number, dir: Direction): void {
       o.push(d + 3, tag("per-minute", dir.tempo?.perMinute ?? 90));
       o.push(d + 2, "</metronome>");
       break;
+    case "bracket":
+      // 伴奏括弧（简谱来源才带起止）；MusicXML 读进来的没有 spanType，照旧写空元素
+      if (dir.spanType) {
+        o.push(d + 2, `<bracket type="${dir.spanType}" line-end="down" line-type="solid"/>`);
+      } else {
+        o.push(d + 2, "<bracket/>");
+      }
+      break;
     case "pedal":
     case "octave-shift":
       o.push(d + 2, `<${dir.type} type="${dir.spanType ?? "start"}"/>`);
@@ -310,6 +330,7 @@ function directionXml(o: Out, d: number, dir: Direction): void {
     if (dir.sound.fine) a.push('fine="yes"');
     if (dir.sound.segno) a.push(`segno="${escAttr(dir.sound.segno)}"`);
     if (dir.sound.coda) a.push(`coda="${escAttr(dir.sound.coda)}"`);
+    if (dir.sound.tocoda) a.push(`tocoda="${escAttr(dir.sound.tocoda)}"`);
     if (dir.sound.tempo !== undefined) a.push(`tempo="${dir.sound.tempo}"`);
     if (a.length) o.push(d + 1, `<sound ${a.join(" ")}/>`);
   }
@@ -403,7 +424,19 @@ function measureXml(
     }
     if (el.kind === "chord") {
       if (el.harmony) harmonyXml(o, d + 1, el.harmony);
+      for (const h of el.laterHarmonies ?? []) harmonyXml(o, d + 1, h);
+      // 长音中途换和弦（挂在增时线上）：`<harmony>` 排在所辖音符之前，拍位靠 offset
+      for (const su of el.sustains ?? []) if (su.harmony) harmonyXml(o, d + 1, su.harmony);
       chordXml(o, d + 1, el, marksByStart.get(el.id) ?? [], marksByEnd.get(el.id) ?? []);
+    } else if (el.spacer === "x" && el.duration) {
+      // 不可见休止：占时值
+      if (el.harmony) harmonyXml(o, d + 1, el.harmony);
+      o.push(d + 1, '<note print-object="no">');
+      o.push(d + 2, "<rest/>");
+      o.push(d + 2, tag("duration", Math.max(0, Math.round(el.duration.divisions))));
+      o.push(d + 2, tag("voice", el.voice));
+      if (el.duration.type) o.push(d + 2, tag("type", el.duration.type));
+      o.push(d + 1, "</note>");
     } else if (el.harmony) {
       // `y` 占位符只为挂和弦（规范 §8.1）——MusicXML 里就是一个孤立的 `<harmony>`
       harmonyXml(o, d + 1, el.harmony);
@@ -434,10 +467,17 @@ function partXml(o: Out, d: number, part: Part, song: Song): void {
   o.push(d, "</part>");
 }
 
-/** `ScoreDoc` → MusicXML 文本（含 XML 声明与 DOCTYPE）。 */
-export function scoreDocToMusicXml(doc: ScoreDoc): string {
-  const song = doc.songs[0];
-  if (!song) throw new Error("这份文档里没有曲子");
+export interface ToXmlOptions {
+  /** 取第几首（多曲文件、文本谱 `-----` 分曲）。默认第一首 */
+  song?: number;
+}
+
+/** `ScoreDoc` → MusicXML 文本（含 XML 声明与 DOCTYPE）。**MusicXML 的唯一写出端**：
+ *  简谱来源先经 `xmlproject.ts` 投成 MusicXML 形状，MusicXML 读进来的原样序列化。 */
+export function scoreDocToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): string {
+  const src = doc.songs[options.song ?? 0];
+  if (!src) throw new Error("这份文档里没有曲子");
+  const song = projectForMusicXml(src);
   const o = new Out();
   o.push(0, '<?xml version="1.0" encoding="UTF-8"?>');
   o.push(

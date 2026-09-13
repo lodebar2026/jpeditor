@@ -43,7 +43,7 @@ import type {
   Time,
   Transpose,
 } from "./doc";
-import { IdGen, degreeFromPitch, emptyDoc, emptySong } from "./helpers";
+import { IdGen, assignDegrees, emptyDoc, emptySong } from "./helpers";
 import { child, childText, children } from "../score/xmldom";
 
 const num = (el: Element | null, tag: string): number | undefined => {
@@ -262,6 +262,8 @@ function readHarmony(el: Element): Harmony {
       type: (childText(d, "degree-type") ?? "add") as "add" | "alter" | "subtract",
     }));
   }
+  const offset = num(el, "offset");
+  if (offset !== undefined) h.offset = offset;
   return h;
 }
 
@@ -480,11 +482,11 @@ function readMeasure(
   el: Element,
   ids: IdGen,
   marks: MarkSink,
-  key: () => Key | undefined,
 ): Measure {
   const m: Measure = { number: el.getAttribute("number") ?? "", elements: [] };
-  /** 和弦符号先攒着，挂到它后面第一个元素上（MusicXML 的 `<harmony>` 在音符之前） */
-  let pendingHarmony: Harmony | undefined;
+  /** 和弦符号先攒着，挂到它后面第一个元素上（MusicXML 的 `<harmony>` 在音符之前）。
+   *  一个长音中途换和弦时音符前会连着好几个（后面的带 offset），**全留着**——只留最后一个会丢和弦 */
+  let pendingHarmonies: Harmony[] = [];
   /** `<chord>` 标记的音要并进上一个 `Chord` */
   let last: Chord | null = null;
 
@@ -508,7 +510,7 @@ function readMeasure(
         break;
       }
       case "harmony":
-        pendingHarmony = readHarmony(c);
+        pendingHarmonies.push(readHarmony(c));
         break;
       case "print": {
         const p = readPrint(c);
@@ -529,8 +531,6 @@ function readMeasure(
         const note: Note = {};
         if (pitchEl) {
           note.pitch = readPitch(pitchEl);
-          const k = key();
-          if (k) note.degree = degreeFromPitch(note.pitch, k);
         }
         const acc = childText(c, "accidental");
         if (acc) note.accidental = acc as Note["accidental"];
@@ -593,9 +593,11 @@ function readMeasure(
         if (lyr.length) ch.lyrics = lyr;
         const nots = readNotations(c, marks, ch.id);
         if (nots) ch.notations = nots;
-        if (pendingHarmony) {
-          ch.harmony = pendingHarmony;
-          pendingHarmony = undefined;
+        if (pendingHarmonies.length) {
+          const [first, ...later] = pendingHarmonies;
+          ch.harmony = first;
+          if (later.length) ch.laterHarmonies = later;
+          pendingHarmonies = [];
         }
         m.elements.push(ch);
         last = ch;
@@ -608,14 +610,14 @@ function readMeasure(
   // **小节末尾还欠着一个和弦**：那是给下一小节的预置和弦（常带 `<offset>` 负值），
   // 后面没有音符可挂。`ScoreDoc` 的 `y` 占位符就是为这种「和弦完全没有对位音符」设的
   // （规范 §8.1，语料实测 72 次）——丢了它，往返一轮就少一个 `<harmony>`。
-  if (pendingHarmony) {
+  for (const harmony of pendingHarmonies) {
     const sp: Space = {
       kind: "space",
       id: ids.next(),
       spacer: "y",
       voice: 1,
       staff: 1,
-      harmony: pendingHarmony,
+      harmony,
     };
     m.elements.push(sp);
   }
@@ -685,21 +687,10 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
     const nm = names.get(id);
     if (nm?.name) part.name = nm.name;
     if (nm?.abbrev) part.abbrev = nm.abbrev;
-    let curKey: Key | undefined;
     let staves: number | undefined;
     for (const mEl of children(p, "measure")) {
-      const m = readMeasure(mEl, ids, marks, () => curKey);
-      if (m.attrs?.key) curKey = m.attrs.key;
+      const m = readMeasure(mEl, ids, marks);
       if (m.attrs?.staves !== undefined) staves = m.attrs.staves;
-      // 调号在本小节里才出现时，前面按旧调算的度数要补正
-      if (m.attrs?.key) {
-        for (const el of m.elements) {
-          if (el.kind !== "chord") continue;
-          for (const n of el.notes) {
-            if (n.pitch) n.degree = degreeFromPitch(n.pitch, m.attrs.key);
-          }
-        }
-      }
       part.measures.push(m);
     }
     if (staves !== undefined) part.staffCount = staves;
@@ -710,6 +701,8 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
   const first = song.parts[0]?.measures.find((m) => m.attrs?.key || m.attrs?.time);
   if (first?.attrs?.key) song.key = first.attrs.key;
   if (first?.attrs?.time) song.time = first.attrs.time;
+  // 简谱度数与面上的临时记号：整个声部读完再按小节内延续规则算（`helpers.ts::assignDegrees`）
+  for (const part of song.parts) assignDegrees(part, song.key ?? { fifths: 0 });
 
   song.marks = marks.marks;
   doc.songs.push(song);

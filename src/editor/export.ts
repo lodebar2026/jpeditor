@@ -5,10 +5,9 @@ import { buildPptx } from "./pptx";
 import { ExpandedPainter } from "../jianpu/expanded";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { scoreToJpwabc } from "../score/jpscore";
-import { textScoreToMusicXml } from "../pu";
 import { asset } from "../common/asset";
-import { scoreToMusicXml } from "../score/musicxmlout";
-import { patchMusicXml } from "../score/musicxmlpatch";
+import { scoreDocToMusicXml } from "../model/toxml";
+import { scoreToScoreDoc } from "../model/fromscore";
 import { annotateLayout } from "../score/musicxmllayout";
 import { colorToCss } from "../common/geom";
 
@@ -144,8 +143,7 @@ export function pptxPainter(app: App): ExpandedPainter {
 
 const MUSICXML_MIME = "application/vnd.recordare.musicxml+xml";
 
-/** 导出 MusicXML。有底本（OMR/ABC/导入的 musicxml）就在底本上做增量修改，只有纯 .jpwabc
- *  才整体重生成——.jpwabc 承载的信息比 MusicXML 少，重生成等于把底本降采样。 */
+/** 导出 MusicXML（简谱档与混排档）。 */
 export async function exportMusicXml(app: App): Promise<void> {
   await saveBytes(
     new TextEncoder().encode(buildMusicXml(app)),
@@ -154,29 +152,21 @@ export async function exportMusicXml(app: App): Promise<void> {
   );
 }
 
-/** 当前文档 → MusicXML 文本。**保存回 `.musicxml` 原文件与「导出 MusicXML」共用这一条**，
- *  四条路径见本文件顶部的说明（未改动零损耗 / patch / 兜底全量 / 无底本全量）。 */
+/** 当前文档 → MusicXML 文本。**保存回 `.musicxml` 原文件与「导出 MusicXML」共用这一条**。
+ *
+ *  只有两条路：有底本且没改过（混排预览、识别核对未动）→ 底本原样；否则由唯一写出端
+ *  `toxml.ts::scoreDocToMusicXml` 整份重写——`.jpwabc` 先经 `scoreToScoreDoc(forMusicXml)` 进模型。 */
 export function buildMusicXml(app: App): string {
   const base = app.mixedXmlText;
-  if (app.mode === "mixed" && base) return base; // 混排：底本即五线谱原文，原样给出
+  if (base && app.mode === "mixed") return base; // 混排：底本即五线谱原文，原样给出
+  if (base && app.importUnchanged) return finishMusicXmlText(base); // 识别核对一字未改：零损耗
   let xml: string;
-  if (base && app.importUnchanged) {
-    xml = base; // 一字未改：零损耗
-  } else if (base) {
-    let r: { xml: string; fallback: boolean } | null = null;
-    try {
-      r = patchMusicXml(base, app.painter.score);
-    } catch (e) {
-      console.error("MusicXML 增量修改失败，改走整体重生成", e);
-    }
-    if (!r || r.fallback) {
-      app.setStatus("改动过大，MusicXML 已按当前谱面重新生成（原图行结构等细节会丢失）");
-      xml = scoreToMusicXml(app.painter.score);
-    } else {
-      xml = r.xml;
-    }
+  if (app.docFormat === "jpwabc") {
+    xml = scoreDocToMusicXml(scoreToScoreDoc(app.painter.score, { forMusicXml: true }));
   } else {
-    xml = scoreToMusicXml(app.painter.score);
+    const doc = app.currentScoreDoc();
+    if (!doc) throw new Error("这份谱里没有可导出的曲行");
+    xml = scoreDocToMusicXml(doc);
   }
   return finishMusicXmlText(xml);
 }
@@ -192,24 +182,10 @@ export function finishMusicXmlText(xml: string): string {
   return out;
 }
 
-async function finishMusicXml(app: App, xml: string): Promise<void> {
-  await saveBytes(
-    new TextEncoder().encode(finishMusicXmlText(xml)),
-    `${baseName(app)}.musicxml`,
-    MUSICXML_MIME,
-  );
-}
-
-/** 文本谱/123/ABC → MusicXML。直接从 `ScoreDoc` 生成（不经 Score），和弦、力度、渐强渐弱都保住。
- *  `.musicxml` 那一档文档里就是 XML（原文或 `editScoreDoc` 整份重写过的），原样给出。 */
+/** 文本谱/123/ABC → MusicXML。`.musicxml` 那一档文档里就是 XML（原文或 `editScoreDoc` 整份重写过的），原样给出。 */
 export async function exportPuMusicXml(app: App): Promise<void> {
-  if (app.docFormat === "musicxml") {
-    await saveBytes(new TextEncoder().encode(app.getText()), `${baseName(app)}.musicxml`, MUSICXML_MIME);
-    return;
-  }
-  const doc = app.currentScoreDoc();
-  if (!doc) throw new Error("这份谱里没有可导出的曲行");
-  await finishMusicXml(app, textScoreToMusicXml(doc));
+  const text = app.docFormat === "musicxml" ? app.getText() : buildMusicXml(app);
+  await saveBytes(new TextEncoder().encode(text), `${baseName(app)}.musicxml`, MUSICXML_MIME);
 }
 
 /** 文本谱 → `.jpwabc`。JP-Word 的 .Voice 只有单声部，多声部时只导第一声部。 */
