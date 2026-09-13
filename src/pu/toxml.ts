@@ -23,7 +23,6 @@ import type {
   Meter,
   MusicElement,
   NoteElement,
-  PuDoc,
   PuSong,
   ScoreLine,
 } from "./ast";
@@ -227,13 +226,6 @@ export interface ToXmlOptions {
 export function textScoreToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): string {
   const song = docView(doc).songs[options.song ?? 0];
   if (!song) throw new Error("这份谱里没有可导出的曲行");
-  return songXml(song);
-}
-
-/** 过渡期对照用：解析器直出的 `PuDoc` → MusicXML（`scripts/toscore-dual.mjs`）。阶段 4 删。 */
-export function puToMusicXml(doc: PuDoc, options: ToXmlOptions = {}): string {
-  const song = doc.songs[options.song ?? 0];
-  if (!song) throw new Error("这份文本谱里没有可导出的曲行");
   return songXml(song);
 }
 

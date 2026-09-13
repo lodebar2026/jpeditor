@@ -74,7 +74,7 @@ export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> =
   // `.jpwabc` 的语法**刻意不扩**（`docs/架构.md` A5 那条）：和弦与 slur 在
   // `scoreToJpwabc` 就丢了，成书对比里那条基准路因此被停用。
   jpwabc: allBut("harmony", "slur", "dynamics", "multiVoice", "style", "multiSong", "grace"),
-  // 文本谱：`puToScore` 丢和弦/力度/多声部（`docs/架构.md` §6.1 的表），
+  // 文本谱：`scoreDocToScore` 丢和弦/力度/多声部（`docs/架构.md` §6.1 的表），
   // 但文本谱**原文**装得下和弦——这里算的是「另存为之后还在不在」，所以按解析器的能力写。
   pu: allBut("style", "playOrder", "dynamics"),
   // MusicXML 装不下的两样：`playOrder` 的 skip/limit（`<ending>` 只能整小节）与样式引用。

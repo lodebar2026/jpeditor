@@ -36,7 +36,6 @@ import type {
   LyricLine,
   Mark,
   NoteElement,
-  PuDoc,
   PuSong,
   ScoreLine,
 } from "./ast";
@@ -439,15 +438,6 @@ function pageEnds(song: PuSong, voice: number): Set<ScoreLine> {
     if (last) out.add(last);
   });
   return out;
-}
-
-/**
- * 文本谱 → Score。多声部会变成多个 Part（Part[0] 为主旋律）。
- * 返回 null 表示这份文档没有可用的曲行。
- */
-export function puToScore(doc: PuDoc, options: ToScoreOptions = {}): Score | null {
-  const song = doc.songs[options.song ?? 0];
-  return song ? songToScore(song, options) : null;
 }
 
 export interface ScoreDocToScoreOptions {
