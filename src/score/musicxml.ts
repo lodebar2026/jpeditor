@@ -25,6 +25,7 @@ import {
   TimePosition,
 } from "./score";
 import { child, childText, children } from "./xmldom";
+import { SECTION_WORD_RE } from "./phraseinput";
 
 // ---------------- DOM helpers ----------------
 // 通用的取子元素工具在 ./xmldom.ts；这里只保留本模块特有的取值语义（数字/默认值）。
@@ -205,11 +206,6 @@ function parsePrint(m: Measure, printEl: Element): void {
   if (printEl.getAttribute("new-system") === "yes") m.newSystem = true;
   if (printEl.getAttribute("new-page") === "yes") { m.newSystem = true; m.newPage = true; }
 }
-
-// 段落词（流行/敬拜谱常见的段落方框标记）。`<words>` 也用于表情记号(rit./dolce)，故只认这些词，
-// 免把普通文字当段落；`<rehearsal>` 本就是排练/段落记号，一律收下。
-const SECTION_WORD_RE =
-  /^(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|refrain|tag|前奏|主歌|副歌|间奏|尾奏|尾声|桥段|插曲)\s*\d*$/i;
 
 /**
  * 从 `<direction>` 取**表情/跳转记号**（`rit.` / `Fine` / `D.S.` / `mf`）。

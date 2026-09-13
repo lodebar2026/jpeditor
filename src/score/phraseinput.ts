@@ -64,3 +64,8 @@ export function isPhraseChord(e: object): e is PhraseChord {
 export function chordsOf(m: PhraseMeasure): PhraseChord[] {
   return m.entries.filter(isPhraseChord);
 }
+
+// 段落词（流行/敬拜谱常见的段落方框标记）。`<words>` 也用于表情记号(rit./dolce)，故只认这些词，
+// 免把普通文字当段落；`<rehearsal>` 本就是排练/段落记号，一律收下。
+export const SECTION_WORD_RE =
+  /^(intro|verse|chorus|pre-?chorus|bridge|coda|outro|ending|interlude|solo|refrain|tag|前奏|主歌|副歌|间奏|尾奏|尾声|桥段|插曲)\s*\d*$/i;
