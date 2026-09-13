@@ -7,7 +7,7 @@
 import { Fraction } from "../common/fraction";
 import { BarStyle, StartStopDiscontinue } from "./enums";
 import { jpTonicOctaveShift, keyAlter } from "./jppitch";
-import { PlayData, playOrderFromSpec, playOrderOf, type RepeatSpec } from "./playorder";
+import { PlayData, playOrderOf } from "./playorder";
 
 export { BarStyle, StartStopDiscontinue };
 // 演唱顺序的类原在这里，阶段 4 搬到 playorder.ts；照旧从这里导出，调用方不用改。
@@ -569,10 +569,6 @@ export class Score {
         m.entries = m.entries.filter((e) => !(e instanceof LineBreak));
       }
     }
-  }
-
-  doRepeat(repeat: RepeatSpec): void {
-    this.playData.measures.push(...playOrderFromSpec(repeat, this.parts[0]));
   }
 
   parseRepeatInf(): void {

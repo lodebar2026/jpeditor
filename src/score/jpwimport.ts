@@ -23,12 +23,11 @@ import {
   Note,
   Lyric,
   Part,
-  PlayItem,
-  RepeatSpec,
   Score,
   Time,
 } from "./score";
 import { applyJpPitch, type JpKeyState } from "./jppitch";
+import { RepeatSpec, playOrderByVerses, playOrderFromSpec } from "./playorder";
 
 class JpState implements JpKeyState {
   inTuplet = false;
@@ -342,18 +341,10 @@ function processRepeat(
   rep: RepeatSection | null,
 ): void {
   if (rep === null) {
-    for (let pp = 0; pp < pass; pp++) {
-      const p = new PlayItem();
-      p.pass = 1 + pp;
-      p.mid = 0;
-      p.end = part.measures.length;
-      res.playData.measures.push(p);
-    }
+    res.playData.measures = playOrderByVerses(part.measures.length, pass);
     res.playData.isSimpple = true;
   } else {
-    const ss = rep.data.join("\n");
-    const spec = new RepeatSpec(ss);
-    res.doRepeat(spec);
+    res.playData.measures = playOrderFromSpec(new RepeatSpec(rep.data.join("\n")), part);
   }
 }
 
