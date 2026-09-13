@@ -24,7 +24,7 @@ import { loadMusicXml } from "../score/musicxml";
 import type { FitMetric } from "../score/phrase";
 import type { FitMeasure } from "../pu/phrase";
 import { abcToMusicXml } from "../abc/abc2xml";
-import { scoreToJpwabc, scoreToJpwabcWithMeta, type JpwMeta, type JpwRange } from "../score/jpscore";
+import { scoreToJpwabc, type JpwMeta, type JpwRange } from "../score/jpscore";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
 import { isTauriRuntime, saveBytes } from "./fileio";
 import { DOC_EXT, acceptAttr, is123File, isPuFile } from "../common/filetypes";
@@ -35,6 +35,7 @@ import { showConfirmDialog } from "./dialogs";
 import { buildMusicXml, finishMusicXmlText } from "./export";
 import { scoreDocToMusicXml } from "../model/toxml";
 import { emit123 } from "../j123/emit";
+import { metaFrom123 } from "./omrmeta";
 import { emitAbc } from "../abcfamily/emitabc.entry";
 import { puToScoreDoc } from "../model/frompu";
 import { scoreToScoreDoc } from "../model/fromscore";
@@ -157,6 +158,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   readonly omr: OmrController = new OmrController(this);
   /** 最近一次 xml 导入的序列化映射，供 OmrController 接管为它的点选映射。 */
   private _lastImportMeta: JpwMeta | null = null;
+  /** 识别核对：从识别底本转出的 123 原文。文本仍与它逐字相同 = 没改过，存回时给底本 */
+  private _omrBaseText: string | null = null;
   // 乐句排版：缓存导入时的「原始排版」文本以便无损切回；_phraseOn 记当前是否乐句排版。
   private _originalLayoutBtnEl: HTMLButtonElement | null = null;
   private _phraseBtnEl: HTMLButtonElement | null = null;
@@ -507,10 +510,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this.view.state.doc.toString();
   }
 
-  /** 当前文本是否与「导入 MusicXML 时生成的 .jpwabc」逐字相同。
+  /** 当前文本是否与「识别底本转出的 123」逐字相同。
    *  true = 用户没改过谱面，MusicXML 导出可以直接给底本原文（零损耗）。 */
   get importUnchanged(): boolean {
-    return this._origLayoutText !== null && this.getText() === this._origLayoutText;
+    return this._omrBaseText !== null && this.mixedXmlText !== null && this.getText() === this._omrBaseText;
   }
 
   setText(text: string): void {
@@ -1185,10 +1188,11 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   }
 
   // ---------------- file I/O ----------------
-  /** Decode bytes by extension: .xml/.musicxml -> import to .jpwabc; else UTF-16 .jpwabc. */
+  /** 按扩展名落地：.abc / .123 / 文本谱 / .musicxml（无代码区）各进原生格式；其余按 UTF-16 .jpwabc 读。 */
   importBytes(bytes: Uint8Array, name: string): void {
     // 任何新导入都使上一次的识别叠加产物失效（识别结果由 OmrController 在本调用之后重设）。
     this.omr.clear();
+    this._omrBaseText = null;
     // ABC 记谱：**原文就是源格式**，原生解析直接进编辑器（`reloadAbc`），不再转 MusicXML。
     // 原生解析读不动时由 `reloadAbc` 自己回落 abc2xml，这里不预先转。
     if (/\.abc$/i.test(name)) {
@@ -1253,23 +1257,29 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   }
 
   /**
-   * 简谱识别产物落地（`OmrHost.importOmrMusicXml`）：MusicXML 底本 + 可编辑的 `.jpwabc` 转换文本。
+   * 简谱识别产物落地（`OmrHost.importOmrMusicXml`）：MusicXML 底本 + 可编辑的 123 转换文本。
    *
-   * 与用户打开 `.musicxml` 不同：识别核对要在代码区里改简谱文本、点选定位靠转换时产出的区间映射
-   * （`lastImportMeta`），导出 MusicXML 时在底本上 patch（`export.ts::buildMusicXml`）。
+   * 与用户打开 `.musicxml` 不同：识别核对要在代码区里改简谱文本、点选定位靠转换文本的源区间
+   * （`lastImportMeta`，见 `omrmeta.ts`）。底本留在 `mixedXmlText`：没改过就原样存回，
+   * 改过就由 123 文本整份重写（`export.ts::buildMusicXml`）。
    */
   importOmrMusicXml(xml: string): void {
     this.omr.clear();
-    this._setDocFormat("jpwabc");
+    const doc = formatOf("musicxml").toScoreDoc!(xml);
+    const text = emit123(doc);
+    const losses = planSave(doc, "123");
+    this._setDocFormat("123");
     this.mixedXmlText = xml;
     this._mixedPainter = null; // reset so next showStaffPreview re-loads
     this._setMixedAvailable(true);
     this._setMode("jp");
-    const score = loadMusicXml(xml);
     this._syncViewModeButtons();
-    const { text, meta } = scoreToJpwabcWithMeta(score);
-    this._lastImportMeta = meta; // 供 OmrController 接管为它的点选映射
-    this._applyImportedJp(text);
+    this._lastImportMeta = metaFrom123(text); // 供 OmrController 接管为它的点选映射
+    this._omrBaseText = text; // 供「未改动就存回底本」判断
+    this.setText(text);
+    if (losses.length) {
+      this.setStatus(`识别结果已转成 123 核对文本；有 ${losses.length} 样 123 表达不了，改动后导出 MusicXML 会丢`);
+    }
   }
 
   /**
@@ -1366,16 +1376,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this.setStatus(`已转成 ${target} 新文档（未保存，原 MusicXML 未改动）`);
   }
 
-  /** 导入 MusicXML/OMR 得到的默认（原始排版）文本：缓存以便乐句排版无损切回，并启用切换按钮。 */
-
-  private _applyImportedJp(text: string): void {
-    this._origLayoutText = text;
-    this._phraseOn = false;
-    this._setPhraseActive(false);
-    this._setPhraseAvailable(true);
-    this.setText(text);
-  }
-
   private _disablePhrase(): void {
     this._origLayoutText = null;
     this._phraseOn = false;
@@ -1429,30 +1429,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this._phraseBtnEl?.setAttribute("aria-pressed", String(phrase));
   }
 
-  /** Switch between the imported line layout and phrase-aware relayout. */
+  /** 原样排版与按乐句重排之间切换。只有文本谱支持（重排的是原文本身）。 */
   setPhraseLayout(phrase: boolean): void {
-    if (this.adapter.caps.phraseRelayout) {
-      this._setPuPhraseLayout(phrase);
-      return;
-    }
-    if (!this.mixedXmlText || !this._origLayoutText) return;
-    if (this._phraseOn === phrase) return;
-    // 乐句排版要看的是排版结果 → 先退出识别/混排叠加视图，回到简谱模式，否则 reload 直接返回不重排。
-    this._setMode("jp");
-    if (!phrase) {
-      this._phraseOn = false;
-      this._setPhraseActive(false);
-      this.setText(this._origLayoutText);
-    } else {
-      try {
-        const score = loadMusicXml(this.mixedXmlText);
-        this.setText(scoreToJpwabc(score, { phrase: true, fit: this._phraseFit(score) }));
-        this._phraseOn = true;
-        this._setPhraseActive(true);
-      } catch (e) {
-        console.error("phrase relayout failed", e);
-      }
-    }
+    if (this.adapter.caps.phraseRelayout) this._setPuPhraseLayout(phrase);
   }
 
   /**
@@ -1507,23 +1486,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return (score) => this._fitOf(score, this.pageW, this._sizes.pptx.fontSize);
   }
 
-  /**
-   * 乐句排版的**真实坐标尺子**：空排一遍，量出版心宽与每个和弦的自然横向区间。
-   *
-   * 行长目标与「这一行放不放得下」都按它算（`phrase.ts::targetMeasForFit` / `FitMetric`），
-   * 一个拍脑袋的常数都不留——从前是固定「4 小节」加「25 格」，那两个数是按 4/4、
-   * 每小节 4 个音调出来的：3/4 的谱一小节才 3 个音，一行明明还放得下一句却被硬断开
-   * （350《主耶稣我羡慕活在祢面前》一遍因此排两页）。换纸、换字号，它自己跟着重算。
-   *
-   * **另起一个 painter 来量，且要 `lyricStack > 0`**：展开档的 `buildLine` 走 `playData`
-   * 的完整展开序列（反复与多段各排一遍），同一个 Chord 在多遍里各出现一次，而 spans 是
-   * 以 Chord 为键的 Map、只留最后一遍，按小节取 min/max 就成了整首的跨度。
-   */
-  private _phraseFit(score: Score): FitMetric {
-    return this._fitOf(score, this.layoutPage.w, this.fontSize);
-  }
-
-  /** 同上，纸宽与字号由调用方给（文本谱那条路的纸不在 `layoutPage` 里）。 */
+  /** 乐句重排的行长度量：按实际纸宽与字号量出每小节自然宽度（`phrase.ts::targetMeasForFit`）。
+   *  另起一个 painter 来量，且要 `lyricStack > 0`：展开档会按反复与多段各排一遍，按小节取跨度就成了整首。 */
   private _fitOf(score: Score, width: number, fontSize: number): FitMetric {
     const p = new JinpuPainter(fontSize);
     p.layout.options.smuflMeta = this.meta;
@@ -1918,7 +1882,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private async writeTo(path: string): Promise<void> {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     // `.musicxml` 那一档：文档里就是 XML（未改动是原文，改过的已由 `editScoreDoc` 整份重写）。
-    // 其余格式存到 XML 路径上（识别核对的 `.jpwabc` 转换文本）：底本 patch，失败兜底全量重生成。
+    // 其余格式存到 XML 路径上（识别核对的 123 转换文本）：未改动给底本，改过由唯一写出端整份重写。
     const bytes = this.docFormat === "musicxml"
       ? this.encodeForSave()
       : this.onDiskIsXml

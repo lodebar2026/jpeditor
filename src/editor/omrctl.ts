@@ -29,7 +29,7 @@ export interface OmrHost {
   readonly mode: "jp" | "mixed" | "recognize";
   /** 编辑器里的 CodeMirror 视图（点选定位要用）。 */
   readonly view: EditorView;
-  /** 最近一次 MusicXML 导入产出的代码区间映射（jpwabc 那条路的 meta 从这儿接管）。 */
+  /** 最近一次 MusicXML 导入产出的代码区间映射（123 核对文本那条路的 meta 从这儿接管）。 */
   readonly lastImportMeta: JpwMeta | null;
 
   getText(): string;
@@ -45,7 +45,7 @@ export interface OmrHost {
    * 返回 false 表示简谱那一侧转不出来（不影响混排预览）。
    */
   adoptStaffXml(xml: string): boolean;
-  /** 简谱识别产物（MusicXML 底本）落地：转成可编辑的 `.jpwabc` 文本，并产出点选映射 `lastImportMeta`。 */
+  /** 简谱识别产物（MusicXML 底本）落地：转成可编辑的 123 文本，并产出点选映射 `lastImportMeta`。 */
   importOmrMusicXml(xml: string): void;
 
   /** 清空 #score-pane 与翻页状态（各预览铺页前都要做）。 */
@@ -306,7 +306,7 @@ export class OmrController {
     });
   }
 
-  /** 识别 SVG 交互：点选命中对象→选中对应 jpwabc 代码；悬停高亮；floating 视图弹行/页眉浮窗。 */
+  /** 识别 SVG 交互：点选命中对象→选中对应代码；悬停高亮；floating 视图弹行/页眉浮窗。 */
   private wireInteraction(svg: SVGSVGElement, wrap: HTMLDivElement): void {
     const hitOf = (t: EventTarget | null): SVGRectElement | null =>
       (t instanceof Element ? t.closest(".omr-hits rect") : null) as SVGRectElement | null;

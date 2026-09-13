@@ -37,6 +37,7 @@ import type {
   VoiceGroup,
 } from "./ast";
 import type { Dialect } from "./dialect";
+import { projectForJianpu } from "../model/jianpuproject";
 import type {
   Barline,
   Chord,
@@ -660,7 +661,8 @@ export function docView(doc: ScoreDoc): DocView {
   const view: DocView = {
     dialect: (doc.puDialect ?? "shige") as Dialect,
     doc,
-    songs: doc.songs.map(toPuSong),
+    // MusicXML 读进来的先投成简谱形状（长音拆增时线、减时线按 `<type>` 算、和弦补原文）
+    songs: doc.songs.map((s, i) => toPuSong(projectForJianpu(s), i)),
     idOf: new Map(),
     elementOf: new Map(),
     syllableOwner: new Map(),

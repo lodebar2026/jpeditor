@@ -87,21 +87,22 @@ async function boot() {
     import("./score/musicxml"), import("./pu"),
     import("./abcfamily/emitabc.entry"), import("./abc/abc2xml"),
     import("./model/fromxml"), import("./model/toxml"), import("./model/capability"),
+    import("./model/jianpuproject"),
   ]).then((
     [parse, emit, fromscore, frompu, helpers, musicxml, pu, emitabc, abc2xml,
-     fromxml, toxml, capability],
+     fromxml, toxml, capability, jianpuproject],
   ) => ({
     ...parse, ...emit, ...fromscore, ...frompu, ...helpers, ...musicxml, pu,
-    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability,
+    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject,
   }));
-  // MusicXML 导出（全量序列化 / 增量 patch / 版面注入）暴露，供 scripts/xml-roundtrip.mjs 回归。
+  // `.jpwabc` ↔ Score ↔ MusicXML 的导入与版面注入暴露，供 scripts/xml-roundtrip.mjs 回归
+  // （写出端只有 `model/toxml.ts`，在 `__j123` 里）。
   win.__xmlout = Promise.all([
-    import("./score/musicxmlout"), import("./score/musicxmlpatch"),
     import("./score/musicxmllayout"), import("./score/musicxml"),
     import("./score/jpscore"), import("./jpword/jpwfile"),
     import("./jpword/parse"), import("./score/jpwimport"),
-  ]).then(([out, patch, layout, imp, jpscore, jpwfile, parse, jpwimport]) =>
-    ({ ...out, ...patch, ...layout, ...imp, ...jpscore, ...jpwfile, ...parse, ...jpwimport }));
+  ]).then(([layout, imp, jpscore, jpwfile, parse, jpwimport]) =>
+    ({ ...layout, ...imp, ...jpscore, ...jpwfile, ...parse, ...jpwimport }));
 
   const revealWorkspace = () => {
     startScreen.hidden = true;

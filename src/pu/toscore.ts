@@ -376,6 +376,8 @@ function chordDuration(ch: Chord): Fraction {
 }
 
 function applyTupletDurations(part: Part): void {
+  /** 在多连音起止之间：`Tuplet` 只挂在首尾两个音上，**中间的音也要乘比例** */
+  let inTuplet = false;
   for (const m of part.measures) {
     let pos = new Fraction(0);
     for (const ent of m.entries) {
@@ -385,7 +387,10 @@ function applyTupletDurations(part: Part): void {
         continue;
       }
       let dur = chordDuration(ent);
-      if (ent.notes[0]?.tuplet) dur = dur.timesInt(2).divInt(3);
+      const nt = ent.notes[0];
+      if (nt?.tuplet && nt.tupletBegin) inTuplet = true;
+      if (inTuplet || nt?.tuplet) dur = dur.timesInt(2).divInt(3);
+      if (nt?.tuplet && nt.tupletEnd) inTuplet = false;
       ent.duration = dur;
       ent.position = pos;
       pos = pos.plus(dur);

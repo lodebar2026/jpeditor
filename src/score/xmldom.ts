@@ -1,4 +1,4 @@
-// MusicXML **DOM 后处理**的公共件。三处各写过一份（musicxmlpatch / musicxmllayout / musicxml 导入），
+// MusicXML **DOM 后处理**的公共件。几处各写过一份（musicxmllayout / musicxml 导入），
 // 其中 insertOrdered 逐字符相同。字符串生成那一路的工具在 ./xmlutil.ts。
 //
 // 一律只看**直接子元素**（`el.children`），不用 querySelector——MusicXML 里同名标签会在不同层级

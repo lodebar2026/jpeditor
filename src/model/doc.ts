@@ -232,6 +232,8 @@ export interface Harmony {
   degrees?: { value: number; alter: number; type: "add" | "alter" | "subtract" }[];
   /** 整段和弦只有文字、解析不出结构时的原文兜底（识别结果常是这种） */
   text?: string;
+  /** `<offset>`：相对所修饰音符起点的 divisions（增时线上的和弦由 `xmlproject.ts` 填） */
+  offset?: number;
 }
 
 export interface Lyric {
@@ -361,6 +363,9 @@ export interface Chord {
   beamGroup?: number;
   /** 和弦符号可挂在任意元素上（音符 / 休止 / 增时线 / 占位符）——规范 §8.1 的四种锚定 */
   harmony?: Harmony;
+  /** 同一个音前面连着的**后续**和弦（MusicXML 一个 `<note>` 前多个 `<harmony>`，后面的带 `offset` 落在长音中间）。
+   *  简谱侧没有这个位置：进简谱形状时挂到对应的增时线上（`jianpuproject.ts`） */
+  laterHarmonies?: Harmony[];
   lyrics?: Lyric[];
   notations?: Notations;
   /** 段落词（「（副歌）」这类印在谱上的提示） */
@@ -375,8 +380,8 @@ export interface Chord {
   /** 见 `SourceOrnament` */
   ornaments?: SourceOrnament[];
   /** **承接前音的延长**：小节线/换行之后开头的增时线（文本谱 `5 - | - -`）。
-   *  这个和弦本身印成一条增时线、不印符头，音高照抄前音，导出 MusicXML 时与前音以 tie 相连。
-   *  123 目前写不出这种写法（`$`/小节线后的 `-` 读作孤立增时线），写出端跳过它 */
+   *  这个和弦本身印成一条增时线、不印符头，音高照抄前音——只为文本谱排版无损而留。
+   *  **不需要支持**别的表达：123 写出端跳过它，导出 MusicXML 按普通音符写（不补 tie） */
   continued?: boolean;
   /** 见 `InlineItem` */
   before?: InlineItem[];
@@ -512,7 +517,7 @@ export interface Direction {
   /** 上方还是下方 */
   placement?: "above" | "below";
   /** `<sound>` 的播放语义：dacapo / dalsegno / fine / segno / coda / tempo */
-  sound?: { dacapo?: boolean; dalsegno?: string; fine?: boolean; segno?: string; coda?: string; tempo?: number };
+  sound?: { dacapo?: boolean; dalsegno?: string; fine?: boolean; segno?: string; coda?: string; tocoda?: string; tempo?: number };
   voice?: number;
   staff?: number;
   source?: SourceSpan;

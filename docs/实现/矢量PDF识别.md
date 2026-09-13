@@ -598,7 +598,6 @@ Node 侧照着画，两端不必共享字体度量。**不用 SVG 字符串**—
 `loadMusicXml` 原本整个跳过 `<harmony>`（docs/架构与实现.md 记的「Score 装不下和弦」说的是 **jpwabc 那条路**，
 Score 这边只是一直没做）。现在 `src/score/harmonyparse.ts` 把它读成 `Chord.harmony`，
 `NoteEntry.addHarmony` 排到音符正上方，富文本分段复用 `layout/harmony.ts`（与五线谱、文本谱同一套）。
-导出侧的既定约束不变：`musicxmlpatch` 仍然不碰 harmony。
 
 两处要害：
 

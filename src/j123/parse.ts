@@ -111,9 +111,12 @@ export function parseLyricLine(
   verseFrom: number,
   verseTo: number | undefined,
   source: SourceSpan,
+  valueOffset?: number,
 ): { syllables: Lyric[]; label?: string } {
   const out: Lyric[] = [];
   let i = 0;
+  /** 当前音节在 body 里的起点：给音节记源区间（识别核对的点选定位落到字上） */
+  let tokStart = 0;
   let label: string | undefined;
 
   // 印刷段号 `<1.>` / `"1."`
@@ -133,12 +136,16 @@ export function parseLyricLine(
       prefix = "";
     }
     if (verseTo !== undefined && verseTo !== verseFrom) l.numberTo = verseTo;
+    if (valueOffset !== undefined && text !== "") {
+      l.source = { line: source.line, column: valueOffset - source.offset + tokStart, offset: valueOffset + tokStart, length: text.length };
+    }
     return l;
   };
 
   while (i < body.length) {
     const ch = body[i]!;
     if (ch === " " || ch === "\t") { i++; continue; }
+    tokStart = i;
     // 跳一个音符（该音符不配字）
     if (ch === "*") { out.push(mk("")); i++; continue; }
     // 前一音节延长到这个音符
@@ -989,7 +996,7 @@ function applyField(
       startPart(f.voice ?? 1);
       break;
     case "w": {
-      const { syllables, label } = parseLyricLine(f.value, f.verseFrom ?? 1, f.verseTo, f.source);
+      const { syllables, label } = parseLyricLine(f.value, f.verseFrom ?? 1, f.verseTo, f.source, f.valueOffset);
       // 印刷段号不占音符格，挂在该段**第一个非空**音节上——空音节（`*`）不会被挂到元素上
       // （`attachLyrics` 会跳过），label 跟着它一起丢
       if (label !== undefined) {

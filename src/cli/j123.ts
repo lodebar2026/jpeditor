@@ -17,7 +17,7 @@ export * from "../model/helpers";
 export { scoreDocToPu } from "../pu/slots";
 export { puToScoreDoc } from "../model/frompu";
 export { scoreToScoreDoc } from "../model/fromscore";
-export { textScoreToMusicXml } from "../pu/toxml";
+export { scoreDocToMusicXml } from "../model/toxml";
 export { scoreDocToScore } from "../pu/toscore";
 export { scoreToJpwabc } from "../score/jpscore";
 // 文本谱与 Score 侧：迁移工具要拿它们当输入

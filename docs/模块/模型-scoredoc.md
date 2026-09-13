@@ -32,9 +32,11 @@
 | `src/model/doc.ts` | 类型定义（571 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
 | `src/model/helpers.ts` | 遍历/查询/构造 + **音高互推** |
 | `src/model/fromxml.ts` | ← MusicXML（**直通**，读不懂的挂 `Measure.raw` 原样留着） |
-| `src/model/toxml.ts` | → MusicXML（**直通**，全量序列化） |
+| `src/model/toxml.ts` | → MusicXML（**唯一写出端**，全量序列化） |
+| `src/model/xmlproject.ts` | 简谱来源 → MusicXML 形状的投影（音高、divisions、记号原名、跨行小节…），`toxml.ts` 先过它 |
+| `src/model/jianpuproject.ts` | 反方向：MusicXML 形状 → 简谱形状（增时线、减时线、和弦原文、长音中途的和弦），`slots.ts` 与 123 写出端先过它 |
 | `src/model/frompu.ts` | ← `PuDoc`（**无损**：文本谱的全部排版信息都进来，`pu-scoredoc-check` 全语料逐字段还原零差异） |
-| `src/pu/slots.ts` | → **排版行视图**（`docView`）：线性化规则只写一次，排版器/`scoreDocToScore`/`textScoreToMusicXml`/双向定位共用；行里每个符号带 `ElementId` |
+| `src/pu/slots.ts` | → **排版行视图**（`docView`）：线性化规则只写一次，排版器/`scoreDocToScore`/双向定位共用；行里每个符号带 `ElementId` |
 | `src/model/fromscore.ts` | ← `Score`（`.jpwabc` / MusicXML 迁移） |
 | `src/model/capability.ts` | **格式能力表**：每种格式装得下什么 + `planSave`（另存为会丢什么） |
 
@@ -67,7 +69,7 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
   **已由 `fromxml.ts` 填充**（`scripts/staff-fields-check.mjs` 的合成夹具逐样断言过，
   真实语料 1035 份的填充率也在那里）。
 - **`Measure.raw` 是「全量重写不丢东西」的支点**：`fromxml.ts` 不认识的子节点序列化后挂在它上面，
-  `toxml.ts` 原位吐回去。没有它，全量重写就只能退回 patch。
+  `toxml.ts` 原位吐回去。没有它，全量重写就会丢东西。
 - **换行口径是 MusicXML 的**：`Print.newSystem/newPage` 表示「本小节**起**新系统」。源码的 `$` 写在小节之后，
   解析器先按「之后」收集、收尾经 `helpers.ts::breaksAfterToStart` 翻过来；写出端用 `breakAfter` 反向。
   最后一小节之后的换行记 `Part.endBreak`。
@@ -90,6 +92,4 @@ npm run build && HYMN500=<500首语料根> node scripts/musicxml-open-check.mjs 
 ## 已知限制
 
 - `fromscore.ts` 受 `Score` 限制：和弦/力度/多声部在上游就没有（不是这里丢的）
-- 123 写不出承接前音的增时线（`Chord.continued`），见 [../待办.md](../待办.md) §1.1
-- MusicXML 写出端有两份：文本谱来源走 `pu/toxml.ts::textScoreToMusicXml`（经排版行视图），
-  MusicXML 来源走 `model/toxml.ts`。合并的判据见 [../待办.md](../待办.md) §1.1
+- 承接前音的增时线（`Chord.continued`）不需要支持：123 写不出，导出 MusicXML 按普通音符写

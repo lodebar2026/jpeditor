@@ -53,6 +53,8 @@ export interface FieldLine {
   voice?: number;
   value: string;
   source: SourceSpan;
+  /** `value` 首字符的全文偏移（点选定位要落到字上） */
+  valueOffset?: number;
 }
 
 /** 字段行前缀。
@@ -85,6 +87,7 @@ export function parseFieldLine(
     name,
     value: line.slice(m[0].length).trim(),
     source: { line: lineNo, column: 0, offset, length: line.length },
+    valueOffset: offset + m[0].length + (/^\s*/.exec(line.slice(m[0].length))?.[0].length ?? 0),
   };
   if (m[2]) {
     const n = Number(m[2]);

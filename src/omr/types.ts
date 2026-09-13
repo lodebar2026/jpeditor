@@ -91,7 +91,7 @@ export interface JpNum {
   //   文本谱 `(y…)`；.jpwabc/Score 装不下。
   tuplet?: { actual: number; normal: number; start: boolean; stop: boolean };
   // 顿音（谱面上是音符正上方一个**实心倒三角** ▼，简谱印刷体的顿音记号）。
-  // → MusicXML `<notations><articulations><staccato/>`（与 pu/toxml.ts 的 `dy` 同口径）；
+  // → MusicXML `<notations><articulations><staccato/>`（与 model/xmlproject.ts 的 `dy` 同口径）；
   //   文本谱 `&dy`；.jpwabc/Score 装不下（layout 那边只画重音）。
   articulation?: "staccato";
 }

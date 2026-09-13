@@ -18,10 +18,12 @@
 
 import type { ScoreDoc } from "./doc";
 import { eachChord, verseCount } from "./helpers";
+import { projectForJianpu } from "./jianpuproject";
 
 /** 一项「文档里可能用到、格式可能装不下」的特性。 */
 export type Feature =
   | "harmony"        // 和弦符号
+  | "harmonyOffset"  // 落在长音中间、又不在整拍上的和弦（简谱挂不到增时线上）
   | "multiVoice"     // 多声部
   | "dynamics"       // 力度与渐强渐弱
   | "playOrder"      // 演唱顺序（含 skip/limit）
@@ -40,6 +42,7 @@ export type Feature =
 /** 人看的名字，直接进丢失清单。 */
 export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
   harmony: "和弦符号",
+  harmonyOffset: "长音中间不在整拍上的和弦（会提前到音符上）",
   multiVoice: "多声部",
   dynamics: "力度与渐强渐弱",
   playOrder: "演唱顺序（房号跳转、第几遍配第几段词）",
@@ -67,16 +70,16 @@ const allBut = (...gone: Feature[]): Set<Feature> => new Set(ALL.filter((f) => !
 export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> = {
   // 123 是按「装得下全部」设计的（`docs/格式/123格式.md`），实测 全语料只有 0.17% 表达不了，
   // 那些是转换层的账不是格式的账。
-  "123": allBut(),
+  "123": allBut("harmonyOffset"),
   // 标准 ABC：样式被规范标为 VOLATILE（§11，「not standardised」），所以 123 才把样式
   // 另走样式表；`I:playorder` 是 123 的扩展，标准 ABC 读不懂（虽然会忽略，等于丢）。
-  abc: allBut("style", "playOrder", "rhythmNote", "verseLabel"),
+  abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset"),
   // `.jpwabc` 的语法**刻意不扩**（`docs/架构.md` A5 那条）：和弦与 slur 在
   // `scoreToJpwabc` 就丢了，成书对比里那条基准路因此被停用。
-  jpwabc: allBut("harmony", "slur", "dynamics", "multiVoice", "style", "multiSong", "grace"),
+  jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "style", "multiSong", "grace"),
   // 文本谱：`scoreDocToScore` 丢和弦/力度/多声部（`docs/架构.md` §6.1 的表），
   // 但文本谱**原文**装得下和弦——这里算的是「另存为之后还在不在」，所以按解析器的能力写。
-  pu: allBut("style", "playOrder", "dynamics"),
+  pu: allBut("style", "playOrder", "dynamics", "harmonyOffset"),
   // MusicXML 装不下的两样：`playOrder` 的 skip/limit（`<ending>` 只能整小节）与样式引用。
   // 见 `docs/模块/模型-scoredoc.md` 的关键判据。
   musicxml: allBut("playOrder", "style"),
@@ -120,6 +123,10 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
     }
     for (const { chord } of eachChord(song)) {
       for (const su of chord.sustains ?? []) if (su.harmony) used.add("harmony");
+    }
+    // 长音中途换和弦：进简谱形状后还挂不到增时线上的才算（`jianpuproject.ts`）
+    if ([...eachChord(song)].some(({ chord }) => chord.laterHarmonies?.length)) {
+      if ([...eachChord(projectForJianpu(song))].some(({ chord }) => chord.laterHarmonies?.length)) used.add("harmonyOffset");
     }
   }
   return used;

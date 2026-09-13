@@ -57,7 +57,7 @@ function lyricLines(part: Part, sep: string): string[] {
   for (const mea of part.measures) {
     for (const el of mea.elements) {
       if (el.kind === "chord" && el.grace) continue;
-      // 承接前音的延长（文本谱小节线后的 `-`）123 写不出来，整个跳过（见 `doc.ts::Chord.continued`）
+      // 承接前音的延长（文本谱小节线后的 `-`）123 不表达，整个跳过（见 `doc.ts::Chord.continued`）
       if (el.kind === "chord" && el.continued) continue;
       // `y` 无时值、不占对位格（规范 §8.1 它只为挂和弦）；`x` 占（它是 Chord）
       if (el.kind === "space" && el.spacer === "y") continue;
@@ -199,6 +199,10 @@ export abstract class AbcFamilyEmitter {
     return "";
   }
 
+  /** 延音线记号（MusicXML 读进来的 `tied`）写成弧线括号。123 是：简谱里延音线与圆滑线同形，
+   *  123 没有单独的 tie 写法；ABC 不是，它有 `-`（见 `tieText`）。 */
+  protected readonly tiesAsSlurs: boolean = false;
+
   /** 延音线（ABC 专有：tie 的 start 端写 `-`）。 */
   protected tieText(ch: Chord): string {
     void ch;
@@ -299,7 +303,7 @@ export abstract class AbcFamilyEmitter {
     const tupletStart = new Map<number, { actual: number; normal: number }>();
     for (const m of song.marks) {
       if (!own.has(m.start) || !own.has(m.end)) continue;
-      if (m.type === "slur") {
+      if (m.type === "slur" || (m.type === "tied" && this.tiesAsSlurs)) {
         slurStart.set(m.start, (slurStart.get(m.start) ?? 0) + 1);
         slurEnd.set(m.end, (slurEnd.get(m.end) ?? 0) + 1);
       } else if (m.type === "tuplet") {

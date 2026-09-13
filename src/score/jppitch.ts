@@ -1,5 +1,5 @@
 // 简谱数字 → 五线谱音高拼写（step/alter/octave）。原本内联在 src/omr/musicxml.ts，
-// 因 MusicXML 导出（musicxmlout.ts / musicxmlpatch.ts）也要用同一套换算而提出来共享——
+// 因 MusicXML 导出（model/xmlproject.ts / model/fromscore.ts）也要用同一套换算而提出来共享——
 // 两份实现一旦漂移，导出→导入的往返数字就会错，故只留这一处。
 //
 // 可动 do：数字 1=主音，按调号求该音级的升降。与导入器 score.ts::Note.init 严格互逆。

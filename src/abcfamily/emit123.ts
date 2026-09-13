@@ -2,6 +2,8 @@
 
 import type { Chord, Element, Note, Song } from "../model/doc";
 import { AbcFamilyEmitter, type MarkIndex } from "./emit";
+import { projectForJianpu } from "../model/jianpuproject";
+import { harmonyToText } from "../score/harmonyparse";
 
 const ACC_TEXT: Readonly<Record<string, string>> = {
   sharp: "#",
@@ -13,6 +15,12 @@ const ACC_TEXT: Readonly<Record<string, string>> = {
 
 export class Emitter123 extends AbcFamilyEmitter {
   protected readonly versionLine = "%123-1.0";
+  protected override readonly tiesAsSlurs = true;
+
+  /** MusicXML 读进来的歌先投成简谱形状：123 的 `-` 是增时线、`_` 是减时线，照 MusicXML 的 type/beam 直写会写错时值 */
+  override emitSong(song: Song, fallbackNumber?: number): string {
+    return super.emitSong(projectForJianpu(song), fallbackNumber);
+  }
 
   /** 度数 + 八度点。变音记号**前置**（简谱惯例）。 */
   protected noteText(n: Note): string {
@@ -44,7 +52,7 @@ export class Emitter123 extends AbcFamilyEmitter {
     let s = "";
     for (const su of ch.sustains ?? []) {
       s += "(".repeat(mi?.slurStart.get(su.id) ?? 0);
-      s += su.harmony?.text ? ` "${su.harmony.text}"-` : "-";
+      s += su.harmony ? ` "${harmonyToText(su.harmony)}"-` : "-";
       s += ")".repeat(mi?.slurEnd.get(su.id) ?? 0);
     }
     return s;

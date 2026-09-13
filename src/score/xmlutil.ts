@@ -1,22 +1,34 @@
-// MusicXML **字符串生成**的公共件。三条互不相干的导出路径共用：
-//   score/musicxmlout.ts（Score → 全量序列化）、pu/toxml.ts（文本谱直出）、omr/musicxml.ts（识别结果直出）。
+// MusicXML **字符串生成**的公共件。识别结果的两份直出（omr/musicxml.ts、staffomr/toxml.ts）
+// 与唯一写出端的投影（model/xmlproject.ts 用 typeOfDuration）共用。
 // 抽到这里的都是「三处各写一份、且已经或即将漂移」的东西——尤其是 <barline> 的子元素顺序
 // （bar-style → ending → repeat，MusicXML DTD 强制），以前由三处各自记着，改一处漏两处。
 // DOM 后处理那一路的工具在 ./xmldom.ts。
-import type { Fraction } from "../common/fraction";
+import { Fraction } from "../common/fraction";
 
 export const escapeXml = (s: string): string =>
   s.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"));
 
 export const escapeAttr = (s: string): string => escapeXml(s).replace(/"/g, "&quot;");
 
-/** Fraction 时值 → `<duration>` 的整数刻度。分母除不尽会告警（时值与 divisions 不匹配）。 */
-export function durationTicks(d: Fraction, divisions: number, where = "MusicXML 导出"): number {
-  const num = d.numerator * divisions;
-  if (num % d.denominator !== 0) {
-    console.warn(`${where}：时值 ${d} 无法被 divisions=${divisions} 整除`);
+const BASES: Array<[string, number]> = [
+  ["whole", 4], ["half", 2], ["quarter", 1], ["eighth", 0.5],
+  ["16th", 0.25], ["32nd", 0.125], ["64th", 0.0625],
+];
+
+/** BASES 里的值都是 2 的幂或其倒数，×16 后必为整数。 */
+const frac = (v: number): Fraction => new Fraction(Math.round(v * 16), 16);
+
+/** 由总时值（四分音符为 1）反推 `<type>` + 附点数，Fraction 精确比较。 */
+export function typeOfDuration(duration: Fraction): { type: string; dots: number } {
+  const q = duration;
+  for (const [type, val] of BASES) {
+    const b = frac(val);
+    if (q.equals(b)) return { type, dots: 0 };
+    if (q.equals(b.times(new Fraction(3, 2)))) return { type, dots: 1 };
+    if (q.equals(b.times(new Fraction(7, 4)))) return { type, dots: 2 };
   }
-  return Math.max(1, Math.round(num / d.denominator));
+  for (const [type, val] of BASES) if (q.compareTo(frac(val)) >= 0) return { type, dots: 0 };
+  return { type: "64th", dots: 0 };
 }
 
 /** `<beam number="n">begin|continue|end</beam>`，按层号升序。 */
