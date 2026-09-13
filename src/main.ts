@@ -79,8 +79,10 @@ async function boot() {
     import("./pdflayout/browser"), import("./layout/painter"), import("./score/musicxml"),
     import("./score/phrase"), import("./score/applybreaks"), import("./score/jpscore"), import("./jpword/jpwfile"),
     import("./jpword/parse"), import("./score/jpwimport"), import("./pu"),
-  ]).then(([book, painter, musicxml, phrase, applybreaks, jpscore, jpwfile, parse, jpwimport, pu]) => ({
+    import("./model/fromxml"), import("./model/phrasedoc"),
+  ]).then(([book, painter, musicxml, phrase, applybreaks, jpscore, jpwfile, parse, jpwimport, pu, fromxml, phrasedoc]) => ({
     ...book, ...painter, ...musicxml, ...phrase, ...applybreaks, ...jpscore, ...jpwfile, ...parse, ...jpwimport, pu,
+    ...fromxml, ...phrasedoc,
   }));
   // 123 格式与语义模型暴露，供 scripts/j123-migrate.mjs 跑 MusicXML 那一路——
   // `loadMusicXml` 要 DOMParser，Node 侧没有，所以这条必须在浏览器里走（同 __book 的路子）。
