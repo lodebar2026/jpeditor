@@ -1,15 +1,10 @@
-// Ported from JpwImport (mp/score/jpw.kt lines 13-340).
-// Builds a Score from a parsed .jpwabc JpwFile (the .jpwabc edit path).
+// `.jpwabc` → 简谱引擎的输入树 `Score`（编辑器 `.jpwabc` 谱面、帮助页样例用）。
+// 原文只读一遍：切源文小节、落歌词那一步与 `jpwToScoreDoc` 共用（`model/fromjpw.ts::readJpwSource`），
+// 这里只把源文小节一一落成引擎的小节。原先这里自己走一遍语法树（照 mp/score/jpw.kt 移植），
+// R2 阶段 9 换成共用那一步，删前两路双跑 500 首 568 份 + testdata 14 份整棵树逐项一致（`score-dual-check.mjs --jpw`）。
 
 import { Fraction } from "../common/fraction";
-import {
-  JpwFile,
-  RepeatSection,
-  VoiceSection,
-  WordsSection,
-  WordsSegment,
-} from "../jpword/jpwfile";
-import type { NoteContext } from "../jpword/parser/JpwabcParser";
+import { JpwFile, RepeatSection } from "../jpword/jpwfile";
 import {
   BarStyle,
   BarlineEntry,
@@ -17,129 +12,18 @@ import {
   Credit,
   doPairTuplet,
   Key,
-  LineBreak,
   Measure,
-  MusicCommon,
   Note,
   Lyric,
   Part,
   Score,
   Time,
 } from "./score";
-import { applyJpPitch, type JpKeyState } from "./jppitch";
+import { readJpwSource, type SrcMeasure } from "../model/fromjpw";
 import { RepeatSpec, playOrderByVerses, playOrderFromSpec } from "./playorder";
-
-class JpState implements JpKeyState {
-  inTuplet = false;
-  /** **前面的音符**留下的、还没配对的 `(` 有几个。
-   *  `.jpwabc` 里圆滑线/延音线的收尾与三连音的收尾都写作 `)`，只能靠它分：
-   *  手上还欠着一个前面开的 `(` 就先还那个，欠完了才轮到三连音（见 makeChord 的 `)` 分支）。 */
-  slurDepth = 0;
-  alter: Record<string, number> = {};
-  basePitch = 0;
-  fifths = 0;
-}
 
 function unescape(str: string): string {
   return str.replace(/\\n/g, "\n");
-}
-
-function makeChord(note: NoteContext, mea: Measure, stat: JpState): Chord {
-  const res = new Chord(mea);
-  res.beats = 1;
-  const nt = new Note(res);
-  res.add(nt);
-  let txt = note.Note().getText();
-  let acc = "";
-  const tupletText = "{(3}";
-  if (txt.includes(tupletText)) {
-    if (stat.inTuplet) throw new Error("");
-    nt.tupletBegin = true;
-    stat.inTuplet = true;
-    txt = txt.replace(tupletText, "");
-  }
-  // 倚音 `{6,}` / `{57}`（Jpwabc.g4 的 `fragment Grace : '{' Pitch+ '}'`）。
-  // **必须排在三连音 `{(3}` 剥掉之后**，否则那个 3 会被当成倚音；演奏记号
-  // `{DunYin}` 那几个名字里有大写字母，落不进下面的字符类，先后无所谓。
-  // 倚音不带时值，排版按八分音符画（layout.ts::addGraceNotes）。
-  const graceMatch = txt.match(/\{([#b0-7',gd]+)\}/);
-  if (graceMatch) {
-    for (const g of graceMatch[1].matchAll(/(#b|#|b)?([0-7])([',gd]*)/g)) {
-      const gn = new Note(res);
-      gn.number = g[2];
-      if (g[1] === "#b") gn.jpAlter = "n";
-      else if (g[1] === "#" || g[1] === "b") gn.jpAlter = g[1];
-      for (const c of g[3]) {
-        if (c === ",") gn.jpOctave -= 1;
-        else if (c === "'") gn.jpOctave += 1;
-      }
-      applyJpPitch(stat, gn); // 倚音在主音之前唱，音高也先算（临时记号照样落进 stat.alter）
-      res.graceNotes.push(gn);
-    }
-    txt = txt.replace(graceMatch[0], "");
-  }
-  // 演奏记号 {DunYin|BoYin|YanYin|ZhongYin}（Jpwabc.g4 Articulation）。目前仅渲染延音(fermata)。
-  const artMatch = txt.match(/\{(?:DunYin|BoYin|YanYin|ZhongYin)(?:,(?:DunYin|BoYin|YanYin|ZhongYin))*\}/);
-  if (artMatch) {
-    if (artMatch[0].includes("YanYin")) res.fermata = true;
-    txt = txt.replace(artMatch[0], "");
-  }
-  let opened = 0;
-  for (const ch of txt) {
-    if (ch >= "0" && ch <= "9") {
-      nt.number = ch;
-      switch (acc) {
-        case "#": nt.jpAlter = "#"; break;
-        case "b": nt.jpAlter = "b"; break;
-        case "#b": nt.jpAlter = "n"; break;
-      }
-      continue;
-    }
-    switch (ch) {
-      case ",": nt.jpOctave -= 1; break;
-      case "'": nt.jpOctave++; break;
-      case "_": res.beams += 1; break;
-      case "-": res.beats++; break;
-      case ".": res.dot++; break;
-      case "#":
-      case "b": acc += ch; break;
-      case "(":
-        res.slurStart = true;
-        // **本音符自己开的 `(` 不算数**（要到下一个音符才轮到它配对）：
-        // `(6,_)` 是「这里起一条延音线」+「三连音收尾」，不是一条只罩自己的弧。
-        opened++;
-        break;
-      case ")":
-        // 前面还欠着 `(` 就先收弧；欠完了、又正在三连音里，这个 `)` 才是三连音的收尾。
-        // 158《一件礼物》m3 是 `({(3}2_ 1_) (6,_) 6,)`——中间那个音符收的是弧，
-        // 老规矩（inTuplet 就一律当三连音收尾）会把括线提前一个音符停掉。
-        if (stat.slurDepth > 0) {
-          stat.slurDepth--;
-          res.slurEnds++;
-        } else if (stat.inTuplet) {
-          stat.inTuplet = false;
-          nt.tupletEnd = true;
-        } else {
-          res.slurEnds++;
-        }
-        break;
-      default: console.log(ch);
-    }
-  }
-  stat.slurDepth += opened;
-  applyJpPitch(stat, nt);
-  let dur = new Fraction(res.beats);
-  if (res.dot > 0) {
-    dur = dur.timesInt(3);
-    dur = dur.divInt(2);
-  }
-  if (stat.inTuplet) {
-    dur = dur.timesInt(2);
-    dur = dur.divInt(3);
-  }
-  dur = dur.divInt(1 << res.beams);
-  res.duration = dur;
-  return res;
 }
 
 function updateTimeInf(p: Part): void {
@@ -178,162 +62,6 @@ function updateTimeInf(p: Part): void {
   }
 }
 
-function makePart(sec: VoiceSection, key: Key, ts: Time): Part {
-  const res = new Part();
-  const data = sec.voiceData;
-  let mea: Measure | null = null;
-  let newMeasure = false;
-  const slurOpen: Chord[] = []; // 已开未闭的弧（栈：后开先闭，容嵌套的两条）
-  const stat = new JpState();
-  stat.basePitch = MusicCommon.getBasePitchOfKey(key);
-  stat.fifths = key.fifths;
-  const tupNotes: Note[] = [];
-  let mid = 0;
-
-  // **曲中转拍号 / 转调**：文法里现成的两个 token（`entry: … | text | timesig | …`），
-  // 原版 JP-Word 与本仓从前都当没看见。读到就记下来，落到**下一个**开出来的小节上。
-  let pendingTime: Time | null = null;
-  let pendingKey: Key | null = null;
-
-  for (const e of data.entry_list()) {
-    const noteCtx = e.note();
-    const barlineCtx = e.barline();
-    const linebreakCtx = e.linebreak();
-    const timesigCtx = e.timesig();
-    const textCtx = e.text();
-    if (noteCtx) {
-      if (mea === null || newMeasure) {
-        mea = new Measure(mid);
-        mid++;
-        res.measures.push(mea);
-        newMeasure = false;
-        if (pendingTime !== null) {
-          mea.time = pendingTime;
-          mea.timeChange = true;
-          pendingTime = null;
-        }
-        if (pendingKey !== null) {
-          mea.key = pendingKey;
-          mea.keyChange = true;
-          // 换调之后的数字要按**新调**折算成音高，否则转调后半首的 MIDI/MusicXML 全是错的。
-          stat.basePitch = MusicCommon.getBasePitchOfKey(pendingKey);
-          stat.fifths = pendingKey.fifths;
-          stat.alter = {};
-          pendingKey = null;
-        }
-      }
-      const chord = makeChord(noteCtx, mea, stat);
-      const nt = chord.notes[0];
-      if (nt.tupletEnd || nt.tupletBegin) tupNotes.push(nt);
-      // 收在前、起在后：同一个音符上「收上一条、再起下一条」是常见写法。
-      for (let k = 0; k < chord.slurEnds; k++) {
-        const from = slurOpen.pop();
-        if (from) from.slurEndChord = chord;
-      }
-      if (chord.slurStart) slurOpen.push(chord);
-      mea.entries.push(chord);
-    } else if (barlineCtx) {
-      // **曲子最开头就写小节线**（`|:3_ …`，全曲一上来就是反复开始记号）：此刻还没有
-      // 任何小节，`mea` 是 null。开一个小节把它收进去，并且**不置 newMeasure**——
-      // 后面的音符仍进这一小节，小节线就落在第一个音符**之前**。
-      // 不能另开一个只装小节线的空小节：`assignLrcSeg` 是按小节序号 `mid` 找歌词落点的，
-      // 多一个空小节，整首歌词会整体错后一小节（D01《万王之王》、J14《你们要专心》）。
-      if (mea === null) {
-        mea = new Measure(mid);
-        mid++;
-        res.measures.push(mea);
-        newMeasure = false;
-      }
-      const ent = new BarlineEntry(mea);
-      const txt = barlineCtx.Barline().getText();
-      switch (txt) {
-        case "|": ent.style = BarStyle.REGULAR; break;
-        case "|]": ent.style = BarStyle.LIGHT_HEAVY; break;
-        case "[|]": ent.style = BarStyle.NONE; break;
-        case "||": ent.style = BarStyle.LIGHT_LIGHT; break;
-        // 反复线另记 ent.repeat：`:|` 与终止线 `|]` 的 style 相同，只看 style 分不开。
-        case "|:": ent.style = BarStyle.HEAVY_LIGHT; ent.repeat = "forward"; break;
-        case ":|": ent.style = BarStyle.LIGHT_HEAVY; ent.repeat = "backward"; break;
-        default: throw new Error(`bad barline: ${txt}`);
-      }
-      mea.entries.push(ent);
-      // 开头那根线不算「这一小节到此为止」（上面刚开的小节还空着，音符还没进来）
-      newMeasure = mea.entries.length > 1;
-      stat.alter = {};
-    } else if (timesigCtx) {
-      const m2 = /^(\d+)\/(\d+)/.exec(timesigCtx.TimeSig().getText());
-      if (m2) pendingTime = new Time(parseInt(m2[1], 10), parseInt(m2[2], 10));
-    } else if (textCtx) {
-      // 调号借 STRING 记：`"1=A"`。别的 STRING（文法里本来就允许的注文）一概不理。
-      const m2 = /^"1=([#b]?[A-G])"$/.exec(textCtx.STRING().getText());
-      if (m2) {
-        const k = new Key();
-        k.fifths = MusicCommon.keyNameToFifth(m2[1]);
-        pendingKey = k;
-      }
-    } else if (linebreakCtx) {
-      const ret = linebreakCtx.Return().getText();
-      const args = substringBefore(substringAfter(ret, "("), ")").split(",");
-      let pg = false;
-      if (args.length >= 4) pg = args[3].toLowerCase() === "true";
-      mea?.lineBreak(pg);
-    }
-    // TextContext / TimesigContext / prelude: ignored (as in original)
-  }
-
-  doPairTuplet(tupNotes);
-  updateTimeInf(res);
-  // 调号与拍号都要写进小节：原先只写了 `time`，`Measure.key` 一直是默认的 C，
-  // 于是「排版 → 简谱」纸顶那块调号（painter.ts::keyMeter）永远印成 `1=C`。
-  // `keyChange` 不动——那是曲中转调的标志，首调不该冒出一个「转1=X」。
-  // 没有标记的小节沿用**上一次**的调号/拍号（原先一律盖成首调首拍号，
-  // 曲中转调转拍号刚记上就被抹掉）。
-  let curTime = ts;
-  let curKey = key;
-  for (const m of res.measures) {
-    if (m.timeChange) curTime = m.time;
-    else m.time = curTime;
-    if (m.keyChange) curKey = m.key;
-    else m.key = curKey;
-  }
-  return res;
-}
-
-export function fromJpw(f: JpwFile): Score | null {
-  const res = new Score();
-  const title = f.getTitle();
-  res.title = unescape(title?.title ?? "");
-  const key = title?.key ?? "C";
-  const author = title?.wordsMusicBy ?? null;
-  if (author !== null) {
-    const cred = new Credit();
-    cred.text = unescape(author);
-    // page 是 0 基的页号（MusicXML 导入端也是 attr−1）。原先写 1 与写出端 tojpw.ts 只收 page===0
-    // 的判据对不上，`.jpwabc → Score → .jpwabc` 的作者行会整条丢掉，导出的 MusicXML 里
-    // 词曲也会落到第 2 页。
-    cred.page = 0;
-    res.credit.push(cred);
-  }
-  res.playData.tempo = title?.tempo ?? 0;
-  const tm = title?.meter ?? "4/4";
-  const tmArr = tm.split("/");
-  const ts = new Time();
-  ts.beatType = parseInt(tmArr[1], 10);
-  ts.beats = parseInt(tmArr[0], 10);
-  const kk = new Key();
-  kk.fifths = MusicCommon.keyNameToFifth(key);
-  const part = makePart(f.getVoice()!, kk, ts);
-  const lrc = f.getLyric();
-  let pass = 0;
-  if (lrc !== null) {
-    assignLrcSection(part, lrc);
-    for (const it of lrc.segments) pass = Math.max(pass, it.passLast);
-  }
-  res.parts.push(part);
-  processRepeat(res, part, pass, f.getSection(RepeatSection));
-  return res;
-}
-
 function processRepeat(
   res: Score,
   part: Part,
@@ -348,52 +76,121 @@ function processRepeat(
   }
 }
 
-function assignLrcSeg(part: Part, seg: WordsSegment): void {
-  const notes: Note[] = [];
-  let mid = 0;
-  for (const m of part.measures) {
-    mid++;
-    let nid = 0;
-    for (const ent of m.entries) {
-      if (ent instanceof LineBreak) {
-        if (ent !== m.entries[m.entries.length - 1]) {
-          mid++;
-          nid = 0;
-        }
+// ───────────────────────── 由源文小节建（R2 阶段 9） ─────────────────────────
+
+/** 源文小节 → 引擎的小节（一一对应；时值、连音配对、调号拍号沿用照旧口径）。 */
+function partOfSource(src: readonly SrcMeasure[], key: Key, ts: Time): Part {
+  const res = new Part();
+  const slurOpen: Chord[] = []; // 已开未闭的弧（栈：后开先闭，容嵌套的两条）
+  const tupNotes: Note[] = [];
+  src.forEach((sm, mid) => {
+    const mea = new Measure(mid);
+    res.measures.push(mea);
+    if (sm.timeChange) {
+      mea.time = new Time(sm.time.beats, sm.time.beatType);
+      mea.timeChange = true;
+    }
+    if (sm.keyChange) {
+      const k = new Key();
+      k.fifths = sm.fifths;
+      mea.key = k;
+      mea.keyChange = true;
+    }
+    for (const e of sm.entries) {
+      if (e.kind === "break") {
+        mea.lineBreak(e.page);
         continue;
       }
-      if (!(ent instanceof Chord)) continue;
-      nid++;
-      if (mid < seg.measure) continue;
-      if (mid === seg.measure && nid < seg.noteIndex) continue;
-      notes.push(ent.notes[0]);
-    }
-  }
-  let idx = 0;
-  for (const it of seg.data) {
-    if (idx >= notes.length) break;
-    for (let pass = seg.passFirst; pass <= seg.passLast; pass++) {
-      const lrc = new Lyric();
-      lrc.number = pass;
-      if (it.text.length > 0) {
-        lrc.text = it.text;
-        notes[idx].lyrics.push(lrc);
+      if (e.kind === "bar") {
+        const ent = new BarlineEntry(mea);
+        ent.style = e.style as BarStyle;
+        if (e.repeat) ent.repeat = e.repeat;
+        mea.entries.push(ent);
+        continue;
       }
+      const chord = new Chord(mea);
+      chord.beats = e.beats;
+      chord.beams = e.beams;
+      chord.dot = e.dot;
+      chord.slurStart = e.slurStart;
+      chord.slurEnds = e.slurEnds;
+      chord.fermata = e.fermata;
+      chord.rest = e.rest;
+      const nt = new Note(chord);
+      chord.add(nt);
+      for (const g of e.graces) {
+        const gn = new Note(chord);
+        gn.number = g.number;
+        gn.jpOctave = g.jpOctave;
+        gn.jpAlter = g.jpAlter;
+        gn.pitch = g.pitch;
+        gn.step = g.step;
+        gn.rest = g.rest;
+        chord.graceNotes.push(gn);
+      }
+      nt.number = e.number;
+      nt.jpOctave = e.jpOctave;
+      nt.jpAlter = e.jpAlter;
+      nt.pitch = e.pitch;
+      nt.step = e.step;
+      nt.rest = e.rest;
+      nt.tupletBegin = e.tupletBegin;
+      nt.tupletEnd = e.tupletEnd;
+      for (const l of e.lyrics) {
+        const lrc = new Lyric();
+        lrc.number = l.number;
+        lrc.text = l.text;
+        nt.lyrics.push(lrc);
+      }
+      let dur = new Fraction(chord.beats);
+      if (chord.dot > 0) dur = dur.timesInt(3).divInt(2);
+      if (e.tupletBegin || tupNotes.length % 2 === 1) dur = dur.timesInt(2).divInt(3);
+      chord.duration = dur.divInt(1 << chord.beams);
+      if (nt.tupletEnd || nt.tupletBegin) tupNotes.push(nt);
+      // 收在前、起在后：同一个音符上「收上一条、再起下一条」是常见写法。
+      for (let k = 0; k < chord.slurEnds; k++) {
+        const from = slurOpen.pop();
+        if (from) from.slurEndChord = chord;
+      }
+      if (chord.slurStart) slurOpen.push(chord);
+      mea.entries.push(chord);
     }
-    idx++;
+  });
+  doPairTuplet(tupNotes);
+  updateTimeInf(res);
+  let curTime = ts;
+  let curKey = key;
+  for (const m of res.measures) {
+    if (m.timeChange) curTime = m.time;
+    else m.time = curTime;
+    if (m.keyChange) curKey = m.key;
+    else m.key = curKey;
   }
+  return res;
 }
 
-function assignLrcSection(part: Part, sec: WordsSection): void {
-  for (const seg of sec.segments) assignLrcSeg(part, seg);
-}
-
-// Kotlin substringAfter/substringBefore semantics.
-function substringAfter(s: string, delim: string): string {
-  const i = s.indexOf(delim);
-  return i < 0 ? s : s.substring(i + delim.length);
-}
-function substringBefore(s: string, delim: string): string {
-  const i = s.indexOf(delim);
-  return i < 0 ? s : s.substring(0, i);
+/** `.jpwabc` → 引擎输入树。读原文那一步与 `jpwToScoreDoc` 共用（`model/fromjpw.ts::readJpwSource`）。 */
+export function fromJpw(f: JpwFile): Score | null {
+  const res = new Score();
+  const title = f.getTitle();
+  res.title = unescape(title?.title ?? "");
+  const author = title?.wordsMusicBy ?? null;
+  if (author !== null) {
+    const cred = new Credit();
+    cred.text = unescape(author);
+    // page 是 0 基的页号（MusicXML 导入端也是 attr−1），与写出端 tojpw.ts 只收 page===0 的判据对得上
+    cred.page = 0;
+    res.credit.push(cred);
+  }
+  res.playData.tempo = title?.tempo ?? 0;
+  const src = readJpwSource(f);
+  const ts = new Time();
+  ts.beatType = src.time.beatType;
+  ts.beats = src.time.beats;
+  const kk = new Key();
+  kk.fifths = src.fifths;
+  const part = partOfSource(src.measures, kk, ts);
+  res.parts.push(part);
+  processRepeat(res, part, src.passes, f.getSection(RepeatSection));
+  return res;
 }

@@ -95,11 +95,23 @@ function nthNoteId(part: Part, measureNo: number, n: number): number | undefined
 
 // ───────────────────────── 第一步：源文 → 源文小节 ─────────────────────────
 
-interface SrcNote {
+/** 一个倚音（`{6,}`），音高照主音那样按调号与小节内临时记号落好 */
+export interface SrcGrace {
+  number: string;
+  jpOctave: number;
+  jpAlter: string;
+  pitch: number;
+  step: string;
+  rest: boolean;
+}
+
+export interface SrcNote {
   kind: "note";
   number: string;
   jpOctave: number;
   jpAlter: string;
+  /** MIDI 音高（`applyJpPitch`，休止为 0） */
+  pitch: number;
   step: string;
   rest: boolean;
   beams: number;
@@ -111,27 +123,27 @@ interface SrcNote {
   fermata: boolean;
   tupletBegin: boolean;
   tupletEnd: boolean;
-  graces: { number: string; jpOctave: number }[];
+  graces: SrcGrace[];
   lyrics: { number: number; text: string }[];
   source?: SourceSpan;
 }
 
-interface SrcBar {
+export interface SrcBar {
   kind: "bar";
   style: NonNullable<Barline["style"]>;
   repeat?: "forward" | "backward";
   source?: SourceSpan;
 }
 
-interface SrcBreak {
+export interface SrcBreak {
   kind: "break";
   page: boolean;
 }
 
-type SrcEntry = SrcNote | SrcBar | SrcBreak;
+export type SrcEntry = SrcNote | SrcBar | SrcBreak;
 
-/** 与 `jpwimport` 的 `Score.Measure` 一一对应（歌词按它数小节） */
-interface SrcMeasure {
+/** 与引擎输入树 `Score.Measure` 一一对应（歌词按它数小节；`jpwimport.ts::fromJpw` 照它建小节） */
+export interface SrcMeasure {
   entries: SrcEntry[];
   fifths: number;
   time: { beats: number; beatType: number };
@@ -152,7 +164,7 @@ function spanOf(sec: Section, start: Token, stop: Token | undefined): SourceSpan
 /** 一个音符 token。照 `jpwimport.ts::makeChord`。 */
 function readNote(txt: string, stat: JpKeyState & { inTuplet: boolean; slurDepth: number }): SrcNote {
   const nt: SrcNote = {
-    kind: "note", number: "0", jpOctave: 0, jpAlter: " ", step: " ", rest: false,
+    kind: "note", number: "0", jpOctave: 0, jpAlter: " ", pitch: 0, step: " ", rest: false,
     beams: 0, beats: 1, dot: 0, slurStart: false, slurEnds: 0, fermata: false,
     tupletBegin: false, tupletEnd: false, graces: [], lyrics: [],
   };
@@ -176,7 +188,7 @@ function readNote(txt: string, stat: JpKeyState & { inTuplet: boolean; slurDepth
         else if (c === "'") gn.jpOctave += 1;
       }
       applyJpPitch(stat, gn); // 倚音的临时记号照样落进 stat.alter
-      nt.graces.push({ number: gn.number, jpOctave: gn.jpOctave });
+      nt.graces.push({ number: gn.number, jpOctave: gn.jpOctave, jpAlter: gn.jpAlter, pitch: gn.pitch, step: gn.step, rest: gn.rest });
     }
     txt = txt.replace(graceMatch[0], "");
   }
@@ -225,6 +237,7 @@ function readNote(txt: string, stat: JpKeyState & { inTuplet: boolean; slurDepth
   stat.slurDepth += opened;
   const pitched = { ...nt, pitch: 0, chord: { rest: false } };
   applyJpPitch(stat, pitched);
+  nt.pitch = pitched.pitch;
   nt.step = pitched.step;
   nt.rest = pitched.rest;
   return nt;
@@ -499,6 +512,28 @@ function unescape(str: string): string {
   return str.replace(/\\n/g, "\n");
 }
 
+/** 读 `.jpwabc` 原文的那一步（`jpwToScoreDoc` 与引擎输入树 `jpwimport.ts::fromJpw` 共用）：
+ *  `.Voice` 切成源文小节、歌词落到音符上。`.Voice` 缺失或解析失败时抛错。 */
+export function readJpwSource(f: JpwFile): {
+  measures: SrcMeasure[];
+  fifths: number;
+  time: { beats: number; beatType: number };
+  /** 歌词的最大遍数（`.Words` 各段 `passLast` 取大；没有歌词为 0） */
+  passes: number;
+} {
+  const title = f.getTitle();
+  const fifths = MusicCommon.keyNameToFifth(title?.key ?? "C");
+  const [beats, beatType] = (title?.meter ?? "4/4").split("/");
+  const time = { beats: parseInt(beats!, 10), beatType: parseInt(beatType!, 10) };
+  const voice = f.getVoice();
+  if (!voice) throw new Error("没有 .Voice");
+  const measures = readVoice(voice as VoiceSectionLike, fifths, time);
+  assignLyrics(measures, f);
+  let passes = 0;
+  for (const seg of f.getLyric()?.segments ?? []) passes = Math.max(passes, seg.passLast);
+  return { measures, fifths, time, passes };
+}
+
 /** `.jpwabc` → `ScoreDoc`。`.Voice` 缺失或解析失败时抛错（与 `fromJpw` 同）。 */
 export function jpwToScoreDoc(f: JpwFile): ScoreDoc {
   const doc = emptyDoc("jpwabc");
@@ -517,13 +552,7 @@ export function jpwToScoreDoc(f: JpwFile): ScoreDoc {
 
   // 速度（`.Title` 的 `Expression ♩=NN`），试听与转 123 的 `Q:` 都要（`fromJpw` 落在 `playData.tempo`）
   if (title?.tempo) song.tempos = [title.tempo];
-  const fifths = MusicCommon.keyNameToFifth(title?.key ?? "C");
-  const [beats, beatType] = (title?.meter ?? "4/4").split("/");
-  const time = { beats: parseInt(beats!, 10), beatType: parseInt(beatType!, 10) };
-  const voice = f.getVoice();
-  if (!voice) throw new Error("没有 .Voice");
-  const src = readVoice(voice as VoiceSectionLike, fifths, time);
-  assignLyrics(src, f);
+  const src = readJpwSource(f).measures;
 
   const m0 = src[0];
   if (m0) {
