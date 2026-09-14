@@ -1,6 +1,6 @@
 // MusicXML -> Score, ported from score.kt (Score.load / Part.load / Measure.load /
 // Note.load / parse*) + musicxml-ext.kt, using the browser DOMParser instead of JAXB.
-// Reuses the existing TS Score model + Fraction/MusicCommon/AccidentalStat.
+// Reuses the existing TS Score model + Fraction/MusicCommon（简谱数字/记号经 model/jianpu.ts，见 Note.init）.
 
 import { Fraction } from "../common/fraction";
 import { harmonyElemToText } from "./harmonyparse";
