@@ -9,7 +9,7 @@ import { Font } from "../layout/font";
 import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
 import { MIXED_PUNCT } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
-import type { Chord as DocChord, Note as DocNote } from "../model/doc";
+import type { Chord as DocChord, Harmony as DocHarmony, Lyric as DocLyric, Note as DocNote } from "../model/doc";
 import { beamCount } from "../model/jianpu";
 
 const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -953,29 +953,63 @@ export enum LCR {
 
 export class MLyric {
   measure: MeasureData;
+  /** `ScoreDoc` 里对应的歌词 */
+  readonly src: DocLyric;
+  readonly chord: MChord;
   offset = new Fraction(0);
-  num = "1";
-  name = "";
-  text = "";
-  prefix = "";
   font!: Font;
-  chord: MChord | null = null;
-
-  begin = true;
-  end = true;
   extend: Fraction | null = null;
 
   x = -1;
   y = -1;
   xOffset = 0;
   width = 0;
-  staff = 0;
-  halign = LCR.Center;
   prev: MLyric | null = null;
   next: MLyric | null = null;
 
-  constructor(measure: MeasureData) {
+  constructor(measure: MeasureData, src: DocLyric, chord: MChord) {
     this.measure = measure;
+    this.src = src;
+    this.chord = chord;
+  }
+
+  // ---- 语义：一律从 ScoreDoc 取 ----
+  /** 段号原文（分段按它） */
+  get num(): string {
+    return this.src.numberText ?? String(this.src.number);
+  }
+  get name(): string {
+    return this.src.name ?? "";
+  }
+  /** 印在首字前的段落号（`1.圣` 的 `1.`）与去掉它的正文 */
+  private get split(): { prefix: string; text: string } {
+    const text = this.src.text.trim();
+    if (text.length > 0 && /^\d/.test(text)) {
+      const dot = text.indexOf(".");
+      if (dot >= 0) return { prefix: text.slice(0, dot + 1), text: text.slice(dot + 1) };
+    }
+    return { prefix: "", text };
+  }
+  get text(): string {
+    return this.split.text;
+  }
+  get prefix(): string {
+    return this.split.prefix;
+  }
+  /** 词首 / 词尾（`<syllabic>`） */
+  get begin(): boolean {
+    const s = this.src.syllabic ?? "single";
+    return s === "single" || s === "begin";
+  }
+  get end(): boolean {
+    const s = this.src.syllabic ?? "single";
+    return s === "single" || s === "end";
+  }
+  get staff(): number {
+    return this.chord.src.staff - 1;
+  }
+  get halign(): LCR {
+    return this.src.justify === "right" ? LCR.Right : this.src.justify === "left" ? LCR.Left : LCR.Center;
   }
 
   get empty(): boolean {
@@ -1027,20 +1061,46 @@ export interface HarmonyStepAlter {
 
 export class MHarmony {
   measure: MeasureData;
+  /** `ScoreDoc` 里对应的和弦符号 */
+  readonly src: DocHarmony;
   offset = new Fraction(0);
-  root: HarmonyStepAlter = { step: "C", alter: 0 };
-  bass: HarmonyStepAlter | null = null;
-  degree: { value: number; alter: number; type: HarmonyDegreeType }[] = [];
-  kind = "";
-  kindText: string | null = null;
-  useSymbols = false;
-  parenthesesDegrees = false;
   x = 0;
   y = 0;
-  staff = 0;
 
-  constructor(measure: MeasureData) {
+  constructor(measure: MeasureData, src: DocHarmony) {
     this.measure = measure;
+    this.src = src;
+  }
+
+  // ---- 语义：一律从 ScoreDoc 取 ----
+  get root(): HarmonyStepAlter {
+    return { step: this.src.root.step, alter: this.src.root.alter };
+  }
+  get bass(): HarmonyStepAlter | null {
+    return this.src.bass ? { step: this.src.bass.step, alter: this.src.bass.alter } : null;
+  }
+  get degree(): { value: number; alter: number; type: HarmonyDegreeType }[] {
+    return (this.src.degrees ?? []).map((g) => ({
+      value: g.value,
+      alter: g.alter,
+      type: g.type === "subtract" ? HarmonyDegreeType.Subtract : g.type === "alter" ? HarmonyDegreeType.Alter : HarmonyDegreeType.Add,
+    }));
+  }
+  get kind(): string {
+    return this.src.kind.trim();
+  }
+  get kindText(): string | null {
+    return this.src.kindText ?? null;
+  }
+  get useSymbols(): boolean {
+    return this.src.useSymbols === true;
+  }
+  /** 加音加括号（Sibelius 导出一律加，照 musicpp） */
+  get parenthesesDegrees(): boolean {
+    return this.src.parenthesesDegrees === true || this.measure.part.score.encoder === Encoder.Sibelius;
+  }
+  get staff(): number {
+    return (this.src.staff ?? 1) - 1;
   }
 
   /** 纯文本形式（仅用于 calcMixedStaffY 的宽度粗估）。 */
@@ -1511,13 +1571,13 @@ export class MeasureData {
     this.chords.push(ch);
     return ch;
   }
-  newLyric(): MLyric {
-    const l = new MLyric(this);
+  newLyric(src: DocLyric, chord: MChord): MLyric {
+    const l = new MLyric(this, src, chord);
     this.lyrics.push(l);
     return l;
   }
-  newHarmony(): MHarmony {
-    const h = new MHarmony(this);
+  newHarmony(src: DocHarmony): MHarmony {
+    const h = new MHarmony(this, src);
     this.harmonies.push(h);
     return h;
   }

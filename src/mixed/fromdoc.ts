@@ -50,7 +50,6 @@ import {
   Encoder,
   fEq,
   GroupSymbol,
-  HarmonyDegreeType,
   KeySig,
   LCR,
   LrcExtend,
@@ -413,36 +412,14 @@ class DocPartLoader {
 
   private processLrc(lyrics: Lyric[], md: MeasureData, ch: MChord, nt: MNote): void {
     for (const l of lyrics) {
-      const lrc = md.newLyric();
-      lrc.chord = ch;
+      const lrc = md.newLyric(l, ch);
       lrc.offset = ch.offset;
-      lrc.num = l.numberText ?? String(l.number);
-      lrc.name = l.name ?? "";
-      lrc.staff = nt.staff;
       lrc.x = nt.x;
 
       let y = l.pos?.defaultY ?? -1;
       const ry = l.pos?.relativeY;
       if (ry !== undefined) y += ry;
       lrc.y = y;
-
-      if (l.justify === "right") lrc.halign = LCR.Right;
-      else if (l.justify === "left") lrc.halign = LCR.Left;
-      else lrc.halign = LCR.Center;
-
-      const syllabic = l.syllabic ?? "single";
-      lrc.begin = syllabic === "single" || syllabic === "begin";
-      lrc.end = syllabic === "single" || syllabic === "end";
-
-      let text = l.text.trim();
-      if (text.length > 0 && /^\d/.test(text)) {
-        const dotPos = text.indexOf(".");
-        if (dotPos >= 0) {
-          lrc.prefix = text.slice(0, dotPos + 1);
-          text = text.slice(dotPos + 1);
-        }
-      }
-      lrc.text = text;
       lrc.font = this.score.defaults.lyricFont;
 
       lrc.updateWidth(this.score.options.meta);
@@ -845,27 +822,9 @@ class DocPartLoader {
   }
 
   private processHarmony(src: Harmony, md: MeasureData, tick: Fraction): void {
-    const h = md.newHarmony();
+    const h = md.newHarmony(src);
     h.offset = tick;
     h.y = src.pos?.defaultY ?? -1;
-    h.staff = (src.staff ?? 1) - 1;
-
-    h.root.step = src.root.step;
-    h.root.alter = src.root.alter;
-    if (src.bass) h.bass = { step: src.bass.step, alter: src.bass.alter };
-    h.kind = src.kind.trim();
-    h.kindText = src.kindText ?? null;
-    h.useSymbols = src.useSymbols === true;
-    h.parenthesesDegrees = src.parenthesesDegrees === true || this.score.encoder === Encoder.Sibelius;
-    for (const g of src.degrees ?? []) {
-      let type: HarmonyDegreeType;
-      switch (g.type) {
-        case "subtract": type = HarmonyDegreeType.Subtract; break;
-        case "alter": type = HarmonyDegreeType.Alter; break;
-        default: type = HarmonyDegreeType.Add;
-      }
-      h.degree.push({ value: g.value, alter: g.alter, type });
-    }
   }
 
   private processBarline(b: Barline, mif: MeasureInfo): void {
