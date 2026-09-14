@@ -7,9 +7,9 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { PuPainter } from "../pu/painter";
 import { parsePu, scoreDocToScore, relayoutPuText, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
-import { eachChord } from "../model/helpers";
+import { eachChord, emptyDoc } from "../model/helpers";
 import type { ElementId, ScoreDoc } from "../model/doc";
-import type { Chord, Score } from "../score/score";
+import { Chord, type Score } from "../score/score";
 import type { PuDoc } from "../pu";
 import type { PuUserOptions } from "../pu/metrics";
 import { ExpandedPainter, type ExpandedOptions } from "../jianpu/expanded";
@@ -146,6 +146,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private _syncing = false;
   /** 展开档：元素 id → Score 和弦（`_puScoreCache.chordIds` 的反向） */
   private _noteToChord: Map<ElementId, Chord> | null = null;
+  /** `.jpwabc`：元素 id → 谱面 Score 和弦（`_buildJpwSync` 建） */
+  private _jpwNoteToChord: Map<ElementId, Chord> | null = null;
 
   mixedXmlText: string | null = null;
   private _mixedPainter: MixedPainter | null = null;
@@ -564,7 +566,33 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     this.renderPages();
     this.playback.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换
+    this._buildJpwSync(f, score);
     return true;
+  }
+
+  /** `.jpwabc` 的双向定位：索引建在 `jpwToScoreDoc` 带 span 的模型上，谱面仍是 `fromJpw` 的 Score，
+   *  两边按和弦次序（跳倚音）配出「元素 id → 和弦」。两路和弦逐个一致由 `jpw-doc-check` 保证；
+   *  个数对不上就不建索引（宁可不亮，不亮错）。阶段 9 引擎直吃 ScoreDoc 后这层配对消失。 */
+  private _buildJpwSync(f: JpwFile, score: Score): void {
+    const m = new Map<ElementId, Chord>();
+    let doc: ScoreDoc;
+    try {
+      doc = jpwToScoreDoc(f);
+    } catch (e) {
+      console.warn("jpwabc 定位索引建不出", e);
+      doc = emptyDoc("jpwabc");
+    }
+    const chords: Chord[] = [];
+    for (const mea of score.parts[0]?.measures ?? []) for (const ent of mea.entries) if (ent instanceof Chord) chords.push(ent);
+    const ids: ElementId[] = [];
+    for (const song of doc.songs) for (const { chord } of eachChord(song)) if (!chord.grace) ids.push(chord.id);
+    if (ids.length === chords.length) ids.forEach((id, i) => m.set(id, chords[i]!));
+    else {
+      console.warn(`jpwabc 定位：模型 ${ids.length} 个和弦、谱面 ${chords.length} 个，对不上，不建索引`);
+      doc = emptyDoc("jpwabc");
+    }
+    this._jpwNoteToChord = m;
+    this._buildSync(doc);
   }
 
 
@@ -742,6 +770,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /** 展开档：元素 id → Score 和弦（`puScore` 建的 chordIds 的反向，用时才建）。 */
   private _chordOfNote(id: ElementId): Chord | null {
+    if (this.adapter.caps.layout === "jpwabc") return this._jpwNoteToChord?.get(id) ?? null;
     if (!this._noteToChord) {
       const m = new Map<ElementId, Chord>();
       // puScore() 会填 _puScoreCache；展开档下它与谱面是同一份 Score
@@ -758,7 +787,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     if (this._syncing) return;
     for (const el of this._syncMarked) el.classList.remove("cursor-at");
     this._syncMarked = [];
-    if (this.adapter.caps.layout !== "scoredoc" || this.mode !== "jp") return;
+    if (this.mode !== "jp") return;
     const sel = this.view.state.selection.main;
     const entries = this._sync.range(sel.from, sel.to);
     if (entries.length === 0) return;
@@ -1088,7 +1117,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 谱面被点击 → 代码区光标跳到对应原文。找不到对应条目就什么都不做
    *  （点在标题、小节线上都算找不到）。 */
   private _onSyncClick(ev: Event): void {
-    if (this.adapter.caps.layout !== "scoredoc") return;
+    if (this.mode !== "jp") return;
     const entry = this._syncEntryAt(ev.target);
     if (entry) this._syncScoreToCursor(entry);
   }
