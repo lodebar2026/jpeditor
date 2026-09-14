@@ -462,7 +462,7 @@ export function defaultBookStyle(): BookStyle {
     },
     layout: {
       // 0 = 一页装多少行交给排版器按页高定。成书要的是装满，硬定行数会空掉半页；
-      // 编辑器那条路（jpscore）另有自己的 4。
+      // 编辑器那条路（原 jpscore）另有自己的 4。
       linesPerPage: 0,
       phrase: true,
       phraseTargetMeas: 0,

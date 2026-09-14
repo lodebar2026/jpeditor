@@ -27,7 +27,7 @@ import { scoreDocToScore } from "./toscore";
 import { puToScoreDoc } from "../model/frompu";
 import type { ElementId } from "../model/doc";
 
-/** 乐句排版时一页排几行。与 `jpscore.ts::PAGE_LINES` 同义，两种格式必须是同一个数。 */
+/** 乐句排版时一页排几行。与 `原 jpscore.ts（阶段 8 已删）::PAGE_LINES` 同义，两种格式必须是同一个数。 */
 const PAGE_LINES = 4;
 
 /** 一个声部在某一新行上占的元素区间（半开区间，下标是该声部**整曲元素流**的下标）。 */

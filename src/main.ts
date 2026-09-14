@@ -77,12 +77,12 @@ async function boot() {
   // 成书重排（BookStyle 注入 + 页面树 → DrawList）暴露，供 scripts/rebuild.mjs 用。
   win.__book = Promise.all([
     import("./pdflayout/browser"), import("./layout/painter"), import("./score/musicxml"),
-    import("./score/phrase"), import("./score/applybreaks"), import("./score/jpscore"), import("./jpword/jpwfile"),
+    import("./score/phrase"), import("./score/applybreaks"), import("./jpword/jpwfile"),
     import("./jpword/parse"), import("./score/jpwimport"), import("./pu"),
     import("./model/fromxml"), import("./model/phrasedoc"), import("./score/timeline"), import("./model/playdoc"),
     import("./score/midi"),
-  ]).then(([book, painter, musicxml, phrase, applybreaks, jpscore, jpwfile, parse, jpwimport, pu, fromxml, phrasedoc, timeline, playdoc, midi]) => ({
-    ...book, ...painter, ...musicxml, ...phrase, ...applybreaks, ...jpscore, ...jpwfile, ...parse, ...jpwimport, pu,
+  ]).then(([book, painter, musicxml, phrase, applybreaks, jpwfile, parse, jpwimport, pu, fromxml, phrasedoc, timeline, playdoc, midi]) => ({
+    ...book, ...painter, ...musicxml, ...phrase, ...applybreaks, ...jpwfile, ...parse, ...jpwimport, pu,
     ...fromxml, ...phrasedoc, ...timeline, ...playdoc, ...midi,
   }));
   // 123 格式与语义模型暴露，供 scripts/j123-migrate.mjs 跑 MusicXML 那一路——
@@ -93,22 +93,22 @@ async function boot() {
     import("./score/musicxml"), import("./pu"),
     import("./abcfamily/emitabc.entry"), import("./abc/abc2xml"),
     import("./model/fromxml"), import("./model/toxml"), import("./model/capability"),
-    import("./model/jianpuproject"), import("./model/jianpu"),
+    import("./model/jianpuproject"), import("./model/jianpu"), import("./model/tojpw"),
   ]).then((
     [parse, emit, fromscore, fromjpw, frompu, helpers, musicxml, pu, emitabc, abc2xml,
-     fromxml, toxml, capability, jianpuproject, jianpu],
+     fromxml, toxml, capability, jianpuproject, jianpu, tojpw],
   ) => ({
     ...parse, ...emit, ...fromscore, ...fromjpw, ...frompu, ...helpers, ...musicxml, pu,
-    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu,
+    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw,
   }));
   // `.jpwabc` ↔ Score ↔ MusicXML 的导入与版面注入暴露，供 scripts/xml-roundtrip.mjs 回归
   // （写出端只有 `model/toxml.ts`，在 `__j123` 里）。
   win.__xmlout = Promise.all([
     import("./score/musicxmllayout"), import("./score/musicxml"),
-    import("./score/jpscore"), import("./jpword/jpwfile"),
+    import("./jpword/jpwfile"),
     import("./jpword/parse"), import("./score/jpwimport"),
-  ]).then(([layout, imp, jpscore, jpwfile, parse, jpwimport]) =>
-    ({ ...layout, ...imp, ...jpscore, ...jpwfile, ...parse, ...jpwimport }));
+  ]).then(([layout, imp, jpwfile, parse, jpwimport]) =>
+    ({ ...layout, ...imp, ...jpwfile, ...parse, ...jpwimport }));
 
   const revealWorkspace = () => {
     startScreen.hidden = true;

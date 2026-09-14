@@ -1,10 +1,8 @@
 // 把乐句分析的断点写到 Score 上（成书重排用）。
 //
-// 与 jpscore.ts 那条路的分工：
-//   scoreToJpwabc({phrase:true})  Score → .jpwabc 文本，断点写成 `$(true)` / `$(true,0,0,true)`，
-//                                 编辑器要的是文本，所以走那条；代价是**经过 jpwabc 这层会降采样**
-//                                 （和弦、装饰音、部分 barline 装不下）。
-//   applyPhraseBreaks（本文件）    Score → Score，断点直接写成 `LineBreak` entry，
+// 从前另有一条 `scoreToJpwabc({phrase:true})`（Score → .jpwabc 文本，断点写成 `$(true)`），
+// 没有调用方，阶段 8 随原 jpscore.ts 删掉。本文件：
+//   applyPhraseBreaks             Score → Score，断点直接写成 `LineBreak` entry，
 //                                 就是 layout.ts:1402 消费的那个东西。成书重排走这条，
 //                                 数据一路不落地成文本，和弦与结构都能带到排版。
 //
@@ -18,7 +16,7 @@ export type { FitMetric };
 export interface ApplyBreakOptions {
   /** 每页几行。**0 = 不按行数换页**——成书排版走这个：一页装多少行交给
    *  layout 的 layoutVertically 按页高决定，硬定 4 行会让每页空掉半页。
-   *  编辑器那条路（jpscore）仍是 4。 */
+   *  编辑器那条路（原 jpscore）仍是 4。 */
   linesPerPage?: number;
   /** 段落起点（主歌/副歌…）是否另起一页。成书里一首歌通常连排，默认不换。 */
   sectionNewPage?: boolean;
@@ -990,7 +988,7 @@ export function chooseLineLayout(
 /**
  * **乐句行 → 换页行号**（`.jpwabc` 与文本谱共用同一套口径）。
  *
- * 从 `jpscore.ts::balanceVoicePages` 里抽出来的纯计算：两种源格式的「按乐句重排」都要按同一个
+ * 从 `原 jpscore.ts（阶段 8 已删）::balanceVoicePages` 里抽出来的纯计算：两种源格式的「按乐句重排」都要按同一个
  * 尺子分页，否则同一首歌导出 `.jpwabc` 与文本谱会分出不一样的页。写回是各写各的
  * （`.jpwabc` 写 `$(true,0,0,true)`，文本谱另起一个 `ScorePage`），这里只管**算在哪儿换**。
  *

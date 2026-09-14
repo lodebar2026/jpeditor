@@ -18,6 +18,7 @@ import {
 import { linesOfVoice, voiceNumbers, type PuSong } from "./ast";
 import { Key, MusicCommon } from "../score/score";
 import type { PlaySource } from "../score/timeline";
+import type { JpwChordIn, JpwMeasureIn, JpwScoreIn } from "../model/tojpw";
 import { buildMeasures, type JumpOut, type MeasureOut } from "./phrasesong";
 import { docView } from "./slots";
 
@@ -49,6 +50,8 @@ export function playSourceOfSong(doc: ScoreDoc, songIdx = 0, options: PlaySongOp
 
 interface SongMeasures {
   song: PuSong;
+  key: Key;
+  time: { beats: number; beatType: number };
   voices: number[];
   parts: MeasureOut[][];
   jumps: JumpOut[];
@@ -95,7 +98,7 @@ function songMeasures(doc: ScoreDoc, songIdx: number, options: PlaySongOptions, 
     parts.push(built.measures);
   }
   if (parts.length === 0) return null;
-  return { song, voices, parts, jumps, idToChord };
+  return { song, key, time, voices, parts, jumps, idToChord };
 }
 
 function playDataOf(doc: ScoreDoc, songIdx: number, { song, voices, parts, jumps, idToChord }: SongMeasures): PlayData {
@@ -184,4 +187,73 @@ function applyJumps(pd: PlayData, measures: readonly MeasureOut[], jumps: readon
         break;
     }
   }
+}
+
+/** `.jpwabc` 写出端的输入（`model/tojpw.ts::JpwScoreIn`），**口径照 `scoreDocToScore`**（非展开档那一份）：
+ *  第一个有曲行的声部；小节线条目与行末换行按原次序；标题/credit 同 `songToScore`。这首没有曲行时返回 null。 */
+export function jpwInputOfSong(doc: ScoreDoc, songIdx = 0): JpwScoreIn | null {
+  const built = songMeasures(doc, songIdx, {}, false);
+  if (!built) return null;
+  const playData = playDataOf(doc, songIdx, built);
+  const meta = built.song.metadata;
+  for (const tempo of meta.tempos) {
+    if (typeof tempo === "number" && tempo >= 20 && tempo <= 400) {
+      playData.tempo = tempo;
+      break;
+    }
+  }
+  const credit: { type: string | null; page: number; text: string }[] = [];
+  const push = (text: string, type: string | null): void => {
+    if (text) credit.push({ type, text, page: 0 });
+  };
+  meta.titles.forEach((t, i) => push(t, i === 0 ? "title" : "subtitle"));
+  // 作者条目在排版行视图里是一行（换行换成了空格）；模型的 credit 里还留着原来的换行（`.jpwabc` 的
+  // `WordsByAndMusicBy` 一条多行），写回时照 credit 原文
+  const credits = doc.songs[songIdx]!.credits ?? [];
+  const original = (a: string): string => credits.find((c) => c.text !== a && c.text.replace(/\n/g, " ") === a)?.text ?? a;
+  for (const a of meta.authors) push(original(a), "composer");
+  for (const t of meta.topRight) push(t, "composer");
+  for (const t of meta.topLeft) push(t, "lyricist");
+
+  const key = { fifths: built.key.fifths, name: built.key.name };
+  const measures: JpwMeasureIn[] = built.parts[0]!.map((m) => {
+    let chords = 0;
+    const entries = m.seq.map((it): object => {
+      if (it === "break") return { newPage: false, pass: null };
+      if (it === "barline") return { style: null, repeat: null, position: new Fraction(chords > 0 ? 1 : 0) };
+      chords++;
+      const n = it.notes[0]!;
+      const chord: JpwChordIn = {
+        notes: [{
+          number: n.number, jpOctave: n.jpOctave, jpAlter: n.jpAlter,
+          tieStart: n.tieStart, tieEnd: n.tieEnd, tupletBegin: it.tupletBegin, tupletEnd: it.tupletEnd,
+          lyrics: n.lyrics,
+        }],
+        rest: it.rest,
+        dot: it.dot,
+        beats: it.beats,
+        beams: it.beams,
+        slurStart: it.slurStart,
+        slurEnds: it.slurEnds,
+        fermata: it.fermata,
+        graceNotes: [],
+      };
+      return chord;
+    });
+    return {
+      entries,
+      newSystem: false,
+      newPage: false,
+      repeatForward: m.repeatForward,
+      repeatBackward: m.repeatBackward,
+      endingLeft: m.endingLeft,
+      endingNum: m.endingNum,
+      timeChange: false,
+      keyChange: false,
+      time: built.time,
+      key,
+      barline: m.barline,
+    };
+  });
+  return { title: meta.titles[0] ?? "", credit, parts: [{ measures }], playData };
 }

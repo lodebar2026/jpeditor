@@ -11,12 +11,11 @@
 // 方言差异一律从 dialectSpec() 取（八度字符、变音记号、节奏音符、跳词字符、小节线写法、
 // 音节分隔符、头部字段写法），**不要在两套方言之间写 if**——那正是 DialectSpec 存在的理由。
 
-import type { RecognizedScore, JpNum, StaffRow } from "./types";
+import type { RecognizedScore, JpNum, StaffRow, JpwMeta, JpwRange } from "./types";
 import { rright } from "./types";
 import { dialectSpec, type Dialect, type DialectSpec } from "../pu/dialect";
 import type { BarlineType } from "../pu/ast";
 import { STEPS, tonicStep, keyAlter } from "../score/jppitch";
-import type { JpwMeta, JpwRange } from "../score/jpscore";
 
 /**
  * fifths → 调号名。与 jppitch 的主音推法同源，保证与音高换算一致。
@@ -214,7 +213,7 @@ function headerLines(score: RecognizedScore, d: DialectSpec, tb: TextBuilder, me
 /**
  * RecognizedScore → 文本谱原文 + 「音符序 → 代码区间」映射。
  *
- * meta 的下标严格是 flatten(rows[].nums) 的序号——与 jpscore.ts 那条路一致，
+ * meta 的下标严格是 flatten(rows[].nums) 的序号——与最早 `.jpwabc` 那条路一致，
  * 识别模式的点选定位（app.ts::_rangeOfHit）因此两种输出格式通用。
  */
 export function toPuText(

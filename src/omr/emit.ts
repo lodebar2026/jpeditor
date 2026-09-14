@@ -10,11 +10,10 @@
 // **meta 的序号约定**：所有 emitter 产出的 `JpwMeta`，`noteRanges` / `lyricRanges`
 // 一律按 `flatten(rows[].nums)` 的下标编号。识别模式「原图对照」的点选定位
 // （app.ts::_rangeOfHit）因此不必分格式。
-import type { RecognizedScore } from "./types";
+import type { JpwMeta, RecognizedScore } from "./types";
 import { toMusicXml } from "./musicxml";
 import { toPuText } from "./topu";
 import { DIALECTS, type Dialect } from "../pu/dialect";
-import type { JpwMeta } from "../score/jpscore";
 
 /** 识别结果的输出格式。文本谱两种方言各算一种。 */
 export type OmrFormat = "123" | Dialect;
