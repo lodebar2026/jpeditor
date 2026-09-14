@@ -4,7 +4,7 @@
 
 ## 职责
 
-JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（直出，带源偏移），以及 `Score` ↔ `.jpwabc` 双向转换。
+JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（直出，带源偏移），`ScoreDoc` → `.jpwabc`，以及过渡期的 `.jpwabc` → `Score`（渲染输入）。
 
 ## 入口
 
@@ -14,7 +14,7 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
 | `parseVoiceText(text)` | `src/jpword/parse.ts:9` | `.Voice` 正文 → ANTLR 树 |
 | `jpwToScoreDoc(f)` | `src/model/fromjpw.ts` | `JpwFile` → `ScoreDoc`（不经 `Score`，音符/小节线带 `SourceSpan`）。转 123/ABC、能力表、双向定位索引都走它 |
 | `fromJpw(f)` | `src/score/jpwimport.ts:303` | `JpwFile` → `Score`。**过渡期只当编辑器渲染输入**，R2 阶段 9 随 `Score` 删 |
-| `scoreToJpwabc(score, opts)` | `src/score/jpscore.ts` | `Score` → `.jpwabc` 文本 + `JpwMeta` |
+| `emitJpwabc(doc)` | `src/model/tojpw.ts` | `ScoreDoc` → `.jpwabc` 文本（只写第一声部）。写出端 `writeJpwabc` 只经输入接口读谱，`Score` 结构上也满足 |
 | `TokenData` | `src/jpword/tokens.ts:27` | 分词器，**仅供语法高亮**，非语义解析 |
 | `hanconv` | `src/jpword/hanconv.ts` | 简繁转换（只转 `.Title` 字段值与 `.Words` 歌词） |
 
@@ -38,7 +38,10 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
 - **`[|]` 不可见小节线必须照写**：少一根，重解析时两小节并成一个、`.Repeat` 的小节编号整体错位。
 - **曲首就写 `|:`** 有专门处理：不能另开空小节，否则歌词整体错后一小节。
   （`|:|` 连写时 `fromJpw` 仍多开一个空小节——160、D01、J14 试听开头多一小节静音；`fromjpw` 落模型时并掉，歌词落点口径两边相同。）
-- **两条 `.jpwabc` 读入路必须逐字段一致**：`fromjpw.ts` 的判据照搬 `jpwimport.ts`，改其一必改其二，跑 `jpw-doc-check`。
+- **两条 `.jpwabc` 读入路判据同源**：`fromjpw.ts` 照搬 `jpwimport.ts`（阶段 3 逐字段双跑 568 份一致），改其一必改其二。
+  `fromjpw` **不填绝对音高**（`.jpwabc` 只有度数），导出 MusicXML 由投影层按度数 + 调号推。
+- **歌词段锚点 `W2@m,n` 的小节序号**：只有小节**中间**的换行才算开出一个小节，小节末的不算——读入端（`assignLyrics`）
+  与写出端（`tojpw.ts::LyricProcessor`）必须同口径，否则多段歌词起点在第一行之后错位。
 - **`jpToStep` 按调号拼写**，不按 fifths：否则 `1=#C`/`1=bD`/`1=#F`/`1=bG` 四个调整首排不出来。
 - 简繁转换要把非 ASCII 内容字符**抽出拼成整串**再送词表（跨过 `/`、`-`、`()`），否则
   `日光/之下` 会被拆开导致词汇级转换失效；长度对不上退回逐字转换，绝不错位。
@@ -48,7 +51,8 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
 ```bash
 node scripts/check-gt.mjs          # testdata 下各 .jpwabc 能正常解析排版
 node scripts/xml-roundtrip.mjs     # 与 MusicXML 往返
-npm run build:cli && node scripts/jpw-doc-check.mjs   # 568 份：jpwToScoreDoc 与 scoreToScoreDoc(fromJpw) 逐字段一致
+node scripts/jpw-emit-check.mjs --dual --cmp   # 写出端：MusicXML/文本谱来源逐字节一致 + .jpwabc 往返定点
+node scripts/jpw-xml-check.mjs     # 导出 MusicXML：582 份读回快照与旧路基线一致
 node scripts/sync-check.mjs        # 双向定位（含 .jpwabc 两档）
 node scripts/shot.mjs              # 渲染通用回归
 ```

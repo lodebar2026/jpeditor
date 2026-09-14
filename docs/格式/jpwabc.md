@@ -13,7 +13,7 @@
 | `src/jpword/Jpwabc.g4`（116 行） | **唯一形式文法**（ANTLR 4），只覆盖 `.Voice` 段。生成码在 `src/jpword/parser/`，**勿手改** |
 | `src/jpword/jpwfile.ts` | **段落层规范**：哪些段头合法、各段的行语法 |
 | `src/editor/help.ts:276-407` | 面向用户的记谱法说明（事实上的用户手册） |
-| `src/score/jpscore.ts` / `jpwimport.ts` | **事实上的可用子集**：写出端只产生哪些记号、读入端只处理哪些 |
+| `src/model/tojpw.ts` / `jpwimport.ts` | **事实上的可用子集**：写出端只产生哪些记号、读入端只处理哪些 |
 
 - 文件头签名：`// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************`
 - 编码：读时 BOM 探测（回退 UTF-16LE/UTF-8），**存 UTF-16LE + BOM**

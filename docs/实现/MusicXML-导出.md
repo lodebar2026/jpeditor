@@ -10,7 +10,6 @@
 |---|---|
 | `src/model/toxml.ts::scoreDocToMusicXml` | **唯一写出端**：MusicXML 形状的 `ScoreDoc` → 文本。按固定元素次序序列化，`Measure.raw` 原位吐回 |
 | `src/model/xmlproject.ts::projectForMusicXml` | **投影**：简谱来源留空的语义字段补齐成 MusicXML 形状（见下） |
-| `src/model/fromscore.ts`（`forMusicXml`） | `.jpwabc` 的 `Score` 进 `ScoreDoc` 时带上 `playData` 的速度/跳转/段落标记、房号、拼好的音高、符杠、连音比例 |
 | `src/score/musicxmllayout.ts` | 版面注入：`<defaults>`、分行、小节宽度、`default-x` |
 | `src/editor/export.ts::buildMusicXml` | 调度：有底本且没改过给底本，否则整份重写 |
 
@@ -28,7 +27,7 @@
 |---|---|
 | 混排预览（`app.mode === "mixed"`） | 底本原文（五线谱原文） |
 | 识别核对、123 文本一字未改（`App.importUnchanged`） | 底本原文，零损耗 |
-| `.jpwabc` | `scoreDocToMusicXml(scoreToScoreDoc(score, { forMusicXml: true }))` |
+| `.jpwabc` | `scoreDocToMusicXml(jpwToScoreDoc(f))`（阶段 8 起；与 123 同一条投影） |
 | 其余（文本谱 / 123 / ABC / 改过的识别核对文本） | `scoreDocToMusicXml(app.currentScoreDoc())` |
 | `.musicxml` 文档 | 文档里就是 XML（原文，或 `editScoreDoc` 整份重写过的） |
 
@@ -54,13 +53,13 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 **判据**：首小节带 `attrs.divisions` 的是 MusicXML 形状（`fromxml.ts` 读进来的），**原样返回**——
 `.musicxml` 重写因此逐字节不受投影影响（568 份实测）。其余在克隆上投影，不改调用方的文档。
-简谱来源（`frompu`/`j123`/`fromscore`）一律不写 `attrs.divisions`，时值以一个四分音符 = 48 记名义时值。
+简谱来源（`frompu`/`j123`/`fromjpw`）一律不写 `attrs.divisions`，时值以一个四分音符 = 48 记名义时值。
 
 改 `xmlproject.ts` 之前先读这几条，每条都对应一个对拍出来的问题（全部文本谱语料新旧写出端对拍）：
 
 - **跨行接着写的小节要并回去**。文本谱/123 行尾不写小节线、下一行接着写同一小节，模型里是两个小节；
   MusicXML 表达不了小节中间换行，拆成两个短小节时值就不对。并成一个，换行顺延到并完之后的下一小节。
-  判据是「上一小节没有右线」——所以 `fromscore`（`forMusicXml`）要给 `Score` 的每个小节补一根普通右线，
+  判据是「上一小节没有右线」——所以原 `fromscore`（`forMusicXml`，阶段 8 已删）要给 `Score` 的每个小节补一根普通右线，
   否则 MusicXML 读回的 `Score` 会被整首并成一个小节。
 - **没有元素的小节不成小节**（行首 `|:`、两根线挨着）：房号起点、左反复、线上的记号（`|:&hs`）、行结构、拍号顺延到下一小节。
 - **右线上的 `|:` 是下一小节的左反复**，heavy-light 线型跟着挪过去——右线留着 heavy-light 导入端直接报错。
@@ -83,9 +82,14 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 **不表达的**：承接前音的增时线（`Chord.continued`，文本谱 `5 - | - -`）按普通音符写、不补 tie；
 挂在增时线上的歌词（文本谱 `-@`）不写——MusicXML 里增时线不是独立的音符。
 
-## `.jpwabc`（`fromscore.ts` 的 `forMusicXml`）
+## `.jpwabc`
 
-`Score` 里有些东西迁移到 123 用不上、MusicXML 却要，只在导出时带上（迁移报表口径不变）。
+**阶段 8 起**：`jpwToScoreDoc` → `xmlproject` 投影 → 唯一写出端，与 123/文本谱同一条路。`fromjpw` 只填简谱度数、
+不填绝对音高（从前照抄的假 `pitch` 八度恒为 0，会让投影层整首掉到第 0 八度），调号取 `.Title`，速度进 `Song.tempos`，
+房号由 `Song.playOrder` 反推（`xmlproject.ts::voltasOfPlayOrder`）。符杠不再写（与 123 一样交给读入端自动连）。
+`scripts/jpw-xml-check.mjs` 拿删 `fromscore` 前的旧路导出做基线，582 份读回快照逐项一致。
+
+下面 (a)–(d) 与「符杠」是**旧路 `fromscore.ts`（`forMusicXml`）的判据**，留作记录：
 
 **(a) 音高走简谱表述，不走 pitch。** `jpSpelling()` = `jpPitch(数字, 八度点, fifths)` 定 step/octave +
 按**音高差**（pitch − 该数字在本调的自然音高）定临时记号。原因：`.jpwabc` 来源的 Score 只设了
@@ -107,7 +111,7 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 MusicXML 读回的 `Score` 左反复线既在 `Measure.leftBarline` 上、又多一个 BarlineEntry，转换时并成一根（否则每往返一轮多一根）；
 右侧只有房号终点、没有线型时也要出一根右线（否则房号 stop 丢掉）。
 
-`.jpwabc` 不在小节上标房号，而是用 `.Repeat` 段列出每一遍唱哪些小节。`deriveVoltas()` 把它翻回 `<ending>`：
+`.jpwabc` 不在小节上标房号，而是用 `.Repeat` 段列出每一遍唱哪些小节。`voltasOfPlayOrder()`（原 `deriveVoltas()`）把它翻回 `<ending>`：
 
 1. 算出每个小节被哪几遍唱到，按「连续且遍集合相同」切成段；
 2. 找**分岔点**——某段的遍集合是前一段的真子集，说明反复体在这里分头；

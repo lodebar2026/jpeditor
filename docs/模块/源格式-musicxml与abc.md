@@ -36,7 +36,7 @@ MusicXML 双向（导入为 `ScoreDoc`/`Score`/`MixedScore`；导出只有一份
 - **全量重写不丢东西靠 `Measure.raw`**：`fromxml.ts` 读不懂的节点原样挂着、`toxml.ts` 原位吐回。
   所以以前「有底本就 patch」的取舍（`.jpwabc` 装得少、重生成 = 降采样）已经退役，增量 patch 删了。
 - MusicXML 形状的文档（首小节带 `attrs.divisions`）不经投影，重写逐字节稳定。
-- `.jpwabc` 的房号由 `.Repeat` 反推（`fromscore.ts::deriveVoltas`），并自动给除最后一房外每房补 backward repeat。
+- `.jpwabc` 的房号由 `.Repeat` 反推（`xmlproject.ts::voltasOfPlayOrder`，读 `Song.playOrder`），并自动给除最后一房外每房补 backward repeat。
 - **`annotateLayout` 不引用 `JinpuPainter`**：屏幕上的简谱版面不导给第三方；底本自带 `<defaults>` 时整体跳过。
 - MuseScore 兼容：有任何 `<credit>` 就不再用 `<work-title>` 生成标题 → 缺 title credit 时补一条；
   `<part-name>` 留空并 `print-object="no"`。
