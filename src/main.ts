@@ -89,17 +89,17 @@ async function boot() {
   // `loadMusicXml` 要 DOMParser，Node 侧没有，所以这条必须在浏览器里走（同 __book 的路子）。
   win.__j123 = Promise.all([
     import("./j123/parse"), import("./j123/emit"),
-    import("./model/fromscore"), import("./model/fromjpw"), import("./model/frompu"), import("./model/helpers"),
+    import("./model/fromjpw"), import("./model/frompu"), import("./model/helpers"),
     import("./score/musicxml"), import("./pu"),
     import("./abcfamily/emitabc.entry"), import("./abc/abc2xml"),
     import("./model/fromxml"), import("./model/toxml"), import("./model/capability"),
-    import("./model/jianpuproject"), import("./model/jianpu"), import("./model/tojpw"),
+    import("./model/jianpuproject"), import("./model/jianpu"), import("./model/tojpw"), import("./model/xmlproject"),
   ]).then((
-    [parse, emit, fromscore, fromjpw, frompu, helpers, musicxml, pu, emitabc, abc2xml,
-     fromxml, toxml, capability, jianpuproject, jianpu, tojpw],
+    [parse, emit, fromjpw, frompu, helpers, musicxml, pu, emitabc, abc2xml,
+     fromxml, toxml, capability, jianpuproject, jianpu, tojpw, xmlproject],
   ) => ({
-    ...parse, ...emit, ...fromscore, ...fromjpw, ...frompu, ...helpers, ...musicxml, pu,
-    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw,
+    ...parse, ...emit, ...fromjpw, ...frompu, ...helpers, ...musicxml, pu,
+    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw, ...xmlproject,
   }));
   // `.jpwabc` ↔ Score ↔ MusicXML 的导入与版面注入暴露，供 scripts/xml-roundtrip.mjs 回归
   // （写出端只有 `model/toxml.ts`，在 `__j123` 里）。

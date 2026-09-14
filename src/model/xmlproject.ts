@@ -24,7 +24,7 @@ import { MusicCommon } from "../score/score";
 import { typeOfDuration } from "../score/xmlutil";
 import { DYNAMICS, TERMS } from "../pu/glyph";
 
-/** 简谱来源的时值单位：一个四分音符 = 48（`frompu.ts` / `j123` / `fromscore.ts` 同口径）。 */
+/** 简谱来源的时值单位：一个四分音符 = 48（`frompu.ts` / `j123` / `fromjpw.ts` 同口径）。 */
 const SIMPLE_DIVISIONS = 48;
 
 /** 记号原名 → `<articulations>` 元素名（`&xx` 与 123 的 `!xx!` 同名）。 */
@@ -68,6 +68,7 @@ export function projectForMusicXml(src: Song): Song {
   tiesToMarks(song);
   normalizeMarks(song, hosts);
   for (const [pi, part] of song.parts.entries()) {
+    if (pi === 0) applyVoltas(part, voltasOfPlayOrder(song));
     joinOpenMeasures(part);
     mergeEmptyMeasures(part);
     moveForwardRepeats(part);
@@ -123,6 +124,112 @@ function tempoDirection(song: Song, first: Measure): void {
   (first.directions ??= []).unshift({
     type: "metronome", placement: "above", tempo: { beatUnit: "quarter", perMinute: bpm }, sound: { tempo: bpm },
   });
+}
+
+// ───────────────────────── 房号（由演唱顺序反推） ─────────────────────────
+
+export interface Volta {
+  /** 本小节是某一房的开头，值为该房辖的遍数（"1,2,3"） */
+  start?: string;
+  /** 本小节是某一房的结尾 */
+  stop?: boolean;
+  /** 本小节末尾要补一个反复回头（除最后一房外，每房唱完都要回到 `|:`） */
+  repeatBack?: boolean;
+}
+
+const setKey = (s: ReadonlySet<number>): string => [...s].sort((a, b) => a - b).join(",");
+
+/**
+ * 从文档自带的演唱顺序（`.jpwabc` 的 `.Repeat`）反推房号。原 `fromscore.ts::deriveVoltas`，判据原样搬来，
+ * 小节序号是第一声部 `Part.measures` 的下标（`PlayPass` 1 基、`toMeasure` 含）：
+ *
+ *  1. 算出每个小节被哪几遍唱到，按「连续且遍集合相同」切成段；
+ *  2. 找**分岔点**：某段的遍集合是前一段的真子集，说明反复体在这里分头；
+ *  3. 从分岔点往后连续收段，直到各段遍集合的并集**恰好等于**分岔前的全集——这一组段就是各房。
+ *     并集对不上（或只有一段）就放弃：那不是房，只是「某一遍唱得短一点」。
+ *
+ * 判据在《沧海一声笑》上推出 `1,2,3,5` / `4` / `6`，与 OMR 从原图识别出的房号一致；
+ * 《因有主同在》的 `1-28V1 / 1-8V2` 则正确地不成房。谱面已经带房号的不推。
+ */
+export function voltasOfPlayOrder(song: Song): Map<number, Volta> {
+  const out = new Map<number, Volta>();
+  const part = song.parts[0];
+  const items = song.playOrder ?? [];
+  if (!part || items.length === 0) return out;
+  if (part.measures.some((m) => m.barlines?.some((b) => b.ending))) return out;
+
+  const passesOf = new Map<number, Set<number>>();
+  const allPasses = new Set<number>();
+  for (const it of items) {
+    const pass = it.verse ?? 0;
+    allPasses.add(pass);
+    for (let mid = it.fromMeasure - 1; mid < it.toMeasure; mid++) {
+      const s = passesOf.get(mid) ?? new Set<number>();
+      s.add(pass);
+      passesOf.set(mid, s);
+    }
+  }
+  if (allPasses.size < 2) return out;
+
+  const segs: Array<{ from: number; to: number; passes: Set<number> }> = [];
+  for (const mid of [...passesOf.keys()].sort((a, b) => a - b)) {
+    const p = passesOf.get(mid)!;
+    const last = segs[segs.length - 1];
+    if (last && last.to + 1 === mid && setKey(last.passes) === setKey(p)) last.to = mid;
+    else segs.push({ from: mid, to: mid, passes: p });
+  }
+
+  const isSubset = (a: Set<number>, b: Set<number>): boolean =>
+    a.size < b.size && [...a].every((v) => b.has(v));
+
+  for (let i = 0; i < segs.length - 1; i++) {
+    if (!isSubset(segs[i + 1]!.passes, segs[i]!.passes)) continue;
+    const target = segs[i]!.passes;
+    const group: typeof segs = [];
+    const acc = new Set<number>();
+    for (let j = i + 1; j < segs.length; j++) {
+      if ([...segs[j]!.passes].some((v) => acc.has(v))) break; // 遍次重叠：不是并列的房
+      for (const v of segs[j]!.passes) acc.add(v);
+      group.push(segs[j]!);
+      if (setKey(acc) === setKey(target)) break;
+    }
+    if (group.length < 2 || setKey(acc) !== setKey(target)) continue;
+    group.forEach((g, k) => {
+      const head = out.get(g.from) ?? {};
+      head.start = setKey(g.passes);
+      out.set(g.from, head);
+      const tail = out.get(g.to) ?? {};
+      tail.stop = true;
+      if (k < group.length - 1) tail.repeatBack = true;
+      out.set(g.to, tail);
+    });
+    i = segs.indexOf(group[group.length - 1]!);
+  }
+  return out;
+}
+
+/** 反推出的房号落到小节上：起点挂左线、终点挂右线（非最后一房补反复回头）。 */
+function applyVoltas(part: Part, voltas: ReadonlyMap<number, Volta>): void {
+  for (const [mid, v] of voltas) {
+    const m = part.measures[mid];
+    if (!m) continue;
+    if (v.start !== undefined) {
+      const ending = { numbers: v.start.split(",").map(Number), type: "start" as const, text: v.start };
+      const left = (m.barlines ?? []).find((b) => b.location === "left");
+      if (left) left.ending = ending;
+      else (m.barlines ??= []).unshift({ location: "left", ending });
+    }
+    if (v.stop) {
+      let right = (m.barlines ?? []).find((b) => b.location === "right");
+      if (!right) (m.barlines ??= []).push((right = { location: "right" }));
+      const nums = v.start ?? "";
+      right.ending = { numbers: nums ? nums.split(",").map(Number) : [], type: "stop", text: nums };
+      if (v.repeatBack) {
+        right.repeat = "backward";
+        right.style ??= "light-heavy";
+      }
+    }
+  }
 }
 
 // ───────────────────────── 小节结构 ─────────────────────────

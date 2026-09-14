@@ -163,8 +163,14 @@ export function parseLyricLine(
     if (ch === "{") {
       const close = body.indexOf("}", i);
       if (close < 0) { i++; continue; }
-      out.push(mk(body.slice(i + 1, close)));
+      const l = mk(body.slice(i + 1, close));
       i = close + 1;
+      // 紧跟的 `-` 同拉丁音节：词内断音节（写出端 `emit123` 会写 `{来”}-`，从前这里读丢，211《等主来》往返不幂等）
+      if (body[i] === "-") {
+        l.syllabic = "begin";
+        i++;
+      }
+      out.push(l);
       continue;
     }
     // 转义的真连字符
