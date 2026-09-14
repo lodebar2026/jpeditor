@@ -33,7 +33,7 @@
 
 最后都过一遍 `annotateLayout`。
 
-简谱识别产物（`App.importOmrMusicXml`）：识别 XML 当底本存在 `mixedXmlText`，经
+简谱识别产物（`App.importOmrMusicXml`）：识别 XML 读成 `App.mixedDoc`（底本原文在 `mixedDoc.source`），经
 `loadScoreDoc → emit123` 转成 123 文本进代码区；点选映射由 `editor/omrmeta.ts` 重解析 123 取源区间。
 
 ## 反方向：MusicXML → 简谱形状（`model/jianpuproject.ts`）

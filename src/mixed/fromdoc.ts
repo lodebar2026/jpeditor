@@ -1,20 +1,24 @@
-// 混排 `ScoreDoc` → `MixedScore`。与 `loader.ts`（MusicXML DOM → `MixedScore`）判据逐条对照，
-// 只把数据来源从 DOM 换成 `ScoreDoc`（`docs/待办.md` §3.1 阶段 6）。各声部读完之后的版面 pass 两边共用 `layoutpass.ts`。
+// 混排 `ScoreDoc`（MusicXML 形状）→ `MixedScore`。从 musicpp mxml/parser.cpp 移植，判据原样。
+// 各声部读完之后的版面 pass 在 `layoutpass.ts`。
 //
-// ## 与 DOM 那条路的对应
+// 原先由 `loader.ts` 直接读 MusicXML DOM；阶段 6（`docs/待办.md` §3.1）改成只读 `ScoreDoc`，
+// 删 `loader.ts` 前两路双跑：500 首 568 份、Praise as One kl2020 40 首、赞美之泉 222 份、合唱谱 10 份、
+// 五线谱识别导出 6 份，简谱层开关两档页面树逐字节一致。
 //
-// - 游标：DOM 那边按 `<backup>`/`<forward>` 现算；这里取 `Chord.onset`（缺省 = 前一个元素的终点），
+// ## 与 DOM 读法的对应
+//
+// - 游标：DOM 读法按 `<backup>`/`<forward>` 现算；这里取 `Chord.onset`（缺省 = 前一个元素的终点），
 //   `<direction>` 取 `Direction.onset`（缺省 = `afterElements` 处前一个元素的终点），`<harmony>` 取 `Harmony.onset`（缺省 = 所挂元素的起点）
 // - 同一小节里 `<attributes>` / 音符 / `<harmony>` / `<direction>` / `<barline>` 各自独立成表，
 //   交错次序不影响结果，所以按类分开走（各类内部仍按原文次序）
-// - slur / tuplet 由 `Song.marks` 给出（按收口先后），在收口那个音读到时建，端点音照 DOM 那条路「读到此处时和弦里的最后一个音」取
+// - slur / tuplet 由 `Song.marks` 给出（按收口先后），在收口那个音读到时建，端点音照 DOM 读法「读到此处时和弦里的最后一个音」取
 //
-// ## 已知与 DOM 那条路不同、语料里 0 例的（记着，不补）
+// ## 已知与 DOM 读法不同、上述语料里 0 例的（记着，不补）
 //
 // - 和弦音各自的 `print-object` / `staff` / `<type size>` / 歌词：`ScoreDoc` 只存在和弦上（取首音）
 // - `<dynamics>` 多个子元素 / `<other-dynamics>`、`<strong-accent type>`、`<pedal type="change">`、休止上的 `<stem>`
-// - `<tuplet bracket>`：DOM 那条路读的是 **stop** 上的属性（musicpp 原样），语料 51 处都写在 start 上，所以从来不认；这里照样不认
-// - 一个 `<credit>` 多个 `<credit-words>`：DOM 那条路只取第一个
+// - `<tuplet bracket>`：DOM 读法读的是 **stop** 上的属性（musicpp 原样），语料 51 处都写在 start 上，所以从来不认；这里照样不认
+// - 一个 `<credit>` 多个 `<credit-words>`：DOM 读法只取第一个
 
 import { Fraction } from "../common/fraction";
 import { Font } from "../layout/font";
@@ -1150,7 +1154,7 @@ function partGroupsOf(score: MixedScore, song: Song): PartGroup[] {
 
 /**
  * `ScoreDoc`（MusicXML 形状）→ `MixedScore`。只取第一首。
- * 与 `loadMixedXml` 同口径，调用方给好 `MixedOptions`（含已加载的 MetaData）。
+ * 调用方给好 `MixedOptions`（含已加载的 MetaData）。
  */
 export function loadMixedDoc(doc: ScoreDoc, options: MixedOptions): MixedScore {
   const song = doc.songs[0];

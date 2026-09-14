@@ -86,7 +86,7 @@ export const GlyphCodes = {
   // Repeats / navigation
   segno: String.fromCharCode(0xe047),
   coda: String.fromCharCode(0xe048),
-  // Dynamics (单字母组合成 mf/sfz 等；见 loader.ts::convertDynamicsStr)
+  // Dynamics (单字母组合成 mf/sfz 等；见 mixed/layoutpass.ts::convertDynamicsStr)
   dynamicPiano: String.fromCharCode(0xe520),
   dynamicMezzo: String.fromCharCode(0xe521),
   dynamicForte: String.fromCharCode(0xe522),

@@ -159,7 +159,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 试听输入的缓存：同一份模型、同一档只拼一次（`refreshSpeedUi` 每次重排都要取速度） */
   private _playCache: { doc: ScoreDoc; forExpanded: boolean; src: PlaySource | null } | null = null;
 
-  mixedXmlText: string | null = null;
+  /** 五线谱/混排档读的模型（MusicXML 形状）；null = 这份文档没有五线谱视图。
+   *  底本原文在 `mixedDoc.source`：识别核对没改过就原样存回（`export.ts::buildMusicXml`） */
+  mixedDoc: ScoreDoc | null = null;
   private _mixedPainter: MixedPainter | null = null;
   /** 排版模式切换（展开 / 原样 / 五线谱 / 混排）的四个按钮，见 `ViewMode`。 */
   private _viewBtns = new Map<ViewMode, HTMLButtonElement>();
@@ -525,7 +527,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 当前文本是否与「识别底本转出的 123」逐字相同。
    *  true = 用户没改过谱面，MusicXML 导出可以直接给底本原文（零损耗）。 */
   get importUnchanged(): boolean {
-    return this._omrBaseText !== null && this.mixedXmlText !== null && this.getText() === this._omrBaseText;
+    return this._omrBaseText !== null && this.mixedDoc !== null && this.getText() === this._omrBaseText;
   }
 
   setText(text: string): void {
@@ -709,7 +711,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     try {
       const xml = abcToMusicXml(text);
       const score = loadMusicXml(xml);
-      this.mixedXmlText = xml;
+      this._setMixedXml(xml);
       this._layoutScore(score, null);
       this.renderPages();
       this.setStatus(`ABC 原生解析未成功（${why}），已回落 abc2xml——谱面可看，定位只到小节`);
@@ -1032,7 +1034,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       // 混排是简谱那侧的上下文工具，文本谱不适用；乐句重排两种格式都有
       // （文本谱走 `pu/relayout.ts`，重排的是原文本身），可用性由 reloadPu 定。
       this._disablePhrase();
-      this.mixedXmlText = null;
+      this.mixedDoc = null;
       this._setMixedAvailable(false);
     } else {
       this._puPainter = null;
@@ -1250,7 +1252,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     // ABC 记谱：**原文就是源格式**，原生解析直接进编辑器（`reloadAbc`），不再转 MusicXML。
     // 原生解析读不动时由 `reloadAbc` 自己回落 abc2xml，这里不预先转。
     if (/\.abc$/i.test(name)) {
-      this.mixedXmlText = null;
+      this.mixedDoc = null;
       this._mixedPainter = null;
       this._setMixedAvailable(false);
       this._setMode("jp");
@@ -1260,7 +1262,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     // 123（简谱主格式）：原文就是源格式，直接进编辑器，不做任何转换。
     if (is123File(name)) {
-      this.mixedXmlText = null;
+      this.mixedDoc = null;
       this._mixedPainter = null;
       this._setMode("jp");
       this._setDocFormat("123");
@@ -1276,7 +1278,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
         this.setStatus(`这不像文本谱：${sniffed.reason}`);
         return;
       }
-      this.mixedXmlText = null;
+      this.mixedDoc = null;
       this._mixedPainter = null;
       this._setMode("jp");
       this._setDocFormat("pu");
@@ -1290,7 +1292,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       const xml = formatOf("musicxml").decode(bytes);
       this._mixedPainter = null;
       this._setDocFormat("musicxml");
-      this.mixedXmlText = xml;
+      if (!this._setMixedXml(xml)) return;
       this._setMixedAvailable(true);
       // 多声部（SATB 等）歌谱默认进入混排模式
       const toMixed = this.mode === "mixed" || isMultiPartXml(xml);
@@ -1301,7 +1303,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       return;
     } else {
       this._setDocFormat("jpwabc");
-      this.mixedXmlText = null;
+      this.mixedDoc = null;
       this._mixedPainter = null;
       this._setMixedAvailable(false);
       this._disablePhrase();
@@ -1314,7 +1316,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
    * 简谱识别产物落地（`OmrHost.importOmrMusicXml`）：MusicXML 底本 + 可编辑的 123 转换文本。
    *
    * 与用户打开 `.musicxml` 不同：识别核对要在代码区里改简谱文本、点选定位靠转换文本的源区间
-   * （`lastImportMeta`，见 `omrmeta.ts`）。底本留在 `mixedXmlText`：没改过就原样存回，
+   * （`lastImportMeta`，见 `omrmeta.ts`）。底本留在 `mixedDoc`（原文在 `source`）：没改过就原样存回，
    * 改过就由 123 文本整份重写（`export.ts::buildMusicXml`）。
    */
   importOmrMusicXml(xml: string): void {
@@ -1323,7 +1325,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     const text = emit123(doc);
     const losses = planSave(doc, "123");
     this._setDocFormat("123");
-    this.mixedXmlText = xml;
+    this._setMixedXml(xml);
     this._mixedPainter = null; // reset so next showStaffPreview re-loads
     this._setMixedAvailable(true);
     this._setMode("jp");
@@ -1343,7 +1345,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   adoptStaffXml(xml: string): boolean {
     this._mixedPainter = null;
     this._setDocFormat("musicxml");
-    this.mixedXmlText = xml;
+    if (!this._setMixedXml(xml)) return false;
     this._setMixedAvailable(true);
     this._setMode("mixed");
     this.filePath = null;
@@ -1352,9 +1354,23 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return true;
   }
 
-  /** FormatHost：`.musicxml` 读成 `ScoreDoc` → 简谱档排版（五线谱/混排档另由 `MixedPainter` 吃原文）。 */
+  /** 五线谱/混排档的模型：MusicXML 读成 `ScoreDoc`（与简谱档那份分开读——那份会被投影、断句层补字段，混排只读原样的）。
+   *  读不出来时置空并提示，返回 false。 */
+  private _setMixedXml(xml: string): boolean {
+    try {
+      this.mixedDoc = formatOf("musicxml").toScoreDoc!(xml);
+      return true;
+    } catch (e) {
+      this.mixedDoc = null;
+      console.error("MusicXML 读取失败", e);
+      this.setStatus("MusicXML 读取失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
+    }
+  }
+
+  /** FormatHost：`.musicxml` 读成 `ScoreDoc` → 简谱档排版；五线谱/混排档另读一份（`mixedDoc`）。 */
   reloadMusicXml(text: string): boolean {
-    this.mixedXmlText = text;
+    this._setMixedXml(text);
     this._mixedPainter = null;
     let doc: ScoreDoc;
     try {
@@ -1421,7 +1437,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this.setStatus("转换失败：" + (e instanceof Error ? e.message : String(e)));
       return;
     }
-    this.mixedXmlText = null;
+    this.mixedDoc = null;
     this._mixedPainter = null;
     this._setMixedAvailable(false);
     this._setMode("jp");
@@ -1612,7 +1628,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 切档。**唯一入口**：两组状态该怎么配由这里说了算。 */
   async setViewMode(mode: ViewMode): Promise<void> {
     if (mode === "staff" || mode === "mixed") {
-      if (!this.mixedXmlText) return;
+      if (!this.mixedDoc) return;
       // 先定简谱层再进混排：setStaffJianpuLayer 会作废 painter，进去后只排一遍
       await this.setStaffJianpuLayer(mode === "mixed");
       await this.showStaffPreview();
@@ -1677,7 +1693,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /** 文本谱产物落地：丢掉混排底本、切 docFormat、清文件路径，再设文本。 */
   adoptPuText(text: string): void {
-    this.mixedXmlText = null;
+    this.mixedDoc = null;
     this._mixedPainter = null;
     this._setMixedAvailable(false);
     this._setMode("jp");
@@ -1709,7 +1725,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   }
 
   async showStaffPreview(): Promise<void> {
-    if (!this.mixedXmlText) return;
+    if (!this.mixedDoc) return;
     if (this.mode === "mixed") return;
     this.stopPlayback();
     this._setMode("mixed");
@@ -1758,8 +1774,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this._mixedPainter.showJianpuLayer = this.mixedShowJianpuLayer;
     }
     this._mixedPainter.hideBarNumber = this.mixedHideBarNumber;
-    if (this.mixedXmlText) {
-      await this._mixedPainter.load(this.mixedXmlText);
+    if (this.mixedDoc) {
+      await this._mixedPainter.load(this.mixedDoc);
     }
     const painter = this._mixedPainter;
     this._renderPagesWith(painter.pageCount, (i) => painter.renderPage(i), {

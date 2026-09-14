@@ -50,7 +50,7 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 
 | 依据 | 内容 |
 |---|---|
-| `src/mixed/loader.ts` | 项目里 MusicXML 覆盖最全的读取实现，**88 个元素**——字段清单以它为基准 |
+| `src/mixed/loader.ts`（阶段 6 删） | 混排原先的 MusicXML DOM 读取，**88 个元素**——字段清单以它为基准；混排改读 `ScoreDoc` 时缺的字段已补齐 |
 | `scripts/census-123.mjs` | 500 首实测：`<harmony>` 100% 的曲目都有（12646 个）、`<print new-system>` 100%、`lyric number` 到 8 段 |
 
 ## 关键判据
