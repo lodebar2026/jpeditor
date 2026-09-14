@@ -38,7 +38,7 @@ import { emit123 } from "../j123/emit";
 import { metaFrom123 } from "./omrmeta";
 import { emitAbc } from "../abcfamily/emitabc.entry";
 import { puToScoreDoc } from "../model/frompu";
-import { scoreToScoreDoc } from "../model/fromscore";
+import { jpwToScoreDoc } from "../model/fromjpw";
 import { MixedPainter } from "../mixed/painter";
 import { PlaybackController, type PlaybackHost } from "./playback";
 import { OmrController, type OmrHost } from "./omrctl";
@@ -1842,8 +1842,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     try {
       if (this.adapter.caps.layout === "scoredoc") return this.currentScoreDoc();
       const f = JpwFile.fromString(text);
-      const score = f ? fromJpw(f) : null;
-      return score ? scoreToScoreDoc(score) : null;
+      return f ? jpwToScoreDoc(f) : null;
     } catch {
       return null;
     }
