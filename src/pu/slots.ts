@@ -306,7 +306,7 @@ function rowLyrics(row: RowBuild, infos: readonly LyricLineInfo[] | undefined): 
             (l.numberTo ?? l.number) === info.verseTo &&
             (l.lineIndex === undefined || l.lineIndex === lineIdx),
         );
-        const syl: LyricSyllable = { text: hit?.text ?? "", source: hit?.source ?? ZERO };
+        const syl: LyricSyllable = { text: hit?.text ?? "", source: info.sources?.[a] ?? hit?.source ?? ZERO };
         if (hit?.trailingPunctuation) syl.trailingPunctuation = hit.trailingPunctuation;
         syllables.push(syl);
       }
@@ -315,7 +315,7 @@ function rowLyrics(row: RowBuild, infos: readonly LyricLineInfo[] | undefined): 
         verseTo: info.verseTo,
         annotationGap: info.annotationGap,
         syllables,
-        source: ZERO,
+        source: info.source ?? ZERO,
       };
       if (info.annotation !== undefined) line.annotation = info.annotation;
       if (info.joinBrace) line.joinBrace = true;
@@ -587,7 +587,7 @@ export interface DocView {
   syllableOwner: Map<LyricSyllable, ElementId>;
 }
 
-function toPuSong(song: Song, index: number): SongView {
+function toPuSong(song: Song, index: number, rawLines: readonly string[]): SongView {
   const perPart = song.parts.map((p) => splitSystems(p));
   /** 文本谱来源：一组不一定含全部声部，按 `print.system` 对回同一组；其余按行序号 */
   const bySystem = perPart.some((rows) => rows.some((r) => r.system !== undefined));
@@ -614,13 +614,17 @@ function toPuSong(song: Song, index: number): SongView {
   for (const key of [...systems.keys()].sort((a, b) => a - b)) {
     const voices: RowView[] = [];
     let texts: string[] = [];
+    let textSources: readonly SourceSpan[] = [];
     let newPage = false;
     for (const { pi, r } of systems.get(key)!) {
       const part = song.parts[pi]!;
       const build = builds[pi]![r]!;
       const p = perPart[pi]![r]!.measures[0]?.print;
       if (bySystem && p?.newPage) newPage = true;
-      if (p?.texts) texts = p.texts;
+      if (p?.texts) {
+        texts = p.texts;
+        textSources = p.textSources ?? [];
+      }
       const line: RowView = {
         part,
         measures: perPart[pi]![r]!.measures,
@@ -629,8 +633,8 @@ function toPuSong(song: Song, index: number): SongView {
         elements: build.elements,
         marks: [...segmentMarks(song.marks, builds[pi]!, r), ...voltas[pi]![r]!],
         lyrics: rowLyrics(build, p?.lyricLines),
-        raw: "",
-        source: ZERO,
+        raw: p?.source ? (rawLines[p.source.line] ?? "") : "",
+        source: p?.source ?? ZERO,
       };
       const caption = bySystem ? p?.caption : part.name;
       if (caption !== undefined) line.caption = caption;
@@ -644,7 +648,7 @@ function toPuSong(song: Song, index: number): SongView {
     page.groups.push({
       index: page.groups.length,
       system: key,
-      texts: texts.map((t) => ({ text: t, source: ZERO })),
+      texts: texts.map((t, i) => ({ text: t, source: textSources[i] ?? ZERO })),
       voices,
     });
   }
@@ -658,11 +662,13 @@ const views = new WeakMap<ScoreDoc, DocView>();
 export function docView(doc: ScoreDoc): DocView {
   const hit = views.get(doc);
   if (hit) return hit;
+  // 行的 `raw`：文本谱来源按 `Print.source` 的行号取原文（乐句重排改写原文要它）
+  const rawLines = doc.source && doc.sourceFormat === "pu" ? doc.source.split(/\r?\n/) : [];
   const view: DocView = {
     dialect: (doc.puDialect ?? "shige") as Dialect,
     doc,
     // MusicXML 读进来的先投成简谱形状（长音拆增时线、减时线按 `<type>` 算、和弦补原文）
-    songs: doc.songs.map((s, i) => toPuSong(projectForJianpu(s), i)),
+    songs: doc.songs.map((s, i) => toPuSong(projectForJianpu(s), i, rawLines)),
     idOf: new Map(),
     elementOf: new Map(),
     syllableOwner: new Map(),
