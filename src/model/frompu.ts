@@ -310,6 +310,8 @@ function attachLyrics(anchors: readonly (Chord | Sustain)[], lyrics: readonly Pu
       verseTo: line.verseTo,
       annotationGap: line.annotationGap,
       count: line.syllables.length,
+      source: line.source,
+      sources: line.syllables.map((syl) => syl.source),
     };
     if (line.annotation !== undefined) info.annotation = line.annotation;
     if (line.joinBrace) info.joinBrace = true;
@@ -653,11 +655,11 @@ export function puToScoreDoc(pu: PuDoc, options: PuToScoreDocOptions = {}): Scor
           convertMarks(line.marks, r, marks, cs, r.measures, pv.voltas);
           // 行首小节：模型口径「本小节起新系统」（`doc.ts::Print`），附上行这一级的东西
           const first = r.measures[0]!;
-          const p: NonNullable<Measure["print"]> = { newSystem: true, system };
+          const p: NonNullable<Measure["print"]> = { newSystem: true, system, source: line.source };
           if (groupIdx === 0 && pageIdx > 0) p.newPage = true;
-          if (voiceIdx === 0) {
-            const texts = group.texts.map((t) => t.text);
-            if (texts.length) p.texts = texts;
+          if (voiceIdx === 0 && group.texts.length) {
+            p.texts = group.texts.map((t) => t.text);
+            p.textSources = group.texts.map((t) => t.source);
           }
           if (line.caption !== undefined) p.caption = line.caption;
           if (line.variant !== undefined) p.variant = line.variant;

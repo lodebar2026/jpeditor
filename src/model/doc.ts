@@ -671,6 +671,10 @@ export interface Print {
   /** 本行挂的歌词行版式：段号区间、印刷段号、段号与字的间隙、联合括号、音节个数。
    *  字本身挂在各元素的 `lyrics` 上；这里只记「行」这一级才有的东西，排版要原样还原 */
   lyricLines?: LyricLineInfo[];
+  /** 文本谱 `Q` 行本身在原文的区间。**只给改写原文的**（乐句重排 `pu/relayout.ts`）：它按行号取原文、按列号切 */
+  source?: SourceSpan;
+  /** 与 `texts` 平行：各条 `W:` 行的原文区间（用途同 `source`） */
+  textSources?: SourceSpan[];
 }
 
 /** 见 `Print.lyricLines` */
@@ -683,6 +687,11 @@ export interface LyricLineInfo {
   joinBrace?: boolean;
   /** 原文里这一行有几个音节（含空音节）。多于对位格时多出的排版不用 */
   count: number;
+  /** 歌词行本身在原文的区间（用途同 `Print.source`） */
+  source?: SourceSpan;
+  /** 与原文音节平行（`count` 个）：各音节的原文区间。**跳词符 `@` 与超出对位格的音节**不挂在元素上，
+   *  区间只有这里有——乐句重排按音节切原文要它们 */
+  sources?: SourceSpan[];
 }
 
 export interface Measure {
