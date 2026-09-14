@@ -458,7 +458,7 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 
 ```
 musicxml → loadScoreDoc → jianpuInputOfXml + phrasePartOfDoc → computePhraseBreaks → applyPhraseBreaks（按元素 id 写换行）
-        → JinpuPainter（applyBookStyle 注入样式）→ pageItemsToDrawPage → DrawList
+        → JinpuPainter（style/book.ts::applyBookPreset 注入样式）→ pageItemsToDrawPage → DrawList
         → scripts/pdfwrite.mjs → PDF
 ```
 
@@ -1529,7 +1529,7 @@ musicxml 那侧给的是 `B♭` 那种字母在前的写法）。
   简谱的圆滑线/连音线**方向固定**（弧在音符上方、开口朝下），所以先钳住下限再取负。
 - **弧度**：换成成书的小字号后，若按字号等比缩（0.42 倍）弧会压成一条平线，几乎看不出弧度。
   所以给一个**物理目标** `metrics.slurArcEm`（弧的凸起高度 × 音符字高，默认 0.9），
-  由 `applyBookStyle` 按「典型跨度（3 个音符步距）」反算 `slurHeightScale`。
+  由 `style/book.ts::applyBookPreset` 按「典型跨度（3 个音符步距）」反算 `slurHeightScale`。
   这个值**不从原书量**：那边量到的 `slurHeight` 是 slur 对象的包围盒高（含描边外扩、且短弧居多）。
 
 ### 页码底下那道闸（V13）
