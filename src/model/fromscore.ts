@@ -33,38 +33,15 @@ import type {
   Mark,
   Measure,
   Part,
-  PlayPass,
   ScoreDoc,
   Song,
   Sustain,
 } from "./doc";
 import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "./helpers";
+import { accidentalOf, convertRepeat, durationOf } from "./fromjpw";
 import type { BreakKind } from "./helpers";
 
 const DIVISIONS = 48;
-
-function durationOf(beams: number, dots: number, beats: number): Chord["duration"] {
-  const base = DIVISIONS >> Math.min(beams, 6);
-  let total = base;
-  let add = base;
-  for (let k = 0; k < dots; k++) {
-    add = Math.floor(add / 2);
-    total += add;
-  }
-  total += beats * DIVISIONS;
-  const types = ["quarter", "eighth", "16th", "32nd", "64th", "128th", "256th"] as const;
-  return { divisions: total, type: types[Math.min(beams, 6)]!, dots };
-}
-
-/** `.jpwabc` 的 jpAlter（`b`/`n`/`#`/空格）→ 模型的 Accidental。 */
-function accidentalOf(jpAlter: string): Lyric extends never ? never : ("sharp" | "flat" | "natural" | undefined) {
-  switch (jpAlter) {
-    case "#": return "sharp";
-    case "b": return "flat";
-    case "n": return "natural";
-    default: return undefined;
-  }
-}
 
 function barlineOf(m: JpMeasure, side: "left" | "right"): Barline | null {
   const style = side === "left" ? m.leftBarline : m.barline;
@@ -253,11 +230,13 @@ function convertPart(jp: JpPart, index: number, ids: IdGen, marks: Mark[], xml?:
       }
       mea.elements.push(ch);
 
-      if (jc.slurStart) openSlurs.push(ch.id);
+      // 先收后起（同 `jpwimport` / `ParserTemp.pairSlur`）：同一音符「收上一条、再起下一条」时，
+      // 先起会把自己弹出来，造出起止同音的弧、前一条错配到后面去（037《我尊崇祢》等 21 份）
       for (let k = 0; k < jc.slurEnds; k++) {
         const start = openSlurs.pop();
         if (start !== undefined) marks.push({ type: "slur", start, end: ch.id, level: openSlurs.length });
       }
+      if (jc.slurStart) openSlurs.push(ch.id);
       // 三连音：`Score` 把标记放在 Note 上（tupletBegin / tupletEnd）
       if (jc.notes.some((n) => n.tupletBegin)) openTuplet = ch.id;
       if (openTuplet !== null && jc.notes.some((n) => n.tupletEnd)) {
@@ -341,46 +320,6 @@ function convertPart(jp: JpPart, index: number, ids: IdGen, marks: Mark[], xml?:
   breaksAfterToStart(part, breakAfterOf);
   for (let i = 0; i < part.measures.length; i++) part.measures[i]!.number = String(i + 1);
   return part;
-}
-
-/** `.Repeat` 的一行：`起[.音符]-止[.音符]V段号[P]`。与 `jpwfile.ts::RepeatSection` 同形。 */
-const REPEAT_ROW = /^(\d+)(?:\.(\d+))?-(\d+)(?:\.(\d+))?V(\d+)(P)?$/i;
-
-function convertRepeat(rows: readonly string[], part: Part | undefined): PlayPass[] {
-  const out: PlayPass[] = [];
-  for (const raw of rows.flatMap((r) => r.split(","))) {
-    const s = raw.trim();
-    if (!s) continue;
-    const m = REPEAT_ROW.exec(s);
-    if (!m) continue;
-    const p: PlayPass = { fromMeasure: Number(m[1]), toMeasure: Number(m[3]), verse: Number(m[5]) };
-    if (m[6]) p.pageBreakAfter = true;
-    if (part) {
-      if (m[2]) {
-        const id = nthNoteId(part, Number(m[1]), Number(m[2]));
-        if (id !== undefined) p.fromElement = id;
-      }
-      if (m[4]) {
-        const id = nthNoteId(part, Number(m[3]), Number(m[4]));
-        if (id !== undefined) p.toElement = id;
-      }
-    }
-    out.push(p);
-  }
-  return out;
-}
-
-function nthNoteId(part: Part, measureNo: number, n: number): number | undefined {
-  const m = part.measures[measureNo - 1];
-  if (!m) return undefined;
-  let k = 0;
-  for (const el of m.elements) {
-    if (el.kind === "chord" && !el.grace) {
-      k++;
-      if (k === n) return el.id;
-    }
-  }
-  return undefined;
 }
 
 /** 把 `refrain` 标记还原成段号区间（`w1-N:`）。`Score` 只留「这行是副歌」，上界得靠全曲段数推。 */
