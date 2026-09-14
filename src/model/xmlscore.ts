@@ -23,17 +23,23 @@ import {
   Lyric,
   Measure,
   Note,
-  ParserTemp,
   Part,
   Score,
   type BarStyle,
   type ChordDirection,
+  doPairTuplet,
   type StartStopDiscontinue,
 } from "../score/score";
-import type { Barline, Chord as DocChord, Direction, DirectionPart, Harmony, Measure as DocMeasure, Note as DocNote, Song } from "./doc";
+import { AccidentalCarry, degreeFromPitch } from "./jianpu";
+import type { Barline, Chord as DocChord, Direction, DirectionPart, Harmony, Measure as DocMeasure, Note as DocNote, Pitch, Song } from "./doc";
 import { playDataOfDoc, tempoOfDoc } from "./playdoc";
 
 const PITCH_MAP: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+/** 语义层记号 → `Note.jpAlter` 的单字符 */
+const JP_ALTER: Readonly<Record<string, string>> = {
+  sharp: "#", "double-sharp": "#", flat: "b", "double-flat": "b", natural: "n",
+};
 
 /** MusicXML 形状的一首 → 引擎输入。 */
 export function scoreOfXmlSong(song: Song): Score {
@@ -57,7 +63,7 @@ export function scoreOfXmlSong(song: Song): Score {
   if (!src) throw new Error("no part");
   loadPart(part, src, song);
   score.parts.push(part);
-  for (const m of part.measures) m.init();
+  for (const m of part.measures) initMeasure(m);
   findRefrain(score);
   score.playData = playDataOfDoc(song);
   score.playData.tempo = tempoOfDoc(song);
@@ -385,6 +391,107 @@ function parseDirectionMarks(d: Direction): ChordDirection[] {
     }
   }
   return res;
+}
+
+/** 读谱期的配对池（弧、延音、连音、还没落到主音上的倚音）。 */
+class ParserTemp {
+  /** 按文档序收集的和弦，收齐了在 `pairSlur` 里栈式配对（后开先闭）。 */
+  slurChords: Chord[] = [];
+  tieNotes: Note[] = [];
+  tupletNotes: Note[] = [];
+  /** 还没落到主音符上的倚音（`<grace>` 排在它修饰的音符**之前**）。 */
+  graceNotes: Note[] = [];
+
+  pairTuplet(): void {
+    this.tupletNotes.sort((a, b) => a.absoluteTick.compareTo(b.absoluteTick));
+    doPairTuplet(this.tupletNotes);
+    this.tupletNotes = [];
+  }
+
+  /** 圆滑线配对：栈式（后开先闭），这样嵌套的两条弧各自连对端点。 */
+  pairSlur(): void {
+    const stack: Chord[] = [];
+    for (const c of this.slurChords) {
+      for (let k = 0; k < c.slurEnds; k++) {
+        const s = stack.pop();
+        if (s) s.slurEndChord = c;
+      }
+      if (c.slurStart) stack.push(c);
+    }
+    this.slurChords = [];
+  }
+
+  pairTie(): void {
+    const starts: Note[] = [];
+    const ends: Note[] = [];
+    for (const nt of this.tieNotes) {
+      if (nt.tieStart) starts.push(nt);
+      if (nt.tieEnd) ends.push(nt);
+    }
+    starts.sort((a, b) => a.absoluteTick.compareTo(b.absoluteTick));
+    ends.sort((a, b) => a.absoluteTick.compareTo(b.absoluteTick));
+    for (let i = 0; i < starts.length; i++) {
+      const a = starts[i];
+      if (i >= ends.length) break;
+      const b = ends[i];
+      a.tieNext = b;
+      b.tiePrev = a;
+    }
+  }
+}
+
+/** 由 MusicXML 来的 step/octave/alter 推简谱的数字/八度点/记号（MusicXML 那一路；`.jpwabc` 与文本谱直接给度数）。
+ *  **经简谱语义层**（`model/jianpu.ts`）：唱名与八度点 `degreeFromPitch`、小节内延续的记号 `AccidentalCarry.mark`。
+ *  `Score` 只有单字符记号位，双升/双降印成 `#`/`b`（语料 0 例）。 */
+function initNote(nt: Note, fifths: number, carry: AccidentalCarry): void {
+  const pitch = { step: nt.step as Pitch["step"], alter: nt.alter, octave: nt.octave };
+  const key = { fifths };
+  const d = degreeFromPitch(pitch, key);
+  nt.number = nt.rest ? "0" : String(d.number);
+  nt.jpAlter = JP_ALTER[carry.mark(pitch, key) ?? ""] ?? " ";
+  nt.jpOctave = d.octaveShift;
+}
+
+/** 读完一小节：只留 voice ≤ 1、和弦取最高音（歌词并到它上面），再按调号推唱名与记号（倚音先于主音）。 */
+function initMeasure(m: Measure): void {
+  removeUnused(m);
+  const stat = new AccidentalCarry();
+  for (const ent of m.entries) {
+    if (!(ent instanceof Chord)) continue;
+    // 倚音先于主音（临时记号是按左右顺序生效的，延续状态认这个次序）
+    for (const nt of ent.graceNotes) initNote(nt, m.key.fifths, stat);
+    if (ent.rest) continue;
+    for (const nt of ent.notes) initNote(nt, m.key.fifths, stat);
+  }
+}
+
+function removeUnused(m: Measure): void {
+  const rem: Chord[] = [];
+  for (const ent of m.entries) {
+    if (!(ent instanceof Chord)) continue;
+    const ch = ent;
+    if (ch.voice > 1) {
+      rem.push(ch);
+      continue;
+    }
+    if (ch.notes.length <= 1) continue;
+    let cur = -1;
+    let maxPit = 0;
+    const lrc: Lyric[] = [];
+    ch.notes.forEach((nt, i) => {
+      const p = nt.pitch;
+      if (p > maxPit) {
+        cur = i;
+        maxPit = p;
+      }
+      lrc.push(...nt.lyrics);
+    });
+    const v = ch.notes[cur];
+    v.lyrics = [];
+    v.lyrics.push(...lrc);
+    ch.notes = [v];
+  }
+  m.entries = m.entries.filter((e) => !(e instanceof Chord && rem.includes(e)));
 }
 
 // ---------------- 副歌判定（同原 musicxml.ts::findRefrain，phrasedoc.ts 有一份按断句输入的） ----------------
