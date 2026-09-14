@@ -6,6 +6,9 @@ import { parseVoiceText, type VoiceContext } from "./parse";
 
 export abstract class Section {
   lines: string[] = [];
+  /** `lines[i]` 在原文里的 0 基行号与行首偏移（跳过的注释与空行照算）。`model/fromjpw.ts` 填 `SourceSpan` 用 */
+  lineNos: number[] = [];
+  lineOffsets: number[] = [];
   constructor(public name: string) {}
   parse(): boolean {
     return true;
@@ -307,7 +310,10 @@ export class JpwFile {
   }
 
   parse(lines: string[]): boolean {
-    for (const l of lines) {
+    let offset = 0;
+    for (const [no, l] of lines.entries()) {
+      const at = offset;
+      offset += l.length + 1;
       if (l.startsWith("//")) continue;
       if (l.length === 0) continue;
       if (l.startsWith(".")) {
@@ -315,7 +321,10 @@ export class JpwFile {
         continue;
       }
       if (this.sections.length === 0) throw new Error("");
-      this.sections[this.sections.length - 1].lines.push(l);
+      const sec = this.sections[this.sections.length - 1];
+      sec.lines.push(l);
+      sec.lineNos.push(no);
+      sec.lineOffsets.push(at);
     }
     for (const s of this.sections) {
       if (!s.parse()) return false;
