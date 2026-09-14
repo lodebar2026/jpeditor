@@ -107,7 +107,11 @@ export interface Identification {
 export interface Credit {
   /** `credit-type`：title / subtitle / composer / lyricist / rights… */
   type?: string;
+  /** 全部文字（多个 `<credit-words>` 用换行接起来） */
   text: string;
+  /** 各个 `<credit-words>` 的原文。**`text` 里的换行不等于元素边界时才写**（原文一个元素里自带换行，016 的作曲者行）；
+   *  不写时 `text` 按换行切就是各个元素 */
+  words?: string[];
   /** 左下原点坐标系，与 MusicXML 一致 */
   x?: number;
   y?: number;
@@ -123,6 +127,8 @@ export interface FontSpec {
   family?: string;
   size?: number;
   weight?: string;
+  /** `font-style`：italic / normal */
+  style?: string;
 }
 
 /** [五线谱] `<defaults>`：版面默认值。本轮留空。 */

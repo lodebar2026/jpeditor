@@ -224,6 +224,8 @@ function readFont(el: Element): FontSpec {
   if (size !== undefined) f.size = size;
   const w = el.getAttribute("font-weight");
   if (w !== null) f.weight = w;
+  const st = el.getAttribute("font-style");
+  if (st !== null) f.style = st;
   return f;
 }
 
@@ -239,6 +241,7 @@ function readCredits(root: Element): Credit[] {
     const words = children(c, "credit-words");
     if (words.length === 0) continue;
     const cr: Credit = { text: words.map((w) => w.textContent ?? "").join("\n") };
+    if (words.some((w) => (w.textContent ?? "").includes("\n"))) cr.words = words.map((w) => w.textContent ?? "");
     const type = childText(c, "credit-type");
     if (type) cr.type = type;
     const first = words[0]!;
