@@ -566,8 +566,8 @@ function drawTuplet(eng: MixedOptions, container: Group, obj: Tuplet): void {
     plx = ntl.x + wl / 2 + chl.measure.xpos();
     prx = ntr.x + wr / 2 + chr.measure.xpos();
     const dot = Math.max(
-      ntl.octaveJp(eng.addOctaveJpForKeyA),
-      ntr.octaveJp(eng.addOctaveJpForKeyA),
+      ntl.octaveJp(),
+      ntr.octaveJp(),
     );
     ply = pry = dot > 0 ? -4 : 3;
   } else {
@@ -969,13 +969,13 @@ function drawLineObjs(container: Group, sys: Sys, p: MixedPart): void {
       drawSlur(sys, eng, grp, sl, Notation.Normal);
       const nts = sl.startChord().notes;
       const nt = sl.above ? nts[nts.length - 1] : nts[0];
-      if (nt.layer !== 1) continue;
+      if (!nt.jpMelody) continue;
       drawSlur(sys, eng, grpJp, sl, Notation.JianPu);
     }
     for (const obj of p.tied) {
       drawTied(sys, eng, grp, obj, Notation.Normal);
       const nt = obj.startNote;
-      if (!nt || nt.layer !== 1) continue;
+      if (!nt || !nt.jpMelody) continue;
       drawTied(sys, eng, grpJp, obj, Notation.Mixed);
     }
   } else {

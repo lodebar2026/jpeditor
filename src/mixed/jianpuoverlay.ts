@@ -1,5 +1,5 @@
 // 混排的**简谱叠层**：压在五线谱第一子谱表上方的那一行简谱（`1=X`、拍号、数字、临时记号、八度点、附点/增时线、减时线）。
-// 从 musicpp model/render.cpp 的 Mixed 分支移植；五线谱层在 `render.ts`，两层只经 `SysStaff.minY`（叠层带的位置）相接。
+// 从 musicpp model/render.cpp 的 Mixed 分支移植（印哪个音、唱名/八度/临时记号/减时线条数改从语义层 `model/jianpu.ts` 取）；五线谱层在 `render.ts`，两层只经 `SysStaff.minY`（叠层带的位置）相接。
 //
 // **逐音成柱**：每个音一个 `<g>`，里面依次是临时记号、数字、八度点、附点或增时线；减时线是跨音的，各柱画完再画。
 // 原先照 musicpp 按遍画（先整小节的数字、再整小节的临时记号、再减时线），页面树不同、画出来的像素一致
@@ -12,7 +12,6 @@ import { Font } from "../layout/font";
 import { jpDot, jpTimeSigItems } from "../layout/jpglyph";
 import { GlyphCodes } from "../smufl/smufl";
 import {
-  AccidentalStat,
   accidentalSym,
   MChord,
   MeasureData,
@@ -60,12 +59,11 @@ export function drawJianpuOverlay(grp: Group, sys: Sys, st: SysStaff, m: Measure
     drawJpTimeSignature(eng, grpJp, next, ps, m.width - sys.timeChangeWidth - 5);
   }
 
-  const accidentals = jianpuAccidentals(md, ps.subIndex);
   for (const ch of md.chords) {
     for (const n of ch.notes) {
       const col = new Group();
-      const alt = accidentals.get(n);
-      if (alt !== undefined) drawAccidental(eng, col, n, alt);
+      const alt = accidentalOf(ch, n, ps.subIndex);
+      if (alt !== null) drawAccidental(eng, col, n, alt);
       drawColumn(eng, col, md, ch, n, ps.subIndex);
       if (col.children.length) grpJp.add(col);
     }
@@ -73,30 +71,10 @@ export function drawJianpuOverlay(grp: Group, sys: Sys, st: SysStaff, m: Measure
   drawJpBeams(eng, grpJp, md);
 }
 
-/** 本小节简谱层要印的临时记号（render.cpp::drawAccidentalJianPu）：按时值排序后用 AccidentalStat 推算——
- *  简谱记号要按调号推算，不能直接照搬 MusicXML 的 <accidental>。 */
-function jianpuAccidentals(md: MeasureData, subStaff: number): Map<MNote, number> {
-  const notes: MNote[] = [];
-  for (const ch of md.chords) {
-    if (ch.rest) continue;
-    for (const n of ch.notes) {
-      if (n.staff !== subStaff) continue;
-      if (!n.visible) continue;
-      if (n.layer !== 1) continue;
-      if (n.x < 0) continue;
-      notes.push(n);
-    }
-  }
-  notes.sort((a, b) => a.chord.offset.compareTo(b.chord.offset));
-
-  const key = md.part.staves[subStaff].getKey(md.measureInfo.offset);
-  const stat = new AccidentalStat(key.fifths);
-  const out = new Map<MNote, number>();
-  for (const n of notes) {
-    const alt = stat.process(n.writtenPitch % 7, n.alter);
-    if (alt !== null) out.set(n, alt);
-  }
-  return out;
+/** 这个音在简谱层要印的临时记号：语义层按旋律延续算好的（`Degree.accidental`），不照搬 MusicXML 的 <accidental>。 */
+function accidentalOf(ch: MChord, n: MNote, subStaff: number): number | null {
+  if (ch.rest || n.staff !== subStaff || !n.visible || !n.jpMelody || n.x < 0) return null;
+  return n.jpAccidental();
 }
 
 /** 临时记号：数字左侧的小号 SMuFL 字形。 */
@@ -117,7 +95,7 @@ function drawColumn(eng: MixedOptions, col: Group, md: MeasureData, ch: MChord, 
   if (ch.slash) return;
   if (n.staff !== subStaff) return;
   if (!n.visible) return;
-  if (n.layer !== 1) return;
+  if (!n.jpMelody) return;
   if (ch.cue) return;
   const sc = eng.mixStaffHeight / 40;
   const font = eng.mixFont;
@@ -164,7 +142,7 @@ function drawColumn(eng: MixedOptions, col: Group, md: MeasureData, ch: MChord, 
   }
 
   // octave dots
-  const oct = n.octaveJp(eng.addOctaveJpForKeyA);
+  const oct = n.octaveJp();
   if (oct !== 0) {
     const dotBnd = font.charBound(".");
     const dotR = (dotBnd.bottom - dotBnd.top) / 2;
@@ -271,8 +249,8 @@ function drawJpBeams(eng: MixedOptions, container: Group, md: MeasureData): void
       if (runs.length === 0) break;
 
       for (const [first, last] of runs) {
-        const ntL = first.notes.find((n) => n.layer === 1) ?? first.notes[0];
-        const ntR = last.notes.find((n) => n.layer === 1) ?? last.notes[0];
+        const ntL = first.notes.find((n) => n.jpMelody) ?? first.notes[0];
+        const ntR = last.notes.find((n) => n.jpMelody) ?? last.notes[0];
 
         const grace = first.grace;
         const graceSc = grace ? eng.jpGraceScale : 1;
@@ -298,7 +276,7 @@ function drawJpBeams(eng: MixedOptions, container: Group, md: MeasureData): void
           hook.lineTo(cx, y + 5);
           hook.cubicTo(cx, y + 10, cx, y + 10, cx + 10, y + 10);
           hook.lineTo(cx + 10, y + 10);
-          const oct = ntL.octaveJp(eng.addOctaveJpForKeyA);
+          const oct = ntL.octaveJp();
           if (oct < 0 && ntL === ntR) {
             const g = translated(0, 10);
             g.add(hook);

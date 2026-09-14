@@ -9,6 +9,8 @@ import { Font } from "../layout/font";
 import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
 import { MIXED_PUNCT } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
+import type { Chord as DocChord, Note as DocNote } from "../model/doc";
+import { beamCount } from "../model/jianpu";
 
 // ---------------- Fraction helpers (boost::rational 比较语义) ----------------
 
@@ -119,45 +121,6 @@ export function accidentalSym(acc: number, csym: boolean): string {
   if (acc === 1) return GlyphCodes.accidentalSharp;
   if (acc === -1) return GlyphCodes.accidentalFlat;
   return GlyphCodes.accidentalNatural;
-}
-
-/**
- * 小节内临时记号推算（model.cpp::AccidentalStat）。简谱临时记号要按调号推算，
- * 而非直接照搬 MusicXML 的 <accidental>：例如 1=♭B 调里 E♮ 相对音阶第 4 级
- * （E♭）升高半音，应显示 ♯4 而非 ♮4。
- */
-export class AccidentalStat {
-  fifths: number;
-  private alter = new Map<number, number>();
-  constructor(fifths = 0) {
-    this.fifths = fifths;
-  }
-  /** 返回需要绘制的记号值（-1/0/1），null 表示无需绘制。 */
-  process(step: number, alt: number): number | null {
-    step = ((step % 7) + 7) % 7;
-    const sign = this.fifths === 0 ? 0 : this.fifths > 0 ? 1 : -1;
-    let cur: number;
-    let changed = false;
-    if (this.alter.has(step)) {
-      cur = this.alter.get(step)!;
-      changed = true;
-    } else {
-      cur = 0;
-      if (this.fifths !== 0) {
-        for (let i = 1; i <= Math.abs(this.fifths); i++) {
-          const v = ((i * 4 - 2) * sign + 1 + 35) % 7;
-          if (v === step % 7) {
-            cur = sign;
-            break;
-          }
-        }
-      }
-    }
-    if (cur === alt) return null;
-    this.alter.set(step, alt);
-    const diff = alt - cur;
-    return changed ? 0 : diff;
-  }
 }
 
 export class TimeSig {
@@ -323,8 +286,10 @@ export class NotationItem {
 export class MNote {
   chord: MChord;
   entry: NoteEntry | null = null;
-
-  layer = 0;
+  /** `ScoreDoc` 里对应的音（`fromdoc.ts` 挂上；休止与无音高的节奏音符为 null）。简谱叠层的唱名/八度/临时记号从它的 `degree` 取 */
+  src: DocNote | null = null;
+  /** 简谱叠层印的就是这个音（语义层 `melodyChords` 那一路的 `topNote`，休止也算） */
+  jpMelody = false;
   soundPitch = 0;
   writtenPitch = -1;
   alter = 0;
@@ -377,29 +342,21 @@ export class MNote {
     return res;
   }
 
-  // ---- 简谱音名换算（model.cpp:176-218）----
-  degreeWithBase(): { degree: number; base: number } {
-    const t = this.chord.tick();
-    const k = this.partStaff().getKey(t);
-    const base = (4 * k.fifths + 28) % 7;
-    return { degree: this.writtenPitch - base, base };
-  }
-  degree(): number {
-    return this.degreeWithBase().degree;
-  }
+  // ---- 简谱写法：一律取语义层给的度数（`model/jianpu.ts::assignDegrees`，读 MusicXML 时已算好）----
   number(): string {
     if (this.chord.rest) return "0";
-    const deg = this.degree();
-    return String.fromCharCode(49 + (((deg % 7) + 7) % 7)); // '1'+deg%7
+    return String(this.src?.degree?.number ?? 0);
   }
   /** 简谱八度点数（>0 上加点，<0 下加点）。 */
-  octaveJp(addOctaveJpForKeyA: boolean): number {
+  octaveJp(): number {
     if (this.chord.rest) return 0;
-    const { degree, base } = this.degreeWithBase();
-    let res = Math.floor(degree / 7) - 4;
-    if (base === 6) res += 1; // 规范 p.243
-    if (addOctaveJpForKeyA && base === 5) res += 1;
-    return res;
+    return this.src?.degree?.octaveShift ?? 0;
+  }
+  /** 简谱面上要印的临时记号（1 升 / -1 降 / 0 还原），不印为 null。延续规则在语义层（`AccidentalCarry`） */
+  jpAccidental(): number | null {
+    const acc = this.src?.degree?.accidental;
+    if (!acc) return null;
+    return acc.includes("sharp") ? 1 : acc.includes("flat") ? -1 : 0;
   }
 
   static sortByPitchWr(v: MNote[]): void {
@@ -416,6 +373,9 @@ export class MNote {
 
 export class MChord {
   measure: MeasureData;
+  /** `ScoreDoc` 里对应的和弦（`fromdoc.ts` 挂上）与所在小节的 divisions */
+  src: DocChord | null = null;
+  divisions = 1;
   offset = new Fraction(0);
 
   rest = false;
@@ -468,15 +428,9 @@ export class MChord {
     return true;
   }
 
-  /** 简谱减时线条数。 */
+  /** 简谱减时线条数（语义层 `jianpuShape`）。 */
   jpBeamCount(): number {
-    let dur = this.noteType;
-    let res = 0;
-    while (fLt(dur, new Fraction(1))) {
-      res += 1;
-      dur = dur.timesInt(2);
-    }
-    return res;
+    return this.src ? beamCount(this.src, this.divisions) : 0;
   }
 
   /** 音符头/休止符 SMuFL 字形（Chord::sym，model.cpp:1696）。 */
@@ -1466,7 +1420,6 @@ export class MeasureData {
   beams: BeamGroup[] = [];
   graceBeams: BeamGroup[] = [];
   jpBeams: BeamGroup[] = [];
-  layerNum = 0;
   noteEntries: NoteEntry[] = [];
 
   newChord(): MChord {
@@ -1517,73 +1470,12 @@ export class MeasureData {
     return this.measureInfo.xpos();
   }
 
-  // ---- splitLayer（model.cpp:877）：按音高链分配 layer，layer==1 为最高声部 ----
-
-  private getFirstUnknown(): MNote | null {
-    for (const ent of this.chords) {
-      for (let idx = ent.notes.length - 1; idx >= 0; idx--) {
-        const n = ent.notes[idx];
-        if (!n.visible) continue;
-        if (n.layer === 0) {
-          const prev = idx - 1;
-          if (prev >= 0) {
-            const ntPrev = ent.notes[prev];
-            if (ntPrev.layer === 0 && ntPrev.writtenPitch === n.writtenPitch) {
-              return ntPrev;
-            }
-          }
-          return n;
-        }
-      }
-    }
-    return null;
-  }
-
-  private getUnknownByTick(t: Fraction): MNote | null {
-    for (const ent of this.chords) {
-      if (fLt(ent.offset, t)) continue;
-      for (let idx = ent.notes.length - 1; idx >= 0; idx--) {
-        const n = ent.notes[idx];
-        if (!n.visible) continue;
-        if (n.layer === 0) {
-          const prev = idx - 1;
-          if (prev >= 0) {
-            const ntPrev = ent.notes[prev];
-            if (
-              ntPrev.layer === 0 &&
-              ntPrev.writtenPitch === n.writtenPitch &&
-              ntPrev.x < n.x
-            ) {
-              return ntPrev;
-            }
-          }
-          return n;
-        }
-      }
-    }
-    return null;
-  }
-
-  splitLayer(): void {
+  /** 和弦按起点、和弦内的音按记谱音高排好（musicpp splitLayer 的前半；分层那半由语义层的旋律取音代替） */
+  sortChords(): void {
     this.chords.sort((a, b) => a.offset.compareTo(b.offset));
     for (const ent of this.chords) {
       ent.notes.sort((a, b) => a.writtenPitch - b.writtenPitch);
     }
-    let layer = 1;
-    for (;;) {
-      const unk = this.getFirstUnknown();
-      if (!unk) break;
-      unk.layer = layer;
-      let end = unk.endTick();
-      for (;;) {
-        const next = this.getUnknownByTick(end);
-        if (!next) break;
-        next.layer = layer;
-        end = next.endTick();
-      }
-      layer += 1;
-    }
-    this.layerNum = layer - 1;
   }
 
   /** 简谱减时线分组（MusicData::processJpBeam）。 */
@@ -1592,7 +1484,7 @@ export class MeasureData {
     let stf = -1;
     for (const ch of this.chords) {
       for (const nt of ch.notes) {
-        if (nt.layer === 1) {
+        if (nt.jpMelody) {
           layer.push(ch);
           stf = nt.staff;
           break;
@@ -2388,8 +2280,8 @@ export class SysStaff {
         }
         let yy = 5;
         for (const nt of ch.notes) {
-          if (nt.layer !== 1) continue;
-          const oct = nt.octaveJp(eng.addOctaveJpForKeyA);
+          if (!nt.jpMelody) continue;
+          const oct = nt.octaveJp();
           if (oct > 0) yy += 5;
         }
         const offset = ht.length > 1 ? 10 : 5;
@@ -2712,7 +2604,6 @@ export class MixedOptions {
   mixStaffHeight = 30;
   mixStaffDist = 5;
   octaveDotDist = 6;
-  addOctaveJpForKeyA = false;
   beamDistJP = 5;
   harmonyYPos = -60;
 
@@ -2928,15 +2819,15 @@ export function slurTiedPosForJp(
   let dot = 0;
   let hasTied = false;
   for (const nt of chl.notes) {
-    if (nt.layer === 1) {
-      const dd = nt.octaveJp(eng.addOctaveJpForKeyA);
+    if (nt.jpMelody) {
+      const dd = nt.octaveJp();
       if (dd > dot) dot = dd;
       if (checkTied && nt.tieBegin) hasTied = true;
     }
   }
   for (const nt of chr.notes) {
-    if (nt.layer === 1) {
-      const dd = nt.octaveJp(eng.addOctaveJpForKeyA);
+    if (nt.jpMelody) {
+      const dd = nt.octaveJp();
       if (dd > dot) dot = dd;
     }
   }
