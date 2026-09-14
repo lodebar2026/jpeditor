@@ -6,7 +6,9 @@
 
 import { Fraction } from "../common/fraction";
 import { BarStyle, StartStopDiscontinue } from "./enums";
-import { jpTonicOctaveShift, keyAlter } from "./jppitch";
+import { keyAlter } from "./jppitch";
+import { AccidentalCarry, degreeFromPitch } from "../model/jianpu";
+import type { Pitch } from "../model/doc";
 import { PlayData, playOrderOf } from "./playorder";
 
 export { BarStyle, StartStopDiscontinue };
@@ -198,28 +200,10 @@ export class MusicCommon {
   }
 }
 
-export class AccidentalStat {
-  alter: Record<string, number> = {};
-  constructor(public fifths: number) {}
-
-  update(step: string, alt: number): string | null {
-    const def = MusicCommon.getAlter(step, this.fifths);
-    const expect = step in this.alter ? this.alter[step] : def;
-    if (expect === alt) return null;
-    // 同一音级在一个小节里**再换一次记号**（先 ♯4 后 ♭4，16《爱心的功课》那串倚音就是）：
-    // 原 Kotlin 这一支直接 error("")，整首谱就崩在导入这一步。谱面上这写法完全合法，
-    // 照「新记号相对当前值往哪边走」写出 `b`/`#` 即可（回到调号本身则是还原号 `n`）。
-    const res: string | null = def === alt ? "n" : (expect > alt ? "b" : "#");
-    if (def === alt) delete this.alter[step];
-    else this.alter[step] = alt;
-    return res;
-  }
-
-  reset(k: number): void {
-    this.alter = {};
-    this.fifths = k;
-  }
-}
+/** 语义层记号 → `Score.Note.jpAlter` 的单字符 */
+const JP_ALTER: Readonly<Record<string, string>> = {
+  sharp: "#", "double-sharp": "#", flat: "b", "double-flat": "b", natural: "n",
+};
 
 export abstract class Entry {
   duration?: Fraction;
@@ -352,22 +336,16 @@ export class Note {
     return res.plus(mea.position);
   }
 
-  /** Derives jp number/octave/alter from MusicXML-derived step/octave/alter.
-   *  Used by the MusicXML import path; the .jpwabc path sets these directly. */
-  init(fifths: number, stat: AccidentalStat): void {
-    const str = "CDEFGAB";
-    const idx = str.indexOf(this.step);
-    const wr = idx + this.octave * 7;
-    let p = this.octave * 7 + idx;
-    const b = (4 * fifths + 28) % 7;
-    p -= b;
-    this.number = "0";
-    if (!this.rest) {
-      this.number = String.fromCharCode("1".charCodeAt(0) + (p % 7));
-    }
-    this.jpAlter = stat.update(this.step, this.alter) ?? " ";
-    this.jpOctave = Math.floor((wr - b) / 7) - 4;
-    this.jpOctave += jpTonicOctaveShift(fifths);
+  /** 由 MusicXML 来的 step/octave/alter 推简谱的数字/八度点/记号（`loadMusicXml` 那一路；`.jpwabc` 直接给）。
+   *  **经简谱语义层**（`model/jianpu.ts`）：唱名与八度点 `degreeFromPitch`、小节内延续的记号 `AccidentalCarry.mark`。
+   *  `Score` 只有单字符记号位，双升/双降印成 `#`/`b`（语料 0 例）。 */
+  init(fifths: number, carry: AccidentalCarry): void {
+    const pitch = { step: this.step as Pitch["step"], alter: this.alter, octave: this.octave };
+    const key = { fifths };
+    const d = degreeFromPitch(pitch, key);
+    this.number = this.rest ? "0" : String(d.number);
+    this.jpAlter = JP_ALTER[carry.mark(pitch, key) ?? ""] ?? " ";
+    this.jpOctave = d.octaveShift;
   }
 }
 
@@ -458,10 +436,10 @@ export class Measure {
 
   init(): void {
     this.removeUnused();
-    const stat = new AccidentalStat(this.key.fifths);
+    const stat = new AccidentalCarry();
     for (const ent of this.entries) {
       if (!(ent instanceof Chord)) continue;
-      // 倚音先于主音（临时记号是按左右顺序生效的，`AccidentalStat` 认这个次序）
+      // 倚音先于主音（临时记号是按左右顺序生效的，延续状态认这个次序）
       for (const nt of ent.graceNotes) nt.init(this.key.fifths, stat);
       if (ent.rest) continue;
       for (const nt of ent.notes) nt.init(this.key.fifths, stat);
