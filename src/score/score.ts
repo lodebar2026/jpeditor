@@ -73,7 +73,6 @@ export class ParserTemp {
   tupletNotes: Note[] = [];
   /** 还没落到主音符上的倚音（`<grace>` 排在它修饰的音符**之前**）。 */
   graceNotes: Note[] = [];
-  constructor(public playData: PlayData) {}
 
   pairTuplet(): void {
     this.tupletNotes.sort((a, b) => a.absoluteTick.compareTo(b.absoluteTick));

@@ -1,5 +1,6 @@
 // `ScoreDoc`（MusicXML 形状）→ 简谱引擎的输入树 `Score`。**口径逐条照原 `score/musicxml.ts::loadMusicXml`**
-// （R2 阶段 9：成书重排与 ABC 回落不再另读一遍 DOM；删 `loadMusicXml` 前两路双跑逐项一致，见 `score-dual-check.mjs`）。
+// （R2 阶段 9：成书重排与 ABC 回落不再另读一遍 DOM。删 `loadMusicXml` 前两路整棵树深度序列化双跑，500 首 568 份逐项一致；
+//  其余语料的差异是旧读法游标本身错——`<backup>` 从上一个和弦的起点往回退、`<forward>` 不认，首声部带多声部的谱拍位随之错）。
 //
 // 那条路的口径（都照搬，不修）：
 //   - 只读第一声部；时值/拍位按**首小节**的 divisions 折算；`<forward>` 不认（游标取 `Chord.onset`，语料里 0 例有 `<forward>`）
@@ -76,7 +77,7 @@ function titleOf(song: Song): string {
 function loadPart(part: Part, src: import("./doc").Part, song: Song): void {
   const div = src.measures[0]?.attrs?.divisions ?? 1;
   let pos = new Fraction(0);
-  const tmp = new ParserTemp(score0PlayData);
+  const tmp = new ParserTemp();
   // 标记：每个和弦上的 slur 起止、tuplet 起止落在第几个音
   const marksAt = marksByNote(song);
   let prev: Measure | null = null;
@@ -92,9 +93,6 @@ function loadPart(part: Part, src: import("./doc").Part, song: Song): void {
   tmp.pairSlur();
   tmp.pairTie();
 }
-
-/** `ParserTemp` 要一个 `PlayData`（DOM 那条路读 `<sound>` 用），这里演唱顺序另推，给个占位 */
-const score0PlayData = new Score().playData;
 
 interface NoteMarks {
   slurStart: boolean;
