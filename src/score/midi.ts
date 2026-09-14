@@ -1,10 +1,9 @@
 // Ported from mp/score/midi.kt (ToMidi). Builds a Standard MIDI File (format 1)
-// in pure TS: a tempo meta track + one track per part, note on/off per chord.
+// in pure TS: a tempo meta track + one track per part, note on/off per chord (velocity from dynamics).
 // Note timing comes from buildTimeline (shared with the in-editor player), so the
 // exported MIDI honors the expanded play order (repeats / voltas / D.C. / D.S.).
 
-import { Score } from "./score";
-import { buildTimeline, partGain, PlayOptions, playTempo, TimedNote } from "./timeline";
+import { buildTimeline, partGain, PlayOptions, PlaySource, playTempo, TimedNote } from "./timeline";
 
 const PPQ = 960;
 
@@ -64,16 +63,16 @@ function partTrack(notes: TimedNote[], partIdx: number, opts?: PlayOptions): num
   return trackChunk(events);
 }
 
-export function scoreToMidi(score: Score, opts?: PlayOptions): Uint8Array {
-  const { notes } = buildTimeline(score);
-  const ntracks = 1 + score.parts.length;
+export function toMidi(src: PlaySource, opts?: PlayOptions): Uint8Array {
+  const { notes } = buildTimeline(src);
+  const ntracks = 1 + src.parts.length;
   const header = [
     0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, // MThd, len 6
     0, 1, // format 1
     (ntracks >> 8) & 0xff, ntracks & 0xff,
     (PPQ >> 8) & 0xff, PPQ & 0xff, // division (ticks per quarter)
   ];
-  const out: number[] = [...header, ...tempoTrack(playTempo(score, opts))];
-  for (let i = 0; i < score.parts.length; i++) out.push(...partTrack(notes, i, opts));
+  const out: number[] = [...header, ...tempoTrack(playTempo(src, opts))];
+  for (let i = 0; i < src.parts.length; i++) out.push(...partTrack(notes, i, opts));
   return new Uint8Array(out);
 }

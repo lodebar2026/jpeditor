@@ -1,6 +1,6 @@
 // Export: PNG (rasterize page SVG), MIDI (SMF), PPTX, Mixed PDF.
 import type { App } from "./app";
-import { scoreToMidi } from "../score/midi";
+import { toMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
 import { ExpandedPainter } from "../jianpu/expanded";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
@@ -112,9 +112,9 @@ export async function exportCurrentPagePng(app: App): Promise<void> {
 }
 
 export async function exportMidi(app: App): Promise<void> {
-  const score = app.adapter.caps.layout === "scoredoc" ? app.puScore() : app.painter.score;
-  if (!score) throw new Error("这份文本谱里没有可导出的曲行");
-  const bytes = scoreToMidi(score, app.playback.options());
+  const src = app.playable();
+  if (!src) throw new Error("这份谱里没有可导出的曲行");
+  const bytes = toMidi(src, app.playback.options());
   await saveBytes(bytes, `${baseName(app)}.mid`, "audio/midi");
 }
 

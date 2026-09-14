@@ -41,6 +41,11 @@ import { puToScoreDoc } from "../model/frompu";
 import { jpwToScoreDoc } from "../model/fromjpw";
 import { MixedPainter } from "../mixed/painter";
 import { PlaybackController, type PlaybackHost } from "./playback";
+import type { PlayPoint } from "./player";
+import type { PlaySource } from "../score/timeline";
+import { playSourceOfSong } from "../pu/playsong";
+import { playSourceOfDoc } from "../model/playdoc";
+import { isXmlShaped } from "../model/xmlproject";
 import { OmrController, type OmrHost } from "./omrctl";
 import type { JianpuLayoutMode } from "../jianpu/profile";
 import {
@@ -148,6 +153,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private _noteToChord: Map<ElementId, Chord> | null = null;
   /** `.jpwabc`：元素 id → 谱面 Score 和弦（`_buildJpwSync` 建） */
   private _jpwNoteToChord: Map<ElementId, Chord> | null = null;
+  /** `.jpwabc`：`jpwToScoreDoc` 的结果（试听读它；转不出来为 null） */
+  private _jpwDoc: ScoreDoc | null = null;
+  /** 试听输入的缓存：同一份模型、同一档只拼一次（`refreshSpeedUi` 每次重排都要取速度） */
+  private _playCache: { doc: ScoreDoc; forExpanded: boolean; src: PlaySource | null } | null = null;
 
   mixedXmlText: string | null = null;
   private _mixedPainter: MixedPainter | null = null;
@@ -273,7 +282,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   readonly playback: PlaybackController = new PlaybackController(this);
   /** 试听/导出 MIDI 的速度倍率（1 = 谱面标注速度）。持久化。 */
   // Selected note (for "play from here"): its chord + which verse/pass row.
-  private _selectedChord: import("../score/score").Chord | null = null;
+  private _selectedChord: Chord | null = null;
   private _selectedVerse = 0;
 
 
@@ -565,8 +574,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       return false;
     }
     this.renderPages();
-    this.playback.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换
     this._buildJpwSync(f, score);
+    this.playback.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换（读 `_jpwDoc`，要在建索引之后）
     return true;
   }
 
@@ -578,9 +587,11 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     let doc: ScoreDoc;
     try {
       doc = jpwToScoreDoc(f);
+      this._jpwDoc = doc;
     } catch (e) {
       console.warn("jpwabc 定位索引建不出", e);
       doc = emptyDoc("jpwabc");
+      this._jpwDoc = null;
     }
     const chords: Chord[] = [];
     for (const mea of score.parts[0]?.measures ?? []) for (const ent of mea.entries) if (ent instanceof Chord) chords.push(ent);
@@ -1153,44 +1164,57 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this.mode === "jp";
   }
 
-  /** PlaybackHost：当前该播哪份 Score（文本谱要先转一遍）。 */
-  playableScore(): Score | null {
-    return this.adapter.caps.layout === "scoredoc" ? this.puScore() : this.painter.score;
-  }
-
-  /** PlaybackHost：谱面标注的速度 ♩=NN（0 = 未标注，试听按默认 90）。 */
-  get scoreTempo(): number {
-    return this.painter.score.playData.tempo;
-  }
-
-  /** PlaybackHost：算「当前实际 BPM」用的那份 Score。 */
-  get tempoScore(): Score {
-    return this.painter.score;
+  /** PlaybackHost：当前该播的谱，由 ScoreDoc 拼（`docs/待办.md` §3.1 阶段 8）。
+   *  MusicXML 形状（`.musicxml`、ABC 回落）带全部声部、voice 与力度；简谱形状（文本谱/123/ABC/`.jpwabc`）
+   *  口径同 `scoreDocToScore`，展开档那一份带歌词的声部当主旋律。 */
+  playable(): PlaySource | null {
+    const jpw = this.adapter.caps.layout === "jpwabc";
+    const doc = jpw ? this._jpwDoc : this.currentScoreDoc();
+    if (!doc) return null;
+    const forExpanded = !jpw && this.layoutMode === "expanded";
+    const c = this._playCache;
+    if (c && c.doc === doc && c.forExpanded === forExpanded) return c.src;
+    let src: PlaySource | null = null;
+    try {
+      const song = doc.songs[0];
+      if (song && isXmlShaped(song)) src = playSourceOfDoc(song);
+      else src = playSourceOfSong(doc, 0, forExpanded ? { forExpanded } : {});
+    } catch (e) {
+      console.error("试听输入拼不出", e);
+    }
+    this._playCache = { doc, forExpanded, src };
+    return src;
   }
 
   /** PlaybackHost：用户在谱面上选中了某个音就从那儿起播。 */
-  startPoint(): { chord: Chord; pass: number } | undefined {
-    return this._selectedChord !== null
-      ? { chord: this._selectedChord, pass: this._selectedVerse }
-      : undefined;
+  startPoint(): PlayPoint | undefined {
+    const chord = this._selectedChord;
+    if (chord === null) return undefined;
+    let id: ElementId | undefined;
+    if (this.adapter.caps.layout === "jpwabc") {
+      for (const [k, v] of this._jpwNoteToChord ?? []) if (v === chord) id = k;
+    } else {
+      id = this._puScoreCache?.chordIds.get(chord);
+    }
+    return id === undefined ? undefined : { id, pass: this._selectedVerse };
   }
 
-  /** PlaybackHost：播到某个和弦 → 谱面高亮 + 保证可见。
-   *  高亮留在 App 而不进控制器：简谱与文本谱走各自排版器的索引，那属于「谁在画谱面」。 */
-  highlightPlaying(chord: Chord | null, pass: number): void {
-    // 原样档：播放器给的是 Chord，「原版」谱面按元素 id 索引，靠 chordIds 搭桥。
-    // 展开档与 .jpwabc 同一个排版器，照下面按 Chord 高亮。
+  /** PlaybackHost：播到某个元素 → 谱面高亮 + 保证可见。
+   *  高亮留在 App 而不进控制器：各排版器按 id 找音的办法不同，那属于「谁在画谱面」。 */
+  highlightPlaying(id: ElementId | null, pass: number): void {
+    // 原样档：「原版」谱面直接按元素 id 索引。
     if (this.adapter.caps.layout === "scoredoc" && this.layoutMode === "original") {
       const painter = this._puPainter;
       if (!painter) return;
-      const id = chord ? this._puScoreCache?.chordIds.get(chord) : undefined;
-      const pg = painter.highlight(id ?? null, Math.max(0, pass - 1));
-      if (id !== undefined && pg !== null) {
+      const pg = painter.highlight(id, Math.max(0, pass - 1));
+      if (id !== null && pg !== null) {
         if (pg !== this.pageIndex) this.pageIndex = pg;
         painter.noteGroupEl(id)?.scrollIntoView({ block: "nearest", inline: "nearest" });
       }
       return;
     }
+    // 展开档与 `.jpwabc` 同一个排版器，按 Chord 画：经 id → 谱面 Score 和弦（阶段 9 引擎直吃 ScoreDoc 后消失）
+    const chord = id === null ? null : this._chordOfNote(id);
     const page = this.painter.highlightChord(chord, pass);
     if (chord && page !== null) {
       if (page !== this.pageIndex) this.pageIndex = page;
@@ -1201,7 +1225,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /** Number of parts in the current score (for the mixer UI). */
   get partCount(): number {
-    return this.painter.score.parts.length;
+    return this.playable()?.parts.length ?? 1;
   }
 
   /** 停止试听。四处铺页前都要调，故留一个短名字在 App 上。 */
