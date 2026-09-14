@@ -5,7 +5,7 @@
 //（八度点：前两者用字体的 `.` 字形，pu 手绘矢量圆；小节线：layout 用 GraphicLine，
 //  pu 用填充 rect）。这里收一份，差异走 style 参数。
 //
-// 原语一律是**纯函数**：只认坐标与 style，不认 Entry / MChord / PlacedItem 那些模型类型，
+// 原语一律是**纯函数**：只认坐标与 style，不认 Entry / ChordLayout / PlacedItem 那些模型类型，
 // 各路的坐标换算留在自己的调用点（musicpp 的 `sc = staffHeight/40` 之类别漏进来）。
 
 import { Point, Rect } from "../common/geom";

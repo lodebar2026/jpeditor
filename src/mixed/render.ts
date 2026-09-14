@@ -1,6 +1,6 @@
 // 混排渲染器。从 musicpp model/render.cpp 移植。
-// 输入：MixedScore（已排版）；输出：Group（含 GraphicLine/TextFrame）。
-// 单位：tenths（与 MixedScore 一致）。
+// 输入：StaffLayout（已排版）；输出：Group（含 GraphicLine/TextFrame）。
+// 单位：tenths（与 StaffLayout 一致）。
 // SMuFL 字形用 TextFrame + font.family="Bravura"（等价 SmuflText，无需 LayoutOptions）。
 
 import { Fraction } from "../common/fraction";
@@ -17,11 +17,11 @@ import {
   GroupSymbol,
   LCR,
   LrcExtend,
-  MeasureData,
+  PartMeasureLayout,
   MeasureText,
   MixedOptions,
-  MixedPart,
-  MLyric,
+  PartLayout,
+  LyricLayout,
   Notation,
   PedalLine,
   Slur,
@@ -69,7 +69,7 @@ function addFilledQuad(
 export function drawNotesNormal(
   eng: MixedOptions,
   container: Group,
-  md: MeasureData,
+  md: PartMeasureLayout,
   subStaff: number,
 ): void {
   const fs = eng.musicFont.size;
@@ -210,18 +210,18 @@ export function drawNotesNormal(
 
 /** One item of a beam run: start/end chord (null = hook), level. */
 interface BeamItem {
-  start: import("./model").MChord | null;
-  end: import("./model").MChord | null;
+  start: import("./model").ChordLayout | null;
+  end: import("./model").ChordLayout | null;
   level: number;
 }
 
 function buildBeamItems(
-  chords: import("./model").MChord[],
+  chords: import("./model").ChordLayout[],
 ): BeamItem[] {
   const items: BeamItem[] = [];
   for (let lev = 0; lev < 10; lev++) {
-    let start: import("./model").MChord | null = null;
-    let last: import("./model").MChord | null = null;
+    let start: import("./model").ChordLayout | null = null;
+    let last: import("./model").ChordLayout | null = null;
     let found = false;
     for (const ch of chords) {
       if (lev >= ch.beams.length) continue;
@@ -259,7 +259,7 @@ function buildBeamItems(
 
 function drawBeamGroup(
   container: Group,
-  chords: import("./model").MChord[],
+  chords: import("./model").ChordLayout[],
   stfY: number,
   scale: number,
 ): void {
@@ -306,7 +306,7 @@ function drawBeamGroup(
 
 export function drawBeams(
   container: Group,
-  md: MeasureData,
+  md: PartMeasureLayout,
   subStaff: number,
 ): void {
   const stfY = md.staffY(subStaff);
@@ -693,7 +693,7 @@ function drawEnding(container: Group, obj: Ending, sys: Sys, mixed: boolean): vo
 // drawWedge / drawPedalLine（render.cpp::drawWedge / drawPedalLine）
 // container 已平移到 part 顶（yposPart(p,0)）；ypos 加上 staff 内偏移。
 
-function partStaffOffset(sys: Sys, p: MixedPart, staff: number): number {
+function partStaffOffset(sys: Sys, p: PartLayout, staff: number): number {
   return sys.yposPart(p, staff) - sys.yposPart(p, 0);
 }
 
@@ -766,7 +766,7 @@ function drawPedalLine(container: Group, obj: PedalLine, sys: Sys): void {
 
 function drawLrcHyphen(
   eng: MixedOptions,
-  lrc: MLyric,
+  lrc: LyricLayout,
   container: Group,
   mifXpos: number,
 ): void {
@@ -798,7 +798,7 @@ function drawLrcHyphen(
 export function drawLrc(
   eng: MixedOptions,
   container: Group,
-  data: MeasureData,
+  data: PartMeasureLayout,
   subStaff: number,
 ): void {
   const mifXpos = data.measureInfo.xpos();
@@ -841,7 +841,7 @@ export function drawLrc(
 export function drawHarmony(
   eng: MixedOptions,
   container: Group,
-  data: MeasureData,
+  data: PartMeasureLayout,
   subStaff: number,
   scaling: number,
   mixed: boolean,
@@ -934,7 +934,7 @@ function drawTextBlock(container: Group, t: MeasureText): void {
   }
 }
 
-function drawTextBlocks(container: Group, data: MeasureData, subStaff: number): void {
+function drawTextBlocks(container: Group, data: PartMeasureLayout, subStaff: number): void {
   for (const t of data.textBlocks) {
     if (t.staff !== subStaff) continue;
     drawTextBlock(container, t);
@@ -944,7 +944,7 @@ function drawTextBlocks(container: Group, data: MeasureData, subStaff: number): 
 // -----------------------------------------------------------------------
 // drawLineObjs（render.cpp::drawLineObjs）— span objects per part per system
 
-function drawLineObjs(container: Group, sys: Sys, p: MixedPart): void {
+function drawLineObjs(container: Group, sys: Sys, p: PartLayout): void {
   const scr = sys.score;
   const eng = scr.options;
 
@@ -1078,7 +1078,7 @@ function drawKeyAccid(
 function drawKey(
   eng: MixedOptions,
   container: Group,
-  mif: import("./model").MeasureInfo,
+  mif: import("./model").MeasureLayout,
   ps: import("./model").PartStaff,
   x: number,
 ): void {
@@ -1118,7 +1118,7 @@ function drawKey(
 function drawTime(
   eng: MixedOptions,
   container: Group,
-  mif: import("./model").MeasureInfo,
+  mif: import("./model").MeasureLayout,
   ps: import("./model").PartStaff,
   x: number,
 ): void {

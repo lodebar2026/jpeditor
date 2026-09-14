@@ -1,7 +1,10 @@
-// 混排（五线谱+简谱）数据模型。从 musicpp model/model.hpp + model.cpp 移植
+// 五线谱引擎（混排）的**版面态**。从 musicpp model/model.hpp + model.cpp 移植
 // （dolce::Score/Part/Staff/Chord/Note/System/SysStaff 等）。
 // 单位：tenths（五线谱高 40，线距 10），y 向下，五线谱顶线 y=0。
-// 水平位置全部信任 MusicXML 内嵌版面（default-x / measure width）。
+// 水平位置信任 MusicXML 内嵌版面（default-x / measure width），没有时走自动版面（`layoutpass.ts`）。
+//
+// **这里不是模型**（R2 阶段 10 删了 `MixedScore`）：根对象 `StaffLayout` 与各版面节点只存引擎自己算出来的东西
+// （坐标、符干、符杠、系统与页、按 tick 查的谱号/调号/拍号索引），语义经各节点的 `src` 从 `ScoreDoc` 取。
 
 import { Fraction } from "../common/fraction";
 import { Point } from "../common/geom";
@@ -9,7 +12,7 @@ import { Font } from "../layout/font";
 import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
 import { MIXED_PUNCT } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
-import type { Chord as DocChord, Harmony as DocHarmony, Lyric as DocLyric, Note as DocNote } from "../model/doc";
+import type { Chord as DocChord, Harmony as DocHarmony, Lyric as DocLyric, Note as DocNote, Song } from "../model/doc";
 import { beamCount } from "../model/jianpu";
 
 const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -222,7 +225,7 @@ export function smuflCutOut(
 // ---------------- Staff（per-staff 谱号/调号/拍号/记谱法时间线） ----------------
 
 export class PartStaff {
-  part: MixedPart;
+  part: PartLayout;
   subIndex: number;
   order = 0;
   key = new TickMap<KeySig>();
@@ -230,7 +233,7 @@ export class PartStaff {
   time = new TickMap<TimeSig>();
   notation = new TickMap<Notation>();
 
-  constructor(part: MixedPart, subIndex: number) {
+  constructor(part: PartLayout, subIndex: number) {
     this.part = part;
     this.subIndex = subIndex;
     this.notation.set(new Fraction(0), Notation.Normal);
@@ -307,14 +310,14 @@ export class NotationItem {
   };
 }
 
-export class MNote {
-  chord: MChord;
+export class NoteLayout {
+  chord: ChordLayout;
   entry: NoteEntry | null = null;
-  /** `ScoreDoc` 里对应的音（`fromdoc.ts` 挂上；休止与无音高的节奏音符为 null）。简谱叠层的唱名/八度/临时记号从它的 `degree` 取 */
+  /** `ScoreDoc` 里对应的音（`layout.ts` 挂上；休止与无音高的节奏音符为 null）。简谱叠层的唱名/八度/临时记号从它的 `degree` 取 */
   src: DocNote | null = null;
   /** 简谱叠层印的就是这个音（语义层 `melodyChords` 那一路的 `topNote`，休止也算） */
   jpMelody = false;
-  /** 谱表上的位置（记谱音高按调式音级计，含移调）。有音高时 `fromdoc` 按 `src.pitch` 算好；
+  /** 谱表上的位置（记谱音高按调式音级计，含移调）。有音高时 `layout.ts` 按 `src.pitch` 算好；
    *  **休止由 `fixPitchForRest` 排到谱表上**，所以它是版面坐标、不是只读的语义 */
   writtenPitch = -1;
   /** 延音线起止（读入时照 `<tie>`，Sibelius 不成对的由 `fixTieForSib` 补） */
@@ -325,7 +328,7 @@ export class MNote {
   arpeg: Arpeggiate | null = null;
   x = -1;
 
-  constructor(chord: MChord) {
+  constructor(chord: ChordLayout) {
     this.chord = chord;
   }
 
@@ -411,10 +414,10 @@ export class MNote {
     return acc.includes("sharp") ? 1 : acc.includes("flat") ? -1 : 0;
   }
 
-  static sortByPitchWr(v: MNote[]): void {
+  static sortByPitchWr(v: NoteLayout[]): void {
     v.sort((a, b) => a.writtenPitch - b.writtenPitch);
   }
-  static sortByPitchSnd(v: MNote[]): void {
+  static sortByPitchSnd(v: NoteLayout[]): void {
     v.sort((a, b) =>
       a.writtenPitch !== b.writtenPitch
         ? a.writtenPitch - b.writtenPitch
@@ -423,8 +426,8 @@ export class MNote {
   }
 }
 
-export class MChord {
-  measure: MeasureData;
+export class ChordLayout {
+  measure: PartMeasureLayout;
   /** `ScoreDoc` 里对应的和弦 */
   readonly src: DocChord;
   /** 所在小节的 divisions（时值换算用） */
@@ -439,12 +442,12 @@ export class MChord {
   stemUp = true;
   stemExtra = 0; // 跨谱表符杠时符干延伸量（model.hpp stemExtra / styler.cpp calcSlopeLen）
 
-  notes: MNote[] = [];
+  notes: NoteLayout[] = [];
   /** 符杠逐层状态（照 `<beam>`，整声部没写时由自动符杠补） */
   beams: BeamVal[] = [];
   notations: NotationItem[] = [];
 
-  constructor(measure: MeasureData, src: DocChord, divisions: number) {
+  constructor(measure: PartMeasureLayout, src: DocChord, divisions: number) {
     this.measure = measure;
     this.src = src;
     this.divisions = divisions;
@@ -487,8 +490,8 @@ export class MChord {
     return tm ? new Fraction(tm.normal, tm.actual) : new Fraction(1);
   }
 
-  newNote(): MNote {
-    const n = new MNote(this);
+  newNote(): NoteLayout {
+    const n = new NoteLayout(this);
     this.notes.push(n);
     return n;
   }
@@ -502,7 +505,7 @@ export class MChord {
   }
 
   /** 时值区间是否相交（model.cpp:1825 Chord::overlape）。 */
-  overlape(ch: MChord): boolean {
+  overlape(ch: ChordLayout): boolean {
     const t0 = this.tick();
     const t1 = t0.plus(this.dur);
     const t2 = ch.tick();
@@ -572,10 +575,10 @@ export class MChord {
     return this.notes[0].x;
   }
 
-  tailNote(): MNote {
+  tailNote(): NoteLayout {
     return this.stemUp ? this.notes[this.notes.length - 1] : this.notes[0];
   }
-  stemNote(): MNote {
+  stemNote(): NoteLayout {
     return this.stemUp ? this.notes[0] : this.notes[this.notes.length - 1];
   }
 
@@ -598,7 +601,7 @@ export class MChord {
   }
 
   sort(): void {
-    MNote.sortByPitchWr(this.notes);
+    NoteLayout.sortByPitchWr(this.notes);
   }
 
   /** 二度音程翻转音符头（Chord::autoFlip）。 */
@@ -610,7 +613,7 @@ export class MChord {
       arr = [...arr].reverse();
     }
     let lastFlipped = false;
-    let last: MNote | null = null;
+    let last: NoteLayout | null = null;
     for (const n of arr) {
       if (n.writtenPitch <= 0) continue;
       if (!last || lastFlipped) {
@@ -630,7 +633,7 @@ export class MChord {
     }
   }
 
-  static sortByOffset(arr: MChord[]): void {
+  static sortByOffset(arr: ChordLayout[]): void {
     arr.sort((a, b) => a.offset.compareTo(b.offset));
   }
 }
@@ -803,18 +806,18 @@ export class AccidentalLayout {
 
 export class DotLayout {
   mutipleVoice = false;
-  notes: MNote[] = [];
+  notes: NoteLayout[] = [];
   dots = new Set<number>();
   dotPos = 0;
 
-  addNote(n: MNote): void {
+  addNote(n: NoteLayout): void {
     this.notes.push(n);
   }
 
   update(meta: MetaData): void {
     this.dots.clear();
     this.dotPos = 0;
-    const done = new Set<MNote>();
+    const done = new Set<NoteLayout>();
     const count = new Map<number, number>();
     for (const n of this.notes) {
       const l = n.line();
@@ -859,15 +862,15 @@ export class DotLayout {
 }
 
 export class NoteEntry {
-  notes: MNote[] = [];
-  measure: MeasureData;
+  notes: NoteLayout[] = [];
+  measure: PartMeasureLayout;
   leger = new LegerLayout();
   dot = new DotLayout();
   acc: AccidentalLayout;
   subStaff = 0;
   offset = new Fraction(0);
 
-  constructor(measure: MeasureData, meta: MetaData) {
+  constructor(measure: PartMeasureLayout, meta: MetaData) {
     this.measure = measure;
     this.acc = new AccidentalLayout(meta);
   }
@@ -899,7 +902,7 @@ export class NoteEntry {
 
   /** Sibelius 同 entry 多 chord 的水平错位修正（NoteEntry::layoutChords）。 */
   private layoutChords(meta: MetaData): void {
-    const chords = new Set<MChord>();
+    const chords = new Set<ChordLayout>();
     for (const n of this.notes) {
       const ch = n.chord;
       if (ch.rest || ch.grace) continue;
@@ -951,11 +954,11 @@ export enum LCR {
   Right,
 }
 
-export class MLyric {
-  measure: MeasureData;
+export class LyricLayout {
+  measure: PartMeasureLayout;
   /** `ScoreDoc` 里对应的歌词 */
   readonly src: DocLyric;
-  readonly chord: MChord;
+  readonly chord: ChordLayout;
   offset = new Fraction(0);
   font!: Font;
   extend: Fraction | null = null;
@@ -964,10 +967,10 @@ export class MLyric {
   y = -1;
   xOffset = 0;
   width = 0;
-  prev: MLyric | null = null;
-  next: MLyric | null = null;
+  prev: LyricLayout | null = null;
+  next: LyricLayout | null = null;
 
-  constructor(measure: MeasureData, src: DocLyric, chord: MChord) {
+  constructor(measure: PartMeasureLayout, src: DocLyric, chord: ChordLayout) {
     this.measure = measure;
     this.src = src;
     this.chord = chord;
@@ -1059,15 +1062,15 @@ export interface HarmonyStepAlter {
   alter: number;
 }
 
-export class MHarmony {
-  measure: MeasureData;
+export class HarmonyLayout {
+  measure: PartMeasureLayout;
   /** `ScoreDoc` 里对应的和弦符号 */
   readonly src: DocHarmony;
   offset = new Fraction(0);
   x = 0;
   y = 0;
 
-  constructor(measure: MeasureData, src: DocHarmony) {
+  constructor(measure: PartMeasureLayout, src: DocHarmony) {
     this.measure = measure;
     this.src = src;
   }
@@ -1356,12 +1359,12 @@ export class TextBlock {
 }
 
 export class MeasureText extends TextBlock {
-  measure: MeasureData;
+  measure: PartMeasureLayout;
   offset = new Fraction(0);
   staff = 0;
   relative = false;
 
-  constructor(measure: MeasureData) {
+  constructor(measure: PartMeasureLayout) {
     super();
     this.measure = measure;
   }
@@ -1370,7 +1373,7 @@ export class MeasureText extends TextBlock {
 // ---------------- BeamGroup ----------------
 
 export class BeamGroup {
-  chords: MChord[] = [];
+  chords: ChordLayout[] = [];
   jp = false;
   doubleDir = false;
 
@@ -1395,11 +1398,11 @@ export class BeamGroup {
     if (noteCnt.size === 1) {
       const first = this.chords[0];
       let nts = [...first.notes];
-      MNote.sortByPitchWr(nts);
+      NoteLayout.sortByPitchWr(nts);
       for (const ch of this.chords) {
         if (ch === first) continue;
         const nts2 = [...ch.notes];
-        MNote.sortByPitchWr(nts2);
+        NoteLayout.sortByPitchWr(nts2);
         for (let i = 0; i < nts.length; i++) {
           const n2 = nts2[i];
           const n1 = nts[i];
@@ -1415,12 +1418,12 @@ export class BeamGroup {
       return res;
     }
 
-    const refChords: MChord[] = [this.chords[0]];
+    const refChords: ChordLayout[] = [this.chords[0]];
     if (this.chords.length >= 3) refChords.push(this.chords[this.chords.length - 1]);
     for (const refCh of refChords) {
       const nts = [...refCh.notes];
-      MNote.sortByPitchWr(nts);
-      const refs: MNote[] = [nts[0]];
+      NoteLayout.sortByPitchWr(nts);
+      const refs: NoteLayout[] = [nts[0]];
       if (nts.length > 1) refs.push(nts[nts.length - 1]);
       for (const ref of refs) {
         for (const ch of this.chords) {
@@ -1549,15 +1552,15 @@ export class BeamGroup {
   }
 }
 
-// ---------------- MeasureData（声部内单小节内容，dolce::MusicData） ----------------
+// ---------------- PartMeasureLayout（声部内单小节内容，dolce::MusicData） ----------------
 
-export class MeasureData {
-  measureInfo!: MeasureInfo;
-  part!: MixedPart;
+export class PartMeasureLayout {
+  measureInfo!: MeasureLayout;
+  part!: PartLayout;
 
-  chords: MChord[] = [];
-  lyrics: MLyric[] = [];
-  harmonies: MHarmony[] = [];
+  chords: ChordLayout[] = [];
+  lyrics: LyricLayout[] = [];
+  harmonies: HarmonyLayout[] = [];
   textBlocks: MeasureText[] = [];
   arpegs: Arpeggiate[] = [];
 
@@ -1566,18 +1569,18 @@ export class MeasureData {
   jpBeams: BeamGroup[] = [];
   noteEntries: NoteEntry[] = [];
 
-  newChord(src: DocChord, divisions: number): MChord {
-    const ch = new MChord(this, src, divisions);
+  newChord(src: DocChord, divisions: number): ChordLayout {
+    const ch = new ChordLayout(this, src, divisions);
     this.chords.push(ch);
     return ch;
   }
-  newLyric(src: DocLyric, chord: MChord): MLyric {
-    const l = new MLyric(this, src, chord);
+  newLyric(src: DocLyric, chord: ChordLayout): LyricLayout {
+    const l = new LyricLayout(this, src, chord);
     this.lyrics.push(l);
     return l;
   }
-  newHarmony(src: DocHarmony): MHarmony {
-    const h = new MHarmony(this, src);
+  newHarmony(src: DocHarmony): HarmonyLayout {
+    const h = new HarmonyLayout(this, src);
     this.harmonies.push(h);
     return h;
   }
@@ -1624,7 +1627,7 @@ export class MeasureData {
 
   /** 简谱减时线分组（MusicData::processJpBeam）。 */
   processJpBeam(): void {
-    const layer: MChord[] = [];
+    const layer: ChordLayout[] = [];
     let stf = -1;
     for (const ch of this.chords) {
       for (const nt of ch.notes) {
@@ -1636,7 +1639,7 @@ export class MeasureData {
       }
     }
     if (stf < 0) return;
-    MChord.sortByOffset(layer);
+    ChordLayout.sortByOffset(layer);
     const pstf = this.part.staves[stf];
     const t0 = this.measureInfo.offset;
     const ts = pstf.getTime(t0);
@@ -1816,7 +1819,7 @@ export class MeasureData {
   }
 }
 
-// ---------------- MeasureInfo（全局小节版面信息，dolce::Measure） ----------------
+// ---------------- MeasureLayout（全局小节版面信息，dolce::Measure） ----------------
 
 export enum EndingType {
   None,
@@ -1835,7 +1838,7 @@ export enum BarGlyph {
   None, // bar-style none：占位且不可见
 }
 
-export class MeasureInfo {
+export class MeasureLayout {
   system!: Sys;
   number = "";
 
@@ -1927,20 +1930,20 @@ export class MeasureInfo {
 // ---------------- Span objects（跨小节对象） ----------------
 
 export class SpanObj {
-  part!: MixedPart;
+  part!: PartLayout;
   startTick = new Fraction(0);
   endTick = new Fraction(0);
   above = false;
 }
 
 export class SpanOverNotes extends SpanObj {
-  startNote: MNote | null = null;
-  endNote: MNote | null = null;
+  startNote: NoteLayout | null = null;
+  endNote: NoteLayout | null = null;
 
-  startChord(): MChord {
+  startChord(): ChordLayout {
     return this.startNote!.chord;
   }
-  endChord(): MChord {
+  endChord(): ChordLayout {
     return this.endNote!.chord;
   }
 }
@@ -1964,16 +1967,16 @@ export class Tuplet extends SpanOverNotes {
 }
 
 export class Ending extends SpanObj {
-  startMeasure!: MeasureInfo;
-  endMeasure!: MeasureInfo;
+  startMeasure!: MeasureLayout;
+  endMeasure!: MeasureLayout;
   number = "";
   hasStop = false;
 }
 
 /** 渐强/渐弱松叶（model.hpp:860 Wedge）。 */
 export class Wedge extends SpanObj {
-  startMeasure!: MeasureInfo;
-  endMeasure!: MeasureInfo;
+  startMeasure!: MeasureLayout;
+  endMeasure!: MeasureLayout;
   crescendo = false;
   staff = 0;
   ypos = 0;
@@ -1983,8 +1986,8 @@ export class Wedge extends SpanObj {
 
 /** 踏板线（model.hpp:873 PedalLine）。 */
 export class PedalLine extends SpanObj {
-  startMeasure!: MeasureInfo;
-  endMeasure!: MeasureInfo;
+  startMeasure!: MeasureLayout;
+  endMeasure!: MeasureLayout;
   sign = false;
   line = false;
   staff = 0;
@@ -1993,20 +1996,20 @@ export class PedalLine extends SpanObj {
 
 /** 琶音（model.hpp:435 Arpeggiate）：同一 offset 上的一组音符。 */
 export class Arpeggiate {
-  notes: MNote[] = [];
+  notes: NoteLayout[] = [];
 }
 
 export class LrcExtend extends SpanOverNotes {
-  start: MLyric | null = null;
-  stop: MLyric | null = null;
+  start: LyricLayout | null = null;
+  stop: LyricLayout | null = null;
 }
 
 // ---------------- Part ----------------
 
-export class MixedPart {
-  score!: MixedScore;
+export class PartLayout {
+  score!: StaffLayout;
   pid = "";
-  measures: MeasureData[] = [];
+  measures: PartMeasureLayout[] = [];
   staves: PartStaff[] = [];
 
   slurs: Slur[] = [];
@@ -2017,8 +2020,8 @@ export class MixedPart {
   pedalLines: PedalLine[] = [];
   lrcExtends: LrcExtend[] = [];
 
-  newMeasure(): MeasureData {
-    const m = new MeasureData();
+  newMeasure(): PartMeasureLayout {
+    const m = new PartMeasureLayout();
     m.part = this;
     this.measures.push(m);
     return m;
@@ -2084,7 +2087,7 @@ export class MixedPart {
   /** Part::guessTiedPlacement（连音线方向推断）。 */
   guessTiedPlacement(): void {
     interface Pt {
-      note: MNote;
+      note: NoteLayout;
       begin: boolean;
       up: boolean;
       hasDir: boolean;
@@ -2242,8 +2245,8 @@ export class MixedPart {
 
   /** Sibelius tie 元素不成对的修正（Part::fixTieForSib + TieProcessor）。 */
   fixTieForSib(): void {
-    const startNotes = new Map<string, MNote[]>();
-    const stopNotes = new Map<string, MNote[]>();
+    const startNotes = new Map<string, NoteLayout[]>();
+    const stopNotes = new Map<string, NoteLayout[]>();
     const ticks: Fraction[] = [];
     const seen = new Set<string>();
     for (const md of this.measures) {
@@ -2274,10 +2277,10 @@ export class MixedPart {
         }
       }
     }
-    const connect = (va: MNote[], vb: MNote[]): boolean => {
+    const connect = (va: NoteLayout[], vb: NoteLayout[]): boolean => {
       if (va.length !== vb.length) return false;
-      MNote.sortByPitchSnd(va);
-      MNote.sortByPitchSnd(vb);
+      NoteLayout.sortByPitchSnd(va);
+      NoteLayout.sortByPitchSnd(vb);
       for (let i = 0; i < va.length; i++) {
         if (va[i].soundPitch !== vb[i].soundPitch) return false;
       }
@@ -2320,7 +2323,7 @@ export enum GroupSymbol {
 }
 
 export class PartGroup {
-  parts: MixedPart[] = [];
+  parts: PartLayout[] = [];
   number = "";
   barline = false;
   symbol = GroupSymbol.None;
@@ -2345,7 +2348,7 @@ export class SysStaff {
   height(): number {
     return this.staffScale * (this.staffLines - 1) * 10;
   }
-  part(): MixedPart {
+  part(): PartLayout {
     return this.partStaff.part;
   }
   subIndex(): number {
@@ -2522,7 +2525,7 @@ export class SysStaff {
 }
 
 export class Sys {
-  score!: MixedScore;
+  score!: StaffLayout;
   index = 0;
   distance = 0;
   firstMeasure = 0;
@@ -2532,7 +2535,7 @@ export class Sys {
   keyChangeWidth = 0;
   timeChangeWidth = 0;
 
-  measures: MeasureInfo[] = [];
+  measures: MeasureLayout[] = [];
   staves: SysStaff[] = [];
 
   top(): number {
@@ -2550,7 +2553,7 @@ export class Sys {
     return res;
   }
 
-  yposPart(p: MixedPart, sub = 0): number {
+  yposPart(p: PartLayout, sub = 0): number {
     let res = 0;
     for (const stf of this.staves) {
       if (!stf.staffVisible) continue;
@@ -2630,8 +2633,8 @@ export class Sys {
   /** 跨 part 小节线分组（System::barlineGroups）。 */
   barlineGroups(): Map<number, number> {
     const single = new Set<number>();
-    const partStart = new Map<MixedPart, number>();
-    const partEnd = new Map<MixedPart, number>();
+    const partStart = new Map<PartLayout, number>();
+    const partEnd = new Map<PartLayout, number>();
     let stf = 0;
     for (const p of this.score.parts) {
       partStart.set(p, stf);
@@ -2815,33 +2818,55 @@ export interface ScoreCredit {
   fontSize: number;
 }
 
-export class MixedScore {
+export class StaffLayout {
+  /** `ScoreDoc` 里对应的曲子 */
+  readonly song: Song;
+  /** 版面单位换算：pt / tenths（`<scaling>` 算出，页面尺寸与字号都按它换到 tenths） */
   scaling = 1;
-  encoder = Encoder.Unknown;
-  measures: MeasureInfo[] = [];
-  parts: MixedPart[] = [];
+  measures: MeasureLayout[] = [];
+  parts: PartLayout[] = [];
   pages: MPage[] = [];
   systems: Sys[] = [];
   partGroups: PartGroup[] = [];
 
   options: MixedOptions;
+  /** 页面与字体缺省值（tenths） */
   defaults = new MixedDefaults();
-  title = "";
+  /** 排好的标题块（原谱没有坐标时由 `autoLayoutHeader` 重排） */
   credits: ScoreCredit[] = [];
 
-  constructor(options: MixedOptions) {
+  constructor(options: MixedOptions, song: Song) {
     this.options = options;
+    this.song = song;
   }
 
-  newPart(): MixedPart {
-    const p = new MixedPart();
+  /** 导出这份谱的软件（Sibelius / MuseScore 各有几处照 musicpp 的修正），任一条 `<software>` 认得就算 */
+  get encoder(): Encoder {
+    let e = Encoder.Unknown;
+    for (const sw of this.song.identification?.software ?? []) {
+      if (sw.includes("Sibelius")) e = Encoder.Sibelius;
+      else if (sw.includes("MuseScore")) e = Encoder.MuseScore;
+    }
+    return e;
+  }
+
+  /** 标题：`credit-type` 为 title 的首条，没有取 `<work-title>` / `<movement-title>` */
+  get title(): string {
+    return (
+      this.song.credits?.find((c) => c.type?.trim() === "title" && c.text.trim())?.text.trim() ??
+      (this.song.work.title?.trim() || this.song.work.movementTitle?.trim() || "")
+    );
+  }
+
+  newPart(): PartLayout {
+    const p = new PartLayout();
     p.score = this;
     this.parts.push(p);
     return p;
   }
 
-  newMeasure(): MeasureInfo {
-    const m = new MeasureInfo();
+  newMeasure(): MeasureLayout {
+    const m = new MeasureLayout();
     m.index = this.measures.length;
     this.measures.push(m);
     return m;
@@ -2886,8 +2911,8 @@ export function mixedSlurStyle(above: boolean): SlurStyle {
 /** 五线谱 slur/tied 锚点（SpanObj::slurTiedPos）。 */
 export function slurTiedPos(
   eng: MixedOptions,
-  chl: MChord | null,
-  chr: MChord | null,
+  chl: ChordLayout | null,
+  chr: ChordLayout | null,
   above: boolean,
 ): [Pt2, Pt2] {
   const pl: Pt2 = { x: 0, y: 0 };
@@ -2952,8 +2977,8 @@ export function slurTiedPos(
 /** 简谱层 slur/tied 锚点（SpanObj::slurTiedPosForJp）。 */
 export function slurTiedPosForJp(
   eng: MixedOptions,
-  chl: MChord,
-  chr: MChord,
+  chl: ChordLayout,
+  chr: ChordLayout,
   checkTied = false,
 ): [Pt2, Pt2] {
   const refLeft = chl.stemNote();

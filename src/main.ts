@@ -63,8 +63,8 @@ async function boot() {
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
   // 混排模型（`AccidentalStat` / `GlyphCodes`）暴露，供 scripts/jianpu-semantic-check.mjs 三方比简谱语义。
-  win.__mixedModel = Promise.all([import("./mixed/model"), import("./smufl/smufl"), import("./mixed/fromdoc")])
-    .then(([model, smufl, fromdoc]) => ({ ...model, GlyphCodes: smufl.GlyphCodes, MetaData: smufl.MetaData, ...fromdoc }));
+  win.__mixedModel = Promise.all([import("./mixed/model"), import("./smufl/smufl"), import("./mixed/layout")])
+    .then(([model, smufl, layout]) => ({ ...model, GlyphCodes: smufl.GlyphCodes, MetaData: smufl.MetaData, ...layout }));
   // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
   win.__omr = import("./omr");
   // ABC → MusicXML 移植版暴露（便于 scripts/abc-check.mjs 回归，同 __app 约定）。

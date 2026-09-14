@@ -6,7 +6,7 @@
 // |---|---|---|
 // | **`ScoreDoc`**（本文件） | 123 的原生模型 | **唯一语义模型**，其余向它汇聚 |
 // | `Score`（`score/score.ts`） | 简谱排版/MIDI/乐句断句吃它，**装不下力度/多声部**；和弦只在 MusicXML 进来那一路留得住 | 退役 |
-// | `MixedScore`（`mixed/model.ts`） | 五线谱**语义 + 排版**混在一起（单位 tenths） | 语义并入这里，它只留排版 |
+// | ~~`MixedScore`~~ | 原先五线谱**语义 + 排版**混在一起 | **已删**（R2 阶段 10）：五线谱引擎只留版面态 `StaffLayout`（`mixed/model.ts`），语义一律从这里取 |
 // | `PuDoc`（`pu/ast.ts`） | 文本谱解析器的产物，**只在进 `ScoreDoc` 之前与乐句重排（改写原文）里活着** | 退役 |
 //
 // 文本谱/123/ABC 的排版、`Score`、MusicXML 导出、双向定位都直接吃 `ScoreDoc`，

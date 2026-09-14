@@ -4,7 +4,7 @@
 
 ## 职责
 
-MusicXML 双向（导入为 `ScoreDoc`/`Score`/`MixedScore`；导出只有一份写出端 `model/toxml.ts`，见 [导出.md](导出.md)）。
+MusicXML 双向（导入为 `ScoreDoc`/`Score`；五线谱/混排由 `ScoreDoc` 建版；导出只有一份写出端 `model/toxml.ts`，见 [导出.md](导出.md)）。
 
 **ABC 已搬走**：`.abc` 现在是原生可编辑保存的源格式，读写都在
 [源格式-abc家族.md](源格式-abc家族.md)（与 123 共用基类）。本页只留 `abc2xml` 作为
@@ -15,7 +15,7 @@ MusicXML 双向（导入为 `ScoreDoc`/`Score`/`MixedScore`；导出只有一份
 | 函数 | 文件 | 作用 |
 |---|---|---|
 | `loadMusicXml(xml)` | `src/score/musicxml.ts:476` | → `Score`（只读第一声部） |
-| `loadMixedDoc(doc)` | `src/mixed/fromdoc.ts` | `ScoreDoc` → `MixedScore`（五线谱/混排，只读 `ScoreDoc`） |
+| `layoutStaff(doc)` | `src/mixed/layout.ts` | `ScoreDoc` → `StaffLayout`（五线谱/混排的版面态，只读 `ScoreDoc`） |
 | `loadScoreDoc(xml)` | `src/model/fromxml.ts` | → `ScoreDoc`（**直通，读得最全**；读不懂的挂 `Measure.raw`） |
 | `scoreDocToMusicXml(doc)` | `src/model/toxml.ts` | **唯一写出端**；简谱来源先经 `model/xmlproject.ts` 投影 |
 | `projectForJianpu(song)` | `src/model/jianpuproject.ts` | MusicXML 形状 → 简谱形状（简谱档排版、转 123 之前） |
@@ -26,7 +26,7 @@ MusicXML 双向（导入为 `ScoreDoc`/`Score`/`MixedScore`；导出只有一份
 
 ## 吃什么吐什么
 
-- 导入：`.xml`/`.musicxml` → `Score`（简谱路）或 `MixedScore`（五线谱/混排路）
+- 导入：`.xml`/`.musicxml` → `ScoreDoc`（简谱档与五线谱/混排共用；成书仍经 `Score`）
 - 导出：有底本且没改过 → 原文零损耗；否则 → 唯一写出端整份重写
 - ABC：`.abc` → `parseAbc` → `ScoreDoc`（原生，保住源字符偏移）。原生读不动才回落
   `abcToMusicXml` → MusicXML 那条老路（只读、定位到小节级，状态栏提示降级）

@@ -1,5 +1,9 @@
-// 混排 `ScoreDoc`（MusicXML 形状）→ `MixedScore`。从 musicpp mxml/parser.cpp 移植，判据原样。
+// 五线谱引擎建版：`ScoreDoc`（MusicXML 形状）→ `StaffLayout`（版面态，`model.ts`）。从 musicpp mxml/parser.cpp 移植，判据原样。
 // 各声部读完之后的版面 pass 在 `layoutpass.ts`。
+//
+// **引擎里没有模型**：版面节点（`ChordLayout` / `NoteLayout` / `LyricLayout` / `HarmonyLayout`）只带 `src`
+// （对应的 `ScoreDoc` 元素）与坐标、符干这类版面态，音高、时值、歌词、和弦内容一律经 `src` 取（R2 阶段 10）。
+// 跨元素对象（slur / tie / tuplet / ending / wedge）在这里按 `ElementId` 配到版面节点上。
 //
 // 原先由 `loader.ts` 直接读 MusicXML DOM；阶段 6（`docs/待办.md` §3.1）改成只读 `ScoreDoc`，
 // 删 `loader.ts` 前两路双跑：500 首 568 份、Praise as One kl2020 40 首、赞美之泉 222 份、合唱谱 10 份、
@@ -53,15 +57,15 @@ import {
   KeySig,
   LCR,
   LrcExtend,
-  MChord,
-  MeasureData,
-  MeasureInfo,
+  ChordLayout,
+  PartMeasureLayout,
+  MeasureLayout,
   MeasureText,
-  MLyric,
+  LyricLayout,
   MixedOptions,
-  MixedPart,
-  MixedScore,
-  MNote,
+  PartLayout,
+  StaffLayout,
+  NoteLayout,
   NotationItem,
   PartGroup,
   PartStaff,
@@ -110,7 +114,7 @@ function makeTime(time: DocTime): TimeSig {
   return t;
 }
 
-interface TieRef { note: MNote; pitch: number; endTick: Fraction }
+interface TieRef { note: NoteLayout; pitch: number; endTick: Fraction }
 
 /** 一个元素在小节里的游标（divisions）：`onset` 缺省 = 前一个元素的终点 */
 function measureTiming(m: Measure): { onsets: number[]; endAfter: number[]; end: number } {
@@ -132,15 +136,15 @@ function measureTiming(m: Measure): { onsets: number[]; endAfter: number[]; end:
 }
 
 class DocPartLoader {
-  part: MixedPart;
-  score: MixedScore;
+  part: PartLayout;
+  score: StaffLayout;
   src: DocPart;
   /** 本声部的 slur / tuplet（按收口先后），按收口那个和弦 id 分组 */
   marksByEnd = new Map<number, Mark[]>();
-  chordById = new Map<number, MChord>();
+  chordById = new Map<number, ChordLayout>();
   docChordById = new Map<number, DocChord>();
-  stemYMap = new Map<MNote, number>(); // note → stem default-y
-  stemNotes = new Set<MNote>(); // 有 <stem> 元素的音符（parser.cpp stemDir）
+  stemYMap = new Map<NoteLayout, number>(); // note → stem default-y
+  stemNotes = new Set<NoteLayout>(); // 有 <stem> 元素的音符（parser.cpp stemDir）
   hasBeamEl = false; // 本声部是否出现过 <beam>（无则自动按拍分组符杠，供 OMR 谱用）
   transposeSteps = 0;
   /** 当前小节的 divisions 与简谱叠层的旋律（和弦 → 印的那个音） */
@@ -149,19 +153,19 @@ class DocPartLoader {
 
   tieStarts: TieRef[] = [];
   tieStops: TieRef[] = [];
-  // lrc linking: num → [MLyric list in order]
-  lrcByNum = new Map<string, MLyric[]>();
+  // lrc linking: num → [LyricLayout list in order]
+  lrcByNum = new Map<string, LyricLayout[]>();
   // lyric extend (melisma) points, paired 2-by-2 in processLrcExtend
-  lrcExtendPts: { note: MNote; lrc: MLyric; tick: Fraction; stop: boolean }[] = [];
+  lrcExtendPts: { note: NoteLayout; lrc: LyricLayout; tick: Fraction; stop: boolean }[] = [];
   // 本声部自己的 ending 端点（print-object="no" 不计入），对齐 musicpp 按 part 收集，
   // 避免反复记号在每个声部都被画一遍。
-  endingPts: { mif: MeasureInfo; nums: Set<number>; text: string; start: boolean; stop: boolean }[] = [];
+  endingPts: { mif: MeasureLayout; nums: Set<number>; text: string; start: boolean; stop: boolean }[] = [];
 
   // 琶音：当前小节内按 offset 聚合的音符（loadMeasure 末尾成组）。
-  arpegNotes = new Map<string, MNote[]>();
+  arpegNotes = new Map<string, NoteLayout[]>();
   // wedge/pedal 端点（parser.cpp processWedge/processPedal：全声部收集后配对）。
   wedgePts: {
-    mif: MeasureInfo;
+    mif: MeasureLayout;
     tick: Fraction;
     staff: number;
     type: "crescendo" | "diminuendo" | "stop";
@@ -169,7 +173,7 @@ class DocPartLoader {
     defY: number | null;
   }[] = [];
   pedalPts: {
-    mif: MeasureInfo;
+    mif: MeasureLayout;
     tick: Fraction;
     staff: number;
     line: boolean;
@@ -177,7 +181,7 @@ class DocPartLoader {
     ypos: number;
   }[] = [];
 
-  constructor(part: MixedPart, score: MixedScore, src: DocPart, marks: Mark[]) {
+  constructor(part: PartLayout, score: StaffLayout, src: DocPart, marks: Mark[]) {
     this.part = part;
     this.score = score;
     this.src = src;
@@ -235,7 +239,7 @@ class DocPartLoader {
     this.part.guessTiedPlacement();
   }
 
-  private loadMeasure(m: Measure, mif: MeasureInfo, prevDiv: number): number {
+  private loadMeasure(m: Measure, mif: MeasureLayout, prevDiv: number): number {
     let div = prevDiv;
     const dv = m.attrs?.divisions;
     if (dv !== undefined && dv > 0) div = dv;
@@ -275,7 +279,7 @@ class DocPartLoader {
           if (h) this.processHarmony(h, md, tickOf(h.onset ?? on).plus(harmonyDelta(h)));
         }
         const tick = tickOf(on);
-        let ch: MChord | null = null;
+        let ch: ChordLayout | null = null;
         if (el.notes.length === 0) ch = this.processNote(el, null, 0, md, tick, ch);
         el.notes.forEach((n, k) => {
           ch = this.processNote(el, n, k, md, tick, ch);
@@ -330,16 +334,16 @@ class DocPartLoader {
     }
   }
 
-  /** 一个 `<note>`：`k` 是它在和弦里的下标（首音建 `MChord`，其余并进去）。`note` 为 null 是没有音高的休止/节奏音符。 */
+  /** 一个 `<note>`：`k` 是它在和弦里的下标（首音建 `ChordLayout`，其余并进去）。`note` 为 null 是没有音高的休止/节奏音符。 */
   private processNote(
     src: DocChord,
     note: DocNote | null,
     k: number,
-    md: MeasureData,
+    md: PartMeasureLayout,
     tick: Fraction,
-    prevChord: MChord | null,
-  ): MChord {
-    let ch: MChord;
+    prevChord: ChordLayout | null,
+  ): ChordLayout {
+    let ch: ChordLayout;
     if (prevChord === null) {
       ch = md.newChord(src, this.curDiv);
       ch.offset = tick;
@@ -382,7 +386,7 @@ class DocPartLoader {
     return ch;
   }
 
-  private processBeam(ch: MChord, beams: DocChord["beams"], md: MeasureData): void {
+  private processBeam(ch: ChordLayout, beams: DocChord["beams"], md: PartMeasureLayout): void {
     if (!beams || beams.length === 0) return;
     this.hasBeamEl = true;
     const beamMap = new Map<number, BeamVal>();
@@ -410,7 +414,7 @@ class DocPartLoader {
     }
   }
 
-  private processLrc(lyrics: Lyric[], md: MeasureData, ch: MChord, nt: MNote): void {
+  private processLrc(lyrics: Lyric[], md: PartMeasureLayout, ch: ChordLayout, nt: NoteLayout): void {
     for (const l of lyrics) {
       const lrc = md.newLyric(l, ch);
       lrc.offset = ch.offset;
@@ -436,7 +440,7 @@ class DocPartLoader {
     }
   }
 
-  private processTie(note: DocNote | null, nt: MNote, tick: Fraction): void {
+  private processTie(note: DocNote | null, nt: NoteLayout, tick: Fraction): void {
     if (note?.tie?.start) {
       nt.tieBegin = true;
       this.tieStarts.push({ note: nt, pitch: nt.writtenPitch, endTick: tick.plus(nt.chord.dur) });
@@ -448,7 +452,7 @@ class DocPartLoader {
   }
 
   /** 第 `k` 个音上的记号。和弦级的（fermata/articulations/arpeggiate）挂首音；slur/tuplet 在收口那个音上建。 */
-  private processNotations(src: DocChord, k: number, ch: MChord): boolean {
+  private processNotations(src: DocChord, k: number, ch: ChordLayout): boolean {
     const n = k === 0 ? src.notations : undefined;
     // fermata（parser.cpp:1446 processNotations）。type=inverted → 下方。
     if (n?.fermata) {
@@ -555,7 +559,7 @@ class DocPartLoader {
     // 裸 extend：melisma 终点 = 同一 verse 的下一个音节起点；但若中途遇到休止符
     // （该声部停唱），melisma 即结束，终点取休止前最后一个续腔音，不得跨过休止连到
     // 休止之后的歌词。先按全局 tick 收集本声部各谱表的全部和弦用于边界扫描。
-    const seqByStaff = new Map<number, MChord[]>();
+    const seqByStaff = new Map<number, ChordLayout[]>();
     for (const md of this.part.measures) {
       for (const ch of md.chords) {
         const staff = ch.notes[0]?.staff ?? 0;
@@ -580,7 +584,7 @@ class DocPartLoader {
 
       // 扫描本声部（同谱表）起始音之后、下一个音节之前，寻首个休止符。
       const seq = seqByStaff.get(pt.note.staff) ?? [];
-      let lastMelisma: MNote | null = null;
+      let lastMelisma: NoteLayout | null = null;
       let restBefore = false;
       for (const ch of seq) {
         const t = ch.tick();
@@ -632,7 +636,7 @@ class DocPartLoader {
   }
 
   /** <direction> 文本（words / dynamics / metronome），对应 musicpp loader.cpp::processDirection。 */
-  private processDirection(d: Direction, md: MeasureData, tick: Fraction): void {
+  private processDirection(d: Direction, md: PartMeasureLayout, tick: Fraction): void {
     const blk = md.newText();
     blk.offset = tick;
     blk.staff = (d.staff ?? 1) - 1;
@@ -672,7 +676,7 @@ class DocPartLoader {
   }
 
   /** <wedge>（渐强/渐弱松叶）端点收集，配对在 pairWedges（parser.cpp:1069 processWedge）。 */
-  private collectWedge(el: DirectionPart, md: MeasureData, tick: Fraction, staff: number): void {
+  private collectWedge(el: DirectionPart, md: PartMeasureLayout, tick: Fraction, staff: number): void {
     const ty = el.spanType === "stop" ? "stop" : el.spanType === "start" ? el.wedgeType : undefined;
     if (ty !== "crescendo" && ty !== "diminuendo" && ty !== "stop") return;
     this.wedgePts.push({
@@ -686,7 +690,7 @@ class DocPartLoader {
   }
 
   /** <pedal>（踏板线）端点收集，配对在 pairPedals（parser.cpp:1150 processPedal）。 */
-  private collectPedal(el: DirectionPart, md: MeasureData, tick: Fraction, staff: number): void {
+  private collectPedal(el: DirectionPart, md: PartMeasureLayout, tick: Fraction, staff: number): void {
     // 仅处理 start/stop 配对（sostenuto/change 等不绘制）。
     if (el.spanType !== "start" && el.spanType !== "stop") return;
     const dy = el.pos?.defaultY;
@@ -821,13 +825,13 @@ class DocPartLoader {
     return new Font(fam, sz / this.score.scaling, bold);
   }
 
-  private processHarmony(src: Harmony, md: MeasureData, tick: Fraction): void {
+  private processHarmony(src: Harmony, md: PartMeasureLayout, tick: Fraction): void {
     const h = md.newHarmony(src);
     h.offset = tick;
     h.y = src.pos?.defaultY ?? -1;
   }
 
-  private processBarline(b: Barline, mif: MeasureInfo): void {
+  private processBarline(b: Barline, mif: MeasureLayout): void {
     const loc = b.location;
     if (b.style) {
       const g = barGlyphFromStyle(b.style);
@@ -842,7 +846,7 @@ class DocPartLoader {
     }
     const ending = b.ending;
     // print-object="no" 的 ending 不参与绘制（parser.cpp::processEnding 1232）；ending 端点按
-    // 本声部收集（musicpp 逐声部读 barline），否则全局 MeasureInfo 会让每个声部都画一遍。
+    // 本声部收集（musicpp 逐声部读 barline），否则全局 MeasureLayout 会让每个声部都画一遍。
     if (ending && ending.printObject !== false) {
       // 房号以元素文本为准、属性兜底（同 score/musicxml.ts parseBarline）：文本才是给人看的
       // 那串「1.2.3.」，number 属性只说这一房适用于第几遍，两者常不一致。
@@ -865,7 +869,7 @@ class DocPartLoader {
    *  仅在整声部无任何 <beam> 时启用；真实制谱谱都带 <beam>，不受影响。 */
   private autoBeamPart(): void {
     const one = new Fraction(1);
-    const levelsOf = (ch: MChord) => Math.max(0, Math.round(-Math.log2(ch.noteType.toFloat())));
+    const levelsOf = (ch: ChordLayout) => Math.max(0, Math.round(-Math.log2(ch.noteType.toFloat())));
     for (let mi = 0; mi < this.part.measures.length; mi++) {
       const md = this.part.measures[mi];
       if (md.beams.length > 0) continue;
@@ -875,7 +879,7 @@ class DocPartLoader {
       let beatLen = 1;
       if (ts) beatLen = ts.beatType === 8 && ts.beats % 3 === 0 ? 1.5 : 4 / ts.beatType;
       const chords = [...md.chords].filter((c) => !c.grace).sort((a, b) => a.offset.compareTo(b.offset));
-      let run: MChord[] = [];
+      let run: ChordLayout[] = [];
       const flush = () => {
         if (run.length >= 2) {
           const g = new BeamGroup();
@@ -959,7 +963,7 @@ class DocPartLoader {
   }
 
   private processTied(): void {
-    const done = new Set<MNote>();
+    const done = new Set<NoteLayout>();
     for (const start of this.tieStarts) {
       if (done.has(start.note)) continue;
       for (const stop of this.tieStops) {
@@ -982,7 +986,7 @@ class DocPartLoader {
    *  相邻两两配对。左反复记号（start）在小节起点，右反复记号（stop/discontinue）在小节末端。
    *  此处 mif.offset 已在 PartLoader 主循环里赋为绝对 tick，可直接取用。 */
   private processEnding(): void {
-    type EndingPt = { tick: Fraction; mif: MeasureInfo; nums: Set<number>; text: string; stop: boolean };
+    type EndingPt = { tick: Fraction; mif: MeasureLayout; nums: Set<number>; text: string; stop: boolean };
     const pts: EndingPt[] = this.endingPts.map((p) => ({
       tick: p.start ? p.mif.offset : p.mif.endTick(),
       mif: p.mif,
@@ -1039,7 +1043,7 @@ function layoutInputOf(song: Song): LayoutInput {
 
 /** 声部分组。DOM 那条路按 `<part-list>` 子元素次序建：组在它的 `start` 处建、组外的声部各自成一组；
  *  `ScoreDoc` 只存组与组内声部，这里按「组在它的首个声部之前」还原那个次序。 */
-function partGroupsOf(score: MixedScore, song: Song): PartGroup[] {
+function partGroupsOf(score: StaffLayout, song: Song): PartGroup[] {
   const docGroups = song.partGroups ?? [];
   const made = new Map<(typeof docGroups)[number], PartGroup>();
   const groups: PartGroup[] = [];
@@ -1075,18 +1079,13 @@ function partGroupsOf(score: MixedScore, song: Song): PartGroup[] {
 // ---------------- 入口 ----------------
 
 /**
- * `ScoreDoc`（MusicXML 形状）→ `MixedScore`。只取第一首。
+ * `ScoreDoc`（MusicXML 形状）→ `StaffLayout`。只取第一首。
  * 调用方给好 `MixedOptions`（含已加载的 MetaData）。
  */
-export function loadMixedDoc(doc: ScoreDoc, options: MixedOptions): MixedScore {
+export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
   const song = doc.songs[0];
   if (!song) throw new Error("这份文档里没有曲子");
-  const score = new MixedScore(options);
-
-  for (const sw of song.identification?.software ?? []) {
-    if (sw.includes("Sibelius")) score.encoder = Encoder.Sibelius;
-    else if (sw.includes("MuseScore")) score.encoder = Encoder.MuseScore;
-  }
+  const score = new StaffLayout(options, song);
 
   const def = song.defaults;
   if (def) {
@@ -1129,19 +1128,15 @@ export function loadMixedDoc(doc: ScoreDoc, options: MixedOptions): MixedScore {
     });
   }
 
-  score.title =
-    song.credits?.find((c) => c.type?.trim() === "title" && c.text.trim())?.text.trim() ??
-    (song.work.title?.trim() || song.work.movementTitle?.trim() || "");
-
   const numMeasures = song.parts[0]?.measures.length ?? 0;
   for (let i = 0; i < numMeasures; i++) {
-    const mif = new MeasureInfo();
+    const mif = new MeasureLayout();
     mif.index = i;
     score.measures.push(mif);
   }
 
   for (const src of song.parts) {
-    const part = new MixedPart();
+    const part = new PartLayout();
     part.score = score;
     part.pid = src.id;
     score.parts.push(part);
