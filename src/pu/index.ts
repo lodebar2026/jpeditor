@@ -1,8 +1,8 @@
 // 文本谱（番茄简谱 / 「有谱」）的对外入口。
 
 export { sniffDialect, dialectSpec, DIALECTS, type Dialect, type DialectSpec } from "./dialect";
-export { parsePu, parseMusicLine, parseLyricBody, type ParseOptions } from "./parse";
-export { eachNote, eachNoteInElements, emptyMetadata, primaryMetadata } from "./ast";
+export { parsePu, parsePuAst, parseMusicLine, parseLyricBody, type ParseOptions } from "./parse";
+export { eachNoteInElements, emptyMetadata } from "./ast";
 export { PuPainter } from "./painter";
 export { jianpuInputOfDoc, type JianpuInputOptions } from "../model/jianpuinput";
 export { relayoutPuText } from "./relayout";
@@ -11,7 +11,7 @@ export { phrasePartOfSong } from "./phrasesong";
 export { playDataOfSong, playSourceOfSong } from "./playsong";
 // 展开档应有几遍（两种格式共用的判据；回归脚本经 window.__pu 取用）
 export { countPasses } from "../jianpu/expand";
-export { docView, scoreDocToPu, type DocView, type SongView, type RowView, type SlotRef } from "./slots";
+export { docView, type DocView, type SongView, type RowView, type SlotRef } from "./slots";
 export { puToScoreDoc } from "../model/frompu";
 export { layoutDocument, layoutSong, elementBeats } from "./layout";
 export { metricsFor, contentWidth, contentHeight, type PuMetrics } from "./metrics";
@@ -32,7 +32,6 @@ export type {
   MusicElement,
   NoteElement,
   Ornament,
-  PuDoc,
   PuSong,
   ScoreLine,
   ScorePage,

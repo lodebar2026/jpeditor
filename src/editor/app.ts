@@ -36,7 +36,6 @@ import { scoreDocToMusicXml } from "../model/toxml";
 import { emit123 } from "../j123/emit";
 import { metaFrom123 } from "./omrmeta";
 import { emitAbc } from "../abcfamily/emitabc.entry";
-import { puToScoreDoc } from "../model/frompu";
 import { jpwToScoreDoc } from "../model/fromjpw";
 import { MixedPainter } from "../mixed/painter";
 import { PlaybackController, type PlaybackHost } from "./playback";
@@ -583,25 +582,17 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 文本谱（番茄 / 诗歌本）：解析 → 排版 → 渲染。展开档先投影成简谱引擎输入、与 `.jpwabc` 同一个排版器；
    *  原样档走文本谱专用的 PuPainter（印刷原版的观感）。 */
   reloadPu(text: string): boolean {
-    let doc;
+    let sdoc: ScoreDoc;
     try {
-      doc = parsePu(text);
+      sdoc = parsePu(text);
     } catch (e) {
       console.error("文本谱解析失败", e);
       this.setStatus("文本谱解析失败：" + (e instanceof Error ? e.message : String(e)));
       return false;
     }
-    const fatal = doc.diagnostics.find((d) => d.severity === "error");
+    const fatal = sdoc.diagnostics.find((d) => d.severity === "error");
     if (fatal) {
       this.setStatus(`文本谱无法解析：${fatal.message}`);
-      return false;
-    }
-    let sdoc: ScoreDoc;
-    try {
-      sdoc = puToScoreDoc(doc);
-    } catch (e) {
-      console.error("文本谱转模型失败", e);
-      this.setStatus("文本谱转模型失败：" + (e instanceof Error ? e.message : String(e)));
       return false;
     }
     this._scoreDoc = { text, doc: sdoc };
@@ -614,11 +605,12 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     if (!this._phraseOn) this._origLayoutText = text;
     this._setPhraseAvailable(true);
-    this._puDialect = doc.dialect;
+    const dialect = (sdoc.puDialect ?? "tomato") as Dialect;
+    this._puDialect = dialect;
     this._syncFormatLabel();
     if (!this._layoutScoreDoc(sdoc, "文本谱")) return false;
     // 解析告警不拦排版，但要让用户看得见（谱面往往仍然是对的）
-    this._reportDiagnostics(dialectSpec(doc.dialect).name, doc.diagnostics);
+    this._reportDiagnostics(dialectSpec(dialect).name, sdoc.diagnostics);
     return true;
   }
 

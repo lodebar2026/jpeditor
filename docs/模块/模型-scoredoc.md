@@ -21,7 +21,8 @@
 | 试听 / MIDI | `playdoc.ts::playSourceOfDoc` / `playsong.ts::playSourceOfSong` | `score/timeline.ts` |
 | 断句 | `phrasedoc.ts` / `phrasesong.ts` 拼断句输入（带 `idOf`） | `score/phrase.ts` |
 
-`PuDoc`（`src/pu/ast.ts`）只剩文本谱解析器产物（进 `ScoreDoc` 之前）与乐句重排（改写原文要列号）两处。
+`PuDoc`（`src/pu/ast.ts`）已退役：只是 `parsePuAst` → `puToScoreDoc` 之间的中间结果，`parsePu` 直出 `ScoreDoc`。
+乐句重排改写原文要的行号/列号在模型上（`Print.source` / `textSources`、`LyricLineInfo.source` / `sources`）。
 
 ## 入口
 
@@ -34,7 +35,7 @@
 | `src/model/toxml.ts` | → MusicXML（**唯一写出端**，全量序列化） |
 | `src/model/xmlproject.ts` | 简谱来源 → MusicXML 形状的投影（音高、divisions、记号原名、跨行小节…），`toxml.ts` 先过它 |
 | `src/model/jianpuproject.ts` | 反方向：MusicXML 形状 → 简谱形状（增时线、减时线、和弦原文、长音中途的和弦），`slots.ts` 与 123 写出端先过它 |
-| `src/model/frompu.ts` | ← `PuDoc`（**无损**：文本谱的全部排版信息都进来，`pu-scoredoc-check` 全语料逐字段还原零差异） |
+| `src/model/frompu.ts` | ← 文本谱语法树（**无损**：文本谱的全部排版信息都进来，`pu-scoredoc-check` 全语料逐字段还原零差异） |
 | `src/pu/slots.ts` | → **排版行视图**（`docView`）：线性化规则只写一次，原样档排版器 / 展开档投影 / 双向定位共用；行里每个符号带 `ElementId` |
 | `src/model/jianpuinput.ts` | → **简谱引擎输入**（`jianpuInputOfXml` / `jianpuInputOfDoc` / `jianpuInputOfJpw`），和弦带元素 id；判据是谱面（`jianpu-svg-dump`） |
 | `src/model/fromjpw.ts` | ← `.jpwabc`（`JpwFile` 直出，带 span；小节中间的 `$` 另记 `Chord.lineBreakAfter`） |
@@ -95,7 +96,7 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 
 ```bash
 npm run build:cli
-PU_CORPUS=<文本谱语料根> node scripts/pu-scoredoc-check.mjs     # PuDoc → ScoreDoc → PuDoc 逐字段零差异
+PU_CORPUS=<文本谱语料根> node scripts/pu-scoredoc-check.mjs     # 语法树 → ScoreDoc → 排版行视图 逐字段零差异（含原文区间）
 PU_CORPUS=<文本谱语料根> HYMN500=<500首语料根> node scripts/j123-migrate.mjs
 npm run build && HYMN500=<500首语料根> node scripts/musicxml-open-check.mjs   # .musicxml 打开/转换/重写
 HYMN500=<500首语料根> node scripts/layout-attr-check.mjs    # 改一个音整份重写，版面坐标逐份不丢、重写是定点

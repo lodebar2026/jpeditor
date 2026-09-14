@@ -34,6 +34,8 @@ import {
   type VoiceGroup,
 } from "./ast";
 import { dialectSpec, sniffDialect, type Dialect, type DialectSpec } from "./dialect";
+import { puToScoreDoc } from "../model/frompu";
+import type { ScoreDoc } from "../model/doc";
 import { PU_LYRIC_PUNCTUATION, PU_LYRIC_QUOTES } from "../common/cjkpunct";
 
 /** 音符后可跟的记号名（`&xx`）。不在表里的会报 unknown-command 但仍保留。 */
@@ -961,7 +963,9 @@ export interface ParseOptions {
   dialect?: Dialect;
 }
 
-export function parsePu(text: string, options: ParseOptions = {}): PuDoc {
+/** 文本谱 → 语法树。**只是进 `ScoreDoc` 之前的中间产物**：产品代码一律用 `parsePu`；
+ *  直接要树的只有 AST 级校验脚本（`pu-parse-check` / `pu-scoredoc-check` / `omr-pu-check`）。 */
+export function parsePuAst(text: string, options: ParseOptions = {}): PuDoc {
   const diagnostics: Diagnostic[] = [];
   let dialect = options.dialect;
   if (dialect === undefined) {
@@ -1182,4 +1186,9 @@ export function parsePu(text: string, options: ParseOptions = {}): PuDoc {
   flushSong();
 
   return { dialect, source: text, songs, diagnostics };
+}
+
+/** 文本谱 → `ScoreDoc`：对外的解析入口。方言嗅探失败也返回文档（无曲、带 error 级诊断）。 */
+export function parsePu(text: string, options: ParseOptions = {}): ScoreDoc {
+  return puToScoreDoc(parsePuAst(text, options));
 }

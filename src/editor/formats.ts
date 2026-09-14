@@ -16,7 +16,6 @@ import { j123Highlighter } from "../j123/highlight";
 import { decodeJpwabc, encodeJpwabc } from "./fileio";
 import { parsePu } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
-import { puToScoreDoc } from "../model/frompu";
 import type { ScoreDoc } from "../model/doc";
 import { loadScoreDoc } from "../model/fromxml";
 import { fillDegreesFromPitch } from "../model/jianpu";
@@ -121,7 +120,7 @@ const PU: FormatAdapter = {
   profileKnob: "pu",
   caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true },
   reload: (host, text) => host.reloadPu(text),
-  toScoreDoc: (text) => puToScoreDoc(parsePu(text)),
+  toScoreDoc: (text) => parsePu(text),
 };
 
 /** 123 —— 简谱主格式。原生解析直出 `ScoreDoc`；排版直接吃 `ScoreDoc`。

@@ -13,8 +13,8 @@
 // - 跨行记号按行切段（续接标记、续行 level）、房号由 `Barline.ending` 还原成行内区间、歌词按行级版式铺回。
 //
 // 视图里符号的形状沿用 `pu/ast.ts` 的元素类型（排版器与导出的几何代码按这些字段写成，原样复用），
-// 但**入口只收 `ScoreDoc`**。`scripts/pu-scoredoc-check.mjs` 用 `scoreDocToPu` 把视图拼回 `PuDoc`，
-// 与解析器直出的逐字段比对，证明这份铺排对 全语料文本谱无损。
+// 但**入口只收 `ScoreDoc`**。`scripts/pu-scoredoc-check.mjs` 把视图与解析器的语法树（`parsePuAst`）
+// 逐字段比对（含曲行/歌词行/文字行的原文区间，乐句重排靠它们改写原文），证明这份铺排对 全语料文本谱无损。
 //
 // `dialect` 缺省填 `"shige"` 只是为了让下游取到一份印刷观感的度量（`metricsFor`），
 // **不表示 123 是诗歌本方言**。
@@ -29,7 +29,6 @@ import type {
   MusicElement,
   NoteElement,
   Ornament,
-  PuDoc,
   PuSong,
   ScoreLine,
   ScorePage,
@@ -698,8 +697,3 @@ export function docView(doc: ScoreDoc): DocView {
   return view;
 }
 
-/** 视图拼回 `PuDoc`。**只给校验脚本用**（`scripts/pu-scoredoc-check.mjs`），产品代码一律用 `docView`。 */
-export function scoreDocToPu(doc: ScoreDoc): PuDoc {
-  const v = docView(doc);
-  return { dialect: v.dialect, source: doc.source ?? "", songs: v.songs, diagnostics: doc.diagnostics };
-}
