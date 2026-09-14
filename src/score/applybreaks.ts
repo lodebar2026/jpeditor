@@ -965,7 +965,7 @@ export function chooseLineLayout(
 /**
  * **乐句行 → 换页行号**（`.jpwabc` 与文本谱共用同一套口径）。
  *
- * 从 `原 jpscore.ts（阶段 8 已删）::balanceVoicePages` 里抽出来的纯计算：两种源格式的「按乐句重排」都要按同一个
+ * 纯计算：两种源格式的「按乐句重排」都要按同一个
  * 尺子分页，否则同一首歌导出 `.jpwabc` 与文本谱会分出不一样的页。写回是各写各的
  * （`.jpwabc` 写 `$(true,0,0,true)`，文本谱另起一个 `ScorePage`），这里只管**算在哪儿换**。
  *

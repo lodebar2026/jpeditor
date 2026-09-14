@@ -6,7 +6,7 @@
 // |---|---|---|
 // | **`ScoreDoc`**（本文件） | 123 的原生模型 | **唯一语义模型**，其余向它汇聚 |
 // | ~~`Score`~~ | 原先是简谱排版的输入树 | **已删**：简谱引擎读 `layout/input.ts` 的只读输入，由 `model/jianpuinput.ts` 从这里投影 |
-// | ~~`MixedScore`~~ | 原先五线谱**语义 + 排版**混在一起 | **已删**（R2 阶段 10）：五线谱引擎只留版面态 `StaffLayout`（`mixed/model.ts`），语义一律从这里取 |
+// | ~~`MixedScore`~~ | 原先五线谱**语义 + 排版**混在一起 | **已删**：五线谱引擎只留版面态 `StaffLayout`（`mixed/model.ts`），语义一律从这里取 |
 // | `PuDoc`（`pu/ast.ts`） | 文本谱解析器的产物，**只在进 `ScoreDoc` 之前与乐句重排（改写原文）里活着** | 退役 |
 //
 // 各格式的排版、试听、MusicXML 导出、双向定位都直接吃 `ScoreDoc`，
@@ -15,7 +15,7 @@
 // ## 设计依据（不是凭空设计）
 //
 // - 层级照 MusicXML：声部 → 小节 → 元素。`PuDoc` 那种扁平元素流每次对接 MusicXML 都得重摊一遍。
-// - 字段清单以混排原先直接读 DOM 的 `mixed/loader.ts` 实读的 88 个 MusicXML 元素为基准（阶段 6 混排改读本模型，缺的补齐后删掉了它），叠加 `scripts/census-123.mjs`
+// - 字段清单以混排原先直接读 DOM 的 `mixed/loader.ts` 实读的 88 个 MusicXML 元素为基准（混排改读本模型时缺的都补齐了），叠加 `scripts/census-123.mjs`
 //   对 500 首的实测（`<harmony>` 100% 的曲目都有、`<print new-system>` 100%、`lyric number` 到 8 段）。
 // - **绝对音高与简谱度数并存、可互推**：沿用 `score.ts::Note` 的既有做法（`pitch` + `number/jpOctave`），
 //   换算判据含「无点 1 的绝对音高」那条国标规则，**必须与 `jppitch.ts::jpTonicOctaveShift` 同源**。

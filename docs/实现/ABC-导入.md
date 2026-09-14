@@ -1,8 +1,7 @@
 # ABC 记谱导入（`src/abc/`）
 
-导入 **ABC 记谱**（`.abc`）：拖入或「打开」`.abc` → 转 MusicXML → 复用现有 MusicXML 导入路径
-（`importBytes` 识别 `.abc` → `abcToMusicXml` → 改名 `.musicxml` 走 `loadMusicXml`，天然享受多声部
-→混排、乐句排版、`_lastImportMeta` 等既有行为）。**全量忠实移植自 Willem Vree 的 abc2xml.py**
+`.abc` 现在原生解析直出 `ScoreDoc`（见 [../模块/源格式-abc家族.md](../模块/源格式-abc家族.md)）；本篇的 abc2xml 移植
+**降为对照基准与 fallback**：原生解析读不动时 `abcToMusicXml` → `loadScoreDoc` → `jianpuInputOfXml` 排出谱面（定位只到小节）。**全量忠实移植自 Willem Vree 的 abc2xml.py**
 （`~/proj/zanmeigepu/abc2xml.py`，2181 行，LGPL），非子集裁剪：
 
 - `src/abc/pyparsing.ts` — pyparsing 迷你 shim（只实现 abc2xml 用到的有界子集组合子 + `+|^~<<` 运算符）。

@@ -457,7 +457,7 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 **从 musicxml / 文本谱 / .jpwabc 重新排一本书**，乐句优先、页数由排版决定。
 
 ```
-musicxml → loadMusicXml → Score → computePhraseBreaks → applyPhraseBreaks（写 LineBreak）
+musicxml → loadScoreDoc → jianpuInputOfXml + phrasePartOfDoc → computePhraseBreaks → applyPhraseBreaks（按元素 id 写换行）
         → JinpuPainter（applyBookStyle 注入样式）→ pageItemsToDrawPage → DrawList
         → scripts/pdfwrite.mjs → PDF
 ```
@@ -595,8 +595,7 @@ Node 侧照着画，两端不必共享字体度量。**不用 SVG 字符串**—
 
 ### 和弦
 
-`loadMusicXml` 原本整个跳过 `<harmony>`（docs/架构与实现.md 记的「Score 装不下和弦」说的是 **jpwabc 那条路**，
-Score 这边只是一直没做）。现在 `src/score/harmonyparse.ts` 把它读成 `Chord.harmony`，
+引擎输入的 MusicXML 形状分支（`jianpuInputOfXml`）把 `<harmony>` 经 `src/score/harmonyparse.ts::harmonyToText` 读成 `JChord.harmony`，
 `NoteEntry.addHarmony` 排到音符正上方，富文本分段复用 `layout/harmony.ts`（与五线谱、文本谱同一套）。
 
 两处要害：

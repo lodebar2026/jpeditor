@@ -582,7 +582,7 @@ function buildMusicLine(
 
       case "slurEnd": {
         // **`)` 是二义符号**：收圆滑线 还是 收多连音？判据照 `.jpwabc` 那条
-        // （`docs/架构与实现.md`：「前面的音符还欠着 `(` 就先收弧，欠完了才轮到三连音」）——
+        // （`docs/模块/源格式-jpwabc.md`：「前面的音符还欠着 `(` 就先收弧，欠完了才轮到三连音」）——
         // ABC 的多连音本不需要 `)`，但写谱人习惯带上，照收不误。
         if (openSlurs.length === 0) {
           if (cur.justClosedTuplet) {

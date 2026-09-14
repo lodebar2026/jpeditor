@@ -1,8 +1,8 @@
 # 简谱图像识别（OMR，`src/omr/`）
 
-把简谱图片（PNG/JPG）识别成 MusicXML，再走编辑器现有 `importBytes`→`loadMusicXml` 导入排版。
-工具栏「识图」按钮 → `showRecognizeDialog`（[src/editor/dialogs.ts](src/editor/dialogs.ts)）选方式 →
-`App.recognizeFromImage`（[src/editor/app.ts](src/editor/app.ts)）。**两种方式**：
+把简谱图片（PNG/JPG）识别成 MusicXML，再转成 123 进编辑器核对（`App.importOmrMusicXml`）。
+工具栏「识图」按钮 → `showRecognizeDialog`（[src/editor/dialogs.ts](../../src/editor/dialogs.ts)）选方式 →
+`App.recognizeFromImage`（[src/editor/app.ts](../../src/editor/app.ts)）。**两种方式**：
 
 **PDF 输入**（拖入 `.pdf`，见 `main.ts` 的 `RECOG_EXT_RE`）经 `decode.ts` 的 `pdfToImageData` 转位图再走
 同一 OMR 管线。用 **pdf.js（`pdfjs-dist`）**：worker 经 Vite `?url` 引入，位图解码器 wasm 目录（jbig2.wasm
@@ -125,7 +125,7 @@ montage 单行长条过大导致 OCR 超时（改网格）、**八度点过检**
 「3」常被读成 0（正是空心环校验要复原的那种），在那里一刀切会连它的真附点一起丢（沧海一声笑行 1 的
 `3._`）。改成复原完再对仍是 0 的音符 `n.dot = 0`。
 
-**反复记号**（`repeats.ts` 识别 + `score/score.ts::RepeatProcessor` 展开，issue #2）：以
+**反复记号**（`repeats.ts` 识别 + `score/playorder.ts` 展开，issue #2）：以
 《沧海一声笑》（`1.2.3.5.` / `4.`(带 D.C.) / `6.` 三房）为基准，识别与展开各修了几处：
 - **房括线搜索窗放深到 3.4 字号**：括线到数字顶的距离随谱面松紧变化很大，行内有圆滑线时括线
   被顶到 ~2.8 字号高处，旧的 1.8 字号窗口整片漏掉三个房。放深的误检由新增的 `hasLeftHook`
@@ -176,7 +176,7 @@ montage 单行长条过大导致 OCR 超时（改网格）、**八度点过检**
   谱行才开始）。若不补，导出后第二遍前半是空的。规则只补**前缀**：某段首次出现的谱行 `first` 之前、
   该段整行无词而第 1 段有词的谱行，把第 1 段的该行词**整行照抄**（连 melisma 分布一起，下游 `/`
   续记号才不错位）。附加条件「`first` 行上第 1 段也有词」用来排除反复房「二房起歌词整体上移」那类
-  结构（见 `Score.expandVoltaByVerse`）——那种谱在分岔行上第 1 段反而是空的，不该补。
+  结构（「一房只有第 1 段」的反复约定）——那种谱在分岔行上第 1 段反而是空的，不该补。
 - **房内的短歌词行**（`covOf`）：注记过滤按「行宽/整谱行宽」算 cov，房内只覆盖一小节的第 2、3 段
   词（「天知晓。」占 0.2）会被当注记丢掉、那几遍没词唱。改成 cov 取「对整行」与「对各房」的
   最大值——整条落在某房内且铺满该房的短行同样算真词。
@@ -270,7 +270,7 @@ lt .81 rt .38 lb .63 rb .68，原先 0.45 的门把它判成了 ♯）。♮ 早
 再要求这两列之间有个**谷**（≥0.3 块高）。只比「正中间几列 vs 全块最高点」不够——波音的峰宽，
 中间那几列会踩在第二个峰的上升沿上（实测差 2px、门槛 3px，正好漏掉）。
 带竖杠的下波音过不了谷判据，认不出来——手头没有样张，不照着猜写判据。
-→ MusicXML `<notations><ornaments><inverted-mordent/>`、文本谱 `&sby`；.jpwabc / Score 模型
+→ MusicXML `<notations><ornaments><inverted-mordent/>`、文本谱 `&sby`；.jpwabc
 装不下演奏记号（只认 fermata），那一路会丢。
 
 **倚音**（`JpNum.grace`）：主音符左上角的小号数字，**底下压着一两条与它同宽的减时线**，再由
@@ -312,7 +312,7 @@ lt .81 rt .38 lb .63 rb .68，原先 0.45 的门把它判成了 ♯）。♮ 早
 不许变宽，容 1px 毛刺），圆点上下一样宽；再加填充率兜一道（三角 ≈0.5、圆点 ≈0.8，取 0.4~0.75）。
 **离数字比八度点远得多**（实测 0.7 字号，八度点是紧贴），故 owner 的搜索窗放到 1 个字号。
 → MusicXML `<notations><articulations><staccato/>`（与 `model/xmlproject.ts` 的 `dy` 同口径）、文本谱 `&dy`；
-.jpwabc/Score 装不下（`layout.ts` 那边只画重音）。**文本谱的 `dy` 字形改成 `articStaccatissimoAbove`
+.jpwabc 与简谱引擎输入装不下（`layout.ts` 那边只画重音）。**文本谱的 `dy` 字形改成 `articStaccatissimoAbove`
 （▼）**：简谱里数字正上方的圆点已经是高八度点，再用 `articStaccatoAbove` 画顿音两者分不开。
 37 张实拍图里只有这一首命中，没有误检。
 
@@ -433,7 +433,7 @@ Chorus/Intro 一视同仁地先剥掉，再判是不是注记行。1《以色列
 段落起点，对乐句排版有用。故被丢弃的短行（≤5 格）也送 rec（`Chunk.mark`，只提词不参与歌词装配），
 在任何块的 rec 原文里用 `SECTION_MARK_RE` 就地捞词（Chorus 常与和弦同块）。落位：方框印在**下一谱行**
 音符上方 → 归到该行、标记 x 所在**小节的首音**（`JpNum.sectionMark`）→ `<direction><words>`。
-`musicxml.ts` 吐 `<lyric number>`，下游 `score/musicxml.ts` 导入器接管 → 排版/存 `.Words`。
+`musicxml.ts` 吐 `<lyric number>`，下游 `model/fromxml.ts` 读进 `ScoreDoc` → 转 123 核对。
 ### 按 y 聚成行的五个阈值（`geom.ts::clusterByY`）
 
 「把墨块按纵向中心聚成一行」这个操作在管线里出现五次。实现只有一份（`omr/geom.ts::clusterByY` /
@@ -463,7 +463,7 @@ Chorus/Intro 一视同仁地先剥掉，再判是不是注记行。1《以色列
 （`isAnnotationLine` / `CHORD_TOKEN_RE` / `chordCoverage`，见上）连同切词、归一、落位一并搬进
 `src/omr/chordline.ts`；`lyrics.ts` 只调不判。识别到的和弦挂上 `JpNum.chord`，由两路 emitter 输出：
 `musicxml.ts` → `<harmony>`（复用 `score/harmonyxml.ts`，与文本谱直出共用），`topu.ts` → `"hx:…"`。
-**`.jpwabc` / Score 模型装不下和弦**，jpwabc 那路输出会丢（与力度、渐强渐弱现状一致）——这是有意的，
+**`.jpwabc` 装不下和弦**，jpwabc 那路输出会丢（与力度、渐强渐弱现状一致）——这是有意的，
 不为和弦扩 jpwabc 语法。
 
 - **文法（四道闸）**：① **根音必须大写** `[A-G]`——印刷体和弦的根音从来是大写，而小写字母遍地都是，
@@ -567,7 +567,7 @@ Chorus/Intro 一视同仁地先剥掉，再判是不是注记行。1《以色列
 回归：`node scripts/measure-all.mjs`(音符/八度/附点/小节/slur-tie/歌词/对位/和弦/标题/词曲、CSV 逐曲+平均；`--node` 快、`--dump=目录` 落盘识别侧 123) +
 `node scripts/bench-lyrics.mjs`(歌词)。
 回归脚本：`node scripts/measure-all.mjs`（自动扫 `testdata/` 每个歌谱文件夹，需本地 Edge；用 `window.__omr` 跑真实管线；
-可加子串参数只测部分曲，如 `node scripts/measure-all.mjs 从前`）。**每首之间重载页面**——App/Score 在同一 page 里
+可加子串参数只测部分曲，如 `node scripts/measure-all.mjs 从前`）。**每首之间重载页面**——App 在同一 page 里
 复用会串味（「爱是不保留」单跑 slur/歌词 100%，跟在别的歌谱后面跑掉到 60%/42%），基线因此不可复现。
 **GT 与识别产物都是 123，同一套 tokenizer**（`scripts/gt123.mjs`）：识别侧走识别核对落地的真实路径
 （识别 MusicXML → `loadScoreDoc` → `emit123`，即 `App.importOmrMusicXml`），GT 是 `gt.123`。两处口径归一要知道：
@@ -709,11 +709,11 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 
 | 格式 | 路径 |
 |---|---|
-| `jpwabc`（默认） | `musicxml.ts::toMusicXml` → `importBytes` → `loadMusicXml` → `scoreToJpwabcWithMeta` |
+| `jpwabc`（默认） | `musicxml.ts::toMusicXml` → `importOmrMusicXml`（转 123 核对，点选映射由 123 源区间生成） |
 | `tomato` / `shige` | `topu.ts::toPuText` **直出文本谱原文**，编辑器切到 `docFormat="pu"` |
 
-**为什么文本谱不过 Score**：文本谱「一行 `Q:` 就是谱面一行」，而 `rows` 正是源图的行结构，
-天然对齐；逐音符的多段歌词 `JpNum.lyrics[verse]` 原样在手，不必经 Score 的段落/副歌再拆分；
+**为什么文本谱直出、不过 MusicXML**：文本谱「一行 `Q:` 就是谱面一行」，而 `rows` 正是源图的行结构，
+天然对齐；逐音符的多段歌词 `JpNum.lyrics[verse]` 原样在手，不必经 MusicXML 读入端的段落/副歌再拆分；
 小节线按 `row.barlineXs` 落位，跨行开口小节也不用像 MusicXML 那路先合并再补。
 
 **meta 的序号约定**：两个 emitter 都产出 `JpwMeta`，`noteRanges`/`lyricRanges` 一律按

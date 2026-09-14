@@ -93,7 +93,7 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
 
 ## 进度
 
-各阶段完成情况与打包产物体积见 [docs/进度.md](docs/进度.md)。
+还要做什么见 [docs/待办.md](docs/待办.md)；打包产物体积见 [docs/技术栈.md](docs/技术栈.md)。
 
 ## 致谢
 

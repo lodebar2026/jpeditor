@@ -13,7 +13,7 @@
 | `src/jpword/Jpwabc.g4`（116 行） | **唯一形式文法**（ANTLR 4），只覆盖 `.Voice` 段。生成码在 `src/jpword/parser/`，**勿手改** |
 | `src/jpword/jpwfile.ts` | **段落层规范**：哪些段头合法、各段的行语法 |
 | `src/editor/help.ts:276-407` | 面向用户的记谱法说明（事实上的用户手册） |
-| `src/model/tojpw.ts` / `jpwimport.ts` | **事实上的可用子集**：写出端只产生哪些记号、读入端只处理哪些 |
+| `src/model/tojpw.ts` / `fromjpw.ts` | **事实上的可用子集**：写出端只产生哪些记号、读入端只处理哪些 |
 
 - 文件头签名：`// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************`
 - 编码：读时 BOM 探测（回退 UTF-16LE/UTF-8），**存 UTF-16LE + BOM**
@@ -136,11 +136,9 @@ W(\d+)(-(\d+))?(\([0-9a-zA-Z.,]+\))?(@(\d+),(\d+))?(\([0-9a-zA-Z.,]+\))?:
 1. **`{C:…}` 不剥离会污染音符解析**：逐字符扫描时 `{C:1.5}` 里的 `1`/`5` 被当音高、`.` 被当附点。
    500 首语料里 0 例，但真实 JP-Word 文件可能带。
 2. **`::` / `:|:` 抛错**导致整首载入失败（文法允许、导入端 `throw`）。语料 0 例。
-3. **写出端产生自身文法读不回的房号**：`m.repeatForward && m.endingLeft` 时输出 `|:[1`（无尾点），
-   而文法 `House` 要求 `DecimalDigit+ '.'`；多房直接 `throw new Error("multi-ending")`。
-   只有 MusicXML 来源的 Score 会走到。
+（原第 3 条「写出端产生 `|:[1` 读不回」随旧写出端删除：现写出端 `tojpw.ts` 不写房号，反复与分遍经 `.Repeat` 表达。）
 
-三条的真实影响面都已用 568 首语料量过（见 `node scripts/census-123.mjs`），故优先级定为低。
+两条的真实影响面都已用 568 首语料量过（见 `node scripts/census-123.mjs`），故优先级定为低。
 
 ## 9. 表达力边界
 
