@@ -8,7 +8,7 @@
 // 和弦符号进不了 Score、首调号拍号展开档本来就不画，所以文本谱转过来天然没有这两样，这里不写特判。
 
 import type { MetaData } from "../smufl/smufl";
-import type { Score } from "../score/score";
+import type { JScore } from "../layout/input";
 import { TextFrame, type Group } from "../layout/pageitem";
 import { applyPptxStyle } from "../layout/pptxstyle";
 import { ScorePainter } from "../layout/painter";
@@ -42,7 +42,7 @@ export class ExpandedPainter extends ScorePainter {
   }
 
   /** 排一份 Score。`breakDesc` 是 `.jpwabc` 的 `.Layout` 分页描述（文本谱没有）。 */
-  load(score: Score, breakDesc: string | null = null): void {
+  load(score: JScore, breakDesc: string | null = null): void {
     const { pageW: w, pageH: h } = this.settings;
     this.score = score;
     this.layout.fromScore(score, breakDesc, w, h);

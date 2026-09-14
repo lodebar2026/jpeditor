@@ -11,6 +11,7 @@ import { Fraction } from "../common/fraction";
 import { BarStyle, StartStopDiscontinue } from "./enums";
 import { keyAlter } from "./jppitch";
 import { PlayData } from "./playorder";
+import type { ElementId } from "../model/doc";
 
 export { BarStyle, StartStopDiscontinue };
 // 演唱顺序的类原在这里，阶段 4 搬到 playorder.ts；照旧从这里导出，调用方不用改。
@@ -164,6 +165,7 @@ export abstract class Entry {
 }
 
 export class LineBreak extends Entry {
+  readonly kind = "break";
   newPage = false;
   pass: number | null = null;
   constructor(mea: Measure) {
@@ -173,6 +175,7 @@ export class LineBreak extends Entry {
 }
 
 export class BarlineEntry extends Entry {
+  readonly kind = "bar";
   style: BarStyle | null = null;
   /** 原始记号是不是反复线。`.jpwabc` 的 `:|` 与终止线 `|]` 都映射成 LIGHT_HEAVY、光看
    *  style 分不开，故另记一笔（导出 MusicXML 要据此写 `<repeat>`；原 model/fromscore.ts，阶段 8 已删）。
@@ -198,6 +201,8 @@ export interface ChordDirection {
 }
 
 export class Chord extends Entry {
+  readonly kind = "chord";
+  id: ElementId | null = null;
   notes: Note[] = [];
   dot = 0;
   beams = 0; // 减时线
@@ -288,7 +293,7 @@ export class Note {
 }
 
 export class Measure {
-  entries: Entry[] = [];
+  entries: (Chord | LineBreak | BarlineEntry)[] = [];
   key = new Key();
   time = new Time();
   keyChange = false;

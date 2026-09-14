@@ -7,7 +7,8 @@ import { Font } from "./font";
 import { GlyphCodes } from "../smufl/smufl";
 import { chordTextSegs, layoutHarmonySegs } from "./harmony";
 import { GraceAlter, GraceMetrics, GraceNote, graceAdvance, graceBottom, graceGeometry } from "../common/gracenote";
-import * as S from "../score/score";
+import type { BarStyle } from "../score/enums";
+import type { JChord, JKey, JTime } from "./input";
 import { PageItem, GraphicPath, Group, TextFrame, GraphicLine, SmuflText, JpOctaveDot, JpNumber, Lyric } from "./pageitem";
 import type { LayoutOptions } from "./options";
 import type { Line } from "./layout";
@@ -37,7 +38,7 @@ export abstract class Entry {
 export class KeySig extends Entry {
   /** 转调标记那个文本框。`liftOverChords` 要按它的墨迹框判避让，故留住引用。 */
   readonly label: TextFrame;
-  constructor(key: S.Key, opt: LayoutOptions) {
+  constructor(key: JKey, opt: LayoutOptions) {
     super();
     const names = ["Cb", "Gb", "Db", "Ab", "Eb", "Bb", "F", "C", "G", "D", "A", "E", "B", "F#", "C#"];
     const name = names[key.fifths + 7];
@@ -76,7 +77,7 @@ export class TimeSig extends Entry {
     this.layout(opt);
     this.group.data = this;
   }
-  static fromTime(t: S.Time, opt: LayoutOptions): TimeSig {
+  static fromTime(t: JTime, opt: LayoutOptions): TimeSig {
     return new TimeSig(t.beats, t.beatType, opt);
   }
   entryItem(): PageItem | null {
@@ -194,7 +195,7 @@ function graceMetricsOf(opt: LayoutOptions): GraceMetrics {
 }
 
 export class NoteEntry extends Entry {
-  chord!: S.Chord;
+  chord!: JChord;
   verse = 0; // repeat pass / lyric verse this rendered entry belongs to
   lrc: Lyric | null = null;
   /** 叠排时这个音符底下的各段歌词（lrc 是其中第一段，供既有的宽度/链表逻辑用）。 */
@@ -217,7 +218,7 @@ export class NoteEntry extends Entry {
   }
   /** 和弦符号：排在音符正上方（以数字墨迹中心对齐）。
    *  富文本分段（根音升降号走 SMuFL、后缀上标）复用 layout/harmony.ts，与五线谱、文本谱同一套。 */
-  static addHarmony(ch: S.Chord, opt: LayoutOptions, ent: NoteEntry, num: JpNumber): void {
+  static addHarmony(ch: JChord, opt: LayoutOptions, ent: NoteEntry, num: JpNumber): void {
     if (!ch.harmony || opt.chordSize <= 0) return;
     const wordFont = opt.numberFont.makeWithSize(opt.chordSize);
     const musicFont = opt.smuflFont.makeWithSize(opt.chordSize);
@@ -338,7 +339,7 @@ export class NoteEntry extends Entry {
     return above + options.jpBelowGap + (-oct - 1) * options.jpLowDotRung + 2 * options.jpDotRadius;
   }
 
-  static addAccidental(it: JpNumber, options: LayoutOptions, ch: S.Chord, ent: NoteEntry): void {
+  static addAccidental(it: JpNumber, options: LayoutOptions, ch: JChord, ent: NoteEntry): void {
     const alt = ch.notes[0].jpAlter;
     if (alt !== " ") {
       const tf = new SmuflText(options);
@@ -375,7 +376,7 @@ export class NoteEntry extends Entry {
    * with octY independent of the dot count), which is not how jianpu is
    * normally engraved.
    */
-  static octaveDot(ch: S.Chord, options: LayoutOptions, ent: NoteEntry): void {
+  static octaveDot(ch: JChord, options: LayoutOptions, ent: NoteEntry): void {
     const oct = ch.notes[0].jpOctave;
     const numBound = options.numberBound("1");
     for (let d = 0; d < Math.abs(oct); d++) {
@@ -398,7 +399,7 @@ export class NoteEntry extends Entry {
       ent.octaveDot.push(tf);
     }
   }
-  static addLyric(ch: S.Chord, options: LayoutOptions, ent: NoteEntry, it: JpNumber, lrc: number): void {
+  static addLyric(ch: JChord, options: LayoutOptions, ent: NoteEntry, it: JpNumber, lrc: number): void {
     // 叠排：这个音符底下把各段歌词一行行摞起来（原书的排法）。段序按 lyric.number。
     const stack = options.lyricStack > 0;
     const all = stack
@@ -441,7 +442,7 @@ export class NoteEntry extends Entry {
    * 占位走 `Entry.leadSpace`：倚音在拍点**之前**唱，位置也该在主音符之前，
    * 直接往左伸会压住上一个音符。
    */
-  static addGraceNotes(ch: S.Chord, options: LayoutOptions, ent: NoteEntry, main: JpNumber): void {
+  static addGraceNotes(ch: JChord, options: LayoutOptions, ent: NoteEntry, main: JpNumber): void {
     if (!ch.graceNotes.length) return;
     const gm = graceMetricsOf(options);
     const size = options.numberFont.size * gm.scale;
@@ -551,7 +552,7 @@ export class NoteEntry extends Entry {
     return y;
   }
 
-  static addNotations(ch: S.Chord, options: LayoutOptions, ent: NoteEntry): void {
+  static addNotations(ch: JChord, options: LayoutOptions, ent: NoteEntry): void {
     if (ch.fermata) {
       const t = new SmuflText(options);
       t.color = options.color;
@@ -617,7 +618,7 @@ export class NoteEntry extends Entry {
     num.update();
   }
 
-  static fromChord(res: Entry[], ch: S.Chord, lrc: number, options: LayoutOptions): void {
+  static fromChord(res: Entry[], ch: JChord, lrc: number, options: LayoutOptions): void {
     let ent = new NoteEntry();
     ent.beams = ch.beams;
     ent.chord = ch;
@@ -655,7 +656,7 @@ export class NoteEntry extends Entry {
 /** 小节线的样子：粗细组合 + 反复点。与五线谱同一套画法（`‖:` 点在右、`:‖` 点在左）。 */
 export interface BarlineSpec {
   /** MusicXML 的 bar-style。null = 普通细线。 */
-  style?: S.BarStyle | null;
+  style?: BarStyle | null;
   /** `:‖`（反复回到前面）——两点画在左侧。 */
   repeatBackward?: boolean;
   /** `‖:`（反复段起点）——两点画在右侧。 */
