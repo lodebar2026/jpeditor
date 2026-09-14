@@ -21,26 +21,6 @@ import {
 
 // ---------------- Note type ----------------
 
-// noteType 以四分音符为单位（musicpp parser.cpp:625-665）：quarter=1、whole=4、eighth=1/2…
-const NOTE_TYPE_MAP: Record<string, Fraction> = {
-  "1024th": new Fraction(1, 256),
-  "512th": new Fraction(1, 128),
-  "256th": new Fraction(1, 64),
-  "128th": new Fraction(1, 32),
-  "64th": new Fraction(1, 16),
-  "32nd": new Fraction(1, 8),
-  "16th": new Fraction(1, 4),
-  eighth: new Fraction(1, 2),
-  quarter: new Fraction(1),
-  half: new Fraction(2),
-  whole: new Fraction(4),
-  breve: new Fraction(8),
-  long: new Fraction(16),
-};
-
-export function noteTypeFraction(typeName: string): Fraction {
-  return NOTE_TYPE_MAP[typeName] ?? new Fraction(1);
-}
 
 // ---------------- Barline ----------------
 

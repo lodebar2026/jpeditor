@@ -73,7 +73,6 @@ import {
   convertDynamicsStr,
   finishMixedScore,
   metNoteGlyph,
-  noteTypeFraction,
   parseEndingNums,
   type LayoutInput,
   type PrintInput,
@@ -277,11 +276,10 @@ class DocPartLoader {
           if (h) this.processHarmony(h, md, tickOf(h.onset ?? on).plus(harmonyDelta(h)));
         }
         const tick = tickOf(on);
-        const cdur = new Fraction(el.duration.divisions, div);
         let ch: MChord | null = null;
-        if (el.notes.length === 0) ch = this.processNote(el, null, 0, md, tick, cdur, ch);
+        if (el.notes.length === 0) ch = this.processNote(el, null, 0, md, tick, ch);
         el.notes.forEach((n, k) => {
-          ch = this.processNote(el, n, k, md, tick, cdur, ch);
+          ch = this.processNote(el, n, k, md, tick, ch);
         });
       } else if (el.harmony) {
         const h = el.harmony;
@@ -340,35 +338,14 @@ class DocPartLoader {
     k: number,
     md: MeasureData,
     tick: Fraction,
-    dur: Fraction,
     prevChord: MChord | null,
   ): MChord {
     let ch: MChord;
     if (prevChord === null) {
-      ch = md.newChord();
+      ch = md.newChord(src, this.curDiv);
       ch.offset = tick;
-      ch.dur = dur;
-      ch.rest = src.rest !== undefined;
-      ch.grace = src.grace !== undefined;
-      ch.cue = src.cue === true;
-      ch.voice = src.voice - 1;
-      ch.dot = src.duration.dots;
-
-      // timeModification 单独累乘；noteType 纯由 <type> 决定（musicpp parser.cpp:620-665）
-      const tm = src.duration.timeMod;
-      if (tm) ch.timeModification = new Fraction(tm.normal, tm.actual);
-      if (src.duration.type) {
-        ch.noteType = noteTypeFraction(src.duration.type);
-      } else {
-        // 无 <type>：整小节休止（noteType=4 全休止符字形）
-        ch.noteType = new Fraction(4);
-        ch.measureRest = true;
-      }
-
       this.processBeam(ch, src.beams, md);
       this.chordById.set(src.id, ch);
-      ch.src = src;
-      ch.divisions = this.curDiv;
     } else {
       ch = prevChord;
     }
@@ -393,7 +370,6 @@ class DocPartLoader {
       this.stemNotes.add(nt);
     }
 
-    if (note?.notehead?.trim() === "slash") ch.slash = true;
 
     this.processTie(note, nt, ch.tick());
     const arp = this.processNotations(src, k, ch);

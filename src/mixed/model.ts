@@ -14,6 +14,28 @@ import { beamCount } from "../model/jianpu";
 
 const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 
+// noteType 以四分音符为单位（musicpp parser.cpp:625-665）：quarter=1、whole=4、eighth=1/2…
+const NOTE_TYPE_MAP: Record<string, Fraction> = {
+  "1024th": new Fraction(1, 256),
+  "512th": new Fraction(1, 128),
+  "256th": new Fraction(1, 64),
+  "128th": new Fraction(1, 32),
+  "64th": new Fraction(1, 16),
+  "32nd": new Fraction(1, 8),
+  "16th": new Fraction(1, 4),
+  eighth: new Fraction(1, 2),
+  quarter: new Fraction(1),
+  half: new Fraction(2),
+  whole: new Fraction(4),
+  breve: new Fraction(8),
+  long: new Fraction(16),
+};
+
+export function noteTypeFraction(typeName: string): Fraction {
+  return NOTE_TYPE_MAP[typeName] ?? new Fraction(1);
+}
+
+
 // ---------------- Fraction helpers (boost::rational 比较语义) ----------------
 
 export function fLt(a: Fraction, b: Fraction): boolean {
@@ -403,34 +425,66 @@ export class MNote {
 
 export class MChord {
   measure: MeasureData;
-  /** `ScoreDoc` 里对应的和弦（`fromdoc.ts` 挂上）与所在小节的 divisions */
-  src: DocChord | null = null;
-  divisions = 1;
+  /** `ScoreDoc` 里对应的和弦 */
+  readonly src: DocChord;
+  /** 所在小节的 divisions（时值换算用） */
+  readonly divisions: number;
+  /** 小节内起点（四分音符为 1）：`<backup>`/`<forward>` 游标折算好的，引擎一切按它定时间 */
   offset = new Fraction(0);
-
-  rest = false;
-  grace = false;
-  cue = false;
+  /** 整小节休止（读到时按那一刻的小节长判；无 `<type>` 的休止也算） */
   measureRest = false;
   doubleSide = false;
-  slash = false;
 
-  voice = 0;
-  dot = 0;
   stemLen = 0; // 无符干（全音符）默认 0，与 musicpp 一致；有符干者在 calcStemLen 赋值
   stemUp = true;
   stemExtra = 0; // 跨谱表符杠时符干延伸量（model.hpp stemExtra / styler.cpp calcSlopeLen）
 
-  dur = new Fraction(0);
-  noteType = new Fraction(1);
-  timeModification = new Fraction(1);
-
   notes: MNote[] = [];
+  /** 符杠逐层状态（照 `<beam>`，整声部没写时由自动符杠补） */
   beams: BeamVal[] = [];
   notations: NotationItem[] = [];
 
-  constructor(measure: MeasureData) {
+  constructor(measure: MeasureData, src: DocChord, divisions: number) {
     this.measure = measure;
+    this.src = src;
+    this.divisions = divisions;
+    this.measureRest = !src.duration.type;
+  }
+
+  // ---- 语义：一律从 ScoreDoc 取 ----
+  get rest(): boolean {
+    return this.src.rest !== undefined;
+  }
+  get grace(): boolean {
+    return this.src.grace !== undefined;
+  }
+  get cue(): boolean {
+    return this.src.cue === true;
+  }
+  /** 声部（0 基） */
+  get voice(): number {
+    return this.src.voice - 1;
+  }
+  get dot(): number {
+    return this.src.duration.dots;
+  }
+  /** 斜线符头（节奏记谱） */
+  get slash(): boolean {
+    return this.src.notes.some((n) => n.notehead?.trim() === "slash");
+  }
+  /** 实际时值（四分音符为 1） */
+  get dur(): Fraction {
+    return new Fraction(this.src.duration.divisions, this.divisions);
+  }
+  /** 符号时值（四分音符为 1，纯由 `<type>` 决定；没有 `<type>` 按全音符字形） */
+  get noteType(): Fraction {
+    const t = this.src.duration.type;
+    return t ? noteTypeFraction(t) : new Fraction(4);
+  }
+  /** 连音比（normal / actual） */
+  get timeModification(): Fraction {
+    const tm = this.src.duration.timeMod;
+    return tm ? new Fraction(tm.normal, tm.actual) : new Fraction(1);
   }
 
   newNote(): MNote {
@@ -460,7 +514,7 @@ export class MChord {
 
   /** 简谱减时线条数（语义层 `jianpuShape`）。 */
   jpBeamCount(): number {
-    return this.src ? beamCount(this.src, this.divisions) : 0;
+    return beamCount(this.src, this.divisions);
   }
 
   /** 音符头/休止符 SMuFL 字形（Chord::sym，model.cpp:1696）。 */
@@ -1452,8 +1506,8 @@ export class MeasureData {
   jpBeams: BeamGroup[] = [];
   noteEntries: NoteEntry[] = [];
 
-  newChord(): MChord {
-    const ch = new MChord(this);
+  newChord(src: DocChord, divisions: number): MChord {
+    const ch = new MChord(this, src, divisions);
     this.chords.push(ch);
     return ch;
   }
