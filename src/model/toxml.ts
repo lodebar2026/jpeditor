@@ -641,15 +641,24 @@ export function scoreDocToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): s
     o.push(1, "</work>");
   }
   if (song.work.movementTitle) o.push(1, tag("movement-title", song.work.movementTitle));
-  if (song.identification) {
+  if (song.identification || song.meta) {
     o.push(1, "<identification>");
-    for (const c of song.identification.creators) {
+    for (const c of song.identification?.creators ?? []) {
       o.push(2, `<creator type="${escAttr(c.type)}">${esc(c.text)}</creator>`);
     }
-    if (song.identification.rights) o.push(2, tag("rights", song.identification.rights));
+    if (song.identification?.rights) o.push(2, tag("rights", song.identification.rights));
     o.push(2, "<encoding>");
-    for (const sw of song.identification.software ?? ["jpeditor"]) o.push(3, tag("software", sw));
+    for (const sw of song.identification?.software ?? ["jpeditor"]) o.push(3, tag("software", sw));
     o.push(2, "</encoding>");
+    // 扩展 meta（`model/metakeys.ts`）。schema 顺序：creator*, rights*, encoding?, source?, relation*, miscellaneous?
+    const meta = Object.entries(song.meta ?? {});
+    if (meta.length) {
+      o.push(2, "<miscellaneous>");
+      for (const [name, vals] of meta) {
+        for (const v of vals) o.push(3, `<miscellaneous-field name="${escAttr(name)}">${esc(v)}</miscellaneous-field>`);
+      }
+      o.push(2, "</miscellaneous>");
+    }
     o.push(1, "</identification>");
   }
   if (song.defaults) writeDefaults(o, 1, song.defaults);

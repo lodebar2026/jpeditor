@@ -36,6 +36,7 @@ export type Feature =
   | "textLine"       // 文字行（段落词、注记）
   | "multiSong"      // 一个文件多首
   | "pageText"       // 页眉页脚
+  | "meta"           // 扩展 meta（英文标题、经文、标签…，`Song.meta`）
   | "verseLabel"     // 印刷段号 `<1.>`
   | "rhythmNote"     // 节奏音符（有声无音高）
   | "invisibleRest"; // 不可见休止
@@ -56,6 +57,7 @@ export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
   textLine: "段落词与注记",
   multiSong: "一个文件里的多首曲子",
   pageText: "页眉页脚",
+  meta: "扩展曲目信息（英文标题、经文、标签等）",
   verseLabel: "印刷段号",
   rhythmNote: "节奏音符（有声无音高）",
   invisibleRest: "不可见休止",
@@ -79,10 +81,11 @@ export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> =
   abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset"),
   // `.jpwabc` 的语法**刻意不扩**：和弦、力度、多声部都写不进去。
   // 音符堆：写出端只留最高音、删 voice > 1
-  jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "noteStack", "style", "multiSong", "grace"),
+  jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "noteStack", "style", "multiSong", "grace", "meta"),
   // 文本谱：展开档谱面不画和弦/力度/多声部，但文本谱**原文**装得下和弦——
   // 这里算的是「另存为之后还在不在」，所以按解析器的能力写。
-  pu: allBut("style", "playOrder", "dynamics", "harmonyOffset"),
+  // 扩展 meta 没有字段可落（文本谱只有按位置的 XL/XR/TL/TR/BL/BC/BR，不往里猜）
+  pu: allBut("style", "playOrder", "dynamics", "harmonyOffset", "meta"),
   // MusicXML 装不下的两样：`playOrder` 的 skip/limit（`<ending>` 只能整小节）与样式引用。
   // 见 `docs/模块/模型-scoredoc.md` 的关键判据。
   musicxml: allBut("playOrder", "style"),
@@ -97,6 +100,7 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
     if (song.playOrder?.length) used.add("playOrder");
     if (song.style?.sheetRef || song.style?.raw?.length) used.add("style");
     if (song.pageText) used.add("pageText");
+    if (song.meta && Object.keys(song.meta).length) used.add("meta");
     if (song.remarks?.length) used.add("textLine");
     if (verseCount(song) > 1) used.add("multiVerse");
     for (const m of song.marks ?? []) {

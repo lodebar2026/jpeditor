@@ -90,7 +90,9 @@ export interface Work {
 
 /** ← 123 的 `C:` / 文本谱 `Z:` / MusicXML `<identification><creator>` */
 export interface Creator {
-  /** MusicXML 的 `type`：composer / lyricist / arranger / translator… */
+  /** MusicXML 的 `type`：composer / lyricist / arranger / translator / transcriber / words-and-music…
+   *  无 type 的源格式（123 `C:`、文本谱 `Z:`、`.jpwabc`）按原文标签定（`metakeys.ts::creatorTypeOf`），
+   *  没有标签的记 composer。 */
   type: string;
   text: string;
 }
@@ -823,6 +825,11 @@ export interface StyleRef {
   raw?: { key: string; value: string }[];
 }
 
+/** 扩展 meta：键 → 值列表（单值一项，多行/多标签多项）。**扩数据项只加注册表**（`model/metakeys.ts`），
+ *  不改这里的类型；不在表里的键照样保存、往返（MusicXML `<miscellaneous-field>` / 123 `I:meta`）。
+ *  排版器要算的字段（标题、词曲、调号拍号）仍强类型，不进这里。见 `docs/样式机制.md` §9。 */
+export type SongMeta = Record<string, string[]>;
+
 /** 页眉页脚文字（文本谱的 `XL/XR/TL/TR/BL/BC/BR`）。
  *  MusicXML 侧没有对应物，导出时只能落进 `<credit>`。 */
 export interface PageText {
@@ -860,6 +867,8 @@ export interface Song {
   pageText?: PageText;
   /** 无前缀的自由文字行（注记、勘误、版权说明） */
   remarks?: string[];
+  /** 扩展 meta（英文标题、经文、标签、分类…）。键见 `model/metakeys.ts`，读写走那里的 `getMeta`/`setMeta`。 */
+  meta?: SongMeta;
   /** 每页谱行数（`.jpwabc` 的 `.Layout LinesPerPage`，只对展开档有意义） */
   linesPerPage?: number;
   source?: SourceSpan;

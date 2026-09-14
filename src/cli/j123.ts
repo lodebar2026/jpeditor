@@ -14,6 +14,7 @@ export { emitAbc } from "../abcfamily/emitabc.entry";
 export * from "../model/capability";
 export * from "../j123/fields";
 export * from "../model/helpers";
+export * from "../model/metakeys";
 export { docView } from "../pu/slots";
 export { puToScoreDoc } from "../model/frompu";
 export { jpwToScoreDoc } from "../model/fromjpw";

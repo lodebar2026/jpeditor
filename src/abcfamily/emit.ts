@@ -450,6 +450,10 @@ export abstract class AbcFamilyEmitter {
         for (const t of arr) for (const line of t.split(/\r?\n/)) if (line.trim()) L.push(`I:${key} ${line.trim()}`);
       }
     }
+    // 扩展 meta（`model/metakeys.ts`）：一项一行；项里自带换行的拆成多行（读回是多项，按 "\n" 合起来文字不变）
+    for (const [key, vals] of Object.entries(song.meta ?? {})) {
+      for (const v of vals) for (const line of v.split(/\r?\n/)) L.push(`I:meta ${key} ${line}`.trimEnd());
+    }
     if (song.style?.sheetRef) L.push(`I:style ${song.style.sheetRef}`);
     if (song.linesPerPage) L.push(`I:linesperpage ${song.linesPerPage}`);
     // 指令名**一律小写输出**：`parseInstruction` 读入时会归一成小写（ABC 的 `I:` 不区分大小写），
