@@ -14,10 +14,13 @@
 // 跨行的弧线与跳房子因此天然成立：上一行以未闭合的 `(` 收尾，解析器会自己接到下一行
 // （`parse.ts::carriedCurves` / `carriedVoltas`），不必补任何续接记号。
 //
-// 无 DOM 依赖。
+// 读的是 `ScoreDoc` 的排版行视图（`slots.ts::docView`）：元素、音节、曲行/歌词行/文字行的源区间都在上面，
+// 曲行 `raw` 由视图按行号从原文取出。无 DOM 依赖。
 
 import { takesLyric, voiceNumbers } from "./ast";
-import type { LyricLine, PuDoc, PuSong, ScoreLine } from "./ast";
+import type { LyricLine, PuSong, ScoreLine, SourceSpan } from "./ast";
+import type { ScoreDoc } from "../model/doc";
+import { docView, type RowView } from "./slots";
 import { dialectSpec } from "./dialect";
 import { BODY_PREFIX } from "./parse";
 import { puPhraseLines, voiceStream, type FitMeasure, type PuNewLine, type VoiceStream } from "./phrase";
@@ -118,17 +121,18 @@ function musicText(pieces: readonly Piece[]): string {
   return pieces.map(pieceText).filter((s) => s.length > 0).join(" ");
 }
 
-/** 一条歌词行在 [s0,s1) 这几个音节上的原文切片，以及它实际给出了几个音节。 */
+/** 一条歌词行在 [s0,s1) 这几个音节上的原文切片，以及它实际给出了几个音节。
+ *  `cols` 是原文**全部**音节的区间（视图里的音节只到对位格为止，多出的那几个切片边界也要用）。 */
 function lyricSlice(
-  lyric: LyricLine, raw: string, s0: number, s1: number,
+  lyric: LyricLine, cols: readonly SourceSpan[], raw: string, s0: number, s1: number,
 ): { text: string; count: number; words: number } {
   const syl = lyric.syllables;
-  if (s0 >= syl.length) return { text: "", count: 0, words: 0 };
-  const begin = syl[s0]!.source.column;
-  const stop = Math.min(s1, syl.length);
-  const end = s1 >= syl.length ? raw.length : syl[s1]!.source.column;
+  if (s0 >= cols.length) return { text: "", count: 0, words: 0 };
+  const begin = cols[s0]!.column;
+  const stop = Math.min(s1, cols.length);
+  const end = s1 >= cols.length ? raw.length : cols[s1]!.column;
   let words = 0;
-  for (let i = s0; i < stop; i++) if (syl[i]!.text.length > 0) words += 1;
+  for (let i = s0; i < stop; i++) if ((syl[i]?.text.length ?? 0) > 0) words += 1;
   return { text: raw.slice(begin, end).trim(), count: stop - s0, words };
 }
 
@@ -138,19 +142,20 @@ function lyricSlice(
  * 逐首处理（`-----` 分出的多唱法各自断句）；头部字段、`W:` 文字行、`-----` 原样保留，
  * 换掉的只有曲行与歌词行所在的那一段，以及分组空行与 `[fenye]`（行结构变了，它们要重来）。
  *
- * @param text    编辑器里的原文（`doc` 必须是它解析出来的那一份）
+ * @param text    编辑器里的原文（`doc` 必须是它解析出来的那一份，`parsePu(text)`）
  * @param measure 行长尺子（`App._puPhraseMeasure`）；不给就按 `phrase.ts` 的出厂目标断
  */
 export function relayoutPuText(
-  text: string, doc: PuDoc, opt: { measure?: FitMeasure | null } = {},
+  text: string, sdoc: ScoreDoc, opt: { measure?: FitMeasure | null } = {},
 ): string {
   const raws = text.split(/\r?\n/);
+  const doc = docView(sdoc);
   const skip = dialectSpec(doc.dialect).lyricSkip[0] ?? "@";
   // 各首各排各的，但都写回同一份文本：先收集「哪一段换成什么」，最后统一拼。
   const patches: Array<{ from: number; to: number; lines: string[] }> = [];
 
   doc.songs.forEach((song, songIdx) => {
-    const plan = puPhraseLines(doc, songIdx, { measure: opt.measure ?? null });
+    const plan = puPhraseLines(sdoc, songIdx, { measure: opt.measure ?? null });
     if (!plan) return;
     const region = songRegion(song);
     if (!region) return;
@@ -265,13 +270,15 @@ function lyricLines(pieces: readonly Piece[], raws: readonly string[], skip: str
     const inside = lyricCount(p.line, p.from, p.to);
     needs.push(inside);
     const seen = new Map<string, number>();
-    for (const lyric of p.line.lyrics) {
+    const infos = (p.line as RowView).measures[0]?.print?.lyricLines;
+    for (const [li, lyric] of p.line.lyrics.entries()) {
       const verse = `${lyric.verseFrom}-${lyric.verseTo}`;
       const dup = seen.get(verse) ?? 0;
       seen.set(verse, dup + 1);
       const key = `${verse}#${dup}`;
       const raw = raws[lyric.source.line] ?? "";
-      const { text, count, words } = lyricSlice(lyric, raw, before, before + inside);
+      const cols = infos?.[li]?.sources ?? lyric.syllables.map((syl) => syl.source);
+      const { text, count, words } = lyricSlice(lyric, cols, raw, before, before + inside);
       let cur = byKey.get(key);
       if (!cur) {
         cur = { head: lyric, headRaw: raw, atHead: before === 0, texts: [], filled: [], words: 0 };
