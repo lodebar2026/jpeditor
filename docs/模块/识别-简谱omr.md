@@ -50,6 +50,8 @@ node scripts/check-align.mjs      # 歌词↔音符「对位」（逐音符序�
 node scripts/omr-node-check.mjs   # Node ↔ 浏览器逐字符一致性（Node CLI 的验收依据）
 node scripts/shot-recog.mjs       # 识别模式 + 叠加层渲染
 node scripts/omr-cli.mjs <图…>    # CLI
+node scripts/pack-omr.mjs         # 把 OMR CLI 打成自包含分发包
+node scripts/pdf-diff.mjs && node scripts/pdf-mark.mjs   # 矢量 PDF：全书对 GT + 差异标记版 PDF
 ```
 
 ## 已知限制

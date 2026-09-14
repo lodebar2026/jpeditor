@@ -100,6 +100,7 @@ PU_CORPUS=<文本谱语料根> node scripts/pu-scoredoc-check.mjs     # 语法�
 PU_CORPUS=<文本谱语料根> HYMN500=<500首语料根> node scripts/j123-migrate.mjs
 npm run build && HYMN500=<500首语料根> node scripts/musicxml-open-check.mjs   # .musicxml 打开/转换/重写
 HYMN500=<500首语料根> node scripts/layout-attr-check.mjs    # 改一个音整份重写，版面坐标逐份不丢、重写是定点
+HYMN500=<500首语料根> node scripts/save-loss-check.mjs      # 保存前丢失清单：能力表自洽、planSave、存回本格式无损
 ```
 
 ## 已知限制

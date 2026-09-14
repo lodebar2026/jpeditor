@@ -23,11 +23,11 @@ npm run tauri dev      # 桌面应用（需 Rust）
 ```
 
 回归脚本全在 [scripts/](scripts/)（`node scripts/xxx.mjs`，一律从仓库根跑），
-清单与用法见 [docs/开发.md](docs/开发.md)。
+各模块跑哪几条见各模块页的「回归」一节，公共引导见 [docs/架构.md](docs/架构.md) §8「工程约定」。
 
 ## 约定
 
 - 测试语料与回归基线（`testdata/`）只留本地，不入库。
 - 提交信息用简要中文，不要 `Co-Authored-By` 尾注。
 - 代码与工程上的约定（TS 严格模式、文件编码、Tauri 插件要同改哪几处）见
-  [docs/开发.md](docs/开发.md) 的「约定」一节。
+  [docs/架构.md](docs/架构.md) 的「工程约定」与各模块页。

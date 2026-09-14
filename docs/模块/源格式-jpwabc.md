@@ -68,4 +68,20 @@ node scripts/shot.mjs              # 渲染通用回归
 - 装不下和弦、力度、多声部、副标题、曲号（**刻意不扩语法**）
 - `{C:…}` 会污染音符解析；`::`/`:|:` 抛错——两条均语料 0 例，优先级低（R6）
 - 写出端不写房号与反复记号（分遍经 `.Repeat` 表达）
-- ANTLR 重生成需 JDK + ANTLR 4.13.2，并给生成文件逐个加 `// @ts-nocheck`
+
+## 重生成解析器
+
+改了 `src/jpword/Jpwabc.g4` 后（需 JDK，本机在 `/opt/homebrew/opt/openjdk/bin`）：
+
+```bash
+java -jar /tmp/antlr-4.13.2-complete.jar -Dlanguage=TypeScript -o /tmp/gen -visitor src/jpword/Jpwabc.g4
+# 把生成的 *.ts 拷到 src/jpword/parser/，给每个文件首行加 `// @ts-nocheck`
+```
+
+运行时用 npm 的 `antlr4` 包（浏览器构建），导入写 `from "antlr4"`、生成文件用 `./X.js` 后缀（bundler 解析到 `.ts`）。
+生成码**勿手改**。
+
+## 与原 Kotlin 的对应
+
+原 Kotlin/JVM 桌面版在仓库根 `../`。`jpwfile.kt→jpword/jpwfile.ts`、`jpw.kt→model/fromjpw.ts`（读源文那一步）近乎逐行翻译，
+改行为前先看 `../src/main/kotlin/` 对应文件确认原意。
