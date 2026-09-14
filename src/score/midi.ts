@@ -58,7 +58,7 @@ function partTrack(notes: TimedNote[], partIdx: number, opts?: PlayOptions): num
     if (n.part !== partIdx) continue;
     const start = Math.round(n.t0 * PPQ);
     const end = Math.round(n.t1 * PPQ);
-    events.push({ tick: start, order: 1, data: [0x90 | channel, n.pitch & 0x7f, 100] });
+    events.push({ tick: start, order: 1, data: [0x90 | channel, n.pitch & 0x7f, n.velocity & 0x7f] });
     events.push({ tick: end, order: 0, data: [0x80 | channel, n.pitch & 0x7f, 0] });
   }
   return trackChunk(events);

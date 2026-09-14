@@ -543,8 +543,11 @@ export interface Direction {
    *  缺省 = 小节开头。`<direction>` 的拍位就是游标当时的位置：`Fine` / `D.S.` / segno 常写在小节末尾，
    *  丢了它，演唱顺序的跳转落点（segno/coda 的小节内位置）和写回的位置都不对 */
   afterElements?: number;
-  /** dynamics / wedge / words / metronome / segno / coda / pedal / octave-shift / rehearsal */
+  /** dynamics / wedge / words / metronome / segno / coda / pedal / octave-shift / rehearsal；
+   *  `sound` 是小节级的 `<sound>`（不在 `<direction>` 里，只有 `sound` 与 `xml`） */
   type: string;
+  /** `type: "sound"` 时的原文（`<sound>` 可带 `<swing>` 等子元素），`toxml.ts` 原样写回 */
+  xml?: string;
   /** 力度名（`f` / `mf`…）或文字内容 */
   text?: string;
   /** `<metronome>`：♩=76 */

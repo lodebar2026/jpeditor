@@ -319,6 +319,9 @@ export function melodyChords(m: Measure, staff?: number): Chord[] {
 
 const midiOf = (p: Pitch): number => p.octave * 12 + [0, 2, 4, 5, 7, 9, 11][STEPS.indexOf(p.step)]! + p.alter;
 
+/** MIDI 音高（中央 C = 60，口径同 `musicxml.ts::loadMusicXml` 的 `Note.pitch`）。 */
+export const midiPitch = (p: Pitch): number => midiOf(p) + 12;
+
 /** 和弦里简谱印的那个音：音高最高者；没有绝对音高（简谱来源）时取度数最高者，再没有取第一个。 */
 export function topNote(ch: Chord): Note | undefined {
   let best: Note | undefined;

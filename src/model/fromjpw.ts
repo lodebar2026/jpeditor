@@ -514,6 +514,8 @@ export function jpwToScoreDoc(f: JpwFile): ScoreDoc {
     if (text !== titleText) song.identification = { creators: [{ type: "composer", text: text.replace(/\n/g, " ") }] };
   }
 
+  // 速度（`.Title` 的 `Expression ♩=NN`），试听与转 123 的 `Q:` 都要（`fromJpw` 落在 `playData.tempo`）
+  if (title?.tempo) song.tempos = [title.tempo];
   const fifths = MusicCommon.keyNameToFifth(title?.key ?? "C");
   const [beats, beatType] = (title?.meter ?? "4/4").split("/");
   const time = { beats: parseInt(beats!, 10), beatType: parseInt(beatType!, 10) };

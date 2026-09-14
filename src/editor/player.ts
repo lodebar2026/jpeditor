@@ -55,7 +55,7 @@ export class ScorePlayer {
     // 秒/四分音符：谱面 ♩= 与用户速度倍率都折进这一个系数，时间轴本身仍是四分音符单位。
     const SPQ = 60 / playTempo(score, opts);
 
-    this.anchors = tl.anchors.map((a) => ({ t: a.t0 * SPQ, chord: a.chord, pass: a.pass }));
+    this.anchors = tl.anchors.map((a) => ({ t: a.t0 * SPQ, chord: a.chord as Chord, pass: a.pass })); // Score 来源：和弦就是 Score 的 Chord
     this.duration = tl.duration * SPQ;
     this.curIdx = -1;
     this.useNative = isTauriRuntime();
