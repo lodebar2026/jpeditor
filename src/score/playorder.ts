@@ -1,4 +1,4 @@
-// 演唱顺序（`docs/待办.md` §3.1 阶段 4）：反复、房号、D.C./D.S./Coda、多段歌词逐段一遍，推成 `PlayItem[]`。
+// 演唱顺序：反复、房号、D.C./D.S./Coda、多段歌词逐段一遍，推成 `PlayItem[]`。
 //
 // 演唱顺序的唯一实现（判据从 mp/score 移植）。只经下面这组接口读谱，`ScoreDoc` 两侧拼出满足接口的纯对象：
 // MusicXML 形状 `model/playdoc.ts`、简谱形状 `pu/playsong.ts`。

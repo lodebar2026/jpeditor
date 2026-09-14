@@ -1119,7 +1119,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this.mode === "jp";
   }
 
-  /** PlaybackHost：当前该播的谱，由 ScoreDoc 拼（`docs/待办.md` §3.1 阶段 8）。
+  /** PlaybackHost：当前该播的谱，由 ScoreDoc 拼。
    *  MusicXML 形状（`.musicxml`、ABC 回落）带全部声部、voice 与力度；简谱形状（文本谱/123/ABC/`.jpwabc`）
    *  口径同 `jianpuInputOfDoc`，展开档那一份带歌词的声部当主旋律。 */
   playable(): PlaySource | null {

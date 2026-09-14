@@ -1,4 +1,4 @@
-// 简谱形状的 `ScoreDoc`（文本谱 / 123 / ABC / `.jpwabc`）→ 演唱顺序，`docs/待办.md` §3.1 阶段 4 的新侧。
+// 简谱形状的 `ScoreDoc`（文本谱 / 123 / ABC / `.jpwabc`）→ 演唱顺序、试听输入、`.jpwabc` 写出端输入。
 //
 // 与 `model/playdoc.ts`（MusicXML 形状）分工同断句那一对（`phrasesong.ts` / `phrasedoc.ts`），
 // 小节序列与断句共用 `phrasesong.ts::buildMeasures`。**口径同简谱引擎输入 `jianpuinput.ts::jianpuInputOfDoc`**：

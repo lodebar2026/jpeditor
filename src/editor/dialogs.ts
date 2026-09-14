@@ -141,7 +141,7 @@ export function showOptionsDialog(app: App): void {
   const isJp = !isMixed && !isPu;
   const isJianpu = isJp && view === "original";
   /** 「每页行数」写进 `.jpwabc` 的 `.Layout` 段，文本谱与 123 没有这个段
-   *  （123 是 `I:linesperpage`，等阶段 5 直通后再接）。 */
+   *  （123 是 `I:linesperpage`，尚未接）。 */
   const hasLayoutSection = isPpt && app.docFormat === "jpwabc";
 
   const num = (value: number, min: number, max: number): HTMLInputElement => {

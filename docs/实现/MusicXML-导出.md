@@ -13,10 +13,7 @@
 | `src/score/musicxmllayout.ts` | 版面注入：`<defaults>`、分行、小节宽度、`default-x` |
 | `src/editor/export.ts::buildMusicXml` | 调度：有底本且没改过给底本，否则整份重写 |
 
-以前有三份全量写出端（文本谱走排版行视图的 `pu/toxml.ts`、`.jpwabc` 走 `Score` 的
-`score/musicxmlout.ts`、`.musicxml` 走 `model/toxml.ts`）外加底本增量 patch
-（`score/musicxmlpatch.ts`）。patch 存在的前提是「`.jpwabc`/`Score` 比 MusicXML 装得少，
-重生成 = 降采样」；`ScoreDoc` 加上 `Measure.raw` 装得下之后，这个前提不成立了，四份并成一份。
+只有这一份写出端、不做底本增量 patch：`ScoreDoc` 加上 `Measure.raw` 装得下 MusicXML 的内容，整份重写不是降采样。
 
 识别结果的两份**直出**（`omr/musicxml.ts`、`staffomr/toxml.ts`）不在此列：那是识别产物的原始出口，
 产出的就是底本。
@@ -27,7 +24,7 @@
 |---|---|
 | 混排预览（`app.mode === "mixed"`） | 底本原文（五线谱原文） |
 | 识别核对、123 文本一字未改（`App.importUnchanged`） | 底本原文，零损耗 |
-| `.jpwabc` | `scoreDocToMusicXml(jpwToScoreDoc(f))`（阶段 8 起；与 123 同一条投影） |
+| `.jpwabc` | `scoreDocToMusicXml(jpwToScoreDoc(f))`（与 123 同一条投影） |
 | 其余（文本谱 / 123 / ABC / 改过的识别核对文本） | `scoreDocToMusicXml(app.currentScoreDoc())` |
 | `.musicxml` 文档 | 文档里就是 XML（原文，或 `editScoreDoc` 整份重写过的） |
 
@@ -47,7 +44,7 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 - **和弦**：结构化的补原文（`harmonyToText`）。`fromxml.ts` 保留一个音前的全部 `<harmony>`（后面的进 `Chord.laterHarmonies`，
   各带 `offset`），投影时按拍位挂到增时线上。小节末还欠着的 `<harmony>`（`fromxml` 放在 `y` 占位符上）位置是
   **小节末 + offset**（负值往回数，常落在前面长音的中间），按这个位置找落点；`y` 本身拆掉——简谱侧会把它画成一拍隐藏休止。
-- **对照基准**是 `loadMusicXml → Score`（`parseDuration`），`scripts/jianpu-shape-check.mjs` 逐音比。
+- **对照基准**是简谱引擎输入的 MusicXML 形状分支（`jianpuInputOfXml` 按 `<type>` 读时值），`scripts/jianpu-shape-check.mjs` 逐音比。
 
 ## 投影：判据与要害
 
@@ -59,8 +56,7 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 - **跨行接着写的小节要并回去**。文本谱/123 行尾不写小节线、下一行接着写同一小节，模型里是两个小节；
   MusicXML 表达不了小节中间换行，拆成两个短小节时值就不对。并成一个，换行顺延到并完之后的下一小节。
-  判据是「上一小节没有右线」——所以原 `fromscore`（`forMusicXml`，阶段 8 已删）要给 `Score` 的每个小节补一根普通右线，
-  否则 MusicXML 读回的 `Score` 会被整首并成一个小节。
+  判据是「上一小节没有右线」——所以简谱来源的每个小节都要有右线，否则会被整首并成一个小节。
 - **没有元素的小节不成小节**（行首 `|:`、两根线挨着）：房号起点、左反复、线上的记号（`|:&hs`）、行结构、拍号顺延到下一小节。
 - **右线上的 `|:` 是下一小节的左反复**，heavy-light 线型跟着挪过去——右线留着 heavy-light 导入端直接报错。
 - **临时记号在小节内延续**，按唱名键记，小节线处清空（跨行并回的小节自然接着用）。
@@ -84,31 +80,15 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 ## `.jpwabc`
 
-**阶段 8 起**：`jpwToScoreDoc` → `xmlproject` 投影 → 唯一写出端，与 123/文本谱同一条路。`fromjpw` 只填简谱度数、
+`jpwToScoreDoc` → `xmlproject` 投影 → 唯一写出端，与 123/文本谱同一条路。`fromjpw` 只填简谱度数、
 不填绝对音高（从前照抄的假 `pitch` 八度恒为 0，会让投影层整首掉到第 0 八度），调号取 `.Title`，速度进 `Song.tempos`，
 房号由 `Song.playOrder` 反推（`xmlproject.ts::voltasOfPlayOrder`）。符杠不再写（与 123 一样交给读入端自动连）。
-`scripts/jpw-xml-check.mjs` 拿删 `fromscore` 前的旧路导出做基线，582 份读回快照逐项一致。
-
-下面 (a)–(d) 与「符杠」是**旧路 `fromscore.ts`（`forMusicXml`）的判据**，留作记录：
-
-**(a) 音高走简谱表述，不走 pitch。** `jpSpelling()` = `jpPitch(数字, 八度点, fifths)` 定 step/octave +
-按**音高差**（pitch − 该数字在本调的自然音高）定临时记号。原因：`.jpwabc` 来源的 Score 只设了
-`pitch` 和 `step`，`octave`/`alter` 恒 0；且不能读 `nt.jpAlter`——那只标在记号出现的那个音上，
-同小节后续同音级由 `AccidentalStat` 延续。
-
-**(b) fifths 要推断。** `jpwimport` 从不给 `Measure.key` 赋值，照抄会把 `1=bB` 导成 C 调 + 满谱临时记号。
-`keyChange` 只有 MusicXML 导入路径会置 true；否则走 `deriveFifths`——按 `pitch − 12*jpOctave − stepToPitch(number)`
-取众数得主音音高，再按音名字母取众数得主音字母，两者**同时**吻合才认（`#F` 与 `bG` 的 basePitch 都是 66）。
-
-**(c) 连音比例**由实际时值与名义时值之比得出（`timeMod`），divisions 仍记名义时值，投影层统一缩放。
-
-**(d) voice**：`.jpwabc` 来源从 0 起、MusicXML 来源从 1 起，统一 `max(1, voice)`。
+`scripts/jpw-xml-check.mjs` 对 582 份读回快照守基线。
 
 ### 反复与房号
 
-反复**不展开**，导出的小节数与谱面一致。`jpwimport` 在 `BarlineEntry.repeat` 上记下 `|:`/`:|`
-（`:|` 与终止线 `|]` 都映射成 `LIGHT_HEAVY`，光看 style 分不开）。
-MusicXML 读回的 `Score` 左反复线既在 `Measure.leftBarline` 上、又多一个 BarlineEntry，转换时并成一根（否则每往返一轮多一根）；
+反复**不展开**，导出的小节数与谱面一致。`fromjpw` 在模型小节线上记 `repeat: forward/backward`
+（`:|` 与终止线 `|]` 线型都是 light-heavy，光看线型分不开）。
 右侧只有房号终点、没有线型时也要出一根右线（否则房号 stop 丢掉）。
 
 `.jpwabc` 不在小节上标房号，而是用 `.Repeat` 段列出每一遍唱哪些小节。`voltasOfPlayOrder()`（原 `deriveVoltas()`）把它翻回 `<ending>`：
@@ -120,14 +100,13 @@ MusicXML 读回的 `Score` 左反复线既在 `Measure.leftBarline` 上、又多
 
 《沧海一声笑》推出三房 `1,2,3,5` / `4` / `6`，**与 OMR 从原图识别出的房号逐字一致**；
 《因有主同在》的 `1-28V1 / 1-8V2` 正确地不成房。**除最后一房外，每房末尾补 `<repeat direction="backward"/>`**，
-否则外部软件走不出正确的演唱顺序。Score 上已有房号（MusicXML 来源）时不再叠加推断。
+否则外部软件走不出正确的演唱顺序。模型上已有房号（MusicXML 来源）时不再叠加推断。
 
 ### 符杠
 
-一拍之内相邻的减时线音符连成一组，逐层输出 begin/continue/end；组内某层只有一个音符时输出 hook。
-分组直接复用 **`Measure.autoBeamGroup()`**（排版引擎用的就是它，导出与屏幕上看到的分组天然一致）。
-**休止符不带 `<beam>`**：简谱的减时线画在休止符下面，分组时休止符留在段内保持连续，只由实音符承载，
-符杠跨过休止符（beam over rest）。`omr/musicxml.ts::beamsOfMeasure` 是识别直出那边的同规则实现。
+简谱来源（文本谱/123/`.jpwabc`）的 `beams` 只是减时线层数的占位，**不写 `<beam>`**，交给读入端自动连（见上「投影」一节）。
+识别直出那边（`omr/musicxml.ts::beamsOfMeasure`）自己分组：一拍之内相邻的减时线音符连成一组，逐层 begin/continue/end，
+**休止符不带 `<beam>`**（简谱的减时线画在休止符下面，符杠跨过休止符）。
 
 `<beam number>` 是**层号**：按下标算，不能 `indexOf(值)`——两层同为 begin 时会都写成 1
 （`.musicxml` 重写原先就有这个 bug，500 首里 280 处）。
@@ -184,13 +163,13 @@ npm run build
 node scripts/xml-roundtrip.mjs [曲名子串]    # 14 首 .jpwabc + ABC 底本：R 往返 / 反复 / 房号 / 符杠 / L 版面
 node scripts/omr-export-check.mjs [曲名子串]  # 真跑一遍识别：未改动直出底本、点选映射、改一处后整份重写不丢元素、弧线与符杠合法
 HYMN500=… node scripts/xml-direct-check.mjs   # 568 份 .musicxml 全量重写：十类关键元素计数不降、往返稳定
-HYMN500=… node scripts/jianpu-shape-check.mjs # 568 份 MusicXML → 简谱形状：简谱档与转 123 后逐音对照 loadMusicXml → Score
+HYMN500=… node scripts/jianpu-shape-check.mjs # 568 份 MusicXML → 简谱形状：简谱档与转 123 后逐音对照 jianpuInputOfXml
 node scripts/pu-export-check.mjs              # 文本谱夹具：音符序列、XML 可解析、无空小节
 ```
 
 `scripts/xml-roundtrip.mjs` 的 R 组定点性从**第二轮**起算（第一轮 jpw→XML 会被导入端归一：
 `findRefrain` 把尾段歌词折成 chorus、首小节 `<attributes>` 让 `keyChange` 变 true），断言 `X2 === X1`
-且 Score 快照逐字段相同。
+且读回的引擎输入快照逐字段相同。
 
 ## 已知不往返 / 容差
 

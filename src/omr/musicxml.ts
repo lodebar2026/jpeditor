@@ -157,8 +157,7 @@ function notationsXml(num: JpNum, arcs: ArcPairs): string {
  * 符杠（`<beam>`）：简谱的减时线就是五线谱的符杠，一拍之内相邻的减时线音符连成一组。
  * 不写的话下游软件会按自己的规则猜，跨拍/弱起处容易与原图不一致。
  *
- * 与原 model/fromscore.ts::collectBeams（阶段 8 已删）同一套规则（那边分组复用 Measure.autoBeamGroup，
- * 这里输入是 JpNum 只能自己按拍切）：逐层找连续段，长度 ≥2 → begin/continue/end，
+ * 与简谱引擎的符杠分组（`layout.ts::beamGroupsOf`）同一套规则（这里输入是 JpNum，只能自己按拍切）：逐层找连续段，长度 ≥2 → begin/continue/end，
  * 单个 → hook（组内前面还有音就朝后勾）。
  */
 function beamsOfMeasure(notes: JpNum[], beatDiv: number): Map<JpNum, Map<number, string>> {

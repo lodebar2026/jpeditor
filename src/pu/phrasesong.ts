@@ -1,4 +1,4 @@
-// 简谱形状的 `ScoreDoc`（文本谱 / 123 / ABC）→ 断句输入（`score/phraseinput.ts`），`docs/待办.md` §3.1 阶段 5。
+// 简谱形状的 `ScoreDoc`（文本谱 / 123 / ABC）→ 断句输入（`score/phraseinput.ts`）；试听输入与演唱顺序也用这份小节序列。
 //
 // 与 `model/phrasedoc.ts`（MusicXML 形状）分工同 `pu/slots.ts::docView` 与 `jianpuproject.ts`：
 // 这里经排版行视图 `docView` 读，和原样档谱面、简谱引擎输入（`jianpuInputOfDoc`）是同一批对象。

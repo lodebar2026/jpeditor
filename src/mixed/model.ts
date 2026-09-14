@@ -3,7 +3,7 @@
 // 单位：tenths（五线谱高 40，线距 10），y 向下，五线谱顶线 y=0。
 // 水平位置信任 MusicXML 内嵌版面（default-x / measure width），没有时走自动版面（`layoutpass.ts`）。
 //
-// **这里不是模型**（R2 阶段 10 删了 `MixedScore`）：根对象 `StaffLayout` 与各版面节点只存引擎自己算出来的东西
+// **这里不是模型**：根对象 `StaffLayout` 与各版面节点只存引擎自己算出来的东西
 // （坐标、符干、符杠、系统与页、按 tick 查的谱号/调号/拍号索引），语义经各节点的 `src` 从 `ScoreDoc` 取。
 
 import { Fraction } from "../common/fraction";

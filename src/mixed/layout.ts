@@ -2,12 +2,10 @@
 // 各声部读完之后的版面 pass 在 `layoutpass.ts`。
 //
 // **引擎里没有模型**：版面节点（`ChordLayout` / `NoteLayout` / `LyricLayout` / `HarmonyLayout`）只带 `src`
-// （对应的 `ScoreDoc` 元素）与坐标、符干这类版面态，音高、时值、歌词、和弦内容一律经 `src` 取（R2 阶段 10）。
+// （对应的 `ScoreDoc` 元素）与坐标、符干这类版面态，音高、时值、歌词、和弦内容一律经 `src` 取。
 // 跨元素对象（slur / tie / tuplet / ending / wedge）在这里按 `ElementId` 配到版面节点上。
 //
-// 原先由 `loader.ts` 直接读 MusicXML DOM；阶段 6（`docs/待办.md` §3.1）改成只读 `ScoreDoc`，
-// 删 `loader.ts` 前两路双跑：500 首 568 份、Praise as One kl2020 40 首、赞美之泉 222 份、合唱谱 10 份、
-// 五线谱识别导出 6 份，简谱层开关两档页面树逐字节一致。
+// 只读 `ScoreDoc`（不另读 MusicXML DOM）。
 //
 // ## 与 DOM 读法的对应
 //
