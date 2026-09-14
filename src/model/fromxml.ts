@@ -23,6 +23,8 @@ import type {
   Credit,
   Defaults,
   Direction,
+  DirectionPart,
+  FontSpec,
   Element as DocElement,
   HAlign,
   Harmony,
@@ -108,6 +110,8 @@ const KNOWN_KEY = ["fifths", "mode", "cancel", "key-step", "key-alter", "key-acc
 
 function readKey(el: Element): Key {
   const k: Key = { fifths: num(el, "fifths") ?? 0 };
+  const cancel = num(el, "cancel");
+  if (cancel !== undefined) k.cancel = cancel;
   const mode = childText(el, "mode");
   if (mode) k.mode = mode;
   const steps = children(el, "key-step");
@@ -202,7 +206,29 @@ function readDefaults(el: Element): Defaults {
     const sd = num(stl, "staff-distance");
     if (sd !== undefined) d.staffLayout = { staffDistance: sd };
   }
+  const lf = child(el, "lyric-font");
+  if (lf) d.lyricFont = readFont(lf);
+  const wf = child(el, "word-font");
+  if (wf) d.wordFont = readFont(wf);
   return d;
+}
+
+/** `font-family` / `font-size` / `font-weight` 三个属性；一个都没有时也返回空对象（元素本身在就要留） */
+function readFont(el: Element): FontSpec {
+  const f: FontSpec = {};
+  const fam = el.getAttribute("font-family");
+  if (fam !== null) f.family = fam;
+  const size = attrNum(el, "font-size");
+  if (size !== undefined) f.size = size;
+  const w = el.getAttribute("font-weight");
+  if (w !== null) f.weight = w;
+  return f;
+}
+
+/** 同 `readFont`，但三个属性都没有时返回 `undefined`（文字元素上不留空对象） */
+function readFontAttrs(el: Element): FontSpec | undefined {
+  const f = readFont(el);
+  return Object.keys(f).length ? f : undefined;
 }
 
 function readCredits(root: Element): Credit[] {
@@ -217,11 +243,13 @@ function readCredits(root: Element): Credit[] {
     const x = first.getAttribute("default-x");
     const y = first.getAttribute("default-y");
     const fs = first.getAttribute("font-size");
-    const ha = first.getAttribute("justify") ?? first.getAttribute("halign");
     if (x) cr.x = Number(x);
     if (y) cr.y = Number(y);
     if (fs) cr.fontSize = Number(fs);
-    if (ha === "left" || ha === "center" || ha === "right") cr.justify = ha;
+    const just = readAlign(first, "justify");
+    if (just) cr.justify = just;
+    const ha = readAlign(first, "halign");
+    if (ha) cr.halign = ha;
     const page = c.getAttribute("page");
     if (page) cr.page = Number(page);
     out.push(cr);
@@ -307,6 +335,10 @@ function readHarmony(el: Element): Harmony {
   }
   const offset = num(el, "offset");
   if (offset !== undefined) h.offset = offset;
+  if (kindEl?.getAttribute("use-symbols") === "yes") h.useSymbols = true;
+  if (kindEl?.getAttribute("parentheses-degrees") === "yes") h.parenthesesDegrees = true;
+  const st = attrNum(el, "staff");
+  if (st !== undefined) h.staff = st;
   return h;
 }
 
@@ -316,9 +348,17 @@ function readLyrics(noteEl: Element): Lyric[] {
     const text = children(l, "text").map((t) => t.textContent ?? "").join("");
     const n = l.getAttribute("number");
     const lr: Lyric = { number: n ? Number(n.replace(/[^\d]/g, "")) || 1 : 1, text };
+    if (n !== null && !/^\d+$/.test(n)) lr.numberText = n;
+    const name = l.getAttribute("name");
+    if (name !== null) lr.name = name;
     const syl = childText(l, "syllabic");
     if (syl) lr.syllabic = syl as Lyric["syllabic"];
-    if (child(l, "extend")) lr.extend = true;
+    const ext = child(l, "extend");
+    if (ext) {
+      lr.extend = true;
+      const et = ext.getAttribute("type");
+      if (et === "start" || et === "stop" || et === "continue") lr.extendType = et;
+    }
     const el2 = childText(l, "elision");
     if (el2 !== null) lr.elision = el2;
     const pos = readPos(l);
@@ -330,10 +370,11 @@ function readLyrics(noteEl: Element): Lyric[] {
   return out;
 }
 
-function readNotations(noteEl: Element, marks: MarkSink, id: number): Notations | undefined {
+/** `<notations>` 读进 `into`（和弦音的记号并进同一个 `Chord`：语料 14 份的 slur 起止写在和弦音上）。 */
+function readNotations(noteEl: Element, marks: MarkSink, id: number, into: Notations | undefined, noteIndex = 0): Notations | undefined {
   const nots = child(noteEl, "notations");
-  if (!nots) return undefined;
-  const n: Notations = {};
+  if (!nots) return into;
+  const n: Notations = into ?? {};
   const art = child(nots, "articulations");
   if (art) {
     const list = Array.from(art.children).map((c) => c.tagName);
@@ -349,7 +390,11 @@ function readNotations(noteEl: Element, marks: MarkSink, id: number): Notations 
     const list = Array.from(tech.children).map((c) => c.tagName);
     if (list.length) n.technical = list;
   }
-  if (child(nots, "fermata")) n.fermata = true;
+  const fer = child(nots, "fermata");
+  if (fer) {
+    n.fermata = true;
+    if (fer.getAttribute("type") === "inverted") n.fermataInverted = true;
+  }
   if (child(nots, "arpeggiate")) n.arpeggiate = true;
   if (child(nots, "glissando")) n.glissando = true;
   // 跨元素记号：slur / tied / tuplet，按 number 配对
@@ -358,8 +403,8 @@ function readNotations(noteEl: Element, marks: MarkSink, id: number): Notations 
       const type = s.getAttribute("type");
       const number = Number(s.getAttribute("number") ?? 1);
       const kind = tag === "tuplet" ? "tuplet" : tag === "tied" ? "tied" : "slur";
-      if (type === "start") marks.open(kind, number, id, s);
-      else if (type === "stop") marks.close(kind, number, id);
+      if (type === "start") marks.open(kind, number, id, s, noteIndex);
+      else if (type === "stop") marks.close(kind, number, id, noteIndex);
     }
   }
   return Object.keys(n).length ? n : undefined;
@@ -368,23 +413,29 @@ function readNotations(noteEl: Element, marks: MarkSink, id: number): Notations 
 /** 跨元素记号的配对池。MusicXML 用 `number` 属性配对，同类可重叠。 */
 class MarkSink {
   readonly marks: Mark[] = [];
-  private open_ = new Map<string, { id: number; el: Element }[]>();
+  private open_ = new Map<string, { id: number; el: Element; note: number }[]>();
 
-  open(type: Mark["type"], number: number, id: number, el: Element): void {
+  open(type: Mark["type"], number: number, id: number, el: Element, note: number): void {
     const k = `${type}#${number}`;
     const list = this.open_.get(k) ?? [];
-    list.push({ id, el });
+    list.push({ id, el, note });
     this.open_.set(k, list);
   }
 
-  close(type: Mark["type"], number: number, id: number): void {
+  close(type: Mark["type"], number: number, id: number, note: number): void {
     const k = `${type}#${number}`;
     const list = this.open_.get(k);
     const started = list?.pop();
     if (!started) return;
     const m: Mark = { type, number, start: started.id, end: id };
+    if (started.note) m.startNote = started.note;
+    if (note) m.endNote = note;
     const pl = started.el.getAttribute("placement");
     if (pl === "above" || pl === "below") m.placement = pl;
+    const ori = started.el.getAttribute("orientation");
+    if (ori === "over" || ori === "under") m.orientation = ori;
+    const br = started.el.getAttribute("bracket");
+    if (br === "yes" || br === "no") m.bracket = br === "yes";
     if (type === "tuplet") {
       const actual = num(child(started.el, "tuplet-actual"), "tuplet-number");
       const normal = num(child(started.el, "tuplet-normal"), "tuplet-number");
@@ -436,23 +487,35 @@ function readBarline(el: Element, elementCount: number): Barline {
       type: t === "start" ? "start" : t === "discontinue" ? "discontinue" : "stop",
       text: end.textContent?.trim() || undefined,
     };
+    if (end.getAttribute("print-object") === "no") b.ending.printObject = false;
   }
   if (b.location === "middle") b.afterElements = elementCount;
   return b;
 }
 
 function readDirection(el: Element): Direction | null {
-  const dt = child(el, "direction-type");
-  if (!dt) return null;
-  const first = dt.firstElementChild;
+  const items = children(el, "direction-type").flatMap((dt) => Array.from(dt.children));
+  const first = items[0];
   if (!first) return null;
-  const d: Direction = { type: first.tagName };
+  const d: Direction = readDirectionPart(first);
   const offset = num(el, "offset");
   if (offset !== undefined) d.offset = offset;
   const pl = el.getAttribute("placement");
   if (pl === "above" || pl === "below") d.placement = pl;
   const st = el.getAttribute("staff");
   if (st) d.staff = Number(st);
+  if (items.length > 1) d.more = items.slice(1).map(readDirectionPart);
+  const sound = child(el, "sound");
+  if (sound) {
+    const s = readSound(sound);
+    if (s) d.sound = s;
+  }
+  return d;
+}
+
+/** `<direction-type>` 下的一个子元素（words / dynamics / wedge…）。 */
+function readDirectionPart(first: Element): DirectionPart {
+  const d: DirectionPart = { type: first.tagName };
   const pos = readPos(first);
   if (pos) d.pos = pos;
   const just = readAlign(first, "justify");
@@ -461,6 +524,8 @@ function readDirection(el: Element): Direction | null {
   if (ha) d.halign = ha;
   const va = first.getAttribute("valign");
   if (va) d.valign = va;
+  const font = readFontAttrs(first);
+  if (font) d.font = font;
   switch (first.tagName) {
     case "dynamics":
       d.text = first.firstElementChild?.tagName ?? "";
@@ -487,15 +552,11 @@ function readDirection(el: Element): Direction | null {
     case "octave-shift": {
       const t = first.getAttribute("type");
       d.spanType = t === "stop" ? "stop" : t === "continue" ? "continue" : "start";
+      if (first.tagName === "pedal" && first.getAttribute("line") !== null) d.line = first.getAttribute("line") === "yes";
       break;
     }
     default:
       break;
-  }
-  const sound = child(el, "sound");
-  if (sound) {
-    const s = readSound(sound);
-    if (s) d.sound = s;
   }
   return d;
 }
@@ -531,8 +592,24 @@ function readPrint(el: Element): Print | undefined {
     const td = num(sl, "top-system-distance");
     if (sd !== undefined) sys.systemDistance = sd;
     if (td !== undefined) sys.topSystemDistance = td;
+    const mg = child(sl, "system-margins");
+    if (mg) {
+      const lm = num(mg, "left-margin");
+      const rm = num(mg, "right-margin");
+      if (lm !== undefined) sys.leftMargin = lm;
+      if (rm !== undefined) sys.rightMargin = rm;
+    }
     if (Object.keys(sys).length) p.systemLayout = sys;
   }
+  const staffLayouts = children(el, "staff-layout").map((s) => {
+    const out: NonNullable<Print["staffLayouts"]>[number] = {};
+    const n = attrNum(s, "number");
+    if (n !== undefined) out.staff = n;
+    const sd = num(s, "staff-distance");
+    if (sd !== undefined) out.staffDistance = sd;
+    return out;
+  });
+  if (staffLayouts.length) p.staffLayouts = staffLayouts;
   const mn = child(el, "measure-numbering");
   if (mn?.textContent) p.measureNumbering = mn.textContent;
   return Object.keys(p).length ? p : undefined;
@@ -557,9 +634,20 @@ function readMeasure(
   let pendingHarmonies: Harmony[] = [];
   /** `<chord>` 标记的音要并进上一个 `Chord` */
   let last: Chord | null = null;
+  /** 游标（divisions）：`<backup>` 退、`<forward>` 进、非和弦音进；`end` 是前一个元素的终点（`onset` 的缺省值） */
+  let cursor = 0;
+  let end = 0;
+  /** 和弦符号读到时的游标（与所挂元素的起点不同才记 `onset`） */
+  let pendingOnsets: number[] = [];
 
   for (const c of Array.from(el.children)) {
     switch (c.tagName) {
+      case "backup":
+        cursor = Math.max(0, cursor - (num(c, "duration") ?? 0));
+        break;
+      case "forward":
+        cursor += num(c, "duration") ?? 0;
+        break;
       case "attributes": {
         const a: MeasureAttrs = {};
         const div = num(c, "divisions");
@@ -590,6 +678,7 @@ function readMeasure(
       }
       case "harmony":
         pendingHarmonies.push(readHarmony(c));
+        pendingOnsets.push(cursor);
         break;
       case "print": {
         const p = readPrint(c);
@@ -599,6 +688,7 @@ function readMeasure(
       case "direction": {
         const d = readDirection(c);
         if (d && m.elements.length > 0) d.afterElements = m.elements.length;
+        if (d && cursor !== end) d.onset = cursor;
         if (d) (m.directions ??= []).push(d);
         break;
       }
@@ -621,8 +711,12 @@ function readMeasure(
         if (pitchEl) {
           note.pitch = readPitch(pitchEl);
         }
-        const acc = childText(c, "accidental");
+        const accEl = child(c, "accidental");
+        const acc = accEl?.textContent;
         if (acc) note.accidental = acc as Note["accidental"];
+        if (accEl?.getAttribute("parentheses") === "yes") note.accidentalParentheses = true;
+        const nh = childText(c, "notehead");
+        if (nh) note.notehead = nh;
         const tie = children(c, "tie");
         if (tie.length) {
           note.tie = {};
@@ -644,6 +738,8 @@ function readMeasure(
         }
         if (isChordNote && last) {
           last.notes.push(note);
+          const nots = readNotations(c, marks, last.id, last.notations, last.notes.length - 1);
+          if (nots) last.notations = nots;
           break;
         }
         const ch: Chord = {
@@ -695,16 +791,23 @@ function readMeasure(
         }
         const lyr = readLyrics(c);
         if (lyr.length) ch.lyrics = lyr;
-        const nots = readNotations(c, marks, ch.id);
+        const nots = readNotations(c, marks, ch.id, undefined);
         if (nots) ch.notations = nots;
+        if (cursor !== end) ch.onset = cursor;
         if (pendingHarmonies.length) {
+          pendingHarmonies.forEach((h, i) => {
+            if (pendingOnsets[i] !== cursor) h.onset = pendingOnsets[i];
+          });
           const [first, ...later] = pendingHarmonies;
           ch.harmony = first;
           if (later.length) ch.laterHarmonies = later;
           pendingHarmonies = [];
+          pendingOnsets = [];
         }
         m.elements.push(ch);
         last = ch;
+        cursor += ch.duration.divisions;
+        end = cursor;
         break;
       }
       default:
@@ -714,7 +817,7 @@ function readMeasure(
   // **小节末尾还欠着一个和弦**：那是给下一小节的预置和弦（常带 `<offset>` 负值），
   // 后面没有音符可挂。`ScoreDoc` 的 `y` 占位符就是为这种「和弦完全没有对位音符」设的
   // （规范 §8.1，语料实测 72 次）——丢了它，往返一轮就少一个 `<harmony>`。
-  for (const harmony of pendingHarmonies) {
+  pendingHarmonies.forEach((harmony, i) => {
     const sp: Space = {
       kind: "space",
       id: ids.next(),
@@ -723,8 +826,9 @@ function readMeasure(
       staff: 1,
       harmony,
     };
+    if (pendingOnsets[i] !== end) sp.onset = pendingOnsets[i];
     m.elements.push(sp);
-  }
+  });
   const raw = rawOf(el, KNOWN_MEASURE_CHILDREN);
   if (raw) m.raw = raw;
   return m;
@@ -769,8 +873,8 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
     const rights = childText(ident, "rights");
     if (rights) song.identification.rights = rights;
     const enc = child(ident, "encoding");
-    const sw = enc ? childText(enc, "software") : null;
-    if (sw) song.identification.encoding = sw;
+    const sw = enc ? children(enc, "software").map((s) => s.textContent ?? "") : [];
+    if (sw.length) song.identification.software = sw;
   }
 
   const credits = readCredits(root);

@@ -98,8 +98,8 @@ export interface Creator {
 export interface Identification {
   creators: Creator[];
   rights?: string;
-  /** `<encoding><software>` 等，原样保留 */
-  encoding?: string;
+  /** `<encoding><software>`，按出现顺序全留（Sibelius 导出写两条，混排按任一条认编码软件） */
+  software?: string[];
 }
 
 /** `<credit>`：带版式与坐标的标题块文字。导出 MusicXML 时要照原样写回
@@ -112,8 +112,17 @@ export interface Credit {
   x?: number;
   y?: number;
   fontSize?: number;
-  justify?: "left" | "center" | "right";
+  /** `<credit-words justify>`。与 `halign` 分开存：混排只认 `justify`（语料 5 份只写了 `halign`） */
+  justify?: HAlign;
+  halign?: HAlign;
   page?: number;
+}
+
+/** 字体属性（`font-family` / `font-size`（pt）/ `font-weight`）。 */
+export interface FontSpec {
+  family?: string;
+  size?: number;
+  weight?: string;
 }
 
 /** [五线谱] `<defaults>`：版面默认值。本轮留空。 */
@@ -127,6 +136,9 @@ export interface Defaults {
   };
   systemLayout?: { systemDistance?: number; topSystemDistance?: number; leftMargin?: number; rightMargin?: number };
   staffLayout?: { staffDistance?: number };
+  /** `<lyric-font>` / `<word-font>`：歌词与文字的缺省字体（语料 100% 都有） */
+  lyricFont?: FontSpec;
+  wordFont?: FontSpec;
 }
 
 /** [五线谱] `<part-group>`：SATB 的括号分组。← 123 的 `%%score {(S A) (T B)}` */
@@ -160,6 +172,8 @@ export interface Key {
   display?: string;
   /** `<key>` 的显式临时记号（`K:D exp _b _e ^f`） */
   explicitAccidentals?: { step: string; alter: number }[];
+  /** [五线谱] `<cancel>`：转调时先印的还原号个数（带号，同 `fifths` 口径） */
+  cancel?: number;
 }
 
 export interface Time {
@@ -253,6 +267,13 @@ export interface Harmony {
   pos?: Position;
   /** [五线谱] `<kind halign>` */
   kindHalign?: HAlign;
+  /** [五线谱] `<kind use-symbols>` / `<kind parentheses-degrees>` */
+  useSymbols?: boolean;
+  parenthesesDegrees?: boolean;
+  /** [五线谱] `<harmony staff>`（多谱表时挂在哪个谱表） */
+  staff?: number;
+  /** [五线谱] 见 `Chord.onset`。缺省 = 所挂元素的起点 */
+  onset?: number;
 }
 
 export interface Lyric {
@@ -265,6 +286,13 @@ export interface Lyric {
   syllabic?: "single" | "begin" | "middle" | "end";
   /** `<extend>`：续记号（一字多音），123 的 `_` */
   extend?: boolean;
+  /** [五线谱] `<extend type>`。有 stop 的谱按起止两两配对，裸 `<extend/>` 不写（混排两种画法不同） */
+  extendType?: "start" | "stop" | "continue";
+  /** [五线谱] `<lyric number>` 不是纯数字时的原文（Sibelius 写 `part1verse1` / `chorus`）。
+   *  `number` 是解析出的段号；混排按原文分段 */
+  numberText?: string;
+  /** [五线谱] `<lyric name>` */
+  name?: string;
   /** `<elision>`：一音多字的连接（123 的 `{多字}` / ABC 的 `~`） */
   elision?: string;
   /** 副歌：这一行词被多遍共用（`Lyric.refrain` 的对应物） */
@@ -296,6 +324,8 @@ export interface Notations {
   /** [五线谱] `<technical>`。本轮留空 */
   technical?: string[];
   fermata?: boolean;
+  /** [五线谱] `<fermata type="inverted">`：倒置延长记号（画在下方） */
+  fermataInverted?: boolean;
   arpeggiate?: boolean;
   glissando?: boolean;
 }
@@ -414,6 +444,9 @@ export interface Chord {
   typeSize?: string;
   /** [五线谱] 没有 `Note` 可挂时（休止、节奏音符）的 `<note default-x…>`；有音时坐标在各 `Note.pos` */
   pos?: Position;
+  /** [五线谱] 小节内起点（divisions）：MusicXML 靠 `<backup>`/`<forward>` 挪游标，多声部同一小节里各声部从头排。
+   *  **缺省 = 前一个元素的终点**（首个元素为 0）；只在与缺省不同时写。`toxml.ts` 按它补回 `<backup>`/`<forward>` */
+  onset?: number;
   source?: SourceSpan;
 }
 
@@ -423,6 +456,8 @@ export interface Note {
   degree?: Degree;
   /** 面上要印的临时记号（与 `pitch.alter` 不同：alter 是音高，这个是**是否画出来**） */
   accidental?: Accidental;
+  /** [五线谱] `<accidental parentheses="yes">` */
+  accidentalParentheses?: boolean;
   /** 延音线。跨小节、跨行都靠它 */
   tie?: { start?: boolean; stop?: boolean };
   /** [五线谱] `<notehead>` */
@@ -453,6 +488,8 @@ export interface Space {
   harmony?: Harmony;
   lyrics?: Lyric[];
   notations?: Notations;
+  /** [五线谱] 见 `Chord.onset`（`y` 不占时值，只标位置） */
+  onset?: number;
   source?: SourceSpan;
 }
 
@@ -491,6 +528,8 @@ export interface Ending {
   captionless?: boolean;
   /** 起止倒置的空房号（原文 `[1` 紧跟着就收了）：只有 start，不画线段。挂在 start 上 */
   collapsed?: boolean;
+  /** [五线谱] `<ending print-object="no">`：只记遍次、不画 */
+  printObject?: boolean;
 }
 
 export interface Barline {
@@ -568,8 +607,22 @@ export interface Direction {
   justify?: HAlign;
   halign?: HAlign;
   valign?: string;
+  /** [五线谱] 同上那个子元素的字体（`words` / `metronome`） */
+  font?: FontSpec;
+  /** [五线谱] `<pedal line>` */
+  line?: boolean;
+  /** [五线谱] 同一 `<direction>` 里其余的子元素（多行诗文写成几个 `<words>`），字段口径同上 */
+  more?: DirectionPart[];
+  /** [五线谱] 见 `Chord.onset`。缺省 = 它前面那个元素的终点（`afterElements` 为 0 时是 0） */
+  onset?: number;
   source?: SourceSpan;
 }
+
+/** `Direction.more` 的一项：`<direction-type>` 下的一个子元素。 */
+export type DirectionPart = Pick<
+  Direction,
+  "type" | "text" | "tempo" | "spanType" | "wedgeType" | "pos" | "justify" | "halign" | "valign" | "font" | "line"
+>;
 
 /** `<print>`：版面指示。123 的 `$`（换行）/ `$$`（换页）落在这里。
  *
@@ -582,7 +635,9 @@ export interface Print {
   newSystem?: boolean;
   newPage?: boolean;
   /** [五线谱] */
-  systemLayout?: { systemDistance?: number; topSystemDistance?: number };
+  systemLayout?: { systemDistance?: number; topSystemDistance?: number; leftMargin?: number; rightMargin?: number };
+  /** [五线谱] `<staff-layout number>`：本系统各谱表离上一谱表的距离 */
+  staffLayouts?: { staff?: number; staffDistance?: number }[];
   staffSpacing?: number;
   /** `<measure-numbering>` */
   measureNumbering?: string;
@@ -667,9 +722,16 @@ export interface Mark {
   number?: number;
   start: ElementId;
   end: ElementId;
+  /** [五线谱] 起止写在和弦的第几个音上（`Chord.notes` 下标；缺省 0）。混排的弧按这个音定端点 */
+  startNote?: number;
+  endNote?: number;
   /** 嵌套层级（简谱的双弧 / 房号抬高） */
   level?: number;
   placement?: "above" | "below";
+  /** [五线谱] `<slur orientation>`：Sibelius 导出只写它不写 `placement` */
+  orientation?: "over" | "under";
+  /** [五线谱] `<tuplet bracket>` */
+  bracket?: boolean;
   /** 虚线弧（ABC 的 `.(cde)`，规范自称多段歌词时有用） */
   dashed?: boolean;
   /** 渐强/渐弱（`type === "wedge"` 时） */
