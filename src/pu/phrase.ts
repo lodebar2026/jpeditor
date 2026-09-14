@@ -7,7 +7,7 @@
 //   1. **断点 → AST 位置**。断点是「第 n 小节之前」/「某个和弦之后」，
 //      而文本谱的行是 `ScoreLine`，落点得是「某个声部的第 k 个元素之前」。
 //      断句直接吃 `ScoreDoc` 拼出的输入（`phrasesong.ts`），桥是它的 `idOf`（和弦 → 元素 id）
-//      再经 `puToScoreDoc` 的 `elementIds` 回到原文元素。
+//      再经排版行视图的 `elementOf` 回到行里的元素（元素带原文区间，重排据此切原文）。
 //   2. **多声部对齐**。断点只按主旋律（`parts[0]`）算，但合唱谱四个声部得在**同一拍位**
 //      断行，否则各声部行长不一、`layout.ts::alignVoices` 会把它们拧成一团。
 //      对齐按**累计时值**做，不按元素下标——各声部的元素个数本来就不一样。
@@ -21,11 +21,11 @@ import { computePhraseBreaks } from "../score/phrase";
 import { chordsOf, type PhraseChord } from "../score/phraseinput";
 import type { JChord, JScore } from "../layout/input";
 import { elementQuarters, linesOfVoice, tupletRatios, voiceNumbers } from "./ast";
-import type { MusicElement, NoteElement, PuDoc, PuSong, ScoreLine } from "./ast";
+import type { MusicElement, NoteElement, PuSong, ScoreLine } from "./ast";
 import { phrasePartOfSong } from "./phrasesong";
 import { jianpuInputOfDoc } from "../model/jianpuinput";
-import { puToScoreDoc } from "../model/frompu";
-import type { ElementId } from "../model/doc";
+import type { ScoreDoc } from "../model/doc";
+import { docView } from "./slots";
 
 /** 乐句排版时一页排几行。分页与断句共用这一个数。 */
 const PAGE_LINES = 4;
@@ -113,22 +113,19 @@ export type FitMeasure = (score: JScore) => { width: number; spans: ReadonlyMap<
  * @returns 新的行划分；这份文档没有可排的曲行时返回 null。
  */
 export function puPhraseLines(
-  doc: PuDoc, songIdx = 0, opt: { measure?: FitMeasure | null } = {},
+  sdoc: ScoreDoc, songIdx = 0, opt: { measure?: FitMeasure | null } = {},
 ): PuNewLine[] | null {
-  const song = doc.songs[songIdx];
+  const view = docView(sdoc);
+  const song = view.songs[songIdx];
   if (!song) return null;
-  // 断句输入从 `ScoreDoc` 出；断点经「和弦 → id → 原文元素」回到原文（重排改写的是原文本身）
-  const elementIds = new Map<MusicElement, ElementId>();
-  const sdoc = puToScoreDoc(doc, { elementIds });
+  // 断句输入从 `ScoreDoc` 出；断点经「和弦 → id → 行里的元素」回到原文（重排改写的是原文本身）
   const input = phrasePartOfSong(sdoc, songIdx);
   if (!input) return null;
   const part = input.part;
-  const elementOf = new Map<ElementId, NoteElement>();
-  for (const [el, id] of elementIds) if (el.kind === "note") elementOf.set(id, el);
   const noteMap = new Map<PhraseChord, NoteElement>();
   for (const [ch, id] of input.idOf) {
-    const el = elementOf.get(id);
-    if (el) noteMap.set(ch, el);
+    const el = view.elementOf.get(id);
+    if (el?.kind === "note") noteMap.set(ch, el);
   }
 
   const voices = voiceNumbers(song);

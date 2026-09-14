@@ -11,7 +11,6 @@ import { eachChord } from "../model/helpers";
 import type { ElementId, ScoreDoc } from "../model/doc";
 import type { JScore } from "../layout/input";
 import { clearBreaks } from "../layout/input";
-import type { PuDoc } from "../pu";
 import type { PuUserOptions } from "../pu/metrics";
 import { ExpandedPainter, type ExpandedOptions } from "../jianpu/expanded";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
@@ -124,9 +123,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private _breakDesc: string | null = null;
   /** 已解析出的文本谱方言，用于代码区标签（解析前未知）。 */
   private _puDialect: Dialect | null = null;
-  /** 上次解析结果的缓存（同一份文本不重复解析）。文本谱另留解析器直出的 `PuDoc`——
-   *  乐句重排改写的是原文本身，要它的原文列号（`pu/relayout.ts`）。 */
-  private _scoreDoc: { text: string; doc: ScoreDoc; pu: PuDoc | null } | null = null;
+  /** 上次解析结果的缓存（同一份文本不重复解析）。文本谱的乐句重排也读它（原文区间在模型上，`pu/relayout.ts`）。 */
+  private _scoreDoc: { text: string; doc: ScoreDoc } | null = null;
   /** 上次投影出的引擎输入（展开档谱面、导出 PPTX 共用）。 */
   private _puScoreCache: {
     text: string;
@@ -606,7 +604,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this.setStatus("文本谱转模型失败：" + (e instanceof Error ? e.message : String(e)));
       return false;
     }
-    this._scoreDoc = { text, doc: sdoc, pu: doc };
+    this._scoreDoc = { text, doc: sdoc };
     this._puScoreCache = null; // 文本变了，引擎输入要重建
     // 乐句重排：**用户手改过的文本就是新的「原样」基准**（切回按钮要还原到它）。
     // 重排后又手改的，也按「这就是新的原样」算——否则一按「原样」就把用户后来的编辑抹了。
@@ -640,7 +638,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this.setStatus(`123 无法解析：第 ${fatal.source.line + 1} 行 ${fatal.message}`);
       return false;
     }
-    this._scoreDoc = { text, doc, pu: null };
+    this._scoreDoc = { text, doc };
     this._puScoreCache = null; // 文本变了，引擎输入要重建
     // 乐句重排认的是文本谱语法（`pu/relayout.ts` 重排的是原文本身），123 这一档不给
     this._disablePhrase();
@@ -665,7 +663,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     const notes = doc.songs.reduce((n, song) => n + [...eachChord(song)].length, 0);
     if (notes === 0) return this._reloadAbcFallback(text, "原生解析没读出音符");
-    this._scoreDoc = { text, doc, pu: null };
+    this._scoreDoc = { text, doc };
     this._puScoreCache = null;
     this._disablePhrase();
     this._syncFormatLabel();
@@ -909,26 +907,13 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     if (this._scoreDoc?.text === text) return this._scoreDoc.doc;
     try {
       const doc = toScoreDoc(text);
-      this._scoreDoc = { text, doc, pu: null };
+      this._scoreDoc = { text, doc };
       return doc;
     } catch {
       return null;
     }
   }
 
-  /** 文本谱解析器直出的 `PuDoc`——**只给乐句重排**（它改写原文，要原文列号）。 */
-  private puSource(): PuDoc | null {
-    if (this.docFormat !== "pu") return null;
-    const text = this.getText();
-    if (this._scoreDoc?.text === text && this._scoreDoc.pu) return this._scoreDoc.pu;
-    try {
-      const pu = parsePu(text);
-      this._scoreDoc = { text, doc: puToScoreDoc(pu), pu };
-      return pu;
-    } catch {
-      return null;
-    }
-  }
 
   /** 当前文档投影出的引擎输入（展开档谱面与导出 PPTX 共用）。
    *  `forExpanded`：展开档那一份（带歌词的声部换到最前、同号歌词顺延，见 `JianpuInputOptions.forExpanded`）。 */
@@ -1329,7 +1314,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this.setStatus("这份 MusicXML 里没有音符");
       return false;
     }
-    this._scoreDoc = { text, doc, pu: null };
+    this._scoreDoc = { text, doc };
     this._puScoreCache = null;
     this._disablePhrase();
     this._syncFormatLabel();
@@ -1464,7 +1449,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       return;
     }
     const text = this.getText();
-    const doc = this.puSource();
+    const doc = this.docFormat === "pu" ? this.currentScoreDoc() : null;
     if (!doc) {
       this.setStatus("文本谱解析失败，无法按乐句重排");
       return;

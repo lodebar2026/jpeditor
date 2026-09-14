@@ -170,7 +170,6 @@ function convertLine(
   ids: IdGen,
   startMeasureNo: number,
   carry: Carry,
-  elementIds?: Map<MusicElement, ElementId>,
 ): LineResult {
   const measures: Measure[] = [];
   const idAt = new Map<number, ElementId>();
@@ -229,7 +228,6 @@ function convertLine(
           takePending(ch);
           mea.elements.push(ch);
           idAt.set(i, ch.id);
-          elementIds?.set(el, ch.id);
           measureAt.set(i, measures.length);
           if (el.lyricAnchor) anchors.push(ch);
           host = ch;
@@ -245,7 +243,6 @@ function convertLine(
         (host.sustains ??= []).push(su);
         host.duration = durationFrom(4 << (host.beams?.length ?? 0), host.duration.dots, host.sustains.length);
         idAt.set(i, su.id);
-        elementIds?.set(el, su.id);
         measureAt.set(i, measures.length);
         if (el.lyricAnchor) anchors.push(su);
         break;
@@ -260,7 +257,6 @@ function convertLine(
         mea.elements.push(ch);
         for (const g of n.graceAfter) mea.elements.push(chordOfNote(g, voice, ids, { after: true }));
         idAt.set(i, ch.id);
-        elementIds?.set(n, ch.id);
         measureAt.set(i, measures.length);
         host = ch;
         carry.last = ch;
@@ -274,7 +270,7 @@ function convertLine(
 
       case "inline-layer": {
         // 伴奏层是独立的一小段元素流：自带小节与记号，承接状态不跟主旋律串
-        const sub = convertLine(el.elements, voice, ids, 1, { last: null }, elementIds);
+        const sub = convertLine(el.elements, voice, ids, 1, { last: null });
         const marks: Mark[] = [];
         convertMarks(el.marks, sub, marks, { pending: new Map() }, sub.measures);
         pending.push({ kind: "layer", role: el.role, measures: sub.measures, marks, source: el.source });
@@ -567,14 +563,8 @@ function applyVolta(r: LineResult, m: PuMark, measures: Measure[], voltas: { ope
   else (mea.barlines ??= []).push({ location: "right", ending });
 }
 
-export interface PuToScoreDocOptions {
-  /** 传入一个空 Map，转换时填上「原文元素（音符/增时线）→ 元素 id」。
-   *  乐句重排要用：它改写的是原文，断点要从断句输入经 id 找回原文元素（`pu/phrase.ts`）。 */
-  elementIds?: Map<MusicElement, ElementId>;
-}
-
 /** `PuDoc` → `ScoreDoc`。一首 `PuSong` 对一首 `Song`。 */
-export function puToScoreDoc(pu: PuDoc, options: PuToScoreDocOptions = {}): ScoreDoc {
+export function puToScoreDoc(pu: PuDoc): ScoreDoc {
   const doc: ScoreDoc = emptyDoc("pu");
   doc.puDialect = pu.dialect;
   doc.source = pu.source;
@@ -647,7 +637,7 @@ export function puToScoreDoc(pu: PuDoc, options: PuToScoreDocOptions = {}): Scor
             pv = { part, carry: { last: null }, voltas: { open: [] } };
             byVoice.set(line.voice, pv);
           }
-          const r = convertLine(line.elements, line.voice, ids, pv.part.measures.length + 1, pv.carry, options.elementIds);
+          const r = convertLine(line.elements, line.voice, ids, pv.part.measures.length + 1, pv.carry);
           if (r.measures.length === 0) r.measures.push({ number: String(pv.part.measures.length + 1), elements: [] });
           const lyricLines = attachLyrics(r.anchors, line.lyrics);
           let cs = cross.get(line.voice);
