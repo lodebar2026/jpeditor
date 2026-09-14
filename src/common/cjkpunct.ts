@@ -218,7 +218,7 @@ export const PU_LYRIC_PUNCTUATION = "，。！？、；：,.!?;:…—～~《》
 /** `pu/parse.ts`：引号。左引号领起下一个字，右引号贴前一个字（正是 CLREQ 的 open/close 语义）。 */
 export const PU_LYRIC_QUOTES = "“”‘’\"";
 
-/** `mixed/model.ts::MLyric.widthInfo`：判「哪些字算 CJK 主体」时要排除的标点。 */
+/** `mixed/model.ts::LyricLayout.widthInfo`：判「哪些字算 CJK 主体」时要排除的标点。 */
 export const MIXED_PUNCT = "「」（），。！；：、“”？｡";
 
 /** 折行禁则：不许出现在行首的收尾标点（`bookparts.ts::wrapText`）。 */

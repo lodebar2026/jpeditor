@@ -11,8 +11,8 @@ import { renderPageSvg } from "../layout/painter";
 import type { ItemVisitor } from "../layout/walk";
 import { colorToCss } from "../common/geom";
 import type { PagePainter } from "../layout/pagepainter";
-import { LCR, MixedOptions, MixedScore, Notation, ScoreCredit, Sys, SysStaff } from "./model";
-import { loadMixedDoc } from "./fromdoc";
+import { LCR, MixedOptions, StaffLayout, Notation, ScoreCredit, Sys, SysStaff } from "./model";
+import { layoutStaff } from "./layout";
 import type { ScoreDoc } from "../model/doc";
 import { drawSystem } from "./render";
 
@@ -22,13 +22,13 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 // formatMixedScore（formatScorePAO port, without per-song hacks）
 
 /**
- * Post-process the loaded MixedScore to set up Mixed notation on the first part:
+ * Post-process the loaded StaffLayout to set up Mixed notation on the first part:
  * - Set staves[0].notation[0] = Mixed
  * - Run calcMixedStaffY (needs notes already in place)
  * - Move harmonies to harmonyY
  * - Scale P2 lyric font × 0.8
  */
-export function formatMixedScore(score: MixedScore): void {
+export function formatMixedScore(score: StaffLayout): void {
   if (score.parts.length === 0) return;
 
   const p = score.parts[0];
@@ -108,7 +108,7 @@ interface LayoutFrame {
   newPage: boolean;
 }
 
-function getFrames(score: MixedScore): FrameItem[] {
+function getFrames(score: StaffLayout): FrameItem[] {
   const items: FrameItem[] = [];
   for (const sys of score.systems) {
     // System::getYBound（model.ts）：忠实移植，topY 为上方延伸量，bottomY 为下方（负）。
@@ -149,7 +149,7 @@ function flowLayout(items: FrameItem[], ph: number): LayoutFrame[] {
 }
 
 function drawFrames(
-  score: MixedScore,
+  score: StaffLayout,
   items: FrameItem[],
   lf: LayoutFrame[],
   leftMargin: number,
@@ -236,7 +236,7 @@ function drawFrames(
 // MixedPainter。对外契约见 layout/pagepainter.ts::PagePainter（以前只写在这行注释里）。
 
 export class MixedPainter implements PagePainter {
-  private score: MixedScore | null = null;
+  private score: StaffLayout | null = null;
   private meta: MetaData | null = null;
   private _pages: Group[] = [];
   /** 隐藏小节号（用户选项）。下次 load 生效。 */
@@ -276,10 +276,10 @@ export class MixedPainter implements PagePainter {
     return this.score?.title.split("\n")[0] ?? "";
   }
 
-  /** 读谱并排版（`ScoreDoc` 须是 MusicXML 形状，见 `fromdoc.ts`）。Must be called before renderPage. */
+  /** 读谱并排版（`ScoreDoc` 须是 MusicXML 形状，见 `layout.ts`）。Must be called before renderPage. */
   async load(doc: ScoreDoc): Promise<void> {
     const options = await this._options();
-    this._layout(loadMixedDoc(doc, options));
+    this._layout(layoutStaff(doc, options));
   }
 
   private async _options(): Promise<MixedOptions> {
@@ -291,7 +291,7 @@ export class MixedPainter implements PagePainter {
     return options;
   }
 
-  private _layout(score: MixedScore): void {
+  private _layout(score: StaffLayout): void {
     if (this.showJianpuLayer) formatMixedScore(score);
     this.score = score;
 

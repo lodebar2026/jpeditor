@@ -1,5 +1,5 @@
-// 混排 `MixedScore` 读入的公共部分：纯函数小工具与各声部读完之后的版面 pass。
-// `fromdoc.ts` 把各声部读成 `MixedScore` 后调这里的 `finishMixedScore` 排版。从 musicpp mxml/parser.cpp 移植，判据原样。
+// 混排 `StaffLayout` 读入的公共部分：纯函数小工具与各声部读完之后的版面 pass。
+// `layout.ts` 把各声部读成 `StaffLayout` 后调这里的 `finishMixedScore` 排版。从 musicpp mxml/parser.cpp 移植，判据原样。
 
 import { Fraction } from "../common/fraction";
 import { GlyphCodes } from "../smufl/smufl";
@@ -8,8 +8,8 @@ import {
   Encoder,
   fEq,
   LCR,
-  MChord,
-  MixedScore,
+  ChordLayout,
+  StaffLayout,
   MPage,
   Notation,
   PartGroup,
@@ -93,7 +93,7 @@ function autoSlotWidth(durQuarters: number): number {
 }
 
 /** 该 MusicXML 是否自带版面坐标（任一小节有 width 或任一音符有 default-x）。 */
-function hasEmbeddedLayout(score: MixedScore): boolean {
+function hasEmbeddedLayout(score: StaffLayout): boolean {
   for (const mif of score.measures) if (mif.width > 0) return true;
   for (const part of score.parts) {
     for (const md of part.measures) {
@@ -106,7 +106,7 @@ function hasEmbeddedLayout(score: MixedScore): boolean {
 }
 
 /** 某小节内所有声部音符的节奏槽：offset(measure-relative) → 自然累计 x + 该 offset 的槽宽。 */
-function autoMeasureSlots(score: MixedScore, mi: number): { offset: Fraction; nat: number; slot: number }[] {
+function autoMeasureSlots(score: StaffLayout, mi: number): { offset: Fraction; nat: number; slot: number }[] {
   const durAt = new Map<string, { offset: Fraction; dur: number }>();
   for (const part of score.parts) {
     const md = part.measures[mi];
@@ -132,7 +132,7 @@ function autoMeasureSlots(score: MixedScore, mi: number): { offset: Fraction; na
 }
 
 /** 计算每小节自然宽度 + 按页宽折行，返回强制换行的小节索引集合。 */
-function autoLayoutWidths(score: MixedScore): Set<number> {
+function autoLayoutWidths(score: StaffLayout): Set<number> {
   const natSpan: number[] = [];
   for (let i = 0; i < score.measures.length; i++) {
     const slots = autoMeasureSlots(score, i);
@@ -161,7 +161,7 @@ function autoLayoutWidths(score: MixedScore): Set<number> {
 }
 
 /** 折行后拉伸每个 system 的小节宽度以铺满页宽（末行保持自然宽，不拉伸）。 */
-function autoJustifySystems(score: MixedScore): void {
+function autoJustifySystems(score: StaffLayout): void {
   const d = score.defaults;
   for (let si = 0; si < score.systems.length; si++) {
     const sys = score.systems[si];
@@ -181,7 +181,7 @@ function autoJustifySystems(score: MixedScore): void {
 }
 
 /** layoutAttr 之后：把每小节音符横向铺到 [dataPos, dataEnd] 内（按节奏槽比例）。 */
-function autoPlaceNotes(score: MixedScore): void {
+function autoPlaceNotes(score: StaffLayout): void {
   for (let i = 0; i < score.measures.length; i++) {
     const mif = score.measures[i];
     const slots = autoMeasureSlots(score, i);
@@ -238,7 +238,7 @@ function autoPlaceNotes(score: MixedScore): void {
   // 歌词 y：逐 system 取该行音符/符干/下方 slur-tie 的最低点统一下移，让各 verse 行整齐
   // 且不与下探的符干/加线/符杠/圆滑线重叠（固定偏移在低音+朝下符干/下方 slur 时会被压住）。
   const four = new Fraction(4);
-  const chordLow = (ch: MChord): number => {
+  const chordLow = (ch: ChordLayout): number => {
     let low = 0;
     for (const nt of ch.notes) low = Math.max(low, nt.cy());
     if (!ch.stemUp && ch.noteType.compareTo(four) < 0) low = Math.max(low, ch.tailY(false));
@@ -298,7 +298,7 @@ const AUTO_DIRECTION_Y = 46; // 速度记号默认高度（谱表上方）
 const AUTO_ATTR_GAP = 16;    // 行首小节谱号/调号/拍号右缘到首音符的额外净空
 const AUTO_SLUR_SAG = 16;    // 下方 slur/tie 弧线相对端点音符再下探的量
 
-function autoLayoutHeader(score: MixedScore): void {
+function autoLayoutHeader(score: StaffLayout): void {
   const d = score.defaults;
   const cx = d.pageWidth / 2;
   const creds: ScoreCredit[] = [];
@@ -324,7 +324,7 @@ function autoLayoutHeader(score: MixedScore): void {
 }
 
 
-function layoutAttr(score: MixedScore): void {
+function layoutAttr(score: StaffLayout): void {
   for (const mif of score.measures) {
     const sys = mif.system;
     const nsys = sys.firstMeasure === mif.index;
@@ -436,7 +436,7 @@ function timeSigWidthCalc(ts: TimeSig): number {
   return Math.max(digits(ts.beats), digits(ts.beatType)) * 10;
 }
 
-function updateEntPos(score: MixedScore): void {
+function updateEntPos(score: StaffLayout): void {
   for (let i = 0; i < score.measures.length; i++) {
     const mif = score.measures[i];
     for (const part of score.parts) {
@@ -450,7 +450,7 @@ function updateEntPos(score: MixedScore): void {
   }
 }
 
-function updateDataXPos(score: MixedScore): void {
+function updateDataXPos(score: StaffLayout): void {
   for (const part of score.parts) {
     for (let i = 0; i < score.measures.length; i++) {
       const mif = score.measures[i];
@@ -465,7 +465,7 @@ function updateDataXPos(score: MixedScore): void {
 }
 
 // ---- 系统/分页/谱表间距：读 `<print>` 与 `<staff-details>` 的那三步 ----
-// 输入由 `fromdoc.ts` 从 `ScoreDoc` 拼，判据原样。
+// 输入由 `layout.ts` 从 `ScoreDoc` 拼，判据原样。
 
 /** 一个 `<print>`。`systemLayout` / `margins` 为 null 表示元素不在（与「在但没写数」不同）。 */
 export interface PrintInput {
@@ -490,7 +490,7 @@ export interface MeasureLayoutInput {
 /** 声部 → 小节 → 版面输入 */
 export type LayoutInput = MeasureLayoutInput[][];
 
-function buildSystemsAndPages(score: MixedScore, input: LayoutInput, extraBreaks?: Set<number>): void {
+function buildSystemsAndPages(score: StaffLayout, input: LayoutInput, extraBreaks?: Set<number>): void {
   const newSystem = new Set<number>(extraBreaks ?? []);
   const newPage = new Set<number>();
 
@@ -556,7 +556,7 @@ function buildSystemsAndPages(score: MixedScore, input: LayoutInput, extraBreaks
  * 状态跨系统延续（loader.cpp::processStaffDetails + updateSystemLayout 的 visPrev）。
  * 在每个 system 的 firstMeasure 处应用累积可见性快照。
  */
-function applyStaffVisibility(score: MixedScore, input: LayoutInput): void {
+function applyStaffVisibility(score: StaffLayout, input: LayoutInput): void {
   // measureIdx → (全局谱表序号 → 可见)
   const changes = new Map<number, Map<number, boolean>>();
   let stfOff = 0;
@@ -600,7 +600,7 @@ function applyStaffVisibility(score: MixedScore, input: LayoutInput): void {
   }
 }
 
-function updateLayoutByPrint(score: MixedScore, input: LayoutInput): void {
+function updateLayoutByPrint(score: StaffLayout, input: LayoutInput): void {
   for (const sys of score.systems) {
     let stfOff = 0;
     let pid = 0;
@@ -665,7 +665,7 @@ function updateLayoutByPrint(score: MixedScore, input: LayoutInput): void {
  * 各声部读完之后的收尾：全局 tick、跨小节对象的绝对 tick、简谱符杠、整个版面 pass、声部分组、Sibelius 修正。
  * 与来源无关。
  */
-export function finishMixedScore(score: MixedScore, input: LayoutInput, partGroups: PartGroup[]): void {
+export function finishMixedScore(score: StaffLayout, input: LayoutInput, partGroups: PartGroup[]): void {
   // Staff order
   let ord = 0;
   for (const part of score.parts) for (const st of part.staves) st.order = ord++;

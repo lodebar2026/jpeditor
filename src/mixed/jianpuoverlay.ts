@@ -13,11 +13,11 @@ import { jpDot, jpTimeSigItems } from "../layout/jpglyph";
 import { GlyphCodes } from "../smufl/smufl";
 import {
   accidentalSym,
-  MChord,
-  MeasureData,
-  MeasureInfo,
+  ChordLayout,
+  PartMeasureLayout,
+  MeasureLayout,
   MixedOptions,
-  MNote,
+  NoteLayout,
   PartStaff,
   Sys,
   SysStaff,
@@ -28,7 +28,7 @@ import { addLine, addSmufl, addSmuflScaled, translated } from "./prims";
 const BLACK = 0xff000000;
 
 /** 一个小节的简谱叠层。`grp` 是这个小节在五线谱层里的组（原点在谱表顶线、小节左缘）。 */
-export function drawJianpuOverlay(grp: Group, sys: Sys, st: SysStaff, m: MeasureInfo): void {
+export function drawJianpuOverlay(grp: Group, sys: Sys, st: SysStaff, m: MeasureLayout): void {
   const scr = sys.score;
   const eng = scr.options;
   const ps = st.partStaff;
@@ -72,13 +72,13 @@ export function drawJianpuOverlay(grp: Group, sys: Sys, st: SysStaff, m: Measure
 }
 
 /** 这个音在简谱层要印的临时记号：语义层按旋律延续算好的（`Degree.accidental`），不照搬 MusicXML 的 <accidental>。 */
-function accidentalOf(ch: MChord, n: MNote, subStaff: number): number | null {
+function accidentalOf(ch: ChordLayout, n: NoteLayout, subStaff: number): number | null {
   if (ch.rest || n.staff !== subStaff || !n.visible || !n.jpMelody || n.x < 0) return null;
   return n.jpAccidental();
 }
 
 /** 临时记号：数字左侧的小号 SMuFL 字形。 */
-function drawAccidental(eng: MixedOptions, col: Group, n: MNote, alt: number): void {
+function drawAccidental(eng: MixedOptions, col: Group, n: NoteLayout, alt: number): void {
   const sc = 0.75;
   const sym = accidentalSym(alt, true);
   const w = smuflWidth(eng.meta, sym);
@@ -91,7 +91,7 @@ function drawAccidental(eng: MixedOptions, col: Group, n: MNote, alt: number): v
 }
 
 /** 一个音的数字、八度点、增时线或附点（render.cpp::drawNotesJianPu）。 */
-function drawColumn(eng: MixedOptions, col: Group, md: MeasureData, ch: MChord, n: MNote, subStaff: number): void {
+function drawColumn(eng: MixedOptions, col: Group, md: PartMeasureLayout, ch: ChordLayout, n: NoteLayout, subStaff: number): void {
   if (ch.slash) return;
   if (n.staff !== subStaff) return;
   if (!n.visible) return;
@@ -219,7 +219,7 @@ function textAt(text: string, font: Font, x: number, y: number): TextFrame {
 }
 
 /** 减时线（render.cpp::BeamLevelData::drawJianPu）：跨音的，各柱画完再画。 */
-function drawJpBeams(eng: MixedOptions, container: Group, md: MeasureData): void {
+function drawJpBeams(eng: MixedOptions, container: Group, md: PartMeasureLayout): void {
   const sc = eng.mixStaffHeight / 40;
   const font = eng.mixFont;
   const meta = eng.meta;
@@ -232,9 +232,9 @@ function drawJpBeams(eng: MixedOptions, container: Group, md: MeasureData): void
     for (let lev = 0; lev < 10; lev++) {
       // 收集本层的连续减时线段（render.cpp:32-58 processLevelJp）——同层可有多段，
       // 不能用全局首/尾连成一条。
-      const runs: [MChord, MChord][] = [];
-      let start: MChord | null = null;
-      let end: MChord | null = null;
+      const runs: [ChordLayout, ChordLayout][] = [];
+      let start: ChordLayout | null = null;
+      let end: ChordLayout | null = null;
       for (const ch of grp.chords) {
         if (ch.jpBeamCount() <= lev) {
           if (start && end) runs.push([start, end]);
@@ -296,7 +296,7 @@ function drawJpBeams(eng: MixedOptions, container: Group, md: MeasureData): void
 function drawJpTimeSignature(
   eng: MixedOptions,
   container: Group,
-  mif: MeasureInfo,
+  mif: MeasureLayout,
   ps: PartStaff,
   x: number,
 ): void {
@@ -342,7 +342,7 @@ function drawJpTimeSignature(
 function drawJpKey(
   eng: MixedOptions,
   container: Group,
-  mif: MeasureInfo,
+  mif: MeasureLayout,
   ps: PartStaff,
   st: SysStaff,
 ): void {
