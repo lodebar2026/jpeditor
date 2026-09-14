@@ -81,7 +81,6 @@ import {
 import { melodyChords, topNote } from "../model/jianpu";
 
 const STEP_DIATONIC: Record<string, number> = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
-const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 
 function makeClef(c: DocClef): ClefSig {
   const octChange = c.octaveChange ?? 0;
@@ -375,37 +374,13 @@ class DocPartLoader {
     }
 
     const nt = ch.newNote();
-    nt.staff = src.staff - 1;
     nt.src = note;
     const top = this.melody.get(src);
     nt.jpMelody = top !== undefined && (note === null || note === top);
 
     const pitch = note?.pitch;
-    if (ch.rest) {
-      nt.writtenPitch = -1;
-      nt.soundPitch = 0;
-    } else {
-      nt.writtenPitch = pitch ? pitch.octave * 7 + (STEP_DIATONIC[pitch.step] ?? 0) + this.transposeSteps : -1;
-      nt.soundPitch = pitch ? (pitch.octave + 1) * 12 + (STEP_CHROMATIC[pitch.step] ?? 0) + Math.round(pitch.alter) : 0;
-      nt.alter = pitch?.alter ?? 0;
-    }
-
+    if (!ch.rest && pitch) nt.writtenPitch = pitch.octave * 7 + (STEP_DIATONIC[pitch.step] ?? 0) + this.transposeSteps;
     nt.x = (note ? note.pos : src.pos)?.defaultX ?? -1;
-    // 每音符显示尺寸（<type size="cue">）——musicpp Note::size==1（render.cpp:963）。
-    if (src.typeSize === "cue") nt.size = 1;
-
-    if (note?.accidental) {
-      nt.parenthesesAcc = note.accidentalParentheses === true;
-      switch (note.accidental.trim()) {
-        case "flat": nt.acc = GlyphCodes.accidentalFlat; break;
-        case "sharp": nt.acc = GlyphCodes.accidentalSharp; break;
-        case "natural": nt.acc = GlyphCodes.accidentalNatural; break;
-        case "double-sharp": nt.acc = GlyphCodes.accidentalDoubleSharp; break;
-        case "flat-flat": nt.acc = GlyphCodes.accidentalDoubleFlat; break;
-      }
-    }
-
-    nt.visible = src.printObject !== false;
 
     if (note?.stem !== undefined) {
       ch.stemUp = note.stem === "up";

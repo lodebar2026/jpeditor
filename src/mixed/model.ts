@@ -12,6 +12,8 @@ import { MetaData, GlyphCodes } from "../smufl/smufl";
 import type { Chord as DocChord, Note as DocNote } from "../model/doc";
 import { beamCount } from "../model/jianpu";
 
+const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
 // ---------------- Fraction helpers (boost::rational 比较语义) ----------------
 
 export function fLt(a: Fraction, b: Fraction): boolean {
@@ -290,27 +292,55 @@ export class MNote {
   src: DocNote | null = null;
   /** 简谱叠层印的就是这个音（语义层 `melodyChords` 那一路的 `topNote`，休止也算） */
   jpMelody = false;
-  soundPitch = 0;
+  /** 谱表上的位置（记谱音高按调式音级计，含移调）。有音高时 `fromdoc` 按 `src.pitch` 算好；
+   *  **休止由 `fixPitchForRest` 排到谱表上**，所以它是版面坐标、不是只读的语义 */
   writtenPitch = -1;
-  alter = 0;
-  staff = 0;
-  /** 显示尺寸：1=cue（小符头），0=正常（MusicXML <type size="cue">）。 */
-  size = 0;
-
+  /** 延音线起止（读入时照 `<tie>`，Sibelius 不成对的由 `fixTieForSib` 补） */
   tieBegin = false;
   tieEnd = false;
-  parenthesesAcc = false;
-  visible = true;
   flipped = false;
   /** 所属琶音组（无则 null）。 */
   arpeg: Arpeggiate | null = null;
-
-  /** 显式临时记号（SMuFL 字形，"" 表示无）。 */
-  acc = "";
   x = -1;
 
   constructor(chord: MChord) {
     this.chord = chord;
+  }
+
+  // ---- 语义：一律从 ScoreDoc 取 ----
+  /** 发音音高（MIDI 口径，休止与无音高为 0） */
+  get soundPitch(): number {
+    const p = this.src?.pitch;
+    if (this.chord.rest || !p) return 0;
+    return (p.octave + 1) * 12 + (STEP_CHROMATIC[p.step] ?? 0) + Math.round(p.alter);
+  }
+  get alter(): number {
+    return this.chord.rest ? 0 : this.src?.pitch?.alter ?? 0;
+  }
+  /** 所在谱表（0 基） */
+  get staff(): number {
+    return (this.chord.src?.staff ?? 1) - 1;
+  }
+  /** 显示尺寸：1=cue（小符头），0=正常（MusicXML <type size="cue">）。 */
+  get size(): number {
+    return this.chord.src?.typeSize === "cue" ? 1 : 0;
+  }
+  get visible(): boolean {
+    return this.chord.src?.printObject !== false;
+  }
+  get parenthesesAcc(): boolean {
+    return this.src?.accidental ? this.src.accidentalParentheses === true : false;
+  }
+  /** 面上印的临时记号（SMuFL 字形，"" 表示无）。 */
+  get acc(): string {
+    switch (this.src?.accidental?.trim()) {
+      case "flat": return GlyphCodes.accidentalFlat;
+      case "sharp": return GlyphCodes.accidentalSharp;
+      case "natural": return GlyphCodes.accidentalNatural;
+      case "double-sharp": return GlyphCodes.accidentalDoubleSharp;
+      case "flat-flat": return GlyphCodes.accidentalDoubleFlat;
+      default: return "";
+    }
   }
 
   endTick(): Fraction {
