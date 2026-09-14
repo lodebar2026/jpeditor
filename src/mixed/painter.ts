@@ -12,7 +12,6 @@ import type { ItemVisitor } from "../layout/walk";
 import { colorToCss } from "../common/geom";
 import type { PagePainter } from "../layout/pagepainter";
 import { LCR, MixedOptions, MixedScore, Notation, ScoreCredit, Sys, SysStaff } from "./model";
-import { loadMixedXml } from "./loader";
 import { loadMixedDoc } from "./fromdoc";
 import type { ScoreDoc } from "../model/doc";
 import { drawSystem } from "./render";
@@ -277,14 +276,8 @@ export class MixedPainter implements PagePainter {
     return this.score?.title.split("\n")[0] ?? "";
   }
 
-  /** Load and format a MusicXML string. Must be called before renderPage. */
-  async load(xmlText: string): Promise<void> {
-    const options = await this._options();
-    this._layout(loadMixedXml(xmlText, options));
-  }
-
-  /** 同 `load`，但从 `ScoreDoc`（MusicXML 形状）读（`fromdoc.ts`）。 */
-  async loadDoc(doc: ScoreDoc): Promise<void> {
+  /** 读谱并排版（`ScoreDoc` 须是 MusicXML 形状，见 `fromdoc.ts`）。Must be called before renderPage. */
+  async load(doc: ScoreDoc): Promise<void> {
     const options = await this._options();
     this._layout(loadMixedDoc(doc, options));
   }

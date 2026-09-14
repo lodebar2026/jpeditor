@@ -1,6 +1,5 @@
 // 混排 `MixedScore` 读入的公共部分：纯函数小工具与各声部读完之后的版面 pass。
-// **与来源无关**——`loader.ts`（MusicXML DOM）与 `fromdoc.ts`（`ScoreDoc`）各自把声部读成 `MixedScore`，
-// 再调这里的 `finishMixedScore` 排版。从 musicpp mxml/parser.cpp 移植，判据原样。
+// `fromdoc.ts` 把各声部读成 `MixedScore` 后调这里的 `finishMixedScore` 排版。从 musicpp mxml/parser.cpp 移植，判据原样。
 
 import { Fraction } from "../common/fraction";
 import { GlyphCodes } from "../smufl/smufl";
@@ -486,7 +485,7 @@ function updateDataXPos(score: MixedScore): void {
 }
 
 // ---- 系统/分页/谱表间距：读 `<print>` 与 `<staff-details>` 的那三步 ----
-// 输入与来源无关（`loader.ts` 从 DOM 拼、`fromdoc.ts` 从 `ScoreDoc` 拼），判据原样。
+// 输入由 `fromdoc.ts` 从 `ScoreDoc` 拼，判据原样。
 
 /** 一个 `<print>`。`systemLayout` / `margins` 为 null 表示元素不在（与「在但没写数」不同）。 */
 export interface PrintInput {
@@ -684,7 +683,7 @@ function updateLayoutByPrint(score: MixedScore, input: LayoutInput): void {
 
 /**
  * 各声部读完之后的收尾：全局 tick、跨小节对象的绝对 tick、简谱符杠、整个版面 pass、声部分组、Sibelius 修正。
- * 与来源无关（`loader.ts` / `fromdoc.ts` 共用）。
+ * 与来源无关。
  */
 export function finishMixedScore(score: MixedScore, input: LayoutInput, partGroups: PartGroup[]): void {
   // Staff order

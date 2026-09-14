@@ -15,7 +15,7 @@
 // ## 设计依据（不是凭空设计）
 //
 // - 层级照 MusicXML：声部 → 小节 → 元素。`PuDoc` 那种扁平元素流每次对接 MusicXML 都得重摊一遍。
-// - 字段清单以 `mixed/loader.ts` 实读的 88 个 MusicXML 元素为基准，叠加 `scripts/census-123.mjs`
+// - 字段清单以混排原先直接读 DOM 的 `mixed/loader.ts` 实读的 88 个 MusicXML 元素为基准（阶段 6 混排改读本模型，缺的补齐后删掉了它），叠加 `scripts/census-123.mjs`
 //   对 500 首的实测（`<harmony>` 100% 的曲目都有、`<print new-system>` 100%、`lyric number` 到 8 段）。
 // - **绝对音高与简谱度数并存、可互推**：沿用 `score.ts::Note` 的既有做法（`pitch` + `number/jpOctave`），
 //   换算判据含「无点 1 的绝对音高」那条国标规则，**必须与 `jppitch.ts::jpTonicOctaveShift` 同源**。

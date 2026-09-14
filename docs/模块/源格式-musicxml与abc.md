@@ -15,7 +15,7 @@ MusicXML 双向（导入为 `ScoreDoc`/`Score`/`MixedScore`；导出只有一份
 | 函数 | 文件 | 作用 |
 |---|---|---|
 | `loadMusicXml(xml)` | `src/score/musicxml.ts:476` | → `Score`（只读第一声部） |
-| `loadMixedXml(xml)` | `src/mixed/loader.ts:1925` | → `MixedScore`（五线谱/混排） |
+| `loadMixedDoc(doc)` | `src/mixed/fromdoc.ts` | `ScoreDoc` → `MixedScore`（五线谱/混排，只读 `ScoreDoc`） |
 | `loadScoreDoc(xml)` | `src/model/fromxml.ts` | → `ScoreDoc`（**直通，读得最全**；读不懂的挂 `Measure.raw`） |
 | `scoreDocToMusicXml(doc)` | `src/model/toxml.ts` | **唯一写出端**；简谱来源先经 `model/xmlproject.ts` 投影 |
 | `projectForJianpu(song)` | `src/model/jianpuproject.ts` | MusicXML 形状 → 简谱形状（简谱档排版、转 123 之前） |
