@@ -7,6 +7,7 @@
 //
 // 无 DOM 依赖（Node CLI 与浏览器两侧都要 import）。
 import type { BookStyle } from "../pdflayout/bookstyle";
+import type { ScopedRule, TemplateSheet } from "./jpcss";
 import type { Length } from "./units";
 
 /** 版面角色。成书那一路的判定依据是 PageSpec 的字段位置（见 pdflayout/stats.ts）。 */
@@ -91,6 +92,17 @@ export type DeepPartial<T> = {
 export interface RoleDecl {
   size?: Length;
   color?: number;
+  /** 以下由歌本 `.jpcss` 写（docs/格式/jpcss.md §3）；四把尺子的适配器暂不读，模板排版（`template.ts`）读。 */
+  font?: string;
+  family?: string;
+  weight?: string;
+  italic?: boolean;
+  align?: string;
+  lineHeight?: Length;
+  dx?: Length;
+  dy?: Length;
+  features?: string;
+  visible?: boolean;
 }
 
 /** 纸张名（`PAPER_SIZES` 的键，「长图」是其中一档）或投影片尺寸。 */
@@ -120,6 +132,10 @@ export interface StyleSheet {
   staff: { preset?: "musicpp"; overrides?: Record<string, Length> };
   /** 成书的完整样式（`BookStyle`，字号是墨迹高）。只有 `engine: "book"` 用。 */
   book?: BookStyle;
+  /** 歌本模板：区域、装页、歌本声明、具名字体（`.jpcss` 的 `@template`/`@flow`/`@book`/`@font-face`）。 */
+  template?: TemplateSheet;
+  /** 逐元素样式。**各层累加**（`computeStyle` 里接起来），不走深合并的「数组整体替换」。 */
+  scoped?: ScopedRule[];
 }
 
 export function emptySheet(): StyleSheet {
