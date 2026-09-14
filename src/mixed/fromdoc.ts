@@ -78,6 +78,7 @@ import {
   type LayoutInput,
   type PrintInput,
 } from "./layoutpass";
+import { melodyChords, topNote } from "../model/jianpu";
 
 const STEP_DIATONIC: Record<string, number> = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
 const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -145,6 +146,9 @@ class DocPartLoader {
   stemNotes = new Set<MNote>(); // 有 <stem> 元素的音符（parser.cpp stemDir）
   hasBeamEl = false; // 本声部是否出现过 <beam>（无则自动按拍分组符杠，供 OMR 谱用）
   transposeSteps = 0;
+  /** 当前小节的 divisions 与简谱叠层的旋律（和弦 → 印的那个音） */
+  curDiv = 1;
+  melody = new Map<DocChord, DocNote | null>();
 
   tieStarts: TieRef[] = [];
   tieStops: TieRef[] = [];
@@ -247,6 +251,9 @@ class DocPartLoader {
 
     const md = this.part.newMeasure();
     md.measureInfo = mif;
+    this.curDiv = div;
+    // 简谱叠层印的那一路：语义层的旋律取音（第一谱表最小 voice 的和弦，和弦取最高音）
+    this.melody = new Map(melodyChords(m, 1).map((c) => [c, topNote(c) ?? null] as const));
 
     this.arpegNotes.clear();
 
@@ -295,7 +302,7 @@ class DocPartLoader {
       if (ch.rest && fEq(ch.dur, mif.dur)) ch.measureRest = true;
     }
 
-    md.splitLayer();
+    md.sortChords();
     md.layoutNotes(this.score.options.meta, this.score.encoder === Encoder.Sibelius);
     // layoutNotations 不在此处调用：它依赖最终符干长度（fermataBelow 等记号按 tailY 定位），
     // 而 stemLen 要等 calcStemLen/formatBeams 之后才就绪。改在 load 里统一后处理，
@@ -361,12 +368,17 @@ class DocPartLoader {
 
       this.processBeam(ch, src.beams, md);
       this.chordById.set(src.id, ch);
+      ch.src = src;
+      ch.divisions = this.curDiv;
     } else {
       ch = prevChord;
     }
 
     const nt = ch.newNote();
     nt.staff = src.staff - 1;
+    nt.src = note;
+    const top = this.melody.get(src);
+    nt.jpMelody = top !== undefined && (note === null || note === top);
 
     const pitch = note?.pitch;
     if (ch.rest) {
