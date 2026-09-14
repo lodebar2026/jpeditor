@@ -322,6 +322,7 @@ export class JinpuPainter extends ScorePainter {
   private creditLines(): string[] {
     const LABEL: Record<string, string> = {
       lyricist: "作词", poet: "作词", composer: "作曲", arranger: "编曲",
+      "words-and-music": "词曲", translator: "译词", transcriber: "制谱",
     };
     const out: string[] = [];
     for (const c of this.score.credit) {

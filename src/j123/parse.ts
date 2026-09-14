@@ -31,6 +31,7 @@ import type {
 } from "../model/doc";
 import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "../model/helpers";
 import { fillDegreesFromPitch } from "../model/jianpu";
+import { addMeta, creatorOf, isMetaKey } from "../model/metakeys";
 import type { BreakKind } from "../model/helpers";
 import {
   CJK_INSTRUCTION_ALIAS,
@@ -965,7 +966,7 @@ function applyField(
       else song.work.subtitles.push(f.value);
       break;
     case "C":
-      (song.identification ??= { creators: [] }).creators.push({ type: "composer", text: f.value });
+      (song.identification ??= { creators: [] }).creators.push(creatorOf(f.value));
       break;
     case "K": {
       const r = ctx.d.parseKey(f.value);
@@ -1050,6 +1051,13 @@ function applyInstruction(
     case "style":
       (song.style ??= {}).sheetRef = ins.value.trim();
       break;
+    // 扩展 meta：`I:meta 键 值`（键见 model/metakeys.ts；多值写多行）
+    case "meta": {
+      const m = /^\s*(\S+)(?:\s+(.*))?$/.exec(ins.value);
+      if (m && isMetaKey(m[1]!)) addMeta(song, m[1]!, (m[2] ?? "").trim());
+      else (song.style ??= {}).raw = [...(song.style.raw ?? []), { key: name, value: ins.value }];
+      break;
+    }
     // 页眉页脚：与 emit 对称（见 `j123/emit.ts` 的同名指令）
     case "indexleft": (song.pageText ??= emptyPageText()).indexLeft = ins.value; break;
     case "indexright": (song.pageText ??= emptyPageText()).indexRight = ins.value; break;

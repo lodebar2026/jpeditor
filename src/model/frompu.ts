@@ -45,6 +45,7 @@ import type {
 } from "./doc";
 import { normalizeSpelling } from "../j123/fields";
 import { IdGen, emptyDoc, emptySong } from "./helpers";
+import { creatorOf } from "./metakeys";
 
 /** `PuDoc` 的 BarlineType → `ScoreDoc` 的 bar-style + repeat。 */
 function fromPuBarline(el: BarlineElement): Barline {
@@ -578,7 +579,7 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
     song.work.subtitles = meta.titles.slice(1);
     if (meta.version !== undefined) song.work.version = meta.version;
     if (meta.authors.length) {
-      song.identification = { creators: meta.authors.map((t) => ({ type: "composer", text: t })) };
+      song.identification = { creators: meta.authors.map(creatorOf) };
     }
     if (meta.mode !== undefined || meta.tonic !== undefined) {
       song.key = { fifths: 0 };

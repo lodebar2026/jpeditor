@@ -48,6 +48,7 @@ import type {
 } from "./doc";
 import { IdGen, emptyDoc, emptySong } from "./helpers";
 import { assignDegrees } from "./jianpu";
+import { addMeta } from "./metakeys";
 import { child, childText, children } from "../score/xmldom";
 
 const num = (el: Element | null, tag: string): number | undefined => {
@@ -900,6 +901,12 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
     const enc = child(ident, "encoding");
     const sw = enc ? children(enc, "software").map((s) => s.textContent ?? "") : [];
     if (sw.length) song.identification.software = sw;
+    // `<miscellaneous-field name>` → 扩展 meta（同名多个 = 多项）
+    const misc = child(ident, "miscellaneous");
+    for (const f of misc ? children(misc, "miscellaneous-field") : []) {
+      const name = f.getAttribute("name");
+      if (name) addMeta(song, name, f.textContent ?? "");
+    }
   }
 
   const credits = readCredits(root);

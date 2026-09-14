@@ -16,6 +16,7 @@ import { MusicCommon, applyJpPitch, type JpKeyState } from "../score/jppitch";
 import type { Barline, BeamVal, Chord, Lyric, Mark, Measure, Part, PlayPass, ScoreDoc, Song, SourceSpan, Sustain } from "./doc";
 import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "./helpers";
 import type { BreakKind } from "./helpers";
+import { creatorTypeOf } from "./metakeys";
 
 /** 简谱来源的时值单位：一个四分音符 = 48 */
 const DIVISIONS = 48;
@@ -551,7 +552,11 @@ export function jpwToScoreDoc(f: JpwFile): ScoreDoc {
     const text = unescape(author);
     song.credits = [{ text }];
     // 词曲一行当作者行，123 才写得出 `C:`
-    if (text !== titleText) song.identification = { creators: [{ type: "composer", text: text.replace(/\n/g, " ") }] };
+    // 类型按标签定，只在整条是**一行**时认（多行「作词：…\n作曲：…」拼成一条，不拆，免得改 `C:` 的写出）
+    if (text !== titleText) {
+      const one = text.replace(/\n/g, " ");
+      song.identification = { creators: [{ type: (text.includes("\n") ? null : creatorTypeOf(one)) ?? "composer", text: one }] };
+    }
   }
 
   // 速度（`.Title` 的 `Expression ♩=NN`），试听与转 123 的 `Q:` 都要
