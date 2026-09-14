@@ -16,7 +16,6 @@ export * from "../j123/fields";
 export * from "../model/helpers";
 export { scoreDocToPu } from "../pu/slots";
 export { puToScoreDoc } from "../model/frompu";
-export { scoreToScoreDoc } from "../model/fromscore";
 export { jpwToScoreDoc } from "../model/fromjpw";
 export { scoreDocToMusicXml } from "../model/toxml";
 export { scoreDocToScore } from "../pu/toscore";

@@ -7,11 +7,12 @@
 // - 源文怎么读——`jpwimport.ts::makePart/makeChord/assignLrcSeg`：`{(3}` 三连音、倚音、`{YanYin}`、
 //   `(`/`)` 靠「前面欠着几个 `(`」分弧线收尾与三连音收尾、`"1=X"` 转调、拍号 token、`$` 换行、
 //   临时记号到小节线清零、歌词按「源文小节序号 + 第几个音符」起排；
-// - 落成模型的样子——`fromscore.ts::convertPart`（`scoreToScoreDoc` 非 `forMusicXml` 那支）：
+// - 落成模型的样子——原 `fromscore.ts::convertPart`（`scoreToScoreDoc` 非 `forMusicXml` 那支，阶段 8 已删）：
 //   每根小节线都切小节、空小节的线并进下一小节左线、换行记「之后」再翻成「起」、倚音作独立 grace 元素。
 //
 // 所以中间先按 `jpwimport` 的口径切出「源文小节」（`SrcMeasure`，歌词落点按它数），再逐个落成模型小节。
-// `scripts/jpw-doc-check.mjs` 拿 `scoreToScoreDoc(fromJpw(f), {repeatRows})` 双跑逐字段比。
+// 阶段 3 起拿 `scoreToScoreDoc(fromJpw(f), {repeatRows})` 双跑逐字段比过 568 份一致（`jpw-doc-check`，随 fromscore 在阶段 8 退役）；
+// 导出 MusicXML 的新旧对拍见 `scripts/jpw-xml-check.mjs`。
 //
 // 与旧侧的已知差别：曲首 `|:|` 旧侧多开一个空的源文小节（`Score` 里是空小节，`ScoreDoc` 里本就并掉了），
 // 这里照样数它（歌词落点口径不能变），落模型时同样并掉。
@@ -360,7 +361,7 @@ function assignLyrics(measures: readonly SrcMeasure[], f: JpwFile): void {
 
 // ───────────────────────── 第二步：源文小节 → 模型 ─────────────────────────
 
-/** 照 `fromscore.ts::convertPart`（非 `forMusicXml`）。 */
+/** 照原 `fromscore.ts::convertPart`（非 `forMusicXml`）。 */
 function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part {
   const part: Part = { id: "P1", measures: [] };
   let prevKeyFifths: number | null = null;
@@ -424,10 +425,10 @@ function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part 
       if (Number.isFinite(num) && num !== 0) {
         const acc = accidentalOf(ent.jpAlter);
         ch.notes.push({
+          // `.jpwabc` 只有简谱度数，不填绝对音高：从前照 `fromscore` 抄了个只有音名字母、八度恒为 0 的 `pitch`，
+          // 导出 MusicXML 时投影层（`xmlproject.ts`）见有音高就不再按度数 + 调号推，整首掉到第 0 八度
           degree: { number: num, octaveShift: ent.jpOctave, ...(acc ? { accidental: acc } : {}) },
-          // 与旧侧同口径：只填了音名字母（`applyJpPitch` 不算 alter/octave），简谱消费者读 degree
-          pitch: ent.step.trim() ? { step: ent.step as "C", alter: 0, octave: 0 } : undefined,
-        } as Chord["notes"][number]);
+        });
       }
       if (ent.beams > 0) ch.beams = Array.from({ length: ent.beams }, () => "continue" as BeamVal);
       for (let k = 0; k < ent.beats - 1; k++) {
