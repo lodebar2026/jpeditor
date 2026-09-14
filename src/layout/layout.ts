@@ -7,7 +7,8 @@ import { Fraction } from "../common/fraction";
 import { Point } from "../common/geom";
 import { GlyphCodes } from "../smufl/smufl";
 import { BandItem, bandTop, stackUpperBand } from "./upperband";
-import * as S from "../score/score";
+import { BarStyle, StartStopDiscontinue } from "../score/enums";
+import { measureDuration, type JChord, type JMeasure, type JNote, type JScore } from "./input";
 import { getOrNull, PageItem, GraphicPath, Group, TextFrame, SmuflText, JpNumber, Lyric, Tie, slurStyleOf, type SlurStyle, type SlurTieBase } from "./pageitem";
 import { Entry, KeySig, TimeSig, NoteEntry, Barline, LineBreak, BeamLine, EntryItemInfo, entryBounds, normalizeEntryX, placeSectionWord, sectionWordHangLeft, sectionWordRun, type SectionWordSlot } from "./entry";
 import { LayoutOptions } from "./options";
@@ -22,7 +23,11 @@ export class Line {
   entries: Entry[] = [];
   beams: BeamLine[] = [];
   maxBeamLevel = 0;
-  chordEntry = new Map<S.Chord, NoteEntry>();
+  chordEntry = new Map<JChord, NoteEntry>();
+  /** 段落词挪位（行末挪到下一行行首，见 `layout`）：有记录的以它为准，否则取输入。 */
+  sectionWords = new Map<JChord, string | null>();
+  /** 符杠分组：每装载一个小节按拍重组一次（`beamGroupsOf`），同一和弦以最后一次为准。 */
+  beamGroups = new Map<JChord, BeamGroup>();
   /** Arcs drawn on this line, in line coordinates (see clipBarlinesUnderSlurs). */
   slurTies: SlurTieBase[] = [];
   /** 三连音括线的**墨迹盒**（绝对，相对 `Line.group`）。`addTuplet` 现画现记：
@@ -42,6 +47,10 @@ export class Line {
   private slurStyle: SlurStyle = { thickness: 6, color: 0 };
   /** 弧罩住这么多音符就改画扁平式（0 = 只按跨度判）。见 LayoutOptions.slurFlatNotes。 */
   private slurFlatNotes = 0;
+
+  private sectionWordOf(e: NoteEntry): string | null {
+    return this.sectionWords.has(e.chord) ? this.sectionWords.get(e.chord)! : e.chord.sectionWord;
+  }
 
   private addEntry(e: Entry): void {
     if (e instanceof NoteEntry) {
@@ -207,7 +216,7 @@ export class Line {
       const fwd = prev.spec.repeatForward || cur.spec.repeatForward;
       if (!back && !fwd) continue;
       const merged = new Barline(false, opt, {
-        style: fwd ? S.BarStyle.HEAVY_LIGHT : S.BarStyle.LIGHT_HEAVY,
+        style: fwd ? BarStyle.HEAVY_LIGHT : BarStyle.LIGHT_HEAVY,
         repeatBackward: back,
         repeatForward: fwd,
       });
@@ -228,7 +237,7 @@ export class Line {
    * 所以「Σ 宽度 ≤ 版心宽」与排版器的判断一致。断点不影响这些坐标（`calcXPos` 在
    * `doLineBreak` 之前跑），所以整首量一次就够。
    */
-  naturalSpans(opt: LayoutOptions): Map<S.Chord, { x0: number; x1: number }> {
+  naturalSpans(opt: LayoutOptions): Map<JChord, { x0: number; x1: number }> {
     this.lyricGap = opt.lyricGap;
     this.dropDoubledBarlines(opt);
     this.calcXPos();
@@ -239,7 +248,7 @@ export class Line {
     // 却放不下，把行末那个 `7-` 连同三段歌词折成了单独一行（中间行只有一个音）。
     // 取各 entry 的**最左左缘、最右右缘**。
     // 和弦与表情记号不算进这把尺子，理由见 `entryRight`（与 doLineBreak 共用）。
-    const out = new Map<S.Chord, { x0: number; x1: number }>();
+    const out = new Map<JChord, { x0: number; x1: number }>();
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
       const g = e.group;
@@ -347,7 +356,7 @@ export class Line {
     this.entries.forEach((e, i) => { if (e instanceof Barline) bars.push(i); });
     for (let i = 0; i < this.entries.length; i++) {
       const e = this.entries[i];
-      if (!(e instanceof NoteEntry) || !e.chord.sectionWord) continue;
+      if (!(e instanceof NoteEntry) || !this.sectionWordOf(e)) continue;
       const item = e.entryItem();
       if (!item) continue;
       const endIdx = bars.find((b) => b > i) ?? this.entries.length;
@@ -373,7 +382,7 @@ export class Line {
         const barRight0 = this.entries[endIdx]?.group.x ?? lastEnt.group.x + lastEnt.group.width;
         const barLeftAt = [...bars].reverse().map((b) => this.entries[b].group.x).find((bx) => bx <= anchorX);
         const barLeft = barLeftAt ?? 0;
-        const width = sectionWordRun(font, e.chord.sectionWord!, opt.punctCompress).width;
+        const width = sectionWordRun(font, this.sectionWordOf(e)!, opt.punctCompress).width;
         return (spread: number): SectionWordSlot =>
           placeSectionWord({
             anchorX,
@@ -451,7 +460,7 @@ export class Line {
    * SVG、PDF 都只有 family/size/weight 三档，为一个记号加一档不划算。
    */
   /** 一组表情/跳转记号排出来有多宽（与 `addDirections` 同一套字体与间距）。 */
-  private directionWidth(ch: S.Chord, opt: LayoutOptions): number {
+  private directionWidth(ch: JChord, opt: LayoutOptions): number {
     const size = opt.chordSize > 0 ? opt.chordSize : opt.numberSize * 0.6;
     let w = 0;
     for (const d of ch.directions) {
@@ -477,7 +486,7 @@ export class Line {
     if (size <= 0) return;
     const bars: number[] = [];
     this.entries.forEach((e, i) => { if (e instanceof Barline) bars.push(i); });
-    const done = new Set<S.Chord>();
+    const done = new Set<JChord>();
     for (let i = 0; i < this.entries.length; i++) {
       const e = this.entries[i];
       if (!(e instanceof NoteEntry)) continue;
@@ -511,7 +520,7 @@ export class Line {
   addDirections(opt: LayoutOptions, lineWidth: number): void {
     const size = opt.chordSize > 0 ? opt.chordSize : opt.numberSize * 0.6;
     if (size <= 0) return;
-    const drawn = new Set<S.Chord>();
+    const drawn = new Set<JChord>();
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry) || !e.chord.directions.length) continue;
       // 同一个 Chord 在一行里会摊成好几个 NoteEntry（长音的增时线各占一个），只画一次
@@ -914,9 +923,9 @@ export class Line {
     const e = this.entries[0];
     if (!(e instanceof NoteEntry)) return 0;
     let need = 0;
-    if (opt.sectionWordSize > 0 && e.chord.sectionWord) {
+    if (opt.sectionWordSize > 0 && this.sectionWordOf(e)) {
       const font = opt.lrcFont.makeWithSize(opt.sectionWordSize);
-      const w = sectionWordRun(font, e.chord.sectionWord, opt.punctCompress).width;
+      const w = sectionWordRun(font, this.sectionWordOf(e)!, opt.punctCompress).width;
       // **就地摆得下就别折腾**：判据是「从锚点起排要压掉右边的和弦多少」——025 的
       // 「副歌」两个字后面老远才有和弦，直接排在音符上方就是了。压得不多（不到一道净空）
       // 也不缩进：那点量在 justify 之后由 `nudgeForSectionWords` 从行内匀掉就行，
@@ -1041,7 +1050,7 @@ export class Line {
     const i0 = this.entries.indexOf(ena);
     const i1 = this.entries.indexOf(enb);
     if (i0 < 0 || i1 < 0) return 0;
-    const seen = new Set<S.Chord>();
+    const seen = new Set<JChord>();
     for (let i = Math.min(i0, i1); i <= Math.max(i0, i1); i++) {
       const e = this.entries[i];
       if (e instanceof NoteEntry) seen.add(e.chord);
@@ -1049,7 +1058,7 @@ export class Line {
     return seen.size;
   }
 
-  private addSlurTie(a: S.Note, b: S.Note, ypos: number): void {
+  private addSlurTie(a: JNote, b: JNote, ypos: number): void {
     const ena = this.chordEntry.get(a.chord);
     const enb = this.chordEntry.get(b.chord);
     // 两端都得在**本行**里才画得出来。调用点查的是 `chord`，这里查的是 `note.chord`——
@@ -1181,14 +1190,20 @@ export class Line {
     // 段落词挂在**行末那个音符**上时，它标的其实是下一行的起句（「（副歌）」印在主歌
     // 最后一行的行尾没有意义，副歌是从下一行开始唱的）——挪到下一行行首那个音符上。
     // 锚点是按「第几个音符」记的，重排后的断行与原书不同，落到行末是常事（013 首）。
+    // 挪动记在各行共用的 `sectionWords` 上，不改输入（同一个和弦在别的遍、别的行里看到的也是挪过的）；
+    // 符杠分组同样是整条装载时定的，各行共用。
+    for (const l of lines) {
+      l.sectionWords = this.sectionWords;
+      l.beamGroups = this.beamGroups;
+    }
     for (let i = 0; i + 1 < lines.length; i++) {
       const notes = lines[i].entries.filter((e): e is NoteEntry => e instanceof NoteEntry);
       const last = notes[notes.length - 1];
-      if (!last?.chord.sectionWord) continue;
+      if (!last || !this.sectionWordOf(last)) continue;
       const next = lines[i + 1].entries.find((e): e is NoteEntry => e instanceof NoteEntry);
-      if (!next || next.chord.sectionWord) continue;
-      next.chord.sectionWord = last.chord.sectionWord;
-      last.chord.sectionWord = null;
+      if (!next || this.sectionWordOf(next)) continue;
+      this.sectionWords.set(next.chord, this.sectionWordOf(last));
+      this.sectionWords.set(last.chord, null);
     }
     for (const l of lines) {
       this.updateXPos(l, width, opt);
@@ -1217,12 +1232,12 @@ export class Line {
     return this.layoutVertically(lines, opt, height);
   }
 
-  private getEntry(ch: S.Chord): NoteEntry | null {
+  private getEntry(ch: JChord): NoteEntry | null {
     return this.chordEntry.get(ch) ?? null;
   }
 
   addTuplet(opt: LayoutOptions): void {
-    const tuplets = new Set<S.Tuplet>();
+    const tuplets = new Set<NonNullable<JNote["tuplet"]>>();
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
       const t = e.chord.notes[0].tuplet;
@@ -1351,7 +1366,7 @@ export class Line {
   addEnding(opt: LayoutOptions): void {
     if (opt.endingSize <= 0) return;
     // 先把本行按小节切开（房的起止是**小节级**的）
-    const segs: { m: S.Measure; notes: NoteEntry[] }[] = [];
+    const segs: { m: JMeasure; notes: NoteEntry[] }[] = [];
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
       const m = e.chord.measure;
@@ -1388,7 +1403,7 @@ export class Line {
       // 二房常写成「start + discontinue 在同一小节，逻辑上的 stop 在几小节之后」
       //（037《我尊崇祢》的二房 m9 就地 discontinue、m11 才 stop），
       // 线要在 m9 收住——跨过好几个小节的长横线是错的。
-      if (seg.m.endingRight !== null) flush(seg.m.endingRight === S.StartStopDiscontinue.STOP);
+      if (seg.m.endingRight !== null) flush(seg.m.endingRight === StartStopDiscontinue.STOP);
     }
     flush(false); // 房跨到下一行：本行这一段不封口
     if (!spans.length) return;
@@ -1496,9 +1511,9 @@ export class Line {
     // 同一个 Chord 可能在一行里出现**好几个 NoteEntry**：长音的增时线各占一个，
     // 不展开叠排时（有反复房号的谱）整条谱行还会按遍数重复装载。
     // 段落词是挂在 Chord 上的，每个 Chord 只画一次，否则就叠出两三个「（副歌）」（131 首）。
-    const drawn = new Set<S.Chord>();
+    const drawn = new Set<JChord>();
     for (const e of this.entries) {
-      if (!(e instanceof NoteEntry) || !e.chord.sectionWord) continue;
+      if (!(e instanceof NoteEntry) || !this.sectionWordOf(e)) continue;
       if (drawn.has(e.chord)) continue;
       drawn.add(e.chord);
       const item = e.entryItem();
@@ -1507,10 +1522,10 @@ export class Line {
       tf.classes.add("section-word");
       tf.font = font;
       tf.color = opt.color;
-      tf.text = e.chord.sectionWord;
+      tf.text = this.sectionWordOf(e)!;
       tf.update();
       // 量宽与笔位都按挤压后的来（见 sectionWordRun）；`charXs` 一路传到 `<text>` 的 `x`。
-      const run = sectionWordRun(font, e.chord.sectionWord, opt.punctCompress);
+      const run = sectionWordRun(font, this.sectionWordOf(e)!, opt.punctCompress);
       tf.width = run.width;
       tf.charXs = run.xs;
       // 段落词**可以横向伸出锚点音符的范围**（它只是个标记，原书也这么印），
@@ -1578,7 +1593,7 @@ export class Line {
   nudgeForSectionWords(opt: LayoutOptions, lineWidth: number): void {
     if (opt.sectionWordSize <= 0) return;
     const e = this.entries[0];
-    if (!(e instanceof NoteEntry) || !e.chord.sectionWord) return;
+    if (!(e instanceof NoteEntry) || !this.sectionWordOf(e)) return;
     const item = e.entryItem();
     if (!item) return;
     const n = this.entries.length;
@@ -1589,7 +1604,7 @@ export class Line {
     const barXs = this.entries.filter((x): x is Barline => x instanceof Barline).map((b) => b.group.x).sort((a, b) => a - b);
     const slot = placeSectionWord({
       anchorX,
-      width: sectionWordRun(font, e.chord.sectionWord, opt.punctCompress).width,
+      width: sectionWordRun(font, this.sectionWordOf(e)!, opt.punctCompress).width,
       size: opt.sectionWordSize,
       baseY: this.sectionWordBaseY(e, opt, chords),
       chords,
@@ -1607,10 +1622,10 @@ export class Line {
   }
 
   addBeams(opt: LayoutOptions): void {
-    const groups = new Set<S.BeamGroup>();
+    const groups = new Set<BeamGroup>();
     for (const e of this.entries) {
       if (!(e instanceof NoteEntry)) continue;
-      const grp = e.chord.beamGroup;
+      const grp = this.beamGroups.get(e.chord);
       if (!grp) continue;
       groups.add(grp);
     }
@@ -1727,17 +1742,16 @@ export class Line {
 
   /** `skip`：跳过本小节开头这么多个和弦（弱起式接入，见 PlayItem.skip）。
    *  `limit`：只装载前这么多个和弦（-1 = 整节，见 PlayItem.limit）；截断时不补小节线。 */
-  load(m: S.Measure, lrc: number, options: LayoutOptions, final: boolean, skip = 0, limit = -1): void {
+  load(m: JMeasure, lrc: number, options: LayoutOptions, final: boolean, skip = 0, limit = -1, ignoreBreaks = false): void {
+    const ents = byPosition(m.entries).filter((e) => !(ignoreBreaks && e.kind === "break"));
     if (m.timeChange && m.index !== 0) {
       const ts = TimeSig.fromTime(m.time, options);
       this.entries.push(ts);
     }
     if (m.keyChange && m.index !== 0) {
       const key = new KeySig(m.key, options);
-      const first = m.entries[0];
-      if (first instanceof S.Chord) {
-        if (first.slurStart) key.group.y -= options.numberSize / 4;
-      }
+      const first = ents[0];
+      if (first?.kind === "chord" && first.slurStart) key.group.y -= options.numberSize / 4;
       this.entries.push(key);
     }
     // 小节**开头**的反复起点 `‖:`（MusicXML 的 `<barline location="left">`）。
@@ -1749,9 +1763,9 @@ export class Line {
     }
     let hasBarline = limit >= 0; // 截断的小节尾不补小节线（下一段接着唱同一小节）
     let taken = 0;
-    for (const ch of m.entries) {
+    for (const ch of ents) {
       if (limit >= 0 && taken >= limit) break;
-      if (ch instanceof S.LineBreak) {
+      if (ch.kind === "break") {
         const ignore = ch.pass !== null && ch.pass !== lrc;
         if (!ignore) {
           const br = new LineBreak();
@@ -1759,11 +1773,11 @@ export class Line {
           this.entries.push(br);
         }
         continue;
-      } else if (ch instanceof S.Chord) {
+      } else if (ch.kind === "chord") {
         if (skip > 0) { skip--; continue; }
         NoteEntry.fromChord(this.entries, ch, lrc, options);
         taken++;
-      } else if (ch instanceof S.BarlineEntry) {
+      } else {
         const ent = new Barline(final, options, { style: m.barline, repeatBackward: m.repeatBackward });
         ent.update();
         this.entries.push(ent);
@@ -1848,7 +1862,7 @@ export class Layout {
     let tick = new Fraction(0);
     const newEnt: Entry[] = [];
     let lineBeg = 0;
-    let lastChord: S.Chord | null = null;
+    let lastChord: JChord | null = null;
     let lastTick: Fraction | null = null;
     for (const e of l.entries) {
       let isNote = false;
@@ -1887,17 +1901,16 @@ export class Layout {
    * 给「一行放不放得下」用（`applybreaks.ts::FitMetric`）。与 `fromScore` 共用同一套
    * 装载逻辑（`buildLine`），量到的坐标就是排版器折行时用的那一套。
    */
-  measureNatural(scr: S.Score, width: number): { width: number; spans: Map<S.Chord, { x0: number; x1: number }> } {
+  measureNatural(scr: JScore, width: number, ignoreBreaks = false): { width: number; spans: Map<JChord, { x0: number; x1: number }> } {
     const cw = width - this.options.marginLeft - this.options.marginRight;
-    const l = this.buildLine(scr, null);
+    const l = this.buildLine(scr, null, ignoreBreaks);
     l.connectTextFrames();
     return { width: cw, spans: l.naturalSpans(this.options) };
   }
 
   /** 把整首装成一条 Line（分行之前的那一条）。`fromScore` 与 `measureNatural` 共用。 */
-  private buildLine(scr: S.Score, dur: string | null): Line {
+  private buildLine(scr: JScore, dur: string | null, ignoreBreaks = dur !== null): Line {
     const p = scr.parts[0];
-    if (dur !== null) scr.clearSystemBreak();
     const l = new Line();
     // 叠排 = **按原谱排一遍**：不展开任何反复（原样档）。
     //
@@ -1909,8 +1922,8 @@ export class Layout {
     walkPlay(plan, {
       measure: (mid, pass, cut) => {
         const m = p.measures[mid];
-        m.autoBeamGroup();
-        l.load(m, pass, this.options, cut.final, cut.skip, cut.limit);
+        for (const [ch, g] of beamGroupsOf(m)) l.beamGroups.set(ch, g);
+        l.load(m, pass, this.options, cut.final, cut.skip, cut.limit, ignoreBreaks);
       },
       passEnd: () => {
         if (dur !== null) return;
@@ -1922,7 +1935,7 @@ export class Layout {
     if (dur !== null) {
       const part = scr.parts[0];
       const mea = part.measures[part.measures.length - 1];
-      const total = mea.position.plus(mea.duration);
+      const total = mea.position.plus(measureDuration(mea));
       let pass: number | null = null;
       if (scr.playData.isSimpple) pass = scr.playData.measures.length;
       this.breakByDur(l, dur, total, pass);
@@ -1930,7 +1943,7 @@ export class Layout {
     return l;
   }
 
-  fromScore(scr: S.Score, dur: string | null, width: number, height: number): void {
+  fromScore(scr: JScore, dur: string | null, width: number, height: number): void {
     this.pages = [];
     const cw = width - this.options.marginLeft - this.options.marginRight;
     const ch = height - this.options.marginTop - this.options.marginBottom;
@@ -1950,4 +1963,36 @@ export class Layout {
 function substringAfter(s: string, delim: string): string {
   const i = s.indexOf(delim);
   return i < 0 ? s : s.substring(i + delim.length);
+}
+
+/** 小节条目按拍位稳定排序（不改输入）。 */
+function byPosition<T extends { position: Fraction }>(entries: readonly T[]): T[] {
+  return [...entries].sort((a, b) => a.position.compareTo(b.position));
+}
+
+/** 符杠分组的一组和弦。 */
+export class BeamGroup {
+  chords: JChord[] = [];
+}
+
+/** **按拍自动成组**：拍长一个四分（`x/8` 拍号是附点四分）；减时线为 0 或长过一拍的不进组。 */
+function beamGroupsOf(m: JMeasure): Map<JChord, BeamGroup> {
+  let len = new Fraction(1);
+  if (m.time.beatType === 8) len = len.divInt(2).timesInt(3);
+  const res = new Map<JChord, BeamGroup>();
+  let cur: BeamGroup | null = null;
+  let curStart: Fraction | null = null;
+  for (const ent of byPosition(m.entries)) {
+    if (ent.kind !== "chord") continue;
+    if (ent.duration === undefined) throw new Error("");
+    if (ent.beams === 0) continue;
+    if (ent.duration.compareTo(len) > 0) continue;
+    const start = len.timesInt(ent.position.div(len).toInt());
+    if (curStart !== null && !curStart.equals(start)) curStart = null;
+    if (curStart === null) cur = new BeamGroup();
+    cur!.chords.push(ent);
+    res.set(ent, cur!);
+    curStart = start;
+  }
+  return res;
 }

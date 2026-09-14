@@ -9,7 +9,8 @@ import { Font } from "./font";
 import { Group, PageItem, TextFrame, SmuflText } from "./pageitem";
 import { NoteEntry } from "./entry";
 import { Layout } from "./layout";
-import { Chord, MusicCommon, Score } from "../score/score";
+import { MusicCommon } from "../score/score";
+import { emptyScore, type JChord, type JScore } from "./input";
 import { jpTimeSigItems } from "./jpglyph";
 import type { PagePainter } from "./pagepainter";
 import { walkPageItem, type ItemVisitor } from "./walk";
@@ -21,13 +22,13 @@ export const LYRIC_STACK_RATIO = 1.35;
 
 export abstract class ScorePainter implements PagePainter {
   layout: Layout;
-  score = new Score();
+  score: JScore = emptyScore();
   pageWidth = 0;
   pageHeight = 0;
   /** PageItem -> rendered <g>, populated each renderPage (for DOM picking). */
   nodeMap = new WeakMap<PageItem, SVGGElement>();
   /** Chord -> its note-entry groups (one per rendered verse/pass), for playback cursor. */
-  private chordItem = new Map<Chord, { page: number; item: PageItem; verse: number }[]>();
+  private chordItem = new Map<JChord, { page: number; item: PageItem; verse: number }[]>();
   private highlighted: PageItem | null = null;
   /** 逐页高度。空 = 各页同高（`pageHeight`）；连续长纸那一档按内容逐页给。 */
   protected pageHeights: number[] = [];
@@ -55,14 +56,14 @@ export abstract class ScorePainter implements PagePainter {
   }
 
   /** The rendered entry for a chord at a given pass/verse (falls back to first). */
-  private hitFor(chord: Chord, pass: number): { page: number; item: PageItem } | null {
+  private hitFor(chord: JChord, pass: number): { page: number; item: PageItem } | null {
     const list = this.chordItem.get(chord);
     if (!list || list.length === 0) return null;
     return list.find((h) => h.verse === pass) ?? list[0];
   }
 
   /** Highlight the note of `chord` at `pass` (clearing any previous). Returns page index. */
-  highlightChord(chord: Chord | null, pass = 0): number | null {
+  highlightChord(chord: JChord | null, pass = 0): number | null {
     if (this.highlighted) {
       this.nodeMap.get(this.highlighted)?.classList.remove("playing");
       this.highlighted = null;
@@ -76,7 +77,7 @@ export abstract class ScorePainter implements PagePainter {
   }
 
   /** SVG <g> for a chord's note at `pass` (for scroll-into-view); null if not rendered. */
-  chordGroupEl(chord: Chord, pass = 0): SVGGElement | null {
+  chordGroupEl(chord: JChord, pass = 0): SVGGElement | null {
     const hit = this.hitFor(chord, pass);
     return hit ? this.nodeMap.get(hit.item) ?? null : null;
   }
