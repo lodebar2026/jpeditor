@@ -5,23 +5,22 @@ import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { PuPainter } from "../pu/painter";
-import { parsePu, scoreDocToScore, relayoutPuText, sniffDialect, dialectSpec, type Dialect } from "../pu";
+import { parsePu, relayoutPuText, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
-import { eachChord, emptyDoc } from "../model/helpers";
+import { eachChord } from "../model/helpers";
 import type { ElementId, ScoreDoc } from "../model/doc";
-import { Chord, type Score } from "../score/score";
+import type { JScore } from "../layout/input";
+import { clearBreaks } from "../layout/input";
 import type { PuDoc } from "../pu";
 import type { PuUserOptions } from "../pu/metrics";
 import { ExpandedPainter, type ExpandedOptions } from "../jianpu/expanded";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
-import { fromJpw } from "../score/jpwimport";
 import { JinpuPainter } from "../layout/painter";
 import { PPTX_PAGE, type JpProfileName } from "../layout/pptxstyle";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/pageitem";
 import { Point, colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
-import { scoreOfXmlSong } from "../model/xmlscore";
-import type { FitMetric } from "../score/phrase";
+import { jianpuInputOfDoc, jianpuInputOfJpw, jianpuInputOfXml } from "../model/jianpuinput";
 import type { FitMeasure } from "../pu/phrase";
 import { abcToMusicXml } from "../abc/abc2xml";
 import type { JpwMeta, JpwRange } from "../omr/types";
@@ -128,15 +127,14 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 上次解析结果的缓存（同一份文本不重复解析）。文本谱另留解析器直出的 `PuDoc`——
    *  乐句重排改写的是原文本身，要它的原文列号（`pu/relayout.ts`）。 */
   private _scoreDoc: { text: string; doc: ScoreDoc; pu: PuDoc | null } | null = null;
-  /** 上次转出的 Score 及「Chord → 元素 id」的对照（试听逐字高亮靠它搭桥）。 */
+  /** 上次投影出的引擎输入（展开档谱面、导出 PPTX 共用）。 */
   private _puScoreCache: {
     text: string;
-    /** 转出这份 Score 的模型（排版器、同步索引认的是它的排版行视图） */
+    /** 投影出这份输入的模型（排版器、同步索引认的是它的排版行视图） */
     doc: ScoreDoc;
-    /** 展开档那一份调过声部顺序与段号（`ToScoreOptions.forExpanded`），与原样档那份不通用 */
+    /** 展开档那一份调过声部顺序与段号（`JianpuInputOptions.forExpanded`），与原样档那份不通用 */
     forExpanded: boolean;
-    score: Score | null;
-    chordIds: Map<Chord, ElementId>;
+    score: JScore | null;
   } | null = null;
   private _highlightCompartment = new Compartment();
 
@@ -150,10 +148,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private _syncMarked: Element[] = [];
   /** 防回环：两条方向互相触发时，被动的那一侧不要再反推一次 */
   private _syncing = false;
-  /** 展开档：元素 id → Score 和弦（`_puScoreCache.chordIds` 的反向） */
-  private _noteToChord: Map<ElementId, Chord> | null = null;
-  /** `.jpwabc`：元素 id → 谱面 Score 和弦（`_buildJpwSync` 建） */
-  private _jpwNoteToChord: Map<ElementId, Chord> | null = null;
   /** `.jpwabc`：`jpwToScoreDoc` 的结果（试听读它；转不出来为 null） */
   private _jpwDoc: ScoreDoc | null = null;
   /** 试听输入的缓存：同一份模型、同一档只拼一次（`refreshSpeedUi` 每次重排都要取速度） */
@@ -285,7 +279,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   readonly playback: PlaybackController = new PlaybackController(this);
   /** 试听/导出 MIDI 的速度倍率（1 = 谱面标注速度）。持久化。 */
   // Selected note (for "play from here"): its chord + which verse/pass row.
-  private _selectedChord: Chord | null = null;
+  private _selectedId: ElementId | null = null;
   private _selectedVerse = 0;
 
 
@@ -299,7 +293,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this._rebuildPainter();
   }
 
-  /** 按当前档与设置重建排版器，保留已排好的 Score。选项都是构造时一次灌定的
+  /** 按当前档与设置重建排版器，保留已排好的引擎输入。选项都是构造时一次灌定的
    *  （`applyPptxStyle` 是**单向覆写**，切回原样只能换一份干净的 LayoutOptions），
    *  所以档位或设置一变就整个重建——排版器本身很轻，重的是随后的 reload。 */
   private _rebuildPainter(): void {
@@ -334,8 +328,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     };
   }
 
-  /** 把一份 Score 交给当前排版器排版（展开档用自己的投影片尺寸，原样档用 `layoutPage`）。 */
-  private _layoutScore(score: Score, breakDesc: string | null): void {
+  /** 把一份引擎输入交给当前排版器排版（展开档用自己的投影片尺寸，原样档用 `layoutPage`）。 */
+  private _layoutScore(score: JScore, breakDesc: string | null): void {
     const p = this.painter;
     if (p instanceof ExpandedPainter) {
       p.load(score, breakDesc);
@@ -559,13 +553,17 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       return false;
     }
     if (!f) return false;
-    let score;
+    let doc: ScoreDoc;
+    let score: JScore | null;
     try {
-      score = fromJpw(f);
+      doc = jpwToScoreDoc(f);
+      score = jianpuInputOfJpw(doc);
     } catch (e) {
       console.error("import failed", e);
+      this._jpwDoc = null;
       return false;
     }
+    this._jpwDoc = doc;
     if (!score) return false;
 
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
@@ -577,40 +575,14 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       return false;
     }
     this.renderPages();
-    this._buildJpwSync(f, score);
-    this.playback.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换（读 `_jpwDoc`，要在建索引之后）
+    this._buildSync(doc);
+    this.playback.refreshSpeedUi(); // 谱面 ♩= 随文本走，速度提示要跟着换（读 `_jpwDoc`）
     return true;
   }
 
-  /** `.jpwabc` 的双向定位：索引建在 `jpwToScoreDoc` 带 span 的模型上，谱面仍是 `fromJpw` 的 Score，
-   *  两边按和弦次序（跳倚音）配出「元素 id → 和弦」。两路和弦逐个一致由 `jpw-doc-check` 保证；
-   *  个数对不上就不建索引（宁可不亮，不亮错）。阶段 9 引擎直吃 ScoreDoc 后这层配对消失。 */
-  private _buildJpwSync(f: JpwFile, score: Score): void {
-    const m = new Map<ElementId, Chord>();
-    let doc: ScoreDoc;
-    try {
-      doc = jpwToScoreDoc(f);
-      this._jpwDoc = doc;
-    } catch (e) {
-      console.warn("jpwabc 定位索引建不出", e);
-      doc = emptyDoc("jpwabc");
-      this._jpwDoc = null;
-    }
-    const chords: Chord[] = [];
-    for (const mea of score.parts[0]?.measures ?? []) for (const ent of mea.entries) if (ent instanceof Chord) chords.push(ent);
-    const ids: ElementId[] = [];
-    for (const song of doc.songs) for (const { chord } of eachChord(song)) if (!chord.grace) ids.push(chord.id);
-    if (ids.length === chords.length) ids.forEach((id, i) => m.set(id, chords[i]!));
-    else {
-      console.warn(`jpwabc 定位：模型 ${ids.length} 个和弦、谱面 ${chords.length} 个，对不上，不建索引`);
-      doc = emptyDoc("jpwabc");
-    }
-    this._jpwNoteToChord = m;
-    this._buildSync(doc);
-  }
 
 
-  /** 文本谱（番茄 / 诗歌本）：解析 → 排版 → 渲染。展开档先转成 Score、与 `.jpwabc` 同一个排版器；
+  /** 文本谱（番茄 / 诗歌本）：解析 → 排版 → 渲染。展开档先投影成简谱引擎输入、与 `.jpwabc` 同一个排版器；
    *  原样档走文本谱专用的 PuPainter（印刷原版的观感）。 */
   reloadPu(text: string): boolean {
     let doc;
@@ -635,8 +607,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       return false;
     }
     this._scoreDoc = { text, doc: sdoc, pu: doc };
-    this._puScoreCache = null; // 文本变了，Score 与 chordIds 都要重建
-    this._noteToChord = null;
+    this._puScoreCache = null; // 文本变了，引擎输入要重建
     // 乐句重排：**用户手改过的文本就是新的「原样」基准**（切回按钮要还原到它）。
     // 重排后又手改的，也按「这就是新的原样」算——否则一按「原样」就把用户后来的编辑抹了。
     if (this._phraseOn && text !== this._phraseText) {
@@ -670,8 +641,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       return false;
     }
     this._scoreDoc = { text, doc, pu: null };
-    this._puScoreCache = null; // 文本变了，Score 与 noteMap 都要重建
-    this._noteToChord = null;
+    this._puScoreCache = null; // 文本变了，引擎输入要重建
     // 乐句重排认的是文本谱语法（`pu/relayout.ts` 重排的是原文本身），123 这一档不给
     this._disablePhrase();
     this._syncFormatLabel();
@@ -697,7 +667,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     if (notes === 0) return this._reloadAbcFallback(text, "原生解析没读出音符");
     this._scoreDoc = { text, doc, pu: null };
     this._puScoreCache = null;
-    this._noteToChord = null;
     this._disablePhrase();
     this._syncFormatLabel();
     if (!this._layoutScoreDoc(doc, "ABC")) return false;
@@ -712,7 +681,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       const xml = abcToMusicXml(text);
       this._setMixedXml(xml);
       if (!this.mixedDoc) return false;
-      const score = scoreOfXmlSong(this.mixedDoc.songs[0]!);
+      const score = jianpuInputOfXml(this.mixedDoc.songs[0]!);
       this._layoutScore(score, null);
       this.renderPages();
       this.setStatus(`ABC 原生解析未成功（${why}），已回落 abc2xml——谱面可看，定位只到小节`);
@@ -725,12 +694,12 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   }
 
   /** 经 `ScoreDoc` 排版并铺页（文本谱、123、ABC 共用）：
-   *  展开档先转 `Score`、与 `.jpwabc` 同一个排版器；原样档走 `PuPainter`（印刷原版的观感）。 */
+   *  展开档先投影成简谱引擎输入、与 `.jpwabc` 同一个排版器；原样档走 `PuPainter`（印刷原版的观感）。 */
   private _layoutScoreDoc(doc: ScoreDoc, what: string): boolean {
     try {
       if (this.layoutMode === "expanded") {
         this._puPainter = null;
-        // 试听、点选与高亮认的都是这同一份 Score 对象（puScore 有缓存）
+        // 同一份文本只投影一次（puScore 有缓存）；点选与高亮按元素 id 认
         const score = this.puScore();
         if (!score) {
           this.setStatus(`这份${what}里没有可排的曲行`);
@@ -771,7 +740,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this._syncCursorToScore();
   }
 
-  /** 一个条目对应的谱面 `<g>`：原样档问 `PuPainter`，展开档经 Score 的和弦问排版器。 */
+  /** 一个条目对应的谱面 `<g>`：原样档问 `PuPainter`，展开档按元素 id 问排版器。 */
   private _syncGroupEl(entry: SyncEntry): SVGGElement | null {
     const p = this._puPainter;
     if (p) {
@@ -779,21 +748,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
         ? p.noteGroupEl(entry.id)
         : p.syllableGroupEl(entry.id, entry.verse);
     }
-    const chord = this._chordOfNote(entry.id);
-    return chord ? this.painter.chordGroupEl(chord, entry.verse ?? 0) : null;
-  }
-
-  /** 展开档：元素 id → Score 和弦（`puScore` 建的 chordIds 的反向，用时才建）。 */
-  private _chordOfNote(id: ElementId): Chord | null {
-    if (this.adapter.caps.layout === "jpwabc") return this._jpwNoteToChord?.get(id) ?? null;
-    if (!this._noteToChord) {
-      const m = new Map<ElementId, Chord>();
-      // puScore() 会填 _puScoreCache；展开档下它与谱面是同一份 Score
-      this.puScore();
-      for (const [chord, n] of this._puScoreCache?.chordIds ?? []) if (!m.has(n)) m.set(n, chord);
-      this._noteToChord = m;
-    }
-    return this._noteToChord.get(id) ?? null;
+    return this.painter.chordGroupEl(entry.id, entry.verse ?? 0);
   }
 
   /** 文本 → 谱面：光标/选区落在哪些音符上，就给哪些 `<g>` 加 `cursor-at`。
@@ -946,7 +901,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return slide ? "expanded" : "original";
   }
 
-  /** 当前文档的 `ScoreDoc`（文本谱/123/ABC；排版器、Score、同步索引共用同一份对象）。 */
+  /** 当前文档的 `ScoreDoc`（文本谱/123/ABC；排版器、引擎输入、同步索引共用同一份对象）。 */
   currentScoreDoc(): ScoreDoc | null {
     const toScoreDoc = this.adapter.toScoreDoc;
     if (!toScoreDoc) return null;
@@ -975,26 +930,23 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
   }
 
-  /** 当前文档对应的 Score（导出 .jpwabc / MIDI、试听与展开档排版共用）。
-   *  `forExpanded`：展开档那一份（带歌词的声部换到最前、同号歌词顺延，见 `ToScoreOptions.forExpanded`）。
-   *  默认跟当前档走——展开档里谱面、试听与高亮必须是**同一份** Score 对象（高亮按 Chord 身份认）。 */
-  puScore(forExpanded = this.layoutMode === "expanded"): Score | null {
+  /** 当前文档投影出的引擎输入（展开档谱面与导出 PPTX 共用）。
+   *  `forExpanded`：展开档那一份（带歌词的声部换到最前、同号歌词顺延，见 `JianpuInputOptions.forExpanded`）。 */
+  puScore(forExpanded = this.layoutMode === "expanded"): JScore | null {
     if (this.adapter.caps.layout !== "scoredoc") return null;
     const text = this.getText();
     const doc = this.currentScoreDoc();
     if (!doc) return null;
     const c = this._puScoreCache;
     if (c && c.text === text && c.doc === doc && c.forExpanded === forExpanded) return c.score;
-    const chordIds = new Map<Chord, ElementId>();
-    let score: Score | null;
+    let score: JScore | null;
     try {
-      score = scoreDocToScore(doc, { chordIds, forExpanded });
+      score = jianpuInputOfDoc(doc, { forExpanded });
     } catch (e) {
-      console.error("转 Score 失败", e);
+      console.error("投影引擎输入失败", e);
       return null;
     }
-    this._puScoreCache = { text, doc, score, chordIds, forExpanded };
-    this._noteToChord = null;
+    this._puScoreCache = { text, doc, score, forExpanded };
     return score;
   }
 
@@ -1042,8 +994,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this._puDialect = null;
       this._scoreDoc = null;
       this._puScoreCache = null;
-      this._noteToChord = null;
-    }
+      }
     // 没有代码区的格式（`.musicxml`）把代码区收起来
     document.getElementById("body")?.classList.toggle("no-code", !this.adapter.caps.textEditor);
     // 两种格式各记一个档位（jpProfile / puProfile），换格式可能就换了档
@@ -1122,8 +1073,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     // Remember the note entry so playback can start from here.
     const d = target.data;
     if (d && typeof (d as { verse?: unknown }).verse === "number" && (d as { chord?: unknown }).chord) {
-      const ne = d as { chord: import("../score/score").Chord; verse: number };
-      this._selectedChord = ne.chord;
+      const ne = d as { chord: import("../layout/input").JChord; verse: number };
+      this._selectedId = ne.chord.id;
       this._selectedVerse = ne.verse;
     }
     this.setStatus(describePick(picked));
@@ -1140,7 +1091,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private deselect(): void {
     this.selectedEl?.classList.remove("selected");
     this.selectedEl = null;
-    this._selectedChord = null;
+    this._selectedId = null;
     this._selectedVerse = 0;
   }
 
@@ -1170,7 +1121,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /** PlaybackHost：当前该播的谱，由 ScoreDoc 拼（`docs/待办.md` §3.1 阶段 8）。
    *  MusicXML 形状（`.musicxml`、ABC 回落）带全部声部、voice 与力度；简谱形状（文本谱/123/ABC/`.jpwabc`）
-   *  口径同 `scoreDocToScore`，展开档那一份带歌词的声部当主旋律。 */
+   *  口径同 `jianpuInputOfDoc`，展开档那一份带歌词的声部当主旋律。 */
   playable(): PlaySource | null {
     const jpw = this.adapter.caps.layout === "jpwabc";
     const doc = jpw ? this._jpwDoc : this.currentScoreDoc();
@@ -1192,15 +1143,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /** PlaybackHost：用户在谱面上选中了某个音就从那儿起播。 */
   startPoint(): PlayPoint | undefined {
-    const chord = this._selectedChord;
-    if (chord === null) return undefined;
-    let id: ElementId | undefined;
-    if (this.adapter.caps.layout === "jpwabc") {
-      for (const [k, v] of this._jpwNoteToChord ?? []) if (v === chord) id = k;
-    } else {
-      id = this._puScoreCache?.chordIds.get(chord);
-    }
-    return id === undefined ? undefined : { id, pass: this._selectedVerse };
+    const id = this._selectedId;
+    return id === null ? undefined : { id, pass: this._selectedVerse };
   }
 
   /** PlaybackHost：播到某个元素 → 谱面高亮 + 保证可见。
@@ -1217,13 +1161,12 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       }
       return;
     }
-    // 展开档与 `.jpwabc` 同一个排版器，按 Chord 画：经 id → 谱面 Score 和弦（阶段 9 引擎直吃 ScoreDoc 后消失）
-    const chord = id === null ? null : this._chordOfNote(id);
-    const page = this.painter.highlightChord(chord, pass);
-    if (chord && page !== null) {
+    // 展开档与 `.jpwabc` 同一个排版器，同样按元素 id 画
+    const page = this.painter.highlightChord(id, pass);
+    if (id !== null && page !== null) {
       if (page !== this.pageIndex) this.pageIndex = page;
       // keep the sounding note visible (no-op when already in view)
-      this.painter.chordGroupEl(chord, pass)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      this.painter.chordGroupEl(id, pass)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
   }
 
@@ -1388,7 +1331,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     this._scoreDoc = { text, doc, pu: null };
     this._puScoreCache = null;
-    this._noteToChord = null;
     this._disablePhrase();
     this._syncFormatLabel();
     if (!this._layoutScoreDoc(doc, "MusicXML")) return false;
@@ -1429,7 +1371,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     let text: string;
     try {
-      // 三种目标同吃这份模型；`.jpwabc` 口径照原 `loadMusicXml → Score` 那条路（`jpw-emit-check` 568 份逐字节一致）
+      // 三种目标同吃这份模型；`.jpwabc` 口径同简谱引擎输入的 MusicXML 形状（`jpw-emit-check` 基线）
       const jpw = target === "jpwabc" ? emitJpwabc(doc) : null;
       if (target === "jpwabc" && jpw === null) throw new Error("没有可转换的曲行");
       text = target === "123" ? emit123(doc) : target === "abc" ? emitAbc(doc) : jpw!;
@@ -1508,7 +1450,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /**
    * 文本谱的「按乐句重排」：**重排的是原文本身**（`pu/relayout.ts`），两档因此同时就位
-   * ——原样档一行 `Q:` 就是谱面一行，展开档的行边界由 `toscore.ts` 转成 `LineBreak`。
+   * ——原样档一行 `Q:` 就是谱面一行，展开档的行边界由 `model/jianpuinput.ts` 转成换行条目。
    * 切回「原样」= 把重排前那份原文放回去（逐字相同，Ctrl+Z 也能整体撤销）。
    */
   private _setPuPhraseLayout(phrase: boolean): void {
@@ -1554,17 +1496,17 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
    */
   private _puPhraseMeasure(): FitMeasure | null {
     if (this.layoutMode !== "expanded") return null;
-    // 量的必须是**断行模块自己那份 Score**（span 以 Chord 身份为键），所以给的是函数不是结果。
+    // 量的是断行模块自己投影的那份输入，所以给的是函数不是结果。
     return (score) => this._fitOf(score, this.pageW, this._sizes.pptx.fontSize);
   }
 
   /** 乐句重排的行长度量：按实际纸宽与字号量出每小节自然宽度（`phrase.ts::targetMeasForFit`）。
    *  另起一个 painter 来量，且要 `lyricStack > 0`：展开档会按反复与多段各排一遍，按小节取跨度就成了整首。 */
-  private _fitOf(score: Score, width: number, fontSize: number): FitMetric {
+  private _fitOf(score: JScore, width: number, fontSize: number): ReturnType<FitMeasure> {
     const p = new JinpuPainter(fontSize);
     p.layout.options.smuflMeta = this.meta;
     p.layout.options.lyricStack = fontSize; // 只要 > 0：不展开反复，一遍就够量
-    score.clearSystemBreak();
+    clearBreaks(score);
     return p.layout.measureNatural(score, width);
   }
 

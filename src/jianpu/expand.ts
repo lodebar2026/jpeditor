@@ -1,11 +1,11 @@
-// 反复展开的公共那一半：按 `PlayItem[]`（`Score.playData.measures`）逐遍走小节。
+// 反复展开的公共那一半：按 `PlayItem[]`（`playData.measures`）逐遍走小节。
 //
-// 「这首歌该唱成什么样」由 Score 那一层推（`Score.parseRepeatInf` / `.Repeat` 段），
+// 「这首歌该唱成什么样」由 `score/playorder.ts` 从 `ScoreDoc` 推（反复与跳转 / `.Repeat` 段），
 // 两种格式都拿到同一种 `PlayItem[]`；这里只负责**怎么走**——逐遍、逐小节、首尾小节的裁切、
 // 遍末换页。「怎么放一个小节」由 sink 决定：排版往 Line 里装小节（layout.ts::buildLine）。
-// 文本谱也先转成 Score（pu/toscore.ts），展开档两种格式走的是同一条路（jianpu/expanded.ts）。
+// 展开档各格式投影成同一种引擎输入，走的是同一条路（jianpu/expanded.ts）。
 
-import { PlayItem } from "../score/score";
+import { PlayItem } from "../score/playorder";
 
 /** 原样档：按原谱排一遍——一小节一项、pass = 0（多段歌词叠排、不展开任何反复）。 */
 export function identityPlan(measureCount: number): PlayItem[] {

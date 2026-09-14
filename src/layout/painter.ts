@@ -9,8 +9,9 @@ import { Font } from "./font";
 import { Group, PageItem, TextFrame, SmuflText } from "./pageitem";
 import { NoteEntry } from "./entry";
 import { Layout } from "./layout";
-import { MusicCommon } from "../score/score";
-import { emptyScore, type JChord, type JScore } from "./input";
+import { MusicCommon } from "../score/jppitch";
+import { emptyScore, type JScore } from "./input";
+import type { ElementId } from "../model/doc";
 import { jpTimeSigItems } from "./jpglyph";
 import type { PagePainter } from "./pagepainter";
 import { walkPageItem, type ItemVisitor } from "./walk";
@@ -27,8 +28,8 @@ export abstract class ScorePainter implements PagePainter {
   pageHeight = 0;
   /** PageItem -> rendered <g>, populated each renderPage (for DOM picking). */
   nodeMap = new WeakMap<PageItem, SVGGElement>();
-  /** Chord -> its note-entry groups (one per rendered verse/pass), for playback cursor. */
-  private chordItem = new Map<JChord, { page: number; item: PageItem; verse: number }[]>();
+  /** 元素 id → 它的音符格（每遍/每段各一个），试听高亮与起播点用。 */
+  private chordItem = new Map<ElementId, { page: number; item: PageItem; verse: number }[]>();
   private highlighted: PageItem | null = null;
   /** 逐页高度。空 = 各页同高（`pageHeight`）；连续长纸那一档按内容逐页给。 */
   protected pageHeights: number[] = [];
@@ -37,17 +38,17 @@ export abstract class ScorePainter implements PagePainter {
     this.layout = new Layout(fontSize);
   }
 
-  /** Walk each page tree, mapping every Chord to its note-entry group(s). */
+  /** 逐页走一遍页面树，把每个和弦的元素 id 对到它的音符格上。 */
   protected buildChordIndex(): void {
     this.chordItem.clear();
     this.highlighted = null;
     const walk = (item: PageItem, page: number): void => {
       if (item.data instanceof NoteEntry) {
-        const ch = item.data.chord;
-        if (ch) {
-          const list = this.chordItem.get(ch) ?? [];
+        const id = item.data.chord?.id;
+        if (id !== null && id !== undefined) {
+          const list = this.chordItem.get(id) ?? [];
           list.push({ page, item, verse: item.data.verse });
-          this.chordItem.set(ch, list);
+          this.chordItem.set(id, list);
         }
       }
       for (const c of item.children) walk(c, page);
@@ -55,30 +56,30 @@ export abstract class ScorePainter implements PagePainter {
     this.layout.pages.forEach((pg, i) => walk(pg, i));
   }
 
-  /** The rendered entry for a chord at a given pass/verse (falls back to first). */
-  private hitFor(chord: JChord, pass: number): { page: number; item: PageItem } | null {
-    const list = this.chordItem.get(chord);
+  /** 某个和弦在第几遍的音符格（找不到那一遍就取第一个）。 */
+  private hitFor(id: ElementId, pass: number): { page: number; item: PageItem } | null {
+    const list = this.chordItem.get(id);
     if (!list || list.length === 0) return null;
     return list.find((h) => h.verse === pass) ?? list[0];
   }
 
-  /** Highlight the note of `chord` at `pass` (clearing any previous). Returns page index. */
-  highlightChord(chord: JChord | null, pass = 0): number | null {
+  /** 高亮元素 `id` 第 `pass` 遍的音（先清掉上一个）。返回所在页。 */
+  highlightChord(id: ElementId | null, pass = 0): number | null {
     if (this.highlighted) {
       this.nodeMap.get(this.highlighted)?.classList.remove("playing");
       this.highlighted = null;
     }
-    if (!chord) return null;
-    const hit = this.hitFor(chord, pass);
+    if (id === null) return null;
+    const hit = this.hitFor(id, pass);
     if (!hit) return null;
     this.nodeMap.get(hit.item)?.classList.add("playing");
     this.highlighted = hit.item;
     return hit.page;
   }
 
-  /** SVG <g> for a chord's note at `pass` (for scroll-into-view); null if not rendered. */
-  chordGroupEl(chord: JChord, pass = 0): SVGGElement | null {
-    const hit = this.hitFor(chord, pass);
+  /** 元素 `id` 第 `pass` 遍那个音的 `<g>`（滚动到可见用）；没画出来为 null。 */
+  chordGroupEl(id: ElementId, pass = 0): SVGGElement | null {
+    const hit = this.hitFor(id, pass);
     return hit ? this.nodeMap.get(hit.item) ?? null : null;
   }
 

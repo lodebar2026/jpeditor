@@ -10,7 +10,6 @@
 // | 来源 | 得到的条目 |
 // |---|---|
 // | `docs/待办.md` §2.2「无法表达」的 全语料实测 | 文字行 `W:` / 圆滑线 / 多段歌词 / 印刷段号 / 多声部 / 分曲 / 倚音 / 房号 |
-// | `docs/架构.md` §6.1 的模型主线 | `Score` 装不下力度、渐强渐弱、多声部并排；`scoreToJpwabc` 丢和弦与 slur |
 // | `docs/模块/模型-scoredoc.md` | `playOrder` 与 `style` 是 **MusicXML 装不下的两样**（`<ending>` 只能整小节） |
 // | `docs/模块/源格式-abc家族.md` | ABC 那一档的 clef/修饰、`Q:` 参照音符长度 |
 //
@@ -78,12 +77,11 @@ export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> =
   // 标准 ABC：样式被规范标为 VOLATILE（§11，「not standardised」），所以 123 才把样式
   // 另走样式表；`I:playorder` 是 123 的扩展，标准 ABC 读不懂（虽然会忽略，等于丢）。
   abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset"),
-  // `.jpwabc` 的语法**刻意不扩**（`docs/架构.md` A5 那条）：和弦与 slur 在
-  // `scoreToJpwabc` 就丢了，成书对比里那条基准路因此被停用。
-  // 音符堆：`Score.removeUnused` 只留最高音、删 voice > 1
+  // `.jpwabc` 的语法**刻意不扩**：和弦、力度、多声部都写不进去。
+  // 音符堆：写出端只留最高音、删 voice > 1
   jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "noteStack", "style", "multiSong", "grace"),
-  // 文本谱：`scoreDocToScore` 丢和弦/力度/多声部（`docs/架构.md` §6.1 的表），
-  // 但文本谱**原文**装得下和弦——这里算的是「另存为之后还在不在」，所以按解析器的能力写。
+  // 文本谱：展开档谱面不画和弦/力度/多声部，但文本谱**原文**装得下和弦——
+  // 这里算的是「另存为之后还在不在」，所以按解析器的能力写。
   pu: allBut("style", "playOrder", "dynamics", "harmonyOffset"),
   // MusicXML 装不下的两样：`playOrder` 的 skip/limit（`<ending>` 只能整小节）与样式引用。
   // 见 `docs/模块/模型-scoredoc.md` 的关键判据。

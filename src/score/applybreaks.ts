@@ -1,13 +1,12 @@
-// 把乐句分析的断点写到 Score 上（成书重排用）。
+// 把乐句分析的断点写到简谱排版引擎的输入上（成书重排用），以及断句要的「放不放得下」换键。
 //
-// 从前另有一条 `scoreToJpwabc({phrase:true})`（Score → .jpwabc 文本，断点写成 `$(true)`），
-// 没有调用方，阶段 8 随原 jpscore.ts 删掉。本文件：
-//   applyPhraseBreaks             Score → Score，断点直接写成 `LineBreak` entry，
-//                                 就是 layout.ts:1402 消费的那个东西。成书重排走这条，
-//                                 数据一路不落地成文本，和弦与结构都能带到排版。
+// 断句在 `ScoreDoc` 拼出的断句输入（`phraseinput.ts`）上跑，引擎吃的是 `model/jianpuinput.ts` 的投影；
+// 两边的和弦**按元素 id 对上**。断点直接写成引擎输入里的换行条目，数据一路不落地成文本。
 //
 // 无 DOM 依赖。
-import { Chord, LineBreak, Measure, Part } from "./score";
+import type { ElementId } from "../model/doc";
+import type { JChord, JMeasure } from "../layout/input";
+import { breakAfterChord, breakAtMeasureEnd } from "../model/jianpuinput";
 import { chordsOf, type PhraseChord, type PhrasePart } from "./phraseinput";
 import { headFpOf, lyricPunctScore, mainLyricText, type CutCandidate, type FitMetric, type PhraseBreaks } from "./phrase";
 
@@ -15,8 +14,7 @@ export type { FitMetric };
 
 export interface ApplyBreakOptions {
   /** 每页几行。**0 = 不按行数换页**——成书排版走这个：一页装多少行交给
-   *  layout 的 layoutVertically 按页高决定，硬定 4 行会让每页空掉半页。
-   *  编辑器那条路（原 jpscore）仍是 4。 */
+   *  layout 的 layoutVertically 按页高决定，硬定 4 行会让每页空掉半页。 */
   linesPerPage?: number;
   /** 段落起点（主歌/副歌…）是否另起一页。成书里一首歌通常连排，默认不换。 */
   sectionNewPage?: boolean;
@@ -31,64 +29,43 @@ export interface ApplyBreakResult {
   pages: number;
 }
 
-function insertAfter(m: Measure, c: Chord, newPage: boolean): void {
-  const i = m.entries.indexOf(c);
-  const lb = new LineBreak(m);
-  lb.newPage = newPage;
-  // 与 Measure.lineBreak 同理：位置要跟着断点和弦走，否则 autoBeamGroup 的排序会把它挪到节首。
-  lb.position = c.duration ? c.position.plus(c.duration) : c.position;
-  m.entries.splice(i < 0 ? m.entries.length : i + 1, 0, lb);
-}
-
-/**
- * **过渡期**（`docs/待办.md` §3.1 阶段 5→9）：断句在 `ScoreDoc` 拼出的输入上跑，引擎仍吃 `Score`。
- * 两份输入按小节、和弦次序配对（`scripts/phrase-dual-check.mjs` 保证逐项一致），对不上直接抛错，不静默。
- * 返回「断句输入的和弦 → `Score` 的和弦」。阶段 9 引擎直吃 `ScoreDoc` 后删。
- */
-export function pairWithScore(part: Part, input: PhrasePart): Map<PhraseChord, Chord> {
-  if (part.measures.length !== input.measures.length) {
-    throw new Error(`断句输入与 Score 小节数对不上：${input.measures.length} / ${part.measures.length}`);
-  }
-  const out = new Map<PhraseChord, Chord>();
-  part.measures.forEach((m, i) => {
-    const a = m.entries.filter((e): e is Chord => e instanceof Chord);
-    const b = chordsOf(input.measures[i]!);
-    if (a.length !== b.length) throw new Error(`断句输入与 Score 第 ${i + 1} 小节和弦数对不上：${b.length} / ${a.length}`);
-    b.forEach((c, k) => out.set(c, a[k]!));
-  });
-  return out;
-}
-
-/** `FitMetric` 换键：引擎按 `Score` 和弦量出来的，换成断句输入的和弦（`pairWithScore` 的反向）。 */
-export function fitForInput(fit: FitMetric, pair: ReadonlyMap<PhraseChord, Chord>): FitMetric {
+/** 引擎量出来的自然跨度（按引擎输入的和弦）换成按断句输入的和弦：两边按元素 id 对上。 */
+export function fitForInput(
+  fit: { width: number; spans: ReadonlyMap<JChord, { x0: number; x1: number }> },
+  idOf: ReadonlyMap<PhraseChord, ElementId>,
+): FitMetric {
+  const byId = new Map<ElementId, { x0: number; x1: number }>();
+  for (const [c, sp] of fit.spans) if (c.id !== null) byId.set(c.id, sp);
   const spans = new Map<PhraseChord, { x0: number; x1: number }>();
-  for (const [c, sc] of pair) {
-    const sp = fit.spans.get(sc);
+  for (const [c, id] of idOf) {
+    const sp = byId.get(id);
     if (sp) spans.set(c, sp);
   }
   return { width: fit.width, spans };
 }
 
-/** 在断句输入上算出的断点写回 `Score`（换键后照 `applyPhraseBreaks`）。 */
-export function applyPhraseBreaksToScore(part: Part, breaks: PhraseBreaks, pair: ReadonlyMap<PhraseChord, Chord>,
-  opt: ApplyBreakOptions = {}): ApplyBreakResult {
-  const map = <T>(set: ReadonlySet<PhraseChord>): Set<T> => new Set([...set].map((c) => pair.get(c) as T));
-  return applyPhraseBreaks(part, {
-    ...breaks,
-    midBreaks: map(breaks.midBreaks),
-    sectionCutChords: map(breaks.sectionCutChords),
-  }, opt);
-}
-
 /**
- * @param part   一般是 score.parts[0]
- * @param breaks computePhraseBreaks(part) 的结果
+ * 在断句输入上算出的断点写进引擎输入（`measures` 一般是 `score.parts[0].measures`）。
+ * 两边小节一一对应、和弦按元素 id 对上；对不上直接抛错，不静默。
  */
-export function applyPhraseBreaks(part: Part, breaks: PhraseBreaks, opt: ApplyBreakOptions = {}): ApplyBreakResult {
+export function applyPhraseBreaks(
+  measures: readonly JMeasure[], input: PhrasePart, idOf: ReadonlyMap<PhraseChord, ElementId>, breaks: PhraseBreaks,
+  opt: ApplyBreakOptions = {},
+): ApplyBreakResult {
+  if (measures.length !== input.measures.length) {
+    throw new Error(`断句输入与引擎输入小节数对不上：${input.measures.length} / ${measures.length}`);
+  }
+  const chordOf = new Map<ElementId, JChord>();
+  for (const m of measures) for (const e of m.entries) if (e.kind === "chord" && e.id !== null) chordOf.set(e.id, e);
+  const target = (c: PhraseChord): JChord => {
+    const id = idOf.get(c);
+    const hit = id === undefined ? undefined : chordOf.get(id);
+    if (!hit) throw new Error(`断句输入的和弦在引擎输入里找不到（id ${id}）`);
+    return hit;
+  };
   const linesPerPage = opt.linesPerPage ?? 4;
   const sectionNewPage = opt.sectionNewPage ?? false;
   const useMidBreaks = opt.useMidBreaks ?? true;
-  const ms = part.measures;
   let lines = 0;
   let pages = 1;
   // 段落起点一定换页，但**不能连着换两次**：段界落在小节内部（sectionCutChords）时，
@@ -106,17 +83,17 @@ export function applyPhraseBreaks(part: Part, breaks: PhraseBreaks, opt: ApplyBr
     justPaged = page;
   };
 
-  for (let i = 0; i < ms.length; i++) {
-    const m = ms[i];
-    for (const c of m.entries) {
-      if (!(c instanceof Chord)) continue;
-      if (!useMidBreaks) break;
-      if (!breaks.midBreaks.has(c) && !breaks.sectionCutChords.has(c)) continue;
-      brk((page) => insertAfter(m, c, page), sectionNewPage && breaks.sectionCutChords.has(c));
+  for (let i = 0; i < measures.length; i++) {
+    const m = measures[i]!;
+    if (useMidBreaks) {
+      for (const c of chordsOf(input.measures[i]!)) {
+        if (!breaks.midBreaks.has(c) && !breaks.sectionCutChords.has(c)) continue;
+        brk((page) => breakAfterChord(m, target(c), page), sectionNewPage && breaks.sectionCutChords.has(c));
+      }
     }
     const next = i + 1;
-    if (next < ms.length && (breaks.measureBreaks.has(next) || breaks.sectionStarts.has(next))) {
-      brk((page) => m.lineBreak(page), sectionNewPage && breaks.sectionStarts.has(next));
+    if (next < measures.length && (breaks.measureBreaks.has(next) || breaks.sectionStarts.has(next))) {
+      brk((page) => breakAtMeasureEnd(m, page), sectionNewPage && breaks.sectionStarts.has(next));
     }
   }
   return { lines, pages };

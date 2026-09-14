@@ -271,7 +271,7 @@ export class MixedPainter implements PagePainter {
     return { w: this.pageWidthTenths, h: this.pageHeightTenths };
   }
 
-  /** Score title (first line), for export filenames. */
+  /** 曲名（首行），导出文件名用。 */
   get title(): string {
     return this.score?.title.split("\n")[0] ?? "";
   }

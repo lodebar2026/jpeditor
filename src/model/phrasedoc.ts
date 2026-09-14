@@ -1,10 +1,10 @@
-// `ScoreDoc` → 断句输入（`score/phraseinput.ts`），`docs/待办.md` §3.1 阶段 5 的新侧。
+// `ScoreDoc`（MusicXML 形状）→ 断句输入（`score/phraseinput.ts`）；试听旋律档与演唱顺序也用这一份。
 //
-// **口径逐条照 `score/musicxml.ts::loadMusicXml` + `Measure.init`**（本轮只换输入、不动判据，靠双跑逐项一致）：
-//   - 只留 voice ≤ 1 的非倚音和弦（`Measure.removeUnused`）；和弦内取最高音（`jianpu.ts::topNote`，同样是先到者胜）
-//   - 位置/时值按**首小节**的 divisions 折算（`loadPart` 只读第一个 `<attributes>`）
-//   - `beats`/`beams`/`dot` 按 `<type>` 与附点（`parseDuration`）；唱名、八度点取语义层 `assignDegrees` 的度数
-//   - 小节线、反复、房号、调号变更、段落标记同 `parseBarline` / `parseAttribute` / `parseSectionMark`
+// **口径逐条同简谱引擎输入 `model/jianpuinput.ts::jianpuInputOfXml`**（断点写回引擎输入要按 id 对上，`phrase-dual-check` 对拍）：
+//   - 只留 voice ≤ 1 的非倚音和弦；和弦内取最高音（`jianpu.ts::topNote`，同样是先到者胜）
+//   - 位置/时值按**首小节**的 divisions 折算
+//   - `beats`/`beams`/`dot` 按 `<type>` 与附点；唱名、八度点取语义层 `assignDegrees` 的度数
+//   - 小节线、反复、房号、调号变更同引擎输入；另读段落标记（段首硬换行）
 //   - 副歌判定同 `findRefrain`
 // 断点集合以这里拼出的对象为键，`idOf` 把它们换回元素 id。
 
@@ -17,7 +17,7 @@ import type { Chord, ElementId, Measure, Song } from "./doc";
 import { midiPitch, topNote } from "./jianpu";
 
 interface LyricOut { text: string; number: number; refrain: boolean }
-/** `pitch`：MIDI 音高（试听用，同 `loadMusicXml` 的 `Note.pitch`；休止与无音高为 0） */
+/** `pitch`：MIDI 音高（试听用；休止与无音高为 0） */
 interface NoteOut { number: string; jpOctave: number; pitch: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
 interface ChordOut {
   notes: NoteOut[];
@@ -44,11 +44,11 @@ interface MeasureOut {
   endingNum: Set<number> | null;
   endingRight: StartStopDiscontinue | null;
   sectionMark: string | null;
-  /** 拍号（前面小节的延续；小节里没有和弦时试听按它算小节长，同 `Score.Measure.time`） */
+  /** 拍号（前面小节的延续；小节里没有和弦时试听按它算小节长，同引擎输入的 `JMeasure.time`） */
   time: { beats: number; beatType: number };
   /** 小节起点（findRefrain 用） */
   position: Fraction;
-  /** 末和弦的终点。没有和弦时抛错（同 `Score.Measure.duration`） */
+  /** 末和弦的终点。没有和弦时抛错（同 `layout/input.ts::measureDuration`） */
   readonly duration: Fraction;
 }
 
@@ -63,7 +63,7 @@ const TYPE_BEATS: Readonly<Record<string, [number, number]>> = {
   whole: [4, 0], half: [2, 0], quarter: [1, 0], eighth: [1, 1], "16th": [1, 2], "32nd": [1, 3], "64th": [1, 4],
 };
 
-/** 断句输入。`partIndex` 缺省取第一声部（与 `loadMusicXml` 只读 `parts[0]` 一致）。 */
+/** 断句输入。`partIndex` 缺省取第一声部（与引擎输入只读 `parts[0]` 一致）。 */
 export function phrasePartOfDoc(song: Song, partIndex = 0): PhraseDocView {
   const part = song.parts[partIndex];
   const idOf = new Map<PhraseChord, ElementId>();
@@ -91,7 +91,7 @@ export function phrasePartOfDoc(song: Song, partIndex = 0): PhraseDocView {
 }
 
 /** 跳转记号（Fine / D.C. / D.S. / To Coda）所在的小节下标（0 基）。**只取记号本身**，
- *  `segno` / `coda` 是跳转的目标、不算（口径同 `rebuild.mjs` 读 `Score.playData.jumpTo`）。 */
+ *  `segno` / `coda` 是跳转的目标、不算（口径同引擎输入的 `playData.jumpTo`）。 */
 export function phraseJumpMeasures(song: Song, partIndex = 0): Set<number> {
   const out = new Set<number>();
   song.parts[partIndex]?.measures.forEach((m, i) => {

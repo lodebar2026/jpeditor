@@ -1,8 +1,8 @@
 // 简谱形状的 `ScoreDoc`（文本谱 / 123 / ABC）→ 断句输入（`score/phraseinput.ts`），`docs/待办.md` §3.1 阶段 5。
 //
 // 与 `model/phrasedoc.ts`（MusicXML 形状）分工同 `pu/slots.ts::docView` 与 `jianpuproject.ts`：
-// 这里经排版行视图 `docView` 读，和原样档谱面、`scoreDocToScore` 是同一批对象。
-// **口径逐条照 `toscore.ts::buildPart`**（`forExpanded` 那一份：带歌词的声部当主旋律、同号歌词顺延），
+// 这里经排版行视图 `docView` 读，和原样档谱面、简谱引擎输入（`jianpuInputOfDoc`）是同一批对象。
+// **口径逐条同 `jianpuinput.ts::rowsPart`**（`forExpanded` 那一份：带歌词的声部当主旋律、同号歌词顺延），
 // 本轮只换输入、不动判据，靠 `scripts/phrase-dual-check.mjs --jianpu` 双跑逐项一致。
 // 断点集合以这里拼出的对象为键，`idOf` 把它们换回元素 id。
 
@@ -16,7 +16,7 @@ import type { LyricLine, Mark, NoteElement, ScoreLine } from "./ast";
 import { docView } from "./slots";
 
 interface LyricOut { text: string; number: number; refrain: boolean }
-/** `pitch`：MIDI 音高，只在 `buildMeasures` 给了调号状态时算（试听用，同 `toscore.ts` 的 `applyJpPitch`） */
+/** `pitch`：MIDI 音高，只在 `buildMeasures` 给了调号状态时算（试听用，经 `applyJpPitch`） */
 interface NoteOut { number: string; jpOctave: number; pitch: number; jpAlter: string; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
 interface ChordOut {
   notes: NoteOut[];
@@ -43,19 +43,19 @@ export interface MeasureOut {
   repeatForward: boolean;
   keyChange: boolean;
   endingLeft: boolean;
-  /** 房号适用的遍数（演唱顺序用，同 `toscore.ts::applyEndingStart`） */
+  /** 房号适用的遍数（演唱顺序用，同 `jianpuinput.ts::applyEndingStart`） */
   endingNum: Set<number> | null;
   endingRight: StartStopDiscontinue | null;
   sectionMark: string | null;
-  /** 和弦、小节线、行末换行按原次序（`.jpwabc` 写出端要，同 `toscore.ts::buildPart` 往 `Measure.entries` 里放的次序） */
+  /** 和弦、小节线、行末换行按原次序（`.jpwabc` 写出端要，同 `jianpuinput.ts::rowsPart` 往小节条目里放的次序） */
   seq: (ChordOut | "barline" | "break")[];
-  /** 拍号（小节里没有和弦时试听按它算小节长，同 `Score.Measure.time`） */
+  /** 拍号（小节里没有和弦时试听按它算小节长，同引擎输入的 `JMeasure.time`） */
   time: { beats: number; beatType: number };
-  /** 末和弦的终点。没有和弦时抛错（同 `Score.Measure.duration`） */
+  /** 末和弦的终点。没有和弦时抛错（同 `layout/input.ts::measureDuration`） */
   readonly duration: Fraction;
 }
 
-/** 跳转记号（`&dc` / `&ds` / `&fine` / `&ty` / `&hs`）挂在哪一小节（同 `toscore.ts::PendingJump`）。 */
+/** 跳转记号（`&dc` / `&ds` / `&fine` / `&ty` / `&hs`）挂在哪一小节。 */
 export interface JumpOut {
   name: string;
   measure: number;
@@ -70,7 +70,7 @@ export interface PhraseSongView {
   idOf: Map<PhraseChord, ElementId>;
 }
 
-/** 断句输入（主旋律那一个声部）。这首没有曲行时返回 null（同 `scoreDocToScore`）。 */
+/** 断句输入（主旋律那一个声部）。这首没有曲行时返回 null（同 `jianpuInputOfDoc`）。 */
 export function phrasePartOfSong(doc: ScoreDoc, songIdx = 0): PhraseSongView | null {
   const view = docView(doc);
   const song = view.songs[songIdx];
@@ -112,7 +112,7 @@ export function distinctVerses(lyrics: readonly LyricLine[]): readonly LyricLine
   });
 }
 
-/** 临时记号 → `applyJpPitch` 的 `jpAlter`（`toscore.ts` 同用这一份）。 */
+/** 临时记号 → `applyJpPitch` 的 `jpAlter`（`jianpuinput.ts` 同用这一份）。 */
 export function jpAlterOf(el: NoteElement): string {
   switch (el.accidental) {
     case "sharp":
@@ -128,7 +128,7 @@ export function jpAlterOf(el: NoteElement): string {
   }
 }
 
-/** 同 `toscore.ts::marksEdgeAt`：跨行的续接端不是真端点。 */
+/** 同 `jianpuinput.ts::marksEdgeAt`：跨行的续接端不是真端点。 */
 function edgeAt(marks: readonly Mark[], index: number, type: Mark["type"]): { starts: boolean; ends: boolean } {
   const hit = marksAt(marks, index, type);
   return {
@@ -143,7 +143,7 @@ function chordDuration(ch: ChordOut): Fraction {
   return dur.divInt(1 << ch.beams);
 }
 
-/** 一个声部的曲行 → 小节序列。`renumberVerses` 同 `toscore.ts::buildPart`（展开档那一份才顺延同号歌词）。 */
+/** 一个声部的曲行 → 小节序列。`renumberVerses` 同 `jianpuinput.ts::rowsPart`（展开档那一份才顺延同号歌词）。 */
 export function buildMeasures(
   lines: readonly ScoreLine[],
   onChord: (ch: ChordOut, el: NoteElement) => void,
@@ -282,7 +282,7 @@ export function buildMeasures(
       lastChord = ch;
       if (takesLyric(el)) attach(ch);
     });
-    // 行末换行（末行不加），同 `toscore.ts` 的 `Measure.lineBreak`
+    // 行末换行（末行不加），同 `jianpuinput.ts::breakAtMeasureEnd`
     const cur = measure as MeasureOut | null;
     if (line !== lines[lines.length - 1] && cur) cur.seq.push("break");
   }

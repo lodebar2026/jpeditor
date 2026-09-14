@@ -1,10 +1,9 @@
-// MusicXML → `ScoreDoc`（**直通**，不经 `Score` 也不经 `MixedScore`）。
+// MusicXML → `ScoreDoc`（**直通**，读进唯一的语义模型）。
 //
 // ## 为什么要直通
 //
-// 以前两条路各有各的损失：`loadMusicXml → Score` 丢和弦、力度、多声部；
-// 混排原先另读一遍 DOM 进 `MixedScore`，语义与排版（tenths）混在一起。而 `ScoreDoc` 两样都装得下，
-// 所以 MusicXML 该直接读进它。
+// 简谱与五线谱两个引擎要的东西（和弦、力度、多声部、版面坐标）`ScoreDoc` 都装得下，
+// 所以 MusicXML 只读这一遍，两个引擎都从它取。
 //
 // ## 读不懂的怎么办：`raw` 原样留着
 //
@@ -12,8 +11,7 @@
 // 全量重写不丢东西，靠的不是 patch，而是**读得全 + 读不懂的原样留着**：
 // 凡本文件不认识的子节点，序列化成字符串挂到最近的 `raw` 上，`toxml.ts` 原位吐回去。
 //
-// 字段清单以混排原先的 DOM 读取（`mixed/loader.ts`，88 个元素，阶段 6 删）为基准；混排现在只读本模型（`mixed/layout.ts`），
-// 它要的字段这里都得读到。
+// 混排只读本模型（`mixed/layout.ts`），它要的字段这里都得读到。
 //
 // **要 DOM**（`DOMParser`），所以只能在浏览器里跑；Node 侧的脚本走 `harness.mjs` 起页面。
 

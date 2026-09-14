@@ -11,7 +11,7 @@
 import { Point, Rect } from "../common/geom";
 import { GraphicLine, GraphicPath, PageItem, TextFrame } from "./pageitem";
 import type { BarlineSpec } from "./entry";
-import * as S from "../score/score";
+import { BarStyle } from "../score/enums";
 import type { Font } from "./font";
 
 /**
@@ -60,15 +60,15 @@ export function jpBarlineWidths(spec: BarlineSpec, final: boolean, light: number
   // 细线画了出来——正因为「画出来会多一条线」，`model/tojpw.ts` 干脆不把它写进 `.jpwabc`，
   // 于是重新解析时两个小节并成一个，`.Repeat` 里按原编号写的段落就越界
   // （094《哈利路亚，祂已复活》等 4 首整份 .pptx 排不出来）。认了它，两头都对得上。
-  if (st === S.BarStyle.NONE && !spec.repeatBackward && !spec.repeatForward) return [];
+  if (st === BarStyle.NONE && !spec.repeatBackward && !spec.repeatForward) return [];
   let widths: number[];
   // **前后反复背靠背**（`:‖:`）：上一小节收尾的 `:‖` 与本小节起头的 `‖:` 合成一条，
   // 五线谱的画法是「细 粗 细」+ 两侧各两点，而不是两根粗线并排。
   if (spec.repeatBackward && spec.repeatForward) widths = [light, heavy, light];
-  else if (st === S.BarStyle.LIGHT_HEAVY || (final && !spec.repeatForward)) widths = [light, heavy];
-  else if (st === S.BarStyle.HEAVY_LIGHT || spec.repeatForward) widths = [heavy, light];
-  else if (st === S.BarStyle.LIGHT_LIGHT) widths = [light, light];
-  else if (st === S.BarStyle.HEAVY || st === S.BarStyle.HEAVY_HEAVY) widths = [heavy];
+  else if (st === BarStyle.LIGHT_HEAVY || (final && !spec.repeatForward)) widths = [light, heavy];
+  else if (st === BarStyle.HEAVY_LIGHT || spec.repeatForward) widths = [heavy, light];
+  else if (st === BarStyle.LIGHT_LIGHT) widths = [light, light];
+  else if (st === BarStyle.HEAVY || st === BarStyle.HEAVY_HEAVY) widths = [heavy];
   else widths = [light];
   if (spec.repeatBackward && widths.length === 1) widths = [light, heavy];
   return widths;

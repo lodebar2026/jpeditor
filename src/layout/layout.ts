@@ -1901,15 +1901,16 @@ export class Layout {
    * 给「一行放不放得下」用（`applybreaks.ts::FitMetric`）。与 `fromScore` 共用同一套
    * 装载逻辑（`buildLine`），量到的坐标就是排版器折行时用的那一套。
    */
-  measureNatural(scr: JScore, width: number, ignoreBreaks = false): { width: number; spans: Map<JChord, { x0: number; x1: number }> } {
+  measureNatural(scr: JScore, width: number): { width: number; spans: Map<JChord, { x0: number; x1: number }> } {
     const cw = width - this.options.marginLeft - this.options.marginRight;
-    const l = this.buildLine(scr, null, ignoreBreaks);
+    const l = this.buildLine(scr, null);
     l.connectTextFrames();
     return { width: cw, spans: l.naturalSpans(this.options) };
   }
 
   /** 把整首装成一条 Line（分行之前的那一条）。`fromScore` 与 `measureNatural` 共用。 */
-  private buildLine(scr: JScore, dur: string | null, ignoreBreaks = dur !== null): Line {
+  private buildLine(scr: JScore, dur: string | null): Line {
+    const ignoreBreaks = dur !== null;
     const p = scr.parts[0];
     const l = new Line();
     // 叠排 = **按原谱排一遍**：不展开任何反复（原样档）。

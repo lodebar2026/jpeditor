@@ -15,7 +15,7 @@ import type { BookStyle, StyleRole } from "./bookstyle";
 import { JinpuPainter } from "../layout/painter";
 import { walkPageItem, type ItemVisitor } from "../layout/walk";
 import type { FitMetric } from "../score/applybreaks";
-import type { Score } from "../score/score";
+import { clearBreaks, type JScore } from "../layout/input";
 import type { MetaData } from "../smufl/smufl";
 
 /** 2D 仿射：[a b c d e f]，与 SVG 的 matrix(a b c d e f) 同序。 */
@@ -410,10 +410,10 @@ export function makeBookPainter(style: BookStyle, smuflMeta?: MetaData): JinpuPa
  * **断点不影响这些坐标**（自然位置在分行之前就算完了），所以整首量一次就够，
  * 补刀/合并反复试的时候不必重排。
  */
-export function measureChordSpans(score: Score, style: BookStyle, smuflMeta?: MetaData): FitMetric {
+export function measureChordSpans(score: JScore, style: BookStyle, smuflMeta?: MetaData): FitMetric {
   const p = makeBookPainter(style, smuflMeta);
   // 与 measureCellsPerLine 同理：先清掉原谱的换行，量的是「自然排下来有多宽」。
-  score.clearSystemBreak();
+  clearBreaks(score);
   const { width, spans } = p.layout.measureNatural(score, style.page.w);
   return { width, spans };
 }
@@ -425,12 +425,12 @@ export function measureChordSpans(score: Score, style: BookStyle, smuflMeta?: Me
  * 乐句排版要按这个数定行长，否则它算出来的行长与排版器实际能放的对不上，
  * 排版器会在小节中间再折一次，行尾挂着孤零零一个音。
  */
-export function measureCellsPerLine(score: Score, style: BookStyle, smuflMeta?: MetaData): number {
+export function measureCellsPerLine(score: JScore, style: BookStyle, smuflMeta?: MetaData): number {
   const p = makeBookPainter(style, smuflMeta);
   // **先清掉原谱的换行**：不清的话排版器照 musicxml 的 `<print new-system>` 分行，
   // 量到的是「原书每行几格」而不是「一行放得下几格」——005《荣耀归与天父》原书那几行是
   // 30/26/27/17 格，量出 27，可它其实放得下 30。清掉之后排版器才真的按宽度塞满再折行。
-  score.clearSystemBreak();
+  clearBreaks(score);
   p.score = score;
   p.resize(style.page.w, style.page.h, null);
   const opt = p.layout.options;

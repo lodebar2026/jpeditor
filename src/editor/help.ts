@@ -4,8 +4,9 @@
 import type { App } from "./app";
 import { JinpuPainter } from "../layout/painter";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
-import { fromJpw } from "../score/jpwimport";
-import { PlayItem } from "../score/score";
+import { jpwToScoreDoc } from "../model/fromjpw";
+import { jianpuInputOfJpw } from "../model/jianpuinput";
+import { PlayItem } from "../score/playorder";
 import type { MetaData } from "../smufl/smufl";
 
 // ---- 记谱法示例的渲染 -------------------------------------------------------
@@ -40,7 +41,7 @@ jpwabc: string, opts: { width?: number; height?: number; titlePage?: boolean } =
   if (!f) return null;
   let score;
   try {
-    score = fromJpw(f);
+    score = jianpuInputOfJpw(jpwToScoreDoc(f));
   } catch {
     return null;
   }

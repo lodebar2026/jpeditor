@@ -20,7 +20,7 @@ import type {
 } from "./doc";
 import { Fraction, lcm } from "../common/fraction";
 import { AccidentalCarry } from "./jianpu";
-import { MusicCommon } from "../score/score";
+import { MusicCommon } from "../score/jppitch";
 import { typeOfDuration } from "../score/xmlutil";
 import { DYNAMICS, TERMS } from "../pu/glyph";
 

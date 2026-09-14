@@ -78,37 +78,36 @@ async function boot() {
   win.__book = Promise.all([
     import("./pdflayout/browser"), import("./layout/painter"),
     import("./score/phrase"), import("./score/applybreaks"), import("./jpword/jpwfile"),
-    import("./jpword/parse"), import("./score/jpwimport"), import("./pu"),
+    import("./jpword/parse"), import("./model/jianpuinput"), import("./pu"),
     import("./model/fromxml"), import("./model/phrasedoc"), import("./score/timeline"), import("./model/playdoc"),
-    import("./score/midi"), import("./model/xmlscore"),
-  ]).then(([book, painter, phrase, applybreaks, jpwfile, parse, jpwimport, pu, fromxml, phrasedoc, timeline, playdoc, midi, xmlscore]) => ({
-    ...book, ...painter, ...phrase, ...applybreaks, ...jpwfile, ...parse, ...jpwimport, pu,
-    ...fromxml, ...phrasedoc, ...timeline, ...playdoc, ...midi, ...xmlscore,
+    import("./score/midi"), import("./layout/input"),
+  ]).then(([book, painter, phrase, applybreaks, jpwfile, parse, jianpuinput, pu, fromxml, phrasedoc, timeline, playdoc, midi, input]) => ({
+    ...book, ...painter, ...phrase, ...applybreaks, ...jpwfile, ...parse, ...jianpuinput, pu,
+    ...fromxml, ...phrasedoc, ...timeline, ...playdoc, ...midi, ...input,
   }));
   // 123 格式与语义模型暴露，供 scripts/j123-migrate.mjs 跑 MusicXML 那一路——
-  // `loadMusicXml` 要 DOMParser，Node 侧没有，所以这条必须在浏览器里走（同 __book 的路子）。
+  // `loadScoreDoc` 要 DOMParser，Node 侧没有，所以这条必须在浏览器里走（同 __book 的路子）。
   win.__j123 = Promise.all([
     import("./j123/parse"), import("./j123/emit"),
     import("./model/fromjpw"), import("./model/frompu"), import("./model/helpers"),
-    import("./model/xmlscore"), import("./pu"),
+    import("./model/jianpuinput"), import("./pu"),
     import("./abcfamily/emitabc.entry"), import("./abc/abc2xml"),
     import("./model/fromxml"), import("./model/toxml"), import("./model/capability"),
     import("./model/jianpuproject"), import("./model/jianpu"), import("./model/tojpw"), import("./model/xmlproject"),
   ]).then((
-    [parse, emit, fromjpw, frompu, helpers, xmlscore, pu, emitabc, abc2xml,
+    [parse, emit, fromjpw, frompu, helpers, jianpuinput, pu, emitabc, abc2xml,
      fromxml, toxml, capability, jianpuproject, jianpu, tojpw, xmlproject],
   ) => ({
-    ...parse, ...emit, ...fromjpw, ...frompu, ...helpers, ...xmlscore, pu,
+    ...parse, ...emit, ...fromjpw, ...frompu, ...helpers, ...jianpuinput, pu,
     ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw, ...xmlproject,
   }));
-  // `.jpwabc` ↔ Score ↔ MusicXML 的导入与版面注入暴露，供 scripts/xml-roundtrip.mjs 回归
+  // `.jpwabc` ↔ MusicXML 的读入与版面注入暴露，供 scripts/xml-roundtrip.mjs 回归
   // （写出端只有 `model/toxml.ts`，在 `__j123` 里）。
   win.__xmlout = Promise.all([
-    import("./score/musicxmllayout"), import("./model/xmlscore"), import("./model/fromxml"),
-    import("./jpword/jpwfile"),
-    import("./jpword/parse"), import("./score/jpwimport"),
-  ]).then(([layout, xmlscore, fromxml, jpwfile, parse, jpwimport]) =>
-    ({ ...layout, ...xmlscore, ...fromxml, ...jpwfile, ...parse, ...jpwimport }));
+    import("./score/musicxmllayout"), import("./model/jianpuinput"), import("./model/fromxml"),
+    import("./model/fromjpw"), import("./jpword/jpwfile"), import("./jpword/parse"),
+  ]).then(([layout, jianpuinput, fromxml, fromjpw, jpwfile, parse]) =>
+    ({ ...layout, ...jianpuinput, ...fromxml, ...fromjpw, ...jpwfile, ...parse }));
 
   const revealWorkspace = () => {
     startScreen.hidden = true;

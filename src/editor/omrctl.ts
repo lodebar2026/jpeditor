@@ -40,7 +40,7 @@ export interface OmrHost {
   reload(text: string): void;
   /**
    * 五线谱识别产物落地：与打开 `.musicxml` 同一个模式（无代码区），默认进**混排视图**。
-   * 不走 `importOmrMusicXml`：五线谱的和弦、多声部、slur 在 `.jpwabc`/Score 里装不下。
+   * 不走 `importOmrMusicXml`：五线谱的和弦、多声部、slur 在 `.jpwabc` 与简谱引擎里装不下。
    * 返回 false 表示简谱那一侧转不出来（不影响混排预览）。
    */
   adoptStaffXml(xml: string): boolean;

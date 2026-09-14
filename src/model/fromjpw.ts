@@ -1,26 +1,18 @@
-// `.jpwabc`（`JpwFile`）→ `ScoreDoc`，不经 `Score`。
+// `.jpwabc`（`JpwFile`）→ `ScoreDoc`。编辑器谱面（经 `model/jianpuinput.ts::jianpuInputOfJpw`）、试听、
+// 转 123/ABC、导出 MusicXML、能力表都从这里出。
 //
-// R2 阶段 3：`.jpwabc` 的语义直接进唯一模型。过渡期 `score/jpwimport.ts::fromJpw` 仍给编辑器当渲染输入
-// （阶段 9 随 `Score` 删），转 123/ABC、能力表、各回归脚本改走这里。
-//
-// **判据照搬、不重想**，两边各有出处：
-// - 源文怎么读——`jpwimport.ts::makePart/makeChord/assignLrcSeg`：`{(3}` 三连音、倚音、`{YanYin}`、
+// 两步：
+// - 源文怎么读（照原 JP-Word 移植来的口径）：`{(3}` 三连音、倚音、`{YanYin}`、
 //   `(`/`)` 靠「前面欠着几个 `(`」分弧线收尾与三连音收尾、`"1=X"` 转调、拍号 token、`$` 换行、
-//   临时记号到小节线清零、歌词按「源文小节序号 + 第几个音符」起排；
-// - 落成模型的样子——原 `fromscore.ts::convertPart`（`scoreToScoreDoc` 非 `forMusicXml` 那支，阶段 8 已删）：
-//   每根小节线都切小节、空小节的线并进下一小节左线、换行记「之后」再翻成「起」、倚音作独立 grace 元素。
+//   临时记号到小节线清零、歌词按「源文小节序号 + 第几个音符」起排——切成「源文小节」（`SrcMeasure`）；
+// - 落成模型：每根小节线都切小节、空小节的线并进下一小节左线、换行记「之后」再翻成「起」
+//   （写在小节中间的 `$` 另记在前一个和弦的 `lineBreakAfter` 上）、倚音作独立 grace 元素。
 //
-// 所以中间先按 `jpwimport` 的口径切出「源文小节」（`SrcMeasure`，歌词落点按它数），再逐个落成模型小节。
-// 阶段 3 起拿 `scoreToScoreDoc(fromJpw(f), {repeatRows})` 双跑逐字段比过 568 份一致（`jpw-doc-check`，随 fromscore 在阶段 8 退役）；
-// 导出 MusicXML 的新旧对拍见 `scripts/jpw-xml-check.mjs`。
-//
-// 与旧侧的已知差别：曲首 `|:|` 旧侧多开一个空的源文小节（`Score` 里是空小节，`ScoreDoc` 里本就并掉了），
-// 这里照样数它（歌词落点口径不能变），落模型时同样并掉。
+// 曲首 `|:|` 连写在源文小节里是一个空小节（歌词落点照样数它，口径不能变），落模型时并掉。
 
 import { JpwFile, RepeatSection, type Section } from "../jpword/jpwfile";
 import type { Token } from "antlr4";
-import { MusicCommon } from "../score/score";
-import { applyJpPitch, type JpKeyState } from "../score/jppitch";
+import { MusicCommon, applyJpPitch, type JpKeyState } from "../score/jppitch";
 import type { Barline, BeamVal, Chord, Lyric, Mark, Measure, Part, PlayPass, ScoreDoc, Song, SourceSpan, Sustain } from "./doc";
 import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "./helpers";
 import type { BreakKind } from "./helpers";
@@ -142,7 +134,7 @@ export interface SrcBreak {
 
 export type SrcEntry = SrcNote | SrcBar | SrcBreak;
 
-/** 与引擎输入树 `Score.Measure` 一一对应（歌词按它数小节；`jpwimport.ts::fromJpw` 照它建小节） */
+/** 源文小节：按原文的小节线切（歌词按它数小节） */
 export interface SrcMeasure {
   entries: SrcEntry[];
   fifths: number;
@@ -161,7 +153,7 @@ function spanOf(sec: Section, start: Token, stop: Token | undefined): SourceSpan
   return { line: lineNo, column: start.column, offset: lineOffset + start.column, length };
 }
 
-/** 一个音符 token。照 `jpwimport.ts::makeChord`。 */
+/** 一个音符 token。 */
 function readNote(txt: string, stat: JpKeyState & { inTuplet: boolean; slurDepth: number }): SrcNote {
   const nt: SrcNote = {
     kind: "note", number: "0", jpOctave: 0, jpAlter: " ", pitch: 0, step: " ", rest: false,
@@ -176,7 +168,7 @@ function readNote(txt: string, stat: JpKeyState & { inTuplet: boolean; slurDepth
     stat.inTuplet = true;
     txt = txt.replace(tupletText, "");
   }
-  // 倚音 `{6,}` / `{57}`：必须排在 `{(3}` 剥掉之后（见 jpwimport）
+  // 倚音 `{6,}` / `{57}`：必须排在 `{(3}` 剥掉之后
   const graceMatch = txt.match(/\{([#b0-7',gd]+)\}/);
   if (graceMatch) {
     for (const g of graceMatch[1]!.matchAll(/(#b|#|b)?([0-7])([',gd]*)/g)) {
@@ -243,7 +235,7 @@ function readNote(txt: string, stat: JpKeyState & { inTuplet: boolean; slurDepth
   return nt;
 }
 
-/** `.Voice` → 源文小节。照 `jpwimport.ts::makePart`。 */
+/** `.Voice` → 源文小节。 */
 function readVoice(sec: VoiceSectionLike, fifths: number, time: { beats: number; beatType: number }): SrcMeasure[] {
   const out: SrcMeasure[] = [];
   let mea: SrcMeasure | null = null;
@@ -287,7 +279,7 @@ function readVoice(sec: VoiceSectionLike, fifths: number, time: { beats: number;
       if (nt.tupletEnd || nt.tupletBegin) tupNotes.push(nt);
       mea.entries.push(nt);
     } else if (barlineCtx) {
-      // 曲首就写小节线（`|:3_ …`）：开一个小节收它，不置 newMeasure（见 jpwimport）
+      // 曲首就写小节线（`|:3_ …`）：开一个小节收它，不置 newMeasure
       if (mea === null) {
         mea = open();
         newMeasure = false;
@@ -338,7 +330,7 @@ function readVoice(sec: VoiceSectionLike, fifths: number, time: { beats: number;
 
 type VoiceSectionLike = Section & { voiceData: import("../jpword/parse").VoiceContext };
 
-/** 歌词落点。照 `jpwimport.ts::assignLrcSeg`：按源文小节数，小节中间的换行也让小节序号加一。 */
+/** 歌词落点：按源文小节数，小节中间的换行也让小节序号加一。 */
 function assignLyrics(measures: readonly SrcMeasure[], f: JpwFile): void {
   for (const seg of f.getLyric()?.segments ?? []) {
     const notes: SrcNote[] = [];
@@ -383,6 +375,8 @@ function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part 
   /** 开着的弧线（栈，嵌套双弧后开先闭；跨小节常见） */
   const openSlurs: number[] = [];
   let openTuplet: number | null = null;
+  /** 刚读到的 `$`：之后同一小节里还有音符，才算小节中间换行 */
+  let pendingInline: { chord: Chord; kind: "system" | "page" } | null = null;
 
   for (const sm of src) {
     let mea: Measure = { number: String(part.measures.length + 1), elements: [] };
@@ -396,12 +390,16 @@ function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part 
     prevKeyFifths = sm.fifths;
     prevTime = timeKey;
     openTuplet = null;
+    pendingInline = null;
 
     for (const ent of sm.entries) {
       if (ent.kind === "break") {
         // `$` 是「这一小节之后」换行；小节线先到、新小节还空着时挂到刚收尾的那一个
         const target = mea.elements.length > 0 ? mea : part.measures[part.measures.length - 1] ?? mea;
         breakAfterOf.set(target, ent.page ? "page" : "system");
+        // 写在小节中间（后面还有音符）的，另在前一个和弦上记原位（见 `Chord.lineBreakAfter`）
+        const last = mea.elements.length > 0 ? mea.elements[mea.elements.length - 1] : undefined;
+        pendingInline = last?.kind === "chord" ? { chord: last, kind: ent.page ? "page" : "system" } : null;
         continue;
       }
       if (ent.kind === "bar") {
@@ -409,6 +407,7 @@ function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part 
         const b: Barline = { location: "right", style: ent.style };
         if (ent.repeat) b.repeat = ent.repeat;
         if (ent.source) b.source = ent.source;
+        pendingInline = null;
         if (mea.elements.length === 0) {
           const left = (mea.barlines ?? []).find((x) => x.location === "left");
           if (left) {
@@ -423,6 +422,10 @@ function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part 
           mea = { number: String(part.measures.length + 1), elements: [] };
         }
         continue;
+      }
+      if (pendingInline) {
+        pendingInline.chord.lineBreakAfter = pendingInline.kind;
+        pendingInline = null;
       }
       const ch: Chord = {
         kind: "chord",
@@ -451,10 +454,11 @@ function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part 
       if (ent.fermata) ch.notations = { fermata: true };
       for (const g of ent.graces) {
         const gnum = Number(g.number);
+        const gacc = accidentalOf(g.jpAlter);
         mea.elements.push({
           kind: "chord",
           id: ids.next(),
-          notes: [{ degree: { number: Number.isFinite(gnum) && gnum > 0 ? gnum : 1, octaveShift: g.jpOctave } }],
+          notes: [{ degree: { number: Number.isFinite(gnum) && gnum > 0 ? gnum : 1, octaveShift: g.jpOctave, ...(gacc ? { accidental: gacc } : {}) } }],
           duration: { divisions: 0, dots: 0 },
           grace: {},
           voice: 1,
@@ -512,7 +516,7 @@ function unescape(str: string): string {
   return str.replace(/\\n/g, "\n");
 }
 
-/** 读 `.jpwabc` 原文的那一步（`jpwToScoreDoc` 与引擎输入树 `jpwimport.ts::fromJpw` 共用）：
+/** 读 `.jpwabc` 原文的那一步：
  *  `.Voice` 切成源文小节、歌词落到音符上。`.Voice` 缺失或解析失败时抛错。 */
 export function readJpwSource(f: JpwFile): {
   measures: SrcMeasure[];
@@ -534,7 +538,7 @@ export function readJpwSource(f: JpwFile): {
   return { measures, fifths, time, passes };
 }
 
-/** `.jpwabc` → `ScoreDoc`。`.Voice` 缺失或解析失败时抛错（与 `fromJpw` 同）。 */
+/** `.jpwabc` → `ScoreDoc`。`.Voice` 缺失或解析失败时抛错。 */
 export function jpwToScoreDoc(f: JpwFile): ScoreDoc {
   const doc = emptyDoc("jpwabc");
   const ids = new IdGen();
@@ -550,7 +554,7 @@ export function jpwToScoreDoc(f: JpwFile): ScoreDoc {
     if (text !== titleText) song.identification = { creators: [{ type: "composer", text: text.replace(/\n/g, " ") }] };
   }
 
-  // 速度（`.Title` 的 `Expression ♩=NN`），试听与转 123 的 `Q:` 都要（`fromJpw` 落在 `playData.tempo`）
+  // 速度（`.Title` 的 `Expression ♩=NN`），试听与转 123 的 `Q:` 都要
   if (title?.tempo) song.tempos = [title.tempo];
   const src = readJpwSource(f).measures;
 

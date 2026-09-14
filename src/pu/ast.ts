@@ -301,8 +301,8 @@ export function* eachNoteInElements(elements: readonly MusicElement[]): Generato
   }
 }
 
-// ---------------- AST 查询（解析器与三个消费者：排版 / toScore / toXml 共用） ----------------
-// 这些以前在 layout.ts / toscore.ts / toxml.ts 里各写一份，判据必须一致——
+// ---------------- AST 查询（解析器与各消费者：排版行视图 / 简谱引擎输入 / 断句与试听共用） ----------------
+// 这些以前各写一份，判据必须一致——
 // 「哪些符号跟词」「多连音占几拍」一旦两边不同，排版上看着对、导出的就错。
 
 /** 一个声部的全部曲行（跨 system 接起来）。 */

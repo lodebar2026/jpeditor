@@ -1,10 +1,8 @@
-// 断句的输入形状（`docs/待办.md` §3.1 阶段 5）。
+// 断句的输入形状。
 //
-// `phrase.ts` / `applybreaks.ts` 只经这组接口读谱，不认 `Score` 的类：
-//   - 旧侧 `Score` 的 `Part` / `Measure` / `Chord` **结构上就满足**这组接口，直接传，不包一层
-//     （断点集合、`FitMetric.spans` 仍以同一批对象为键，调用方的对象身份不变）；
-//   - 新侧由 `ScoreDoc` 拼出满足接口的纯对象（`phrasedoc.ts`），键回元素 id 另有映射。
-// 字段名与口径一律沿用 `Score`（本轮只换输入形状、不动判据）。阶段 9 删 `Score` 后改名收拢。
+// `phrase.ts` / `applybreaks.ts` 只经这组接口读谱。实现由 `ScoreDoc` 拼：MusicXML 形状 `model/phrasedoc.ts`、
+// 简谱形状 `pu/phrasesong.ts`；断点集合与 `FitMetric.spans` 以拼出的对象为键，`idOf` 把它们换回元素 id
+// （写回简谱引擎输入、回原文都按 id）。字段名与简谱引擎输入（`layout/input.ts`）同一套。
 
 import type { Fraction } from "../common/fraction";
 import type { BarStyle, StartStopDiscontinue } from "./enums";
@@ -25,7 +23,7 @@ export interface PhraseNote {
 }
 
 export interface PhraseChord {
-  /** 区分小节里的和弦与其它条目（小节线、换行）。`Score.Chord` 有、别的条目没有。 */
+  /** 区分小节里的和弦与其它条目（小节线、换行）。和弦有、别的条目没有。 */
   readonly notes: readonly PhraseNote[];
   readonly rest: boolean;
   /** 增时线格数（含本音，1 起） */
