@@ -1,4 +1,4 @@
-// `ScoreDoc` → **排版行视图**：文本谱排版器、`ScoreDoc → Score`、双向定位共用的那一份铺排。
+// `ScoreDoc` → **排版行视图**：文本谱排版器、简谱引擎输入（展开档）、双向定位共用的那一份铺排。
 //
 // ## 为什么要有这一层
 //
@@ -186,7 +186,7 @@ function buildRow(measures: readonly Measure[]): RowBuild {
   for (const mea of measures) {
     const first = row.elements.length;
     // **左小节线不输出为元素**：`PuDoc` 里 barline 元素就是小节分隔，行首再来一根会凭空
-    // 多出一个空小节（`toscore.ts` 随即 `measure has no chord` 抛错）。
+    // 多出一个空小节（引擎输入随即 `measure has no chord` 抛错）。
     // 它携带的信息已由「前一小节的右线」与房号的 volta mark 承载。
     let pendingGrace: NoteElement[] = [];
     let lastNote: NoteElement | null = null;
@@ -654,7 +654,7 @@ function toPuSong(song: Song, index: number): SongView {
 
 const views = new WeakMap<ScoreDoc, DocView>();
 
-/** 一份 `ScoreDoc` 的排版行视图。**同一份文档只建一次**：排版器、`scoreDocToScore`、双向定位拿到的是同一批对象。 */
+/** 一份 `ScoreDoc` 的排版行视图。**同一份文档只建一次**：排版器、`jianpuInputOfDoc`、双向定位拿到的是同一批对象。 */
 export function docView(doc: ScoreDoc): DocView {
   const hit = views.get(doc);
   if (hit) return hit;

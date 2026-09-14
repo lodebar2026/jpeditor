@@ -1,9 +1,7 @@
 // 演唱顺序（`docs/待办.md` §3.1 阶段 4）：反复、房号、D.C./D.S./Coda、多段歌词逐段一遍，推成 `PlayItem[]`。
 //
-// 推理原在 `Score.parseRepeatInf` / `RepeatProcessor` / `.Repeat` 解析，**判据原样搬来**，只换输入形状：
-//   - 只经下面这组接口读谱，不认 `Score` 的类。`Score` 的 `Part` / `Measure` / `Chord` **结构上就满足**，直接传；
-//   - `ScoreDoc` 那一侧拼出满足接口的纯对象（`model/playdoc.ts`）。
-// 字段名与口径一律沿用 `Score`。阶段 9 删 `Score` 后这里是演唱顺序的唯一实现。
+// 演唱顺序的唯一实现（判据从 mp/score 移植）。只经下面这组接口读谱，`ScoreDoc` 两侧拼出满足接口的纯对象：
+// MusicXML 形状 `model/playdoc.ts`、简谱形状 `pu/playsong.ts`。
 //
 // 产物 `PlayItem[]` 的消费者：试听/MIDI（`timeline.ts`）、展开档（`jianpu/expand.ts::walkPlay`）、断句。
 
@@ -104,7 +102,7 @@ export interface PlayChord {
 export interface PlayMeasure {
   /** 和弦与其它条目混排；只取 `isPlayChord` 为真的那些。 */
   readonly entries: readonly object[];
-  /** 小节时值（末和弦的位置 + 时值）。**没有和弦时抛错**，与 `Score.Measure.duration` 同口径。 */
+  /** 小节时值（末和弦的位置 + 时值）。**没有和弦时抛错**，与 `layout/input.ts::measureDuration` 同口径。 */
   readonly duration: Fraction;
   readonly repeatBackward: boolean;
   readonly repeatForward: boolean;
@@ -138,7 +136,7 @@ export interface PlayOrder {
 
 // ───────────────────────── 推理 ─────────────────────────
 
-/** 由谱面结构推演唱顺序（原 `Score.parseRepeatInf`）。反复与跳转只看 `parts[0]`，歌词段数取各声部最大值。 */
+/** 由谱面结构推演唱顺序（反复记号、房号、跳转）。反复与跳转只看 `parts[0]`，歌词段数取各声部最大值。 */
 export function playOrderOf(parts: readonly PlayPart[], jumps: PlayJumps): PlayOrder {
   const rep = new RepeatProcessor(parts, jumps);
   const pos = new TimePosition();
@@ -189,7 +187,7 @@ export function playOrderByVerses(measureCount: number, passes: number): PlayIte
   return out;
 }
 
-/** 显式给定的演唱顺序（`.Repeat` 段，原 `Score.doRepeat`）。`part0` 用来把 skip 换成小节内位置。 */
+/** 显式给定的演唱顺序（`.Repeat` 段）。`part0` 用来把 skip 换成小节内位置。 */
 export function playOrderFromSpec(repeat: { readonly items: readonly RepeatSpecItem[] }, part0: PlayPart | undefined): PlayItem[] {
   const out: PlayItem[] = [];
   for (const it of repeat.items) {

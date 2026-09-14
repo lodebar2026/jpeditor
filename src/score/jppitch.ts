@@ -4,7 +4,6 @@
 //
 // 可动 do：数字 1=主音，按调号求该音级的升降。与导入器 score.ts::Note.init 严格互逆。
 
-import { MusicCommon } from "./score";
 
 /** C 大调音名表（fifths=0 时 1..7 对应 C D E F G A B）。 */
 export const STEPS = ["C", "D", "E", "F", "G", "A", "B"];
@@ -55,7 +54,7 @@ export function jpPitch(digit: number, jpOctave: number, fifths: number): {
 }
 
 // ---------------- 简谱表述 → Note.pitch（导入侧） ----------------
-// jpwimport（.jpwabc）与 pu/toscore（文本谱）都要把简谱表述落成 Note.pitch/step。
+// `.jpwabc` 读入（model/fromjpw.ts）与试听输入（pu/phrasesong.ts）都要把简谱表述落成 pitch/step。
 // 两处曾各写一份逐行同构的 calcPitch——音高或临时记号算错就是错音，故只留这一处。
 
 /** 一个声部在小节内的调号状态。`alter` 是**小节内延续**的临时记号（按简谱数字键）。 */
@@ -86,4 +85,87 @@ export function applyJpPitch(stat: JpKeyState, nt: {
   }
   res += stat.alter[nt.number] ?? 0;
   nt.pitch = res;
+}
+
+export class MusicCommon {
+  static readonly fifthCircle = [4, 1, 5, 2, 6, 3, 7];
+  static readonly steps = "CDEFGAB";
+  static readonly keys = [
+    "bC", "bG", "bD", "bA", "bE", "bB", "F",
+    "C", "G", "D", "A", "E", "B", "#F", "#C",
+  ];
+
+  static readonly _stepToPitch: Record<string, number> = {
+    C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11,
+    "1": 0, "2": 2, "3": 4, "4": 5, "5": 7, "6": 9, "7": 11,
+  };
+
+  static stepToPitch(st: string): number {
+    if (!(st in MusicCommon._stepToPitch)) throw new Error("");
+    return MusicCommon._stepToPitch[st];
+  }
+
+  /**
+   * 简谱数字 → 音名字母。字母取自调号的**拼写**（fifths → keys[]），不是 basePitch：
+   * 同音高的升/降两种拼写字母不同（#C 的 1 是 C、bD 的 1 是 D；#F 对 bG 同理），
+   * 只看 basePitch 分不开。原 Kotlin 按 basePitch 查表，bD/#C/bG/#F 四个调根本没有
+   * 表项、直接抛错——`1=#C` 的谱因此整首排不出来（代码区有文本、排版是空的）。
+   */
+  static jpToStep(num: string, fifths: number): string {
+    const tonic = MusicCommon.keys[fifths + 7];
+    if (!tonic) throw new Error("");
+    const letter = tonic[tonic.length - 1]; // 去掉 b/# 前缀
+    const idx = MusicCommon.steps.indexOf(letter) + (num.charCodeAt(0) - "1".charCodeAt(0));
+    return MusicCommon.steps[idx % 7];
+  }
+
+  /** 音名字母在该调号下的固定升降。实现只在 jppitch.ts::keyAlter 一处
+   *  （原来这里另有一份用 fifthCircle 的等价实现，两份漂移就会出错音）。 */
+  static getAlter(st: string, fifths: number): number {
+    return keyAlter(MusicCommon.steps.indexOf(st), fifths);
+  }
+
+  static getBasePitchOfKey(key: { fifths: number }): number {
+    return MusicCommon.getBasePitch(MusicCommon.keys[key.fifths + 7]);
+  }
+
+  static keyNameToFifth(n: string): number {
+    let nn = n;
+    if (nn.length === 2) {
+      if (n[1] === "b" || n[1] === "#") nn = `${n[1]}${n[0]}`;
+    }
+    return MusicCommon.keys.indexOf(nn) - 7;
+  }
+
+  static getBasePitch(key: string): number {
+    let res = 0;
+    let step = key;
+    if (step.includes("b")) {
+      res = -1;
+      step = step.replace(/b/g, "");
+    }
+    if (step.includes("#")) {
+      res = 1;
+      step = step.replace(/#/g, "");
+    }
+    res += MusicCommon.stepToPitch(step[0]);
+    // 无点 1 落在 B3..A4 一个八度里，只有字母 B 的调降八度（《简谱通用规范》23-24 页的
+    // 各调音域对照表；判据与 jppitch.ts::jpTonicOctaveShift 同源，那边按 fifths 判）。
+    res += step[0] === "B" ? 48 : 60;
+    return res;
+  }
+}
+
+/** 调号（fifths）与它的调名拼写（`bB` / `#F` / `C`…）。 */
+export class Key {
+  fifths = 0;
+  get name(): string {
+    const wr = "CDEFGAB";
+    const b = (4 * this.fifths + 28) % 7;
+    let res = "";
+    if (this.fifths < -1) res += "b";
+    else if (this.fifths === 7) res += "#";
+    res += wr[b];
+    return res;
+  }
 }

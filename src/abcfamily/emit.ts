@@ -369,7 +369,7 @@ export abstract class AbcFamilyEmitter {
     const pieces: string[] = [];
     let prevGroup: number | undefined;
     // 小节**中间**的小节线（`[|]` 不可见线多是这种）：按它在元素流里的位置插回去。
-    // `Score` 把它存成独立的 `BarlineEntry`，丢了就会把两个小节并成一个。
+    // 小节线是独立的条目，丢了就会把两个小节并成一个。
     const mid = (mea.barlines ?? []).filter((b) => b.location === "middle");
     let midIdx = 0;
     for (const el of mea.elements) {

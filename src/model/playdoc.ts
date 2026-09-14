@@ -1,8 +1,8 @@
-// `ScoreDoc`（MusicXML 形状）→ 演唱顺序，`docs/待办.md` §3.1 阶段 4 的新侧。
+// `ScoreDoc`（MusicXML 形状）→ 演唱顺序、试听输入、`.jpwabc` 写出端输入。
 //
-// **口径照 `score/musicxml.ts::loadMusicXml`**（本轮只换输入、不动判据，靠 `playorder-check --dual` 双跑逐项一致）：
+// **口径同简谱引擎输入 `model/jianpuinput.ts::jianpuInputOfXml`**（回归 `playorder-check`）：
 //   - 只读第一声部；小节、和弦、歌词段号、房号、反复经 `phrasedoc.ts::phrasePartOfDoc` 拼（与断句同一份输入）
-//   - 跳转取 `<direction><sound>`：落点是**游标当时的位置**（`parseSound` 的 `noteEnd`），
+//   - 跳转取 `<direction><sound>`：落点是**游标当时的位置**（最后一个非倚音和弦的终点），
 //     由 `Direction.afterElements` 还原成它前面那个音符的终点
 // 简谱形状（文本谱 / 123 / ABC / `.jpwabc`）在 `pu/playsong.ts`。
 
@@ -13,12 +13,12 @@ import type { Accidental, Barline, Chord, Direction, Measure, Note, Part, Song }
 import { midiPitch, topNote } from "./jianpu";
 import type { JpwChordIn, JpwLineBreakIn, JpwMeasureIn, JpwPitchIn, JpwScoreIn } from "./tojpw";
 import { BarStyle } from "../score/enums";
-import { Key } from "../score/score";
+import { Key } from "../score/jppitch";
 import { phrasePartOfDoc } from "./phrasedoc";
 import type { PhraseChord } from "../score/phraseinput";
 
 /** 演唱顺序（`measures` / `isSimpple` / `hasRepeat` 与跳转表；速度不在这里）。
- *  推理抛错照样抛出，与 `loadMusicXml` 一致。 */
+ *  推理抛错照样抛出。 */
 export function playDataOfDoc(song: Song): PlayData {
   const pd = new PlayData();
   const part = song.parts[0];
@@ -69,7 +69,7 @@ function addSound(pd: PlayData, d: Direction, tick: TimePosition): void {
 }
 
 export interface PlaySourceOptions {
-  /** 只取第一声部的 voice ≤ 1、和弦只取最高音，不带力度——**口径照 `loadMusicXml`**，双跑用 */
+  /** 只取第一声部的 voice ≤ 1、和弦只取最高音，不带力度——光标跟的旋律档，口径同引擎输入 */
   melodyOnly?: boolean;
 }
 
@@ -176,7 +176,7 @@ const pitchIn = (n: Note | undefined, rest: boolean): JpwPitchIn => ({
   jpAlter: rest ? " " : jpAlterOfAccidental(n?.degree?.accidental),
 });
 
-/** `.jpwabc` 写出端的输入（`model/tojpw.ts::JpwScoreIn`），**口径照 `loadMusicXml`**：
+/** `.jpwabc` 写出端的输入（`model/tojpw.ts::JpwScoreIn`），**口径同引擎输入**：
  *  第一声部 voice ≤ 1、和弦取最高音（与断句同一份 `phrasePartOfDoc`）；标题/credit 照 `extractScoreTitle` 与 `<credit>` 的读法；
  *  倚音挂到它后面第一个新和弦上（跨小节也挂）；小节线条目按游标位置（只看是不是在小节开头）。 */
 export function jpwInputOfDoc(song: Song): JpwScoreIn {
@@ -195,7 +195,7 @@ export function jpwInputOfDoc(song: Song): JpwScoreIn {
     if (mk.type === "tuplet") { tupStarts.add(mk.start); tupEnds.add(mk.end); }
   }
 
-  // 倚音：挂到文档序里它后面第一个非倚音和弦（任意 voice；`loadMusicXml` 的 `tmp.graceNotes` 跨小节延续）
+  // 倚音：挂到文档序里它后面第一个非倚音和弦（任意 voice，可跨小节）
   const graces = new Map<Chord, JpwPitchIn[]>();
   let pending: JpwPitchIn[] = [];
   for (const m of part.measures) {
@@ -281,7 +281,7 @@ export function jpwInputOfDoc(song: Song): JpwScoreIn {
   // 标题同 `extractScoreTitle`：title 类 credit 的首行 → work-title → movement-title
   const credits = (song.credits ?? []).map((c) => ({
     type: c.type ?? null,
-    // `loadMusicXml` 逐个 `<credit-words>` 去首尾空白、丢空的再用换行接；模型里已接成一段，分不出元素边界，
+    // 逐个 `<credit-words>` 去首尾空白、丢空的再用换行接；模型里已接成一段，分不出元素边界，
     // 只能去整段首尾空白、丢纯空白行（元素内部换行两侧的空格留着，同原文）
     text: c.text.split("\n").filter((t) => t.trim().length > 0).join("\n").trim(),
     page: (c.page ?? 1) - 1,
@@ -303,7 +303,7 @@ const barlineAt = (b: Barline, position: Fraction): { style: BarStyle | null; re
   position,
 });
 
-/** `at[i]`：前 `i` 个元素读完时的游标（divisions 折算成四分音符）——`loadMusicXml` 的 `st.noteEnd`：最后一个非倚音和弦的终点。 */
+/** `at[i]`：前 `i` 个元素读完时的游标（divisions 折算成四分音符）：最后一个非倚音和弦的终点。 */
 function cursorEnds(m: Measure, div: number): Fraction[] {
   const pos = new Map<number, number>();
   const out: Fraction[] = [new Fraction(0)];

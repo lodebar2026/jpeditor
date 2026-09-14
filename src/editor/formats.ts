@@ -29,7 +29,7 @@ export interface FormatHost {
   getText(): string;
   /** 文本谱已解析出的方言，用于代码区标签（解析前为 null）。 */
   readonly puDialectName: string | null;
-  /** 当前谱面排版器认得的标题（`.jpwabc` 那路由 Score 给）。 */
+  /** 当前谱面排版器认得的标题（`.jpwabc` 那路由引擎输入给）。 */
   readonly painterTitle: string;
   /** 文本谱重排/重渲染。 */
   reloadPu(text: string): boolean;
@@ -50,8 +50,8 @@ export interface FormatCaps {
   mixed: boolean;
   /** 整篇简繁转换（`convertJpwabc` 认的是 `.Title`/`.Words` 段结构）。 */
   hanConvert: boolean;
-  /** 谱面走哪套排版：`scoredoc` = 解析成 `ScoreDoc` 后原样档走 `PuPainter`、展开档经 `scoreDocToScore`
-   *  （文本谱、123、ABC）；`jpwabc` = `.jpwabc` 自己的 `Score` 排版器。 */
+  /** 谱面走哪套排版：`scoredoc` = 解析成 `ScoreDoc` 后原样档走 `PuPainter`、展开档经 `jianpuInputOfDoc`
+   *  （文本谱、123、ABC）；`jpwabc` = `.jpwabc` 经 `jianpuInputOfJpw` 走简谱引擎（两档）。 */
   layout: "scoredoc" | "jpwabc";
   /** 乐句重排（`pu/relayout.ts` 重排的是文本谱原文，认的是文本谱语法）。 */
   phraseRelayout: boolean;

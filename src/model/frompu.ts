@@ -567,7 +567,7 @@ function applyVolta(r: LineResult, m: PuMark, measures: Measure[], voltas: { ope
 
 export interface PuToScoreDocOptions {
   /** 传入一个空 Map，转换时填上「原文元素（音符/增时线）→ 元素 id」。
-   *  乐句重排要用：它改写的是原文，断点要从 `Score` 经 id 找回原文元素（`pu/phrase.ts`）。 */
+   *  乐句重排要用：它改写的是原文，断点要从断句输入经 id 找回原文元素（`pu/phrase.ts`）。 */
   elementIds?: Map<MusicElement, ElementId>;
 }
 

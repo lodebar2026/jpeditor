@@ -1,19 +1,17 @@
 // **简谱语义层**：从 `ScoreDoc` 取简谱要印的派生量——唱名与八度点、相对调号的临时记号（小节内延续）、
 // 减时线/增时线/附点、和弦原文、谱表上下文、旋律取音、延音线与跨元素记号的对端。
 //
-// ## 为什么单独一层（`docs/待办.md` §3.1 阶段 2）
+// ## 为什么单独一层
 //
-// 这些量以前有三到四份实现：`score.ts::Note.init` + 它的 `AccidentalStat`、`helpers.ts` 的
-// `degreeFromPitch`/`assignDegrees`、混排 `MNote.number/octaveJp` + `render.ts` 里另一份 `AccidentalStat` +
-// `MChord.jpBeamCount`、`jianpuproject.ts` 的时值投影、`xmlproject.ts::pitchOf` 的反向延续。
-// `scripts/jianpu-semantic-check.mjs` 三方逐音比过（500 首 + 另 4 个语料目录）：主干同源，
-// 差异只在下列几处，**本层按括号里的口径统一**：
+// 这些量曾有三到四份各自的实现（简谱引擎输入、混排简谱叠层、时值投影、导出的反向延续），
+// 收拢到这里后 `scripts/jianpu-semantic-check.mjs` 三方逐音比过（500 首 + 另 4 个语料目录）。
+// 统一时定下的口径（括号里是本层的取法）：
 //
-// - 来源印的提醒记号（上一小节 `#5`、这一小节 `<accidental>natural</accidental>`）：`assignDegrees` 照印，
-//   `Score`/混排不印（**不印**——JP-Word 原稿 180《脱离捆绑》就没印，记号只按音高延续判）
-// - 同一唱名一小节里改两次（`b6 → 6 → b6`）：混排第三个印成还原号（**按相对调号的偏移命名**，印 `b`）
-// - 声部逐拍 `<backup>` 交错：混排的「最高音链」接到低声部（**旋律 = 该谱表最小 voice 的最高音**）
-// - 双升/双降：`Score` 印 `#`/`b`、混排印还原号（**印双升/双降**；语料 0 例）
+// - 来源印的提醒记号（上一小节 `#5`、这一小节 `<accidental>natural</accidental>`）：
+//   （**不印**——JP-Word 原稿 180《脱离捆绑》就没印，记号只按音高延续判）
+// - 同一唱名一小节里改两次（`b6 → 6 → b6`）：（**按相对调号的偏移命名**，第三个印 `b` 不印还原号）
+// - 声部逐拍 `<backup>` 交错：（**旋律 = 该谱表最小 voice 的最高音**，不接「最高音链」）
+// - 双升/双降：（**印双升/双降**；语料 0 例。简谱引擎输入只有单字符记号位，印 `#`/`b`）
 //
 // ## 口径
 //
@@ -180,7 +178,7 @@ function onsets(m: Measure, divisions: number): Map<Element, number> {
  *
  *  每条谱表两份延续状态：
  *  - **旋律**（简谱印出来的那个音：该谱表最小 voice 的 `topNote`）只跟旋律音延续。和弦内声部改过的唱名不算数——
- *    赞美之泉 085《复兴的火》第 6 小节 `F A♭ C D` 和弦之后旋律的 A♭，`Score`/混排都印 `b6`。
+ *    赞美之泉 085《复兴的火》第 6 小节 `F A♭ C D` 和弦之后旋律的 A♭，简谱引擎与混排都印 `b6`。
  *    123 也只写这一路（`emit123.ts::emits`），读回时 `AccidentalCarry.pitch` 同样只沿旋律延续，两边对得上
  *  - 其余音（内声部、第二 voice）跟全部音延续，只供五线谱侧与导出参考 */
 export function assignDegrees(part: Part, initialKey: Key): void {
@@ -319,7 +317,7 @@ export function melodyChords(m: Measure, staff?: number): Chord[] {
 
 const midiOf = (p: Pitch): number => p.octave * 12 + [0, 2, 4, 5, 7, 9, 11][STEPS.indexOf(p.step)]! + p.alter;
 
-/** MIDI 音高（中央 C = 60，口径同 `musicxml.ts::loadMusicXml` 的 `Note.pitch`）。 */
+/** MIDI 音高（中央 C = 60）。 */
 export const midiPitch = (p: Pitch): number => midiOf(p) + 12;
 
 /** 和弦里简谱印的那个音：音高最高者；没有绝对音高（简谱来源）时取度数最高者，再没有取第一个。 */

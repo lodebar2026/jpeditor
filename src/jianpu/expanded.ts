@@ -1,11 +1,11 @@
 // 「展开」档的排版器——`.jpwabc` 与文本谱共用同一个。
 //
-// 输入只有一份 `Score`（`.jpwabc` 经 `score/jpwimport.ts`、文本谱经 `pu/toscore.ts` 转来——
+// 输入只有一份引擎输入（`layout/input.ts`，由 `model/jianpuinput.ts` 从 `ScoreDoc` 投影——
 // **格式只是数据来源**）与展开档的那几项设置（`ExpandedOptions`），排成投影 / PPTX 那一套观感：
 // 反复与多段歌词逐遍展开（`Layout.fromScore` 走 `playData`，换页口径在 `jianpu/expand.ts::walkPlay`）、
 // 笔画常量取 `layout/pptxstyle.ts::applyPptxStyle`、第一页是独立的标题词曲页、其后每页有页脚曲名 + 「i/n」页码。
 //
-// 和弦符号进不了 Score、首调号拍号展开档本来就不画，所以文本谱转过来天然没有这两样，这里不写特判。
+// 简谱形状的投影不带和弦符号、首调号拍号展开档本来就不画，所以文本谱转过来天然没有这两样，这里不写特判。
 
 import type { MetaData } from "../smufl/smufl";
 import type { JScore } from "../layout/input";
@@ -41,7 +41,7 @@ export class ExpandedPainter extends ScorePainter {
     this.pageHeight = settings.pageH;
   }
 
-  /** 排一份 Score。`breakDesc` 是 `.jpwabc` 的 `.Layout` 分页描述（文本谱没有）。 */
+  /** 排一份引擎输入。`breakDesc` 是 `.jpwabc` 的 `.Layout` 分页描述（文本谱没有）。 */
   load(score: JScore, breakDesc: string | null = null): void {
     const { pageW: w, pageH: h } = this.settings;
     this.score = score;

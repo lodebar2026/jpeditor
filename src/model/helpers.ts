@@ -104,7 +104,7 @@ export function verseCount(song: Song): number {
   return max;
 }
 
-/** 取某一段的歌词。副歌（`refrain`）对所有段都算命中——与 `Score.Note.getLyric` 同口径。 */
+/** 取某一段的歌词。副歌（`refrain`）对所有段都算命中——与引擎取歌词（`layout/entry.ts::addLyric`）同口径。 */
 export function lyricOfVerse(lyrics: readonly Lyric[] | undefined, verse: number): Lyric | null {
   for (const l of lyrics ?? []) {
     if (l.refrain) return l;

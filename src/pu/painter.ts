@@ -18,7 +18,7 @@ import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFram
 import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
 import { jpBarlineItems, jpDot, jpTimeSigItems } from "../layout/jpglyph";
 import type { BarlineSpec } from "../layout/entry";
-import { BarStyle } from "../score/score";
+import { BarStyle } from "../score/enums";
 import { renderPageSvg } from "../layout/painter";
 import type { PagePainter } from "../layout/pagepainter";
 import type { Metadata, NoteElement } from "./ast";
@@ -286,7 +286,7 @@ const PU_BARLINE_SPEC: Record<string, BarlineSpec | undefined> = {
 };
 
 /**
- * 文本谱的「原样」档排版器（印刷原版的观感）。「展开」档不走这里：文本谱先转成 Score，
+ * 文本谱的「原样」档排版器（印刷原版的观感）。「展开」档不走这里：文本谱先投影成简谱引擎输入，
  * 与 `.jpwabc` 同走 `jianpu/expanded.ts::ExpandedPainter`。
  */
 export class PuPainter implements PagePainter {

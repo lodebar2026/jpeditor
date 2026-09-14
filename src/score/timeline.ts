@@ -3,9 +3,8 @@
 // Consumed by both the MIDI export (toMidi) and the in-editor player (ScorePlayer),
 // so the two stay in lockstep. Times are in quarter-note units.
 //
-// 输入形状（`docs/待办.md` §3.1 阶段 8）：只经下面这组接口读谱，不认 `Score` 的类——
-// `Score` 结构上就满足，直接传；`ScoreDoc` 那一侧由 `pu/playsong.ts::playSourceOfSong`（简谱形状）
-// 与 `model/playdoc.ts::playSourceOfDoc`（MusicXML 形状）拼。字段名与口径沿用 `Score`。
+// 输入形状：只经下面这组接口读谱，由 `pu/playsong.ts::playSourceOfSong`（简谱形状）
+// 与 `model/playdoc.ts::playSourceOfDoc`（MusicXML 形状）从 `ScoreDoc` 拼。
 
 import type { Fraction } from "../common/fraction";
 import type { ElementId } from "../model/doc";
@@ -40,7 +39,7 @@ export interface TimelineChord {
   /** 小节内位置（四分音符为 1） */
   readonly position: Fraction;
   readonly duration?: Fraction;
-  /** 模型里的元素 id（高亮、起播点按它认）。`Score` 来源没有 */
+  /** 模型里的元素 id（高亮、起播点按它认） */
   readonly id?: ElementId;
   /** note-on 力度 1..127，缺省 `DEFAULT_VELOCITY` */
   readonly velocity?: number;
@@ -51,7 +50,7 @@ export interface TimelineChord {
 export interface TimelineMeasure {
   /** 和弦与其它条目混排；只取 `isTimelineChord` 为真的那些。 */
   readonly entries: readonly object[];
-  /** 小节时值（末和弦的位置 + 时值）。**没有和弦时抛错**，与 `Score.Measure.duration` 同口径。 */
+  /** 小节时值（末和弦的位置 + 时值）。**没有和弦时抛错**，与 `layout/input.ts::measureDuration` 同口径。 */
   readonly duration: Fraction;
   /** 没有和弦时按拍号算小节长 */
   readonly time: { readonly beats: number; readonly beatType: number };

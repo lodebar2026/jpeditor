@@ -1,6 +1,6 @@
 // Ported from mp/jpword/jpwfile.kt — .jpwabc section model + parsing.
 // The TokenData/highlight tokenizer (parseTokens) is deferred to Phase 2;
-// this module covers the semantic parse used by JpwImport.fromJpw.
+// this module covers the semantic parse used by model/fromjpw.ts.
 
 import { parseVoiceText, type VoiceContext } from "./parse";
 

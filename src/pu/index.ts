@@ -4,7 +4,7 @@ export { sniffDialect, dialectSpec, DIALECTS, type Dialect, type DialectSpec } f
 export { parsePu, parseMusicLine, parseLyricBody, type ParseOptions } from "./parse";
 export { eachNote, eachNoteInElements, emptyMetadata, primaryMetadata } from "./ast";
 export { PuPainter } from "./painter";
-export { scoreDocToScore, type ToScoreOptions, type ScoreDocToScoreOptions } from "./toscore";
+export { jianpuInputOfDoc, type JianpuInputOptions } from "../model/jianpuinput";
 export { relayoutPuText } from "./relayout";
 export { puPhraseLines, type PuNewLine } from "./phrase";
 export { phrasePartOfSong } from "./phrasesong";

@@ -7,7 +7,7 @@
 //
 // 索引建在 **`ScoreDoc` 的 `source: SourceSpan`** 上——每个音符、每个歌词音节解析时就记了它在
 // 原文里的位置（文本谱经 `model/frompu.ts` 转来时照样带着）。文本谱、123、ABC 三档共用同一套代码。
-// 条目按**元素 id** 认，谱面那一侧（`PuPainter.noteGroupEl(id)` / 展开档经 Score 的和弦）也按 id 取。
+// 条目按**元素 id** 认，谱面那一侧（`PuPainter.noteGroupEl(id)` / 简谱引擎的 `chordGroupEl(id)`）也按 id 取。
 //
 // **不进 `PagePainter` 接口**：架构 §3.1 明写「高亮不在接口里——三者语义不同」。
 // 这里只用各排版器已有的公开取元素方法（`noteGroupEl` / `chordGroupEl`），
@@ -16,7 +16,7 @@
 // ## 歌词音节怎么配到音符
 //
 // 走排版行视图（`pu/slots.ts::docView`）：音节配给哪个音符在视图里已经定好（`syllableOwner`），
-// 与排版器、`Score` 转换用的是**同一份**，不在这里另算。
+// 与排版器、简谱引擎输入用的是**同一份**，不在这里另算。
 
 import type { ElementId, ScoreDoc, SourceSpan } from "../model/doc";
 import { docView } from "../pu/slots";

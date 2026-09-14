@@ -11,7 +11,7 @@
 //
 // 模型本身不动（`.musicxml` 重写要逐字节稳定），在克隆上投影，按 `Song` 对象缓存。
 //
-// 判据对照：`loadMusicXml → Score`（`score/musicxml.ts::parseDuration`）读时值的口径，
+// 判据对照：简谱引擎输入的 MusicXML 形状分支（`jianpuinput.ts::xmlDuration`）读时值的口径，
 // 回归 `scripts/jianpu-shape-check.mjs` 逐音比对。
 
 import type { Chord, Element, ElementId, Harmony, Measure, Song } from "./doc";

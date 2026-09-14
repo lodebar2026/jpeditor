@@ -18,12 +18,8 @@ export { scoreDocToPu } from "../pu/slots";
 export { puToScoreDoc } from "../model/frompu";
 export { jpwToScoreDoc } from "../model/fromjpw";
 export { scoreDocToMusicXml } from "../model/toxml";
-export { scoreDocToScore } from "../pu/toscore";
 export { emitJpwabc, writeJpwabc } from "../model/tojpw";
-// 文本谱与 Score 侧：迁移工具要拿它们当输入
+// 文本谱与 `.jpwabc` 读入：迁移工具要拿它们当输入
 export { parsePu, sniffDialect } from "../pu";
 export type { PuDoc } from "../pu";
-export { scoreOfXmlSong } from "../model/xmlscore";
 export { JpwFile, RepeatSection } from "../jpword/jpwfile";
-export { fromJpw } from "../score/jpwimport";
-export { Score } from "../score/score";

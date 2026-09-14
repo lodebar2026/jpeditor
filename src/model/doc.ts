@@ -5,11 +5,11 @@
 // | 模型 | 现在 | 终局 |
 // |---|---|---|
 // | **`ScoreDoc`**（本文件） | 123 的原生模型 | **唯一语义模型**，其余向它汇聚 |
-// | `Score`（`score/score.ts`） | 简谱排版/MIDI/乐句断句吃它，**装不下力度/多声部**；和弦只在 MusicXML 进来那一路留得住 | 退役 |
+// | ~~`Score`~~ | 原先是简谱排版的输入树 | **已删**：简谱引擎读 `layout/input.ts` 的只读输入，由 `model/jianpuinput.ts` 从这里投影 |
 // | ~~`MixedScore`~~ | 原先五线谱**语义 + 排版**混在一起 | **已删**（R2 阶段 10）：五线谱引擎只留版面态 `StaffLayout`（`mixed/model.ts`），语义一律从这里取 |
 // | `PuDoc`（`pu/ast.ts`） | 文本谱解析器的产物，**只在进 `ScoreDoc` 之前与乐句重排（改写原文）里活着** | 退役 |
 //
-// 文本谱/123/ABC 的排版、`Score`、MusicXML 导出、双向定位都直接吃 `ScoreDoc`，
+// 各格式的排版、试听、MusicXML 导出、双向定位都直接吃 `ScoreDoc`，
 // 经 `pu/slots.ts::docView` 线性化成排版行（那是排版的事，不是模型的事）。
 //
 // ## 设计依据（不是凭空设计）
@@ -257,7 +257,7 @@ export type BeamVal = "begin" | "continue" | "end" | "forward hook" | "backward 
 // ───────────────────────── 和弦符号 / 歌词 / 记号 ─────────────────────────
 
 /** 和弦符号 `<harmony>`。**500 首 MusicXML 100% 都有，共 12646 个**——
- *  经 `Score` 会全部丢失，这是新模型存在的首要理由。 */
+ *  旧的简谱输入树装不下，这是新模型存在的首要理由。 */
 export interface Harmony {
   root: { step: string; alter: number };
   /** `<kind>`：major / minor / dominant / major-seventh… */
@@ -378,6 +378,10 @@ export interface Sustain {
   lyrics?: Lyric[];
   /** 见 `InlineItem` */
   before?: InlineItem[];
+  /** **小节中间换行**：原文在这个和弦之后换行（`.jpwabc` 的 `$` 写在小节中间，弱起谱的乐句尾常这样）。
+   *  只是印刷位置的提示：小节级的换行（下一小节的 `Measure.print`）照「这一小节之后」另记了一份，
+   *  只认小节级换行的消费者（123/MusicXML 写出、排版行视图）不用管它；简谱排版引擎据此在原位换行。 */
+  lineBreakAfter?: "system" | "page";
   source?: SourceSpan;
 }
 
@@ -445,6 +449,10 @@ export interface Chord {
   continued?: boolean;
   /** 见 `InlineItem` */
   before?: InlineItem[];
+  /** **小节中间换行**：原文在这个和弦之后换行（`.jpwabc` 的 `$` 写在小节中间，弱起谱的乐句尾常这样）。
+   *  只是印刷位置的提示：小节级的换行（下一小节的 `Measure.print`）照「这一小节之后」另记了一份，
+   *  只认小节级换行的消费者（123/MusicXML 写出、排版行视图）不用管它；简谱排版引擎据此在原位换行。 */
+  lineBreakAfter?: "system" | "page";
   /** [五线谱] `<cue/>`：提示音（不发声的小音符） */
   cue?: boolean;
   /** [五线谱] `<type size>`：cue / grace-cue / large… */
@@ -561,6 +569,10 @@ export interface Barline {
   annotation?: string;
   /** 见 `InlineItem` */
   before?: InlineItem[];
+  /** **小节中间换行**：原文在这个和弦之后换行（`.jpwabc` 的 `$` 写在小节中间，弱起谱的乐句尾常这样）。
+   *  只是印刷位置的提示：小节级的换行（下一小节的 `Measure.print`）照「这一小节之后」另记了一份，
+   *  只认小节级换行的消费者（123/MusicXML 写出、排版行视图）不用管它；简谱排版引擎据此在原位换行。 */
+  lineBreakAfter?: "system" | "page";
   /** `location === "middle"` 时：它排在本小节第几个元素之后。
    *  不可见小节线 `[|]` 常落在小节中间，丢了位置就会把两个小节并成一个 */
   afterElements?: number;
@@ -752,7 +764,7 @@ export interface Mark {
   /** 跨行时后续各行那一段的 level（文本谱续行会重新编号，见过 3 → 1） */
   continuationLevels?: number[];
   /** 文本谱记号起点写在小节线/`~`/夹层上（`[|](5`）：原起点在 `start` 那个符号之前第几个位置。
-   *  **不能归并到最近的音符**——`Score` 只在音符上认端点，落在小节线上的端点等于没收口，弧会接到下一行 */
+   *  **不能归并到最近的音符**——简谱引擎只在音符上认端点，落在小节线上的端点等于没收口，弧会接到下一行 */
   startLead?: number;
   /** 同上，终点写在 `end` 那个符号之后第几个位置（`(5_ [|]`） */
   endTrail?: number;
