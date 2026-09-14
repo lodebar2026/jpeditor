@@ -157,7 +157,7 @@ function buildPart(
         closeVolta(mea);
         const ent = new BarlineEntry(mea);
         // 反复：`|:` 在 .jpwabc 里是挂到**下一小节**的 repeatForward 上的
-        //（Measure.barline 写 HEAVY_LIGHT 会让 jpscore 的 makeBarline 直接抛错）。
+        //（Measure.barline 写 HEAVY_LIGHT 会让写出端 tojpw.ts 的 makeBarline 直接抛错）。
         switch (el.type) {
           case "normal":
             ent.style = BarStyle.REGULAR;

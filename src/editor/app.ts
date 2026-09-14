@@ -24,7 +24,8 @@ import { loadMusicXml } from "../score/musicxml";
 import type { FitMetric } from "../score/phrase";
 import type { FitMeasure } from "../pu/phrase";
 import { abcToMusicXml } from "../abc/abc2xml";
-import { scoreToJpwabc, type JpwMeta, type JpwRange } from "../score/jpscore";
+import type { JpwMeta, JpwRange } from "../omr/types";
+import { emitJpwabc } from "../model/tojpw";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
 import { isTauriRuntime, saveBytes } from "./fileio";
 import { DOC_EXT, acceptAttr, is123File, isPuFile } from "../common/filetypes";
@@ -1400,7 +1401,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   async convertToTextDoc(target: "123" | "abc" | "jpwabc"): Promise<void> {
     if (this.docFormat !== "musicxml") return;
     const doc = this.currentScoreDoc();
-    const xml = this.getText();
     if (!doc) {
       this.setStatus("这份 MusicXML 读不出来，无法转换");
       return;
@@ -1412,8 +1412,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     let text: string;
     try {
-      // `.jpwabc` 走既有的 MusicXML → Score → jpwabc（那条路对 500 首实测过）
-      text = target === "123" ? emit123(doc) : target === "abc" ? emitAbc(doc) : scoreToJpwabc(loadMusicXml(xml));
+      // 三种目标同吃这份模型；`.jpwabc` 口径照原 `loadMusicXml → Score` 那条路（`jpw-emit-check` 568 份逐字节一致）
+      const jpw = target === "jpwabc" ? emitJpwabc(doc) : null;
+      if (target === "jpwabc" && jpw === null) throw new Error("没有可转换的曲行");
+      text = target === "123" ? emit123(doc) : target === "abc" ? emitAbc(doc) : jpw!;
     } catch (e) {
       console.error("转换失败", e);
       this.setStatus("转换失败：" + (e instanceof Error ? e.message : String(e)));

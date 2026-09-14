@@ -17,7 +17,7 @@ import { docView } from "./slots";
 
 interface LyricOut { text: string; number: number; refrain: boolean }
 /** `pitch`：MIDI 音高，只在 `buildMeasures` 给了调号状态时算（试听用，同 `toscore.ts` 的 `applyJpPitch`） */
-interface NoteOut { number: string; jpOctave: number; pitch: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
+interface NoteOut { number: string; jpOctave: number; pitch: number; jpAlter: string; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
 interface ChordOut {
   notes: NoteOut[];
   rest: boolean;
@@ -47,6 +47,8 @@ export interface MeasureOut {
   endingNum: Set<number> | null;
   endingRight: StartStopDiscontinue | null;
   sectionMark: string | null;
+  /** 和弦、小节线、行末换行按原次序（`.jpwabc` 写出端要，同 `toscore.ts::buildPart` 往 `Measure.entries` 里放的次序） */
+  seq: (ChordOut | "barline" | "break")[];
   /** 拍号（小节里没有和弦时试听按它算小节长，同 `Score.Measure.time`） */
   time: { beats: number; beatType: number };
   /** 末和弦的终点。没有和弦时抛错（同 `Score.Measure.duration`） */
@@ -160,6 +162,7 @@ export function buildMeasures(
     const m: MeasureOut = {
       entries: [], barline: null, repeatBackward: false, repeatForward: false, keyChange: false,
       endingLeft: false, endingNum: null, endingRight: null, sectionMark: null,
+      seq: [],
       time: pitch?.time ?? { beats: 4, beatType: 4 },
       get duration(): Fraction {
         const last = this.entries[this.entries.length - 1];
@@ -206,6 +209,7 @@ export function buildMeasures(
       }
       if (el.kind === "barline") {
         const mea: MeasureOut = measure ?? open();
+        mea.seq.push("barline");
         closeVolta(mea);
         noteJumps(mea, true);
         switch (el.type) {
@@ -246,7 +250,7 @@ export function buildMeasures(
 
       const number = el.sound === "rhythm" ? "0" : String(el.pitch);
       const ch: ChordOut = {
-        notes: [{ number, jpOctave: el.octave, pitch: 0, tieStart: false, tieEnd: false, lyrics: [] }],
+        notes: [{ number, jpOctave: el.octave, pitch: 0, jpAlter: jpAlterOf(el), tieStart: false, tieEnd: false, lyrics: [] }],
         rest: el.hidden || el.sound === "rest" || el.sound === "rhythm" || number === "0",
         beats: 1,
         beams: Math.max(0, Math.round(Math.log2(el.duration / 4))),
@@ -273,10 +277,14 @@ export function buildMeasures(
       if (slur.ends) ch.slurEnds++;
       ch.duration = chordDuration(ch);
       mea.entries.push(ch);
+      mea.seq.push(ch);
       onChord(ch, el);
       lastChord = ch;
       if (takesLyric(el)) attach(ch);
     });
+    // 行末换行（末行不加），同 `toscore.ts` 的 `Measure.lineBreak`
+    const cur = measure as MeasureOut | null;
+    if (line !== lines[lines.length - 1] && cur) cur.seq.push("break");
   }
 
   // doPairTuplet + applyTupletDurations

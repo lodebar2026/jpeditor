@@ -145,3 +145,18 @@ export interface RecognizedScore {
   chordRegions?: TextRegion[]; // 和弦记号的源图定位（识别模式按原位叠加）
   dotDiam?: number; // 八度点/附点在源图的统计直径（识别模式按原图大小画点，非按字号推算）
 }
+
+/** 编辑器文本里的一段字符区间（点选定位用）。 */
+export interface JpwRange {
+  from: number;
+  to: number;
+}
+
+/** 识别产物文本里「识别对象 → 代码区间」的映射，供识别模式点选定位（名字沿用最早的 `.jpwabc` 那一路）。
+ *  noteRanges/lyricRanges 均按 **Chord 序**（== flatten(RecognizedScore.rows[].nums) 序）。 */
+export interface JpwMeta {
+  noteRanges: JpwRange[]; // 第 i 个音符 token（数字+修饰段，不含前后括号/空格）
+  lyricRanges: Array<Map<number, JpwRange>>; // 平行于 noteRanges：第 i 音符各 verse(0基) 的音节区间
+  titleRange?: JpwRange; // 标题值
+  authorRanges: Array<{ text: string; range: JpwRange }>; // 作者行里每个作者条目
+}

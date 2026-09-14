@@ -20,7 +20,7 @@ export { scoreToScoreDoc } from "../model/fromscore";
 export { jpwToScoreDoc } from "../model/fromjpw";
 export { scoreDocToMusicXml } from "../model/toxml";
 export { scoreDocToScore } from "../pu/toscore";
-export { scoreToJpwabc } from "../score/jpscore";
+export { emitJpwabc, writeJpwabc } from "../model/tojpw";
 // 文本谱与 Score 侧：迁移工具要拿它们当输入
 export { parsePu, sniffDialect } from "../pu";
 export type { PuDoc } from "../pu";

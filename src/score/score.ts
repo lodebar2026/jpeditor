@@ -266,7 +266,7 @@ export class Chord extends Entry {
   fermata = false;
   /** 印在这个音符上方的和弦符号（"Am7" / "G/B"）。来自 musicxml 的 `<harmony>`，
    *  与 OMR 的 `JpNum.chord`、文本谱的 `"hx:…"` 是同一层表示。
-   *  `.jpwabc` 装不下它（既定，不扩语法），所以走 jpscore 那条路会丢。 */
+   *  `.jpwabc` 装不下它（既定，不扩语法），所以转 `.jpwabc` 会丢。 */
   harmony: string | null = null;
   /** 印在这个音符上方的**段落词**（「（副歌）」「（间奏）」…）。原书印在和弦那一带，
    *  与和弦同一条基线、左右并排。成书重排从 `校对.db::section_word` 按音符序号注进来。 */
@@ -274,7 +274,7 @@ export class Chord extends Entry {
   /** 印在这个音符上方的**表情/跳转记号**：`rit.`、`Fine`、`D.S.`、`mf`…
    *  来自 musicxml 的 `<direction>`（`<words>` 与 `<dynamics>`）。`music` 为真时
    *  `text` 是 Bravura 的力度字形串（`mf` = mezzo + forte，见 pu/glyph.ts::DYNAMICS）。
-   *  `.jpwabc` 同样装不下（与 `harmony` 一个道理），走 jpscore 那条路会丢。 */
+   *  `.jpwabc` 同样装不下（与 `harmony` 一个道理），转 `.jpwabc` 会丢。 */
   directions: ChordDirection[] = [];
   /** 奏法记号（目前只有 `<accent>`）。画在音符上方，与 fermata 同一带。 */
   articulations: string[] = [];

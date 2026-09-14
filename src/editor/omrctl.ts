@@ -13,8 +13,7 @@ import {
   OMR_EMITTERS, DEFAULT_OMR_FORMAT, isOmrFormat, omrEmitter,
   type OmrFormat, type RecogView,
 } from "../omr";
-import type { Binary, RecognizedScore } from "../omr";
-import type { JpwMeta } from "../score/jpscore";
+import type { Binary, JpwMeta, RecognizedScore } from "../omr";
 import { showConfirmDialog } from "./dialogs";
 
 /** 是否 PDF 字节（mime 或 `%PDF-` 魔数）。与 `omr/decode.ts` 里那份同判据。 */

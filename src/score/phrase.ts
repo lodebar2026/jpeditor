@@ -67,7 +67,7 @@ export interface PhraseBreaks {
   sectionStarts: Set<number>;
   /** 段界落在小节内部（弧闭合处）时的断点和弦：在该和弦后换行**并另起一页**。midBreaks 是其超集。 */
   sectionCutChords: Set<PhraseChord>;
-  /** 是否已为「副歌起点」安排了段界（含弱起顺延）。jpscore 据此不再自行在副歌首音处断行。 */
+  /** 是否已为「副歌起点」安排了段界（含弱起顺延）。原 jpscore 据此不再自行在副歌首音处断行。 */
   refrainCut: boolean;
   /**
    * **全部候选断点**（按位置升序，含落在小节中间的那些）。
@@ -92,7 +92,7 @@ export interface PhraseBreaks {
   forced: Set<number>;
 }
 
-// 句末 / 句中标点（读 Note.lyrics 原文，未被 jpscore 剥离）。
+// 句末 / 句中标点（读 Note.lyrics 原文，未被原 jpscore 剥离）。
 // 分号并列的是两个完整分句（「…忧伤的权利；我要宣告…」），乐句同样在此收尾 → 与句号同级。
 export const PUNCT_END = /[。！？…；]$/;
 export const PUNCT_MID = /[，、：]$/;
@@ -322,7 +322,7 @@ export interface PhraseOptions {
    *  **`targetMeas` 由容量折算时要反过来调小**（成书那条路 0.25）：目标行长已经就是版心宽，
    *  行长代价再重就会压过「断在乐句收尾处」，把行末从标点上挪走（实测全书行末收标点 94% → 81%）。 */
   lenWeight?: number;
-  /** **一页排几行**（0 = 不管分页；编辑器/PPT 那条路传 4，与 `jpscore.ts::balanceVoicePages`
+  /** **一页排几行**（0 = 不管分页；编辑器/PPT 那条路传 4，与 `原 jpscore.ts（阶段 8 已删）::balanceVoicePages`
    *  同一个数）。给了就在第一遍 DP 之后补一道「把末页排满」：整首排下来若剩个半空的页
    *  （001《圣哉，圣哉，圣哉》16 小节排成 4+6+6 三行，而版面装得下 4 行），就照
    *  「行数凑满整页」再排一遍，每行仍不许太稀（`MIN_MEAS` / `MIN_CELLS` 满足其一）。
@@ -1159,16 +1159,16 @@ export function computePhraseBreaks(part: PhrasePart, opts: PhraseOptions = {}):
     idx = aroundSectionPickup(idx);
     if (idx < K) sectionCutIdx.set(mi, idx);
   }
-  // 副歌（refrain）起点同样是段界：jpscore 会在它之前**强制断行并另起一页**（主歌/副歌分页）。
+  // 副歌（refrain）起点同样是段界：原 jpscore 会在它之前**强制断行并另起一页**（主歌/副歌分页）。
   // phrase 若不知情，就会按自己的乐句信号在别处断，两者叠加把中间那点内容甩成孤零零的一行
-  //（实测「从前所珍爱」：phrase 断在长音 `2-` 后，jpscore 又断在其后的 `0` 后 → 一行只剩一个休止）。
+  //（实测「从前所珍爱」：phrase 断在长音 `2-` 后，原 jpscore 又断在其后的 `0` 后 → 一行只剩一个休止）。
   {
     let sawVerse = false, refrainIdx = -1;
     outer: for (let idx = 0; idx < K; idx++) {
       for (const nt of flat[idx].chord.notes) {
         for (const lrc of nt.lyrics) {
           if (lrc.text.length === 0) continue;
-          if (!lrc.refrain) { sawVerse = true; continue; }   // 与 jpscore::firstRefrainChord 同样的两道护栏：
+          if (!lrc.refrain) { sawVerse = true; continue; }   // 与原 jpscore::firstRefrainChord 同样的两道护栏：
           if (!sawVerse) continue;                            // ① 须在主歌之后（单段谱会被整首标成 refrain）
           if (K - idx >= Math.max(8, K / 8)) refrainIdx = idx; // ② 副歌须有份量，否则不算
           break outer;

@@ -3,7 +3,7 @@
 // 识别结果的音符序是 `flatten(rows[].nums)`（`omr/emit.ts` 的约定），`omr/musicxml.ts` 按这个序
 // 一个 num 写一个 `<note>`，读回 `ScoreDoc` 再 `emit123` 也保持这个序。所以这里重解析 123 文本，
 // 按元素序（倚音除外）取各元素的源区间，歌词取音节的源区间，就与识别序逐位对齐。
-import type { JpwMeta, JpwRange } from "../score/jpscore";
+import type { JpwMeta, JpwRange } from "../omr/types";
 import type { SourceSpan } from "../model/doc";
 import { parse123 } from "../j123/parse";
 

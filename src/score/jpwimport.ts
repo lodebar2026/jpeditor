@@ -308,7 +308,7 @@ export function fromJpw(f: JpwFile): Score | null {
   if (author !== null) {
     const cred = new Credit();
     cred.text = unescape(author);
-    // page 是 0 基的页号（MusicXML 导入端也是 attr−1）。原先写 1 与 jpscore.ts 只收 page===0
+    // page 是 0 基的页号（MusicXML 导入端也是 attr−1）。原先写 1 与写出端 tojpw.ts 只收 page===0
     // 的判据对不上，`.jpwabc → Score → .jpwabc` 的作者行会整条丢掉，导出的 MusicXML 里
     // 词曲也会落到第 2 页。
     cred.page = 0;

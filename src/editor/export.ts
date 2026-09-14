@@ -4,7 +4,7 @@ import { toMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
 import { ExpandedPainter } from "../jianpu/expanded";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
-import { scoreToJpwabc } from "../score/jpscore";
+import { emitJpwabc } from "../model/tojpw";
 import { asset } from "../common/asset";
 import { scoreDocToMusicXml } from "../model/toxml";
 import { scoreToScoreDoc } from "../model/fromscore";
@@ -190,12 +190,12 @@ export async function exportPuMusicXml(app: App): Promise<void> {
 
 /** 文本谱 → `.jpwabc`。JP-Word 的 .Voice 只有单声部，多声部时只导第一声部。 */
 export async function exportPuJpwabc(app: App): Promise<void> {
-  const score = app.puScore();
-  if (!score) throw new Error("这份文本谱里没有可导出的曲行");
-  if (score.parts.length > 1) {
-    app.setStatus(`.jpwabc 只支持单声部，已导出第一声部（原谱有 ${score.parts.length} 个）`);
+  const doc = app.currentScoreDoc();
+  const text = doc ? emitJpwabc(doc) : null;
+  if (text === null) throw new Error("这份文本谱里没有可导出的曲行");
+  if (app.partCount > 1) {
+    app.setStatus(`.jpwabc 只支持单声部，已导出第一声部（原谱有 ${app.partCount} 个）`);
   }
-  const text = scoreToJpwabc(score);
   await saveBytes(encodeJpwabc(text), `${baseName(app)}.jpwabc`, "application/octet-stream");
 }
 

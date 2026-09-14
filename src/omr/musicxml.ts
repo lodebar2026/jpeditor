@@ -409,9 +409,9 @@ export function toMusicXml(score: RecognizedScore): string {
 
   const workXml = workElementXml(score.title);
   // 副标题带 `<credit-type>subtitle</credit-type>` 单列（与文本谱那路口径一致），别混进著作者：
-  // 下游 jpscore 是按「非 title 的 credit」拼 WordsByAndMusicBy 的，不标类型就会被当成作者。
+  // 下游 `.jpwabc` 写出端（model/tojpw.ts）是按「非 title 的 credit」拼 WordsByAndMusicBy 的，不标类型就会被当成作者。
   const subtitleXml = score.subtitle ? creditWordsXml(score.subtitle, 1, "subtitle") : "";
-  // 著作者整行（作词：…/作曲：…）作为 credit；下游 jpscore 据此拼 WordsByAndMusicBy。
+  // 著作者整行（作词：…/作曲：…）作为 credit；下游 `.jpwabc` 写出端（model/tojpw.ts）据此拼 WordsByAndMusicBy。
   const creditsXml = subtitleXml + (score.credits ?? []).map((c) => creditWordsXml(c)).join("");
 
   return wrapPartwise({
