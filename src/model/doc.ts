@@ -132,7 +132,8 @@ export interface Defaults {
   pageLayout?: {
     pageWidth?: number;
     pageHeight?: number;
-    margins?: { left: number; right: number; top: number; bottom: number; oddEven?: "odd" | "even" | "both" };
+    /** `<page-margins>`，按出现顺序全留（奇偶页分开写时有两份） */
+    margins?: { left: number; right: number; top: number; bottom: number; oddEven?: "odd" | "even" | "both" }[];
   };
   systemLayout?: { systemDistance?: number; topSystemDistance?: number; leftMargin?: number; rightMargin?: number };
   staffLayout?: { staffDistance?: number };
@@ -589,8 +590,8 @@ export interface Direction {
   xml?: string;
   /** 力度名（`f` / `mf`…）或文字内容 */
   text?: string;
-  /** `<metronome>`：♩=76 */
-  tempo?: { beatUnit?: NoteType; perMinute?: number };
+  /** `<metronome>`：♩=76。`perMinuteText` 是 `<per-minute>` 不是纯数字时的原文（「132 温馨、期盼的」） */
+  tempo?: { beatUnit?: NoteType; perMinute?: number; perMinuteText?: string };
   /** wedge / pedal / octave-shift 的起止，与 `Mark` 配对用 */
   spanType?: "start" | "stop" | "continue";
   /** `<wedge type>`：crescendo / diminuendo */
@@ -673,7 +674,13 @@ export interface Measure {
   width?: number;
   /** [五线谱] `<measure implicit="yes">`：弱起等不计小节号的小节 */
   implicit?: boolean;
+  /** [五线谱] 小节时长（divisions）。**只在比元素的最远终点更长时写**：`<forward>` 撑出来的空拍（赞美之泉 016 末尾的 `<forward>`） */
+  duration?: number;
+  /** 本小节**第一个元素之前**的属性（多个 `<attributes>` 合并） */
   attrs?: MeasureAttrs;
+  /** [五线谱] 小节中间的 `<attributes>`（合唱谱在小节中间换谱号），位置口径同 `Direction.afterElements` / `onset`。
+   *  **简谱侧只看 `attrs`**：小节中间转调/转拍号（语料 0 例）那一侧不认 */
+  laterAttrs?: { afterElements: number; onset?: number; attrs: MeasureAttrs }[];
   /** 按时间序。MusicXML 的 `<backup>`/`<forward>` 解析成各 `voice` 分轨后消失 */
   elements: Element[];
   /** 左右小节线都在这里，按 `location` 区分 */

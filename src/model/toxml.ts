@@ -26,6 +26,7 @@ import type {
   Lyric,
   Mark,
   Measure,
+  MeasureAttrs,
   Note,
   Part,
   Position,
@@ -116,13 +117,12 @@ function writeDefaults(o: Out, d: number, def: Defaults): void {
     o.push(d + 1, "<page-layout>");
     if (pl.pageHeight !== undefined) o.push(d + 2, tag("page-height", pl.pageHeight));
     if (pl.pageWidth !== undefined) o.push(d + 2, tag("page-width", pl.pageWidth));
-    if (pl.margins) {
-      const t = pl.margins.oddEven ?? "both";
-      o.push(d + 2, `<page-margins type="${t}">`);
-      o.push(d + 3, tag("left-margin", pl.margins.left));
-      o.push(d + 3, tag("right-margin", pl.margins.right));
-      o.push(d + 3, tag("top-margin", pl.margins.top));
-      o.push(d + 3, tag("bottom-margin", pl.margins.bottom));
+    for (const mg of pl.margins ?? []) {
+      o.push(d + 2, `<page-margins type="${mg.oddEven ?? "both"}">`);
+      o.push(d + 3, tag("left-margin", mg.left));
+      o.push(d + 3, tag("right-margin", mg.right));
+      o.push(d + 3, tag("top-margin", mg.top));
+      o.push(d + 3, tag("bottom-margin", mg.bottom));
       o.push(d + 2, "</page-margins>");
     }
     o.push(d + 1, "</page-layout>");
@@ -230,6 +230,15 @@ function notationsXml(o: Out, d: number, n: Chord["notations"], starts: Mark[], 
   starts = [...starts].sort((a, b) => order(a) - order(b));
   stops = [...stops].sort((a, b) => order(a) - order(b));
   o.push(d, "<notations>");
+  // 同一个音上先收后起（`)(` 接连两条弧：收前一条、起后一条），按编号配对时次序错了就会配成自起自收；
+  // 真·自起自收（起止同一个音）的收口放最后
+  const self = new Set(starts.filter((m) => stops.includes(m)));
+  const writeStop = (m: Mark): void => {
+    if (m.type === "slur") o.push(d + 1, `<slur type="stop" number="${m.number ?? 1}"/>`);
+    else if (m.type === "tied") o.push(d + 1, `<tied type="stop" number="${m.number ?? 1}"/>`);
+    else if (m.type === "tuplet") o.push(d + 1, `<tuplet type="stop" number="${m.number ?? 1}"/>`);
+  };
+  for (const m of stops) if (!self.has(m)) writeStop(m);
   for (const m of starts) {
     const pl = m.placement ? ` placement="${m.placement}"` : "";
     if (m.type === "slur") {
@@ -241,11 +250,7 @@ function notationsXml(o: Out, d: number, n: Chord["notations"], starts: Mark[], 
       o.push(d + 1, `<tuplet type="start" number="${m.number ?? 1}"${br}${pl}/>`);
     }
   }
-  for (const m of stops) {
-    if (m.type === "slur") o.push(d + 1, `<slur type="stop" number="${m.number ?? 1}"/>`);
-    else if (m.type === "tied") o.push(d + 1, `<tied type="stop" number="${m.number ?? 1}"/>`);
-    else if (m.type === "tuplet") o.push(d + 1, `<tuplet type="stop" number="${m.number ?? 1}"/>`);
-  }
+  for (const m of stops) if (self.has(m)) writeStop(m);
   if (n?.fermata) o.push(d + 1, n.fermataInverted ? '<fermata type="inverted"/>' : "<fermata/>");
   if (n?.arpeggiate) o.push(d + 1, "<arpeggiate/>");
   if (n?.articulations?.length) {
@@ -397,7 +402,7 @@ function directionPartXml(o: Out, d: number, dir: DirectionPart): void {
     case "metronome":
       o.push(d, `<metronome${lay}>`);
       o.push(d + 1, tag("beat-unit", dir.tempo?.beatUnit ?? "quarter"));
-      o.push(d + 1, tag("per-minute", dir.tempo?.perMinute ?? 90));
+      o.push(d + 1, tag("per-minute", dir.tempo?.perMinuteText ?? dir.tempo?.perMinute ?? 90));
       o.push(d, "</metronome>");
       break;
     case "bracket":
@@ -478,6 +483,34 @@ function printXml(o: Out, d: number, p: Print): void {
   o.push(d, "</print>");
 }
 
+function attributesXml(o: Out, d: number, attrs: MeasureAttrs): void {
+  o.push(d, "<attributes>");
+  if (attrs.divisions !== undefined) o.push(d + 1, tag("divisions", attrs.divisions));
+  if (attrs.key) writeKey(o, d + 1, attrs.key);
+  if (attrs.time) writeTime(o, d + 1, attrs.time);
+  if (attrs.staves !== undefined) o.push(d + 1, tag("staves", attrs.staves));
+  for (const c of attrs.clefs ?? []) {
+    o.push(d + 1, c.staff ? `<clef number="${c.staff}">` : "<clef>");
+    o.push(d + 2, tag("sign", c.sign));
+    if (c.line !== undefined) o.push(d + 2, tag("line", c.line));
+    if (c.octaveChange !== undefined) o.push(d + 2, tag("clef-octave-change", c.octaveChange));
+    o.push(d + 1, "</clef>");
+  }
+  for (const sd of attrs.staffDetails ?? []) {
+    const a = (sd.staff ? ` number="${sd.staff}"` : "") +
+      (sd.printObject !== undefined ? ` print-object="${sd.printObject ? "yes" : "no"}"` : "");
+    o.push(d + 1, `<staff-details${a}/>`);
+  }
+  if (attrs.transpose) {
+    o.push(d + 1, "<transpose>");
+    if (attrs.transpose.diatonic !== undefined) o.push(d + 2, tag("diatonic", attrs.transpose.diatonic));
+    o.push(d + 2, tag("chromatic", attrs.transpose.chromatic));
+    if (attrs.transpose.octaveChange !== undefined) o.push(d + 2, tag("octave-change", attrs.transpose.octaveChange));
+    o.push(d + 1, "</transpose>");
+  }
+  o.push(d, "</attributes>");
+}
+
 function measureXml(
   o: Out,
   d: number,
@@ -490,37 +523,7 @@ function measureXml(
   // 顺序是硬要求：print → 左线 → attributes → direction → (harmony/note)* → 右线
   if (m.print) printXml(o, d + 1, m.print);
   for (const b of m.barlines ?? []) if (b.location === "left") barlineXml(o, d + 1, b);
-  if (m.attrs) {
-    o.push(d + 1, "<attributes>");
-    if (m.attrs.divisions !== undefined) o.push(d + 2, tag("divisions", m.attrs.divisions));
-    if (m.attrs.key) writeKey(o, d + 2, m.attrs.key);
-    if (m.attrs.time) writeTime(o, d + 2, m.attrs.time);
-    if (m.attrs.staves !== undefined) o.push(d + 2, tag("staves", m.attrs.staves));
-    for (const c of m.attrs.clefs ?? []) {
-      o.push(d + 2, c.staff ? `<clef number="${c.staff}">` : "<clef>");
-      o.push(d + 3, tag("sign", c.sign));
-      if (c.line !== undefined) o.push(d + 3, tag("line", c.line));
-      if (c.octaveChange !== undefined) o.push(d + 3, tag("clef-octave-change", c.octaveChange));
-      o.push(d + 2, "</clef>");
-    }
-    for (const sd of m.attrs.staffDetails ?? []) {
-      const a = (sd.staff ? ` number="${sd.staff}"` : "") +
-        (sd.printObject !== undefined ? ` print-object="${sd.printObject ? "yes" : "no"}"` : "");
-      o.push(d + 2, `<staff-details${a}/>`);
-    }
-    if (m.attrs.transpose) {
-      o.push(d + 2, "<transpose>");
-      if (m.attrs.transpose.diatonic !== undefined) {
-        o.push(d + 3, tag("diatonic", m.attrs.transpose.diatonic));
-      }
-      o.push(d + 3, tag("chromatic", m.attrs.transpose.chromatic));
-      if (m.attrs.transpose.octaveChange !== undefined) {
-        o.push(d + 3, tag("octave-change", m.attrs.transpose.octaveChange));
-      }
-      o.push(d + 2, "</transpose>");
-    }
-    o.push(d + 1, "</attributes>");
-  }
+  if (m.attrs) attributesXml(o, d + 1, m.attrs);
   // 记号按 afterElements 插回原位（缺省在小节开头；超出元素个数的落到小节末）
   const count = m.elements.length;
   const dirAt = (dir: Direction): number => Math.min(dir.afterElements ?? 0, count);
@@ -531,6 +534,13 @@ function measureXml(
     if (target < cursor) o.push(d + 1, `<backup>${tag("duration", cursor - target)}</backup>`);
     else if (target > cursor) o.push(d + 1, `<forward>${tag("duration", target - cursor)}</forward>`);
     cursor = target;
+  };
+  const writeLaterAttrs = (i: number): void => {
+    for (const la of m.laterAttrs ?? []) {
+      if (Math.min(la.afterElements, count) !== i) continue;
+      moveTo(la.onset ?? end);
+      attributesXml(o, d + 1, la.attrs);
+    }
   };
   const writeDir = (dir: Direction): void => {
     if (dir.type !== "sound") moveTo(dir.onset ?? end);
@@ -547,6 +557,7 @@ function measureXml(
     for (const b of m.barlines ?? []) {
       if (b.location === "middle" && b.afterElements === i) barlineXml(o, d + 1, b);
     }
+    if (i > 0) writeLaterAttrs(i);
     if (i > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === i) writeDir(dir);
     const onset = el.onset ?? end;
     if (el.kind === "chord") {
@@ -576,7 +587,10 @@ function measureXml(
     }
     i += 1;
   }
+  if (count > 0) writeLaterAttrs(count);
   if (count > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === count) writeDir(dir);
+  // `<forward>` 撑出来的空拍（`Measure.duration`）：补一个 `<forward>` 把游标推到小节末
+  if (m.duration !== undefined && m.duration > cursor) moveTo(m.duration);
   for (const raw of m.raw ?? []) o.raw(d + 1, raw);
   for (const b of m.barlines ?? []) if (b.location === "right") barlineXml(o, d + 1, b);
   o.push(d, "</measure>");

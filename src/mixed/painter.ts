@@ -13,6 +13,8 @@ import { colorToCss } from "../common/geom";
 import type { PagePainter } from "../layout/pagepainter";
 import { LCR, MixedOptions, MixedScore, Notation, ScoreCredit, Sys, SysStaff } from "./model";
 import { loadMixedXml } from "./loader";
+import { loadMixedDoc } from "./fromdoc";
+import type { ScoreDoc } from "../model/doc";
 import { drawSystem } from "./render";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -277,12 +279,26 @@ export class MixedPainter implements PagePainter {
 
   /** Load and format a MusicXML string. Must be called before renderPage. */
   async load(xmlText: string): Promise<void> {
+    const options = await this._options();
+    this._layout(loadMixedXml(xmlText, options));
+  }
+
+  /** 同 `load`，但从 `ScoreDoc`（MusicXML 形状）读（`fromdoc.ts`）。 */
+  async loadDoc(doc: ScoreDoc): Promise<void> {
+    const options = await this._options();
+    this._layout(loadMixedDoc(doc, options));
+  }
+
+  private async _options(): Promise<MixedOptions> {
     if (!this.meta) {
       this.meta = await MetaData.load();
     }
     const options = new MixedOptions(this.meta);
     options.hideBarNumber = this.hideBarNumber;
-    const score = loadMixedXml(xmlText, options);
+    return options;
+  }
+
+  private _layout(score: MixedScore): void {
     if (this.showJianpuLayer) formatMixedScore(score);
     this.score = score;
 
