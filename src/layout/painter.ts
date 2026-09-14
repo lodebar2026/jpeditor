@@ -240,22 +240,10 @@ export abstract class ScorePainter implements PagePainter {
 
 /**
  * `.jpwabc` 的「原样」档与成书（`pdflayout`）、帮助示例、分行度量用的排版器：
- * 版面由调用方灌进 `layout.options`（原样档走 `applyOriginal`，成书走 `applyBookStyle`），
+ * 版面由调用方经样式表灌进 `layout.options`（`style/jianpu.ts::applyJianpuStyle`：原样档 `original` 预设、成书 `book` 预设），
  * 标题排在第一页顶上（`bookHead`）或整首一张连续长纸。「展开」档另见 `jianpu/expanded.ts::ExpandedPainter`。
  */
 export class JinpuPainter extends ScorePainter {
-  /**
-   * 灌「原样」档的选项。**契约**：构造之后、颜色/标题字号等选项之后、`resize` 之前调。
-   * 按原谱排一遍（`lyricStack > 0`，多段叠在同一条谱行下），标题排在第一页顶上
-   * （`bookHead`）——印刷歌本的排法；`longImage` = 一张连续长纸（观感同文本谱的「原版」）。
-   */
-  applyOriginal(opts: { longImage?: boolean } = {}): void {
-    const opt = this.layout.options;
-    opt.lyricStack = opt.lrcFont.size * LYRIC_STACK_RATIO;
-    opt.continuousPage = opts.longImage ?? true;
-    opt.bookHead = true;
-  }
-
   resize(w: number, h: number, dur: string | null): void {
     const opt = this.layout.options;
     this.pageWidth = w;

@@ -76,13 +76,13 @@ async function boot() {
     .then(([pptx, exp]) => ({ ...pptx, pptxPainter: exp.pptxPainter }));
   // 成书重排（BookStyle 注入 + 页面树 → DrawList）暴露，供 scripts/rebuild.mjs 用。
   win.__book = Promise.all([
-    import("./pdflayout/browser"), import("./layout/painter"),
+    import("./pdflayout/browser"), import("./style/book"), import("./layout/painter"),
     import("./score/phrase"), import("./score/applybreaks"), import("./jpword/jpwfile"),
     import("./jpword/parse"), import("./model/jianpuinput"), import("./pu"),
     import("./model/fromxml"), import("./model/phrasedoc"), import("./score/timeline"), import("./model/playdoc"),
     import("./score/midi"), import("./layout/input"),
-  ]).then(([book, painter, phrase, applybreaks, jpwfile, parse, jianpuinput, pu, fromxml, phrasedoc, timeline, playdoc, midi, input]) => ({
-    ...book, ...painter, ...phrase, ...applybreaks, ...jpwfile, ...parse, ...jianpuinput, pu,
+  ]).then(([book, bookStyle, painter, phrase, applybreaks, jpwfile, parse, jianpuinput, pu, fromxml, phrasedoc, timeline, playdoc, midi, input]) => ({
+    ...book, ...bookStyle, ...painter, ...phrase, ...applybreaks, ...jpwfile, ...parse, ...jianpuinput, pu,
     ...fromxml, ...phrasedoc, ...timeline, ...playdoc, ...midi, ...input,
   }));
   // 123 格式与语义模型暴露，供 scripts/j123-migrate.mjs 跑 MusicXML 那一路——

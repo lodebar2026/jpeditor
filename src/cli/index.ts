@@ -14,6 +14,7 @@ export * from "../omr/bookprofile";
 export * from "../omr/inventory";
 export * from "../omr/glyphdict";
 export * from "../pdflayout/spec";
+export * from "../style/sheet";
 export * from "../pdflayout/bookstyle";
 export * from "../pdflayout/stats";
 export * from "../pdflayout/drawlist";

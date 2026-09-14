@@ -12,15 +12,8 @@
 import type { Rect } from "../omr/types";
 import type { PageSpec, TextRun, MarkSpec, SongPlacement } from "./spec";
 import type { BookProfile } from "../omr/bookprofile";
-import {
-  defaultBookStyle,
-  roleFontDefaults,
-  type BookStyle,
-  type FontRef,
-  type RoleStyle,
-  type StyleRole,
-  STYLE_ROLES,
-} from "./bookstyle";
+import { defaultBookStyle, roleFontDefaults, type BookStyle, type RoleStyle } from "./bookstyle";
+import { STYLE_ROLES, type FontRef, type StyleRole } from "../style/sheet";
 
 /** 段落词（副歌/间奏…）印在和弦带里，字号是那一带的（实测 7pt 上下），
  *  不是歌词那一档。词表与 bookmeta.ts 的 SECTION_WORDS 同源——两边要一致。 */
@@ -662,7 +655,7 @@ export function inferBookStyle(
   rec("midStartGap", ms.midStartGap, false);
 
   // 三个层距（高音点上距 / 低音点下距 / 减时线首层距）够近才共用一把尺子，
-  // 否则 applyBookStyle 那边要分开覆写（见计划 §5.3 与 docs/实现/简谱纵向栅格.md）。
+  // 否则 style/book.ts::applyBookPreset 那边要分开覆写（见计划 §5.3 与 docs/实现/简谱纵向栅格.md）。
   const gUp = med(ms.octaveDotUpGap);
   const gDown = med(ms.octaveDotDownGap);
   const gDiv = med(ms.divLineGap);

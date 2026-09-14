@@ -3,47 +3,37 @@
 // 输入只有一份引擎输入（`layout/input.ts`，由 `model/jianpuinput.ts` 从 `ScoreDoc` 投影——
 // **格式只是数据来源**）与展开档的那几项设置（`ExpandedOptions`），排成投影 / PPTX 那一套观感：
 // 反复与多段歌词逐遍展开（`Layout.fromScore` 走 `playData`，换页口径在 `jianpu/expand.ts::walkPlay`）、
-// 笔画常量取 `layout/pptxstyle.ts::applyPptxStyle`、第一页是独立的标题词曲页、其后每页有页脚曲名 + 「i/n」页码。
+// 字号、纸与笔画常量取样式表（`style/jianpu.ts` 的 `pptx` 预设，主题 `projection`）、第一页是独立的标题词曲页、其后每页有页脚曲名 + 「i/n」页码。
 //
 // 简谱形状的投影不带和弦符号、首调号拍号展开档本来就不画，所以文本谱转过来天然没有这两样，这里不写特判。
 
 import type { MetaData } from "../smufl/smufl";
 import type { JScore } from "../layout/input";
 import { TextFrame, type Group } from "../layout/pageitem";
-import { applyPptxStyle } from "../layout/pptxstyle";
+import { applyJianpuStyle, jianpuFontSize } from "../style/jianpu";
+import type { StyleSheet } from "../style/sheet";
 import { ScorePainter } from "../layout/painter";
 
-/** 展开档的设置（pt，1 排版单位 = 1pt，导出 PPTX 要的就是它）。
- *  App 只组一处（`App.expandedOptions`），两种格式、屏幕预览与导出 PPTX 都吃这一份。 */
+/** 展开档的设置。App 只组一处（`App.expandedOptions`），两种格式、屏幕预览与导出 PPTX 都吃这一份。 */
 export interface ExpandedOptions {
-  /** 投影片尺寸（`PAGE_RATIOS` 那几张） */
-  pageW: number;
-  pageH: number;
-  /** 基础字号：音符数字与歌词同大 */
-  fontSize: number;
-  titleSize: number;
-  creditSize: number;
-  color: number;
+  /** computed 样式表（主题 `projection` + 用户层）。投影片尺寸在 `page.w/h`（pt，1 排版单位 = 1pt）。 */
+  style: StyleSheet;
   smuflMeta?: MetaData;
 }
 
 export class ExpandedPainter extends ScorePainter {
   constructor(readonly settings: ExpandedOptions) {
-    super(settings.fontSize);
+    super(jianpuFontSize(settings.style));
     const opt = this.layout.options;
     if (settings.smuflMeta) opt.smuflMeta = settings.smuflMeta;
-    opt.color = settings.color;
-    opt.titleSize = settings.titleSize;
-    opt.creditSize = settings.creditSize;
-    // 笔画常量最后灌，覆盖在上面几项之上（契约见 applyPptxStyle）
-    applyPptxStyle(opt);
-    this.pageWidth = settings.pageW;
-    this.pageHeight = settings.pageH;
+    applyJianpuStyle(opt, settings.style);
+    this.pageWidth = settings.style.page.w ?? 960;
+    this.pageHeight = settings.style.page.h ?? 540;
   }
 
   /** 排一份引擎输入。`breakDesc` 是 `.jpwabc` 的 `.Layout` 分页描述（文本谱没有）。 */
   load(score: JScore, breakDesc: string | null = null): void {
-    const { pageW: w, pageH: h } = this.settings;
+    const { pageWidth: w, pageHeight: h } = this;
     this.score = score;
     this.layout.fromScore(score, breakDesc, w, h);
     // 页码不含标题页：页脚要在标题页插进来之前加
@@ -62,7 +52,7 @@ export class ExpandedPainter extends ScorePainter {
    */
   private addFooters(pages: readonly Group[]): void {
     const opt = this.layout.options;
-    const { pageW: w, pageH: h } = this.settings;
+    const { pageWidth: w, pageHeight: h } = this;
     const font = opt.lrcFont.scaled(0.8);
     const title = this.score.title.split("\n")[0] ?? "";
     const n = pages.length;
