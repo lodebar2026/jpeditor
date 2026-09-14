@@ -19,6 +19,8 @@ import type {
   Credit,
   Defaults,
   Direction,
+  DirectionPart,
+  FontSpec,
   Harmony,
   Key,
   Lyric,
@@ -70,10 +72,21 @@ function posAttrs(pos: Position | undefined): string {
 const tag = (name: string, text: string | number): string =>
   `<${name}>${typeof text === "string" ? esc(text) : text}</${name}>`;
 
+/** 字体 → 属性串（带前导空格；没有则空串）。见 `doc.ts::FontSpec`。 */
+function fontAttrs(f: FontSpec | undefined): string {
+  if (!f) return "";
+  const a: string[] = [];
+  if (f.family !== undefined) a.push(`font-family="${escAttr(f.family)}"`);
+  if (f.size !== undefined) a.push(`font-size="${f.size}"`);
+  if (f.weight !== undefined) a.push(`font-weight="${escAttr(f.weight)}"`);
+  return a.length ? " " + a.join(" ") : "";
+}
+
 // ───────────────────────── 头部 ─────────────────────────
 
 function writeKey(o: Out, d: number, k: Key): void {
   o.push(d, "<key>");
+  if (k.cancel !== undefined) o.push(d + 1, tag("cancel", k.cancel));
   o.push(d + 1, tag("fifths", k.fifths));
   if (k.mode) o.push(d + 1, tag("mode", k.mode));
   for (const a of k.explicitAccidentals ?? []) {
@@ -134,6 +147,8 @@ function writeDefaults(o: Out, d: number, def: Defaults): void {
     o.push(d + 2, tag("staff-distance", def.staffLayout.staffDistance));
     o.push(d + 1, "</staff-layout>");
   }
+  if (def.wordFont) o.push(d + 1, `<word-font${fontAttrs(def.wordFont)}/>`);
+  if (def.lyricFont) o.push(d + 1, `<lyric-font${fontAttrs(def.lyricFont)}/>`);
   o.push(d, "</defaults>");
 }
 
@@ -144,6 +159,7 @@ function writeCredit(o: Out, d: number, c: Credit): void {
   if (c.x !== undefined) attrs.push(`default-x="${c.x}"`);
   if (c.y !== undefined) attrs.push(`default-y="${c.y}"`);
   if (c.justify) attrs.push(`justify="${c.justify}"`);
+  if (c.halign) attrs.push(`halign="${c.halign}"`);
   if (c.fontSize !== undefined) attrs.push(`font-size="${c.fontSize}"`);
   const a = attrs.length ? " " + attrs.join(" ") : "";
   for (const line of c.text.split("\n")) {
@@ -160,13 +176,14 @@ function harmonyXml(o: Out, d: number, h: Harmony): void {
     o.push(d, chordTextXml(h.text, h.offset ?? 0));
     return;
   }
-  o.push(d, `<harmony${posAttrs(h.pos)}>`);
+  o.push(d, `<harmony${posAttrs(h.pos)}${h.staff !== undefined ? ` staff="${h.staff}"` : ""}>`);
   o.push(d + 1, "<root>");
   o.push(d + 2, tag("root-step", h.root.step));
   if (h.root.alter) o.push(d + 2, tag("root-alter", h.root.alter));
   o.push(d + 1, "</root>");
   const kindAttrs =
-    (h.kindText !== undefined ? ` text="${escAttr(h.kindText)}"` : "") + (h.kindHalign ? ` halign="${h.kindHalign}"` : "");
+    (h.kindText !== undefined ? ` text="${escAttr(h.kindText)}"` : "") + (h.kindHalign ? ` halign="${h.kindHalign}"` : "") +
+    (h.useSymbols ? ' use-symbols="yes"' : "") + (h.parenthesesDegrees ? ' parentheses-degrees="yes"' : "");
   o.push(d + 1, `<kind${kindAttrs}>${esc(h.kind)}</kind>`);
   if (h.bass) {
     o.push(d + 1, "<bass>");
@@ -187,16 +204,17 @@ function harmonyXml(o: Out, d: number, h: Harmony): void {
 
 function lyricXml(o: Out, d: number, l: Lyric): void {
   const just = l.justify ? ` justify="${l.justify}"` : "";
-  o.push(d, `<lyric number="${l.refrain ? "chorus" : l.number}"${posAttrs(l.pos)}${just}>`);
+  const number = l.numberText ?? (l.refrain ? "chorus" : String(l.number));
+  const name = l.name !== undefined ? ` name="${escAttr(l.name)}"` : "";
+  o.push(d, `<lyric number="${escAttr(number)}"${name}${posAttrs(l.pos)}${just}>`);
   if (l.syllabic) o.push(d + 1, tag("syllabic", l.syllabic));
   o.push(d + 1, tag("text", (l.leadingPunctuation ?? "") + l.text + (l.trailingPunctuation ?? "")));
-  if (l.extend) o.push(d + 1, "<extend/>");
+  if (l.extend) o.push(d + 1, l.extendType ? `<extend type="${l.extendType}"/>` : "<extend/>");
   o.push(d, "</lyric>");
 }
 
 /** 一个音符元素上要挂的 `<notations>`（含跨元素记号的起止）。 */
-function notationsXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): void {
-  const n = ch.notations;
+function notationsXml(o: Out, d: number, n: Chord["notations"], starts: Mark[], stops: Mark[]): void {
   const has =
     n?.articulations?.length ||
     n?.ornaments?.length ||
@@ -207,12 +225,20 @@ function notationsXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[
     starts.length ||
     stops.length;
   if (!has) return;
+  // 按类型、编号定序：`song.marks` 的次序随配对收口的先后变（和弦音上的记号并进来后重读会翻），写出不能跟着翻
+  const order = (m: Mark): number => ["tied", "slur", "tuplet"].indexOf(m.type) * 1000 + (m.number ?? 1);
+  starts = [...starts].sort((a, b) => order(a) - order(b));
+  stops = [...stops].sort((a, b) => order(a) - order(b));
   o.push(d, "<notations>");
   for (const m of starts) {
-    if (m.type === "slur") o.push(d + 1, `<slur type="start" number="${m.number ?? 1}"/>`);
-    else if (m.type === "tied") o.push(d + 1, `<tied type="start" number="${m.number ?? 1}"/>`);
+    const pl = m.placement ? ` placement="${m.placement}"` : "";
+    if (m.type === "slur") {
+      const ori = m.orientation ? ` orientation="${m.orientation}"` : "";
+      o.push(d + 1, `<slur type="start" number="${m.number ?? 1}"${pl}${ori}/>`);
+    } else if (m.type === "tied") o.push(d + 1, `<tied type="start" number="${m.number ?? 1}"/>`);
     else if (m.type === "tuplet") {
-      o.push(d + 1, `<tuplet type="start" number="${m.number ?? 1}"/>`);
+      const br = m.bracket !== undefined ? ` bracket="${m.bracket ? "yes" : "no"}"` : "";
+      o.push(d + 1, `<tuplet type="start" number="${m.number ?? 1}"${br}${pl}/>`);
     }
   }
   for (const m of stops) {
@@ -220,7 +246,7 @@ function notationsXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[
     else if (m.type === "tied") o.push(d + 1, `<tied type="stop" number="${m.number ?? 1}"/>`);
     else if (m.type === "tuplet") o.push(d + 1, `<tuplet type="stop" number="${m.number ?? 1}"/>`);
   }
-  if (n?.fermata) o.push(d + 1, "<fermata/>");
+  if (n?.fermata) o.push(d + 1, n.fermataInverted ? '<fermata type="inverted"/>' : "<fermata/>");
   if (n?.arpeggiate) o.push(d + 1, "<arpeggiate/>");
   if (n?.articulations?.length) {
     o.push(d + 1, "<articulations>");
@@ -276,7 +302,9 @@ function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): 
       o.push(d + 1, ch.typeSize ? `<type size="${escAttr(ch.typeSize)}">${ch.duration.type}</type>` : tag("type", ch.duration.type));
     }
     for (let i = 0; i < ch.duration.dots; i++) o.push(d + 1, "<dot/>");
-    if (note?.accidental) o.push(d + 1, tag("accidental", note.accidental));
+    if (note?.accidental) {
+      o.push(d + 1, note.accidentalParentheses ? `<accidental parentheses="yes">${note.accidental}</accidental>` : tag("accidental", note.accidental));
+    }
     if (ch.duration.timeMod) {
       o.push(d + 1, "<time-modification>");
       o.push(d + 2, tag("actual-notes", ch.duration.timeMod.actual));
@@ -288,10 +316,19 @@ function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): 
       o.push(d + 1, `<stem${sy}>${note.stem}</stem>`);
     }
     if (ch.rhythm && !isChordNote) o.push(d + 1, tag("notehead", "slash"));
+    else if (note?.notehead) o.push(d + 1, tag("notehead", note.notehead));
     if (ch.staff > 1) o.push(d + 1, tag("staff", ch.staff));
     // number 是层号：按下标算，不能 indexOf（两层同为 begin 时会都写成 1）
     (ch.beams ?? []).forEach((b, i) => o.push(d + 1, `<beam number="${i + 1}">${esc(b)}</beam>`));
-    if (withNotations) notationsXml(o, d + 1, ch, starts, stops);
+    // 跨元素记号挂回原来那个音（`Mark.startNote/endNote`），其余记号与歌词挂首音
+    const idx = note ? ch.notes.indexOf(note) : 0;
+    notationsXml(
+      o,
+      d + 1,
+      withNotations ? ch.notations : undefined,
+      starts.filter((m) => (m.startNote ?? 0) === idx || (idx === 0 && (m.startNote ?? 0) >= ch.notes.length)),
+      stops.filter((m) => (m.endNote ?? 0) === idx || (idx === 0 && (m.endNote ?? 0) >= ch.notes.length)),
+    );
     if (withNotations) for (const l of ch.lyrics ?? []) lyricXml(o, d + 1, l);
     o.push(d, "</note>");
   };
@@ -326,48 +363,8 @@ function directionXml(o: Out, d: number, dir: Direction): void {
   const pl = dir.placement ? ` placement="${dir.placement}"` : "";
   o.push(d, `<direction${pl}>`);
   o.push(d + 1, "<direction-type>");
-  // 版面属性只挂在读得回来的那几种子元素上（fromxml 取的是首个子元素）
-  const lay =
-    posAttrs(dir.pos) +
-    (dir.justify ? ` justify="${dir.justify}"` : "") +
-    (dir.halign ? ` halign="${dir.halign}"` : "") +
-    (dir.valign ? ` valign="${escAttr(dir.valign)}"` : "");
-  switch (dir.type) {
-    case "dynamics":
-      o.push(d + 2, `<dynamics${lay}><${dir.text || "mf"}/></dynamics>`);
-      break;
-    case "words":
-    case "rehearsal":
-      o.push(d + 2, `<${dir.type}${lay}>${esc(dir.text ?? "")}</${dir.type}>`);
-      break;
-    case "wedge":
-      o.push(
-        d + 2,
-        `<wedge type="${dir.spanType === "stop" ? "stop" : dir.wedgeType ?? "crescendo"}"/>`,
-      );
-      break;
-    case "metronome":
-      o.push(d + 2, "<metronome>");
-      o.push(d + 3, tag("beat-unit", dir.tempo?.beatUnit ?? "quarter"));
-      o.push(d + 3, tag("per-minute", dir.tempo?.perMinute ?? 90));
-      o.push(d + 2, "</metronome>");
-      break;
-    case "bracket":
-      // 伴奏括弧（简谱来源才带起止）；MusicXML 读进来的没有 spanType，照旧写空元素
-      if (dir.spanType) {
-        o.push(d + 2, `<bracket type="${dir.spanType}" line-end="down" line-type="solid"/>`);
-      } else {
-        o.push(d + 2, "<bracket/>");
-      }
-      break;
-    case "pedal":
-    case "octave-shift":
-      o.push(d + 2, `<${dir.type} type="${dir.spanType ?? "start"}"/>`);
-      break;
-    default:
-      o.push(d + 2, `<${dir.type}/>`);
-      break;
-  }
+  directionPartXml(o, d + 2, dir);
+  for (const part of dir.more ?? []) directionPartXml(o, d + 2, part);
   o.push(d + 1, "</direction-type>");
   if (dir.offset !== undefined) o.push(d + 1, tag("offset", dir.offset));
   if (dir.sound) {
@@ -378,13 +375,59 @@ function directionXml(o: Out, d: number, dir: Direction): void {
   o.push(d, "</direction>");
 }
 
+/** `<direction-type>` 下的一个子元素。 */
+function directionPartXml(o: Out, d: number, dir: DirectionPart): void {
+  const lay =
+    posAttrs(dir.pos) +
+    (dir.justify ? ` justify="${dir.justify}"` : "") +
+    (dir.halign ? ` halign="${dir.halign}"` : "") +
+    (dir.valign ? ` valign="${escAttr(dir.valign)}"` : "") +
+    fontAttrs(dir.font);
+  switch (dir.type) {
+    case "dynamics":
+      o.push(d, `<dynamics${lay}><${dir.text || "mf"}/></dynamics>`);
+      break;
+    case "words":
+    case "rehearsal":
+      o.push(d, `<${dir.type}${lay}>${esc(dir.text ?? "")}</${dir.type}>`);
+      break;
+    case "wedge":
+      o.push(d, `<wedge type="${dir.spanType === "stop" ? "stop" : dir.wedgeType ?? "crescendo"}"${posAttrs(dir.pos)}/>`);
+      break;
+    case "metronome":
+      o.push(d, `<metronome${lay}>`);
+      o.push(d + 1, tag("beat-unit", dir.tempo?.beatUnit ?? "quarter"));
+      o.push(d + 1, tag("per-minute", dir.tempo?.perMinute ?? 90));
+      o.push(d, "</metronome>");
+      break;
+    case "bracket":
+      // 伴奏括弧（简谱来源才带起止）；MusicXML 读进来的没有 spanType，照旧写空元素
+      if (dir.spanType) {
+        o.push(d, `<bracket type="${dir.spanType}" line-end="down" line-type="solid"/>`);
+      } else {
+        o.push(d, "<bracket/>");
+      }
+      break;
+    case "pedal":
+    case "octave-shift": {
+      const line = dir.line !== undefined ? ` line="${dir.line ? "yes" : "no"}"` : "";
+      o.push(d, `<${dir.type} type="${dir.spanType ?? "start"}"${line}${posAttrs(dir.pos)}/>`);
+      break;
+    }
+    default:
+      o.push(d, `<${dir.type}${posAttrs(dir.pos)}/>`);
+      break;
+  }
+}
+
 function barlineXml(o: Out, d: number, b: Barline): void {
   o.push(d, `<barline location="${b.location === "middle" ? "middle" : b.location}">`);
   if (b.style) o.push(d + 1, tag("bar-style", b.style));
   if (b.ending) {
     const t = b.ending.type;
     const nums = b.ending.numbers.join(",");
-    o.push(d + 1, `<ending number="${nums}" type="${t}">${esc(b.ending.text ?? nums)}</ending>`);
+    const po = b.ending.printObject === false ? ' print-object="no"' : "";
+    o.push(d + 1, `<ending number="${nums}" type="${t}"${po}>${esc(b.ending.text ?? nums)}</ending>`);
   }
   if (b.repeat) {
     const times = b.repeatTimes && b.repeatTimes > 2 ? ` times="${b.repeatTimes}"` : "";
@@ -398,7 +441,7 @@ function printXml(o: Out, d: number, p: Print): void {
   if (p.newSystem) a.push('new-system="yes"');
   if (p.newPage) a.push('new-page="yes"');
   const attrs = a.length ? " " + a.join(" ") : "";
-  const hasBody = p.systemLayout || p.measureNumbering;
+  const hasBody = p.systemLayout || p.staffLayouts || p.measureNumbering;
   if (!hasBody) {
     o.push(d, `<print${attrs}/>`);
     return;
@@ -406,6 +449,13 @@ function printXml(o: Out, d: number, p: Print): void {
   o.push(d, `<print${attrs}>`);
   if (p.systemLayout) {
     o.push(d + 1, "<system-layout>");
+    const sl = p.systemLayout;
+    if (sl.leftMargin !== undefined || sl.rightMargin !== undefined) {
+      o.push(d + 2, "<system-margins>");
+      if (sl.leftMargin !== undefined) o.push(d + 3, tag("left-margin", sl.leftMargin));
+      if (sl.rightMargin !== undefined) o.push(d + 3, tag("right-margin", sl.rightMargin));
+      o.push(d + 2, "</system-margins>");
+    }
     if (p.systemLayout.systemDistance !== undefined) {
       o.push(d + 2, tag("system-distance", p.systemLayout.systemDistance));
     }
@@ -413,6 +463,16 @@ function printXml(o: Out, d: number, p: Print): void {
       o.push(d + 2, tag("top-system-distance", p.systemLayout.topSystemDistance));
     }
     o.push(d + 1, "</system-layout>");
+  }
+  for (const sl of p.staffLayouts ?? []) {
+    const n = sl.staff !== undefined ? ` number="${sl.staff}"` : "";
+    if (sl.staffDistance === undefined) {
+      o.push(d + 1, `<staff-layout${n}/>`);
+      continue;
+    }
+    o.push(d + 1, `<staff-layout${n}>`);
+    o.push(d + 2, tag("staff-distance", sl.staffDistance));
+    o.push(d + 1, "</staff-layout>");
   }
   if (p.measureNumbering) o.push(d + 1, tag("measure-numbering", p.measureNumbering));
   o.push(d, "</print>");
@@ -464,23 +524,46 @@ function measureXml(
   // 记号按 afterElements 插回原位（缺省在小节开头；超出元素个数的落到小节末）
   const count = m.elements.length;
   const dirAt = (dir: Direction): number => Math.min(dir.afterElements ?? 0, count);
-  for (const dir of m.directions ?? []) if (dirAt(dir) === 0) directionXml(o, d + 1, dir);
+  // 游标：元素/记号带 `onset`（多声部）时补 `<backup>`/`<forward>` 挪过去；`end` 是前一个元素的终点（`onset` 缺省值）
+  let cursor = 0;
+  let end = 0;
+  const moveTo = (target: number): void => {
+    if (target < cursor) o.push(d + 1, `<backup>${tag("duration", cursor - target)}</backup>`);
+    else if (target > cursor) o.push(d + 1, `<forward>${tag("duration", target - cursor)}</forward>`);
+    cursor = target;
+  };
+  const writeDir = (dir: Direction): void => {
+    if (dir.type !== "sound") moveTo(dir.onset ?? end);
+    directionXml(o, d + 1, dir);
+  };
+  const writeHarmony = (h: Harmony, owner: number): void => {
+    moveTo(h.onset ?? owner);
+    harmonyXml(o, d + 1, h);
+  };
+  for (const dir of m.directions ?? []) if (dirAt(dir) === 0) writeDir(dir);
   let i = 0;
   for (const el of m.elements) {
     // 小节中间的小节线按 afterElements 插回去，丢了会把两个小节并成一个
     for (const b of m.barlines ?? []) {
       if (b.location === "middle" && b.afterElements === i) barlineXml(o, d + 1, b);
     }
-    if (i > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === i) directionXml(o, d + 1, dir);
+    if (i > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === i) writeDir(dir);
+    const onset = el.onset ?? end;
     if (el.kind === "chord") {
-      if (el.harmony) harmonyXml(o, d + 1, el.harmony);
-      for (const h of el.laterHarmonies ?? []) harmonyXml(o, d + 1, h);
+      if (el.harmony) writeHarmony(el.harmony, onset);
+      for (const h of el.laterHarmonies ?? []) writeHarmony(h, onset);
       // 长音中途换和弦（挂在增时线上）：`<harmony>` 排在所辖音符之前，拍位靠 offset
-      for (const su of el.sustains ?? []) if (su.harmony) harmonyXml(o, d + 1, su.harmony);
+      for (const su of el.sustains ?? []) if (su.harmony) writeHarmony(su.harmony, onset);
+      moveTo(onset);
       chordXml(o, d + 1, el, marksByStart.get(el.id) ?? [], marksByEnd.get(el.id) ?? []);
+      if (!el.grace) cursor += Math.max(0, Math.round(el.duration.divisions));
+      end = cursor;
     } else if (el.spacer === "x" && el.duration) {
       // 不可见休止：占时值
-      if (el.harmony) harmonyXml(o, d + 1, el.harmony);
+      if (el.harmony) writeHarmony(el.harmony, onset);
+      moveTo(onset);
+      cursor += Math.max(0, Math.round(el.duration.divisions));
+      end = cursor;
       o.push(d + 1, '<note print-object="no">');
       o.push(d + 2, "<rest/>");
       o.push(d + 2, tag("duration", Math.max(0, Math.round(el.duration.divisions))));
@@ -489,11 +572,11 @@ function measureXml(
       o.push(d + 1, "</note>");
     } else if (el.harmony) {
       // `y` 占位符只为挂和弦（规范 §8.1）——MusicXML 里就是一个孤立的 `<harmony>`
-      harmonyXml(o, d + 1, el.harmony);
+      writeHarmony(el.harmony, onset);
     }
     i += 1;
   }
-  if (count > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === count) directionXml(o, d + 1, dir);
+  if (count > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === count) writeDir(dir);
   for (const raw of m.raw ?? []) o.raw(d + 1, raw);
   for (const b of m.barlines ?? []) if (b.location === "right") barlineXml(o, d + 1, b);
   o.push(d, "</measure>");
@@ -551,7 +634,7 @@ export function scoreDocToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): s
     }
     if (song.identification.rights) o.push(2, tag("rights", song.identification.rights));
     o.push(2, "<encoding>");
-    o.push(3, tag("software", song.identification.encoding ?? "jpeditor"));
+    for (const sw of song.identification.software ?? ["jpeditor"]) o.push(3, tag("software", sw));
     o.push(2, "</encoding>");
     o.push(1, "</identification>");
   }
