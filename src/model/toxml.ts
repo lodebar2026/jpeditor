@@ -80,6 +80,7 @@ function fontAttrs(f: FontSpec | undefined): string {
   if (f.family !== undefined) a.push(`font-family="${escAttr(f.family)}"`);
   if (f.size !== undefined) a.push(`font-size="${f.size}"`);
   if (f.weight !== undefined) a.push(`font-weight="${escAttr(f.weight)}"`);
+  if (f.style !== undefined) a.push(`font-style="${escAttr(f.style)}"`);
   return a.length ? " " + a.join(" ") : "";
 }
 
@@ -162,7 +163,7 @@ function writeCredit(o: Out, d: number, c: Credit): void {
   if (c.halign) attrs.push(`halign="${c.halign}"`);
   if (c.fontSize !== undefined) attrs.push(`font-size="${c.fontSize}"`);
   const a = attrs.length ? " " + attrs.join(" ") : "";
-  for (const line of c.text.split("\n")) {
+  for (const line of c.words ?? c.text.split("\n")) {
     o.push(d + 1, `<credit-words${a}>${esc(line)}</credit-words>`);
   }
   o.push(d, "</credit>");

@@ -20,7 +20,7 @@ import { PPTX_PAGE, type JpProfileName } from "../layout/pptxstyle";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/pageitem";
 import { Point, colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
-import { loadMusicXml } from "../score/musicxml";
+import { scoreOfXmlSong } from "../model/xmlscore";
 import type { FitMetric } from "../score/phrase";
 import type { FitMeasure } from "../pu/phrase";
 import { abcToMusicXml } from "../abc/abc2xml";
@@ -710,8 +710,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private _reloadAbcFallback(text: string, why: string): boolean {
     try {
       const xml = abcToMusicXml(text);
-      const score = loadMusicXml(xml);
       this._setMixedXml(xml);
+      if (!this.mixedDoc) return false;
+      const score = scoreOfXmlSong(this.mixedDoc.songs[0]!);
       this._layoutScore(score, null);
       this.renderPages();
       this.setStatus(`ABC 原生解析未成功（${why}），已回落 abc2xml——谱面可看，定位只到小节`);

@@ -43,8 +43,8 @@ function numOf(parent: Element, tag: string): number {
   return t ? Number(t) || 0 : 0;
 }
 
-/** `ScoreDoc` 的结构化和弦（`model/doc.ts::Harmony`）→ 文本。口径同 `harmonyElemToText`，
- *  升降号写 ASCII（`#`/`b`）——123/ABC 的和弦串认的是它。有原文 `text` 时直接用原文。 */
+/** `ScoreDoc` 的结构化和弦（`model/doc.ts::Harmony`）→ 文本。口径同 `harmonyElemToText`。
+ *  升降号缺省写 ASCII（`#`/`b`）——123/ABC 的和弦串认的是它；简谱引擎的谱面印 `♯♭`（`"unicode"`）。有原文 `text` 时直接用原文。 */
 export function harmonyToText(h: {
   root: { step: string; alter: number };
   kind: string;
@@ -52,9 +52,9 @@ export function harmonyToText(h: {
   bass?: { step: string; alter: number };
   degrees?: { value: number; alter: number; type: "add" | "alter" | "subtract" }[];
   text?: string;
-}): string {
+}, signs: "ascii" | "unicode" = "ascii"): string {
   if (h.text !== undefined) return h.text;
-  const sign = (v: number): string => (v > 0 ? "#".repeat(v) : v < 0 ? "b".repeat(-v) : "");
+  const sign = signs === "unicode" ? alterSign : (v: number): string => (v > 0 ? "#".repeat(v) : v < 0 ? "b".repeat(-v) : "");
   let out = h.root.step + sign(h.root.alter);
   out += h.kindText?.trim() || KIND_SUFFIX[h.kind] || "";
   for (const d of h.degrees ?? []) {
