@@ -1,26 +1,22 @@
 // 试听播放的编辑器侧控制器：播放器实例、速度倍率与分声部音量、播放按钮与速度下拉。
 //
-// 从 App 里切出来的一块。**谱面高亮不在这里**——简谱与文本谱的高亮走各自排版器的索引
-// （JinpuPainter 按 Chord+演唱遍数、PuPainter 按 AST 节点+verse），那属于「谁在画谱面」，
-// 留在 App。控制器只通过 PlaybackHost 要「当前该播哪份 Score」与「高亮到这一个和弦」。
-import { ScorePlayer, type PlayState } from "./player";
-import { playTempo, SPEED_STEPS, type PlayOptions } from "../score/timeline";
-import type { Chord, Score } from "../score/score";
+// 从 App 里切出来的一块。**谱面高亮不在这里**——各排版器怎么按元素 id 找到自己画的那个音
+// （PuPainter 直接按 id、JinpuPainter 经 id → Chord），那属于「谁在画谱面」，留在 App。
+// 控制器只通过 PlaybackHost 要「当前该播哪份谱」（由 ScoreDoc 拼的 `PlaySource`）与「高亮到这个元素」。
+import { ScorePlayer, type PlayPoint, type PlayState } from "./player";
+import { SPEED_STEPS, TEMPO, type PlayOptions, type PlaySource } from "../score/timeline";
+import type { ElementId } from "../model/doc";
 
 /** PlaybackController 向编辑器要的能力。 */
 export interface PlaybackHost {
   /** 当前是否处于可试听的预览模式（混排/识别核对下不试听）。 */
   readonly canPlay: boolean;
-  /** 当前该播哪份 Score（文本谱要先转一遍）。没有可播内容返回 null。 */
-  playableScore(): Score | null;
-  /** 谱面上标注的速度 ♩=NN（0 = 未标注）。 */
-  readonly scoreTempo: number;
-  /** 算「当前实际 BPM」用的那份 Score（速度提示文案用）。 */
-  readonly tempoScore: Score;
+  /** 当前该播的谱（各声部 + 演唱顺序 + 速度）。没有可播内容返回 null。 */
+  playable(): PlaySource | null;
   /** 从哪个音开始播（用户在谱面上选中了某个音时）。 */
-  startPoint(): { chord: Chord; pass: number } | undefined;
-  /** 播到某个和弦：把谱面高亮挪过去并保证可见。null = 清高亮。 */
-  highlightPlaying(chord: Chord | null, pass: number): void;
+  startPoint(): PlayPoint | undefined;
+  /** 播到某个元素：把谱面高亮挪过去并保证可见。null = 清高亮。 */
+  highlightPlaying(id: ElementId | null, pass: number): void;
 
   setStatus(text: string): void;
   saveSettings(): void;
@@ -68,8 +64,10 @@ export class PlaybackController {
     const sel = this.speedSelEl;
     if (!sel) return;
     sel.value = String(this.speed);
-    const bpm = Math.round(playTempo(this.host.tempoScore, this.options()));
-    const marked = this.host.scoreTempo > 0 ? `谱面 ♩=${this.host.scoreTempo}` : "谱面未标速度，按 ♩=90";
+    const src = this.host.playable();
+    const tempo = src?.playData.tempo ?? 0;
+    const bpm = Math.round((tempo > 0 ? tempo : TEMPO) * clampSpeed(this.speed)); // 同 `playTempo`
+    const marked = tempo > 0 ? `谱面 ♩=${tempo}` : "谱面未标速度，按 ♩=90";
     sel.title = `播放速度：${marked}，当前 ♩=${bpm}`;
   }
 
@@ -101,13 +99,13 @@ export class PlaybackController {
   // ---------------- 播放 ----------------
   async play(): Promise<void> {
     if (!this.host.canPlay) return;
-    const score = this.host.playableScore();
-    if (!score) {
-      this.host.setStatus("这份文本谱里没有可试听的曲行");
+    const src = this.host.playable();
+    if (!src) {
+      this.host.setStatus("这份谱里没有可试听的曲行");
       return;
     }
     try {
-      await this.instance().play(score, this.options(), this.host.startPoint());
+      await this.instance().play(src, this.options(), this.host.startPoint());
     } catch (e) {
       console.error("playback failed", e);
       this.player?.stop();
@@ -130,7 +128,7 @@ export class PlaybackController {
   private instance(): ScorePlayer {
     if (!this.player) {
       this.player = new ScorePlayer(
-        (chord, pass) => this.host.highlightPlaying(chord, pass),
+        (id, pass) => this.host.highlightPlaying(id, pass),
         (state) => this.onState(state),
       );
     }

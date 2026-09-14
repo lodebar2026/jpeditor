@@ -5,17 +5,22 @@
 // See ~/.claude/plans/midi-serialized-snowflake.md.
 
 import { Soundfont } from "smplr";
-import { Chord } from "../score/score";
-import { buildTimeline, partGain, PlayOptions, playTempo } from "../score/timeline";
-import { scoreToMidi } from "../score/midi";
-import { Score } from "../score/score";
+import type { ElementId } from "../model/doc";
+import { buildTimeline, partGain, PlayOptions, PlaySource, playTempo } from "../score/timeline";
+import { toMidi } from "../score/midi";
 import { isTauriRuntime } from "./fileio";
 
 export type PlayState = "stopped" | "loading" | "playing";
 
 interface Anchor {
   t: number; // seconds
-  chord: Chord;
+  id: ElementId | undefined;
+  pass: number;
+}
+
+/** 起播点 / 光标：模型元素 id + 演唱遍数。 */
+export interface PlayPoint {
+  id: ElementId;
   pass: number;
 }
 
@@ -35,7 +40,7 @@ export class ScorePlayer {
   private gen = 0; // invalidates in-flight async play() when stop()/replay happens
 
   constructor(
-    private onChord: (chord: Chord | null, pass: number) => void,
+    private onChord: (id: ElementId | null, pass: number) => void,
     private onStateChange: (state: PlayState) => void,
   ) {}
 
@@ -44,18 +49,18 @@ export class ScorePlayer {
   }
 
   async play(
-    score: Score,
+    src: PlaySource,
     opts?: PlayOptions,
-    start?: { chord: Chord; pass: number },
+    start?: PlayPoint,
   ): Promise<void> {
     this.stop();
     const gen = this.gen;
-    const tl = buildTimeline(score);
+    const tl = buildTimeline(src);
     if (tl.notes.length === 0) return;
     // 秒/四分音符：谱面 ♩= 与用户速度倍率都折进这一个系数，时间轴本身仍是四分音符单位。
-    const SPQ = 60 / playTempo(score, opts);
+    const SPQ = 60 / playTempo(src, opts);
 
-    this.anchors = tl.anchors.map((a) => ({ t: a.t0 * SPQ, chord: a.chord as Chord, pass: a.pass })); // Score 来源：和弦就是 Score 的 Chord
+    this.anchors = tl.anchors.map((a) => ({ t: a.t0 * SPQ, id: a.chord.id, pass: a.pass }));
     this.duration = tl.duration * SPQ;
     this.curIdx = -1;
     this.useNative = isTauriRuntime();
@@ -64,8 +69,8 @@ export class ScorePlayer {
     let startSec = 0;
     if (start) {
       const a =
-        tl.anchors.find((x) => x.chord === start.chord && x.pass === start.pass) ??
-        tl.anchors.find((x) => x.chord === start.chord);
+        tl.anchors.find((x) => x.chord.id === start.id && x.pass === start.pass) ??
+        tl.anchors.find((x) => x.chord.id === start.id);
       if (a) startSec = a.t0 * SPQ;
     }
     this.startSec = startSec;
@@ -74,7 +79,7 @@ export class ScorePlayer {
 
     if (this.useNative) {
       try {
-        const bytes = scoreToMidi(score, opts); // per-part CC7 volume baked in
+        const bytes = toMidi(src, opts); // per-part CC7 volume baked in
         const { invoke } = await import("@tauri-apps/api/core");
         if (gen !== this.gen) return;
         await invoke("midi_play_cmd", { bytes: Array.from(bytes), startSeconds: startSec });
@@ -113,7 +118,7 @@ export class ScorePlayer {
           note: n.pitch,
           time: Math.max(ctx.currentTime + lead, base + n.t0 * SPQ),
           duration: Math.max(0.05, t1 - Math.max(n.t0 * SPQ, startSec)),
-          velocity: Math.max(1, Math.round(100 * partGain(opts, n.part))),
+          velocity: Math.max(1, Math.round(n.velocity * partGain(opts, n.part))),
         });
       }
       this.ctx = ctx;
@@ -170,7 +175,7 @@ export class ScorePlayer {
     if (idx !== this.curIdx) {
       this.curIdx = idx;
       const a = idx >= 0 ? this.anchors[idx] : null;
-      this.onChord(a ? a.chord : null, a ? a.pass : 0);
+      this.onChord(a?.id ?? null, a ? a.pass : 0);
     }
     this.raf = requestAnimationFrame(this.tick);
   };
