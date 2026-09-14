@@ -172,17 +172,18 @@ function readDefaults(el: Element): Defaults {
     const h = num(pl, "page-height");
     if (w !== undefined) page.pageWidth = w;
     if (h !== undefined) page.pageHeight = h;
-    const mg = child(pl, "page-margins");
-    if (mg) {
-      page.margins = {
+    const margins = children(pl, "page-margins").map((mg) => {
+      const out: NonNullable<NonNullable<Defaults["pageLayout"]>["margins"]>[number] = {
         left: num(mg, "left-margin") ?? 0,
         right: num(mg, "right-margin") ?? 0,
         top: num(mg, "top-margin") ?? 0,
         bottom: num(mg, "bottom-margin") ?? 0,
       };
       const t = mg.getAttribute("type");
-      if (t === "odd" || t === "even" || t === "both") page.margins.oddEven = t;
-    }
+      if (t === "odd" || t === "even" || t === "both") out.oddEven = t;
+      return out;
+    });
+    if (margins.length) page.margins = margins;
     d.pageLayout = page;
   }
   const sl = child(el, "system-layout");
@@ -410,14 +411,22 @@ function readNotations(noteEl: Element, marks: MarkSink, id: number, into: Notat
   return Object.keys(n).length ? n : undefined;
 }
 
-/** 跨元素记号的配对池。MusicXML 用 `number` 属性配对，同类可重叠。 */
+/** 跨元素记号的配对池。MusicXML 用 `number` 属性配对，同类可重叠；**按声部配**（换声部时 `nextPart`）。
+ *
+ *  同一编号还没收口又起一个（原文出错，合唱谱 宁静的伯利恒 8 处）：slur / tuplet **后起点顶掉前起点**
+ *  （与混排 musicpp 一致；按栈配会把落单的收口配给更早的起点，横跨几小节）。
+ *  tied 仍按栈配：和弦里几个音同时 `<tied type="start"/>`（编号都缺省 1）是正常写法。 */
 class MarkSink {
   readonly marks: Mark[] = [];
   private open_ = new Map<string, { id: number; el: Element; note: number }[]>();
 
+  nextPart(): void {
+    this.open_.clear();
+  }
+
   open(type: Mark["type"], number: number, id: number, el: Element, note: number): void {
     const k = `${type}#${number}`;
-    const list = this.open_.get(k) ?? [];
+    const list = type === "tied" ? this.open_.get(k) ?? [] : [];
     list.push({ id, el, note });
     this.open_.set(k, list);
   }
@@ -502,8 +511,8 @@ function readDirection(el: Element): Direction | null {
   if (offset !== undefined) d.offset = offset;
   const pl = el.getAttribute("placement");
   if (pl === "above" || pl === "below") d.placement = pl;
-  const st = el.getAttribute("staff");
-  if (st) d.staff = Number(st);
+  const st = num(el, "staff");
+  if (st !== undefined) d.staff = st;
   if (items.length > 1) d.more = items.slice(1).map(readDirectionPart);
   const sound = child(el, "sound");
   if (sound) {
@@ -546,6 +555,8 @@ function readDirectionPart(first: Element): DirectionPart {
       d.tempo = {};
       if (bu) d.tempo.beatUnit = bu as NoteType;
       if (pm !== undefined) d.tempo.perMinute = pm;
+      const pmText = childText(first, "per-minute");
+      if (pmText !== null && (pm === undefined || String(pm) !== pmText.trim())) d.tempo.perMinuteText = pmText;
       break;
     }
     case "pedal":
@@ -637,6 +648,9 @@ function readMeasure(
   /** 游标（divisions）：`<backup>` 退、`<forward>` 进、非和弦音进；`end` 是前一个元素的终点（`onset` 的缺省值） */
   let cursor = 0;
   let end = 0;
+  /** 游标到过的最远处与元素的最远终点：前者更远（`<forward>` 撑出空拍）才记 `Measure.duration` */
+  let reach = 0;
+  let maxEnd = 0;
   /** 和弦符号读到时的游标（与所挂元素的起点不同才记 `onset`） */
   let pendingOnsets: number[] = [];
 
@@ -647,6 +661,7 @@ function readMeasure(
         break;
       case "forward":
         cursor += num(c, "duration") ?? 0;
+        reach = Math.max(reach, cursor);
         break;
       case "attributes": {
         const a: MeasureAttrs = {};
@@ -673,7 +688,12 @@ function readMeasure(
             return out;
           });
         }
-        m.attrs = { ...(m.attrs ?? {}), ...a };
+        if (m.elements.length === 0) m.attrs = { ...(m.attrs ?? {}), ...a };
+        else {
+          const later: NonNullable<Measure["laterAttrs"]>[number] = { afterElements: m.elements.length, attrs: a };
+          if (cursor !== end) later.onset = cursor;
+          (m.laterAttrs ??= []).push(later);
+        }
         break;
       }
       case "harmony":
@@ -808,6 +828,8 @@ function readMeasure(
         last = ch;
         cursor += ch.duration.divisions;
         end = cursor;
+        reach = Math.max(reach, cursor);
+        maxEnd = Math.max(maxEnd, cursor);
         break;
       }
       default:
@@ -829,6 +851,7 @@ function readMeasure(
     if (pendingOnsets[i] !== end) sp.onset = pendingOnsets[i];
     m.elements.push(sp);
   });
+  if (reach > maxEnd) m.duration = reach;
   const raw = rawOf(el, KNOWN_MEASURE_CHILDREN);
   if (raw) m.raw = raw;
   return m;
@@ -892,6 +915,7 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
   for (const p of children(root, "part")) {
     const id = p.getAttribute("id") ?? "";
     const part: Part = { id, measures: [] };
+    marks.nextPart();
     const nm = names.get(id);
     if (nm?.name) part.name = nm.name;
     if (nm?.abbrev) part.abbrev = nm.abbrev;
