@@ -303,7 +303,26 @@ function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): 
   ch.notes.forEach((n, i) => writeOne(n, i > 0, i === 0));
 }
 
+/** `<sound>` 的属性串（带前导空格；没有则空串）。 */
+function soundAttrs(s: NonNullable<Direction["sound"]>): string {
+  const a: string[] = [];
+  if (s.dacapo) a.push('dacapo="yes"');
+  if (s.dalsegno) a.push(`dalsegno="${escAttr(s.dalsegno)}"`);
+  if (s.fine) a.push('fine="yes"');
+  if (s.segno) a.push(`segno="${escAttr(s.segno)}"`);
+  if (s.coda) a.push(`coda="${escAttr(s.coda)}"`);
+  if (s.tocoda) a.push(`tocoda="${escAttr(s.tocoda)}"`);
+  if (s.tempo !== undefined) a.push(`tempo="${s.tempo}"`);
+  return a.map((x) => " " + x).join("");
+}
+
 function directionXml(o: Out, d: number, dir: Direction): void {
+  if (dir.type === "sound") {
+    // 小节级 `<sound>`：有原文给原文，没有（程序造的）按属性写
+    if (dir.xml) o.raw(d, dir.xml);
+    else if (dir.sound) o.push(d, `<sound${soundAttrs(dir.sound)}/>`);
+    return;
+  }
   const pl = dir.placement ? ` placement="${dir.placement}"` : "";
   o.push(d, `<direction${pl}>`);
   o.push(d + 1, "<direction-type>");
@@ -352,15 +371,8 @@ function directionXml(o: Out, d: number, dir: Direction): void {
   o.push(d + 1, "</direction-type>");
   if (dir.offset !== undefined) o.push(d + 1, tag("offset", dir.offset));
   if (dir.sound) {
-    const a: string[] = [];
-    if (dir.sound.dacapo) a.push('dacapo="yes"');
-    if (dir.sound.dalsegno) a.push(`dalsegno="${escAttr(dir.sound.dalsegno)}"`);
-    if (dir.sound.fine) a.push('fine="yes"');
-    if (dir.sound.segno) a.push(`segno="${escAttr(dir.sound.segno)}"`);
-    if (dir.sound.coda) a.push(`coda="${escAttr(dir.sound.coda)}"`);
-    if (dir.sound.tocoda) a.push(`tocoda="${escAttr(dir.sound.tocoda)}"`);
-    if (dir.sound.tempo !== undefined) a.push(`tempo="${dir.sound.tempo}"`);
-    if (a.length) o.push(d + 1, `<sound ${a.join(" ")}/>`);
+    const a = soundAttrs(dir.sound);
+    if (a) o.push(d + 1, `<sound${a}/>`);
   }
   if (dir.staff !== undefined && dir.staff > 1) o.push(d + 1, tag("staff", dir.staff));
   o.push(d, "</direction>");

@@ -58,6 +58,15 @@ const num = (el: Element | null, tag: string): number | undefined => {
 
 const serialize = (el: Element): string => new XMLSerializer().serializeToString(el);
 
+/** 序列化并去掉源文件里的整体缩进（按收尾行的缩进左移），`toxml.ts` 按自己的层级重新缩进——
+ *  不去的话每往返一次子行缩进加深一层，重写结果不是定点。 */
+function serializeDedented(el: Element): string {
+  const lines = serialize(el).split("\n");
+  if (lines.length < 2) return lines[0]!;
+  const base = /^ */.exec(lines[lines.length - 1]!)![0].length;
+  return lines.map((l, i) => (i === 0 ? l : l.slice(Math.min(base, /^ */.exec(l)![0].length)))).join("\n");
+}
+
 const attrNum = (el: Element, name: string): number | undefined => {
   const t = el.getAttribute(name);
   if (t === null || t === "") return undefined;
@@ -485,6 +494,15 @@ function readDirection(el: Element): Direction | null {
   }
   const sound = child(el, "sound");
   if (sound) {
+    const s = readSound(sound);
+    if (s) d.sound = s;
+  }
+  return d;
+}
+
+/** `<sound>` 的播放语义（`<direction>` 里的与小节级的同一套）。 */
+function readSound(sound: Element): Direction["sound"] {
+  {
     const s: NonNullable<Direction["sound"]> = {};
     if (sound.getAttribute("dacapo") === "yes") s.dacapo = true;
     const ds = sound.getAttribute("dalsegno");
@@ -498,9 +516,8 @@ function readDirection(el: Element): Direction | null {
     if (tc) s.tocoda = tc;
     const tp = sound.getAttribute("tempo");
     if (tp) s.tempo = Number(tp);
-    if (Object.keys(s).length) d.sound = s;
+    return Object.keys(s).length ? s : undefined;
   }
-  return d;
 }
 
 function readPrint(el: Element): Print | undefined {
@@ -583,6 +600,15 @@ function readMeasure(
         const d = readDirection(c);
         if (d && m.elements.length > 0) d.afterElements = m.elements.length;
         if (d) (m.directions ??= []).push(d);
+        break;
+      }
+      case "sound": {
+        // 小节级 `<sound>`（不在 `<direction>` 里）：语料 568 份都用它记曲首速度。原文留着，写回逐字节
+        const d: Direction = { type: "sound", xml: serializeDedented(c) };
+        const s = readSound(c);
+        if (s) d.sound = s;
+        if (m.elements.length > 0) d.afterElements = m.elements.length;
+        (m.directions ??= []).push(d);
         break;
       }
       case "barline":

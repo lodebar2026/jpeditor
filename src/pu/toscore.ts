@@ -9,7 +9,7 @@
 
 import type { ElementId, ScoreDoc } from "../model/doc";
 import { docView } from "./slots";
-import { distinctVerses } from "./phrasesong";
+import { distinctVerses, jpAlterOf } from "./phrasesong";
 import { playDataOfSong } from "./playsong";
 import { Fraction } from "../common/fraction";
 import { applyJpPitch, type JpKeyState } from "../score/jppitch";
@@ -42,21 +42,6 @@ import type {
 function digitOf(el: NoteElement): string {
   if (el.sound === "rhythm") return "0";
   return String(el.pitch);
-}
-
-function alterOf(el: NoteElement): string {
-  switch (el.accidental) {
-    case "sharp":
-    case "double-sharp":
-      return "#";
-    case "flat":
-    case "double-flat":
-      return "b";
-    case "natural":
-      return "n";
-    default:
-      return " ";
-  }
 }
 
 /** 一行曲里，某个元素下标是某类记号的起点/终点。 */
@@ -232,7 +217,7 @@ function buildPart(
       ch.add(nt);
       nt.number = digitOf(el);
       nt.jpOctave = el.octave;
-      nt.jpAlter = alterOf(el);
+      nt.jpAlter = jpAlterOf(el);
       ch.beats = 1;
       ch.beams = Math.max(0, Math.round(Math.log2(el.duration / 4)));
       ch.dot = el.dots;

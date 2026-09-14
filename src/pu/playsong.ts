@@ -15,7 +15,9 @@ import {
   JumpSpec, PlayData, PlaySpecKind, RepeatSpecItem, TimePosition,
   playOrderByVerses, playOrderFromSpec, playOrderOf,
 } from "../score/playorder";
-import { linesOfVoice, voiceNumbers } from "./ast";
+import { linesOfVoice, voiceNumbers, type PuSong } from "./ast";
+import { Key, MusicCommon } from "../score/score";
+import type { PlaySource } from "../score/timeline";
 import { buildMeasures, type JumpOut, type MeasureOut } from "./phrasesong";
 import { docView } from "./slots";
 
@@ -26,6 +28,34 @@ export interface PlaySongOptions {
 
 /** 演唱顺序（`measures` / `isSimpple` / `hasRepeat` 与跳转表；速度不在这里）。这首没有曲行时返回 null。 */
 export function playDataOfSong(doc: ScoreDoc, songIdx = 0, options: PlaySongOptions = {}): PlayData | null {
+  const built = songMeasures(doc, songIdx, options, false);
+  return built && playDataOf(doc, songIdx, built);
+}
+
+/** 试听/MIDI 的输入（`score/timeline.ts::PlaySource`）：各声部小节序列 + 演唱顺序 + 速度，和弦带元素 id。
+ *  口径照 `scoreDocToScore`（声部顺序、音高换算 `applyJpPitch`、速度取 `meta.tempos` 首个 20..400 的数）。 */
+export function playSourceOfSong(doc: ScoreDoc, songIdx = 0, options: PlaySongOptions = {}): PlaySource | null {
+  const built = songMeasures(doc, songIdx, options, true);
+  if (!built) return null;
+  const playData = playDataOf(doc, songIdx, built);
+  for (const tempo of built.song.metadata.tempos) {
+    if (typeof tempo === "number" && tempo >= 20 && tempo <= 400) {
+      playData.tempo = tempo;
+      break;
+    }
+  }
+  return { parts: built.parts.map((measures) => ({ measures })), playData };
+}
+
+interface SongMeasures {
+  song: PuSong;
+  voices: number[];
+  parts: MeasureOut[][];
+  jumps: JumpOut[];
+  idToChord: Map<ElementId, { measure: number; index: number }>;
+}
+
+function songMeasures(doc: ScoreDoc, songIdx: number, options: PlaySongOptions, withPitch: boolean): SongMeasures | null {
   const view = docView(doc);
   const song = view.songs[songIdx];
   if (!song) return null;
@@ -34,6 +64,14 @@ export function playDataOfSong(doc: ScoreDoc, songIdx = 0, options: PlaySongOpti
     const lead = voices.find((v) => linesOfVoice(song, v).some((l) => l.lyrics.length > 0));
     if (lead !== undefined) voices = [lead, ...voices.filter((v) => v !== lead)];
   }
+  // 调号/拍号同 `songToScore`：全曲一个，取头部
+  const meta = song.metadata;
+  const meter = meta.meters[0];
+  const time = meter ? { beats: meter.numerator, beatType: meter.denominator } : { beats: 4, beatType: 4 };
+  const key = new Key();
+  // 调名缺省时取模型的 fifths：`.jpwabc` 来源只记 fifths、不记调名拼写（口径照 `fromJpw` 的 `.Title` 调号）
+  const fifths = doc.songs[songIdx]!.key?.fifths;
+  key.fifths = meta.mode === undefined && fifths !== undefined ? fifths : MusicCommon.keyNameToFifth(meta.mode ?? "C");
   const parts: MeasureOut[][] = [];
   let jumps: JumpOut[] = [];
   const idToChord = new Map<ElementId, { measure: number; index: number }>();
@@ -41,23 +79,27 @@ export function playDataOfSong(doc: ScoreDoc, songIdx = 0, options: PlaySongOpti
     const lines = linesOfVoice(song, v);
     if (lines.length === 0) continue;
     const first = parts.length === 0;
-    const ids = new Map<object, ElementId>();
+    const pitch = withPitch
+      ? { key: { basePitch: MusicCommon.getBasePitchOfKey(key), fifths: key.fifths, alter: {} }, time }
+      : undefined;
     const built = buildMeasures(lines, (ch, el) => {
       const id = view.idOf.get(el);
-      if (first && id !== undefined) ids.set(ch, id);
-    }, !!options.forExpanded);
+      if (id !== undefined) ch.id = id;
+    }, !!options.forExpanded, pitch);
     if (first) {
       jumps = built.jumps;
       built.measures.forEach((m, measure) => m.entries.forEach((ch, index) => {
-        const id = ids.get(ch);
-        if (id !== undefined) idToChord.set(id, { measure, index });
+        if (ch.id !== undefined) idToChord.set(ch.id, { measure, index });
       }));
     }
     parts.push(built.measures);
   }
-  const main = parts[0];
-  if (!main) return null;
+  if (parts.length === 0) return null;
+  return { song, voices, parts, jumps, idToChord };
+}
 
+function playDataOf(doc: ScoreDoc, songIdx: number, { song, voices, parts, jumps, idToChord }: SongMeasures): PlayData {
+  const main = parts[0]!;
   const pd = new PlayData();
   const docSong = doc.songs[songIdx]!;
   if (docSong.playOrder?.length) {

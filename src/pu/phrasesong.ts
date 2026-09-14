@@ -9,13 +9,15 @@
 import { Fraction } from "../common/fraction";
 import type { ElementId, ScoreDoc } from "../model/doc";
 import { BarStyle, StartStopDiscontinue } from "../score/enums";
+import { applyJpPitch, type JpKeyState } from "../score/jppitch";
 import type { PhraseChord, PhraseMeasure, PhrasePart } from "../score/phraseinput";
 import { linesOfVoice, marksAt, nextSyllables, takesLyric, voiceNumbers } from "./ast";
 import type { LyricLine, Mark, NoteElement, ScoreLine } from "./ast";
 import { docView } from "./slots";
 
 interface LyricOut { text: string; number: number; refrain: boolean }
-interface NoteOut { number: string; jpOctave: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
+/** `pitch`：MIDI 音高，只在 `buildMeasures` 给了调号状态时算（试听用，同 `toscore.ts` 的 `applyJpPitch`） */
+interface NoteOut { number: string; jpOctave: number; pitch: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
 interface ChordOut {
   notes: NoteOut[];
   rest: boolean;
@@ -31,6 +33,8 @@ interface ChordOut {
   tupletBegin: boolean;
   tupletEnd: boolean;
   tuplet: boolean;
+  /** 元素 id（试听高亮用；`buildMeasures` 的回调里由调用方填） */
+  id?: ElementId;
 }
 export interface MeasureOut {
   entries: ChordOut[];
@@ -43,6 +47,8 @@ export interface MeasureOut {
   endingNum: Set<number> | null;
   endingRight: StartStopDiscontinue | null;
   sectionMark: string | null;
+  /** 拍号（小节里没有和弦时试听按它算小节长，同 `Score.Measure.time`） */
+  time: { beats: number; beatType: number };
   /** 末和弦的终点。没有和弦时抛错（同 `Score.Measure.duration`） */
   readonly duration: Fraction;
 }
@@ -104,6 +110,22 @@ export function distinctVerses(lyrics: readonly LyricLine[]): readonly LyricLine
   });
 }
 
+/** 临时记号 → `applyJpPitch` 的 `jpAlter`（`toscore.ts` 同用这一份）。 */
+export function jpAlterOf(el: NoteElement): string {
+  switch (el.accidental) {
+    case "sharp":
+    case "double-sharp":
+      return "#";
+    case "flat":
+    case "double-flat":
+      return "b";
+    case "natural":
+      return "n";
+    default:
+      return " ";
+  }
+}
+
 /** 同 `toscore.ts::marksEdgeAt`：跨行的续接端不是真端点。 */
 function edgeAt(marks: readonly Mark[], index: number, type: Mark["type"]): { starts: boolean; ends: boolean } {
   const hit = marksAt(marks, index, type);
@@ -124,6 +146,7 @@ export function buildMeasures(
   lines: readonly ScoreLine[],
   onChord: (ch: ChordOut, el: NoteElement) => void,
   renumberVerses = true,
+  pitch?: { key: JpKeyState; time: { beats: number; beatType: number } },
 ): { measures: MeasureOut[]; jumps: JumpOut[] } {
   const measures: MeasureOut[] = [];
   const jumps: JumpOut[] = [];
@@ -137,6 +160,7 @@ export function buildMeasures(
     const m: MeasureOut = {
       entries: [], barline: null, repeatBackward: false, repeatForward: false, keyChange: false,
       endingLeft: false, endingNum: null, endingRight: null, sectionMark: null,
+      time: pitch?.time ?? { beats: 4, beatType: 4 },
       get duration(): Fraction {
         const last = this.entries[this.entries.length - 1];
         if (!last?.duration) throw new Error("measure has no chord");
@@ -201,6 +225,7 @@ export function buildMeasures(
           default: mea.barline = BarStyle.NONE;
         }
         newMeasureNeeded = true;
+        if (pitch) pitch.key.alter = {}; // 临时记号到小节线为止
         return;
       }
 
@@ -221,7 +246,7 @@ export function buildMeasures(
 
       const number = el.sound === "rhythm" ? "0" : String(el.pitch);
       const ch: ChordOut = {
-        notes: [{ number, jpOctave: el.octave, tieStart: false, tieEnd: false, lyrics: [] }],
+        notes: [{ number, jpOctave: el.octave, pitch: 0, tieStart: false, tieEnd: false, lyrics: [] }],
         rest: el.hidden || el.sound === "rest" || el.sound === "rhythm" || number === "0",
         beats: 1,
         beams: Math.max(0, Math.round(Math.log2(el.duration / 4))),
@@ -234,6 +259,11 @@ export function buildMeasures(
         tupletEnd: false,
         tuplet: false,
       };
+      if (pitch) {
+        const nt = { number, jpOctave: el.octave, jpAlter: jpAlterOf(el), pitch: 0, step: " ", rest: false, chord: { rest: false } };
+        applyJpPitch(pitch.key, nt);
+        ch.notes[0]!.pitch = nt.pitch;
+      }
       const tup = edgeAt(line.marks, index, "tuplet");
       if (tup.starts) ch.tupletBegin = true;
       if (tup.ends) ch.tupletEnd = true;

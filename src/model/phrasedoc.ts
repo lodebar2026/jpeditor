@@ -12,11 +12,13 @@ import { Fraction } from "../common/fraction";
 import type { BarStyle, StartStopDiscontinue } from "../score/enums";
 import { SECTION_WORD_RE, type PhraseChord, type PhraseMeasure } from "../score/phraseinput";
 import type { PlayMeasure } from "../score/playorder";
+import type { TimelineMeasure } from "../score/timeline";
 import type { Chord, ElementId, Measure, Song } from "./doc";
-import { topNote } from "./jianpu";
+import { midiPitch, topNote } from "./jianpu";
 
 interface LyricOut { text: string; number: number; refrain: boolean }
-interface NoteOut { number: string; jpOctave: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
+/** `pitch`：MIDI 音高（试听用，同 `loadMusicXml` 的 `Note.pitch`；休止与无音高为 0） */
+interface NoteOut { number: string; jpOctave: number; pitch: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
 interface ChordOut {
   notes: NoteOut[];
   rest: boolean;
@@ -28,6 +30,8 @@ interface ChordOut {
   fermata: boolean;
   slurStart: boolean;
   slurEnds: number;
+  /** 元素 id（试听高亮用） */
+  id: ElementId;
 }
 interface MeasureOut {
   entries: ChordOut[];
@@ -40,6 +44,8 @@ interface MeasureOut {
   endingNum: Set<number> | null;
   endingRight: StartStopDiscontinue | null;
   sectionMark: string | null;
+  /** 拍号（前面小节的延续；小节里没有和弦时试听按它算小节长，同 `Score.Measure.time`） */
+  time: { beats: number; beatType: number };
   /** 小节起点（findRefrain 用） */
   position: Fraction;
   /** 末和弦的终点。没有和弦时抛错（同 `Score.Measure.duration`） */
@@ -48,7 +54,7 @@ interface MeasureOut {
 
 export interface PhraseDocView {
   /** 同时满足演唱顺序的输入（`score/playorder.ts::PlayPart`） */
-  part: { readonly measures: readonly (PhraseMeasure & PlayMeasure)[] };
+  part: { readonly measures: readonly (PhraseMeasure & PlayMeasure & TimelineMeasure)[] };
   /** 断句输入的和弦 → 元素 id */
   idOf: Map<PhraseChord, ElementId>;
 }
@@ -73,8 +79,10 @@ export function phrasePartOfDoc(song: Song, partIndex = 0): PhraseDocView {
 
   const measures: MeasureOut[] = [];
   let at = new Fraction(0);
+  let time = { beats: 4, beatType: 4 };
   for (const m of part.measures) {
-    const out = measureOf(m, at, div, slurStarts, slurEnds, idOf);
+    if (m.attrs?.time) time = { beats: m.attrs.time.beats, beatType: m.attrs.time.beatType };
+    const out = measureOf(m, at, div, slurStarts, slurEnds, idOf, time);
     measures.push(out);
     at = at.plus(measureEnd(m, div));
   }
@@ -123,6 +131,7 @@ function measureOf(
   m: Measure, position: Fraction, div: number,
   slurStarts: ReadonlySet<ElementId>, slurEnds: ReadonlyMap<ElementId, number>,
   idOf: Map<PhraseChord, ElementId>,
+  time: { beats: number; beatType: number },
 ): MeasureOut {
   const out: MeasureOut = {
     entries: [],
@@ -134,6 +143,7 @@ function measureOf(
     endingNum: null,
     endingRight: null,
     sectionMark: null,
+    time,
     position,
     get duration(): Fraction {
       const last = this.entries[this.entries.length - 1];
@@ -194,6 +204,7 @@ function chordOf(
   const note: NoteOut = {
     number: top?.degree ? String(top.degree.number) : "0",
     jpOctave: top?.degree?.octaveShift ?? 0,
+    pitch: top?.pitch ? midiPitch(top.pitch) : 0,
     tieStart: top?.tie?.start ?? false,
     tieEnd: top?.tie?.stop ?? false,
     lyrics,
@@ -209,6 +220,7 @@ function chordOf(
     fermata: el.notations?.fermata ?? false,
     slurStart: slurStarts.has(el.id),
     slurEnds: slurEnds.get(el.id) ?? 0,
+    id: el.id,
   };
 }
 
