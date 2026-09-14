@@ -12,7 +12,7 @@ export class LayoutOptions {
   /**
    * 音符数字是否加粗。**只管数字与倚音**——`numberFont` 还派生出和弦、房号、
    * 调号拍号那一行，那些不跟着粗，所以这里是个开关而不是把 `numberFont` 换成粗体。
-   * 展开档（`applyPptxStyle`）与成书排版（`applyBookStyle`）关掉：前者是投影的既有观感、
+   * 展开档（`style/jianpu.ts` 的 `pptx` 预设）与成书排版（`style/book.ts::applyBookPreset`）关掉：前者是投影的既有观感、
    * 后者要逐像素复刻印刷底本，都不能凭空变粗。
    */
   noteBold = true;
@@ -46,7 +46,7 @@ export class LayoutOptions {
    *  附点一律是矢量圆、且圆心与数字墨迹的中心等高，见 `NoteEntry.addAugDots`。 */
   augDotRadius = 0;
   /** 和弦排成**纯文本**（升降号不换 SMuFL 的 csym 字形、后缀不上标）。
-   *  原书 500 首就是这么印的，成书重排由 `applyBookStyle` 打开；
+   *  原书 500 首就是这么印的，成书重排由 `style/book.ts::applyBookPreset` 打开；
    *  编辑器 / 五线谱 / 文本谱三路维持富文本排法。见 layout/harmony.ts。 */
   chordPlainText = false;
   /** 房号（1./2.）的字号。0 = 不画房号。 */
@@ -230,7 +230,7 @@ export class LayoutOptions {
    * 量回来的：28pt 上高音点的 `.` 基线在 −26.13、低音点在 +7.47，各自再补上
    * Microsoft YaHei 那个 `.` 的墨迹半高（0.0506 em）就是墨迹中心，
    * 也就是 −0.9839 em 与 +0.2161 em。逐级、以及低音点让开减时线的那几格，
-   * 一律走 `jpBeamDist`（同一批成品里量到 3.267pt @28pt，见 `pptxstyle.ts`）。
+   * 一律走 `jpBeamDist`（同一批成品里量到 3.267pt @28pt，见 `style/jianpu.ts` 的 `pptx` 预设）。
    */
   /**
    * 旧式（展开档）音符**上方那一带的底**：弧 / fermata / 三连音括线 / 和弦 / 房号
@@ -269,7 +269,7 @@ export class LayoutOptions {
   }
 
   /** 由字号派生的那几个间距。构造时算一次；成书排版会在之后按 BookStyle 逐项覆盖
-   *  （见 src/pdflayout/browser.ts::applyBookStyle）——**默认值必须原样保持**，
+   *  （见 src/style/book.ts::applyBookPreset）——**默认值必须原样保持**，
    *  编辑器与 OMR 那两条路的观感不能变。 */
   applyFontSize(fontSize: number): void {
     this.fontSize = fontSize;

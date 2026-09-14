@@ -12,6 +12,8 @@
 // highlight() 直接按 id 取用，不必反查 SVG，也不依赖对象身份（重新解析一遍 id 不变）。
 
 import { Font } from "../layout/font";
+import { applyPuOverrides, puUserOptionsOf } from "../style/pu";
+import type { StyleSheet } from "../style/sheet";
 import { graceGeometry } from "../common/gracenote";
 import { Matrix33, Point, type Rect } from "../common/geom";
 import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFrame } from "../layout/pageitem";
@@ -309,7 +311,9 @@ export class PuPainter implements PagePainter {
   private syllableItems = new Map<string, { page: number; item: PageItem }>();
   private highlighted: PageItem[] = [];
 
-  /** 编辑器面板上的手动设置（字号缩放 / 换纸 / 长图）。null = 全按档位的内置版式。 */
+  /** computed 样式表（主题 `print` + 用户层）。null = 全按档位的内置版式、出厂墨色。 */
+  private style: StyleSheet | null = null;
+  /** 样式表折出的面板那一层（字号 / 换纸 / 长图），见 `style/pu.ts`。 */
   private userOptions: PuUserOptions | null = null;
   /** 前景色。null = 出厂墨色。 */
   private ink: number | null = null;
@@ -318,10 +322,19 @@ export class PuPainter implements PagePainter {
     this.metrics = metricsFor();
   }
 
-  /** 手动设置。改完要重排才看得见——调用方通常紧接着 `load`（见 App.reloadPu）。 */
-  setUserOptions(o: PuUserOptions | null, ink: number | null): void {
-    this.userOptions = o;
-    this.ink = ink;
+  /** 样式表。改完要重排才看得见——调用方通常紧接着 `load`（见 App.reloadPu）。 */
+  setStyle(sheet: StyleSheet | null): void {
+    this.style = sheet;
+    this.userOptions = sheet ? puUserOptionsOf(sheet) : null;
+    this.ink = sheet?.page.ink ?? null;
+  }
+
+  /** 方言版式 → 样式表的 `pu.overrides` → 谱面自带的 `FontSize:` / `Margin:`（手动字号那层之前的全部）。 */
+  private docMetricsOf(view: DocView): PuMetrics {
+    const meta0 = view.songs[0]?.metadata;
+    let m = metricsFor(view.dialect);
+    if (this.style) m = applyPuOverrides(m, this.style, digitFontSizeOf);
+    return applyDocOptions(m, meta0?.fontSizes ?? [], meta0?.margins ?? []);
   }
 
   /** 面板给的是**字号（pt）**，metrics 那层认的是缩放——在这里换算：
@@ -335,11 +348,7 @@ export class PuPainter implements PagePainter {
 
   /** 这份文档在**不加手动字号**时的数字字号（pt）——面板拿它当「跟随版式」的默认值。 */
   baseDigitFontSize(doc: ScoreDoc): number {
-    const view = docView(doc);
-    const meta0 = view.songs[0]?.metadata;
-    return digitFontSizeOf(
-      applyDocOptions(metricsFor(view.dialect), meta0?.fontSizes ?? [], meta0?.margins ?? []),
-    );
+    return digitFontSizeOf(this.docMetricsOf(docView(doc)));
   }
 
   /** PagePainter：连续长图模式下宽高随谱而变，故不是常数。 */
@@ -355,15 +364,10 @@ export class PuPainter implements PagePainter {
   load(source: ScoreDoc): void {
     const doc = docView(source);
     this.doc = doc;
-    // 谱面自带的 `FontSize:` / `Margin:` 也要生效（真实语料里 `all=` 用得最多）
-    const meta0 = doc.songs[0]?.metadata;
+    // 谱面自带的 `FontSize:` / `Margin:` 也要生效（真实语料里 `all=` 用得最多）；
     // 谱面自带的指令先生效，面板上的手动设置叠在最外层（用户说了算）
     setPuInk(this.ink);
-    const docMetrics = applyDocOptions(
-      metricsFor(doc.dialect),
-      meta0?.fontSizes ?? [],
-      meta0?.margins ?? [],
-    );
+    const docMetrics = this.docMetricsOf(doc);
     this.metrics = applyUserOptions(docMetrics, this.resolveScale(docMetrics));
     const m = this.metrics;
     this.pageWidth = m.pageWidth;

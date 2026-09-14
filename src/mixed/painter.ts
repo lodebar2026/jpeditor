@@ -15,6 +15,10 @@ import { LCR, MixedOptions, StaffLayout, Notation, ScoreCredit, Sys, SysStaff } 
 import { layoutStaff } from "./layout";
 import type { ScoreDoc } from "../model/doc";
 import { drawSystem } from "./render";
+import { computeStyle } from "../style/cascade";
+import type { StyleSheet } from "../style/sheet";
+import { applyStaffStyle } from "../style/staff";
+import { THEMES } from "../style/themes";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -243,6 +247,8 @@ export class MixedPainter implements PagePainter {
   hideBarNumber = false;
   /** false renders the original staff notation only; true adds the legacy jianpu layer. */
   showJianpuLayer = true;
+  /** computed 样式表（主题 `staff`）。下次 load 生效，见 `style/staff.ts`。 */
+  style: StyleSheet = computeStyle([THEMES.staff], { engine: "staff" });
 
   /** Width of one page in tenths. */
   get pageWidthTenths(): number {
@@ -287,6 +293,7 @@ export class MixedPainter implements PagePainter {
       this.meta = await MetaData.load();
     }
     const options = new MixedOptions(this.meta);
+    applyStaffStyle(options, this.style);
     options.hideBarNumber = this.hideBarNumber;
     return options;
   }

@@ -12,7 +12,8 @@
 //
 // 无 DOM 依赖。
 import type { PageSpec, TextRun, PageKind } from "./spec";
-import type { AlignMode, BookStyle, StyleRole } from "./bookstyle";
+import type { BookStyle } from "./bookstyle";
+import type { AlignMode, StyleRole } from "../style/sheet";
 import { roleOf } from "./bookstyle";
 
 export interface DrawText {

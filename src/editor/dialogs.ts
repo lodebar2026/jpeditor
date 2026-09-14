@@ -1,8 +1,15 @@
 // Minimal modal dialogs (replacing options.fxml / SimpleLayout.fxml).
 import type { App } from "./app";
-import { ORIGINAL_PAPERS, PAGE_RATIOS, PAPER_SIZES } from "./app";
+import { ORIGINAL_PAPERS, PAGE_RATIOS, PAPER_SIZES } from "../style/themes";
 
-function modal(title: string, body: HTMLElement, onOk: () => void, onCancel?: () => void): void {
+/** `extra`：页脚左侧再放一个按钮（点了执行并关闭，不算取消）。 */
+function modal(
+  title: string,
+  body: HTMLElement,
+  onOk: () => void,
+  onCancel?: () => void,
+  extra?: { label: string; onClick: () => void },
+): void {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   const box = document.createElement("div");
@@ -23,6 +30,13 @@ function modal(title: string, body: HTMLElement, onOk: () => void, onCancel?: ()
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.textContent = "取消";
+  const extraBtn = extra ? document.createElement("button") : null;
+  if (extraBtn && extra) {
+    extraBtn.type = "button";
+    extraBtn.textContent = extra.label;
+    extraBtn.style.marginRight = "auto";
+    footer.append(extraBtn);
+  }
   footer.append(cancel, ok);
   box.append(h, body, footer);
   overlay.append(box);
@@ -51,6 +65,13 @@ function modal(title: string, body: HTMLElement, onOk: () => void, onCancel?: ()
     onOk();
     close();
   };
+  if (extraBtn && extra) {
+    extraBtn.onclick = () => {
+      settled = true;
+      extra.onClick();
+      close();
+    };
+  }
   (body.querySelector("input,select") as HTMLElement | null)?.focus();
 }
 
@@ -224,7 +245,7 @@ export function showOptionsDialog(app: App): void {
   if (hasLayoutSection) body.append(linesRow);
   if (isJp) {
     body.append(labeled("基础字号", fs));
-    // 原样档只调基础字号：那一档的标题与词曲字号是按比例派生的（App._setJpFontSize），
+    // 原样档只调基础字号：那一档的标题与词曲字号是按比例派生的（`style/jianpu.ts::jianpuSizes`），
     // 摆出来只会让人以为能单独调。展开档三个都是独立设置，照旧全给。
     if (!isJianpu) body.append(labeled("标题字号", titleSz), labeled("词曲信息字号", creditSz));
     body.append(labeled("前景色", color));
@@ -288,5 +309,9 @@ export function showOptionsDialog(app: App): void {
       color: argb, bgColor: colorValue(bgColor, app.bgColor),
     });
     if (isMixed) void app.setMixedHideBarNumber(hideBarNum.checked);
+  }, undefined, isMixed ? undefined : {
+    // 清掉当前档（展开 / 原样）的用户层，回到内置主题；另一档与声部音量不动
+    label: "恢复本档默认",
+    onClick: () => app.resetRenderSettings(),
   });
 }

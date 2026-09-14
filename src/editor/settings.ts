@@ -11,25 +11,8 @@ const KEY = "jpeditor-render-settings";
 /** 存下来的东西。全部可选——旧版本存的数据缺字段是正常的。
  *  取值一律当 unknown 校验（存量数据可能是任何东西）。 */
 export interface PersistedSettings {
-  pageW?: number;
-  pageH?: number;
-  /** **展开档**的三个字号。 */
-  fontSize?: number;
-  titleSize?: number;
-  creditSize?: number;
-  /** **原样档**的基础字号。那一档只调这一个，标题/词曲字号按比例派生，故不单独存。 */
-  originalFontSize?: number;
-  /** 原样档的纸（`PAPER_SIZES` 的键，「长图」是其中一档）。
-   *  展开档只选比例（pageW/pageH），两种格式共用。 */
-  jpPaper?: string;
-  puPaper?: string;
-  /** 文本谱**原样档**音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。展开档与 `.jpwabc` 共用上面那三个字号。 */
-  puFontSize?: number;
-  /** 两档各自的前景色（谱面笔画/文字）与背景色（纸张），ARGB。 */
-  expandedColor?: number;
-  expandedBgColor?: number;
-  originalColor?: number;
-  originalBgColor?: number;
+  /** 样式用户层（`App._userLayers`：每个主题一组 `StyleRule`）。交 `sanitizeLayer` 校验。 */
+  styleLayers?: unknown;
   zoom?: number;
   mixedHideBarNumber?: boolean;
   mixedShowJianpuLayer?: boolean;
