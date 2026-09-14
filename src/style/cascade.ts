@@ -21,6 +21,8 @@ export interface StyleContext {
   engine?: StyleEngine;
   page?: "left" | "right" | "first";
   verse?: number;
+  /** 曲号（`#028`）或曲名。`.jpcss` 的 `@song`。 */
+  song?: string;
 }
 
 export interface StyleRule {
@@ -40,11 +42,16 @@ export function ruleMatches(when: StyleContext | undefined, ctx: StyleContext): 
 /** 按层序、层内按规则序叠出 computed 样式表。 */
 export function computeStyle(layers: readonly StyleLayer[], ctx: StyleContext): StyleSheet {
   let out = emptySheet();
+  const scoped: NonNullable<StyleSheet["scoped"]> = [];
   for (const layer of layers) {
     for (const rule of layer) {
-      if (ruleMatches(rule.when, ctx)) out = mergeStyle(out, rule.set);
+      if (!ruleMatches(rule.when, ctx)) continue;
+      const { scoped: s, ...rest } = rule.set;
+      if (s) scoped.push(...(s as NonNullable<StyleSheet["scoped"]>));
+      out = mergeStyle(out, rest);
     }
   }
+  if (scoped.length) out.scoped = scoped;
   return out;
 }
 
