@@ -258,10 +258,6 @@ export interface PuDoc {
   diagnostics: Diagnostic[];
 }
 
-/** 便捷：第一首的头部（绝大多数文件只有一首）。 */
-export function primaryMetadata(doc: PuDoc): Metadata {
-  return doc.songs[0]?.metadata ?? emptyMetadata();
-}
 
 export function emptyMetadata(): Metadata {
   return {
@@ -279,19 +275,6 @@ export function emptyMetadata(): Metadata {
     options: [],
     remarks: [],
   };
-}
-
-/** 遍历文档里所有音符（按行序），供对位、转换、验证使用。 */
-export function* eachNote(doc: PuDoc): Generator<NoteElement> {
-  for (const song of doc.songs) {
-  for (const page of song.pages) {
-    for (const group of page.groups) {
-      for (const voice of group.voices) {
-        yield* eachNoteInElements(voice.elements);
-      }
-    }
-  }
-  }
 }
 
 export function* eachNoteInElements(elements: readonly MusicElement[]): Generator<NoteElement> {

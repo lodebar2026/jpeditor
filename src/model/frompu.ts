@@ -1,10 +1,10 @@
-// `PuDoc` → `ScoreDoc`：文本谱进语义模型的**唯一入口**。
+// `PuDoc` → `ScoreDoc`：文本谱进语义模型的**唯一入口**（`pu/parse.ts::parsePu` 调它，语法树不出解析器）。
 //
 // ## 判据：无损
 //
-// 文本谱的排版、导出、试听、双向定位都要改吃 `ScoreDoc`（`docs/待办.md` §1.1），
-// 所以这里转过去的东西必须**足以原样还原出那份 `PuDoc`**——少一样，排版就少画一样。
-// 回归是 `scripts/pu-scoredoc-check.mjs`：`PuDoc → ScoreDoc → PuDoc` 逐字段比对，差异为 0。
+// 文本谱的排版、导出、试听、双向定位、乐句重排都只吃 `ScoreDoc`，
+// 所以这里转过去的东西必须**足以原样还原出那棵树**——少一样，排版就少画一样；原文区间少一样，重排就切不准。
+// 回归是 `scripts/pu-scoredoc-check.mjs`：树 → `ScoreDoc` → 排版行视图 逐字段比对，差异为 0。
 // 文本谱特有、MusicXML 装不下的东西（记号原名与 level、`~`/`^`、临时伴奏层、行级歌词版式）
 // 放在 `doc.ts` 里标明来源的字段上，语义那一侧（`notations` / `Barline.ending` / `Mark`）照常填。
 //
