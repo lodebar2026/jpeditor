@@ -1,15 +1,16 @@
-// Ported from mp/score/score.kt.
-// MusicXML import methods (Score.load / Part.load / Measure.load / Note.load /
-// parse*) are intentionally omitted — that path moves to the Rust backend
-// (Phase 5) which emits .jpwabc. This module is the model + the jpw/layout/
-// repeat logic that has no MusicXML (JAXB) dependency.
+// 简谱排版引擎（`layout/`）的**输入树**。**不是模型**——语义模型只有 `ScoreDoc`（`model/doc.ts`）。
+//
+// 由三个建树器产出，各管一种形状，都不再直接读格式文本：
+//   `model/xmlscore.ts::scoreOfXmlSong`   ScoreDoc（MusicXML 形状）→ 成书重排、ABC 回落
+//   `pu/toscore.ts::scoreDocToScore`       ScoreDoc（简谱形状：文本谱 / 123 / ABC）→ 展开档
+//   `score/jpwimport.ts::fromJpw`          `.jpwabc` 源文小节（与 `jpwToScoreDoc` 共用读原文那一步）→ `.jpwabc` 谱面
+// 引擎会在它上面写东西（断句落下的 `LineBreak`、`clearSystemBreak`、演唱顺序 `playData`），所以每次排版给一棵新的。
+// 类与字段从 mp/score/score.kt 移植而来（R2 阶段 9 起读格式、推唱名的那部分挪到了各建树器）。
 
 import { Fraction } from "../common/fraction";
 import { BarStyle, StartStopDiscontinue } from "./enums";
 import { keyAlter } from "./jppitch";
-import { AccidentalCarry, degreeFromPitch } from "../model/jianpu";
-import type { Pitch } from "../model/doc";
-import { PlayData, playOrderOf } from "./playorder";
+import { PlayData } from "./playorder";
 
 export { BarStyle, StartStopDiscontinue };
 // 演唱顺序的类原在这里，阶段 4 搬到 playorder.ts；照旧从这里导出，调用方不用改。
@@ -63,52 +64,6 @@ export function doPairTuplet(tupletNotes: Note[]): void {
     const tup = new Tuplet(a, b);
     a.tuplet = tup;
     b.tuplet = tup;
-  }
-}
-
-export class ParserTemp {
-  /** 按文档序收集的和弦，收齐了在 `pairSlur` 里栈式配对（后开先闭）。 */
-  slurChords: Chord[] = [];
-  tieNotes: Note[] = [];
-  tupletNotes: Note[] = [];
-  /** 还没落到主音符上的倚音（`<grace>` 排在它修饰的音符**之前**）。 */
-  graceNotes: Note[] = [];
-
-  pairTuplet(): void {
-    this.tupletNotes.sort((a, b) => a.absoluteTick.compareTo(b.absoluteTick));
-    doPairTuplet(this.tupletNotes);
-    this.tupletNotes = [];
-  }
-
-  /** 圆滑线配对：栈式（后开先闭），这样嵌套的两条弧各自连对端点。 */
-  pairSlur(): void {
-    const stack: Chord[] = [];
-    for (const c of this.slurChords) {
-      for (let k = 0; k < c.slurEnds; k++) {
-        const s = stack.pop();
-        if (s) s.slurEndChord = c;
-      }
-      if (c.slurStart) stack.push(c);
-    }
-    this.slurChords = [];
-  }
-
-  pairTie(): void {
-    const starts: Note[] = [];
-    const ends: Note[] = [];
-    for (const nt of this.tieNotes) {
-      if (nt.tieStart) starts.push(nt);
-      if (nt.tieEnd) ends.push(nt);
-    }
-    starts.sort((a, b) => a.absoluteTick.compareTo(b.absoluteTick));
-    ends.sort((a, b) => a.absoluteTick.compareTo(b.absoluteTick));
-    for (let i = 0; i < starts.length; i++) {
-      const a = starts[i];
-      if (i >= ends.length) break;
-      const b = ends[i];
-      a.tieNext = b;
-      b.tiePrev = a;
-    }
   }
 }
 
@@ -198,11 +153,6 @@ export class MusicCommon {
     return res;
   }
 }
-
-/** 语义层记号 → `Score.Note.jpAlter` 的单字符 */
-const JP_ALTER: Readonly<Record<string, string>> = {
-  sharp: "#", "double-sharp": "#", flat: "b", "double-flat": "b", natural: "n",
-};
 
 export abstract class Entry {
   duration?: Fraction;
@@ -335,17 +285,6 @@ export class Note {
     return res.plus(mea.position);
   }
 
-  /** 由 MusicXML 来的 step/octave/alter 推简谱的数字/八度点/记号（`loadMusicXml` 那一路；`.jpwabc` 直接给）。
-   *  **经简谱语义层**（`model/jianpu.ts`）：唱名与八度点 `degreeFromPitch`、小节内延续的记号 `AccidentalCarry.mark`。
-   *  `Score` 只有单字符记号位，双升/双降印成 `#`/`b`（语料 0 例）。 */
-  init(fifths: number, carry: AccidentalCarry): void {
-    const pitch = { step: this.step as Pitch["step"], alter: this.alter, octave: this.octave };
-    const key = { fifths };
-    const d = degreeFromPitch(pitch, key);
-    this.number = this.rest ? "0" : String(d.number);
-    this.jpAlter = JP_ALTER[carry.mark(pitch, key) ?? ""] ?? " ";
-    this.jpOctave = d.octaveShift;
-  }
 }
 
 export class Measure {
@@ -418,62 +357,6 @@ export class Measure {
     return res;
   }
 
-  jp(): string {
-    let res = "";
-    for (const ent of this.entries) {
-      if (!(ent instanceof Chord)) continue;
-      const ch = ent;
-      const nt = ch.notes[0];
-      res += nt.number;
-      for (let i = 1; i < ch.beats; i++) res += "-";
-      for (let i = 1; i < ch.beams; i++) res += "/";
-      res += " ";
-    }
-    res += "|";
-    return res;
-  }
-
-  init(): void {
-    this.removeUnused();
-    const stat = new AccidentalCarry();
-    for (const ent of this.entries) {
-      if (!(ent instanceof Chord)) continue;
-      // 倚音先于主音（临时记号是按左右顺序生效的，延续状态认这个次序）
-      for (const nt of ent.graceNotes) nt.init(this.key.fifths, stat);
-      if (ent.rest) continue;
-      for (const nt of ent.notes) nt.init(this.key.fifths, stat);
-    }
-  }
-
-  private removeUnused(): void {
-    const rem: Chord[] = [];
-    for (const ent of this.entries) {
-      if (!(ent instanceof Chord)) continue;
-      const ch = ent;
-      if (ch.voice > 1) {
-        rem.push(ch);
-        continue;
-      }
-      if (ch.notes.length <= 1) continue;
-      let cur = -1;
-      let maxPit = 0;
-      const lrc: Lyric[] = [];
-      ch.notes.forEach((nt, i) => {
-        const p = nt.pitch;
-        if (p > maxPit) {
-          cur = i;
-          maxPit = p;
-        }
-        lrc.push(...nt.lyrics);
-      });
-      const v = ch.notes[cur];
-      v.lyrics = [];
-      v.lyrics.push(...lrc);
-      ch.notes = [v];
-    }
-    this.entries = this.entries.filter((e) => !(e instanceof Chord && rem.includes(e)));
-  }
-
   parseEndingNum(s: string | null): Set<number> | null {
     if (s === null) return null;
     const res = new Set<number>();
@@ -481,20 +364,6 @@ export class Measure {
       const t = it.trim();
       if (t.length === 0) continue;
       res.add(parseInt(t, 10));
-    }
-    return res;
-  }
-
-  lrc(num: number): string {
-    let res = "";
-    for (const ent of this.entries) {
-      if (!(ent instanceof Chord)) continue;
-      for (const nt of ent.notes) {
-        for (const lrc of nt.lyrics) {
-          if (lrc.number !== num) continue;
-          res += lrc.text;
-        }
-      }
     }
     return res;
   }
@@ -515,12 +384,6 @@ export class Measure {
 
 export class Part {
   measures: Measure[] = [];
-
-  jp(): string {
-    let res = "";
-    for (const m of this.measures) res += m.jp();
-    return res;
-  }
 }
 
 export enum EndingType {
@@ -546,22 +409,5 @@ export class Score {
         m.entries = m.entries.filter((e) => !(e instanceof LineBreak));
       }
     }
-  }
-
-  parseRepeatInf(): void {
-    const order = playOrderOf(this.parts, this.playData);
-    this.playData.isSimpple = order.isSimple;
-    this.playData.measures = order.measures;
-    if (order.hasRepeat) this.playData.hasRepeat = true;
-  }
-
-  jp(): string {
-    return this.parts[0].jp();
-  }
-
-  lrc(num: number): string {
-    let res = "";
-    for (const p of this.parts) for (const m of p.measures) res += m.lrc(num);
-    return res;
   }
 }
