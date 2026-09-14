@@ -85,15 +85,15 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
 
 ## 技术栈
 
-完整技术框架、架构要点与项目结构见 [docs/技术栈.md](docs/技术栈.md)。
+技术栈、构建命令、分层与模块地图见 [docs/架构.md](docs/架构.md)。
 
 ## 开发
 
-构建、运行与无头校验命令见 [docs/开发.md](docs/开发.md)。
+构建与运行命令见 [docs/架构.md](docs/架构.md)，无头校验见各 [模块页](docs/模块/) 的「回归」一节。
 
 ## 进度
 
-还要做什么见 [docs/待办.md](docs/待办.md)；打包产物体积见 [docs/技术栈.md](docs/技术栈.md)。
+还要做什么见 [docs/待办.md](docs/待办.md)。
 
 ## 致谢
 
