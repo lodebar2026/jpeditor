@@ -41,6 +41,8 @@ export interface TextMetrics {
 // same glyphs/sizes thousands of times; caching avoids repeated reflows.
 const textCache = new Map<string, TextMetrics>();
 
+export type FontStyle = "normal" | "italic";
+
 // Canvas context used for tight glyph bounds via actualBoundingBox*.
 // SVG getBBox() returns the full line box for CJK fonts, not the tight glyph
 // outline. Canvas actualBoundingBoxAscent/Descent matches Skija getPath bounds.
@@ -48,14 +50,14 @@ let glyphCtx: CanvasRenderingContext2D | null = null;
 
 /** Build a Canvas/FontFaceSet font shorthand without turning an entire CSS
  * fallback list into one (non-existent) quoted family name. */
-function cssFontShorthand(fontFamily: string, fontSizePx: number, fontWeight: "normal" | "bold"): string {
+function cssFontShorthand(fontFamily: string, fontSizePx: number, fontWeight: "normal" | "bold", fontStyle: FontStyle = "normal"): string {
   const family = fontFamily.split(",").map((part) => {
     const name = part.trim().replace(/^(['"])(.*)\1$/, "$2");
     return /^(?:sans-serif|serif|monospace|system-ui)$/i.test(name)
       ? name
       : `"${name.replace(/(["\\])/g, "\\$1")}"`;
   }).join(", ");
-  return `${fontWeight} ${fontSizePx}px ${family}`;
+  return `${fontStyle === "italic" ? "italic " : ""}${fontWeight} ${fontSizePx}px ${family}`;
 }
 
 export function measureGlyphText(
@@ -64,11 +66,12 @@ export function measureGlyphText(
   fontSizePx: number,
   fontWeight: "normal" | "bold" = "normal",
   features?: FeatureList,
+  fontStyle: FontStyle = "normal",
 ): TextMetrics {
   const sep = "\x01";
   const feat = featureSettings(features);
   // **features 必须进 key**：同一串字开不开 `chws` 宽度不同，共用一个 key 会串味。
-  const key = `${fontFamily}${sep}${fontWeight}${sep}${fontSizePx}${sep}${feat}${sep}${text}`;
+  const key = `${fontFamily}${sep}${fontWeight}${sep}${fontStyle}${sep}${fontSizePx}${sep}${feat}${sep}${text}`;
   const cached = textCache.get(key);
   if (cached) return cached;
 
@@ -83,6 +86,7 @@ export function measureGlyphText(
   t.setAttribute("font-family", fontFamily);
   t.setAttribute("font-size", String(fontSizePx));
   t.setAttribute("font-weight", fontWeight);
+  t.setAttribute("font-style", fontStyle);
   // font-feature-settings 在 SVG 1.1 里不是 presentation attribute，只能走 style。
   t.style.fontFeatureSettings = feat;
   t.textContent = text;
@@ -107,7 +111,7 @@ export function measureGlyphText(
     glyphCtx = c.getContext("2d");
   }
   if (glyphCtx) {
-    glyphCtx.font = cssFontShorthand(fontFamily, fontSizePx, fontWeight);
+    glyphCtx.font = cssFontShorthand(fontFamily, fontSizePx, fontWeight, fontStyle);
     const cm = glyphCtx.measureText(text);
     // **整串都是空白时 `getComputedTextLength()` 恒为 0**（浏览器把纯空白的文本节点当空的，
     // 加 `xml:space="preserve"` 也一样）。于是「空格」这个字的 advance 被量成 0，逐字量
@@ -162,9 +166,10 @@ export function measureFontMetrics(
   fontFamily: string,
   fontSizePx: number,
   fontWeight: "normal" | "bold" = "normal",
+  fontStyle: FontStyle = "normal",
 ): { ascent: number; descent: number } {
   const sep = "\x01";
-  const key = `${fontFamily}${sep}${fontWeight}${sep}${fontSizePx}`;
+  const key = `${fontFamily}${sep}${fontWeight}${sep}${fontStyle}${sep}${fontSizePx}`;
   const cached = metricsCache.get(key);
   if (cached) return cached;
   if (!metricsCtx) {
@@ -173,7 +178,7 @@ export function measureFontMetrics(
   }
   let res = { ascent: -fontSizePx * 0.8, descent: fontSizePx * 0.2 };
   if (metricsCtx) {
-    metricsCtx.font = cssFontShorthand(fontFamily, fontSizePx, fontWeight);
+    metricsCtx.font = cssFontShorthand(fontFamily, fontSizePx, fontWeight, fontStyle);
     const m = metricsCtx.measureText("Mg");
     const asc = m.fontBoundingBoxAscent ?? m.actualBoundingBoxAscent;
     const desc = m.fontBoundingBoxDescent ?? m.actualBoundingBoxDescent;

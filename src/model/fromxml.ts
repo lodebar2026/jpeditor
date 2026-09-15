@@ -207,6 +207,8 @@ function readDefaults(el: Element): Defaults {
     const sd = num(stl, "staff-distance");
     if (sd !== undefined) d.staffLayout = { staffDistance: sd };
   }
+  const mf = child(el, "music-font");
+  if (mf) d.musicFont = readFont(mf);
   const lf = child(el, "lyric-font");
   if (lf) d.lyricFont = readFont(lf);
   const wf = child(el, "word-font");

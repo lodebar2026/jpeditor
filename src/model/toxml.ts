@@ -147,6 +147,7 @@ function writeDefaults(o: Out, d: number, def: Defaults): void {
     o.push(d + 2, tag("staff-distance", def.staffLayout.staffDistance));
     o.push(d + 1, "</staff-layout>");
   }
+  if (def.musicFont) o.push(d + 1, `<music-font${fontAttrs(def.musicFont)}/>`);
   if (def.wordFont) o.push(d + 1, `<word-font${fontAttrs(def.wordFont)}/>`);
   if (def.lyricFont) o.push(d + 1, `<lyric-font${fontAttrs(def.lyricFont)}/>`);
   o.push(d, "</defaults>");

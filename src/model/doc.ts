@@ -150,6 +150,8 @@ export interface Defaults {
   /** `<lyric-font>` / `<word-font>`：歌词与文字的缺省字体（语料 100% 都有） */
   lyricFont?: FontSpec;
   wordFont?: FontSpec;
+  /** `<music-font>`：记号字体；五线谱引擎只取字号（segno/coda 等文字里的记号按它排） */
+  musicFont?: FontSpec;
 }
 
 /** [五线谱] `<part-group>`：SATB 的括号分组。← 123 的 `%%score {(S A) (T B)}` */

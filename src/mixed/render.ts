@@ -41,7 +41,7 @@ import {
   smuflWidth,
 } from "./model";
 import { Font } from "../layout/font";
-import { harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
+import { layoutHarmonySegs } from "../layout/harmony";
 import { addLine, addSmufl, addSmuflScaled, translated } from "./prims";
 import { drawJianpuOverlay } from "./jianpuoverlay";
 
@@ -860,8 +860,9 @@ export function drawHarmony(
       measureRest && h.offset.compareTo(new Fraction(0)) === 0 ? 15 : 0;
     const segs = h.asText();
 
-    // 总宽：未缩放的 advance 之和（对齐 musicpp TextBlock::width 的居中口径）
-    const width = harmonyWidth(segs, wordFont, musicFont);
+    // 总宽照 musicpp TextBlock::width：上/下标按 0.75 缩放后的 advance。按未缩放算，A(sus4) 这类
+    // 长上标的和弦会整体左偏（KL2020《基督是锚》第 9 小节偏 18 tenths）
+    const width = segs.reduce((w, s) => w + (s.music ? musicFont : wordFont).measureText(s.text) * (s.superscript ? 0.75 : 1), 0);
     // 分段排版与文本谱共用（src/layout/harmony.ts）
     const grp = layoutHarmonySegs(segs, wordFont, musicFont, 0xff000000);
 
@@ -901,7 +902,7 @@ function drawTextBlock(container: Group, t: MeasureText): void {
     // 行高与谱行包围盒（model.ts::tightLineHeights）同一口径：歌本按字号（musicpp Font::height()），
     // 否则多行文字块画得比包围盒高，压进下面的简谱与歌词（《那一天正来临》开头的楷体引言）
     const fm = it.font.metrics;
-    h = Math.max(h, bySize ? it.font.size : fm.descent - fm.ascent);
+    h = Math.max(h, bySize ? (it.nominalSize ?? it.font.size) : fm.descent - fm.ascent);
   }
   lineW.push(w);
   lineH.push(h);
