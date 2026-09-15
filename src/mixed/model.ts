@@ -1370,7 +1370,8 @@ export class MeasureText extends TextBlock {
   measure: PartMeasureLayout;
   offset = new Fraction(0);
   staff = 0;
-  relative = false;
+  /** x 是否相对拍位（updateDataXPos 再加拍位 x）；false 时 x 就是小节内坐标（只写 default-x 的 `<words>`） */
+  relative = true;
 
   constructor(measure: PartMeasureLayout) {
     super();

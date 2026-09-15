@@ -10,6 +10,7 @@
 //
 // **浏览器侧**（混排引擎要 DOM 量字）。Node 侧的 scripts/kl2020-book.mjs 经 window.__songbook 调它，
 // 拿回纯数据的 DrawPage[] 再交 scripts/pdfwrite.mjs。
+import { compressRun } from "../common/cjkpunct";
 import { Matrix33 } from "../common/geom";
 import { Font } from "../layout/font";
 import { Group, TextFrame } from "../layout/pageitem";
@@ -200,10 +201,14 @@ function placedToTextFrames(page: Group, placed: readonly Placed[], sheet: Style
     const hwid = /\bhwid\b/.test(String(sheet.roles[p.role as keyof StyleSheet["roles"]]?.features ?? ""));
     tf.text = hwid ? toHalfWidthPunct(p.text) : p.text;
     tf.font = font;
-    // 逐字笔位要自己量：前缀串末尾的空格量不进宽度（SVG 包围盒），「Crown Him」的 H 会落到空格上
-    const bar = font.measureText("|");
-    tf.charXs = [...tf.text].map((_, i, cs) => (i === 0 ? 0 : font.measureText(cs.slice(0, i).join("") + "|") - bar));
-    const w = font.measureText(tf.text);
+    // 逐字笔位自己算：单字 advance + 共用的标点挤压（全身式，同书级正文）。
+    // 不能拿浏览器量的前缀宽：Chrome 缺省 `text-spacing-trim` 会把「。（」里左括号的左半格压掉，
+    // 前缀宽里少了半格、括号笔位却没跟着左挪，出 PDF 逐字画全宽字形时括号的墨正好被下一个字盖住
+    //（「根基。（林前3：11）」的「（」看不见）。夹在两字之间量单字，避开行首行末的挤压。
+    const pad = font.measureText("一一");
+    const run = compressRun([...tf.text], (c) => font.measureText(`一${c}一`) - pad, font.size, "clreq");
+    tf.charXs = run.xs;
+    const w = run.width;
     const x = p.align === "center" ? p.x - w / 2 : p.align === "right" ? p.x - w : p.x;
     const m = new Matrix33();
     m.setAffine([1, 0, 0, 1, x, p.y]);

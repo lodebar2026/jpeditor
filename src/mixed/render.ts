@@ -882,6 +882,7 @@ export function drawHarmony(
 /** 绘制单个 TextBlock（逐行 justify，对齐 render.cpp::drawTextBlock 非 useTextArea 分支）。 */
 function drawTextBlock(container: Group, t: MeasureText): void {
   if (t.data.length === 0) return;
+  const bySize = t.measure.part.score.options.textLineHeightBySize;
 
   // 逐行宽/高
   const lineW: number[] = [];
@@ -897,8 +898,10 @@ function drawTextBlock(container: Group, t: MeasureText): void {
       continue;
     }
     w += it.font.measureText(it.text);
+    // 行高与谱行包围盒（model.ts::tightLineHeights）同一口径：歌本按字号（musicpp Font::height()），
+    // 否则多行文字块画得比包围盒高，压进下面的简谱与歌词（《那一天正来临》开头的楷体引言）
     const fm = it.font.metrics;
-    h = Math.max(h, fm.descent - fm.ascent);
+    h = Math.max(h, bySize ? it.font.size : fm.descent - fm.ascent);
   }
   lineW.push(w);
   lineH.push(h);
