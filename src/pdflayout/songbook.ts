@@ -83,6 +83,8 @@ interface SongLayout {
 }
 
 const FRAME_MARGIN = 20;
+/** 出书纸张（pt）：原程序整本固定 A4 */
+const A4_PT = { w: 595, h: 842 };
 
 function exprWord(e: Expr | undefined): string | undefined {
   return e && (e.k === "id" || e.k === "str") ? e.v : undefined;
@@ -322,9 +324,13 @@ export async function layoutMixedSongbook(input: SongbookInput): Promise<Songboo
     usedFamilies.add(fam);
     return fam;
   };
-  const pages = pageGroups.map((g, i) =>
-    pageItemsToDrawPage(g, pageW, pageH, { pageNo: i + 1, meta: { kind: "score", songs: [] }, scale: pageScaling[i]!, roleOf }),
-  );
+  // 纸张一律 A4（genSongBook 的 CGContextBeginPage 固定 595×842），谱面按各曲 scaling 缩放后贴左上角：
+  // scaling 不是 A4 口径的曲目（如 1400 tenths）内容变小、纸不变
+  const pages = pageGroups.map((g, i) => ({
+    ...pageItemsToDrawPage(g, pageW, pageH, { pageNo: i + 1, meta: { kind: "score", songs: [] }, scale: pageScaling[i]!, roleOf }),
+    w: A4_PT.w,
+    h: A4_PT.h,
+  }));
   const titles = songs.map((s) => s.title);
   const toc = tocPages(book, titles, starts, families, usedFamilies);
   const frameFacts = frames.map((f) => ({
@@ -350,8 +356,8 @@ function tocPages(sheet: StyleSheet, titles: string[], starts: number[], familie
   const region = sheet.template?.regions?.toc as Region | undefined;
   if (!region) return [];
   const entry = region.blocks?.entry;
-  const W = 595;
-  const H = 842;
+  const W = A4_PT.w;
+  const H = A4_PT.h;
   const env = (fields: Record<string, string>): RegionEnv => ({
     field: songFields(undefined, fields),
     pageNo: 1,
