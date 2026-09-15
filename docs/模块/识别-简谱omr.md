@@ -46,6 +46,7 @@ node scripts/gt-to-123.mjs        # 新增曲目时把 .jpwabc / gt.shige.pu（�
 node scripts/bench-lyrics.mjs     # 歌词逐音节对齐（按 verse 汉字 CER）
 node scripts/bench-diff.mjs       # 识别 ↔ GT 的音符 token 逐项 diff
 node scripts/bench-meta.mjs       # 页眉元信息对 GT
+node scripts/beat-check.mjs <图…> # 节拍自检：按小节累计拍数对拍号，**不要 GT**（新语料先跑这条）
 node scripts/check-align.mjs      # 歌词↔音符「对位」（逐音符序列 Levenshtein）
 node scripts/omr-node-check.mjs   # Node ↔ 浏览器逐字符一致性（Node CLI 的验收依据）
 node scripts/shot-recog.mjs       # 识别模式 + 叠加层渲染
