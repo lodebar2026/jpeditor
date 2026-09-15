@@ -780,8 +780,16 @@ class DocPartLoader {
     if (dy !== undefined) blk.y = dy;
     const ry = w.pos?.relativeY;
     if (ry !== undefined) blk.y += ry;
+    // x 口径同 parser.cpp::processTextPos：有 relative-x 就相对拍位（updateDataXPos 再加拍位 x）；
+    // 只有 default-x 就是小节内坐标、不加拍位（Sibelius 写的就是小节内坐标）。
+    // 一律加拍位的话，《求主藉异象激动我》的「(副歌)」default-x=-1 会被推到首音上、压住简谱的「5」
     const rx = w.pos?.relativeX;
+    const dx = w.pos?.defaultX;
     if (rx !== undefined) blk.x = rx;
+    else if (dx !== undefined && !blk.data.length) {
+      blk.x = dx;
+      blk.relative = false;
+    }
     if (w.justify === "right") blk.justify = LCR.Right;
     else if (w.justify === "center") blk.justify = LCR.Center;
     const text = w.text ?? "";
