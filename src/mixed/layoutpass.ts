@@ -2,7 +2,7 @@
 // `layout.ts` 把各声部读成 `StaffLayout` 后调这里的 `finishMixedScore` 排版。从 musicpp mxml/parser.cpp 移植，判据原样。
 
 import { Fraction } from "../common/fraction";
-import { GlyphCodes } from "../smufl/smufl";
+import { GlyphCodes, type MetaData } from "../smufl/smufl";
 import {
   BarGlyph,
   Encoder,
@@ -365,15 +365,16 @@ function layoutAttr(score: StaffLayout): void {
       }
       if (timeChange) {
         const ts = ps.getTime(mif.offset);
-        const w = timeSigWidthCalc(ts);
+        const w = timeSigWidthCalc(ts, score.options.meta);
         if (w > timeWidth) timeWidth = w;
       }
     }
 
+    // parser.cpp::layoutAttr 里 `auto xpos = 5` 是 int，累加拍号宽（字形 bbox，带小数）时逐次截断
     let xpos = 5;
     if (hasClef) { mif.clefPos = xpos; xpos += 32; }
-    if (hasKey || keyChange) { mif.keyPos = xpos; xpos += keyWidth; }
-    if (timeChange) { mif.timePos = xpos; xpos += timeWidth; }
+    if (hasKey || keyChange) { mif.keyPos = xpos; xpos = Math.trunc(xpos + keyWidth); }
+    if (timeChange) { mif.timePos = xpos; xpos = Math.trunc(xpos + timeWidth); }
     if (mif.forward && nsys) { mif.leftBarlinePos = xpos + 20; xpos += 30; }
     mif.dataPos = xpos;
     mif.dataEnd = mif.width;
@@ -430,10 +431,18 @@ function keyChangeWidthCalc(cancel: number, key: number): number {
   return res;
 }
 
-function timeSigWidthCalc(ts: TimeSig): number {
+/** parser.cpp::timeChangeWidth：分子、分母各自逐位累加 timeSigN 字形 bbox 宽（TimeSig::width），取大者。 */
+function timeSigWidthCalc(ts: TimeSig, meta: MetaData): number {
   if (ts.symbol) return 30;
-  const digits = (n: number) => String(n).length;
-  return Math.max(digits(ts.beats), digits(ts.beatType)) * 10;
+  const width = (n: number) => {
+    let w = 0;
+    for (const c of String(n)) {
+      const b = meta.getBBoxByName(`timeSig${c}`);
+      w += b ? (b.bBoxNE[0] - b.bBoxSW[0]) * 10 : 10;
+    }
+    return w;
+  };
+  return Math.max(width(ts.beats), width(ts.beatType));
 }
 
 function updateEntPos(score: StaffLayout): void {
