@@ -206,7 +206,10 @@ button:focus-visible, select:focus-visible {
 #code-pane-shell { flex: 0 0 38%; border-right: 1px solid var(--border); background: var(--panel); }
 /* 没有代码区的格式（.musicxml）：只看谱面，要编辑先转成文本格式 */
 #body.no-code #code-pane-shell { display: none !important; }
-#body.no-code #score-pane-shell { display: block !important; }
+/* 这里要 flex 不要 block：`.workspace-pane` 的列向 flex 一关掉，#score-pane 的
+   `flex:1 1 auto; min-height:0` 就失效、高度变成内容高，overflow:auto 永远没得滚
+   ——拖入 .musicxml 后只能捏合缩放、拖不动谱面就是这么来的。 */
+#body.no-code #score-pane-shell { display: flex !important; }
 #score-pane-shell { position: relative; flex: 1 1 auto; background: var(--canvas); }
 .pane-heading {
   flex: 0 0 34px;
