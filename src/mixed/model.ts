@@ -189,7 +189,7 @@ export function smuflBottom(fm: MetaData, glyph: string): number {
  * （smuflTop/Bottom 以 em=musicEm 为基准，再按字号缩放），文本按字体 ascent/descent。
  * 修正 TextBlock.height() 用 Bravura 字体度量导致力度/节拍记号虚高、撑大谱表间距的问题。
  */
-function tightLineHeights(t: TextBlock, meta: MetaData, musicEm: number): number[] {
+function tightLineHeights(t: TextBlock, meta: MetaData, musicEm: number, textBySize = false): number[] {
   const h: number[] = [];
   let lineH = 0;
   for (const it of t.data) {
@@ -203,6 +203,10 @@ function tightLineHeights(t: TextBlock, meta: MetaData, musicEm: number): number
       let gh = 0;
       for (const ch of it.text) gh = Math.max(gh, smuflTop(meta, ch) - smuflBottom(meta, ch));
       ih = gh * (musicEm > 0 ? it.font.size / musicEm : 1);
+    } else if (textBySize) {
+      // 歌本口径：文字行高按字号（原排版程序 Font::height() 就是字号，model.cpp TextBlock::height）。
+      // 字体 ascent−descent 约 1.45 个字号，按它算多行文字块会虚高（《我心等候祢》拆行后被挤成两页）
+      ih = it.font.size;
     } else {
       const fm = it.font.metrics;
       ih = fm.descent - fm.ascent;
@@ -2496,7 +2500,7 @@ export class SysStaff {
       for (const t of mea.textBlocks) {
         // 文本垂直延伸：音乐字形（力度/节拍记号）用真实包围盒，避免 Bravura 字体 em 框
         // 虚高（descent-ascent 可达 ~14 个 staff space）把谱表间距撑大；文本用字体度量。
-        const h = tightLineHeights(t, sys.score.options.meta, sys.score.options.musicFont.size);
+        const h = tightLineHeights(t, sys.score.options.meta, sys.score.options.musicFont.size, sys.score.options.textLineHeightBySize);
         if (h.length === 0) continue;
         const hh = h.reduce((a, b) => a + b, 0);
         let y = t.y + h[0];
@@ -2774,6 +2778,8 @@ export class MixedOptions {
   slurStemDy = 15;
   lrcHWID = true;
   chineseHyphen = false;
+  /** 谱行包围盒里文字的行高按字号算（原排版程序口径，歌本 `pdflayout/songbook.ts` 开）；缺省按字体 ascent−descent */
+  textLineHeightBySize = false;
   harmonySize = 9;
   jpTopDy = 0;
   jpGraceScale = 0.6;
