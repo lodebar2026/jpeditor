@@ -422,7 +422,9 @@ class DocPartLoader {
       const ry = l.pos?.relativeY;
       if (ry !== undefined) y += ry;
       lrc.y = y;
-      lrc.font = this.score.defaults.lyricFont;
+      lrc.font = l.font?.family || l.font?.size
+        ? new Font(l.font.family ?? this.score.defaults.lyricFont.family, l.font.size ? l.font.size / this.score.scaling : this.score.defaults.lyricFont.size)
+        : this.score.defaults.lyricFont;
 
       lrc.updateWidth(this.score.options.meta);
 
@@ -651,11 +653,11 @@ class DocPartLoader {
           if (this.processMetronome(blk, item)) hasText = true;
           break;
         case "segno":
-          this.processSegno(blk, false);
+          this.processSegno(blk, false, item.pos?.relativeX);
           hasText = true;
           break;
         case "coda":
-          this.processSegno(blk, true);
+          this.processSegno(blk, true, item.pos?.relativeX);
           hasText = true;
           break;
         case "wedge":
@@ -761,9 +763,9 @@ class DocPartLoader {
   /** <segno> / <coda> 记号（parser.cpp::processSegno / processCoda）。
    *  位置不取 default-x：本工程文本块统一由 updateDataXPos 按 offset 的 getEntPos 定位，
    *  与 musicpp 直接用 default-x 的策略不同；这里只保留 y=45 与 +15 的小幅右移。 */
-  private processSegno(blk: MeasureText, coda: boolean): void {
+  private processSegno(blk: MeasureText, coda: boolean, relativeX?: number): void {
     blk.y = 45; // todo: parser.cpp 同样硬编码
-    blk.x += 15;
+    blk.x += 15 + (relativeX ?? 0);
     const font = new Font("Bravura", this.score.defaults.musicTextFont.size / this.score.scaling);
     blk.add(coda ? GlyphCodes.coda : GlyphCodes.segno, font, true);
   }
@@ -772,6 +774,8 @@ class DocPartLoader {
   private processWords(blk: MeasureText, w: DirectionPart): boolean {
     const dy = w.pos?.defaultY;
     if (dy !== undefined) blk.y = dy;
+    const ry = w.pos?.relativeY;
+    if (ry !== undefined) blk.y += ry;
     const rx = w.pos?.relativeX;
     if (rx !== undefined) blk.x = rx;
     if (w.justify === "right") blk.justify = LCR.Right;

@@ -208,7 +208,8 @@ function lyricXml(o: Out, d: number, l: Lyric): void {
   const name = l.name !== undefined ? ` name="${escAttr(l.name)}"` : "";
   o.push(d, `<lyric number="${escAttr(number)}"${name}${posAttrs(l.pos)}${just}>`);
   if (l.syllabic) o.push(d + 1, tag("syllabic", l.syllabic));
-  o.push(d + 1, tag("text", (l.leadingPunctuation ?? "") + l.text + (l.trailingPunctuation ?? "")));
+  const lt = (l.leadingPunctuation ?? "") + l.text + (l.trailingPunctuation ?? "");
+  o.push(d + 1, l.font ? `<text${fontAttrs(l.font)}>${esc(lt)}</text>` : tag("text", lt));
   if (l.extend) o.push(d + 1, l.extendType ? `<extend type="${l.extendType}"/>` : "<extend/>");
   o.push(d, "</lyric>");
 }
@@ -304,7 +305,8 @@ function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): 
     }
     o.push(d + 1, tag("voice", ch.voice));
     if (ch.duration.type) {
-      o.push(d + 1, ch.typeSize ? `<type size="${escAttr(ch.typeSize)}">${ch.duration.type}</type>` : tag("type", ch.duration.type));
+      const size = isChordNote ? note?.typeSize : (ch.typeSize ?? note?.typeSize);
+      o.push(d + 1, size ? `<type size="${escAttr(size)}">${ch.duration.type}</type>` : tag("type", ch.duration.type));
     }
     for (let i = 0; i < ch.duration.dots; i++) o.push(d + 1, "<dot/>");
     if (note?.accidental) {

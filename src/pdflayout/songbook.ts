@@ -117,6 +117,7 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   const options = new MixedOptions(meta);
   applyStaffStyle(options, sheet);
   options.hideBarNumber = true;
+  if (metaFlag(song, "layout.chinese-hyphen")) options.chineseHyphen = true;
   const score = layoutStaff(doc, options);
   formatMixedScore(score);
   // 逐曲定制（原排版程序 fixPaoScore 的那几首）：`.jpcss` 的 `@song` / 清单本曲的 style 片段

@@ -62,7 +62,9 @@ export interface Diagnostic {
 export type ElementId = number;
 
 /** [五线谱] 版面坐标（tenths，口径同 MusicXML 的 `default-x/-y`、`relative-x/-y`）。
- *  **只为 `.musicxml` 改动后整份重写不丢版面**：`fromxml.ts` 读、`toxml.ts` 写，排版不读。
+ *  主要为 `.musicxml` 改动后整份重写不丢版面：`fromxml.ts` 读、`toxml.ts` 写。
+ *  混排读其中几项：音符 `default-x`、歌词 `default-y/relative-y`、文字 `default-y/relative-x/relative-y`、
+ *  和弦 `default-y/relative-x`、segno `relative-x`（歌本改谱脚本的位置微调就写在这里）。
  *  断行也是「这份谱怎么印」的事实，同理随文档保存（`Print`），见 `docs/待办.md` §3.1。 */
 export interface Position {
   defaultX?: number;
@@ -306,6 +308,8 @@ export interface Lyric {
   elision?: string;
   /** 副歌：这一行词被多遍共用（`Lyric.refrain` 的对应物） */
   refrain?: boolean;
+  /** [五线谱] `<text font-family font-size…>`：这一行词自己的字体（歌本里某段换楷体） */
+  font?: FontSpec;
   /** 收尾标点。**并入前一字、不占音符格**（规则在 `common/cjkpunct.ts`） */
   trailingPunctuation?: string;
   /** 印刷段号（`<1.>`）：印在该段歌词首字之前、**不占音符格**。语料 55.6% 这么写 */
@@ -483,6 +487,8 @@ export interface Note {
   stem?: "up" | "down" | "none" | "double";
   /** [五线谱] `<stem default-y>`：符干末端 */
   stemY?: number;
+  /** [五线谱] 这个音自己的 `<type size>`（和弦里单个音画小，如「上方音画小」）。首音的另记在 `Chord.typeSize` */
+  typeSize?: string;
   /** [五线谱] 这个音所在 `<note>` 的坐标，见 `Position` */
   pos?: Position;
 }
