@@ -226,8 +226,6 @@ class DocPartLoader {
     }
 
     this.calcStemLen();
-    // musicpp：load（含 calcStemLen）之后才 removeNoneMelody → guessStemDir，所以符干长度按原方向算
-    if (this.score.options.guessStemDir) this.guessStemDir();
     if (!this.hasBeamEl) this.autoBeamPart();
     this.formatBeams();
     // 符干/符杠就绪后再排记号（fermata 等），使 tailY 取到最终符干末端，避免 fermataBelow
@@ -239,6 +237,51 @@ class DocPartLoader {
     this.pairPedals();
     this.processLrcExtend();
     this.part.guessTiedPlacement();
+    // 只留旋律放在**最后**（util/pao.cpp:1003：load 整条跑完才 removeNoneMelody）：
+    // 弧/延音线的配对与方向推断要在**完整的多声部、多音和弦**上做，删早了
+    // `guessTiedPlacement` 看到的都是单音 Entry，方向退化成按符干猜，还会多加 yOffsetType 的 8 tenths。
+    if (this.score.options.melodyOnly) this.removeNoneMelody();
+  }
+
+  /** Part::removeNoneMelody（model.cpp:2312）：删掉非旋律音——和弦只留简谱印的那个音
+   *  （`jpMelody`，即原程序的 `layer==1`），没有旋律音的和弦整个删掉；端点落在被删音上的
+   *  弧与延音线一并删。删完按首音重猜符干方向并重排符杠（原实现在 guessStemDir 里逐组 `format(0)`）。 */
+  private removeNoneMelody(): void {
+    const sib = this.score.encoder === Encoder.Sibelius;
+    const meta = this.score.options.meta;
+    // Sibelius 把两声部的弧都写在和弦首音上：按弧的方向重挂——上方弧挂最高音、下方弧挂最低音
+    this.part.slurs = this.part.slurs.filter((sl) => {
+      const pick = (nt: NoteLayout | null): NoteLayout | null => {
+        if (!sib || !nt) return nt;
+        const ns = nt.chord.notes;
+        return sl.above ? ns[ns.length - 1]! : ns[0]!;
+      };
+      sl.startNote = pick(sl.startNote);
+      if (sl.startNote && !sl.startNote.jpMelody) return false;
+      sl.endNote = pick(sl.endNote);
+      if (sl.endNote && !sl.endNote.jpMelody) return false;
+      return true;
+    });
+    // 延音线按**原本挂的那个音**判，不重挂
+    this.part.tied = this.part.tied.filter(
+      (t) => !(t.startNote && !t.startNote.jpMelody) && !(t.endNote && !t.endNote.jpMelody),
+    );
+    for (const md of this.part.measures) {
+      md.chords = md.chords.filter((ch) => {
+        const n = ch.notes.find((nn) => nn.jpMelody);
+        if (!n) return false;
+        ch.notes = [n];
+        return true;
+      });
+      for (const ent of md.noteEntries) {
+        ent.notes = ent.notes.filter((n) => n.jpMelody);
+        ent.layout(meta, sib);
+      }
+      // 组里还留着非旋律音的符杠组整组删：那几个和弦已从 md.chords 摘掉、音没被缩到旋律音
+      md.beams = md.beams.filter((g) => !g.chords.some((ch) => ch.notes.some((n) => !n.jpMelody)));
+    }
+    this.guessStemDir();
+    this.formatBeams();
   }
 
   private loadMeasure(m: Measure, mif: MeasureLayout, prevDiv: number): number {
@@ -300,8 +343,17 @@ class DocPartLoader {
     laterAttrsAt(m.elements.length);
     for (const b of m.barlines ?? []) this.processBarline(b, mif);
 
-    for (const ch of md.chords) {
-      if (ch.rest && fEq(ch.dur, mif.dur)) ch.measureRest = true;
+    // 整小节休止照 parser.cpp:1304：拿**当前拍号**折算的小节长 tsDur 比，不是本小节实际最大时值
+    // mif.dur——弱起/不满小节里一个四分或二分休止会恰好等于 mif.dur，被误当整小节休止（换全休止
+    // 字形、居中、Y 按全休止走）。tsDur 取到此刻为止最后设过的拍号（musicpp 的 stf->time.rbegin()）。
+    {
+      const ts = this.part.staves[0]?.time.last?.v;
+      if (ts) {
+        const tsDur = new Fraction(ts.beats * 4, ts.beatType);
+        for (const ch of md.chords) {
+          if (ch.rest && fEq(ch.dur, tsDur)) ch.measureRest = true;
+        }
+      }
     }
 
     md.sortChords();
@@ -431,6 +483,8 @@ class DocPartLoader {
       lrc.font = l.font?.family || l.font?.size
         ? new Font(l.font.family ?? this.score.defaults.lyricFont.family, l.font.size ? l.font.size / this.score.scaling : this.score.defaults.lyricFont.size)
         : this.score.defaults.lyricFont;
+      // parser.cpp:2576：lrcHWID 时歌词字体开 hwid（→ OpenType `halt`），标点占半身
+      lrc.compress = this.score.options.lrcHWID ? "halfwidth" : "clreq";
 
       lrc.updateWidth(this.score.options.meta);
 
@@ -963,7 +1017,7 @@ class DocPartLoader {
   /**
    * model.cpp::guessStemDir（musicpp 在 Part::removeNoneMelody 删完非旋律音之后调）：
    * 每个和弦按首音定方向（中线 line=-4 及以上朝下），再把每个符杠组统一——组内（跳过休止与首音正落中线的）
-   * 方向不一致或都没有时朝上，一致就取那个方向。只留旋律的歌本曲目开（`MixedOptions.guessStemDir`）。
+   * 方向不一致或都没有时朝上，一致就取那个方向。只在 `removeNoneMelody` 删完非旋律音后调。
    */
   private guessStemDir(): void {
     for (const md of this.part.measures) {
@@ -1024,15 +1078,17 @@ class DocPartLoader {
   }
 
   private processTied(): void {
-    const done = new Set<NoteLayout>();
+    // 只记「已被吃掉的 stop」：连续延音链 A(start) → B(stop+start) → C(stop) 里，B 既是前一条的
+    // 终点又是后一条的起点，若把起止端点记进同一个 done（原写法），配完 A→B 后 B 的 start 会被跳过，
+    // B→C 整条丢失（《那一天正来临》末行）。musicpp parser.cpp:820 的 done 只用于报未配对端点，
+    // 不参与筛选；这里保留「一个 stop 只配一次」以免重复配对。
+    const usedStops = new Set<NoteLayout>();
     for (const start of this.tieStarts) {
-      if (done.has(start.note)) continue;
       for (const stop of this.tieStops) {
-        if (done.has(stop.note)) continue;
+        if (usedStops.has(stop.note)) continue;
         if (!fEq(stop.endTick, start.endTick)) continue;
         if (stop.pitch !== start.pitch) continue;
-        done.add(start.note);
-        done.add(stop.note);
+        usedStops.add(stop.note);
         const tied = this.part.newTied();
         tied.startNote = start.note;
         tied.endNote = stop.note;

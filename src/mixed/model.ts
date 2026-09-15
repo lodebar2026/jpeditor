@@ -10,7 +10,7 @@ import { Fraction } from "../common/fraction";
 import { Point } from "../common/geom";
 import { Font } from "../layout/font";
 import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
-import { MIXED_PUNCT } from "../common/cjkpunct";
+import { MIXED_PUNCT, type CompressMode } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 import type { Chord as DocChord, Harmony as DocHarmony, Lyric as DocLyric, Note as DocNote, Song } from "../model/doc";
 import { beamCount } from "../model/jianpu";
@@ -966,6 +966,8 @@ export class LyricLayout {
   readonly chord: ChordLayout;
   offset = new Fraction(0);
   font!: Font;
+  /** 标点挤压档（`MixedOptions.lrcHWID` → 半身式）：量宽与绘制共用这一个，绝不能各走各的。 */
+  compress: CompressMode = "halfwidth";
   extend: Fraction | null = null;
 
   x = -1;
@@ -1034,9 +1036,10 @@ export class LyricLayout {
     let last = chars.length - 1;
     for (let i = 0; i < chars.length; i++) if (isCjk(chars[i])) { first = i; break; }
     for (let i = chars.length - 1; i >= 0; i--) if (isCjk(chars[i])) { last = i; break; }
-    // 宽度取**标点挤压后**的笔位（CLREQ，见 common/cjkpunct.ts）：`「你` 的前引号左半格、
-    // `我。` 的句号右半格该压就压，居中的锚点跟着挪，绘制端拿的是同一串坐标。
-    const { xs, width } = this.font.run(this.text);
+    // 宽度取**标点挤压后**的笔位（见 common/cjkpunct.ts）：居中的锚点跟着挪，绘制端拿的是同一串坐标。
+    // 档位照 `compress`——歌词走半身式（musicpp 的 `lrcHWID` → 歌词字体开 OpenType `halt`），
+    // 不是 `Font.run()` 缺省的全身式 `clreq`：两派压出来的总宽、居中偏移与逐字落点都不同。
+    const { xs, width } = this.font.run(this.text, this.compress);
     const at = (i: number): number => (i <= 0 ? 0 : i >= xs.length ? width : xs[i]);
     return [at(first), at(last + 1) - at(first), width - at(last + 1)];
   }
@@ -2807,14 +2810,32 @@ export class MixedOptions {
   };
   barlineDist = 5;
   slurStemDy = 15;
-  lrcHWID = true;
+  /** 歌词字体开 hwid（→ OpenType `halt`，标点占半身）：歌本（`pdflayout/songbook.ts`）开，
+   *  对齐 util/pao.cpp:1002；编辑器视图不开（wasm.cpp:36 同样 false），歌词标点仍按全身式
+   *  上下文挤压（`clreq`）排。 */
+  lrcHWID = false;
   chineseHyphen = false;
-  /** 按首音位置重猜符干方向并统一符杠组（musicpp guessStemDir；只留旋律的歌本曲目开） */
-  guessStemDir = false;
+  /** 只留旋律：读完整条（含弧/延音线配对与方向推断）之后删掉非旋律音，
+   *  再按首音重猜符干方向并重排符杠（musicpp Part::removeNoneMelody → guessStemDir）。
+   *  歌本清单里 `layout.melody-only` 的曲目开。 */
+  melodyOnly = false;
   /** 谱行包围盒里文字的行高按字号算（原排版程序口径，歌本 `pdflayout/songbook.ts` 开）；缺省按字体 ascent−descent */
   textLineHeightBySize = false;
   harmonySize = 9;
   jpTopDy = 0;
+  // ── 简谱层附件相对数字的位置。缺省值即原排版程序的常量
+  //    （render.cpp::drawNotesJianPu 875-947、BeamLevelData::drawJianPu:159），单位 tenths；
+  //    `@staff` 里按 sp 写（1sp = 10 tenths，见 style/staff.ts）。
+  /** 高音点首点基线（render.cpp 的 `5-2`），再减 `jpTopDy` */
+  jpOctaveUpY = 3;
+  /** 低音点首点基线 = `mixStaffHeight + beamDistJP × 减时线层数` 再加这个（render.cpp 的 `-2`） */
+  jpOctaveDownDy = -2;
+  /** 第一层减时线基准 y，再按 `(40 − mixStaffHeight) × 0.8` 上提（render.cpp 的 `35 - diff*0.8`） */
+  jpBeamTopY = 35;
+  /** 附点笔位 = 数字左缘 + `(数字 advance/2 + 这个) × 0.75`（render.cpp 的 `width/2+10`，mix 再乘 0.75） */
+  jpDotDx = 10;
+  /** 附点基线 = `字号 × 0.75` 再加这个 */
+  jpDotDy = 0;
   jpGraceScale = 0.6;
   cueSize = 0.8;
 

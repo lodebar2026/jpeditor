@@ -304,15 +304,22 @@ export function measureGlyphRun(
   t.setAttribute("font-size", String(fontSizePx));
   t.setAttribute("font-weight", fontWeight);
   t.style.fontFeatureSettings = featureSettings(features);
+  // **不能让浏览器折叠空白**：默认 `white-space` 下「十架 归」里的空格不成字，
+  // 逐字取笔位时 `getStartPositionOfChar` 的下标就越界（IndexSizeError），
+  // 且其后每个字的笔位都错位一格。
+  t.style.whiteSpace = "pre";
   t.textContent = text;
   const xs: number[] = [];
+  const n = t.getNumberOfChars();
   let u16 = 0;
   for (const ch of chars) {
-    xs.push(t.getStartPositionOfChar(u16).x);
+    // 仍越界（浏览器把某几个码元合成一个字位）时按上一笔位顺延，不抛
+    xs.push(u16 < n ? t.getStartPositionOfChar(u16).x : (xs[xs.length - 1] ?? 0));
     u16 += ch.length;
   }
   const width = t.getComputedTextLength();
   t.style.fontFeatureSettings = "";
+  t.style.whiteSpace = "";
   return { xs, width };
 }
 
