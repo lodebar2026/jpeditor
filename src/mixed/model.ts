@@ -2794,6 +2794,8 @@ export class MixedOptions {
   hideBarNumber = false; // 对齐 musicpp model.hpp:1062（默认显示小节号）
   initialKeyTime = true;
   showKeyChangeJp = true; // PAO 混排显示简谱调号「1=X」（util/pao.cpp:999）
+  /** 简谱调号「1=X」按 jianpuFont 排（render.cpp::drawKey 原样，歌本用）；缺省按 mixFont 随混排谱高缩小（编辑器视图） */
+  jpKeyJianpuFont = false;
   lineWidths: LineWidths = {
     staff: 1,
     jpBeam: 1,

@@ -46,7 +46,7 @@
 | `@template 区域 { … }` | 模板区域（§4） | `StyleSheet.template` |
 | `@flow { … }` | 装页（§6） | `StyleSheet.template.flow` |
 | `@media (维度: 值) and (…) { … }` | 按 mode / engine 限定 | `StyleRule.when` |
-| `@jianpu` `@pu` `@staff { 键: 值; }` | 各尺子的 `overrides` | `StyleSheet.jianpu/pu/staff` |
+| `@jianpu` `@pu` `@staff { 键: 值; }` | 各尺子的 `overrides`（`@staff` 另收 `MixedOptions` 的布尔开关，如 `showKeyChangeJp: false`） | `StyleSheet.jianpu/pu/staff` |
 
 **级联没有 CSS 的特异性**：层序优先，同层按出现顺序，后写的覆盖先写的——与 `computeStyle` 一致。
 
