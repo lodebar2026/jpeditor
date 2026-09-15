@@ -2341,6 +2341,31 @@ export class PartGroup {
   symbol = GroupSymbol.None;
 }
 
+/** 三次贝塞尔 B(t)（t∈[0,1]）在一个坐标分量上的最小值：比较端点与 B'(t)=0 的内部极值点。 */
+function cubicMinY(p0: number, p1: number, p2: number, p3: number): number {
+  let min = Math.min(p0, p3);
+  // B'(t)/3 = a t² + b t + c
+  const a = -p0 + 3 * p1 - 3 * p2 + p3;
+  const b = 2 * (p0 - 2 * p1 + p2);
+  const c = p1 - p0;
+  const at = (t: number) => {
+    if (t <= 0 || t >= 1) return;
+    const u = 1 - t;
+    min = Math.min(min, u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3);
+  };
+  if (Math.abs(a) < 1e-12) {
+    if (Math.abs(b) > 1e-12) at(-c / b);
+  } else {
+    const d = b * b - 4 * a * c;
+    if (d >= 0) {
+      const s = Math.sqrt(d);
+      at((-b + s) / (2 * a));
+      at((-b - s) / (2 * a));
+    }
+  }
+  return min;
+}
+
 export class SysStaff {
   partStaff: PartStaff;
   distance = 0;
@@ -2393,8 +2418,8 @@ export class SysStaff {
         const [pl, pr] = slurTiedPos(eng, sl.startChord(), sl.endChord(), true);
         const [pt0, pt1] = SlurTieBase.calcSlurPoints(
           new Point(pl.x, pl.y), new Point(pr.x, pr.y), mixedSlurStyle(true));
-        // 三次贝塞尔 y 范围：取四个控制点 y 的最小值近似（够用：仅决定简谱层高度）
-        const top = Math.min(pl.y, pt0.y, pt1.y, pr.y);
+        // 曲线紧包围盒上沿（照 CGPathGetPathBoundingBox；控制点不在曲线上，取控制点最小值会偏高）
+        const top = cubicMinY(pl.y, pt0.y, pt1.y, pr.y);
         miny = Math.min(miny, top - 1);
       }
     }
