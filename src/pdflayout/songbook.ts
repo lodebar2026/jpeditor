@@ -16,7 +16,7 @@ import { Group, TextFrame } from "../layout/pageitem";
 import { MetaData } from "../smufl/smufl";
 import { loadScoreDoc } from "../model/fromxml";
 import { metaFlag } from "../model/metakeys";
-import { keepMelodyOnly } from "../model/melodyonly";
+import { keepFirstPart } from "../model/melodyonly";
 import type { Song } from "../model/doc";
 import { MixedOptions, type Sys } from "../mixed/model";
 import { layoutStaff } from "../mixed/layout";
@@ -106,19 +106,22 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   const title = song.work.title ?? "";
   const ctx: StyleContext = { engine: "staff", mode: "mixed" };
   const sheet = computeStyle([THEMES.staff, input.rules], ctx);
-  if (metaFlag(song, "layout.melody-only")) keepMelodyOnly(song);
+  // 只留旋律第一步：裁到 P1（删非旋律音要等混排引擎读完整条，见 model/melodyonly.ts）
+  if (metaFlag(song, "layout.melody-only")) keepFirstPart(song);
 
   const options = new MixedOptions(meta);
   options.hideBarNumber = true;
   options.textLineHeightBySize = true;
   options.jpKeyJianpuFont = true;
+  // 歌词标点走半身式（util/pao.cpp:1002 `eng->lrcHWID = true` → 歌词字体开 hwid）
+  options.lrcHWID = true;
   // 样式表 `@staff` 最后叠：简谱调号 `showKeyChangeJp` 等开关由书定
   applyStaffStyle(options, sheet);
   // 和弦字体：musicpp Engraver::wordFont 缺省是思源黑体（model.hpp），成品和弦即此；编辑器视图沿用 Times New Roman
   options.wordFont = "Source Han Sans SC";
   if (metaFlag(song, "layout.chinese-hyphen")) options.chineseHyphen = true;
-  // musicpp removeNoneMelody 删完非旋律音后按首音重猜符干（model.cpp::guessStemDir）
-  if (metaFlag(song, "layout.melody-only")) options.guessStemDir = true;
+  // 只留旋律第二步：读完整条后删非旋律音 → 重猜符干（musicpp removeNoneMelody → guessStemDir）
+  if (metaFlag(song, "layout.melody-only")) options.melodyOnly = true;
   const score = layoutStaff(doc, options);
   formatMixedScore(score);
   const scaling = score.scaling;

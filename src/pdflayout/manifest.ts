@@ -25,6 +25,10 @@ export interface BookManifest {
   title: string;
   /** 歌本样式表（`.jpcss`）路径 */
   style: string;
+  /** 按装页口径叠加的样式表：键是 `@flow song-start` 的档，值是 `.jpcss` 路径，
+   *  解析出的规则接在 `style` 之后（后者覆盖前者）。同一本书两种口径的差异写在这里，
+   *  不要为此复制整份样式表。 */
+  styleByFlow?: Partial<Record<"new-page" | "continue", string>>;
   /** 谱文件根目录 */
   root?: string;
   songs: ManifestSong[];

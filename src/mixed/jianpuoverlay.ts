@@ -144,34 +144,25 @@ function drawColumn(eng: MixedOptions, col: Group, md: PartMeasureLayout, ch: Ch
   // octave dots
   const oct = n.octaveJp();
   if (oct !== 0) {
-    const dotBnd = font.charBound(".");
-    const dotR = (dotBnd.bottom - dotBnd.top) / 2;
-    // 低音点那一摞的步距：一档 = 一个点 + 它上面那道空（与减时线同一个 gap）。
-    const belowGap = font.size / 9;
+    // **位置一律照 render.cpp:875-903**：高音点 `5-2`；低音点从谱高起算、每多一层减时线加
+    // 一个 `beamDistJP`（注意原实现这里**不乘** sc），再 −2；逐点步距 `octaveDotDist*sc`。
+    // 早先改成「按减时线墨迹底往下均分」的自算口径，与成品差一档，红蓝对照里整排点都错开。
     let octY: number;
-    let step = eng.octaveDotDist * sc;
     if (oct > 0) {
-      octY = 3 - eng.jpTopDy;
+      octY = eng.jpOctaveUpY - eng.jpTopDy;
     } else {
-      // **低音点接着减时线往下排，间距与「数字↓减时线」那一档相等**（用户口径：
-      // 音符、减时线、低音点看起来要均匀）。原来是从 `staffHeight` 起算的经验值
-      // （`staffHeight + beamDistJP*层数 − 2`），与减时线的实际墨迹底无关，
-      // 层数一多就越飘越远。
-      const beams = ch.jpBeamCount();
-      const nb = font.charBound(String(num));
-      const beamBottom = beams > 0
-        ? ypos + belowGap + eng.lineWidths.jpBeam / 2
-          + (beams - 1) * eng.beamDistJP * sc + eng.lineWidths.jpBeam / 2
-        : ypos + nb.bottom;
-      octY = beamBottom + belowGap + dotR;
-      step = 2 * dotR + belowGap;
+      octY = eng.mixStaffHeight + eng.beamDistJP * ch.jpBeamCount() + eng.jpOctaveDownDy;
     }
+    const step = eng.octaveDotDist * sc;
     // 八度点是**实心矢量圆**，不是字体里的 `.` 字形（三条简谱路统一，见 jpglyph.ts）。
-    // 半径照原先 `.` 的墨迹高折半取，与字形等大；圆按**中心**定位。
-    const r = dotR;
+    // 圆按中心定位，而原实现给的是 `.` 的**笔位**（基线），所以要把圆心挪到该字形的墨心上。
+    const db = font.charBound(".");
+    const r = (db.bottom - db.top) / 2;
+    const inkDx = (db.left + db.right) / 2 - font.measureText(".") / 2;
+    const inkDy = (db.top + db.bottom) / 2;
     for (let i = 0; i < Math.abs(oct); i++) {
-      const cx0 = x + nw / 2;
-      const cy0 = octY + i * step * graceSc + graceDy;
+      const cx0 = x + nw / 2 + inkDx;
+      const cy0 = octY + i * step * graceSc + graceDy + inkDy;
       if (ch.grace) {
         const g = new Group();
         const mtx = new Matrix33();
@@ -196,14 +187,17 @@ function drawColumn(eng: MixedOptions, col: Group, md: PartMeasureLayout, ch: Ch
     for (let c = 1; c < cnt; c++) col.add(textAt(ch.rest ? "0" : "-", font, x + dx * c, ypos));
   } else {
     // 附点：**实心矢量圆**（与八度点、谱面那一路统一，见 jpglyph.ts / layout.ts::addAugDots），
-    // 纵向落在数字墨迹的正中，横向从数字的墨迹右缘起算。
-    const nb = font.charBound(str);
+    // 位置照 render.cpp:938-947——笔位 `x + (数字 advance/2 + 10) * 0.75`、基线 `字号 * 0.75`；
+    // 圆心再挪到 `.` 字形的墨心上（原实现画的是字形，我们画圆）。多个附点按原实现叠在同一处，
+    // 这里按 advance 顺排（成品无双附点，不影响）。
     const db = font.charBound(".");
     const r = (db.bottom - db.top) / 2;
-    const gap = r * 2 * 0.75;
-    const cy = ypos + (nb.top + nb.bottom) / 2;
+    const inkDx = (db.left + db.right) / 2;
+    const inkDy = (db.top + db.bottom) / 2;
+    const adv = font.measureText(".");
+    const px = x + (nw / 2 + eng.jpDotDx) * 0.75;
     for (let d = 0; d < ch.dot; d++) {
-      col.add(jpDot(x + nb.right + gap + r + d * (2 * r + gap), cy, r, BLACK));
+      col.add(jpDot(px + d * adv + inkDx, font.size * 0.75 + eng.jpDotDy + inkDy, r, BLACK));
     }
   }
 }
@@ -259,9 +253,9 @@ function drawJpBeams(eng: MixedOptions, container: Group, md: PartMeasureLayout)
         // 端点 = 数字中心 ±数字宽/2（grace 整体按 jpGraceScale 缩放，render.cpp:146-160）。
         const lx = ntL.x + (first.noteheadWidth(meta) / 2 - font.measureText(numL) / 2) * graceSc;
         const rx = ntR.x + (last.noteheadWidth(meta) / 2 + font.measureText(numR) / 2) * graceSc;
-        // 第一层减时线按**墨迹上缘**离数字墨迹底 `font.size / 9`（与谱面那一路的
-        // `LayoutOptions.jpBelowGap` 同一口径：数字↓减时线↓低音点三档等距）。
-        let y = lev * eng.beamDistJP * sc + font.size + font.size / 9 + eng.lineWidths.jpBeam / 2;
+        // 纵向照 render.cpp:159：`level*beamDistJP*sc + 35 − (40 − mixStaffHeight)*0.8`。
+        // 早先按「数字墨迹底 + font.size/9」自算，谱高 30 时比成品高 1.5 tenths。
+        let y = lev * eng.beamDistJP * sc + eng.jpBeamTopY - (40 - eng.mixStaffHeight) * 0.8;
 
         if (grace) {
           // grace 减时线上移并加尾钩（render.cpp:165-186）。

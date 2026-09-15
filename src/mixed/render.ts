@@ -182,10 +182,10 @@ export function drawNotesNormal(
       addLine(container, lx1 - 3, ly, lx2 + 3, ly, eng.lineWidths.leger);
     }
 
-    if (md.chords.some((ch) => ch.dot > 0 && !ch.rest)) {
-      for (const dotLine of ent.dot.dots) {
-        addSmufl(container, GlyphCodes.augmentationDot, ent.dot.dotPos, -5 * dotLine, fs);
-      }
+    // 附点无条件照 ent.dot.dots 画（render.cpp:1031）：原先还要求本小节存在「非休止的附点音符」，
+    // 小节里只有附点休止时（《那一天正来临》）算好的附点会被整条吞掉。
+    for (const dotLine of ent.dot.dots) {
+      addSmufl(container, GlyphCodes.augmentationDot, ent.dot.dotPos, -5 * dotLine, fs);
     }
 
     for (const it of ent.acc.accidentals) {
@@ -818,8 +818,8 @@ export function drawLrc(
     t.color = 0xff000000;
     t.x = x + lrc.xOffset;
     t.y = -lrc.y;
-    // 标点挤压（CLREQ）：`widthInfo` 量的就是挤压后的宽度，绘制拿同一串笔位。
-    if ([...lrc.text].length > 1) t.charXs = lrc.font.run(lrc.text).xs;
+    // 标点挤压：`widthInfo` 量的就是挤压后的宽度，绘制拿同一串笔位（档位同为 `lrc.compress`）。
+    if ([...lrc.text].length > 1) t.charXs = lrc.font.run(lrc.text, lrc.compress).xs;
     container.add(t);
 
     if (lrc.prefix) {

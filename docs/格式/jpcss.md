@@ -19,12 +19,13 @@
 都先用脚本改好 MusicXML（KL2020 见 `scripts/kl2020-prep.mjs`，写 `<cue/>`、`<stem>`、`relative-x/relative-y`、
 `<text font-family>` 等标准写法），`.jpcss` 只管全书统一的版式。写了 `@song` 或 `角色[…]` 的样式表解析时直接报错。
 
-内置三份：
+内置四份：
 
 | 文件 | 歌本 | 基准 |
 |---|---|---|
 | `src/style/books/hymn500.jpcss` | 诗歌 500 首成书（`engine: book`） | 现有 `rebuild.mjs` 输出逐字节不变 |
-| `src/style/books/kl2020.jpcss` | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF；接排版对照 1219 版 |
+| `src/style/books/kl2020.jpcss` | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF |
+| `src/style/books/kl2020-flow.jpcss` | 同上的**接排版叠加表**（只含与单曲版的差异，清单 `styleByFlow.continue` 指过来） | 1219 接排版 PDF |
 | `src/style/books/pu-original.jpcss` | 文本谱原样档（`engine: pu`）：目前只有页脚区域，页头仍是 `paintHeader` | 展开档指纹与 page-check 不变 |
 
 ## 1. 词法
@@ -46,7 +47,7 @@
 | `@template 区域 { … }` | 模板区域（§4） | `StyleSheet.template` |
 | `@flow { … }` | 装页（§6） | `StyleSheet.template.flow` |
 | `@media (维度: 值) and (…) { … }` | 按 mode / engine 限定 | `StyleRule.when` |
-| `@jianpu` `@pu` `@staff { 键: 值; }` | 各尺子的 `overrides`（`@staff` 另收 `MixedOptions` 的布尔开关，如 `showKeyChangeJp: false`） | `StyleSheet.jianpu/pu/staff` |
+| `@jianpu` `@pu` `@staff { 键: 值; }` | 各尺子的 `overrides`（`@staff` 收 `MixedOptions` 的布尔开关如 `showKeyChangeJp: false`，与数值字段如 `jpBeamTopY: 3.5sp`——数值只认 `em`/`sp`，`1sp` = 10 tenths） | `StyleSheet.jianpu/pu/staff` |
 
 **级联没有 CSS 的特异性**：层序优先，同层按出现顺序，后写的覆盖先写的——与 `computeStyle` 一致。
 
@@ -187,6 +188,9 @@ right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7;
 - `title` / `number` / `creators` / `rights` 覆盖谱文件里的对应字段（`creators` 整组替换）；`root` 是谱文件与字体文件的根目录。
 - `meta` 按键**浅覆盖**谱文件自带的 `Song.meta`，以清单为准。
 - `file` 指向改谱脚本另存的 `.fixed.xml`（没有改谱的曲目指原文件）。XML 表达不了的排版开关（`layout.chinese-hyphen`、`layout.melody-only`、`layout.new-page`）写在 `meta`。
+- `styleByFlow: { "new-page": "…", "continue": "…" }`：**按装页口径叠加**的样式表，解析后接在 `style` 之后
+  （后者覆盖前者）。同一本书两种口径只差几项时写这个，不要复制整份样式表——KL2020 接排版（对照 1219 版）
+  印简谱调号「1=X」、单曲版不印，差异就这一条，落在 `src/style/books/kl2020-flow.jpcss`。
 - 清单由导入脚本从曲目库生成（`gen-manifest-kl2020.mjs`），再由 `kl2020-prep.mjs` 改谱并回写 `file` 与开关；库路径由参数或环境变量给。
 
 ## 9. 示例
