@@ -92,6 +92,11 @@ export function headTrim(ch: string): number {
  */
 export type CompressMode = "clreq" | "halfwidth" | "none";
 
+/** 把有 Unicode 对应字符的全角标点换成半角形，作为输出端无 OpenType `halt` GSUB 时的等效字形。 */
+export function toHalfWidthPunct(s: string): string {
+  return s.replace(/[：；，！？（）]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+}
+
 /**
  * 一个字**两侧的实际留白**（像素）：advance 减墨迹。挤压量拿它封顶——**只压空白，绝不压墨**。
  * 不给的话按「标点的半格空白是满的」算。

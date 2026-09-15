@@ -4,6 +4,7 @@
 // SMuFL 字形用 TextFrame + font.family="Bravura"（等价 SmuflText，无需 LayoutOptions）。
 
 import { Fraction } from "../common/fraction";
+import { punctClass } from "../common/cjkpunct";
 import { Matrix33, Point } from "../common/geom";
 // `Slur` 这个名字在 model.ts 里是**跨度对象**（哪两个音符之间有弧），
 // layout.ts 里的是**画出来的那条弧**，所以起个别名区分。
@@ -819,7 +820,24 @@ export function drawLrc(
     t.x = x + lrc.xOffset;
     t.y = -lrc.y;
     // 标点挤压：`widthInfo` 量的就是挤压后的宽度，绘制拿同一串笔位（档位同为 `lrc.compress`）。
-    if ([...lrc.text].length > 1) t.charXs = lrc.font.run(lrc.text, lrc.compress).xs;
+    if ([...lrc.text].length > 1) {
+      const chars = [...lrc.text];
+      const run = lrc.font.run(lrc.text, lrc.compress);
+      if (eng.musicppHwidGlyphs && lrc.compress === "halfwidth") {
+        // musicpp 在字体上真正开 `hwid`，PDF 输出则只有字符和笔位。
+        // 不把标点换成 ASCII：保留“，；「《等中文字形，只将其墨迹中心
+        // 摆到 `halt` 实测得到的那个 advance 格中心。这也避免全角左括号
+        // 按半宽笔位画时被后一字盖住。
+        t.charXs = run.xs.map((x0, i) => {
+          if (punctClass(chars[i]!) === "none") return x0;
+          const x1 = run.xs[i + 1] ?? run.width;
+          const ink = lrc.font.charBound(chars[i]!);
+          return (x0 + x1) / 2 - (ink.left + ink.right) / 2;
+        });
+      } else {
+        t.charXs = run.xs;
+      }
+    }
     container.add(t);
 
     if (lrc.prefix) {
@@ -848,9 +866,10 @@ export function drawHarmony(
 ): void {
   const fontsz = eng.harmonySize / (scaling > 0 ? scaling : 0.45);
   const wordFont = new Font(eng.wordFont, fontsz);
-  // SMuFL csym 字形（升降号/和弦质量）。musicpp（render.cpp:541）用 "Bravura Text" 内联变体，
-  // 但本工程 webview 只注册了 "Bravura"（styles.css @font-face），且其含同一套记号字形，故用 Bravura。
-  const musicFont = new Font("Bravura", fontsz);
+  // SMuFL csym 字形（升降号/和弦质量）。musicpp（render.cpp:541）明确使用同字号的
+  // "Bravura Text"。不能拿 Bravura 乘一个统一比例代替：两款字体的 csym 升降号等大，
+  // diminished/augmented 等质量字形却不是同一比例；只有实际 Text 字体能逐字形对齐。
+  const musicFont = new Font("Bravura Text", fontsz);
   // 整小节休止的混排小节，offset==0 的和弦标记右移 15（render.cpp:504-515）。
   const measureRest =
     mixed && data.chords.length === 1 && data.chords[0].measureRest;
@@ -1375,12 +1394,15 @@ function drawSysStaff(container: Group, sys: Sys, st: SysStaff, ypos: number): v
     if (m === sys.measures[sys.measures.length - 1]) {
       let endPos = m.width;
       if (sys.timeChangeWidth > 0 && m.index + 1 < scr.measures.length) {
-        endPos -= sys.timeChangeWidth + 5;
+        // 末小节的数据区/小节线已经另留了 5 tenths 间距；预告拍号自身只退它的宽度。
+        // musicpp render.cpp::drawSysStaff 同样是 `endPos -= timeChangeWidth`。
+        endPos -= sys.timeChangeWidth;
         const next = scr.measures[m.index + 1];
         if (!isJp) drawTime(eng, grp, next, ps, endPos);
       }
       if (sys.keyChangeWidth > 0 && m.index + 1 < scr.measures.length) {
-        endPos -= sys.keyChangeWidth + 5;
+        // 与 musicpp 一致：5 tenths 是小节线与预告属性之间的空隙，不属于调号宽度。
+        endPos -= sys.keyChangeWidth;
         const next = scr.measures[m.index + 1];
         if (!isJp) drawKey(eng, grp, next, ps, endPos);
       }

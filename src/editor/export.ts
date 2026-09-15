@@ -27,19 +27,19 @@ function svgSize(svg: SVGSVGElement): { width: number; height: number } {
   throw new Error("无法读取乐谱页面尺寸");
 }
 
-let bravuraDataUrlPromise: Promise<string> | null = null;
-async function bravuraDataUrl(): Promise<string> {
-  if (!bravuraDataUrlPromise) {
-    bravuraDataUrlPromise = fetch(asset("redist/Bravura.woff2"))
+const musicFontDataUrls = new Map<string, Promise<string>>();
+async function musicFontDataUrl(file: string): Promise<string> {
+  if (!musicFontDataUrls.has(file)) {
+    musicFontDataUrls.set(file, fetch(asset(`redist/${file}`))
       .then((r) => r.arrayBuffer())
       .then((buf) => {
         let bin = "";
         const bytes = new Uint8Array(buf);
         for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
         return `data:font/woff2;base64,${btoa(bin)}`;
-      });
+      }));
   }
-  return bravuraDataUrlPromise;
+  return musicFontDataUrls.get(file)!;
 }
 
 /** 给一页 SVG 铺上纸张底色（插一个满幅 rect 到最底层）。
@@ -69,8 +69,13 @@ async function svgToBytes(svg: SVGSVGElement, scale: number, bg = "#fff"): Promi
   clone.removeAttribute("style");
 
   const style = document.createElementNS(SVG_NS, "style");
+  const [bravura, bravuraText] = await Promise.all([
+    musicFontDataUrl("Bravura.woff2"),
+    musicFontDataUrl("BravuraText.otf"),
+  ]);
   style.textContent =
-    `@font-face{font-family:"Bravura";src:url("${await bravuraDataUrl()}") format("woff2");}`;
+    `@font-face{font-family:"Bravura";src:url("${bravura}") format("woff2");}` +
+    `@font-face{font-family:"Bravura Text";src:url("${bravuraText}") format("opentype");}`;
   clone.insertBefore(style, clone.firstChild);
 
   const svgText = new XMLSerializer().serializeToString(clone);

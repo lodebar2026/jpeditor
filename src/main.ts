@@ -31,18 +31,23 @@ W4@1,1:
 {4.[圣]}哉，圣哉，圣哉！全能大主宰！天上地下海中万物颂主尊称，圣哉，圣哉，圣哉！恩慈永无更改，荣耀与赞美，归三一真神。
 `;
 
-// 注册 Bravura @font-face（替代 styles.css 里的静态声明），按 Vite base 解析字体 URL。
+// 注册 Bravura 与 Bravura Text @font-face（替代 styles.css 里的静态声明），按 Vite base
+// 解析字体 URL。和弦内的 csym 字形必须走真实 Text 变体，不能用普通 Bravura 等比模拟。
 async function registerBravura() {
   if (typeof FontFace === "undefined") return;
-  const face = new FontFace("Bravura", `url(${asset("redist/Bravura.woff2")}) format("woff2")`);
-  await face.load();
-  (document.fonts as FontFaceSet).add(face);
+  const faces = [
+    new FontFace("Bravura", `url(${asset("redist/Bravura.woff2")}) format("woff2")`),
+    new FontFace("Bravura Text", `url(${asset("redist/BravuraText.otf")}) format("opentype")`),
+  ];
+  await Promise.all(faces.map((face) => face.load()));
+  for (const face of faces) (document.fonts as FontFaceSet).add(face);
 }
 
 async function boot() {
   await registerBravura();
   await ensureFontsReady([
     { family: "Bravura", size: 40 },
+    { family: "Bravura Text", size: 20 },
     { family: "PingFang SC", size: 28 },
   ]);
   const meta = await MetaData.load();
