@@ -96,6 +96,7 @@ row { left: "{creators.lyricist}", "{creators.composer}" as credit; right: "…"
 ```
 
 - `row(baseline: 长度表达式)`：fixed 区域里是页内绝对基线（加区域 `dy`），block 区域里是相对区域顶的基线（首行不加 ascent）。
+- `row(top: 长度表达式)`：仅 block 区域，行顶相对区域顶固定（首行基线 = 行顶 + ascent），不接上一行块底；块高照常计入。
 - block 区域不写 baseline 的行接在上一行块底，`row(gap-before: 29)` 再空一段（不计入块高）；首行基线 = 行顶 + 字体 ascent。
 - 格有五个槽位：`left | center | right | inner | outer`。`inner`/`outer` 按页码奇偶换边（装订侧/切口侧）。
 - 槽位的值是逗号分隔的一串**行**，每行是一个内容表达式，可带 `as 角色`。不写 `as` 时继承本槽位最后一个 `as`，
