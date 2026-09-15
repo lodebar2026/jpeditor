@@ -21,10 +21,6 @@ export interface StyleContext {
   engine?: StyleEngine;
   page?: "left" | "right" | "first";
   verse?: number;
-  /** 曲名，或 `#曲号`。`.jpcss` 的 `@song`。 */
-  song?: string;
-  /** 本曲曲号（上下文专用）：`@song #2` 按它匹配，`song` 那一维就可以写曲名。 */
-  songNumber?: string;
 }
 
 export interface StyleRule {
@@ -38,24 +34,17 @@ export type StyleLayer = readonly StyleRule[];
 /** 规则的限定是否命中上下文。上下文里没有的维度，带这个限定的规则不生效。 */
 export function ruleMatches(when: StyleContext | undefined, ctx: StyleContext): boolean {
   if (!when) return true;
-  return (Object.keys(when) as (keyof StyleContext)[]).every(
-    (k) => when[k] === undefined || when[k] === ctx[k] || (k === "song" && ctx.songNumber !== undefined && when.song === `#${ctx.songNumber}`),
-  );
+  return (Object.keys(when) as (keyof StyleContext)[]).every((k) => when[k] === undefined || when[k] === ctx[k]);
 }
 
 /** 按层序、层内按规则序叠出 computed 样式表。 */
 export function computeStyle(layers: readonly StyleLayer[], ctx: StyleContext): StyleSheet {
   let out = emptySheet();
-  const scoped: NonNullable<StyleSheet["scoped"]> = [];
   for (const layer of layers) {
     for (const rule of layer) {
-      if (!ruleMatches(rule.when, ctx)) continue;
-      const { scoped: s, ...rest } = rule.set;
-      if (s) scoped.push(...(s as NonNullable<StyleSheet["scoped"]>));
-      out = mergeStyle(out, rest);
+      if (ruleMatches(rule.when, ctx)) out = mergeStyle(out, rule.set);
     }
   }
-  if (scoped.length) out.scoped = scoped;
   return out;
 }
 

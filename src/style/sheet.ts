@@ -7,7 +7,7 @@
 //
 // 无 DOM 依赖（Node CLI 与浏览器两侧都要 import）。
 import type { BookStyle } from "../pdflayout/bookstyle";
-import type { ScopedRule, TemplateSheet } from "./jpcss";
+import type { TemplateSheet } from "./jpcss";
 import type { Length } from "./units";
 
 /** 版面角色。成书那一路的判定依据是 PageSpec 的字段位置（见 pdflayout/stats.ts）。 */
@@ -99,8 +99,6 @@ export interface RoleDecl {
   italic?: boolean;
   align?: string;
   lineHeight?: Length;
-  dx?: Length;
-  dy?: Length;
   features?: string;
   visible?: boolean;
 }
@@ -134,8 +132,6 @@ export interface StyleSheet {
   book?: BookStyle;
   /** 歌本模板：区域、装页、歌本声明、具名字体（`.jpcss` 的 `@template`/`@flow`/`@book`/`@font-face`）。 */
   template?: TemplateSheet;
-  /** 逐元素样式。**各层累加**（`computeStyle` 里接起来），不走深合并的「数组整体替换」。 */
-  scoped?: ScopedRule[];
 }
 
 export function emptySheet(): StyleSheet {

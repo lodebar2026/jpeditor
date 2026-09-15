@@ -6,7 +6,7 @@
 //   flowLayout（util/layout.cpp:6）+ SongBook::layout → `flow`：帧间距取 max(上帧下间距, 本帧上间距)，放不下或强制就换页
 //   SongBook::drawFrame（:371）                      → `drawPages`：标题块在 margin+ypos，谱行在 margin+ypos+topY+musicYOffset
 //   SongBook::genTOC（:289）                         → `tocPage`：A4 pt 口径，点线填到页码前
-// 逐曲的特殊处理（:682 fixPaoScore）不写在这里，写成清单/样式表里的 scoped 规则。
+// 逐曲的特殊处理（:682 fixPaoScore）不在排版里：由 scripts/kl2020-prep.mjs 事先写进 MusicXML（.fixed.xml），这里只按数据排。
 //
 // **浏览器侧**（混排引擎要 DOM 量字）。Node 侧的 scripts/kl2020-book.mjs 经 window.__songbook 调它，
 // 拿回纯数据的 DrawPage[] 再交 scripts/pdfwrite.mjs。
@@ -22,12 +22,11 @@ import { MixedOptions, type Sys } from "../mixed/model";
 import { layoutStaff } from "../mixed/layout";
 import { drawSystem } from "../mixed/render";
 import { formatMixedScore } from "../mixed/painter";
-import { applyScopedToStaff } from "../mixed/scoped";
 import { computeStyle, type StyleContext, type StyleRule } from "../style/cascade";
 import type { StyleSheet } from "../style/sheet";
 import { applyStaffStyle } from "../style/staff";
 import { THEMES } from "../style/themes";
-import { parseJpcss, type Expr, type Region } from "../style/jpcss";
+import type { Expr, Region } from "../style/jpcss";
 import { evalNum, expandText, layoutRegion, songFields, type Placed, type RegionEnv } from "../style/template";
 import { resolveLength } from "../style/units";
 import { applyManifestSong, type ManifestSong } from "./manifest";
@@ -55,8 +54,6 @@ export interface SongbookResult {
   errors: { title: string; error: string }[];
   /** 逐帧装页事实（tenths）：第几首、帧高、页内 y、是否换页、标题块/页脚块占高。核对分页用 */
   frames: { song: number; height: number; ypos: number; newPage: boolean; head: number; foot: number }[];
-  /** 逐曲 scoped 规则的命中数（0 = 多半写错了小节号或曲名） */
-  scoped: { title: string; rule: string; count: number }[];
 }
 
 // ───────────────────────── 帧 ─────────────────────────
@@ -83,9 +80,6 @@ interface SongLayout {
   sheet: StyleSheet;
   env: (dy: number, pageNo: number) => RegionEnv;
   frames: Frame[];
-  scoped: SongbookResult["scoped"];
-  /** 装页之后、画之前那一轮 scoped（文字块拆行） */
-  drawPhase: () => void;
 }
 
 const FRAME_MARGIN = 20;
@@ -108,10 +102,8 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   const song: Song = doc.songs[0]!;
   applyManifestSong(song, entry);
   const title = song.work.title ?? "";
-  const ctx: StyleContext = { engine: "staff", mode: "mixed", song: title, songNumber: entry.number ?? String(index + 1) };
-  const layers = [THEMES.staff, input.rules];
-  if (entry.style) layers.push(parseJpcss(entry.style).rules);
-  const sheet = computeStyle(layers, ctx);
+  const ctx: StyleContext = { engine: "staff", mode: "mixed" };
+  const sheet = computeStyle([THEMES.staff, input.rules], ctx);
   if (metaFlag(song, "layout.melody-only")) keepMelodyOnly(song);
 
   const options = new MixedOptions(meta);
@@ -121,10 +113,6 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   if (metaFlag(song, "layout.chinese-hyphen")) options.chineseHyphen = true;
   const score = layoutStaff(doc, options);
   formatMixedScore(score);
-  // 逐曲定制（原排版程序 fixPaoScore 的那几首）：`.jpcss` 的 `@song` / 清单本曲的 style 片段
-  const report = applyScopedToStaff(score, sheet.scoped, { title, number: ctx.songNumber });
-  const scoped = report.hits.map((h) => ({ title, rule: `${h.rule.role}${h.rule.where.map((w) => `[${w.dim}${w.op}${w.value}]`).join("")}`, count: h.count }));
-  const drawPhase = (): void => void applyScopedToStaff(score, sheet.scoped, { title, number: ctx.songNumber }, "draw");
   const scaling = score.scaling;
   const families = input.families ?? {};
 
@@ -169,7 +157,7 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
     fl.height += foot.span;
   }
   void scaling;
-  return { title, sheet, env, frames, scoped, drawPhase };
+  return { title, sheet, env, frames };
 }
 
 function pageSize(book: Record<string, Expr> | undefined, sheet: StyleSheet): { w: number; h: number; margin: number } {
@@ -241,7 +229,7 @@ export async function layoutMixedSongbook(input: SongbookInput): Promise<Songboo
       errors.push({ title: entry.title ?? entry.file, error: String((e as Error)?.stack ?? e) });
     }
   });
-  if (!songs.length) return { pages: [], toc: [], starts: [], titles: [], families: [], errors, frames: [], scoped: [] };
+  if (!songs.length) return { pages: [], toc: [], starts: [], titles: [], families: [], errors, frames: [] };
 
   const book = computeStyle([THEMES.staff, input.rules], { engine: "staff", mode: "mixed" });
   const { w: pageW, h: pageH, margin } = pageSize(book.template?.book, book);
@@ -257,7 +245,6 @@ export async function layoutMixedSongbook(input: SongbookInput): Promise<Songboo
     frames.push(...s.frames);
   }
   flow(frames, pageH - margin * 2);
-  for (const s of songs) s.drawPhase();
 
   // SongBook::drawFrame
   const pageGroups: Group[] = [];
@@ -304,7 +291,7 @@ export async function layoutMixedSongbook(input: SongbookInput): Promise<Songboo
     song: f.song, height: f.height, ypos: f.ypos, newPage: f.newPage,
     head: f.first ? f.musicYOffset : 0, foot: f.last ? f.height - f.bottomTextYOffset : 0,
   }));
-  return { pages, toc, starts, titles, families: [...usedFamilies], errors, frames: frameFacts, scoped: songs.flatMap((s) => s.scoped) };
+  return { pages, toc, starts, titles, families: [...usedFamilies], errors, frames: frameFacts };
 }
 
 function exprFlag(s: SongLayout, key: string): boolean {

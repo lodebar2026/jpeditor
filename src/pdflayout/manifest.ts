@@ -18,8 +18,6 @@ export interface ManifestSong {
   rights?: string;
   /** 按键浅覆盖 `Song.meta` */
   meta?: SongMeta;
-  /** 本曲的 jpcss 片段（曲内覆盖层） */
-  style?: string;
 }
 
 export interface BookManifest {

@@ -52,8 +52,6 @@ export interface RegionEnv {
   field(path: string): readonly FieldValue[] | undefined;
   /** `ref(a.b.c)` 的取值（成书是 BookStyle）。 */
   ref?(path: string): unknown;
-  /** `metric(key)` 的取值（文本谱是 PuMetrics）。 */
-  metric?(key: string): number | undefined;
   /** 页号（奇数页 = 右手页；`inner`/`outer` 按它换边）。 */
   pageNo: number;
   /** 版心左右缘（`align-x: content`）与纸宽（`align-x: page`）。 */
@@ -105,11 +103,6 @@ export function evalExpr(e: Expr, env: RegionEnv, role = "note"): unknown {
         if (!env.ref) throw new Error("模板用了 ref()，但调用方没给 ref 取值");
         const v = env.ref(name.replace(/^book\./, ""));
         if (v === undefined) throw new Error(`ref(${name}) 取不到值`);
-        return v;
-      }
-      if (e.name === "metric") {
-        const v = env.metric?.(name);
-        if (v === undefined) throw new Error(`metric(${name}) 取不到值`);
         return v;
       }
       throw new Error(`表达式里认不出函数 ${e.name}()`);
