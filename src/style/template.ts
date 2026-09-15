@@ -255,7 +255,8 @@ export interface FontMetricsLike {
  * 排一个区域。`display` 为假时返回空。
  *
  * - `flow: fixed`（缺省）：写了 `baseline` 的行按它（加区域 `dy`）；格内多行按 `line-gap` 递增。
- * - `flow: block`：区域从 `dy` 起往下排。行写了 `baseline` 就相对区域顶；没写就接上一行块底（加 `gap-before`），
+ * - `flow: block`：区域从 `dy` 起往下排。行写了 `baseline` 就相对区域顶；写了 `top` 则行顶相对区域顶（基线照常加 ascent）；
+ *   都没写就接上一行块底（加 `gap-before`），
  *   首行基线 = 行顶 + 该行字体 ascent。格内后续各行下移 `line-height` × 该行字高（原排版程序的 1.444）。
  *   行块高 = 各格字高之和取最大；区域高 = `extent`（其中 `content` = 各行块高之和）。
  */
@@ -280,7 +281,8 @@ export function layoutRegion(region: Region | undefined, env: RegionEnv): Region
     for (const row of region.rows) {
       const gap = evalNum(row.props["gap-before"], env) ?? 0;
       const base = evalNum(row.props.baseline, env);
-      const rowTop = base !== undefined ? dy : cursor + (content > 0 ? gap : 0);
+      const top = evalNum(row.props.top, env);
+      const rowTop = base !== undefined ? dy : top !== undefined ? dy + top : cursor + (content > 0 ? gap : 0);
       let rowH = 0;
       for (const cell of row.cells) {
         const got = layoutBlockCell(region, cell, rowTop, base, left, right, odd, env);
