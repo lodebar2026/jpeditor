@@ -208,8 +208,8 @@ function lex(src: string): Tok[] {
 
 // ───────────────────────── 语句 ─────────────────────────
 
-/** 规则里要求的上下文维度（直接对应 `StyleContext`）；其余维度算元素级，走 scoped。 */
-const CONTEXT_DIMS = new Set(["mode", "engine", "page", "verse"]);
+/** 规则里要求的上下文维度（直接对应 `StyleContext`）；其余维度（段号、小节、拍位…）算元素级，走 scoped。 */
+const CONTEXT_DIMS = new Set(["mode", "engine", "page"]);
 /** `@page :odd` 的页位写法 → `StyleContext.page`。 */
 const PAGE_ALIAS: Record<string, string> = { odd: "right", even: "left", right: "right", left: "left", first: "first" };
 
@@ -611,8 +611,11 @@ class Parser {
   private exprPrimary(): Expr {
     const t = this.next();
     switch (t.t) {
-      case "num":
-        return t.unit ? { k: "num", v: t.v, unit: t.unit } : { k: "num", v: t.v };
+      case "num": {
+        const n: Expr = t.unit ? { k: "num", v: t.v, unit: t.unit } : { k: "num", v: t.v };
+        // `+2pt`：相对继承值（写出成 `inherit + 2pt`，读回同形）
+        return t.raw.startsWith("+") ? { k: "bin", op: "+", a: { k: "id", v: "inherit" }, b: n } : n;
+      }
       case "str":
         return { k: "str", v: t.v };
       case "hash":

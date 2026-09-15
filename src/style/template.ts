@@ -8,7 +8,7 @@
 //
 // 无 DOM 依赖。
 import type { Creator, Song } from "../model/doc";
-import type { Cell, CellLine, Expr, Region, TextPart } from "./jpcss";
+import type { Cell, Expr, Region, TextPart } from "./jpcss";
 
 /** 字段的一项值。署名带类型（`label-by-type` 要用）。 */
 export interface FieldValue {
@@ -65,6 +65,8 @@ export interface RegionEnv {
   sizeOf(role: string): number;
   measure(role: string, text: string, size: number): number;
   components?: Readonly<Record<string, ComponentFn>>;
+  /** 字体竖向度量（`flow: block` 要）。 */
+  fontMetrics?(role: string, size: number): FontMetricsLike;
   /** 1 tenths 折多少排版单位（混排）。 */
   tenths?: number;
 }
@@ -244,38 +246,69 @@ function slotAlign(slot: Cell["slot"], odd: boolean): "left" | "center" | "right
 
 export interface RegionResult {
   items: Placed[];
-  /** 首行基线到末行基线（没有行时 0）。 */
+  /** fixed：首行基线到末行基线；block：区域高（`extent` 求值后，没写 extent 就是内容高）。 */
   span: number;
+  /** block：内容高（各行块高之和，不含行间 gap-before）。 */
+  content?: number;
+}
+
+/** 字体竖向度量（`flow: block` 用）：ascent 取正值，height = 一行的字高（ascent + descent）。 */
+export interface FontMetricsLike {
+  ascent: number;
+  height: number;
 }
 
 /**
  * 排一个区域。`display` 为假时返回空。
- * 行的基线：写了 `baseline` 的按它（加区域 `dy`）；没写的接上一行，下移 `line-height`（× 本行首个角色字号，写长度时按长度）。
+ *
+ * - `flow: fixed`（缺省）：写了 `baseline` 的行按它（加区域 `dy`）；格内多行按 `line-gap` 递增。
+ * - `flow: block`：区域从 `dy` 起往下排。行写了 `baseline` 就相对区域顶；没写就接上一行块底（加 `gap-before`），
+ *   首行基线 = 行顶 + 该行字体 ascent。格内后续各行下移 `line-height` × 该行字高（原排版程序的 1.444）。
+ *   行块高 = 各格字高之和取最大；区域高 = `extent`（其中 `content` = 各行块高之和）。
  */
 export function layoutRegion(region: Region | undefined, env: RegionEnv): RegionResult {
   if (!region || !evalBool(region.props.display, env, true)) return { items: [], span: 0 };
   const odd = env.pageNo % 2 === 1;
   const dy = env.dy ?? 0;
+  const block = region.props.flow?.k === "id" && region.props.flow.v === "block";
   const alignPage = region.props["align-x"]?.k === "id" && region.props["align-x"].v === "page";
-  const inset = evalNum(region.props.inset, env) ?? 0;
-  const left = (alignPage ? 0 : env.content.left) + inset;
-  const right = (alignPage ? (env.pageWidth ?? env.content.right) : env.content.right) - inset;
+  const inset = evalNum(region.props.inset, env);
+  let left = alignPage ? 0 : env.content.left;
+  let right = alignPage ? (env.pageWidth ?? env.content.right) : env.content.right;
+  if (inset !== undefined) {
+    left += inset;
+    right -= inset;
+  }
   const items: Placed[] = [];
-  let prevY: number | undefined;
+
+  if (block) {
+    let cursor = dy;
+    let content = 0;
+    for (const row of region.rows) {
+      const gap = evalNum(row.props["gap-before"], env) ?? 0;
+      const base = evalNum(row.props.baseline, env);
+      const rowTop = base !== undefined ? dy : cursor + (content > 0 ? gap : 0);
+      let rowH = 0;
+      for (const cell of row.cells) {
+        const got = layoutBlockCell(region, cell, rowTop, base, left, right, odd, env);
+        items.push(...got.items);
+        rowH = Math.max(rowH, got.height);
+      }
+      if (rowH === 0) continue;
+      content += rowH;
+      cursor = rowTop + rowH;
+    }
+    const ext = region.props.extent;
+    const span = ext ? evalExtent(ext, content, env) : content;
+    return { items, span, content };
+  }
+
   let firstY: number | undefined;
   let lastY: number | undefined;
-
   for (const row of region.rows) {
-    let rowY: number;
     const base = evalNum(row.props.baseline, env);
-    if (base !== undefined) rowY = base + dy;
-    else if (prevY === undefined) rowY = dy;
-    else {
-      const lh = row.props["line-height"] ?? region.props["line-height"];
-      const role0 = row.cells[0]?.lines[0]?.role ?? "note";
-      const v = lh ? evalExpr(lh, env, role0) : 1.2;
-      rowY = prevY + (lh?.k === "num" && lh.unit === undefined ? (v as number) * env.sizeOf(role0) : (v as number));
-    }
+    if (base === undefined) throw new Error("flow: fixed 的区域里每行都要写 baseline");
+    const rowY = base + dy;
     let rowLast = rowY;
     let any = false;
     for (const cell of row.cells) {
@@ -284,18 +317,85 @@ export function layoutRegion(region: Region | undefined, env: RegionEnv): Region
       items.push(...got.items);
       rowLast = Math.max(rowLast, got.lastY);
     }
-    if (!any && base === undefined) continue; // 空行不占高
+    if (!any) continue;
     firstY ??= rowY;
     lastY = rowLast;
-    prevY = rowLast;
   }
   return { items, span: firstY === undefined || lastY === undefined ? 0 : lastY - firstY };
 }
 
+/** `extent` 里的 `content` 换成内容高再求值。 */
+function evalExtent(e: Expr, content: number, env: RegionEnv): number {
+  const sub = (x: Expr): Expr => {
+    switch (x.k) {
+      case "id":
+        return x.v === "content" ? { k: "num", v: content } : x;
+      case "bin":
+        return { ...x, a: sub(x.a), b: sub(x.b) };
+      case "neg":
+        return { ...x, a: sub(x.a) };
+      default:
+        return x;
+    }
+  };
+  return evalNum(sub(e), env)!;
+}
+
+function fontMetrics(env: RegionEnv, role: string, size: number): FontMetricsLike {
+  if (!env.fontMetrics) throw new Error("flow: block 要调用方给 fontMetrics");
+  return env.fontMetrics(role, size);
+}
+
+function slotEdge(slot: Cell["slot"], left: number, right: number, odd: boolean): { align: "left" | "center" | "right"; edge: number } {
+  const align = slotAlign(slot, odd);
+  return { align, edge: align === "left" ? left : align === "right" ? right : (left + right) / 2 };
+}
+
+function layoutBlockCell(
+  region: Region,
+  cell: Cell,
+  rowTop: number,
+  base: number | undefined,
+  left: number,
+  right: number,
+  odd: boolean,
+  env: RegionEnv,
+): { items: Placed[]; height: number } {
+  const items: Placed[] = [];
+  const { align, edge } = slotEdge(cell.slot, left, right, odd);
+  const lh = evalNum(cell.props["line-height"] ?? region.props["line-height"], env) ?? 1.2;
+  // 每行计入块高的倍数（× 字高）。缺省 1：原排版程序的 TextBlock::height 就是逐行字高相加
+  const box = evalNum(cell.props["line-box"] ?? region.props["line-box"], env) ?? 1;
+  let y: number | undefined;
+  let height = 0;
+  for (const line of cell.lines) {
+    const role = line.role ?? "note";
+    const size = env.sizeOf(role);
+    const x0 = line.at !== undefined ? evalNum(line.at, env, role)! : edge;
+    const x = cell.props.dx !== undefined ? x0 + evalNum(cell.props.dx, env, role)! : x0;
+    if (line.content.kind === "component") {
+      const fn = env.components?.[line.content.name];
+      if (!fn) throw new Error(`模板用了组件 ${line.content.name}()，调用方没给实现`);
+      const cy = y ?? (base !== undefined ? rowTop + base : rowTop);
+      for (const it of fn({ args: line.content.args, x, y: cy, role, size, cell, env })) items.push({ kind: "raw", item: it });
+      continue;
+    }
+    const texts = expandText(line.content.parts, env).flatMap((t) => t.split("\n"));
+    if (texts.length === 0) continue;
+    const fm = fontMetrics(env, role, size);
+    for (const text of texts) {
+      if (y === undefined) y = base !== undefined ? rowTop + base : rowTop + fm.ascent;
+      else y += fm.height * lh;
+      items.push({ kind: "text", text, role, size, x, y, align });
+      height += fm.height * box;
+    }
+  }
+  return { items, height };
+}
+
 function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: boolean, env: RegionEnv): { items: Placed[]; lastY: number } {
   const items: Placed[] = [];
-  const align = slotAlign(cell.slot, odd);
-  const edge = align === "left" ? left : align === "right" ? right : (left + right) / 2;
+  const { align, edge } = slotEdge(cell.slot, left, right, odd);
   const cdx = cell.props.dx;
   const cdy = cell.props.dy;
   let i = 0;
@@ -313,8 +413,7 @@ function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: 
       continue;
     }
     for (const text of expandText(line.content.parts, env)) {
-      const gap = i === 0 ? undefined : lineGap(cell, line, env, role);
-      const y = gap === undefined ? y0 : y0 + i * gap;
+      const y = i === 0 ? y0 : y0 + i * lineGap(cell, env, role);
       items.push({ kind: "text", text, role, size, x, y, align });
       lastY = Math.max(lastY, y);
       i++;
@@ -323,10 +422,9 @@ function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: 
   return { items, lastY };
 }
 
-function lineGap(cell: Cell, line: CellLine, env: RegionEnv, role: string): number {
+function lineGap(cell: Cell, env: RegionEnv, role: string): number {
   const g = cell.props["line-gap"];
   if (g !== undefined) return evalNum(g, env, role)!;
-  void line;
   return env.sizeOf(role) * 1.2;
 }
 

@@ -21,8 +21,10 @@ export interface StyleContext {
   engine?: StyleEngine;
   page?: "left" | "right" | "first";
   verse?: number;
-  /** 曲号（`#028`）或曲名。`.jpcss` 的 `@song`。 */
+  /** 曲名，或 `#曲号`。`.jpcss` 的 `@song`。 */
   song?: string;
+  /** 本曲曲号（上下文专用）：`@song #2` 按它匹配，`song` 那一维就可以写曲名。 */
+  songNumber?: string;
 }
 
 export interface StyleRule {
@@ -36,7 +38,9 @@ export type StyleLayer = readonly StyleRule[];
 /** 规则的限定是否命中上下文。上下文里没有的维度，带这个限定的规则不生效。 */
 export function ruleMatches(when: StyleContext | undefined, ctx: StyleContext): boolean {
   if (!when) return true;
-  return (Object.keys(when) as (keyof StyleContext)[]).every((k) => when[k] === undefined || when[k] === ctx[k]);
+  return (Object.keys(when) as (keyof StyleContext)[]).every(
+    (k) => when[k] === undefined || when[k] === ctx[k] || (k === "song" && ctx.songNumber !== undefined && when.song === `#${ctx.songNumber}`),
+  );
 }
 
 /** 按层序、层内按规则序叠出 computed 样式表。 */
