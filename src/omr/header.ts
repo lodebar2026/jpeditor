@@ -217,6 +217,16 @@ function parseMeta(lines: HLine[]): MetaInfo {
 
   // 混合拍：并排印着好几个竖排拍号（"4/4 3/4 5/4 混合拍"）。det 把上下两排各读成一行
   // （"1=D435" / "444混合拍"），先按这一路认；认不出再走单个拍号那条。
+  // 同一碎片里并排写着几个斜杠式拍号（"1=A 3/4 4/4 混合拍"）先认这一路。
+  const inline = parseInlineMeters(lines, res.fifthsLine);
+  if (inline) {
+    res.meters = inline.meters;
+    res.beats = inline.meters[0]!.beats;
+    res.beatType = inline.meters[0]!.beatType;
+    res.meterNote = inline.note;
+    res.timeBBox = inline.bbox;
+    return res;
+  }
   const mixed = parseMixedMeters(lines, res.fifthsLine);
   if (mixed) {
     res.meters = mixed.meters;
@@ -285,6 +295,60 @@ function parseMixedMeters(lines: HLine[], fifthsLine?: HLine):
     if (score < bd) { bd = score; best = { meters, note, bbox: unionRect(up.bbox, dn.bbox) }; }
   }
   return best;
+}
+
+/** 一串数字与斜杠（"4/4"、"3/44/4"、"6/16"）解析成拍号序列。
+ *  并排印的几个拍号被 OCR 连成一串时，分母与下一个分子之间没有分隔：`3/44/4` 里那个 "44"
+ *  既可能是 44 也可能是「分母 4 + 下一个分子 4」。按「分母优先取一位；取一位后剩下的必须仍是
+ *  `数字+斜杠` 开头或正好取完」定夺，`6/16` 这种真两位分母也照样认得下。 */
+function parseMeterRun(run: string): { beats: number; beatType: number }[] | null {
+  const out: { beats: number; beatType: number }[] = [];
+  let i = 0;
+  while (i < run.length) {
+    const m = /^(\d{1,2})[/／]/.exec(run.slice(i));
+    if (!m) return null;
+    const n = Number(m[1]);
+    if (!validBeats(n)) return null;
+    i += m[0].length;
+    let d = -1;
+    for (const len of [1, 2]) {
+      const t = run.slice(i, i + len);
+      if (t.length !== len) continue;
+      const v = Number(t);
+      if (!validBeatType(v)) continue;
+      const rest = run.slice(i + len);
+      if (rest && !/^\d{1,2}[/／]/.test(rest)) continue;  // 剩下的接不上下一个拍号 → 分母该取长的
+      d = v; i += len; break;
+    }
+    if (d < 0) return null;
+    out.push({ beats: n, beatType: d });
+  }
+  return out.length ? out : null;
+}
+
+/** 并排印在同一碎片里的多个斜杠式拍号（`1=A 3/4 4/4 混合拍` → OCR "1=A3/44/4混合拍"）。
+ *  det 把整行读成一块时 parseMixedMeters（分子分母分两行）无从下手，而 parseTime 的单个
+ *  "数/数" 正则在 `3/44/4` 上会把分母读成 44、判为非法拍号后**整行放弃** → 退回默认 4/4
+ *  （迦南诗选《主是》《祷告》全曲小节都对不上）。这里专认「一串里不止一个拍号」的情形。 */
+function parseInlineMeters(lines: HLine[], fifthsLine?: HLine):
+  { meters: { beats: number; beatType: number }[]; note?: string; bbox: Rect } | undefined {
+  for (const l of lines) {
+    const t = l.text.replace(/\s+/g, "");
+    for (const m of t.matchAll(/[\d/／]+/g)) {
+      const run = m[0];
+      if (!/[/／]/.test(run)) continue;
+      const meters = parseMeterRun(run);
+      if (!meters || meters.length < 2) continue;          // 单个拍号仍交给 parseTime
+      const rest = t.slice(m.index! + run.length);
+      const note = /^[^\d]{1,5}拍/.test(rest) ? /^([^\d]{1,5}拍)/.exec(rest)![1] : undefined;
+      // 与调号同碎片时 bbox 偏到行右侧，免得标注压在 "1=A" 上（同 parseTime）。
+      const bbox = l === fifthsLine
+        ? { x: l.bbox.x + l.bbox.w * 0.3, y: l.bbox.y, w: l.bbox.w * 0.7, h: l.bbox.h }
+        : l.bbox;
+      return { meters, note, bbox };
+    }
+  }
+  return undefined;
 }
 
 /** 解析拍号：先认含斜杠的碎片 "X/Y"（含调号同块 "1=C 4/4"）；否则认上下竖排两碎片(分子在上、
