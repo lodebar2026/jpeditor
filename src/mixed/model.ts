@@ -2778,6 +2778,8 @@ export class MixedOptions {
   slurStemDy = 15;
   lrcHWID = true;
   chineseHyphen = false;
+  /** 按首音位置重猜符干方向并统一符杠组（musicpp guessStemDir；只留旋律的歌本曲目开） */
+  guessStemDir = false;
   /** 谱行包围盒里文字的行高按字号算（原排版程序口径，歌本 `pdflayout/songbook.ts` 开）；缺省按字体 ascent−descent */
   textLineHeightBySize = false;
   harmonySize = 9;
