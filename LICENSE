@@ -25,6 +25,7 @@ SOFTWARE.
 Third-party assets:
 
 The bundled Bravura music font (public/redist/Bravura.otf, Bravura.woff2,
-BravuraText.woff2 and bravura_metadata.json) is licensed under the SIL Open
+BravuraText.otf and bravura_metadata.json) is licensed under the SIL Open
 Font License 1.1 (https://scripts.sil.org/OFL) and is NOT covered by the MIT
-license above.
+license above. BravuraText.otf is a subset of Bravura Text containing only the
+csym glyphs used by chord symbols.

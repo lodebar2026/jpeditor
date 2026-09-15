@@ -11,7 +11,7 @@
 // **浏览器侧**（混排引擎要 DOM 量字）。Node 侧的 scripts/kl2020-book.mjs 经 window.__songbook 调它，
 // 拿回纯数据的 DrawPage[] 再交 scripts/pdfwrite.mjs。
 import { Matrix33 } from "../common/geom";
-import { toHalfWidthPunct } from "../common/cjkpunct";
+import { punctClass } from "../common/cjkpunct";
 import { Font } from "../layout/font";
 import { Group, TextFrame } from "../layout/pageitem";
 import { MetaData } from "../smufl/smufl";
@@ -210,23 +210,33 @@ function placedToTextFrames(page: Group, placed: readonly Placed[], sheet: Style
     const font = fontOfRole(sheet, families, p.role, p.size);
     const tf = new TextFrame();
     // `features: hwid`（半宽标点）：原排版程序开 OpenType hwid，标点印成半宽。
-    // 出 PDF 那头不做 GSUB，这里直接换成对应的半角字符（面貌同为半宽标点）
+    // 出 PDF 那头不做 GSUB，这里照歌词那条的口径（`MixedOptions.musicppHwidGlyphs`，render.ts::drawLrc）
+    // 等效：**保留中文标点字形**，只把它排进半格、墨迹居中。
     const hwid = /\bhwid\b/.test(String(sheet.roles[p.role as keyof StyleSheet["roles"]]?.features ?? ""));
-    tf.text = hwid ? toHalfWidthPunct(p.text) : p.text;
+    tf.text = p.text;
     tf.font = font;
     // 逐字笔位自己算：单字 advance 顺排，**标点不挤压**——成品（原程序直接画字）「内。（来6：19）」「不开口。（赛53：7）」
     // 里句号与左括号都是全宽。不能拿浏览器量的前缀宽：Chrome 缺省 `text-spacing-trim` 会把「。（」里左括号的左半格压掉，
     // 前缀宽里少了半格、括号笔位却没跟着左挪，出 PDF 逐字画全宽字形时括号的墨正好被下一个字盖住
     //（「根基。（林前3：11）」的「（」看不见）。夹在两字之间量单字，避开行首行末的挤压。
-    // hwid 换来的半角标点照 hwid 字形的样子排：占半格、墨迹居中（成品页脚「17：20，21；路」每个标点 0.5em，
-    // ASCII 标点只有 0.25em 左右，整行短一截）
+    // 开 hwid 的角色里，全角标点占半格、墨迹居中（成品页脚「17：20，21；路」每个标点正是 0.5em）。
+    // **不换成 ASCII 标点**：半角形只有 `：；，！？（）` 有，`《》「」【】` 换不出来，照全角画两侧各空半格，
+    //《求主使我成长》页脚「SLBC增修自《恩颂圣歌》，2018」的书名号与前后字接不上；而换得出来的那几个，
+    // ASCII 字形也与成品对不上（逗号落在基线上、冒号分号的墨比成品短 4~5 px @300dpi）。
+    // 保留中文字形排进半格后，这一行与成品的逐字墨迹全部落在 1 px 内。
     // 西文连续段按整段前缀量宽，保住字距调整（逐字量会丢 Pa、Tr、Ya 的 kerning，「Matt Papa, Trans. Boaz Yang」越排越宽）；
     // 前缀两头各垫一个「|」再减掉：SVG 量宽会去掉首尾空白（「；」后的空格段被量成 0）
     const pad = font.measureText("一一");
     const bar = font.measureText("|");
-    const orig = [...p.text];
     const chars = [...tf.text];
-    const latin = (i: number): boolean => chars[i]! < "\u2000" && !(hwid && chars[i] !== orig[i]);
+    /** 这个字排半格：开了 hwid，且是半格里只占一半的那几类标点。
+     *  `middle`（`…—·`）不算——思源黑体的 `halt/hwid` 对破折号、省略号本来就不改 advance。 */
+    const halfCell = (i: number): boolean => {
+      if (!hwid) return false;
+      const k = punctClass(chars[i]!);
+      return k === "open" || k === "close" || k === "stop";
+    };
+    const latin = (i: number): boolean => chars[i]! < "\u2000";
     const xs: number[] = [];
     let w = 0;
     for (let i = 0; i < chars.length; ) {
@@ -238,7 +248,7 @@ function placedToTextFrames(page: Group, placed: readonly Placed[], sheet: Style
         for (let k = 0; k < j - i; k++) xs.push(w + (k ? font.measureText("|" + seg.slice(0, k) + "|") - 2 * bar : 0));
         w += font.measureText("|" + seg + "|") - 2 * bar;
         i = j;
-      } else if (hwid && c !== orig[i]) {
+      } else if (halfCell(i)) {
         const cell = font.size * 0.5;
         const ink = font.charBound(c);
         xs.push(w + (cell - (ink.right - ink.left)) / 2 - ink.left);
@@ -322,9 +332,12 @@ export async function layoutMixedSongbook(input: SongbookInput): Promise<Songboo
   }
 
   const usedFamilies = new Set<string>();
-  // 出 PDF 按角色（= 字体族）挑字体文件；斜体是另一份字体文件，角色名带「 Italic」（Times New Roman Italic.ttf）
+  // 出 PDF 按角色（= 字体族）挑字体文件；粗体、斜体各是另一份字体文件，角色名带「 Bold」「 Italic」
+  //（Times New Roman Italic.ttf；思源黑体的 Bold 与 Regular 同在一个 ttc 里，face 名不同）。
+  // 出 PDF 那头没有「合成粗体」这回事：不带上这个标志，`<words font-weight="bold">`
+  //（《为基督大业》的 D.S.）会按常规字重画出来。
   const roleOf = (it: TextFrame): string => {
-    const fam = (it.font?.family ?? "") + (it.font?.italic ? " Italic" : "");
+    const fam = (it.font?.family ?? "") + (it.font?.bold ? " Bold" : "") + (it.font?.italic ? " Italic" : "");
     usedFamilies.add(fam);
     return fam;
   };
