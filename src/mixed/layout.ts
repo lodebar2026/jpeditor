@@ -888,8 +888,8 @@ class DocPartLoader {
     }
   }
 
-  /** 无 <beam> 的谱（OMR 生成）：按拍自动把相邻的短音符（八分及更短）分组成符杠。
-   *  仅在整声部无任何 <beam> 时启用；真实制谱谱都带 <beam>，不受影响。 */
+  /** 无 <beam> 的谱（OMR 生成）：按拍自动把同一声部相邻的短音符（八分及更短）分组成符杠。
+   *  仅在整声部无任何 <beam> 时启用；真实制谱谱大多带 <beam>（《恩典大过我罪》TB 部没写，靠逐声部分组不误连）。 */
   private autoBeamPart(): void {
     const one = new Fraction(1);
     const levelsOf = (ch: ChordLayout) => Math.max(0, Math.round(-Math.log2(ch.noteType.toFloat())));
@@ -901,7 +901,15 @@ class DocPartLoader {
       // 每拍时值（四分音符单位）：复拍(x/8 且 beats 为 3 的倍数)按附点四分成组，否则按分母音符。
       let beatLen = 1;
       if (ts) beatLen = ts.beatType === 8 && ts.beats % 3 === 0 ? 1.5 : 4 / ts.beatType;
-      const chords = [...md.chords].filter((c) => !c.grace).sort((a, b) => a.offset.compareTo(b.offset));
+      // 逐声部分组：多声部共用一个谱表时（合唱谱 TB 整部没写 <beam>），同一时刻的两个声部的音不能连成一组
+      const voices = new Map<string, ChordLayout[]>();
+      for (const c of md.chords) {
+        if (c.grace) continue;
+        const key = `${c.src.staff}:${c.src.voice}`;
+        const list = voices.get(key);
+        if (list) list.push(c);
+        else voices.set(key, [c]);
+      }
       let run: ChordLayout[] = [];
       const flush = () => {
         if (run.length >= 2) {
@@ -937,15 +945,18 @@ class DocPartLoader {
         }
         run = [];
       };
-      let curBeat = -1;
-      for (const ch of chords) {
-        if (ch.rest || ch.noteType.compareTo(one) >= 0) { flush(); curBeat = -1; continue; }
-        const beat = Math.floor(ch.offset.toFloat() / beatLen + 1e-6);
-        if (run.length > 0 && beat !== curBeat) flush();
-        run.push(ch);
-        curBeat = beat;
+      for (const list of voices.values()) {
+        const chords = list.sort((a, b) => a.offset.compareTo(b.offset));
+        let curBeat = -1;
+        for (const ch of chords) {
+          if (ch.rest || ch.noteType.compareTo(one) >= 0) { flush(); curBeat = -1; continue; }
+          const beat = Math.floor(ch.offset.toFloat() / beatLen + 1e-6);
+          if (run.length > 0 && beat !== curBeat) flush();
+          run.push(ch);
+          curBeat = beat;
+        }
+        flush();
       }
-      flush();
     }
   }
 
