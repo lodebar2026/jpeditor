@@ -21,7 +21,7 @@
 |---|---|---|
 | `src/style/books/hymn500.jpcss` | 诗歌 500 首成书（`engine: book`） | 现有 `rebuild.mjs` 输出逐字节不变 |
 | `src/style/books/kl2020.jpcss` | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF；接排版对照 1219 版 |
-| `src/style/books/pu-original.jpcss` | 文本谱原样档（`engine: pu`） | 现有 `paintHeader` 输出，另加页脚 |
+| `src/style/books/pu-original.jpcss` | 文本谱原样档（`engine: pu`）：目前只有页脚区域，页头仍是 `paintHeader` | 展开档指纹与 page-check 不变 |
 
 ## 1. 词法
 
