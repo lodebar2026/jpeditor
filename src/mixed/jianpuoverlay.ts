@@ -378,7 +378,7 @@ function drawJpKey(
   // 混排谱表上的简谱以 mixFont（按 mixStaffHeight 缩小）排号，转调记号同步用 mixFont，
   // 否则 jianpuFont(30) 比谱面数字(22.5)明显偏大。render.cpp drawKey 用 jianpuFont 是因其
   // 混排谱高为 40；此处随谱高等比缩放，r 即 mixStaffHeight/40。
-  const jpFont = eng.mixFont;
+  const jpFont = eng.jpKeyJianpuFont ? eng.jianpuFont : eng.mixFont;
   const r = jpFont.size / eng.jianpuFont.size;
   if (acc !== 0) {
     const grp = new Group();

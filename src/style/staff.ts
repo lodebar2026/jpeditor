@@ -19,8 +19,13 @@ export function applyStaffStyle(o: MixedOptions, sheet: StyleSheet): void {
     const [head, sub] = k.split(".", 2);
     const target = (sub ? (o as unknown as Record<string, unknown>)[head] : o) as Record<string, unknown> | undefined;
     const key = sub ?? head;
+    if (target && typeof target[key] === "boolean") {
+      if (typeof v === "boolean") target[key] = v;
+      else console.warn(`样式 staff.overrides.${k}：开关只收 true / false，${JSON.stringify(v)} 忽略`);
+      continue;
+    }
     if (!target || typeof target[key] !== "number") {
-      console.warn(`样式 staff.overrides.${k}：MixedOptions 没有这个数值字段，忽略`);
+      console.warn(`样式 staff.overrides.${k}：MixedOptions 没有这个数值或开关字段，忽略`);
       continue;
     }
     const n = resolveLength(v, ctx);

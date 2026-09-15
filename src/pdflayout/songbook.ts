@@ -109,11 +109,11 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   if (metaFlag(song, "layout.melody-only")) keepMelodyOnly(song);
 
   const options = new MixedOptions(meta);
-  applyStaffStyle(options, sheet);
   options.hideBarNumber = true;
   options.textLineHeightBySize = true;
-  // 成品全书不印简谱调号「1=X」（曲首与转调处都没有）；musicpp pao.cpp 虽开了 showKeyChangeJp，成品里并无此项
-  options.showKeyChangeJp = false;
+  options.jpKeyJianpuFont = true;
+  // 样式表 `@staff` 最后叠：简谱调号 `showKeyChangeJp` 等开关由书定
+  applyStaffStyle(options, sheet);
   // 和弦字体：musicpp Engraver::wordFont 缺省是思源黑体（model.hpp），成品和弦即此；编辑器视图沿用 Times New Roman
   options.wordFont = "Source Han Sans SC";
   if (metaFlag(song, "layout.chinese-hyphen")) options.chineseHyphen = true;
