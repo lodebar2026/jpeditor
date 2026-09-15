@@ -8,7 +8,7 @@
 // 挂到后面第二声部的音上（《基督是锚》第 16 小节末的 D），这里改挂到无时值的 `y` 占位上，起点照旧。
 //
 // 就地改。无 DOM 依赖。
-import type { Element, ElementId, Harmony, Song, Space } from "./doc";
+import type { Element, ElementId, Harmony, Mark, Song, Space } from "./doc";
 import { melodyChords, topNote } from "./jianpu";
 
 export function keepMelodyOnly(song: Song): void {
@@ -17,7 +17,8 @@ export function keepMelodyOnly(song: Song): void {
   song.parts = [part];
   if (song.partGroups) song.partGroups = song.partGroups.filter((g) => g.parts.every((p) => p === part.id));
   const kept = new Set<ElementId>();
-  const reduced = new Set<ElementId>();
+  /** 删成单音的和弦 → 留下那个音原来的下标 */
+  const reduced = new Map<ElementId, number>();
   for (const m of part.measures) {
     const lane = new Set(melodyChords(m, 1));
     const laneVoice = [...lane][0]?.voice;
@@ -39,14 +40,28 @@ export function keepMelodyOnly(song: Song): void {
       kept.add(el.id);
       if (el.kind === "chord" && el.notes.length > 1) {
         const top = topNote(el);
+        reduced.set(el.id, top ? el.notes.indexOf(top) : 0);
         if (top) el.notes = [top];
-        reduced.add(el.id);
       }
     }
     // 占位放在末尾且带明确起点，不改动其余元素的起点；id 借被删元素的（不进 kept，挂在它上的记号照删）
     m.elements.push(...orphans);
   }
-  song.marks = song.marks.filter((mk) => kept.has(mk.start) && kept.has(mk.end));
+  // removeNoneMelody：弧按方向重挂——上方弧挂最高音、下方弧挂最低音（Sibelius 把两声部的弧都写在和弦首音上），
+  // 挂到的音不是旋律音就删；延音线按原本挂的音判
+  const onMelody = (id: ElementId, noteIdx: number | undefined, mk: Mark): boolean => {
+    const top = reduced.get(id);
+    if (top === undefined) return true;
+    if (mk.type === "slur") {
+      const side = mk.placement ?? (mk.orientation === "under" ? "below" : mk.orientation === "over" ? "above" : undefined);
+      if (side === "below") return false;
+      if (side === "above") return true;
+    }
+    return (noteIdx ?? 0) === top;
+  };
+  song.marks = song.marks.filter(
+    (mk) => kept.has(mk.start) && kept.has(mk.end) && (mk.type !== "slur" && mk.type !== "tied" ? true : onMelody(mk.start, mk.startNote, mk) && onMelody(mk.end, mk.endNote, mk)),
+  );
   for (const mk of song.marks) {
     if (reduced.has(mk.start)) delete mk.startNote;
     if (reduced.has(mk.end)) delete mk.endNote;
