@@ -80,6 +80,8 @@ import {
 } from "./layoutpass";
 import { melodyChords, topNote } from "../model/jianpu";
 
+/** Bravura Text 里 segno/coda 相对 Bravura 同一字形的大小（见 processSegno） */
+const BRAVURA_TEXT_SCALE = 0.8;
 const STEP_DIATONIC: Record<string, number> = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
 
 function makeClef(c: DocClef): ClefSig {
@@ -657,11 +659,11 @@ class DocPartLoader {
           if (this.processMetronome(blk, item)) hasText = true;
           break;
         case "segno":
-          this.processSegno(blk, false, item.pos?.relativeX);
+          this.processSegno(blk, false, item.pos);
           hasText = true;
           break;
         case "coda":
-          this.processSegno(blk, true, item.pos?.relativeX);
+          this.processSegno(blk, true, item.pos);
           hasText = true;
           break;
         case "wedge":
@@ -765,13 +767,20 @@ class DocPartLoader {
   }
 
   /** <segno> / <coda> 记号（parser.cpp::processSegno / processCoda）。
-   *  位置不取 default-x：本工程文本块统一由 updateDataXPos 按 offset 的 getEntPos 定位，
-   *  与 musicpp 直接用 default-x 的策略不同；这里只保留 y=45 与 +15 的小幅右移。 */
-  private processSegno(blk: MeasureText, coda: boolean, relativeX?: number): void {
+   *  x 照 processTextPos：只有 default-x 时是小节内坐标、不加拍位；default-x 与 relative-x 都写了按
+   *  MusicXML 的意思相加（歌本改谱脚本把原程序的 `x += n` 写成 relative-x）；只有 relative-x 或都没有才相对拍位。
+   *  再 y=45、右移 15。字形照原程序用 Bravura Text（webview 只注册了 Bravura，同一套字形，
+   *  Bravura Text 的 segno/coda 是 Bravura 的 0.8 倍：墨高 629/786、844/1056）。 */
+  private processSegno(blk: MeasureText, coda: boolean, pos?: { defaultX?: number; relativeX?: number }): void {
     blk.y = 45; // todo: parser.cpp 同样硬编码
-    blk.x += 15 + (relativeX ?? 0);
-    const font = new Font("Bravura", this.score.defaults.musicTextFont.size / this.score.scaling);
-    blk.add(coda ? GlyphCodes.coda : GlyphCodes.segno, font, true);
+    const dx = pos?.defaultX;
+    if (dx !== undefined && !blk.data.length) {
+      blk.x = dx + (pos?.relativeX ?? 0);
+      blk.relative = false;
+    } else if (pos?.relativeX !== undefined) blk.x = pos.relativeX;
+    blk.x += 15;
+    const size = this.score.defaults.musicTextFont.size / this.score.scaling;
+    blk.add(coda ? GlyphCodes.coda : GlyphCodes.segno, new Font("Bravura", BRAVURA_TEXT_SCALE * size), true, size);
   }
 
   /** <words> 文本（如「(副歌)」），对应 loader.cpp::processWords。 */
@@ -836,7 +845,7 @@ class DocPartLoader {
     const fam = f?.family ?? "Times New Roman";
     const sz = f?.size !== undefined ? f.size : 16;
     const bold = f?.weight === "bold";
-    return new Font(fam, sz / this.score.scaling, bold);
+    return new Font(fam, sz / this.score.scaling, bold, f?.style === "italic");
   }
 
   private processHarmony(src: Harmony, md: PartMeasureLayout, tick: Fraction): void {
@@ -1149,6 +1158,8 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
       const sz = def.lyricFont.size || score.defaults.lyricFont.size;
       score.defaults.lyricFont = new Font(family, ptToTenths(sz));
     }
+    // parser.cpp 取 <music-font font-size> 当 musicTextFont 的字号（pt，不按 scaling 折算——用时再除）
+    if (def.musicFont?.size) score.defaults.musicTextFont = new Font(score.defaults.musicTextFont.family, def.musicFont.size);
     if (def.wordFont) {
       const family = def.wordFont.family ?? score.defaults.wordFont.family;
       const sz = def.wordFont.size || score.defaults.wordFont.size;

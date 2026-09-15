@@ -199,14 +199,15 @@ function tightLineHeights(t: TextBlock, meta: MetaData, musicEm: number, textByS
       continue;
     }
     let ih: number;
-    if (it.music) {
+    if (textBySize) {
+      // 歌本口径：行高按字号（原排版程序 Font::height() 就是字号，model.cpp TextBlock::height），记号也一样。
+      // 字体 ascent−descent 约 1.45 个字号，按它算多行文字块会虚高（《我心等候祢》拆行后被挤成两页）；
+      // 记号按墨高算则比原程序矮，《基督是锚》segno 那行谱会上移约 11 tenths
+      ih = it.nominalSize ?? it.font.size;
+    } else if (it.music) {
       let gh = 0;
       for (const ch of it.text) gh = Math.max(gh, smuflTop(meta, ch) - smuflBottom(meta, ch));
       ih = gh * (musicEm > 0 ? it.font.size / musicEm : 1);
-    } else if (textBySize) {
-      // 歌本口径：文字行高按字号（原排版程序 Font::height() 就是字号，model.cpp TextBlock::height）。
-      // 字体 ascent−descent 约 1.45 个字号，按它算多行文字块会虚高（《我心等候祢》拆行后被挤成两页）
-      ih = it.font.size;
     } else {
       const fm = it.font.metrics;
       ih = fm.descent - fm.ascent;
@@ -1314,6 +1315,8 @@ export interface TextBlockItem {
   dy: number;
   music: boolean;
   superscript: number;
+  /** 原程序里这项的字号（换了字体、画的字号跟着换算时记下原值；歌本按字号算行高用它） */
+  nominalSize?: number;
 }
 
 export class TextBlock {
@@ -1324,10 +1327,10 @@ export class TextBlock {
   title = false;
 
   /** 文字里的换行拆成「项 + 换行项」（TextBlock::add 的 boost::split）：`<words>` 原文带换行就是多行 */
-  add(text: string, font: Font, music = false): void {
+  add(text: string, font: Font, music = false, nominalSize?: number): void {
     text.split("\n").forEach((s, i) => {
       if (i > 0) this.data.push({ font, text: "\n", dy: 0, music, superscript: 0 });
-      if (s) this.data.push({ font, text: s, dy: 0, music, superscript: 0 });
+      if (s) this.data.push({ font, text: s, dy: 0, music, superscript: 0, ...(nominalSize !== undefined ? { nominalSize } : {}) });
     });
   }
 

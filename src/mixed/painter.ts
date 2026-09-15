@@ -374,6 +374,7 @@ const mixedVisitor: ItemVisitor<SVGGElement> = {
     el.setAttribute("font-family", item.font.family);
     el.setAttribute("font-size", String(item.font.size));
     if (item.font.bold) el.setAttribute("font-weight", "bold");
+    if (item.font.italic) el.setAttribute("font-style", "italic");
     el.setAttribute("fill", "black");
     // 逐字笔位（标点挤压后的坐标，排版期量的那一串）——同 layout/painter.ts 的那一处。
     if (item.charXs && item.charXs.length > 1)

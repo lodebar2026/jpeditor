@@ -1,9 +1,9 @@
 // Replaces org.jetbrains.skija.Font/Typeface. A Font is just a CSS family +
-// pixel size (+ bold); measurement goes through the SVG/canvas helpers so it
+// pixel size (+ bold / italic); measurement goes through the SVG/canvas helpers so it
 // agrees with rendering.
 
 import { Rect } from "../common/geom";
-import { measureGlyphRun, measureGlyphText, measureFontMetrics, punctTrim } from "../common/measure";
+import { measureGlyphRun, measureGlyphText, measureFontMetrics, punctTrim, type FontStyle } from "../common/measure";
 import type { CompressMode } from "../common/cjkpunct";
 
 export class Font {
@@ -11,6 +11,7 @@ export class Font {
     public family: string,
     public size: number,
     public bold = false,
+    public italic = false,
   ) {}
 
   get familyName(): string {
@@ -19,21 +20,24 @@ export class Font {
   get weight(): "normal" | "bold" {
     return this.bold ? "bold" : "normal";
   }
+  get style(): FontStyle {
+    return this.italic ? "italic" : "normal";
+  }
 
   scaled(sc: number): Font {
-    return new Font(this.family, this.size * sc, this.bold);
+    return new Font(this.family, this.size * sc, this.bold, this.italic);
   }
   makeWithSize(sz: number): Font {
-    return new Font(this.family, sz, this.bold);
+    return new Font(this.family, sz, this.bold, this.italic);
   }
   withBold(): Font {
-    return new Font(this.family, this.size, true);
+    return new Font(this.family, this.size, true, this.italic);
   }
 
   /** advance width of str (Skija font.measureText().width). */
   measureText(str: string): number {
     if (str.length === 0) return 0;
-    return measureGlyphText(str, this.family, this.size, this.weight).width;
+    return measureGlyphText(str, this.family, this.size, this.weight, undefined, this.style).width;
   }
 
   /**
@@ -53,7 +57,7 @@ export class Font {
 
   /** tight glyph bbox (Skija font.getPath(gid).bounds). */
   charBound(ch: string): Rect {
-    return measureGlyphText(ch, this.family, this.size, this.weight).bbox;
+    return measureGlyphText(ch, this.family, this.size, this.weight, undefined, this.style).bbox;
   }
 
   /**
@@ -71,7 +75,7 @@ export class Font {
 
   /** font-global ascent (negative) / descent (positive). */
   get metrics(): { ascent: number; descent: number } {
-    return measureFontMetrics(this.family, this.size, this.weight);
+    return measureFontMetrics(this.family, this.size, this.weight, this.style);
   }
 }
 

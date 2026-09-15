@@ -10,7 +10,6 @@
 //
 // **浏览器侧**（混排引擎要 DOM 量字）。Node 侧的 scripts/kl2020-book.mjs 经 window.__songbook 调它，
 // 拿回纯数据的 DrawPage[] 再交 scripts/pdfwrite.mjs。
-import { compressRun } from "../common/cjkpunct";
 import { Matrix33 } from "../common/geom";
 import { Font } from "../layout/font";
 import { Group, TextFrame } from "../layout/pageitem";
@@ -111,6 +110,10 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   applyStaffStyle(options, sheet);
   options.hideBarNumber = true;
   options.textLineHeightBySize = true;
+  // 成品全书不印简谱调号「1=X」（曲首与转调处都没有）；musicpp pao.cpp 虽开了 showKeyChangeJp，成品里并无此项
+  options.showKeyChangeJp = false;
+  // 和弦字体：musicpp Engraver::wordFont 缺省是思源黑体（model.hpp），成品和弦即此；编辑器视图沿用 Times New Roman
+  options.wordFont = "Source Han Sans SC";
   if (metaFlag(song, "layout.chinese-hyphen")) options.chineseHyphen = true;
   // musicpp removeNoneMelody 删完非旋律音后按首音重猜符干（model.cpp::guessStemDir）
   if (metaFlag(song, "layout.melody-only")) options.guessStemDir = true;
@@ -201,14 +204,43 @@ function placedToTextFrames(page: Group, placed: readonly Placed[], sheet: Style
     const hwid = /\bhwid\b/.test(String(sheet.roles[p.role as keyof StyleSheet["roles"]]?.features ?? ""));
     tf.text = hwid ? toHalfWidthPunct(p.text) : p.text;
     tf.font = font;
-    // 逐字笔位自己算：单字 advance + 共用的标点挤压（全身式，同书级正文）。
-    // 不能拿浏览器量的前缀宽：Chrome 缺省 `text-spacing-trim` 会把「。（」里左括号的左半格压掉，
+    // 逐字笔位自己算：单字 advance 顺排，**标点不挤压**——成品（原程序直接画字）「内。（来6：19）」「不开口。（赛53：7）」
+    // 里句号与左括号都是全宽。不能拿浏览器量的前缀宽：Chrome 缺省 `text-spacing-trim` 会把「。（」里左括号的左半格压掉，
     // 前缀宽里少了半格、括号笔位却没跟着左挪，出 PDF 逐字画全宽字形时括号的墨正好被下一个字盖住
     //（「根基。（林前3：11）」的「（」看不见）。夹在两字之间量单字，避开行首行末的挤压。
+    // hwid 换来的半角标点照 hwid 字形的样子排：占半格、墨迹居中（成品页脚「17：20，21；路」每个标点 0.5em，
+    // ASCII 标点只有 0.25em 左右，整行短一截）
+    // 西文连续段按整段前缀量宽，保住字距调整（逐字量会丢 Pa、Tr、Ya 的 kerning，「Matt Papa, Trans. Boaz Yang」越排越宽）；
+    // 前缀两头各垫一个「|」再减掉：SVG 量宽会去掉首尾空白（「；」后的空格段被量成 0）
     const pad = font.measureText("一一");
-    const run = compressRun([...tf.text], (c) => font.measureText(`一${c}一`) - pad, font.size, "clreq");
-    tf.charXs = run.xs;
-    const w = run.width;
+    const bar = font.measureText("|");
+    const orig = [...p.text];
+    const chars = [...tf.text];
+    const latin = (i: number): boolean => chars[i]! < "\u2000" && !(hwid && chars[i] !== orig[i]);
+    const xs: number[] = [];
+    let w = 0;
+    for (let i = 0; i < chars.length; ) {
+      const c = chars[i]!;
+      if (latin(i)) {
+        let j = i;
+        while (j < chars.length && latin(j)) j++;
+        const seg = chars.slice(i, j).join("");
+        for (let k = 0; k < j - i; k++) xs.push(w + (k ? font.measureText("|" + seg.slice(0, k) + "|") - 2 * bar : 0));
+        w += font.measureText("|" + seg + "|") - 2 * bar;
+        i = j;
+      } else if (hwid && c !== orig[i]) {
+        const cell = font.size * 0.5;
+        const ink = font.charBound(c);
+        xs.push(w + (cell - (ink.right - ink.left)) / 2 - ink.left);
+        w += cell;
+        i++;
+      } else {
+        xs.push(w);
+        w += font.measureText(`一${c}一`) - pad;
+        i++;
+      }
+    }
+    tf.charXs = xs;
     const x = p.align === "center" ? p.x - w / 2 : p.align === "right" ? p.x - w : p.x;
     const m = new Matrix33();
     m.setAffine([1, 0, 0, 1, x, p.y]);
@@ -284,8 +316,9 @@ export async function layoutMixedSongbook(input: SongbookInput): Promise<Songboo
   }
 
   const usedFamilies = new Set<string>();
+  // 出 PDF 按角色（= 字体族）挑字体文件；斜体是另一份字体文件，角色名带「 Italic」（Times New Roman Italic.ttf）
   const roleOf = (it: TextFrame): string => {
-    const fam = it.font?.family ?? "";
+    const fam = (it.font?.family ?? "") + (it.font?.italic ? " Italic" : "");
     usedFamilies.add(fam);
     return fam;
   };
