@@ -349,7 +349,8 @@ function readHarmony(el: Element): Harmony {
 function readLyrics(noteEl: Element): Lyric[] {
   const out: Lyric[] = [];
   for (const l of children(noteEl, "lyric")) {
-    const text = children(l, "text").map((t) => t.textContent ?? "").join("");
+    const texts = children(l, "text");
+    const text = texts.map((t) => t.textContent ?? "").join("");
     const n = l.getAttribute("number");
     const lr: Lyric = { number: n ? Number(n.replace(/[^\d]/g, "")) || 1 : 1, text };
     if (n !== null && !/^\d+$/.test(n)) lr.numberText = n;
@@ -369,6 +370,8 @@ function readLyrics(noteEl: Element): Lyric[] {
     if (pos) lr.pos = pos;
     const just = readAlign(l, "justify");
     if (just) lr.justify = just;
+    const tf = texts[0] ? readFontAttrs(texts[0]) : undefined;
+    if (tf) lr.font = tf;
     out.push(lr);
   }
   return out;
@@ -759,6 +762,8 @@ function readMeasure(
             if (sy !== undefined) note.stemY = sy;
           }
         }
+        const noteSize = child(c, "type")?.getAttribute("size");
+        if (noteSize) note.typeSize = noteSize;
         if (isChordNote && last) {
           last.notes.push(note);
           const nots = readNotations(c, marks, last.id, last.notations, last.notes.length - 1);

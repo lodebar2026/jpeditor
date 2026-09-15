@@ -32,6 +32,7 @@ export const META_KEYS: readonly MetaKeyDef[] = [
   { key: "note-br", label: "页脚注释（右）", role: "note" },
   { key: "layout.new-page", label: "另起一页", flag: true },
   { key: "layout.melody-only", label: "只留旋律声部", flag: true },
+  { key: "layout.chinese-hyphen", label: "歌词连字符用「—」", flag: true },
 ];
 
 const BY_KEY = new Map(META_KEYS.map((d) => [d.key, d]));

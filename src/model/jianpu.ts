@@ -324,7 +324,10 @@ export const midiPitch = (p: Pitch): number => midiOf(p) + 12;
 export function topNote(ch: Chord): Note | undefined {
   let best: Note | undefined;
   let bestV = -Infinity;
+  // 画小的音（`<type size="cue">`，和弦里的上方装饰声部）不是旋律：有正常大小的音就只在它们里挑
+  const normal = ch.notes.some((n) => n.typeSize !== "cue");
   for (const n of ch.notes) {
+    if (normal && n.typeSize === "cue") continue;
     const v = n.pitch ? midiOf(n.pitch) : n.degree ? n.degree.octaveShift * 7 + n.degree.number : -Infinity;
     if (v > bestV) {
       best = n;

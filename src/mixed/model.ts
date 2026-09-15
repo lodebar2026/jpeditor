@@ -348,7 +348,7 @@ export class NoteLayout {
   }
   /** 显示尺寸：1=cue（小符头），0=正常（MusicXML <type size="cue">）。 */
   get size(): number {
-    return this.chord.src?.typeSize === "cue" ? 1 : 0;
+    return (this.src?.typeSize ?? this.chord.src?.typeSize) === "cue" ? 1 : 0;
   }
   get visible(): boolean {
     return this.chord.src?.printObject !== false;
@@ -1319,8 +1319,12 @@ export class TextBlock {
   justify = LCR.Left;
   title = false;
 
+  /** 文字里的换行拆成「项 + 换行项」（TextBlock::add 的 boost::split）：`<words>` 原文带换行就是多行 */
   add(text: string, font: Font, music = false): void {
-    this.data.push({ font, text, dy: 0, music, superscript: 0 });
+    text.split("\n").forEach((s, i) => {
+      if (i > 0) this.data.push({ font, text: "\n", dy: 0, music, superscript: 0 });
+      if (s) this.data.push({ font, text: s, dy: 0, music, superscript: 0 });
+    });
   }
 
   width(): number {

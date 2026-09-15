@@ -456,7 +456,8 @@ function updateDataXPos(score: StaffLayout): void {
       const mif = score.measures[i];
       const md = part.measures[i];
       if (!md) continue;
-      for (const h of md.harmonies) h.x = mif.getEntPos(h.offset);
+      // `<harmony relative-x>`：和弦相对拍位的横向微调（歌本改谱脚本写进 XML 的那种）
+      for (const h of md.harmonies) h.x = mif.getEntPos(h.offset) + (h.src.pos?.relativeX ?? 0);
       for (const t of md.textBlocks) {
         if (t.data.length) t.x += mif.getEntPos(t.offset);
       }
