@@ -66,6 +66,31 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
     tryCut(b.h - Math.round(numH * 0.6), b.h - Math.round(numH * 0.12), false);
 }
 
+/** 减时线与紧贴其下的低八度点粘成一块：扁长的线下沿挂着个小墨斑，整块高度跳到 0.33 字号
+ *  （迦南诗选《竭力保守》第 6 行 `2̲ 1̳ 6̳` 实测 207×15，numH 45），过不了「横线要够扁」那道门
+ *  → 第二条减时线与那个低八度点**一起消失**，那一拍时值翻倍、音高还高了八度。
+ *  按行墨宽切开：线那几行的墨宽≈整块宽，点那几行只有点径。返回 null 表示不是这种粘连。
+ *  **只在干净谱面上用**（调用处按整页碎渣比把门，见 classify）：脏页上减时线下沿粘的碎渣
+ *  与八度点同形，切开等于凭空多一个八度。 */
+function splitMergedUnderlineDot(bin: Binary, b: Rect, numH: number): { line: Component; dot: Component } | null {
+  if (b.w < numH * 0.6 || b.w < b.h * 4) return null;
+  if (b.h <= Math.max(3, numH * 0.32) || b.h > numH * 0.6) return null;
+  const ink = rowInk(bin, b);
+  let v = -1;
+  for (let y = 0; y < b.h; y++) if (ink[y]! < b.w * 0.5) { v = y; break; }
+  if (v <= 0) return null;                       // 顶上就不是整条线 → 不是「线+点」
+  const mk = (y0: number, y1: number): Component | null => {
+    const t = tightBox(bin, b, 0, b.w, y0, y1);
+    return t ? { id: -1, bbox: t, area: t.w * t.h, cx: rcx(t), cy: rcy(t) } : null;
+  };
+  const line = mk(0, v), dot = mk(v, b.h);
+  if (!line || !dot) return null;
+  if (line.bbox.h > Math.max(3, numH * 0.32)) return null;                  // 线须仍是细线
+  const dw = dot.bbox.w, dh = dot.bbox.h;
+  if (dw > numH * 0.5 || dh > numH * 0.5 || dw < numH * 0.1 || dh < numH * 0.1) return null; // 点须像点
+  return { line, dot };
+}
+
 /** 倚音底下的减时线条数：从块底往下 0.6 字高内，逐行看有没有一条与它同宽的横墨，连着的算一条。
  *  **不数连通块**：第二条常与那道连到主音符的弧连成一块（2152 末行实测 15×11），
  *  按「扁而宽」的块判据一卡就只数得出一条，倚音的时值差一倍。 */
@@ -217,6 +242,19 @@ function estimateNumH(comps: Component[]): number {
 
 function classify(comps: Component[], bin: Binary): { c: Classified; numH: number } {
   const numH = estimateNumH(comps);
+  // 「干净谱面」判据：**看小节线直不直**。数字排版直接出的印刷本，小节线是一根绝对竖直、
+  // 墨廓填满的矩形（bbox 内前景占比 ≥0.95，实测迦南诗选那批 0.977~1.000）；翻拍/复印件的
+  // 同一根线总是歪一两个像素、边缘发毛，bbox 被撑宽、占比掉到 0.37~0.82（全部现有语料如此）。
+  // 另要求线**够粗**（中位宽 ≥2px）——1px 细线的占比恒等于 1，分不出干净与否；以及**够多**
+  // （≥4 根）免得拿一两根的偶然值当判据。
+  // 只有干净页才做下面的「减时线+八度点」粘连切分：脏页上碎渣挂在减时线下沿时长得跟八度点
+  // 一模一样，切开就是凭空多一个八度。
+  const barCands = comps.filter((k) =>
+    k.bbox.h >= numH * 0.85 && k.bbox.h <= numH * 1.6 && k.bbox.w <= Math.max(2, numH * 0.35));
+  const med = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[xs.length >> 1]! : 0);
+  const pageClean = barCands.length >= 4 &&
+    med(barCands.map((k) => k.bbox.w)) >= 2 &&
+    med(barCands.map((k) => k.area / (k.bbox.w * k.bbox.h))) >= 0.95;
   const c: Classified = { blocks: [], barlines: [], hlines: [], dots: [] };
   // 高瘦竖块可能是"八度点 + 窄数字"粘连体（数字不含点）：优先切开、把点与数字笔各归其类，
   // 否则会被下面的小节线判据整块吞掉而丢音（实测高八度 "1̇" 在单行简谱里 h 恰同真小节线）。
@@ -235,8 +273,19 @@ function classify(comps: Component[], bin: Binary): { c: Classified; numH: numbe
     // 3.5 被排除、落到下面的数字块判据；而粗终止线 ▮（实测 w15 h56 → h/w≈3.7）仍 ≥3.5 保留。
     // 早先用 h/w≥2.2 会把 "1" 当小节线整片丢掉（本行八处 "1" 全失，见「哦愿我有千万舌头」）。
     if (h >= numH * 1.3 && w <= numH * 0.6 && h / w >= 3.5) { c.barlines.push(k); continue; }
-    // 独立横线：扁宽（增时线/分隔），且不够高不足以含数字
-    if (w >= numH * 0.6 && h <= Math.max(3, numH * 0.32)) { c.hlines.push(k); continue; }
+    // 扁长块粘着个小墨斑 → 减时线 + 低八度点，切开各归各类（判据见 splitMergedUnderlineDot）。
+    if (pageClean) {
+      const sp = splitMergedUnderlineDot(bin, k.bbox, numH);
+      if (sp) { c.hlines.push(sp.line); c.dots.push(sp.dot); continue; }
+    }
+    // 独立横线：扁宽（增时线/分隔），且不够高不足以含数字。
+    // 宽度门 0.6 字号是照减时线（要盖住整个数字）定的，**增时线可以短得多**：迦南诗选那批
+    // 粗体版面的 '-' 实测只有 0.48 字号宽（23px / numH 48），过不了门就整根丢掉——那批曲子
+    // 每小节末尾的长音全变短，小节时值对不上。补一条「细长条」通道：宽 ≥0.4 字号且长宽比 ≥3
+    // （真 '-' 实测 23×6 = 3.8 倍）。比值这条挡住了同宽度量级的碎渣（多是近方的小块）。
+    if ((w >= numH * 0.6 || (w >= numH * 0.4 && w >= h * 3)) && h <= Math.max(3, numH * 0.32)) {
+      c.hlines.push(k); continue;
+    }
     // 小点：八度点/附点
     if (w <= numH * 0.45 && h <= numH * 0.45) { c.dots.push(k); continue; }
     // 数字块：高度接近字号（可略高于字号以容纳粘连的下划线），宽度不限（连音会更宽）。
@@ -452,6 +501,20 @@ interface MeterCand {
 /** 合法拍号：分母 2 的幂、分子 1..16（同 header.ts::validMeter 的口径）。 */
 const validMeter = (n: number, d: number) => n >= 1 && n <= 16 && (d === 2 || d === 4 || d === 8 || d === 16);
 
+/** 这条横线上/下方紧挨着另一条同 x 的横线？**增时线从不上下叠**（`- -` 是左右并排），
+ *  上下叠的只可能是减时线。倚音那两条减时线印在主音符**左上方**、恰好落在前一个音符右侧
+ *  的空隙里、又与数字带同高（迦南诗选《求主引导我每一天》第 1 行 `1 ²⁼3 - -` 实测两条
+ *  678×3、Δcy −0.27/−0.42），只靠位置判不出来，会给前一个音符平白添两根增时线。 */
+function stackedHline(hlines: Component[], kb: Rect, numH: number): boolean {
+  return hlines.some((o) => {
+    const ob = o.bbox;
+    if (ob === kb) return false;
+    const dy = rcy(ob) - rcy(kb);
+    if (dy === 0 || Math.abs(dy) > numH * 0.45) return false;
+    return overlapX(ob, kb) >= Math.min(ob.w, kb.w) * 0.5;
+  });
+}
+
 // 为一行的每个数字格归并修饰（八度点/增时线/附点），div 已随数字格带入。
 /** 小块正下方半个字号内的前景占比。八度点是**孤立**的圆点、下方留白；歌词字的顶部笔画
  *  （如「主」字上方那一竖）下方紧接着字的其余笔画，占比高。与字号无关，故比宽高比/间隙阈值稳。 */
@@ -487,12 +550,15 @@ function buildJpNums(
     let octave = 0, dot = 0, augment = 0;
     const upDots: Rect[] = [], downDots: Rect[] = []; // 八度点候选（上/下），循环后按叠放规则裁决
     // 数字先识别（附点判定要用到：休止 0 不接附点 —— 见下）。
-    // "1" 是简谱唯一单竖笔，明显比其它数字窄（实测 ≈0.45~0.55字号，其余 ≈0.9字号）：极窄块若被
-    // OCR 误判成别的数字（淡印/碎裂的 "1" 常被读成 4/7），按宽度纠回 1；不动休止 0（圆形、不窄）。
+    // "1" 是简谱唯一单竖笔，明显比其它数字窄：极窄块若被 OCR 误判成别的数字（淡印/碎裂的 "1"
+    // 常被读成 4/7），按宽度纠回 1；不动休止 0（圆形、不窄）。
     // 只纠 4/7 这两个「1」的实测误读方向：3/5 等弯笔数字在瘦高字体里本就可能窄（宽 ≈0.5字号），
     // 却是 rec 读对的正字，若一并按宽clobber 会把清晰的 3/5 错改成 1（「从前所珍爱」实测 4 处）。
+    // 门限 0.45 字号（原 0.55）：瘦体版面里连 2/3/5/6/7 都只有 0.5 字号宽（迦南诗选实测 "1" 16~18px、
+    // 其余 23~26px，numH 47），0.55 会把**清清楚楚的 4 和 7** 一并改成 1（《祷告》3 个 `4.`、
+    // 7 个 7，《主是》《天不蓝了》各若干）。0.45 卡在两簇之间，两本都分得开；现有语料指标不变。
     let digit = ocrDigit(d);
-    if ((digit === 4 || digit === 7) && d.w <= numH * 0.55) digit = 1;
+    if ((digit === 4 || digit === 7) && d.w <= numH * 0.45) digit = 1;
 
     const dcx = rcx(d), dcy = rcy(d);
     // 右侧附点窗口：附点紧跟其修饰的音符，但实测它常落在到下一音符空隙的中段（约 50%，
@@ -603,10 +669,22 @@ function buildJpNums(
     const belowLines: Rect[] = [];
     for (const k of cls.hlines) {
       const kb = k.bbox;
-      // 独立横线在数字右侧、与数字同高 → 增时线 '-'
-      if (kb.x >= rright(d) - 1 && kb.x < augR && Math.abs(rcy(kb) - rcy(d)) < numH * 0.6 &&
+      // 增时线 '-'：横线在数字**右侧**（x 不重叠）、与数字**纵向重叠**、且**大致居中**。
+      // 前两条与减时线对偶（那条是「在下方 + 横向重叠」），第三条把三种横线按与数字中线的
+      // 相对位置分开——三者实测（22 页语料）：
+      //   · 真增时线画在数字中线上：|Δcy| ≤ 0.21 字号（283 根里只此一根到 0.21，其余 ≤0.14）；
+      //   · 倚音底下的减时线偏在中线**上方**：−0.27~−0.42（它印在主音符左上角，恰好落在前一个
+      //     音符右侧的空隙里，纵向也与数字带重叠，只靠「右侧+重叠」拦不住）；
+      //   · 下一组音符的减时线偏在中线**下方**：+0.58（音符排得密时从本音符右缘伸出来）。
+      // 门开在 0.25：两侧各留 0.04 与 0.02 字号的余量，是实测撑得住的最宽位置。
+      // 「中心距 < 0.6 字号」那条老判据两头都不严，正是上面后两种混进来的原因，已由这两条取代。
+      const yOverlap = kb.y < rbottom(d) && rbottom(kb) > d.y;
+      const centered = Math.abs(rcy(kb) - rcy(d)) <= numH * 0.25;
+      if (kb.x >= rright(d) - 1 && kb.x < augR && yOverlap && centered &&
+          !stackedHline(cls.hlines, kb, numH) &&
           overlapX(kb, d) < kb.w * 0.4) { augment++; augmentRects.push(kb); continue; }
-      // 减时线(下划线)：数字**正下方**的独立横线，x 与数字重叠；多条上下堆叠 → div 多层。
+      // 减时线(下划线)：横线在数字**正下方**、与数字**横向重叠**（与上面的增时线对偶）；
+      // 多条上下堆叠 → div 多层。
       const below = kb.y - rbottom(d);
       if (below > -numH * 0.2 && below < numH * 0.75 && overlapX(kb, d) >= Math.min(kb.w, d.w) * 0.4) {
         belowLines.push(kb);
@@ -711,7 +789,13 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   // 曲中转拍号「3/4」：先把分子/分母两个数字格与分数线从音符流里摘出去（见 meterCandidates），
   // 再按 OCR 出的数值校验；读出来不是合法拍号就当误判、把两个数字格放回音符流。
-  const meterCands = meterCandidates(allCores, c.hlines, numH);
+  // 分数线候选不能只取 hlines：拍号那道线**比减时线短得多**（与数字同宽，实测 19px / numH 48），
+  // 过不了 classify 里横线的宽度门、落进了「小点」那一类 —— 于是页眉的 `6/4`、`3/4 4/4` 一个都
+  // 认不出来，整曲退回默认 4/4（迦南诗选《天不蓝了》全曲 24 小节因此每小节都对不上拍）。
+  // 故把「扁而短的小块」也放进候选池：meterCandidates 要求正上、正下各紧贴一个数字，
+  // 八度点/附点凑不齐这两条，不会误判。
+  const flatDot = (k: Component) => k.bbox.w >= numH * 0.3 && k.bbox.w >= k.bbox.h * 2.5;
+  const meterCands = meterCandidates(allCores, [...c.hlines, ...c.dots.filter(flatDot)], numH);
   const meterMarks: { x: number; beats: number; beatType: number; bbox: Rect }[] = [];
   const meterCores = new Set<DigitCore>();
   const meterLines = new Set<Component>();
@@ -725,8 +809,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     });
     if (meterCores.size) {
       allCores = allCores.filter((k) => !meterCores.has(k));
-      // 分数线留在 hlines 里会被右邻音符当成增时线（它与数字带同高）。
+      // 分数线留在 hlines 里会被右邻音符当成增时线（它与数字带同高）；来自小点池的同理要摘掉。
       c.hlines = c.hlines.filter((h) => !meterLines.has(h));
+      c.dots = c.dots.filter((k) => !meterLines.has(k));
     }
   }
 
