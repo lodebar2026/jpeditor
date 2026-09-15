@@ -10,7 +10,6 @@ import { Matrix33 } from "../common/geom";
 import { GraphicPath, Group, TextFrame } from "../layout/pageitem";
 import { Font } from "../layout/font";
 import { jpDot, jpTimeSigItems } from "../layout/jpglyph";
-import { GlyphCodes } from "../smufl/smufl";
 import {
   accidentalSym,
   ChordLayout,
@@ -56,7 +55,7 @@ export function drawJianpuOverlay(grp: Group, sys: Sys, st: SysStaff, m: Measure
     m.index + 1 < scr.measures.length
   ) {
     const next = scr.measures[m.index + 1];
-    drawJpTimeSignature(eng, grpJp, next, ps, m.width - sys.timeChangeWidth - 5);
+    drawJpTimeSignature(eng, grpJp, next, ps, m.width - sys.timeChangeWidth);
   }
 
   for (const ch of md.chords) {
@@ -300,6 +299,37 @@ function drawJpTimeSignature(
 
   const grp = translated(x, 0);
 
+  // KL2020 参考成品由 musicpp 生成：数字不横向居中，分数线按实际数字 advance
+  // 加 2 tenths，基线也沿用 render.cpp::drawTime 的旧公式。此兼容档只由该歌本
+  // 的 @staff 打开；其他混排/简谱继续使用下面的共用拍号原语。
+  if (eng.musicppJpTimeSig) {
+    const sc = staffHeight / 40;
+    // render.cpp 先把 descent 乘 sc，随后整个 (20-dy)/(40+dy) 又乘一次 sc。
+    const dy = eng.jianpuFont.metrics.descent * sc;
+    const top = new TextFrame();
+    top.text = String(time.beats);
+    top.font = font;
+    top.color = BLACK;
+    top.y = sc * (20 - dy);
+    const bottom = new TextFrame();
+    bottom.text = String(time.beatType);
+    bottom.font = font;
+    bottom.color = BLACK;
+    bottom.y = sc * (40 + dy);
+    const rule = new GraphicPath();
+    rule.fill = false;
+    rule.stroke = true;
+    rule.strokeColor = BLACK;
+    rule.strokeWidth = 1.5;
+    rule.moveTo(-1, staffHeight / 2);
+    rule.lineTo(Math.max(font.measureText(top.text), font.measureText(bottom.text)) + 1, staffHeight / 2);
+    grp.add(top);
+    grp.add(bottom);
+    grp.add(rule);
+    container.add(grp);
+    return;
+  }
+
   // 拍号走公共那一份（jpglyph.ts::jpTimeSigItems）：两个数字**横向居中**于分数线，
   // 一切长度按**小节线高度**的比例。原先这里两个数字都贴 x=0 左对齐、纵向按 musicpp
   // 的 staff space 常量（`sc*(20−dy)` / `sc*(40+dy)`）给，与谱面、文本谱三处口径各不相同。
@@ -383,7 +413,10 @@ function drawJpKey(
     grp.add(str1);
     let w = jpFont.measureText(name) + 7 * r;
 
-    const accSym = acc < 0 ? GlyphCodes.accidentalFlat : GlyphCodes.accidentalSharp;
+    // render.cpp::drawKey 走 accidentalSym(acc, true)：这是 Bravura Text/和弦用的
+    // csym 字形，不是五线谱上的普通 accidentalFlat/Sharp。两者同字号的墨迹差约 1/5；
+    // 《求主藉异象激动我》的 `1=♭B` 因此曾比 musicpp 成品明显小一号、也低一截。
+    const accSym = accidentalSym(acc, true);
     const sc = jpFont.size / 40;
     addSmuflScaled(grp, accSym, w, -10 * r, eng.musicFont.size, sc, sc);
     w += 12 * r;
@@ -414,4 +447,3 @@ function drawJpKey(
     container.add(t);
   }
 }
-

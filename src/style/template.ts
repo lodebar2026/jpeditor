@@ -179,6 +179,15 @@ export const FILTERS: Readonly<Record<string, Filter>> = {
         .filter(Boolean)
         .map((text) => ({ ...v, text })),
     ),
+  /** 拆行但保留显式行首缩进；只去行尾空白和空行。 */
+  "lines-indent": (vals) =>
+    vals.flatMap((v) =>
+      v.text
+        .split(/\r?\n/)
+        .map((t) => t.trimEnd())
+        .filter((t) => t.trim().length > 0)
+        .map((text) => ({ ...v, text })),
+    ),
   /** 没带冒号标签的署名按类型补标签（`scripts/rebuild.mjs` 原 LABEL 规则）。 */
   "label-by-type": (vals) => vals.map((v) => (/[:：]/.test(v.text) ? v : { ...v, text: `${CREDIT_LABEL[v.type ?? ""] ?? v.type}：${v.text}` })),
   first: (vals) => vals.slice(0, 1),

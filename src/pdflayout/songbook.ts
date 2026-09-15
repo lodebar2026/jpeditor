@@ -11,6 +11,7 @@
 // **浏览器侧**（混排引擎要 DOM 量字）。Node 侧的 scripts/kl2020-book.mjs 经 window.__songbook 调它，
 // 拿回纯数据的 DrawPage[] 再交 scripts/pdfwrite.mjs。
 import { Matrix33 } from "../common/geom";
+import { toHalfWidthPunct } from "../common/cjkpunct";
 import { Font } from "../layout/font";
 import { Group, TextFrame } from "../layout/pageitem";
 import { MetaData } from "../smufl/smufl";
@@ -133,7 +134,11 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
     return r ?? 20;
   };
   const tpl = sheet.template ?? {};
-  const pageW = pageSize(tpl.book, sheet).w;
+  // ScoreMeta::updateTop/updateBottom 用的是每首原谱页面的宽度（titlePage/lastPage->width），
+  // 不是歌本样式表的 1322。最终输出纸张仍由 layoutMixedSongbook 固定为 A4；这里只决定
+  // 标题的居中轴和页脚右栏的右缘。《受苦圣徒，到基督前》的源 page-width=1354，拿
+  // 1322 算会让标题左移 16 tenths、右栏左移 32 tenths，正好是 flow 红蓝对照里的偏差。
+  const pageW = score.defaults.pageWidth;
   const env = (dy: number, pageNo: number): RegionEnv => ({
     field: songFields(song),
     pageNo,
@@ -255,10 +260,6 @@ function placedToTextFrames(page: Group, placed: readonly Placed[], sheet: Style
 }
 
 /** 全角标点 → 半角（`hwid` 的替代）。只换标点，汉字与全角字母数字不动。 */
-function toHalfWidthPunct(s: string): string {
-  return s.replace(/[：；，！？（）]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
-}
-
 // ───────────────────────── 入口 ─────────────────────────
 
 export async function layoutMixedSongbook(input: SongbookInput): Promise<SongbookResult> {

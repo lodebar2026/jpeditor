@@ -2799,6 +2799,10 @@ export class MixedOptions {
   showKeyChangeJp = true; // PAO 混排显示简谱调号「1=X」（util/pao.cpp:999）
   /** 简谱调号「1=X」按 jianpuFont 排（render.cpp::drawKey 原样，歌本用）；缺省按 mixFont 随混排谱高缩小（编辑器视图） */
   jpKeyJianpuFont = false;
+  /** 混排简谱拍号照 musicpp 的旧版笔位（KL2020 成品口径）；缺省仍走共用的现代简谱拍号，避免影响其他歌本。 */
+  musicppJpTimeSig = false;
+  /** 将歌词中文标点的原字形墨迹居中到 `halt` 实测格（KL2020/musicpp PDF 兼容）。 */
+  musicppHwidGlyphs = false;
   lineWidths: LineWidths = {
     staff: 1,
     jpBeam: 1,
