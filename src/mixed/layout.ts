@@ -224,6 +224,8 @@ class DocPartLoader {
     }
 
     this.calcStemLen();
+    // musicpp：load（含 calcStemLen）之后才 removeNoneMelody → guessStemDir，所以符干长度按原方向算
+    if (this.score.options.guessStemDir) this.guessStemDir();
     if (!this.hasBeamEl) this.autoBeamPart();
     this.formatBeams();
     // 符干/符杠就绪后再排记号（fermata 等），使 tailY 取到最终符干末端，避免 fermataBelow
@@ -364,9 +366,11 @@ class DocPartLoader {
       ch.stemUp = note.stem === "up";
       this.stemNotes.add(nt);
       if (note.stemY !== undefined) this.stemYMap.set(nt, note.stemY);
-    } else if (!ch.rest && ch.noteType.compareTo(new Fraction(4)) < 0) {
-      // 无 <stem> 且需符干（非全音符）的谱（如 OMR 生成、未给符干方向）：按符头相对中线
+    } else if (k === 0 && !ch.rest && ch.noteType.compareTo(new Fraction(4)) < 0 && !src.notes.some((n) => n.stem !== undefined)) {
+      // 整个和弦都没有 <stem> 且需符干（非全音符）的谱（如 OMR 生成、未给符干方向）：按首音相对中线
       // 位置定默认方向（中线 line=-4 及以上朝下，其下朝上），并登记以便 calcStemLen 给长度。
+      // **和弦里只有部分音写了 <stem> 时不猜**：musicpp parser.cpp:1586 只按写了 <stem> 的音定方向，
+      // Sibelius 导出的和弦音都不写 <stem>，逐音猜会把首音明写的方向覆盖掉（KL2020《为基督大业》）。
       ch.stemUp = nt.line() < -4;
       this.stemNotes.add(nt);
     }
@@ -928,15 +932,42 @@ class DocPartLoader {
     }
   }
 
+  /**
+   * model.cpp::guessStemDir（musicpp 在 Part::removeNoneMelody 删完非旋律音之后调）：
+   * 每个和弦按首音定方向（中线 line=-4 及以上朝下），再把每个符杠组统一——组内（跳过休止与首音正落中线的）
+   * 方向不一致或都没有时朝上，一致就取那个方向。只留旋律的歌本曲目开（`MixedOptions.guessStemDir`）。
+   */
+  private guessStemDir(): void {
+    for (const md of this.part.measures) {
+      for (const ch of md.chords) {
+        if (ch.rest || ch.notes.length === 0) continue;
+        const first = ch.notes[0]!;
+        ch.stemUp = first.line() <= -4;
+        this.stemNotes.add(first);
+      }
+      for (const g of md.beams) {
+        const vals = new Set<boolean>();
+        for (const ch of g.chords) {
+          if (ch.rest || ch.notes.length === 0) continue;
+          if (ch.notes[0]!.line() === -4) continue;
+          vals.add(ch.stemUp);
+        }
+        const up = vals.size === 1 ? [...vals][0]! : true;
+        for (const ch of g.chords) ch.stemUp = up;
+      }
+    }
+  }
+
   private calcStemLen(): void {
-    // parser.cpp::calcStemLen —— 仅有 <stem> 的音符算符干长；有 default-y 用之，
+    // parser.cpp::calcStemLen —— 仅有 <stem> 的音符算符干长；有 default-y 用之（长度量到**和弦尾音**：
+    // `fabs(-ch->tailNote()->cy() - stemY)`，Sibelius 只在和弦首音写 <stem>，量到首音会把朝上的符干算长一截），
     // 否则回退 35（grace 乘 cueSize）。无符干（全音符）保持默认 0。
     const cueSize = this.score.options.cueSize;
     for (const nt of this.stemNotes) {
       const ch = nt.chord;
       const sy = this.stemYMap.get(nt);
       if (sy !== undefined) {
-        ch.stemLen = Math.abs(-nt.cy() - sy);
+        ch.stemLen = Math.abs(-ch.tailNote().cy() - sy);
       } else {
         ch.stemLen = ch.grace ? 35 * cueSize : 35;
       }

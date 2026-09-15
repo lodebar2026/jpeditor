@@ -111,6 +111,8 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   options.hideBarNumber = true;
   options.textLineHeightBySize = true;
   if (metaFlag(song, "layout.chinese-hyphen")) options.chineseHyphen = true;
+  // musicpp removeNoneMelody 删完非旋律音后按首音重猜符干（model.cpp::guessStemDir）
+  if (metaFlag(song, "layout.melody-only")) options.guessStemDir = true;
   const score = layoutStaff(doc, options);
   formatMixedScore(score);
   const scaling = score.scaling;
