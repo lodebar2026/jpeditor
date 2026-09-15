@@ -66,13 +66,6 @@ export interface TemplateSheet {
   fonts?: Record<string, Record<string, Expr>>;
 }
 
-/** 逐元素样式（`角色[维度 op 值] { … }` 里带元素级维度的那些）。多层累加，不深合并。 */
-export interface ScopedRule {
-  role: string;
-  where: { dim: string; op: string; value: string | number }[];
-  props: Record<string, Expr>;
-  song?: string;
-}
 
 // ───────────────────────── 词法 ─────────────────────────
 
@@ -208,23 +201,16 @@ function lex(src: string): Tok[] {
 
 // ───────────────────────── 语句 ─────────────────────────
 
-/** 规则里要求的上下文维度（直接对应 `StyleContext`）；其余维度（段号、小节、拍位…）算元素级，走 scoped。 */
-const CONTEXT_DIMS = new Set(["mode", "engine", "page"]);
-/** `@page :odd` 的页位写法 → `StyleContext.page`。 */
-const PAGE_ALIAS: Record<string, string> = { odd: "right", even: "left", right: "right", left: "left", first: "first" };
-
-/** 角色声明里认得的属性（`RoleDecl`）。其余属性在元素级 scoped 规则里照样收。 */
-const ROLE_PROPS = new Set(["size", "color", "family", "font", "weight", "italic", "align", "line-height", "dx", "dy", "features", "visible"]);
+/** 角色声明认得的属性（`RoleDecl`）。**只有样式**：谱面内容与逐曲的位置微调改数据（MusicXML），不在样式表里。 */
+const ROLE_PROPS = new Set(["size", "color", "family", "font", "weight", "italic", "align", "line-height", "features", "visible"]);
 
 export interface ParseResult {
   rules: StyleRule[];
-  imports: string[];
 }
 
 class Parser {
   private i = 0;
   readonly rules: StyleRule[] = [];
-  readonly imports: string[] = [];
   constructor(private readonly toks: Tok[]) {}
 
   private peek(o = 0): Tok {
@@ -251,14 +237,14 @@ class Parser {
   }
 
   parseSheet(): void {
-    this.stmts({}, undefined, () => this.peek().t === "eof");
+    this.stmts({}, () => this.peek().t === "eof");
   }
 
-  private stmts(when: StyleContext, song: string | undefined, done: () => boolean): void {
+  private stmts(when: StyleContext, done: () => boolean): void {
     while (!done()) {
       const t = this.peek();
-      if (t.t === "at") this.atRule(when, song);
-      else if (t.t === "id") this.roleRule(when, song);
+      if (t.t === "at") this.atRule(when);
+      else if (t.t === "id") this.roleRule(when);
       else if (this.isP(";")) this.next();
       else this.fail(`这里要规则，却是 ${JSON.stringify(t.v)}`);
     }
@@ -268,16 +254,9 @@ class Parser {
     this.rules.push(Object.keys(when).length ? { when: { ...when }, set } : { set });
   }
 
-  private atRule(when: StyleContext, song: string | undefined): void {
+  private atRule(when: StyleContext): void {
     const at = this.next() as Extract<Tok, { t: "at" }>;
     switch (at.v) {
-      case "import": {
-        const s = this.next();
-        if (s.t !== "str") this.fail("@import 后面要字符串", s);
-        this.imports.push(s.v);
-        this.expectP(";");
-        return;
-      }
       case "book":
         this.push(when, { template: { book: this.declBlock() } });
         return;
@@ -289,19 +268,9 @@ class Parser {
         this.push(when, { template: { fonts: { [name]: this.declBlock() } } });
         return;
       }
-      case "page": {
-        let w = when;
-        if (this.isP(":")) {
-          this.next();
-          const pos = this.expectId();
-          const p = PAGE_ALIAS[pos];
-          if (!p) this.fail(`@page 认不出页位 :${pos}`);
-          w = { ...when, page: p as StyleContext["page"] };
-        }
-        const decls = this.declBlock();
-        this.push(w, { page: pageDecl(decls) as DeepPartial<StyleSheet>["page"] });
+      case "page":
+        this.push(when, { page: pageDecl(this.declBlock()) as DeepPartial<StyleSheet>["page"] });
         return;
-      }
       case "jianpu":
       case "pu":
       case "staff": {
@@ -314,13 +283,6 @@ class Parser {
         }
         if (Object.keys(overrides).length) blk.overrides = overrides;
         this.push(when, { [at.v]: blk } as DeepPartial<StyleSheet>);
-        return;
-      }
-      case "book-metrics": {
-        const decls = this.declBlock();
-        const book: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(decls)) setPath(book, k, exprValue(v));
-        this.push(when, { book } as unknown as DeepPartial<StyleSheet>);
         return;
       }
       case "template": {
@@ -345,42 +307,24 @@ class Parser {
           break;
         }
         this.expectP("{");
-        this.stmts(w, song, () => this.isP("}"));
+        this.stmts(w, () => this.isP("}"));
         this.expectP("}");
         return;
       }
-      case "song": {
-        const t = this.next();
-        if (t.t !== "str" && t.t !== "hash") this.fail("@song 后面要曲名字符串或 #曲号", t);
-        const name = t.t === "hash" ? `#${t.v}` : t.v;
-        const w = { ...when, song: name } as StyleContext;
-        this.expectP("{");
-        this.stmts(w, name, () => this.isP("}"));
-        this.expectP("}");
-        return;
-      }
+      case "song":
+        this.fail("样式表不做逐曲规则：改谱面内容或逐曲微调位置请改 MusicXML（如 scripts/kl2020-prep.mjs）", at);
+        break;
       default:
         this.fail(`认不出的规则 @${at.v}`, at);
     }
   }
 
-  /** `角色[限定]…, 角色… { 声明 }` */
-  private roleRule(when: StyleContext, song: string | undefined): void {
-    const sels: { role: string; where: ScopedRule["where"] }[] = [];
+  /** `角色, 角色… { 声明 }`。只认角色名，不做元素级限定（改数据，不改样式表）。 */
+  private roleRule(when: StyleContext): void {
+    const roles: string[] = [];
     for (;;) {
-      const role = this.expectId();
-      const where: ScopedRule["where"] = [];
-      while (this.isP("[")) {
-        this.next();
-        const dim = this.expectId();
-        const opTok = this.next();
-        if (opTok.t !== "p" || !["=", "!=", ">", ">=", "<", "<=", "*="].includes(opTok.v)) this.fail("限定里要比较符", opTok);
-        const vt = this.next();
-        if (vt.t !== "str" && vt.t !== "num" && vt.t !== "id") this.fail("限定的值要是字符串、数字或名字", vt);
-        where.push({ dim, op: opTok.v, value: vt.t === "num" ? vt.v : vt.v });
-        this.expectP("]");
-      }
-      sels.push({ role, where });
+      roles.push(this.expectId());
+      if (this.isP("[")) this.fail("样式表不做元素级限定：改谱面内容或逐曲微调位置请改 MusicXML");
       if (this.isP(",")) {
         this.next();
         continue;
@@ -388,22 +332,8 @@ class Parser {
       break;
     }
     const decls = this.declBlock();
-    for (const sel of sels) {
-      const ctxWhere = sel.where.filter((w) => CONTEXT_DIMS.has(w.dim) && w.op === "=");
-      const elemWhere = sel.where.filter((w) => !(CONTEXT_DIMS.has(w.dim) && w.op === "="));
-      const w: StyleContext = { ...when };
-      for (const c of ctxWhere) (w as Record<string, unknown>)[c.dim] = c.dim === "verse" ? Number(c.value) : c.value;
-      const roleOnly = elemWhere.length === 0 && sel.role !== "score" && Object.keys(decls).every((k) => ROLE_PROPS.has(k));
-      if (roleOnly) {
-        this.push(w, { roles: { [sel.role]: roleDecl(decls) } } as DeepPartial<StyleSheet>);
-      } else {
-        const sr: ScopedRule = { role: sel.role, where: elemWhere, props: decls };
-        if (song !== undefined) sr.song = song;
-        const wNoSong = { ...w };
-        delete (wNoSong as Record<string, unknown>).song;
-        this.push(wNoSong, { scoped: [sr] } as DeepPartial<StyleSheet>);
-      }
-    }
+    for (const k of Object.keys(decls)) if (!ROLE_PROPS.has(k)) this.fail(`角色声明认不出属性 ${k}`);
+    for (const role of roles) this.push(when, { roles: { [role]: roleDecl(decls) } } as DeepPartial<StyleSheet>);
   }
 
   private declBlock(): Record<string, Expr> {
@@ -611,11 +541,8 @@ class Parser {
   private exprPrimary(): Expr {
     const t = this.next();
     switch (t.t) {
-      case "num": {
-        const n: Expr = t.unit ? { k: "num", v: t.v, unit: t.unit } : { k: "num", v: t.v };
-        // `+2pt`：相对继承值（写出成 `inherit + 2pt`，读回同形）
-        return t.raw.startsWith("+") ? { k: "bin", op: "+", a: { k: "id", v: "inherit" }, b: n } : n;
-      }
+      case "num":
+        return t.unit ? { k: "num", v: t.v, unit: t.unit } : { k: "num", v: t.v };
       case "str":
         return { k: "str", v: t.v };
       case "hash":
@@ -760,7 +687,7 @@ const ROLE_KEY: Record<string, string> = { "line-height": "lineHeight" };
 
 function roleDecl(decls: Record<string, Expr>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(decls)) out[ROLE_KEY[k] ?? k] = k === "size" || k === "dx" || k === "dy" ? exprLength(v) : exprValue(v);
+  for (const [k, v] of Object.entries(decls)) out[ROLE_KEY[k] ?? k] = k === "size" ? exprLength(v) : exprValue(v);
   return out;
 }
 
@@ -770,33 +697,16 @@ function pageDecl(decls: Record<string, Expr>): Record<string, unknown> {
   return out;
 }
 
-function setPath(obj: Record<string, unknown>, path: string, v: unknown): void {
-  const ks = path.split(".");
-  let cur = obj;
-  for (const k of ks.slice(0, -1)) cur = (cur[k] ??= {}) as Record<string, unknown>;
-  cur[ks[ks.length - 1]!] = v;
-}
 
 // ───────────────────────── 入口 ─────────────────────────
 
-/** 解析一份 `.jpcss`。`@import` 不在这里展开（读文件是调用方的事，见 `parseJpcssWithImports`）。 */
+/** 解析一份 `.jpcss`。 */
 export function parseJpcss(src: string): ParseResult {
   const p = new Parser(lex(src));
   p.parseSheet();
-  return { rules: p.rules, imports: p.imports };
+  return { rules: p.rules };
 }
 
-/** 带 `@import` 展开：被引入的规则排在本文件之前（同层按出现顺序，引入的先叠）。 */
-export async function parseJpcssWithImports(src: string, load: (path: string) => Promise<string>, seen = new Set<string>()): Promise<StyleRule[]> {
-  const r = parseJpcss(src);
-  const out: StyleRule[] = [];
-  for (const imp of r.imports) {
-    if (seen.has(imp)) continue;
-    seen.add(imp);
-    out.push(...(await parseJpcssWithImports(await load(imp), load, seen)));
-  }
-  return out.concat(r.rules);
-}
 
 // ───────────────────────── 写出 ─────────────────────────
 
@@ -894,9 +804,6 @@ function printCell(cell: Cell, ind: string): string[] {
   return L;
 }
 
-function printWhere(w: ScopedRule["where"]): string {
-  return w.map((c) => `[${c.dim}${c.op}${typeof c.value === "number" ? c.value : JSON.stringify(c.value)}]`).join("");
-}
 
 /** 一条规则的 `set` → 语句（不含 when 包装）。 */
 function printSet(set: DeepPartial<StyleSheet>, ind: string): string[] {
@@ -922,27 +829,11 @@ function printSet(set: DeepPartial<StyleSheet>, ind: string): string[] {
     for (const [k, v] of Object.entries(blk.overrides ?? {})) body.push(`${k}: ${printValue(v)};`);
     L.push(`${ind}@${eng} { ${body.join(" ")} }`);
   }
-  if (set.book) {
-    L.push(`${ind}@book-metrics {`);
-    const walk = (o: Record<string, unknown>, pre: string): void => {
-      for (const [k, v] of Object.entries(o)) {
-        if (v && typeof v === "object" && !Array.isArray(v)) walk(v as Record<string, unknown>, `${pre}${k}.`);
-        else L.push(`${ind}  ${pre}${k}: ${printValue(v)};`);
-      }
-    };
-    walk(set.book as unknown as Record<string, unknown>, "");
-    L.push(`${ind}}`);
-  }
   for (const [name, reg] of Object.entries(tpl?.regions ?? {})) {
     if (!reg) continue;
     L.push(`${ind}@template ${name} {`, ...printRegionBody(reg as Region, ind + "  "), `${ind}}`);
   }
   if (tpl?.flow) L.push(`${ind}@flow {`, ...printDecls(tpl.flow, ind + "  "), `${ind}}`);
-  for (const sr of (set.scoped ?? []) as ScopedRule[]) {
-    const body = printDecls(sr.props, "").join(" ");
-    const rule = `${sr.role}${printWhere(sr.where)} { ${body} }`;
-    L.push(sr.song !== undefined ? `${ind}@song ${sr.song.startsWith("#") ? sr.song : JSON.stringify(sr.song)} { ${rule} }` : `${ind}${rule}`);
-  }
   return L;
 }
 
@@ -951,16 +842,9 @@ export function printJpcss(rules: readonly StyleRule[]): string {
   const L: string[] = [];
   for (const r of rules) {
     const w = { ...(r.when ?? {}) } as Record<string, unknown>;
-    const song = w.song as string | undefined;
-    delete w.song;
     const conds = Object.entries(w).filter(([, v]) => v !== undefined);
     let ind = "";
     const close: string[] = [];
-    if (song !== undefined) {
-      L.push(`@song ${song.startsWith("#") ? song : JSON.stringify(song)} {`);
-      close.unshift("}");
-      ind += "  ";
-    }
     if (conds.length) {
       L.push(`${ind}@media ${conds.map(([k, v]) => `(${k}: ${v})`).join(" and ")} {`);
       close.unshift(`${ind}}`);
