@@ -59,7 +59,7 @@ async function boot() {
   app.loadSettings();
   app.mountEditor(codePane, SAMPLE);
   const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __mixedModel: unknown; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
-    __j123: unknown; __pptx: unknown };
+    __j123: unknown; __pptx: unknown; __songbook: unknown };
   win.__app = app;
   win.__mixedPainter = new MixedPainter();
   // 混排模型（`AccidentalStat` / `GlyphCodes`）暴露，供 scripts/jianpu-semantic-check.mjs 三方比简谱语义。
@@ -85,6 +85,9 @@ async function boot() {
     ...book, ...bookStyle, ...painter, ...phrase, ...applybreaks, ...jpwfile, ...parse, ...jianpuinput, pu,
     ...fromxml, ...phrasedoc, ...timeline, ...playdoc, ...midi, ...input,
   }));
+  // 混排歌本（清单 + .jpcss → DrawPage[]）暴露，供 scripts/kl2020-book.mjs 用。
+  win.__songbook = Promise.all([import("./pdflayout/songbook"), import("./style/jpcss")])
+    .then(([songbook, jpcss]) => ({ ...songbook, ...jpcss }));
   // 123 格式与语义模型暴露，供 scripts/j123-migrate.mjs 跑 MusicXML 那一路——
   // `loadScoreDoc` 要 DOMParser，Node 侧没有，所以这条必须在浏览器里走（同 __book 的路子）。
   win.__j123 = Promise.all([

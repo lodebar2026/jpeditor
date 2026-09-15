@@ -1,10 +1,11 @@
-# `.jpcss` 歌本样式表（设计稿）
+# `.jpcss` 歌本样式表
 
 > 一本歌本一份 `.jpcss`：**样式**（角色的字体/字号/对齐）+ **模板**（哪个字段排进哪个槽位、按什么格式印）
 > + **装页**（新页/接排/半页起排、目录）。机制与级联见 [../样式机制.md](../样式机制.md)；
 > 数据项（`SongMeta`）见 [../模块/模型-scoredoc.md](../模块/模型-scoredoc.md)。
 >
-> 状态：设计稿。落地顺序见 [../待办.md](../待办.md) §2.3。
+> 状态：解析/写出（`src/style/jpcss.ts`）、模板排版（`src/style/template.ts`）、`hymn500` 与 `kl2020` 两份歌本已落地；
+> `pu-original`、编辑器接入待做，见 [../待办.md](../待办.md) §2.3。
 
 ## 0. 为什么模板和样式放一个文件
 
@@ -69,18 +70,30 @@ credit, rights { font: hei-light; size: 8pt; features: hwid; line-height: 1.45; 
 
 | 维度 | 含义 | 维度 | 含义 |
 |---|---|---|---|
-| `mode` | 档位 expanded/original/staff/mixed | `verse` | 第几段歌词 |
+| `mode` | 档位 expanded/original/staff/mixed | `verse` | 第几段歌词（元素级） |
 | `engine` | jianpu/pu/book/staff | `measure` | 小节号（1 基） |
 | `page` | left/right/first | `beat` | 拍位（小节内，四分音符为 1） |
-| `song` | 曲号或标题 | `text` | 元素原文 |
+| `song` | 曲名或 `#曲号`（`@song`） | `text` | 元素原文 |
 | `part` | 声部 id（P1…） | `glyph` | SMuFL 码位 |
-| `voice` | 声部内的 voice | `element` | 元素 id |
+| `voice` | 声部内的 voice | `name` | 歌词行原名（MusicXML `<lyric number>`，如 `part1verse5`） |
 
 **伪角色 `score`**：整曲开关，例如 `score { chinese-hyphen: true; melody-only: true; hide-bar-number: true; }`；
 `cue[measure>=22][measure<=23][beat>=1.5] { cue: true; }` 表示这一段画成小音符。
 
-**元素级属性**（scoped 规则专用）：`text`（改写原文，如段号 `1.`→`1-3.`）、`text-split: "," | each`（段落文字按分隔换行）、
-`cue`、`stem: up|down`、`layer`（叠层）。
+上下文维度只有 `mode` / `engine` / `page`（落到 `StyleRule.when`）；其余都是**元素级**，落成 scoped 规则。
+
+**元素级属性**（scoped 规则专用，混排已接，见 `src/mixed/scoped.ts`）：
+
+| 角色 | 限定 | 属性 |
+|---|---|---|
+| `lyric` | verse measure part name | `family` `size`（`+2pt` 相对） `dy` |
+| `verseNum` | verse measure text | `text`（改写段号原文，`1.` → `1-3.`） |
+| `chord` | measure beat text（`*=add9`） | `dx` `dy` |
+| `direction` | measure text glyph（`U+E047`） | `dx` `dy` `text-split: each` `blank-after: 1 3`（第几项之后空一行，0 基） |
+| `note` | measure beat voice part | `cue: true|false` `stem: up|down` |
+| `score` | — | `chinese-hyphen: true` |
+
+`+2pt` 这种带正号的值是相对继承值，写出成 `inherit + 2pt`。
 
 ## 4. 模板区域
 
@@ -104,7 +117,8 @@ credit, rights { font: hei-light; size: 8pt; features: hwid; line-height: 1.45; 
 | `inset` | 长度 | 左右各缩进 |
 | `extent` | 长度表达式，可含 `content` | 区域高。`content + 100`、`content * 1.5 + 40` |
 | `gap-before` / `gap-after` | 长度 | 与谱面的间距 |
-| `line-height` | 倍数或长度 | 未写 baseline 的行按它往下排 |
+| `line-height` | 倍数 | block：格内换行 = 该行字高 × 它（原排版程序 1.444） |
+| `line-box` | 倍数 | block：每行计入块高的倍数（× 字高，缺省 1）；可写在格上 |
 | `display` | `none` \| 表达式 | 关闭整个区域 |
 | `skip` | `blank` `song-first-page` | 在这些页上不排 |
 
@@ -115,7 +129,8 @@ row(baseline: ref(book.titleBlock.titleBaseline)) { center: "{work.title}" as ti
 row { left: "{creators.lyricist}", "{creators.composer}" as credit; right: "…" as tags; }
 ```
 
-- `row(baseline: 长度表达式)` 用于 fixed 定位；不写 baseline 就接在上一行后面，按行高往下排。
+- `row(baseline: 长度表达式)`：fixed 区域里是页内绝对基线（加区域 `dy`），block 区域里是相对区域顶的基线（首行不加 ascent）。
+- block 区域不写 baseline 的行接在上一行块底，`row(gap-before: 29)` 再空一段（不计入块高）；首行基线 = 行顶 + 字体 ascent。
 - 格有五个槽位：`left | center | right | inner | outer`。`inner`/`outer` 按页码奇偶换边（装订侧/切口侧）。
 - 槽位的值是逗号分隔的一串**行**，每行是一个内容表达式，可带 `as 角色`。不写 `as` 时继承本槽位最后一个 `as`，
   再没有就用 meta 注册表里该字段的默认角色。
@@ -216,6 +231,7 @@ right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7;
 }
 ```
 
+- `title` / `number` / `creators` / `rights` 覆盖谱文件里的对应字段（`creators` 整组替换）；`root` 是谱文件与字体文件的根目录。
 - `meta` 按键**浅覆盖**谱文件自带的 `Song.meta`，以清单为准。
 - `style` 是本曲的 jpcss 片段，作为曲内覆盖层。
 - 清单由导入脚本从现有数据库生成（`gen-manifest-kl2020.mjs`、`gen-manifest-500.mjs`），数据库路径由参数或环境变量给。

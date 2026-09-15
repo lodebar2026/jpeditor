@@ -84,8 +84,11 @@ function roleOfItem(it: TextFrame, opt: LayoutOptions): StyleRole {
 }
 
 export interface ToDrawOptions {
-  style: BookStyle;
-  options: LayoutOptions;
+  style?: BookStyle;
+  /** 简谱引擎的选项（定角色、增时线墨迹对齐）。混排那一路不给，改给 `roleOf`。 */
+  options?: LayoutOptions;
+  /** 文字叶子该按哪个角色落字。给了就不走 `roleOfItem`（混排按字体族定角色，见 pdflayout/songbook.ts）。 */
+  roleOf?: (it: TextFrame) => string;
   pageNo: number;
   meta: DrawPage["meta"];
   /** 页面树的坐标单位 → pt 的缩放（排版用 px，成书要 pt）。 */
@@ -139,11 +142,11 @@ export function pageItemsToDrawPage(root: PageItem | undefined, w: number, h: nu
       //（实测差 1.37pt），照字体基线摆就一排音符里高一道低一道。
       // 只在**画的时候**补这一下——排版度量（entry 高度、纵向栅格、行容量）不能动，
       // 那是「简谱纵向栅格」那把统一的尺子。
-      const role0 = roleOfItem(it, o.options);
+      const role0 = (o.roleOf ? o.roleOf(it) : roleOfItem(it, o.options!)) as StyleRole;
       // 语义标记：**只给 scripts/line-check.mjs 用**，不参与度量。房号与段号同归 verseNum、
       // 转调标记混在 lyric 里，光看 role 分不开（见 DrawText.cls）。
       const cls = CLS_TAGS.find((c) => it.classes.has(c));
-      const dy = role0 === "note" && (it.text === "-" || it.text === "\u2013") ? dashInkShift(o.options) : 0;
+      const dy = o.options && role0 === "note" && (it.text === "-" || it.text === "\u2013") ? dashInkShift(o.options) : 0;
       const y = applyY(m, 0, 0);
       const t: DrawText = {
         t: "text",
