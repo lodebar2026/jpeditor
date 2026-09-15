@@ -117,6 +117,7 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   const options = new MixedOptions(meta);
   applyStaffStyle(options, sheet);
   options.hideBarNumber = true;
+  options.textLineHeightBySize = true;
   if (metaFlag(song, "layout.chinese-hyphen")) options.chineseHyphen = true;
   const score = layoutStaff(doc, options);
   formatMixedScore(score);
