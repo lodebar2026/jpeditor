@@ -24,6 +24,10 @@ import { BarStyle } from "../score/enums";
 import { renderPageSvg } from "../layout/painter";
 import type { PagePainter } from "../layout/pagepainter";
 import type { Metadata, NoteElement } from "./ast";
+import PU_BOOK from "../style/books/pu-original.jpcss?raw";
+import { parseJpcss, type Region } from "../style/jpcss";
+import { computeStyle } from "../style/cascade";
+import { layoutRegion, songFields } from "../style/template";
 import { emptyMetadata } from "./ast";
 import type { ElementId, ScoreDoc } from "../model/doc";
 import { docView, type DocView } from "./slots";
@@ -386,11 +390,15 @@ export class PuPainter implements PagePainter {
       return { left: half - ink.left, right: ink.right - half };
     };
     this.placed = layoutDocument(doc.songs, m, headerBottoms, measure);
+    // 页脚（BL/BC/BR）：每首末页、最低一行之下。先排一遍拿到占高，连续长图的页高要把它算进去
+    const footers = this.layoutFooters(0);
+    const footerBottom = Math.max(0, ...footers.map((f) => f.bottom));
     // 连续长图：页面尺寸随内容走，不受纸张尺寸约束（短曲子不该拖着一大片空白）
     if (m.continuous) {
       this.pageHeight = Math.max(
         m.marginTop + m.bodyTop,
         this.placed.contentBottom + m.digitInkHeight + m.marginBottom,
+        footerBottom > 0 ? footerBottom + m.marginBottom : 0,
       );
       // 页宽按**实际墨迹**裁紧并左右等距留白：连谱号会探进左边距，
       // 直接用 marginLeft 会左右不对称（实测 14 / 81）。
@@ -405,8 +413,10 @@ export class PuPainter implements PagePainter {
     this.noteItems.clear();
     this.syllableItems.clear();
     this.highlighted = [];
+    const footerItems = this.layoutFooters(this._pageShiftX);
     this.layout.pages = this.placed.pages.map((pg, i) => {
       const g = this.paintPage(pg, i);
+      for (const f of footerItems) if (f.page === i) for (const it of f.items) g.add(it);
       g.x += this._pageShiftX;
       return g;
     });
@@ -555,6 +565,46 @@ export class PuPainter implements PagePainter {
       root.add(sys);
     }
     return root;
+  }
+
+  /** 页脚区域（`pu-original.jpcss` 的 `song-foot`）。按页宽算右缘，所以 `shiftX` 与 paintHeader 同口径。 */
+  private layoutFooters(shiftX: number): { page: number; bottom: number; items: TextFrame[] }[] {
+    const region = PU_FOOT();
+    const placed = this.placed;
+    if (!region || !this.doc || !placed) return [];
+    const m = this.metrics;
+    const out: { page: number; bottom: number; items: TextFrame[] }[] = [];
+    placed.pages.forEach((pg, i) => {
+      const next = placed.pages[i + 1];
+      if (next && next.song === pg.song) return; // 不是本曲末页
+      const meta = this.doc!.songs[pg.song]?.metadata;
+      if (!meta || ![...meta.bottomLeft, ...meta.bottomCenter, ...meta.bottomRight].some((t) => t.trim() && t.trim() !== "-")) return;
+      let low = 0;
+      for (const g of pg.groups) for (const v of g.voices) low = Math.max(low, v.y, ...v.lyricY);
+      const font = (size: number): Font => new Font(m.fontFamily, size);
+      const res = layoutRegion(region, {
+        field: songFields(undefined, {
+          "pageText.bottomLeft": meta.bottomLeft.map((text) => ({ text })),
+          "pageText.bottomCenter": meta.bottomCenter.map((text) => ({ text })),
+          "pageText.bottomRight": meta.bottomRight.map((text) => ({ text })),
+        }),
+        pageNo: 1,
+        content: { left: m.marginLeft, right: this.pageWidth - m.continuousSideMargin - shiftX },
+        dy: low + m.lyricSize,
+        sizeOf: () => m.topTextSize,
+        measure: (_r, t, size) => font(size).measureText(t),
+        fontMetrics: (_r, size) => ({ ascent: -font(size).metrics.ascent, height: size }),
+      });
+      const items = res.items.flatMap((p) => {
+        if (p.kind !== "text") return [];
+        const f = font(p.size);
+        const w = f.measureText(p.text);
+        const x = p.align === "center" ? p.x - w / 2 : p.align === "right" ? p.x - w : p.x;
+        return [text(p.text, x, p.y, f, INK)];
+      });
+      out.push({ page: i, bottom: low + m.lyricSize + res.span, items });
+    });
+    return out;
   }
 
   /** 头部文字需要的最小页宽（标题居中、词曲右对齐，页面太窄会挤在一起）。 */
@@ -1443,4 +1493,14 @@ export class PuPainter implements PagePainter {
   get availableWidth(): number {
     return contentWidth(this.metrics);
   }
+}
+
+/** 内置的文本谱页脚模板（解析一次）。 */
+let puFoot: Region | null | undefined;
+function PU_FOOT(): Region | null {
+  if (puFoot === undefined) {
+    const sheet = computeStyle([parseJpcss(PU_BOOK).rules], { engine: "pu" });
+    puFoot = (sheet.template?.regions?.["song-foot"] as Region | undefined) ?? null;
+  }
+  return puFoot;
 }
