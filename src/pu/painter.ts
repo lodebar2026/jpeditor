@@ -12,7 +12,7 @@
 // highlight() 直接按 id 取用，不必反查 SVG，也不依赖对象身份（重新解析一遍 id 不变）。
 
 import { Font } from "../layout/font";
-import { applyPuOverrides, puUserOptionsOf } from "../style/pu";
+import { puUserOptionsOf } from "../style/pu";
 import type { StyleSheet } from "../style/sheet";
 import { graceGeometry } from "../common/gracenote";
 import { Matrix33, Point, type Rect } from "../common/geom";
@@ -25,8 +25,9 @@ import { renderPageSvg } from "../layout/painter";
 import type { PagePainter } from "../layout/pagepainter";
 import type { Metadata, NoteElement } from "./ast";
 import PU_BOOK from "../style/books/pu-original.jpcss?raw";
+import { computeStyleForPaper } from "../style/themes";
 import { parseJpcss, type Region } from "../style/jpcss";
-import { computeStyle } from "../style/cascade";
+
 import { layoutRegion, songFields } from "../style/template";
 import { emptyMetadata } from "./ast";
 import type { ElementId, ScoreDoc } from "../model/doc";
@@ -315,8 +316,6 @@ export class PuPainter implements PagePainter {
   private syllableItems = new Map<string, { page: number; item: PageItem }>();
   private highlighted: PageItem[] = [];
 
-  /** computed 样式表（主题 `print` + 用户层）。null = 全按档位的内置版式、出厂墨色。 */
-  private style: StyleSheet | null = null;
   /** 样式表折出的面板那一层（字号 / 换纸 / 长图），见 `style/pu.ts`。 */
   private userOptions: PuUserOptions | null = null;
   /** 前景色。null = 出厂墨色。 */
@@ -328,16 +327,14 @@ export class PuPainter implements PagePainter {
 
   /** 样式表。改完要重排才看得见——调用方通常紧接着 `load`（见 App.reloadPu）。 */
   setStyle(sheet: StyleSheet | null): void {
-    this.style = sheet;
     this.userOptions = sheet ? puUserOptionsOf(sheet) : null;
     this.ink = sheet?.page.ink ?? null;
   }
 
-  /** 方言版式 → 样式表的 `pu.overrides` → 谱面自带的 `FontSize:` / `Margin:`（手动字号那层之前的全部）。 */
+  /** 方言版式 → 谱面自带的 `FontSize:` / `Margin:`（手动字号那层之前的全部）。 */
   private docMetricsOf(view: DocView): PuMetrics {
     const meta0 = view.songs[0]?.metadata;
-    let m = metricsFor(view.dialect);
-    if (this.style) m = applyPuOverrides(m, this.style, digitFontSizeOf);
+    const m = metricsFor(view.dialect);
     return applyDocOptions(m, meta0?.fontSizes ?? [], meta0?.margins ?? []);
   }
 
@@ -1499,7 +1496,7 @@ export class PuPainter implements PagePainter {
 let puFoot: Region | null | undefined;
 function PU_FOOT(): Region | null {
   if (puFoot === undefined) {
-    const sheet = computeStyle([parseJpcss(PU_BOOK).rules], { engine: "pu" });
+    const sheet = computeStyleForPaper([parseJpcss(PU_BOOK).rules], { engine: "pu" });
     puFoot = (sheet.template?.regions?.["song-foot"] as Region | undefined) ?? null;
   }
   return puFoot;

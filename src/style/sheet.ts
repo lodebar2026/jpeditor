@@ -56,6 +56,10 @@ export const STYLE_ROLES: StyleRole[] = [
   "smufl",
 ];
 
+/** 只有歌本模板（`template.ts`）用的角色。不进 `StyleRole`：成书的 `BookStyle.roles` 是按 `StyleRole`
+ *  穷举的，加进去就得给成书也配一份。解析期与 `STYLE_ROLES` 一起当合法角色名。 */
+export const TEMPLATE_ROLES = ["titleAlt", "epigraph", "epigraphRef", "rights", "scriptureRefs", "tags"] as const;
+
 /** 一个具名字体。间接一层（角色引用字体名）是为了让同一 face 只嵌一次子集。 */
 export interface FontRef {
   /** CSS font-family，浏览器排版用。 */
@@ -92,12 +96,17 @@ export type DeepPartial<T> = {
 export interface RoleDecl {
   size?: Length;
   color?: number;
-  /** 以下由歌本 `.jpcss` 写（docs/格式/jpcss.md §3）；四把尺子的适配器暂不读，模板排版（`template.ts`）读。
+  /** 以下由歌本 `.jpcss` 写（docs/格式/jpcss.md §3）：模板排版（`template.ts`）读，
+   *  尺子那边由 `style/keys.ts::ROLE_FONTS` 对到各自的字体字段（`note` → 简谱数字、`smufl` → 记号…）。
    *  对齐由槽位（`left`/`center`/`inner`…）决定，不在角色上写。 */
   font?: string;
   family?: string;
   weight?: string;
   features?: string;
+  /** 成书：逐字定位的口径（`align-mode: ink-center`），见 `AlignMode`。 */
+  alignMode?: AlignMode;
+  /** 成书：基线修正（× 字号），见 `pdflayout/bookstyle.ts::RoleStyle.baselineAdjust`。 */
+  baselineAdjust?: number;
 }
 
 /** 纸张名（`PAPER_SIZES` 的键，「长图」是其中一档）或投影片尺寸。 */
@@ -111,6 +120,12 @@ export interface PageDecl {
   ink?: number;
   /** 背景色（纸），ARGB。**唯一四档通吃**：它铺的是纸不是谱，排版器不认识它。 */
   background?: number;
+  /** 歌本的纸：`size: 宽 高`（混排歌本是 tenths，成书是 pt）。 */
+  size?: number[];
+  /** 歌本的页边距：一个数（四边同）或 `上 外 下 内`（成书，配 `mirror`）。 */
+  margin?: number | number[];
+  /** 对开页镜像：奇数页内侧（装订边）在左。 */
+  mirror?: boolean;
 }
 
 /** 简谱引擎（`LayoutOptions`）的预设。公式在 `style/jianpu.ts`。 */
@@ -119,12 +134,14 @@ export type JianpuPreset = "default" | "original" | "pptx" | "book";
 export interface StyleSheet {
   roles: Partial<Record<StyleRole, RoleDecl>>;
   page: PageDecl;
-  /** 简谱引擎。`overrides` 的键是 `LayoutOptions` 的数值字段，在 preset 之后叠上。 */
-  jianpu: { preset?: JianpuPreset; overrides?: Record<string, Length> };
-  /** 文本谱原样档（`PuMetrics`）。叠在方言修正之后、谱面 `FontSize:`/`Margin:` 之前。 */
-  pu: { overrides?: Record<string, Length> };
-  /** 五线谱 / 混排（`MixedOptions`，tenths）。只收 em / sp——pt 要等 MusicXML 的 `<scaling>`。 */
-  staff: { preset?: "musicpp"; overrides?: Record<string, Length> };
+  /** **简谱内容**（各模式通用）：`overrides` 的键是 `style/keys.ts::JIANPU_KEYS` 的逻辑键，
+   *  纯简谱那几档落 `LayoutOptions`、混排落 `MixedOptions` 的简谱层字段，在 preset 之后叠上。 */
+  jianpu: { preset?: JianpuPreset; overrides?: Record<string, Length | boolean> };
+  /** **五线谱内容**（`mode: staff / mixed`）：键是 `style/keys.ts::STAFF_KEYS` 的逻辑键，落 `MixedOptions`
+   *  （tenths）。长度只收 em / sp——pt 要等 MusicXML 的 `<scaling>`。 */
+  staff: { preset?: "musicpp"; overrides?: Record<string, Length | boolean> };
+  /** **断句**（与谱式无关）：键是 `style/keys.ts::BREAK_KEYS`。现在只有成书读。 */
+  break?: { overrides?: Record<string, Length | boolean> };
   /** 成书的完整样式（`BookStyle`，字号是墨迹高）。只有 `engine: "book"` 用。 */
   book?: BookStyle;
   /** 歌本模板：区域、装页、具名字体（`.jpcss` 的 `@template`/`@flow`/`@font-face`）。 */
@@ -132,7 +149,7 @@ export interface StyleSheet {
 }
 
 export function emptySheet(): StyleSheet {
-  return { roles: {}, page: {}, jianpu: {}, pu: {}, staff: {} };
+  return { roles: {}, page: {}, jianpu: {}, staff: {} };
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

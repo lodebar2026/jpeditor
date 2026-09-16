@@ -3,13 +3,16 @@
 // 契约（沿用原来两个「样式表应用器」的）：**painter 构造之后、`resize` 之前调**；构造字号取 `jianpuFontSize`。
 // 只改常量的来源，不动 layout.ts 的算法——`jpDotRung` / `jpStaffTop` 那些都是 getter，覆写字段就全局生效。
 //
-// 顺序：前景色 / 标题 / 词曲字号 → 预设（`jianpu.preset`）→ `jianpu.overrides`。
+// 顺序：前景色 / 标题 / 词曲字号 → 预设（`jianpu.preset`）→ 角色字体 → `jianpu.overrides`。
 // 预设里的公式**原样保留**（常量改存比例会出浮点尾差，见 sheet.ts 头注释）。
 import type { LayoutOptions } from "../layout/options";
+import { Font } from "../layout/font";
 import { LYRIC_STACK_RATIO } from "../layout/painter";
 import { applyBookPreset, fontSizeFor } from "./book";
-import type { StyleSheet } from "./sheet";
-import { PAPER_SIZES, PPTX_PAGE } from "./themes";
+import { familyOfRole } from "./fonts";
+import { JIANPU_KEYS, ROLE_FONTS, type KeyDef } from "./keys";
+import type { StyleRole, StyleSheet } from "./sheet";
+import { isPagedSheet, PPTX_PAGE } from "./themes";
 import { resolveLength } from "./units";
 
 /** 原样档标题/词曲字号 ÷ 基础字号。取出厂那三个数的比（48/28、36/28）——
@@ -31,10 +34,9 @@ export function jianpuFontSize(sheet: StyleSheet): number {
   return rolePt(sheet, "note") ?? PPTX_PAGE.fontSize;
 }
 
-/** 原样档是不是长图（纸张表里值为 null 的那一档）。 */
+/** 原样档是不是长图。判据与 `@media (paged: …)` 共用一处（`themes.ts::isPagedSheet`）。 */
 export function isLongImage(sheet: StyleSheet): boolean {
-  const paper = sheet.page.paper;
-  return paper !== undefined && PAPER_SIZES[paper] === null;
+  return !isPagedSheet(sheet);
 }
 
 /** 字号标题、词曲的实际值：给了就用；原样档没给就按出厂比例派生。 */
@@ -62,25 +64,64 @@ export function applyJianpuStyle(opt: LayoutOptions, sheet: StyleSheet): void {
     if (preset === "original") applyOriginalPreset(opt, isLongImage(sheet));
     else if (preset === "pptx") applyPptxPreset(opt);
   }
+  applyFonts(opt, sheet);
   applyOverrides(opt, sheet);
 }
 
-/** `jianpu.overrides`：键是 `LayoutOptions` 的数值字段。em = 音符字号，sp = 名义谱高 / 4
- *  （简谱的名义谱高是默认小节线跨度 4/3 字号，不随 `jpStaffTopOverride` 变）。 */
+/** 角色 → 字体族与字重（`note` → 数字、`lyric` → 歌词、`smufl` → 记号）。
+ *  **字号不动**：这一路的字号由 `jianpuFontSize` 定、`applyFontSize` 还要由它派生一串间距。 */
+function applyFonts(opt: LayoutOptions, sheet: StyleSheet): void {
+  const rec = opt as unknown as Record<string, unknown>;
+  for (const [role, def] of Object.entries(ROLE_FONTS)) {
+    const field = def.layout;
+    if (!field) continue;
+    const f = familyOfRole(sheet, role as StyleRole);
+    if (!f) continue;
+    const base = rec[field] as Font;
+    rec[field] = new Font(f.family || base.family, base.size, f.bold || base.bold, base.italic);
+  }
+}
+
+/** `@jianpu` / `@staff` 的逻辑键 → `LayoutOptions` 的字段（`style/keys.ts` 的 `layout` 一列）。
+ *  em = 音符字号，sp = 名义谱高 / 3（简谱的名义谱高是默认小节线跨度 4/3 字号，不随 `jpStaffTopOverride` 变）。 */
 function applyOverrides(opt: LayoutOptions, sheet: StyleSheet): void {
-  const ov = sheet.jianpu.overrides;
-  if (!ov) return;
   const em = opt.numberSize;
   const ctx = { em, sp: em / 3 };
+  applyBlock(opt, sheet.jianpu.overrides, JIANPU_KEYS, "jianpu", ctx);
+}
+
+function applyBlock(
+  opt: LayoutOptions,
+  ov: Record<string, unknown> | undefined,
+  table: Record<string, KeyDef>,
+  block: string,
+  ctx: { em: number; sp: number },
+): void {
+  if (!ov) return;
   const rec = opt as unknown as Record<string, unknown>;
   for (const [k, v] of Object.entries(ov)) {
-    if (typeof rec[k] !== "number") {
-      console.warn(`样式 jianpu.overrides.${k}：LayoutOptions 没有这个数值字段，忽略`);
+    const def = table[k];
+    if (!def) {
+      console.warn(`样式 @${block} 的 ${k}：认不出的键，忽略`);
       continue;
     }
-    const n = resolveLength(v, ctx);
-    if (n === null) console.warn(`样式 jianpu.overrides.${k}：认不出的长度 ${JSON.stringify(v)}，忽略`);
-    else rec[k] = n;
+    if (!def.layout) {
+      console.warn(`样式 @${block} 的 ${k}：纯简谱不支持${def.note ? `（${def.note}）` : ""}，忽略`);
+      continue;
+    }
+    if (def.kind === "bool") {
+      if (typeof v === "boolean") rec[def.layout] = v;
+      else console.warn(`样式 @${block} 的 ${k}：开关只收 true / false，${JSON.stringify(v)} 忽略`);
+      continue;
+    }
+    if (def.kind === "word") {
+      if (typeof v === "string") rec[def.layout] = v;
+      else console.warn(`样式 @${block} 的 ${k}：要一个词，${JSON.stringify(v)} 忽略`);
+      continue;
+    }
+    const n = resolveLength(v as never, ctx);
+    if (n === null) console.warn(`样式 @${block} 的 ${k}：认不出的长度 ${JSON.stringify(v)}，忽略`);
+    else rec[def.layout] = n;
   }
 }
 

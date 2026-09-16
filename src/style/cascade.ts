@@ -1,7 +1,7 @@
 // 样式级联：若干层规则按序叠成一份 computed 样式表（后者覆盖前者）。
 //
 //   内置主题（themes.ts）
-//     → 书样式表（成书：bookstyle.json）
+//     → 书样式表（歌本 .jpcss；成书的 BookStyle 由它算出，见 style/bookjpcss.ts）
 //       → 曲内局部覆盖（文本谱 `FontSize:`/`Margin:` 是乘法，留在 pu 适配器里，不走深合并）
 //         → 用户面板（编辑器，localStorage）
 //
@@ -19,6 +19,8 @@ export type StyleEngine = "jianpu" | "pu" | "book" | "staff";
 export interface StyleContext {
   mode?: StyleMode;
   engine?: StyleEngine;
+  /** 分页（有实际纸张）还是长图（一张连续长纸）。由纸张反推，见 `themes.ts::computeStyleForPaper`。 */
+  paged?: boolean;
   page?: "left" | "right" | "first";
   verse?: number;
 }

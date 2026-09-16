@@ -23,10 +23,11 @@ import { MixedOptions, type Sys } from "../mixed/model";
 import { layoutStaff } from "../mixed/layout";
 import { drawSystem } from "../mixed/render";
 import { formatMixedScore } from "../mixed/painter";
-import { computeStyle, type StyleContext, type StyleRule } from "../style/cascade";
-import type { StyleSheet } from "../style/sheet";
+import type { StyleContext, StyleRule } from "../style/cascade";
+import type { StyleRole, StyleSheet } from "../style/sheet";
+import { fontOfRole as roleFont } from "../style/fonts";
 import { applyStaffStyle } from "../style/staff";
-import { THEMES } from "../style/themes";
+import { computeStyleForPaper, THEMES } from "../style/themes";
 import type { Expr, Region } from "../style/jpcss";
 import { evalNum, expandText, layoutRegion, songFields, type Placed, type RegionEnv } from "../style/template";
 import { resolveLength } from "../style/units";
@@ -86,18 +87,17 @@ interface SongLayout {
 const FRAME_MARGIN = 20;
 /** 出书纸张（pt）：原程序整本固定 A4 */
 const A4_PT = { w: 595, h: 842 };
+/** 书的缺省字体族：角色没写字体时用它，和弦（`MixedOptions.wordFont`）的书级缺省也是它
+ *  （musicpp Engraver::wordFont，model.hpp）。 */
+const BOOK_FALLBACK_FAMILY = "Source Han Sans SC";
 
 function exprWord(e: Expr | undefined): string | undefined {
   return e && (e.k === "id" || e.k === "str") ? e.v : undefined;
 }
 
-/** 角色 → 字体（`font: 名` 引 `@font-face`，或直接 `family`）。 */
+/** 角色 → 字体（`font: 名` 引 `@font-face`，或直接 `family`）。解析在 `style/fonts.ts`，这里只补书的缺省族。 */
 function fontOfRole(sheet: StyleSheet, families: Record<string, string>, role: string, size: number): Font {
-  const decl = sheet.roles[role as keyof StyleSheet["roles"]];
-  const face = decl?.font ? sheet.template?.fonts?.[decl.font] : undefined;
-  const family = (decl?.font && families[decl.font]) ?? decl?.family ?? exprWord(face?.family) ?? "Source Han Sans SC";
-  const bold = decl?.weight === "bold" || exprWord(face?.bold) === "true";
-  return new Font(family, size, bold);
+  return roleFont(sheet, role as StyleRole, new Font(BOOK_FALLBACK_FAMILY, size), { size, families });
 }
 
 function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta: MetaData, index: number): SongLayout {
@@ -106,7 +106,7 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   applyManifestSong(song, entry);
   const title = song.work.title ?? "";
   const ctx: StyleContext = { engine: "staff", mode: "mixed" };
-  const sheet = computeStyle([THEMES.staff, input.rules], ctx);
+  const sheet = computeStyleForPaper([THEMES.staff, input.rules], ctx);
   // 只留旋律第一步：裁到 P1（删非旋律音要等混排引擎读完整条，见 model/melodyonly.ts）
   if (metaFlag(song, "layout.melody-only")) keepFirstPart(song);
 
@@ -116,10 +116,11 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   options.jpKeyJianpuFont = true;
   // 歌词标点走半身式（util/pao.cpp:1002 `eng->lrcHWID = true` → 歌词字体开 hwid）
   options.lrcHWID = true;
-  // 样式表 `@staff` 最后叠：简谱调号 `showKeyChangeJp` 等开关由书定
+  // 和弦字体：musicpp Engraver::wordFont 缺省是思源黑体（model.hpp），成品和弦即此；编辑器视图沿用 Times New Roman。
+  // 放在 `applyStaffStyle` **之前**：这是书的缺省，样式表里 `chord { font: … }` 要盖得住它。
+  options.wordFont = BOOK_FALLBACK_FAMILY;
+  // 样式表最后叠：角色字体与 `@jianpu` / `@staff` 的几何开关由书定
   applyStaffStyle(options, sheet);
-  // 和弦字体：musicpp Engraver::wordFont 缺省是思源黑体（model.hpp），成品和弦即此；编辑器视图沿用 Times New Roman
-  options.wordFont = "Source Han Sans SC";
   if (metaFlag(song, "layout.chinese-hyphen")) options.chineseHyphen = true;
   // 只留旋律第二步：读完整条后删非旋律音 → 重猜符干（musicpp removeNoneMelody → guessStemDir）
   if (metaFlag(song, "layout.melody-only")) options.melodyOnly = true;
@@ -284,7 +285,7 @@ export async function layoutMixedSongbook(input: SongbookInput): Promise<Songboo
   });
   if (!songs.length) return { pages: [], toc: [], starts: [], titles: [], families: [], errors, frames: [] };
 
-  const book = computeStyle([THEMES.staff, input.rules], { engine: "staff", mode: "mixed" });
+  const book = computeStyleForPaper([THEMES.staff, input.rules], { engine: "staff", mode: "mixed" });
   const { w: pageW, h: pageH, margin } = pageSize(book);
   const songStart = input.songStart ?? (exprWord(book.template?.flow?.["song-start"]) as SongbookInput["songStart"]) ?? "new-page";
 

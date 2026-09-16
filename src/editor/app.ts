@@ -14,10 +14,10 @@ import { clearBreaks } from "../layout/input";
 import { ExpandedPainter, type ExpandedOptions } from "../jianpu/expanded";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { JinpuPainter } from "../layout/painter";
-import { computeStyle, sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
+import { sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
 import { applyJianpuStyle, isLongImage, jianpuFontSize, jianpuSizes } from "../style/jianpu";
 import type { DeepPartial, StyleSheet } from "../style/sheet";
-import { LONG_IMAGE_WIDTH, PAGE_RATIOS, PAPER_SIZES, THEMES, isPaper, themeOfMode } from "../style/themes";
+import { LONG_IMAGE_WIDTH, PAGE_RATIOS, PAPER_SIZES, THEMES, computeStyleForPaper, isPaper, themeOfMode } from "../style/themes";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/pageitem";
 import { Point, colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
@@ -141,7 +141,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 某一档、某把尺子看到的 computed 样式表（内置主题 + 用户层）。 */
   styleOf(mode: JianpuLayoutMode, engine: StyleEngine = "jianpu"): StyleSheet {
     const theme = themeOfMode(mode);
-    return computeStyle([THEMES[theme], this._userLayers[theme]], { mode, engine });
+    return computeStyleForPaper([THEMES[theme], this._userLayers[theme]], { mode, engine });
   }
 
   /** 往某一档的用户层写一条规则（限定相同的就地合并）。 */
