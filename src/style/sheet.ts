@@ -92,15 +92,12 @@ export type DeepPartial<T> = {
 export interface RoleDecl {
   size?: Length;
   color?: number;
-  /** 以下由歌本 `.jpcss` 写（docs/格式/jpcss.md §3）；四把尺子的适配器暂不读，模板排版（`template.ts`）读。 */
+  /** 以下由歌本 `.jpcss` 写（docs/格式/jpcss.md §3）；四把尺子的适配器暂不读，模板排版（`template.ts`）读。
+   *  对齐由槽位（`left`/`center`/`inner`…）决定，不在角色上写。 */
   font?: string;
   family?: string;
   weight?: string;
-  italic?: boolean;
-  align?: string;
-  lineHeight?: Length;
   features?: string;
-  visible?: boolean;
 }
 
 /** 纸张名（`PAPER_SIZES` 的键，「长图」是其中一档）或投影片尺寸。 */
@@ -130,7 +127,7 @@ export interface StyleSheet {
   staff: { preset?: "musicpp"; overrides?: Record<string, Length> };
   /** 成书的完整样式（`BookStyle`，字号是墨迹高）。只有 `engine: "book"` 用。 */
   book?: BookStyle;
-  /** 歌本模板：区域、装页、歌本声明、具名字体（`.jpcss` 的 `@template`/`@flow`/`@book`/`@font-face`）。 */
+  /** 歌本模板：区域、装页、具名字体（`.jpcss` 的 `@template`/`@flow`/`@font-face`）。 */
   template?: TemplateSheet;
 }
 

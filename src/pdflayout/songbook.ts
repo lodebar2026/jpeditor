@@ -149,7 +149,6 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
     measure: (role, text, size) => fontOfRole(sheet, families, role, size).measureText(text),
     // 原排版程序的 Font::height() 就是字号（font.cpp:1095），ascent 取字体的 ascent
     fontMetrics: (role, size) => ({ ascent: -fontOfRole(sheet, families, role, size).metrics.ascent, height: size }),
-    tenths: 1,
   });
 
   // SongBook::addScore：首帧带标题块（块高 + 20），末帧带页脚块
@@ -176,8 +175,7 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
   return { title, sheet, env, frames };
 }
 
-function pageSize(book: Record<string, Expr> | undefined, sheet: StyleSheet): { w: number; h: number; margin: number } {
-  void book;
+function pageSize(sheet: StyleSheet): { w: number; h: number; margin: number } {
   const p = sheet.page as Record<string, unknown>;
   const size = p.size;
   const [w, h] = Array.isArray(size) ? (size as number[]) : [1322, 1870];
@@ -287,7 +285,7 @@ export async function layoutMixedSongbook(input: SongbookInput): Promise<Songboo
   if (!songs.length) return { pages: [], toc: [], starts: [], titles: [], families: [], errors, frames: [] };
 
   const book = computeStyle([THEMES.staff, input.rules], { engine: "staff", mode: "mixed" });
-  const { w: pageW, h: pageH, margin } = pageSize(book.template?.book, book);
+  const { w: pageW, h: pageH, margin } = pageSize(book);
   const songStart = input.songStart ?? (exprWord(book.template?.flow?.["song-start"]) as SongbookInput["songStart"]) ?? "new-page";
 
   const frames: Frame[] = [];
@@ -418,7 +416,7 @@ function tocPages(sheet: StyleSheet, titles: string[], starts: number[], familie
   const rightCell = entry.rows[0]?.cells.find((c) => c.slot === "right");
   const role = leftCell?.lines[0]?.role ?? "toc";
   const size = e0.sizeOf(role);
-  const lh = (evalNum(entry.props["line-height"], e0) ?? 1.5) * size;
+  const lh = evalNum(entry.props["line-height"], e0, role) ?? size * 1.5;
   const first = evalNum(entry.props["first-baseline"], e0) ?? 100;
   const leaderSeq = entry.props.leader;
   const leaderTo = leaderSeq?.k === "seq" ? evalNum(leaderSeq.items[2], e0) : undefined;
