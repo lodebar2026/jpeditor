@@ -249,6 +249,9 @@ export function toPuText(
     // 读回来这一行自然接着上一行那个没写完的小节。别补 `|/`——那是隐藏小节线，
     // 不是「跨行小节」的记号，写了反而在行首多出一条小节线。
     let pendingVolta = false; // 房号已开、等着 `]` 收尾
+    // 诗歌本把 `]` 写在小节线**后面**（`…3|]`），故收口不当场落笔、攒到线写出去时再补。
+    let pendingVoltaClose = false;
+    let rowEmpty = true; // 本行 `Q:` 后还什么都没写（`[` 落在行首时要补一条虚拟小节线）
     // 右侧小节线不当场写，攒到下一小节的左侧再落笔：`:|` 紧接 `|:` 要合成一条 `:|:`，
     // 分开写会连着两条小节线、中间没音符，读回来就多一个空小节。
     let pendingRight: BarlineType | null = null;
@@ -259,6 +262,8 @@ export function toPuText(
     let pendingMeter: string | null = null;
     const writeBarline = (type: BarlineType): void => {
       tb.push(sp + barlineCode(dialect, type));
+      rowEmpty = false;
+      if (pendingVoltaClose) { tb.push("]"); pendingVoltaClose = false; }
       if (pendingMeter) { tb.push(`"p:${pendingMeter}"`); pendingMeter = null; }
       if (pendingJump) {
         tb.push(`&${pendingJump}`); // 紧跟小节线，parse 的 lastAttachable 才挂得到它身上
@@ -280,10 +285,19 @@ export function toPuText(
       // 挂到下一根线上会整整错开一小节，凭空补一根线又会多出一个空小节。
       pendingMeter = null;
       pendingRight = null;
-      // 跳房子：`[` 起、`]` 止。必与前面的小节线隔一个空格——紧贴音符的 `[` 在番茄里是倚音。
+      // 跳房子：`[` 起、`]` 止。
+      //   · 番茄：`[` 必与前面的小节线隔一个空格——紧贴音符的 `[` 在那边是倚音语法。
+      //   · 诗歌本：`[]` 前后都不留空格（紧排），且 `[` 落在行首时先补一条虚拟小节线 `|/`
+      //     ——行首的 `[` 前面没有小节线可倚，谱本的写法是拿虚拟线把房号的左端立住。
       const endingStart = notes.find((n) => n.endingStart !== undefined)?.endingStart;
       if (endingStart !== undefined) {
-        tb.push(` ["${endingStart}"`);
+        if (d.id === "shige") {
+          if (rowEmpty) tb.push(barlineCode(dialect, "hidden"));
+          tb.push(`["${endingStart}"`);
+          rowEmpty = false;
+        } else {
+          tb.push(` ["${endingStart}"`);
+        }
         pendingVolta = true;
       }
       // 减时线的连断：文本谱把相邻两个带减时线的音符自动连成一条线，满一拍才断
@@ -304,6 +318,7 @@ export function toPuText(
       let prevNote: JpNum | null = null, prevBeat = 0, beat = 0, syncopated = false;
       for (const n of notes) {
         tb.push(sp);
+        rowEmpty = false;
         // 两边都得有减时线才有线可连断。复拍子照上面的范式写；其余拍号（groupBeats=1，
         // 组即整拍、组内无细分）只在**切分音**处写 `^`：小节里音符从非整拍起、又跨过整拍
         // 线之后拍位整个错开，读谱的一方最容易在「减时线层数变了」的那个交界上连错。
@@ -375,19 +390,26 @@ export function toPuText(
       }
       const endingStop = [...notes].reverse().find((n) => n.endingStop !== undefined)?.endingStop;
       if (endingStop !== undefined && pendingVolta) {
-        tb.push(" ]");
+        if (d.id === "shige") pendingVoltaClose = true; // 攒到这一小节右侧的线后面再写
+        else tb.push(" ]");
         pendingVolta = false;
       }
       if (notes.some((n) => n.repeatBackward)) pendingRight = "repeat-end";
       const jump = notes.find((n) => n.jumpMark)?.jumpMark;
       if (jump && JUMP_MARK[jump]) pendingJump = JUMP_MARK[jump]!;
     });
-    if (pendingVolta) tb.push(" ]"); // 房号跨到行末未闭合：就地收口，免得整行的 `[` 悬空
+    // 房号跨到行末未闭合：就地收口，免得整行的 `[` 悬空（诗歌本仍等行末那条线写完再补）
+    if (pendingVolta) {
+      if (d.id === "shige") pendingVoltaClose = true;
+      else tb.push(" ]");
+      pendingVolta = false;
+    }
     // 行末小节线：反复记号必须写出；普通线只在图上有时写（开口收尾说明这小节跨到下一行，不可凭空补）
     if (pendingRight !== null) writeBarline(pendingRight);
     else if (rowEndsClosed(row)) writeBarline(row.finalBarline === "end" ? "end" : "normal");
     else if (pendingJump) tb.push(`&${pendingJump}`); // 行末没有小节线可挂，退而挂在末音符上
     pendingJump = null;
+    if (pendingVoltaClose) { tb.push("]"); pendingVoltaClose = false; } // 行末开口收尾，无线可倚
     tb.push("\n");
 
     // ---- 歌词行 ----
