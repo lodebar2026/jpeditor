@@ -10,8 +10,8 @@
 ## 0. 为什么模板和样式放一个文件
 
 - 同一套**级联**：内置主题 → 歌本 `.jpcss` → 曲内覆盖 → 用户层（[../样式机制.md](../样式机制.md) §3）。
-- 同一套**上下文限定**：`@media (engine: …)` 对角色样式和模板一样有效。
-- 同一套**单位**（pt / em / sp）与**实测值引用**（`ref()`）。
+- 同一套**上下文限定**：`@media (engine: …)`、`@media (paged: …)` 对角色样式和模板一样有效。
+- 同一套**单位**（pt / em / sp）。
 
 曲目清单（有哪些歌、顺序、逐曲 meta 覆盖）是**数据**，不进 `.jpcss`，放书清单 `book.json`（§8），清单用 `style:` 引用 `.jpcss`。
 
@@ -23,7 +23,7 @@
 
 | 文件 | 歌本 | 基准 |
 |---|---|---|
-| `hymn500.jpcss`（不在本仓库） | 诗歌 500 首成书（`engine: book`） | 现有 `rebuild.mjs` 输出逐字节不变 |
+| `hymn500-measured.jpcss` + `hymn500.jpcss`（不在本仓库） | 诗歌 500 首成书（`engine: book`）：前者是统计生成的实测部分（§10），后者是模板与手调常量，按序叠 | 现有 `rebuild.mjs` 输出逐字节不变 |
 | `kl2020.jpcss`（不在本仓库） | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF |
 | `kl2020-flow.jpcss`（不在本仓库） | 同上的**接排版叠加表**（只含与单曲版的差异，清单 `styleByFlow.continue` 指过来） | 1219 接排版 PDF |
 | `src/style/books/pu-original.jpcss` | 文本谱原样档（`engine: pu`）：目前只有页脚区域，页头仍是 `paintHeader` | 展开档指纹与 page-check 不变 |
@@ -40,15 +40,67 @@
 
 | 语句 | 作用 | 落到 |
 |---|---|---|
-| `@page { size: A4 \| w h; margin: t [r b l]; mirror: true; }` | 纸与版心 | `StyleSheet.page` |
+| `@page { size: 宽 高; margin: 上 外 下 内 \| 一个数; mirror: true; }` | 纸与版心（成书的四边距配 `mirror` 按页奇偶换边） | `StyleSheet.page` |
 | `@font-face 名 { family; file; face; mode: font\|path; bold; }` | 具名字体 | `FontRef` |
 | `角色, 角色… { 声明 }` | 角色样式 | `StyleSheet.roles` |
 | `@template 区域 { … }` | 模板区域（§4） | `StyleSheet.template` |
 | `@flow { … }` | 装页（§6） | `StyleSheet.template.flow` |
-| `@media (维度: 值) and (…) { … }` | 按 mode / engine 限定 | `StyleRule.when` |
-| `@jianpu` `@pu` `@staff { 键: 值; }` | 各尺子的 `overrides`（`@staff` 收 `MixedOptions` 的布尔开关如 `showKeyChangeJp: false`，与数值字段如 `jpBeamTopY: 3.5sp`——数值只认 `em`/`sp`，`1sp` = 10 tenths） | `StyleSheet.jianpu/pu/staff` |
+| `@media (维度: 值) and (…) { … }` | 按 mode / engine / paged / page / verse 限定（§2.2） | `StyleRule.when` |
+| `@jianpu` `@staff { 键: 值; }` | 简谱 / 五线谱内容的几何与开关（§2.1） | `StyleSheet.jianpu/staff` |
+| `@break { 键: 值; }` | 断句（§2.3），与谱式无关 | `StyleSheet.break` |
 
 **级联没有 CSS 的特异性**：层序优先，同层按出现顺序，后写的覆盖先写的——与 `computeStyle` 一致。
+
+### 2.1 `@jianpu` / `@staff`：按谱面内容分，不按排版器分
+
+| 块 | 管什么 | 各模式落到 |
+|---|---|---|
+| `@jianpu` | **简谱内容**：减时线、八度点、附点、简谱调号拍号、歌词开关 | 展开 / 原样 / 成书 → `LayoutOptions`；混排 → `MixedOptions` 的简谱层 |
+| `@staff` | **五线谱内容**：谱表、符干符杠、小节线、和弦、SMuFL 记号 | 五线谱 / 混排 → `MixedOptions` |
+
+混排里的那层简谱也归 `@jianpu`——写样式表不必知道内部是哪个排版器在跑。模式差异用 `@media (mode: …)` 限定。
+
+```css
+@jianpu { beam-width: 1.5; octave-dot-dist: 0.6sp; }
+@staff  { staff-height: 30; stem: 1; beam: 5; barline: 1.5; }
+@media (mode: mixed) { @jianpu { legacy-time-sig: true; show-key-change: false; } }
+```
+
+- 键名是 **kebab-case 逻辑键**，全表（以及各键在两个排版器上落到哪个字段）见 `src/style/keys.ts`。
+  线宽是一级键（`stem` `beam` `leger` `barline` `final-barline` `staff-line`），只给宽度，颜色随 `@page { ink }`。
+- **块里没有字体**：字体写在角色上（§3）。
+- 认不出的键解析期报 `行:列`；某个模式不支持的键（如纯简谱下的 `beam-top-y`，那几处笔位由排版器自算）排版时告警忽略。
+- 长度：`@staff` 与混排下的 `@jianpu` 裸数字是 tenths，带单位只收 `em`（= `smufl` 字号，出厂 40 tenths）/ `sp`（= 10 tenths）；
+  纯简谱下 `em` = 音符字号，`sp` = 名义谱高 / 4。
+- 块上还可写 `preset`（`@jianpu { preset: pptx }`、`@staff { preset: musicpp }`）。
+- **成书**也读 `@jianpu`（`keys.ts` 的 `book` 一列，落到 `BookStyle.metrics` / `layout`）：间距类写 `em`
+  （基准是音符字高；`lyric-gap` `slur-thickness` `barline` `final-barline` 按歌词字号），线宽类（`bracket-width`、
+  `repeat-dot-diameter`）写裸数 pt。例：`@jianpu { system-gap: 1.2725em; beam-top: 0.2068em; verse-numbers: auto; }`。
+  数值原样存进字段、不在读样式表时乘字号，所以重排结果逐位不变。
+- 以前的 `@pu` 已删：文本谱原样档照原版实测，不由样式表逐字段覆盖（`@media (engine: pu)` 这一维仍在）。
+
+### 2.2 `@media` 维度
+
+| 维度 | 取值 | 说明 |
+|---|---|---|
+| `mode` | `expanded` `original` `staff` `mixed` | 排版档位 |
+| `engine` | `jianpu` `pu` `book` `staff` | 哪个排版器在吃样式 |
+| `paged` | `true` `false` | 分页（有实际纸张）还是长图。由算出来的 `@page` 纸反推（级联两趟，见 `themes.ts::computeStyleForPaper`） |
+| `page` / `verse` | `left` `right` `first` / 段号 | 只实现了匹配，还没有消费者 |
+
+认不出的维度、`paged` 写了 `true`/`false` 以外的值，都报 `行:列`。
+
+### 2.3 `@break`：断句
+
+行怎么断**与谱式无关**，所以单独一块，不放 `@jianpu`（五线谱以后也用）。现在只有成书（`rebuild.mjs`）读：
+
+```css
+@break { enable: true; target-measures: 0; length-weight: 0.25; break-weight: 3; mid-break: true; parallel-weight: 6; }
+```
+
+键：`enable` `lines-per-page` `target-measures` `length-weight` `break-weight` `mid-break` `merge-short` `even-weight`
+`tail-weight` `content-only` `parallel-weight` `tail-long-weight` `more-rows-slack` `fit-slack`，
+各自的含义见 `pdflayout/bookstyle.ts::BookLayoutOpts`。
 
 ## 3. 角色样式
 
@@ -60,8 +112,29 @@ credit, rights { font: hei-light; size: 8pt; features: hwid; }
 声明（`RoleDecl`）：`font`（@font-face 名）、`family`（直接给字体族）、`size`、`weight`、`color`、
 `features`（OpenType 特性，如 `hwid`）。认不出的属性报错。**对齐由槽位决定**（`left`/`center`/`inner`…），不写在角色上。
 
-角色表见 `src/style/sheet.ts::StyleRole`；在原有 20 个之外，新增 `titleAlt` `epigraph` `epigraphRef` `rights`
-`scriptureRefs` `tags` `note`（页脚注释）。
+成书另有两项：`align-mode`（逐字定位的口径：`pen` `ink-center` `left` `center` `right` `outer`，见 `sheet.ts::AlignMode`）
+与 `baseline-adjust`（基线修正，× 字号）。成书的角色 `size` 是原书量到的**墨迹高**（裸数 pt），由 `style/book.ts::fontSizeFor` 反算字号。
+
+角色表见 `src/style/sheet.ts::STYLE_ROLES`（20 个）与 `TEMPLATE_ROLES`（模板专用：`titleAlt` `epigraph` `epigraphRef`
+`rights` `scriptureRefs` `tags`）；认不出的角色名报 `行:列`。
+
+**排版器自带的那几支字也由角色换**（对照表 `src/style/keys.ts::ROLE_FONTS`）。`font` / `family` / `weight` 在各模式都生效；
+字号在纯简谱下仍走 `note { size }` 那一路（由它派生间距），混排里 `note { size }` 改简谱层字号、谱表上缩小的那支随谱高派生：
+
+| 角色 | 纯简谱（展开 / 原样） | 五线谱 / 混排 |
+|---|---|---|
+| `note` | 音符数字 | 简谱层数字（谱表上那层按 `staff-height / 40` 缩小，自动跟随） |
+| `lyric` | 歌词 | —（混排歌词字体由 MusicXML `<defaults>` 给） |
+| `smufl` | 记号 | 五线谱字体（其字号是 `@staff` 里 `em` 的基准） |
+| `chord` | — | 和弦与文字记号（只取族名） |
+
+```css
+@font-face hei { family: "Source Han Sans SC"; bold: true; }
+note  { font: hei; }
+chord { font: hei; }
+```
+
+`@font-face` 解析期就归一化成 `FontRef`，只认 `family`（必填）`file` `face` `mode` `bold`，认不出的属性报错。
 
 ## 4. 模板区域
 
@@ -84,13 +157,13 @@ credit, rights { font: hei-light; size: 8pt; features: hwid; }
 | `inset` | 长度 | 左右各缩进 |
 | `extent` | 长度表达式，可含 `content` | 区域高。`content + 100`、`content * 1.5 + 40` |
 | `gap-before` / `gap-after` | 长度 | 与谱面的间距 |
-| `line-height` | 长度 | 格内换行的行距，**fixed / block 同一个词**；可写在格上（格上的优先）。`1.444em` = 1.444 个字号（原排版程序那套），`12pt` 或 `ref(…)` 是绝对值。缺省 `1.2em`。block 的块高与它无关，按逐行字高相加 |
+| `line-height` | 长度 | 格内换行的行距，**fixed / block 同一个词**；可写在格上（格上的优先）。`1.444em` = 1.444 个字号（原排版程序那套），`12pt` 或裸数是绝对值。缺省 `1.2em`。block 的块高与它无关，按逐行字高相加 |
 | `display` | `false` \| 表达式 | 关闭整个区域 |
 
 ### 4.2 行与格
 
 ```css
-row(baseline: ref(book.titleBlock.titleBaseline)) { center: "{work.title}" as title; }
+row(baseline: 78.63) { center: "{work.title}" as title; }
 row { left: "{creators.lyricist}", "{creators.composer}" as credit; right: "…" as tags; }
 ```
 
@@ -104,7 +177,7 @@ row { left: "{creators.lyricist}", "{creators.composer}" as credit; right: "…"
 
 ```css
 left { content: key-meter(); role: keyMeter; dx: 2.3; dy: -5; avoid: chord note gap 1.5 scan 60; }
-right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7; line-height: ref(book.titleBlock.creditLineGap); }
+right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7; line-height: 13.1; }
 ```
 
 格属性：`content`、`role`、`at`（绝对 x）、`dx`、`dy`、`line-height`、`avoid`（避让：往上抬，直到让开指定角色的墨迹）。
@@ -161,16 +234,20 @@ block 用 `line-height`（倍数）那两套已经合并——同一件事分两
 
 | 属性 | 值 | 谁读 |
 |---|---|---|
-| `song-start` | `new-page` \| `continue` \| `half-page` | 混排歌本（`pdflayout/songbook.ts`）：每首另起一页 / 接排，放不下才换页；接排时逐曲按清单 `meta["layout.new-page"]`。500 首的 `half-page`（半页起排与正反面装箱）仍在 `rebuild.mjs`，line-check 把关 |
+| `song-start` | `new-page` \| `continue` | 混排歌本（`pdflayout/songbook.ts`）：每首另起一页 / 接排，放不下才换页；接排时逐曲按清单 `meta["layout.new-page"]` |
+| `number-baseline` | 数（pt） | 成书：曲号基线，半页起排时标题块整体下移的参照 |
+| `first-system-top` / `cont-system-top` | 数（pt） | 成书：首页 / 续页第一条谱行的音符墨迹上缘 |
+| `mid-start-gap` | 数（pt） | 成书：半页起排时上一首墨迹底到本首曲号基线的净距 |
+| `footer-baseline` | 数（pt） | 成书：页码基线，谱面下界按它算 |
 
-`@flow` 只认 `song-start` 这一项。帧间距、半页起排的各条基线都在实现里（`songbook.ts::FRAME_MARGIN`、`rebuild.mjs`），
-**不在样式表里留没人读的键**——写了看着像生效，其实不是。
+500 首的半页起排与正反面装箱本身在 `rebuild.mjs`（`packMid` / `packAlone`），line-check 把关，样式表里只给上面这几个位置；
+帧间距在 `songbook.ts::FRAME_MARGIN`。**不在样式表里留没人读的键**——写了看着像生效，其实不是。
 
 ## 7. 长度表达式
 
-- 四则运算直接写（`ref(x) * 1.56`、`content * 1.5 + 40`），**没有 `calc()`**：写了会报「认不出函数」。
-- 引用 `ref(book.<路径>)`：`BookStyle`（bookstyle.json）的实测值。
-- **实测常量不抄进 `.jpcss`**，一律用 `ref()` 引用：一是保证浮点逐位一致，二是重跑统计脚本后能自动跟随。
+- 四则运算直接写（`8.92 * 1.56`、`content * 1.5 + 40`），**没有 `calc()`，也没有 `ref()`**：写了会报「认不出函数」。
+- 实测值直接写数：文本 ↔ double 按最短往返（`String(number)` / `Number(raw)`），逐位不丢精度。
+  模板里用到的实测基线在统计报告里给出（`bookstyle-report.md` 的「模板基线实测」），重跑统计后要手动核对。
 - `extent` 里可用 `content`（区域内容高）。
 
 ## 8. 书清单 `book.json`
@@ -199,6 +276,29 @@ block 用 `line-height`（倍数）那两套已经合并——同一件事分两
 
 直接看三份内置歌本（都能被 `scripts/jpcss-roundtrip.mjs` 解析、写出、再解析）：
 
-- `src/style/books/hymn500.jpcss`：fixed 区域 + `ref(book.titleBlock.*)` 引用实测值 + `key-meter()` 组件（避让首行和弦）。
+- `hymn500-measured.jpcss`：统计生成的实测部分（纸、字体、角色、`@jianpu` / `@break` / `@flow`、目录几何）。
+- `hymn500.jpcss`：fixed 区域（基线写实测数）+ `key-meter()` 组件（避让首行和弦）。
 - `src/style/books/kl2020.jpcss`：block 区域（标题块、页脚块按原排版程序与成品实测）、`@font-face` 字体文件、目录区域。
 - `src/style/books/pu-original.jpcss`：文本谱页脚（BL/BC/BR，`dash-empty` 去 `-` 占位）。
+
+## 10. 成书：样式表就是全部，没有 json
+
+成书的 `BookStyle` 只是内存里的中间对象，由样式表算出（`src/style/bookjpcss.ts::bookStyleOf`）；
+反方向 `printBookJpcss` 给统计脚本用。两个方向读同一张对照表，逐字段往返：
+
+| `BookStyle` | 写在 |
+|---|---|
+| `page` | `@page { size; margin: 上 外 下 内; mirror }` |
+| `fonts` | `@font-face` |
+| `roles` | 角色声明（`font` `size` `align-mode` `baseline-adjust` `color`） |
+| `metrics`、`layout.verseNumbers` / `maxHorizontalScale` | `@jianpu`（§2.1） |
+| `layout` 的断句参数 | `@break`（§2.3） |
+| `titleBlock` | `@flow`（§6） |
+| `toc` | `@template toc { title-baseline; heading-gap-above; heading-gap-below; entry { leader; line-height; first-baseline; left-edge; right-edge } index { columns; line-height; first-baseline } }` |
+
+- **一本书两份样式表**：`<id>-measured.jpcss` 由 `gen-bookstyle.mjs` 从原书统计生成（不要手改，重跑覆盖；
+  断句等调好的开关的默认值在 `bookstyle.ts::defaultBookStyle`，生成时带进去），`<id>.jpcss` 写模板与手调常量。
+  脚本按这个顺序叠（`node-harness.mjs::loadBookStyle`，`--style=a.jpcss,b.jpcss` 可换），书的 id 取后一份的文件名。
+- **不补默认值**：样式表没写的字段在 `BookStyle` 里就不出现，由消费端原来的 `??` 兜底。
+- 原书量到但排版不读的量（描边宽、到谱行的各段距离…）只进统计报告作比对，不进样式表。
+

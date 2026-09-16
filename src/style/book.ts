@@ -68,8 +68,8 @@ export function applyBookPreset(opt: LayoutOptions, s: BookStyle): void {
     // 跨度 0-25pt 的弧高恒为 0.41 × 音符高（最短两桶完全相同 → 原书短弧是**定高**的），
     // 25-40 是 0.53、40-60 是 0.59、60-90 才 0.66。对数公式两头都失控：
     // 长跨度一路长高去顶和弦，短跨度塌成一条直线。
-    // ⚠️ 这几个是**手调常量**，而 bookstyle.json 是 stats 实测出来的产物——旧的 JSON 里
-    // 没有这些字段，不兜底的话 `rawH * undefined` = NaN（等于不封顶）、
+    // ⚠️ 这几个是**手调常量**，而歌本样式表的实测部分是 stats 生成的——生成物里
+    // 可能没有这些键，不兜底的话 `rawH * undefined` = NaN（等于不封顶）、
     // `undefined > 0` = false（等于关掉扁平），整条改动会静悄悄地不生效。
     const toRaw = (pt: number): number => pt / (0.75 * opt.slurHeightScale);
     opt.slurMaxHeight = toRaw((m.slurMaxArcEm ?? 0.66) * noteSize);
@@ -108,7 +108,7 @@ export function applyBookPreset(opt: LayoutOptions, s: BookStyle): void {
   opt.verseNumbers = s.layout.verseNumbers ?? "auto";
   opt.bracketFoot = m.bracketFootEm && m.bracketFootEm > 0 ? em(m.bracketFootEm) : 0;
   opt.chordGap = em(m.chordToNoteEm);
-  // 原书的和弦是纯文本（见 layout/harmony.ts）；旧的 bookstyle.json 里没这个字段，缺省即为真
+  // 原书的和弦是纯文本（见 layout/harmony.ts）；样式表没写 `chord-plain` 时缺省即为真
   opt.chordPlainText = m.chordPlain !== false;
   opt.sectionWordSize = fontSizeFor(s, "sectionWord");
   opt.pageFurniture = "none";

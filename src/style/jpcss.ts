@@ -1,11 +1,12 @@
 // `.jpcss` 歌本样式表：文本 ↔ `StyleRule[]`。语法规范见 docs/格式/jpcss.md。
 //
 // 手写解析（词法 → 语句），报错带 `行:列`。只做「形状」：长度表达式、字段插值、组件调用都原样存成 AST
-// （`template.ts` 在排版时按上下文求值），这样 `ref(book.titleBlock.*)` 这类实测值引用在解析期不需要知道 BookStyle。
+// （`template.ts` 在排版时按上下文求值）。成书的 `BookStyle` 由解析结果另算（`bookjpcss.ts`）。
 //
 // 无 DOM 依赖（Node CLI 与浏览器两侧都要 import）。
 import type { StyleContext, StyleRule } from "./cascade";
-import type { DeepPartial, StyleSheet } from "./sheet";
+import { keysOfBlock } from "./keys";
+import { STYLE_ROLES, TEMPLATE_ROLES, type DeepPartial, type FontRef, type StyleSheet } from "./sheet";
 
 // ───────────────────────── AST ─────────────────────────
 
@@ -62,7 +63,8 @@ export type RegionName = "song-head" | "song-foot" | "page-header" | "page-foote
 export interface TemplateSheet {
   regions?: Partial<Record<string, Region>>;
   flow?: Record<string, Expr>;
-  fonts?: Record<string, Record<string, Expr>>;
+  /** `@font-face` 具名字体，解析期就归一化成 `FontRef`（角色的 `font:` 引它）。 */
+  fonts?: Record<string, FontRef>;
 }
 
 
@@ -196,7 +198,21 @@ function lex(src: string): Tok[] {
 // ───────────────────────── 语句 ─────────────────────────
 
 /** 角色声明认得的属性（`RoleDecl`）。**只有样式**：谱面内容与逐曲的位置微调改数据（MusicXML），不在样式表里。 */
-const ROLE_PROPS = new Set(["size", "color", "family", "font", "weight", "features"]);
+const ROLE_PROPS = new Set(["size", "color", "family", "font", "weight", "features", "align-mode", "baseline-adjust"]);
+
+/** 角色声明里 kebab-case 的属性 → `RoleDecl` 字段；`align-mode` 的值也是 kebab ↔ camel（`ink-center` ↔ `inkCenter`）。 */
+const ROLE_PROP_FIELD: Record<string, string> = { "align-mode": "alignMode", "baseline-adjust": "baselineAdjust" };
+const kebabToCamel = (v: string): string => v.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+const camelToKebab = (v: string): string => v.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+
+/** 合法角色名：尺子与成书的 `STYLE_ROLES` + 模板专用的 `TEMPLATE_ROLES`。 */
+const KNOWN_ROLES = new Set<string>([...STYLE_ROLES, ...TEMPLATE_ROLES]);
+
+/** `@font-face` 认得的属性（`FontRef`）。 */
+const FONT_FACE_PROPS = new Set(["family", "file", "face", "mode", "bold"]);
+
+/** `@media` 认得的维度（`StyleContext`）。 */
+const MEDIA_DIMS = new Set(["mode", "engine", "paged", "page", "verse"]);
 
 export interface ParseResult {
   rules: StyleRule[];
@@ -256,26 +272,41 @@ class Parser {
         return;
       case "font-face": {
         const name = this.expectId();
-        this.push(when, { template: { fonts: { [name]: this.declBlock() } } });
+        const decls = this.declBlock();
+        const face: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(decls)) {
+          if (!FONT_FACE_PROPS.has(k)) this.fail(`@font-face 认不出属性 ${k}`, at);
+          face[k] = exprValue(v);
+        }
+        if (typeof face.family !== "string") this.fail(`@font-face ${name} 缺 family`, at);
+        this.push(when, { template: { fonts: { [name]: face as unknown as FontRef } } });
         return;
       }
       case "page":
         this.push(when, { page: pageDecl(this.declBlock()) as DeepPartial<StyleSheet>["page"] });
         return;
       case "jianpu":
-      case "pu":
-      case "staff": {
+      case "staff":
+      case "break": {
+        const table = keysOfBlock(at.v);
         const decls = this.declBlock();
         const blk: Record<string, unknown> = {};
         const overrides: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(decls)) {
-          if (k === "preset") blk.preset = exprWord(v);
-          else overrides[k] = exprLength(v);
+          if (k === "preset" && at.v !== "break") {
+            blk.preset = exprWord(v);
+            continue;
+          }
+          if (!table[k]) this.fail(`@${at.v} 认不出的键 ${k}（键名见 src/style/keys.ts；字体写在角色上，如 note { font: hei }）`, at);
+          overrides[k] = exprLength(v);
         }
         if (Object.keys(overrides).length) blk.overrides = overrides;
         this.push(when, { [at.v]: blk } as DeepPartial<StyleSheet>);
         return;
       }
+      case "pu":
+        this.fail("`@pu` 已删：文本谱原样档照原版实测，不由样式表逐字段覆盖", at);
+        break;
       case "template": {
         const name = this.expectId();
         this.push(when, { template: { regions: { [name]: this.regionBlock() } } } as DeepPartial<StyleSheet>);
@@ -286,10 +317,16 @@ class Parser {
         for (;;) {
           this.expectP("(");
           const dim = this.expectId();
+          if (!MEDIA_DIMS.has(dim)) this.fail(`@media 认不出的维度 ${dim}`);
           this.expectP(":");
           const v = this.next();
           if (v.t !== "id" && v.t !== "num" && v.t !== "str") this.fail("@media 的值要是名字或数字", v);
-          (w as Record<string, unknown>)[dim] = v.t === "num" ? v.v : v.v;
+          let val: string | number | boolean = v.v;
+          if (dim === "paged") {
+            if (val !== "true" && val !== "false") this.fail("@media (paged: …) 只收 true / false", v);
+            val = val === "true";
+          }
+          (w as Record<string, unknown>)[dim] = val;
           this.expectP(")");
           if (this.peek().t === "id" && this.peek().v === "and") {
             this.next();
@@ -323,6 +360,7 @@ class Parser {
       break;
     }
     const decls = this.declBlock();
+    for (const r of roles) if (!KNOWN_ROLES.has(r)) this.fail(`认不出的角色 ${r}（角色表见 src/style/sheet.ts::STYLE_ROLES / TEMPLATE_ROLES）`);
     for (const k of Object.keys(decls)) if (!ROLE_PROPS.has(k)) this.fail(`角色声明认不出属性 ${k}`);
     for (const role of roles) this.push(when, { roles: { [role]: roleDecl(decls) } } as DeepPartial<StyleSheet>);
   }
@@ -666,7 +704,11 @@ function parseColor(hex: string): number {
 
 function roleDecl(decls: Record<string, Expr>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(decls)) out[k] = k === "size" ? exprLength(v) : exprValue(v);
+  for (const [k, v] of Object.entries(decls)) {
+    const field = ROLE_PROP_FIELD[k] ?? k;
+    const val = k === "size" || k === "baseline-adjust" ? exprLength(v) : exprValue(v);
+    out[field] = k === "align-mode" && typeof val === "string" ? kebabToCamel(val) : val;
+  }
   return out;
 }
 
@@ -788,17 +830,23 @@ function printCell(cell: Cell, ind: string): string[] {
 function printSet(set: DeepPartial<StyleSheet>, ind: string): string[] {
   const L: string[] = [];
   const tpl = set.template as TemplateSheet | undefined;
-  for (const [name, f] of Object.entries(tpl?.fonts ?? {})) L.push(`${ind}@font-face ${name} {`, ...printDecls(f, ind + "  "), `${ind}}`);
+  for (const [name, f] of Object.entries(tpl?.fonts ?? {})) {
+    const body = Object.entries(f ?? {}).map(([k, v]) => `${ind}  ${k}: ${printValue(v)};`);
+    L.push(`${ind}@font-face ${name} {`, ...body, `${ind}}`);
+  }
   if (set.page) {
     L.push(`${ind}@page {`);
     for (const [k, v] of Object.entries(set.page)) L.push(`${ind}  ${k}: ${printValue(v, k)};`);
     L.push(`${ind}}`);
   }
   for (const [role, decl] of Object.entries(set.roles ?? {})) {
-    const body = Object.entries(decl ?? {}).map(([k, v]) => `${k}: ${printValue(v, k)};`);
+    const body = Object.entries(decl ?? {}).map(([k, v]) => {
+      const prop = Object.entries(ROLE_PROP_FIELD).find(([, f]) => f === k)?.[0] ?? k;
+      return `${prop}: ${printValue(k === "alignMode" && typeof v === "string" ? camelToKebab(v) : v, k)};`;
+    });
     L.push(`${ind}${role} { ${body.join(" ")} }`);
   }
-  for (const eng of ["jianpu", "pu", "staff"] as const) {
+  for (const eng of ["jianpu", "staff", "break"] as const) {
     const blk = set[eng] as { preset?: string; overrides?: Record<string, unknown> } | undefined;
     if (!blk) continue;
     const body: string[] = [];

@@ -425,7 +425,9 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 
 两条重排路唯一共享的东西：这本书「长什么样」的完整参数集——页面/版心、各角色的字体与字号、各处间距。
 值全部由 `src/pdflayout/stats.ts` 从 `pdf-layout.json` 统计**中位数**得来
-（`node scripts/gen-bookstyle.mjs` → `testdata/500/bookstyle.json` + `bookstyle-report.md`）。
+（`node scripts/gen-bookstyle.mjs` → 歌本样式表的实测部分 `../dev/style/books/hymn500-measured.jpcss` + `bookstyle-report.md`）。
+**没有 json**：`BookStyle` 由样式表算出（`style/bookjpcss.ts`），只留排版真正读的量；原书量到而不用的（描边宽、
+到谱行的各段距离、八度点/附点/增时线的分段距离）只进报告作比对。
 
 **角色判定用 PageSpec 的字段位置**，不是 `BookProfile.families[].role`（那个字段全书恒为 `"unknown"`，
 没有任何回填方），也不重跑 `classifyPage`——spec 的具名字段本身就是归类判据的产物。
@@ -1300,8 +1302,8 @@ accidentalFlat 的墨迹在基线上方 0.448em、下方 0.168em（高 0.616em�
   （从前断在「哦，」之后，行末挂着个领起下一句的叹词）。
   **代价：020《向主歌唱》的定点断言不过**（末两行 12.5 / 14.5 → 15.5 / 11.5）。
   原书那一首末行只有 3 小节、上一行 6 小节，新的排法方向反倒与原书一致，待确认后改断言。
-- **断句那几个开关的默认值一律写在 `bookstyle.ts::inferBookStyle` 里**（2026-09-01 补回）。
-  `testdata/500/bookstyle.json` 是 gitignore 掉的生成产物，只在 JSON 里调参的话，
+- **断句那几个开关的默认值一律写在 `bookstyle.ts::defaultBookStyle` 里**（2026-09-01 补回）。
+  实测样式（当时是 `testdata/500/bookstyle.json`，现在是 `hymn500-measured.jpcss`）是生成产物，只在生成物里调参的话，
   下一次 `scripts/gen-bookstyle.mjs` 就把它们全抹了——`phraseTailLongWeight`（3）、
   `phraseMoreRowsSlack`（4）、`phraseFitSlack`（0）三个当时只落在 JSON 里，
   9 月 1 日重跑一次就没了，rebuild 那边是 `?? 0` 读的，于是整层静悄悄地关掉：
@@ -1623,11 +1625,11 @@ V11 也只遍历 `midStarts`，**整页独占的曲子从不过闸**。实测全
 ### 字体
 
 **字体配置在两处，改了要一起改**：代码里的 `bookstyle.ts::defaultFonts()` 与
-实测产物 `testdata/500/bookstyle.json` 的 `fonts` —— `scripts/rebuild.mjs` 跑的是后者，
-只改代码不改 JSON 等于没改。歌词正文与词曲署名用 GBK 版（`方正报宋_GBK` /
+歌本样式表 `hymn500-measured.jpcss` 的 `@font-face` —— `scripts/rebuild.mjs` 跑的是后者，
+只改代码不改样式表等于没改（重跑 `gen-bookstyle.mjs` 会按代码里的默认值重新生成）。歌词正文与词曲署名用 GBK 版（`方正报宋_GBK` /
 `方正楷体_GBK`，21992 字），简体版只有 8098 字、连「祂」都没有。
 
-按角色配置（`bookstyle.json` 的 `fonts` + `roles[].font`），本机用的是原书那四款方正字体：
+按角色配置（样式表的 `@font-face` + 角色的 `font:`），本机用的是原书那四款方正字体：
 
 | 角色 | 字体 |
 |---|---|
@@ -2127,7 +2129,7 @@ PP-OCR **各有各的短板，正好互补**，所以默认两个都跑，票投
 ### 产物
 
 ```
-node scripts/gen-bookstyle.mjs                       # 统计 → testdata/500/bookstyle.json + bookstyle-report.md
+node scripts/gen-bookstyle.mjs                       # 统计 → ../dev/style/books/hymn500-measured.jpcss + bookstyle-report.md
 node scripts/gen-backfill.mjs                        # GT 回填未读字形 → testdata/500/backfill.json
 node scripts/gen-storyocr.mjs [--dry] [--pages=..]   # 整行 OCR 补字 → glyph_fix + pdf-out/storyocr-report.json
 node scripts/gen-glyphsheet.mjs [--apply=x.tsv]      # 人工确认表 → pdf-out/glyphsheet-*.svg + .tsv

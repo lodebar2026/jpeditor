@@ -11,7 +11,8 @@
 // 数值一律写成它们原来的样子（裸数字 = pt）：改写成比例会有浮点尾差，破几何基线。
 //
 // 无 DOM 依赖。
-import type { StyleLayer } from "./cascade";
+import { computeStyle, type StyleContext, type StyleLayer } from "./cascade";
+import type { StyleSheet } from "./sheet";
 
 /** 老版展开档的「出厂默认」（投影片 960×540，字号 28/48/36）。 */
 export const PPTX_PAGE = { w: 960, h: 540, fontSize: 28, titleSize: 48, creditSize: 36 } as const;
@@ -68,7 +69,7 @@ export const THEMES: Record<ThemeId, StyleLayer> = {
     // 文本谱不给字号：那一路的尺寸是实测来的一整套，缺省 = 跟随版式量到的原尺寸
     { when: { engine: "jianpu" }, set: { roles: { note: { size: PPTX_PAGE.fontSize } } } },
   ],
-  // 成书的其余一切在 `book` 块（bookstyle.json），由调用方作为第二层叠上
+  // 成书的其余一切在 `book` 块（由歌本样式表算出的 BookStyle，见 style/bookjpcss.ts），由调用方作为第二层叠上
   book: [{ set: { jianpu: { preset: "book" } } }],
   staff: [{ set: { staff: { preset: "musicpp" } } }],
 };
@@ -76,4 +77,20 @@ export const THEMES: Record<ThemeId, StyleLayer> = {
 /** 编辑器排版模式 → 主题。 */
 export function themeOfMode(mode: "expanded" | "original"): "projection" | "print" {
   return mode === "expanded" ? "projection" : "print";
+}
+
+/** 这份样式表算出来的是分页还是长图。长图 = 纸张表里值为 `null` 的那一档；
+ *  没写纸（展开档按投影片尺寸走）一律算分页。 */
+export function isPagedSheet(sheet: StyleSheet): boolean {
+  const paper = sheet.page.paper;
+  if (paper === undefined) return true;
+  return PAPER_SIZES[paper] !== null;
+}
+
+/** 级联两趟：先算出纸，再把 `paged` 填进上下文重算——`@media (paged: …)` 要的就是这一维，
+ *  而纸本身又是样式表算出来的（主题给出厂纸、歌本与用户层可改），所以只能这么定。
+ *  第一趟的结果只用来看纸，不外传。 */
+export function computeStyleForPaper(layers: readonly StyleLayer[], ctx: StyleContext): StyleSheet {
+  const paged = isPagedSheet(computeStyle(layers, ctx));
+  return computeStyle(layers, { ...ctx, paged });
 }

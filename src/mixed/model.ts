@@ -2846,14 +2846,19 @@ export class MixedOptions {
   meta: MetaData;
   musicFont: Font;
   jianpuFont: Font;
-  mixFont: Font;
   wordFont = "Times New Roman";
+
+  /** 谱表上那层简谱用的字：`jianpuFont` 按 `mixStaffHeight / 40` 缩小（musicpp 的
+   *  `30 × mixStaffHeight/40`，出厂即 22.5）。**派生量**——换了简谱字体或谱高它自己跟着走，
+   *  样式表也就不必（不能）单独设它。 */
+  get mixFont(): Font {
+    return this.jianpuFont.makeWithSize((this.jianpuFont.size * this.mixStaffHeight) / 40);
+  }
 
   constructor(meta: MetaData) {
     this.meta = meta;
     this.musicFont = new Font("Bravura", 40);
     this.jianpuFont = new Font(JP_FONT_FAMILY, 30);
-    this.mixFont = new Font(JP_FONT_FAMILY, (30 * this.mixStaffHeight) / 40);
   }
 }
 

@@ -19,6 +19,7 @@ export * from "../style/cascade";
 export * from "../style/jpcss";
 export * from "../style/template";
 export * from "../style/themes";
+export * from "../style/bookjpcss";
 export * from "../pdflayout/bookstyle";
 export * from "../pdflayout/stats";
 export * from "../pdflayout/drawlist";

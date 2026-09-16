@@ -667,40 +667,22 @@ export function inferBookStyle(
     );
   }
 
+  // 只留排版读的量；其余（到谱行的距离、描边宽、八度点/附点/增时线的各段距离…）在上面 rec() 进报告作比对
   const metrics: BookStyle["metrics"] = {
     ...base.metrics,
     systemGapEm: em(ms.systemGap),
     noteStepEm: em(ms.noteStep),
-    barGapEm: em(ms.barGap),
-    octaveDotUpGapEm: em(ms.octaveDotUpGap),
-    octaveDotDownGapEm: em(ms.octaveDotDownGap),
-    octaveDotStepEm: em(ms.octaveDotStep),
     divLineGapEm: em(ms.divLineGap),
     divLineStepEm: em(ms.divLineStep),
-    divLineLenEm: em(ms.divLineLen),
-    inkDivLineWidth: pt(ms.divLineWidth),
-    augmentLineLenEm: em(ms.augmentLineLen),
-    inkAugmentLineWidth: pt(ms.augmentLineWidth),
-    augmentDotGapEm: em(ms.augmentDotGap),
-    barlineHeightEm: pt(ms.barlineHeight),
-    inkBarlineWidth: pt(ms.barlineWidth),
     repeatDotDiam: pt(ms.repeatDotDiam),
     // 房号（1./2.）与三连音的括线：原书量到的线宽与「脚」长（脚长按音符字高归一）
     inkBracketWidth: pt(ms.bracketWidth),
     bracketFootEm: em(ms.bracketFootLen),
-    tupletNumEm: em(ms.tupletNumH),
-    inkSlurWidth: pt(ms.slurThickness),
-    slurHeightEm: pt(ms.slurHeight),
     // slurArcEm 不从原书量：那边量到的是 slur 对象的包围盒高（含描边外扩、且短弧居多），
-    // 拿来当弧的凸起高度会扁得几乎没有弧度。用默认值，需要再调就改 bookstyle.json。
+    // 拿来当弧的凸起高度会扁得几乎没有弧度。用默认值，需要再调就改歌本样式表。
     slurArcEm: base.metrics.slurArcEm,
     chordToNoteEm: em(ms.chordToNote),
-    musicToLyricEm: em(ms.musicToLyric),
     lyricToLyricEm: em(ms.lyricToLyric),
-    titleToSystemEm: em(ms.titleToSystem),
-    creditToSystemEm: em(ms.creditToSystem),
-    keyMeterToSystemEm: em(ms.keyMeterToSystem),
-    dotDiam: Number(profile.dotDiam.toFixed(3)),
     stackGapEm: Number(((gUp + gDown + gDiv) / 3 / noteH).toFixed(4)),
   };
 
@@ -728,7 +710,6 @@ export function inferBookStyle(
         top: Number(cb.y.toFixed(2)),
         bottom: Number((profile.pageH - bottom(cb)).toFixed(2)),
       },
-      contentBox: { x: Number(cb.x.toFixed(2)), y: Number(cb.y.toFixed(2)), w: Number(cb.w.toFixed(2)), h: Number(cb.h.toFixed(2)) },
     },
     fonts,
     roles,
@@ -736,19 +717,18 @@ export function inferBookStyle(
     toc: { ...base.toc, ...inferTocRule(pages) },
     titleBlock: {
       numberBaseline: pt(ms.numberBaseline) || base.titleBlock.numberBaseline,
-      titleBaseline: pt(ms.titleBaseline) || base.titleBlock.titleBaseline,
-      keyMeterBaseline: pt(ms.keyMeterBaseline) || base.titleBlock.keyMeterBaseline,
-      creditFirstBaseline: pt(ms.creditFirstBaseline) || base.titleBlock.creditFirstBaseline,
-      creditLineGap: pt(ms.creditLineGap) || base.titleBlock.creditLineGap,
       firstSystemTop: pt(ms.firstSystemTop) || base.titleBlock.firstSystemTop,
       contSystemTop: pt(ms.contSystemTop) || base.titleBlock.contSystemTop,
       midStartGap: pt(ms.midStartGap) || base.titleBlock.midStartGap,
-      headerBaseline: pt(ms.topY) || base.titleBlock.headerBaseline,
       footerBaseline: pt(ms.bottomY) || base.titleBlock.footerBaseline,
     },
-    header: { ...base.header, band: profile.headerBand ?? base.header.band },
-    footer: { ...base.footer, band: profile.footerBand ?? base.footer.band },
   };
+  // 模板里用的几条基线（标题、调号拍号、署名首行与行距、页眉）不进 BookStyle，
+  // 给出实测值供写进歌本模板的 `row(baseline: …)`
+  warnings.push(
+    `模板基线实测：标题 ${pt(ms.titleBaseline)}、调号拍号 ${pt(ms.keyMeterBaseline)}、署名首行 ${pt(ms.creditFirstBaseline)}、` +
+      `署名行距 ${pt(ms.creditLineGap)}、页眉 ${pt(ms.topY)}`,
+  );
 
   return { style, report: { roles: roleReport, metrics: metricReport, warnings } };
 }

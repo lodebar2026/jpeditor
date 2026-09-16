@@ -1,9 +1,9 @@
 // 歌本模板的排版：`@template` 区域 → 定好位置的文字（和组件产出的原样图元）。语法见 docs/格式/jpcss.md。
 //
-// **纯函数**：字段取值、文字测量、实测值引用（`ref()`）、组件实现都由调用方经 `RegionEnv` 注入——
+// **纯函数**：字段取值、文字测量、组件实现都由调用方经 `RegionEnv` 注入——
 // 成书在 Node 侧（`scripts/rebuild.mjs`，度量走 fontres），混排/文本谱在浏览器侧，两边共用这一份。
 //
-// 浮点口径：区域基线 = `ref(...) + dy`，行 = 基线 + 格 dy，多行 = 行 + i × 行距。**加法顺序与原来手写的公式一致**，
+// 浮点口径：区域基线 = 写死的实测值 + dy，行 = 基线 + 格 dy，多行 = 行 + i × 行距。**加法顺序与原来手写的公式一致**，
 // 500 首迁过来之后 DrawList 才能逐字节不变（`x + (−y)` 与 `x − y` 在 IEEE 754 下相同）。
 //
 // 无 DOM 依赖。
@@ -50,8 +50,6 @@ export type ComponentFn = (call: ComponentCall) => unknown[];
 export interface RegionEnv {
   /** 字段路径 → 值。返回空数组或 undefined 都算空。 */
   field(path: string): readonly FieldValue[] | undefined;
-  /** `ref(a.b.c)` 的取值（成书是 BookStyle）。 */
-  ref?(path: string): unknown;
   /** 页号（奇数页 = 右手页；`inner`/`outer` 按它换边）。 */
   pageNo: number;
   /** 版心左右缘（`align-x: content`）与纸宽（`align-x: page`）。 */
@@ -92,17 +90,8 @@ export function evalExpr(e: Expr, env: RegionEnv, role = "note"): unknown {
       if (e.v === "content-right") return env.content.right;
       if (e.v === "page-width") return env.pageWidth;
       return e.v;
-    case "call": {
-      const arg = e.args[0];
-      const name = arg && (arg.k === "id" || arg.k === "str") ? arg.v : "";
-      if (e.name === "ref") {
-        if (!env.ref) throw new Error("模板用了 ref()，但调用方没给 ref 取值");
-        const v = env.ref(name.replace(/^book\./, ""));
-        if (v === undefined) throw new Error(`ref(${name}) 取不到值`);
-        return v;
-      }
+    case "call":
       throw new Error(`表达式里认不出函数 ${e.name}()`);
-    }
     case "neg":
       return -num(evalExpr(e.a, env, role), e);
     case "bin": {
@@ -417,7 +406,7 @@ function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: 
   return { items, lastY };
 }
 
-/** 格内换行的行距。`line-height` 是长度：`1.2em` 是字号的倍数，`12pt`（或 `ref()` 算出的数）是绝对值。 */
+/** 格内换行的行距。`line-height` 是长度：`1.2em` 是字号的倍数，`12pt` 或裸数是绝对值。 */
 function lineLead(cell: Cell, env: RegionEnv, role: string): number {
   const g = cell.props["line-height"];
   if (g !== undefined) return evalNum(g, env, role)!;
@@ -463,9 +452,4 @@ export function songFields(song: Partial<Song> | undefined, extra: Readonly<Reco
         return undefined;
     }
   };
-}
-
-/** `ref(a.b.c)` 从一个对象里按路径取值。 */
-export function refFrom(obj: unknown): (path: string) => unknown {
-  return (path) => path.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), obj);
 }
