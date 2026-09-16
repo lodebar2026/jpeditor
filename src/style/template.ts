@@ -1,6 +1,6 @@
 // 歌本模板的排版：`@template` 区域 → 定好位置的文字（和组件产出的原样图元）。语法见 docs/格式/jpcss.md。
 //
-// **纯函数**：字段取值、文字测量、实测值引用（`ref()`/`metric()`）、组件实现都由调用方经 `RegionEnv` 注入——
+// **纯函数**：字段取值、文字测量、实测值引用（`ref()`）、组件实现都由调用方经 `RegionEnv` 注入——
 // 成书在 Node 侧（`scripts/rebuild.mjs`，度量走 fontres），混排/文本谱在浏览器侧，两边共用这一份。
 //
 // 浮点口径：区域基线 = `ref(...) + dy`，行 = 基线 + 格 dy，多行 = 行 + i × 行距。**加法顺序与原来手写的公式一致**，
@@ -65,8 +65,6 @@ export interface RegionEnv {
   components?: Readonly<Record<string, ComponentFn>>;
   /** 字体竖向度量（`flow: block` 要）。 */
   fontMetrics?(role: string, size: number): FontMetricsLike;
-  /** 1 tenths 折多少排版单位（混排）。 */
-  tenths?: number;
 }
 
 // ───────────────────────── 表达式求值 ─────────────────────────
@@ -80,8 +78,6 @@ export function evalExpr(e: Expr, env: RegionEnv, role = "note"): unknown {
           return e.v;
         case "em":
           return e.v * env.sizeOf(role);
-        case "tenths":
-          return e.v * (env.tenths ?? 1);
         default:
           throw new Error(`模板里不支持单位 ${e.unit}`);
       }
@@ -144,13 +140,11 @@ const CREDIT_LABEL: Readonly<Record<string, string>> = {
   "words-and-music": "词曲", translator: "译词", transcriber: "制谱",
 };
 
-type Filter = (vals: FieldValue[], args: string[]) => FieldValue[];
+type Filter = (vals: FieldValue[]) => FieldValue[];
 
 const map = (f: (t: string) => string): Filter => (vals) => vals.map((v) => ({ ...v, text: f(v.text) }));
 
 export const FILTERS: Readonly<Record<string, Filter>> = {
-  trim: map((t) => t.trim()),
-  upper: map((t) => t.toUpperCase()),
   "strip-zero": map((t) => t.replace(/^0+(?=\d)/, "")),
   "cn-semicolon": map((t) => t.replace(/;/g, "；")),
   "unescape-newline": map((t) => t.replace(/\\n/g, "\n")),
@@ -190,10 +184,6 @@ export const FILTERS: Readonly<Record<string, Filter>> = {
     ),
   /** 没带冒号标签的署名按类型补标签（`scripts/rebuild.mjs` 原 LABEL 规则）。 */
   "label-by-type": (vals) => vals.map((v) => (/[:：]/.test(v.text) ? v : { ...v, text: `${CREDIT_LABEL[v.type ?? ""] ?? v.type}：${v.text}` })),
-  first: (vals) => vals.slice(0, 1),
-  join: (vals, args) => (vals.length ? [{ text: vals.map((v) => v.text).join(args[0] ?? "") }] : []),
-  /** 调号里的 b/# → ♭/♯，挪到字母前（`bE` / `Eb` → `♭E`）。 */
-  "sharp-flat": map((t) => t.replace(/^([A-G])([b#♭♯])$/, "$2$1").replace(/b(?=[A-G])/g, "♭").replace(/#(?=[A-G])/g, "♯")),
 };
 
 // ───────────────────────── 内容 ─────────────────────────
@@ -204,9 +194,9 @@ export function expandText(parts: readonly TextPart[], env: RegionEnv): string[]
     if (typeof p === "string") return null;
     let vals = [...(env.field(p.path) ?? [])];
     for (const f of p.filters) {
-      const fn = FILTERS[f.name];
-      if (!fn) throw new Error(`认不出的过滤器 ${f.name}`);
-      vals = fn(vals, f.args);
+      const fn = FILTERS[f];
+      if (!fn) throw new Error(`认不出的过滤器 ${f}`);
+      vals = fn(vals);
     }
     return vals.filter((v) => v.text !== "");
   });
@@ -263,10 +253,10 @@ export interface FontMetricsLike {
 /**
  * 排一个区域。`display` 为假时返回空。
  *
- * - `flow: fixed`（缺省）：写了 `baseline` 的行按它（加区域 `dy`）；格内多行按 `line-gap` 递增。
+ * - `flow: fixed`（缺省）：写了 `baseline` 的行按它（加区域 `dy`）；格内多行按 `line-height` 递增。
  * - `flow: block`：区域从 `dy` 起往下排。行写了 `baseline` 就相对区域顶；写了 `top` 则行顶相对区域顶（基线照常加 ascent）；
  *   都没写就接上一行块底（加 `gap-before`），
- *   首行基线 = 行顶 + 该行字体 ascent。格内后续各行下移 `line-height` × 该行字高（原排版程序的 1.444）。
+ *   首行基线 = 行顶 + 该行字体 ascent。格内后续各行下移 `line-height`（`1.444em` 就是原排版程序的 1.444 倍字高）。
  *   行块高 = 各格字高之和取最大；区域高 = `extent`（其中 `content` = 各行块高之和）。
  */
 export function layoutRegion(region: Region | undefined, env: RegionEnv): RegionResult {
@@ -367,9 +357,7 @@ function layoutBlockCell(
 ): { items: Placed[]; height: number } {
   const items: Placed[] = [];
   const { align, edge } = slotEdge(cell.slot, left, right, odd);
-  const lh = evalNum(cell.props["line-height"] ?? region.props["line-height"], env) ?? 1.2;
-  // 每行计入块高的倍数（× 字高）。缺省 1：原排版程序的 TextBlock::height 就是逐行字高相加
-  const box = evalNum(cell.props["line-box"] ?? region.props["line-box"], env) ?? 1;
+  const lhExpr = cell.props["line-height"] ?? region.props["line-height"];
   let y: number | undefined;
   let height = 0;
   for (const line of cell.lines) {
@@ -387,11 +375,14 @@ function layoutBlockCell(
     const texts = expandText(line.content.parts, env).flatMap((t) => t.split("\n"));
     if (texts.length === 0) continue;
     const fm = fontMetrics(env, role, size);
+    // 行距是长度：`1.444em` = 1.444 个字号（两个消费端的 fm.height 就是字号），`12pt` 是绝对值
+    const lead = evalNum(lhExpr, env, role) ?? fm.height * 1.2;
     for (const text of texts) {
       if (y === undefined) y = base !== undefined ? rowTop + base : rowTop + fm.ascent;
-      else y += fm.height * lh;
+      else y += lead;
       items.push({ kind: "text", text, role, size, x, y, align });
-      height += fm.height * box;
+      // 块高就是逐行字高相加（原排版程序的 TextBlock::height）
+      height += fm.height;
     }
   }
   return { items, height };
@@ -417,7 +408,7 @@ function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: 
       continue;
     }
     for (const text of expandText(line.content.parts, env)) {
-      const y = i === 0 ? y0 : y0 + i * lineGap(cell, env, role);
+      const y = i === 0 ? y0 : y0 + i * lineLead(cell, env, role);
       items.push({ kind: "text", text, role, size, x, y, align });
       lastY = Math.max(lastY, y);
       i++;
@@ -426,8 +417,9 @@ function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: 
   return { items, lastY };
 }
 
-function lineGap(cell: Cell, env: RegionEnv, role: string): number {
-  const g = cell.props["line-gap"];
+/** 格内换行的行距。`line-height` 是长度：`1.2em` 是字号的倍数，`12pt`（或 `ref()` 算出的数）是绝对值。 */
+function lineLead(cell: Cell, env: RegionEnv, role: string): number {
+  const g = cell.props["line-height"];
   if (g !== undefined) return evalNum(g, env, role)!;
   return env.sizeOf(role) * 1.2;
 }

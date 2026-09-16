@@ -24,8 +24,8 @@ export type Expr =
 export type Slot = "left" | "center" | "right" | "inner" | "outer";
 export const SLOTS: readonly Slot[] = ["left", "center", "right", "inner", "outer"];
 
-/** 插值串里的一段：字面文字或 `{路径 | 过滤器(参数) …}`。 */
-export type TextPart = string | { path: string; filters: { name: string; args: string[] }[] };
+/** 插值串里的一段：字面文字或 `{路径 | 过滤器 …}`。 */
+export type TextPart = string | { path: string; filters: string[] };
 
 export type Content =
   | { kind: "text"; parts: TextPart[] }
@@ -40,7 +40,7 @@ export interface CellLine {
 export interface Cell {
   slot: Slot;
   lines: CellLine[];
-  /** 块形式的其余声明：dx dy line-gap avoid … */
+  /** 块形式的其余声明：dx dy line-height avoid … */
   props: Record<string, Expr>;
 }
 
@@ -56,11 +56,10 @@ export interface Region {
   blocks?: Record<string, Region>;
 }
 
-export type RegionName = "song-head" | "song-foot" | "page-header" | "page-footer" | "toc" | "index" | "front";
+export type RegionName = "song-head" | "song-foot" | "page-header" | "page-footer" | "toc";
 
-/** `StyleSheet.template`：模板区域、装页、歌本声明、具名字体。 */
+/** `StyleSheet.template`：模板区域、装页、具名字体。 */
 export interface TemplateSheet {
-  book?: Record<string, Expr>;
   regions?: Partial<Record<string, Region>>;
   flow?: Record<string, Expr>;
   fonts?: Record<string, Record<string, Expr>>;
@@ -86,7 +85,7 @@ export class JpcssError extends Error {
 
 const ID_START = /[A-Za-z_\u0080-\uffff]/;
 const ID_CHAR = /[A-Za-z0-9_\-.\u0080-\uffff]/;
-const UNITS = ["pt", "em", "sp", "tenths", "%"];
+const UNITS = ["pt", "em", "sp"];
 
 function lex(src: string): Tok[] {
   const out: Tok[] = [];
@@ -182,13 +181,8 @@ function lex(src: string): Tok[] {
       adv(j - i);
       continue;
     }
-    const two = src.slice(i, i + 2);
-    if ([">=", "<=", "!=", "*="].includes(two)) {
-      out.push({ t: "p", v: two, line: L, col: C });
-      adv(2);
-      continue;
-    }
-    if ("{}()[];:,=<>+-*/|".includes(c)) {
+    // `[` `]` 只为撞上元素选择器时能报出那条错（roleRule）
+    if ("{}()[];:,+-*/|".includes(c)) {
       out.push({ t: "p", v: c, line: L, col: C });
       adv(1);
       continue;
@@ -202,7 +196,7 @@ function lex(src: string): Tok[] {
 // ───────────────────────── 语句 ─────────────────────────
 
 /** 角色声明认得的属性（`RoleDecl`）。**只有样式**：谱面内容与逐曲的位置微调改数据（MusicXML），不在样式表里。 */
-const ROLE_PROPS = new Set(["size", "color", "family", "font", "weight", "italic", "align", "line-height", "features", "visible"]);
+const ROLE_PROPS = new Set(["size", "color", "family", "font", "weight", "features"]);
 
 export interface ParseResult {
   rules: StyleRule[];
@@ -257,9 +251,6 @@ class Parser {
   private atRule(when: StyleContext): void {
     const at = this.next() as Extract<Tok, { t: "at" }>;
     switch (at.v) {
-      case "book":
-        this.push(when, { template: { book: this.declBlock() } });
-        return;
       case "flow":
         this.push(when, { template: { flow: this.declBlock() } });
         return;
@@ -592,7 +583,7 @@ function contentOf(e: Expr, tok: Tok): Content {
   throw new JpcssError("槽位的内容要是字符串或组件调用", tok.line, tok.col);
 }
 
-/** `"前缀{路径 | 过滤器(参数)}后缀"` → 段。`{{` / `}}` 是字面花括号。 */
+/** `"前缀{路径 | 过滤器}后缀"` → 段。`{{` / `}}` 是字面花括号。 */
 export function parseInterp(s: string, tok?: { line: number; col: number }): TextPart[] {
   const parts: TextPart[] = [];
   let lit = "";
@@ -616,10 +607,8 @@ export function parseInterp(s: string, tok?: { line: number; col: number }): Tex
       lit = "";
       const [path, ...fs] = s.slice(i + 1, end).split("|").map((x) => x.trim());
       const filters = fs.filter(Boolean).map((f) => {
-        const m = /^([a-z][a-z0-9-]*)(?:\((.*)\))?$/.exec(f);
-        if (!m) throw new JpcssError(`认不出的过滤器 ${f}`, tok?.line ?? 0, tok?.col ?? 0);
-        const args = m[2] === undefined ? [] : splitArgs(m[2]);
-        return { name: m[1]!, args };
+        if (!/^[a-z][a-z0-9-]*$/.test(f)) throw new JpcssError(`认不出的过滤器 ${f}`, tok?.line ?? 0, tok?.col ?? 0);
+        return f;
       });
       parts.push({ path: path!, filters });
       i = end + 1;
@@ -630,14 +619,6 @@ export function parseInterp(s: string, tok?: { line: number; col: number }): Tex
   }
   if (lit) parts.push(lit);
   return parts;
-}
-
-function splitArgs(s: string): string[] {
-  const out: string[] = [];
-  const re = /\s*(?:'([^']*)'|"([^"]*)"|([^,]+))\s*(?:,|$)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(s)) && m[0] !== "") out.push(m[1] ?? m[2] ?? m[3]!.trim());
-  return out;
 }
 
 // ───────────────────────── 声明 → 样式表字段 ─────────────────────────
@@ -683,11 +664,9 @@ function parseColor(hex: string): number {
   throw new Error(`颜色要写 #rrggbb 或 #aarrggbb：#${hex}`);
 }
 
-const ROLE_KEY: Record<string, string> = { "line-height": "lineHeight" };
-
 function roleDecl(decls: Record<string, Expr>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(decls)) out[ROLE_KEY[k] ?? k] = k === "size" ? exprLength(v) : exprValue(v);
+  for (const [k, v] of Object.entries(decls)) out[k] = k === "size" ? exprLength(v) : exprValue(v);
   return out;
 }
 
@@ -744,7 +723,7 @@ function printValue(v: unknown, key?: string): string {
     return String(v);
   }
   if (typeof v === "boolean") return String(v);
-  if (typeof v === "string") return /^-?\d+(\.\d+)?(pt|em|sp|tenths)$/.test(v) || /^[A-Za-z_][A-Za-z0-9_-]*$/.test(v) ? v : JSON.stringify(v);
+  if (typeof v === "string") return /^-?\d+(\.\d+)?(pt|em|sp)$/.test(v) || /^[A-Za-z_][A-Za-z0-9_-]*$/.test(v) ? v : JSON.stringify(v);
   if (Array.isArray(v)) return v.map((x) => printValue(x)).join(" ");
   if (v && typeof v === "object" && "k" in v) return printExpr(v as Expr);
   return JSON.stringify(v);
@@ -756,7 +735,7 @@ function printInterp(parts: TextPart[]): string {
       .map((p) =>
         typeof p === "string"
           ? p.replace(/\{/g, "{{").replace(/\}/g, "}}")
-          : `{${[p.path, ...p.filters.map((f) => (f.args.length ? `${f.name}(${f.args.map((a) => `'${a}'`).join(", ")})` : f.name))].join(" | ")}}`,
+          : `{${[p.path, ...p.filters].join(" | ")}}`,
       )
       .join(""),
   );
@@ -809,7 +788,6 @@ function printCell(cell: Cell, ind: string): string[] {
 function printSet(set: DeepPartial<StyleSheet>, ind: string): string[] {
   const L: string[] = [];
   const tpl = set.template as TemplateSheet | undefined;
-  if (tpl?.book) L.push(`${ind}@book {`, ...printDecls(tpl.book, ind + "  "), `${ind}}`);
   for (const [name, f] of Object.entries(tpl?.fonts ?? {})) L.push(`${ind}@font-face ${name} {`, ...printDecls(f, ind + "  "), `${ind}}`);
   if (set.page) {
     L.push(`${ind}@page {`);
@@ -817,8 +795,7 @@ function printSet(set: DeepPartial<StyleSheet>, ind: string): string[] {
     L.push(`${ind}}`);
   }
   for (const [role, decl] of Object.entries(set.roles ?? {})) {
-    const inv: Record<string, string> = { lineHeight: "line-height" };
-    const body = Object.entries(decl ?? {}).map(([k, v]) => `${inv[k] ?? k}: ${printValue(v, k)};`);
+    const body = Object.entries(decl ?? {}).map(([k, v]) => `${k}: ${printValue(v, k)};`);
     L.push(`${ind}${role} { ${body.join(" ")} }`);
   }
   for (const eng of ["jianpu", "pu", "staff"] as const) {

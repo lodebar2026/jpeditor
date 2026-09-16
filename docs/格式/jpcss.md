@@ -5,13 +5,13 @@
 > 数据项（`SongMeta`）见 [../模块/模型-scoredoc.md](../模块/模型-scoredoc.md)。
 >
 > 状态：解析/写出（`src/style/jpcss.ts`）、模板排版（`src/style/template.ts`）、`hymn500` 与 `kl2020` 两份歌本已落地；
-> `pu-original`、编辑器接入待做，见 [../待办.md](../待办.md) §2.3。
+> `pu-original`、编辑器接入待做，见 [../待办.md](../待办.md) §2.3；语法本身的收敛（认不出的名字要报错等）记在 `docs/jpcss-收敛待办.md`（本地，不入库）。
 
 ## 0. 为什么模板和样式放一个文件
 
 - 同一套**级联**：内置主题 → 歌本 `.jpcss` → 曲内覆盖 → 用户层（[../样式机制.md](../样式机制.md) §3）。
 - 同一套**上下文限定**：`@media (engine: …)` 对角色样式和模板一样有效。
-- 同一套**单位**（pt / em / sp / tenths）与**实测值引用**（`ref()` / `metric()`）。
+- 同一套**单位**（pt / em / sp）与**实测值引用**（`ref()`）。
 
 曲目清单（有哪些歌、顺序、逐曲 meta 覆盖）是**数据**，不进 `.jpcss`，放书清单 `book.json`（§8），清单用 `style:` 引用 `.jpcss`。
 
@@ -33,14 +33,13 @@
 - 编码 UTF-8；注释 `/* … */`。
 - 标识符：字母、数字、`-`、`_`、`.`（字段路径）；中文写在字符串里。
 - 字符串：`"…"` 或 `'…'`，`\"` 转义。字符串里的 `{…}` 是插值（§5），字面量花括号写成 `{{` `}}`。
-- 长度：`12pt` `0.8em` `2sp` 或裸数字（缺省 pt）。颜色 `#rrggbb` / `#aarrggbb`。
+- 长度：`12pt` `0.8em` `2sp` 或裸数字（缺省 pt——混排那本书的裸数字就是 tenths，由 `@page` 的尺寸定口径）。颜色 `#rrggbb` / `#aarrggbb`。
 - 语句以 `;` 结尾，块用 `{ }`。解析错误报 `行:列`。
 
 ## 2. 顶层语句
 
 | 语句 | 作用 | 落到 |
 |---|---|---|
-| `@book { engine: jianpu\|book\|mixed\|pu; unit: pt\|tenths; }` | 谱面走哪个排版器；本文件裸数字的单位 | 清单/脚本选择引擎 |
 | `@page { size: A4 \| w h; margin: t [r b l]; mirror: true; }` | 纸与版心 | `StyleSheet.page` |
 | `@font-face 名 { family; file; face; mode: font\|path; bold; }` | 具名字体 | `FontRef` |
 | `角色, 角色… { 声明 }` | 角色样式 | `StyleSheet.roles` |
@@ -58,8 +57,8 @@ title        { font: hei; size: 22pt; color: #ff000000; }
 credit, rights { font: hei-light; size: 8pt; features: hwid; }
 ```
 
-声明（`RoleDecl`）：`font`（@font-face 名）、`family`（直接给字体族）、`size`、`weight`、`italic`、`color`、
-`align: left|center|right|inner|outer`、`line-height`、`features`（OpenType 特性，如 `hwid`）、`visible`。认不出的属性报错。
+声明（`RoleDecl`）：`font`（@font-face 名）、`family`（直接给字体族）、`size`、`weight`、`color`、
+`features`（OpenType 特性，如 `hwid`）。认不出的属性报错。**对齐由槽位决定**（`left`/`center`/`inner`…），不写在角色上。
 
 角色表见 `src/style/sheet.ts::StyleRole`；在原有 20 个之外，新增 `titleAlt` `epigraph` `epigraphRef` `rights`
 `scriptureRefs` `tags` `note`（页脚注释）。
@@ -85,8 +84,7 @@ credit, rights { font: hei-light; size: 8pt; features: hwid; }
 | `inset` | 长度 | 左右各缩进 |
 | `extent` | 长度表达式，可含 `content` | 区域高。`content + 100`、`content * 1.5 + 40` |
 | `gap-before` / `gap-after` | 长度 | 与谱面的间距 |
-| `line-height` | 倍数 | block：格内换行 = 该行字高 × 它（原排版程序 1.444） |
-| `line-box` | 倍数 | block：每行计入块高的倍数（× 字高，缺省 1）；可写在格上 |
+| `line-height` | 长度 | 格内换行的行距，**fixed / block 同一个词**；可写在格上（格上的优先）。`1.444em` = 1.444 个字号（原排版程序那套），`12pt` 或 `ref(…)` 是绝对值。缺省 `1.2em`。block 的块高与它无关，按逐行字高相加 |
 | `display` | `false` \| 表达式 | 关闭整个区域 |
 
 ### 4.2 行与格
@@ -106,10 +104,13 @@ row { left: "{creators.lyricist}", "{creators.composer}" as credit; right: "…"
 
 ```css
 left { content: key-meter(); role: keyMeter; dx: 2.3; dy: -5; avoid: chord note gap 1.5 scan 60; }
-right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7; line-gap: ref(book.titleBlock.creditLineGap); }
+right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7; line-height: ref(book.titleBlock.creditLineGap); }
 ```
 
-格属性：`content`、`role`、`at`（绝对 x）、`dx`、`dy`、`line-gap`、`avoid`（避让：往上抬，直到让开指定角色的墨迹）。
+格属性：`content`、`role`、`at`（绝对 x）、`dx`、`dy`、`line-height`、`avoid`（避让：往上抬，直到让开指定角色的墨迹）。
+
+**行距只有 `line-height` 这一个词**：值是长度，倍数写成 `em`（= 该行角色的字号）。原先 fixed 用 `line-gap`（绝对长度）、
+block 用 `line-height`（倍数）那两套已经合并——同一件事分两个词，写在哪一档要先想一下，得不偿失。
 
 ## 5. 内容表达式
 
@@ -120,7 +121,7 @@ right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7;
 **空值折叠**：一行里所有插值字段都为空时，整行（连同前后缀文字）不输出；一个 row 所有槽位都空时，这个 row 不占高。
 （musicpp 的「非空才加一行」和 rebuild `put()` 的 `if (!text) return` 是同一个意思。）
 
-多值字段（`string[]`）默认每项一行；要合成一行用 `| join('；')`。
+多值字段（`string[]`）默认每项一行。过滤器**不带参数**。
 
 ### 5.2 字段路径
 
@@ -145,8 +146,8 @@ right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7;
 | `split-paren` | `甲（乙）` 拆成 `甲`、`乙` 两行 |
 | `unescape-newline` | 字面 `\n` → 换行 |
 | `dash-empty` | 值为 `-` 视为空 |
-| `sharp-flat` | 调号里的 b/# → ♭/♯，并把升降号挪到字母前 |
-| `trim` `upper` `first` `lines` `join(s)` | 通用 |
+| `lines` | 每项按换行拆成多行，去空白行 |
+| `lines-indent` | 同 `lines`，但保留显式行首缩进（只去行尾空白与空行） |
 
 ### 5.4 组件
 
@@ -160,14 +161,15 @@ right { content: "{creators.* | lines | label-by-type}"; role: credit; dx: -8.7;
 
 | 属性 | 值 | 谁读 |
 |---|---|---|
-| `song-start` | `new-page` \| `continue` | 混排歌本（`pdflayout/songbook.ts`）：每首另起一页 / 接排，放不下才换页；接排时逐曲按清单 `meta["layout.new-page"]` |
-| `song-start: half-page` 及 `mid-start-gap` `music-top` … | — | 500 首的半页起排与正反面装箱仍在 `rebuild.mjs`（line-check 把关），这几项只作记录 |
+| `song-start` | `new-page` \| `continue` \| `half-page` | 混排歌本（`pdflayout/songbook.ts`）：每首另起一页 / 接排，放不下才换页；接排时逐曲按清单 `meta["layout.new-page"]`。500 首的 `half-page`（半页起排与正反面装箱）仍在 `rebuild.mjs`，line-check 把关 |
+
+`@flow` 只认 `song-start` 这一项。帧间距、半页起排的各条基线都在实现里（`songbook.ts::FRAME_MARGIN`、`rebuild.mjs`），
+**不在样式表里留没人读的键**——写了看着像生效，其实不是。
 
 ## 7. 长度表达式
 
-- 可以做四则运算，`calc()` 可省。
-- 引用：
-  - `ref(book.<路径>)`：`BookStyle`（bookstyle.json）的实测值。
+- 四则运算直接写（`ref(x) * 1.56`、`content * 1.5 + 40`），**没有 `calc()`**：写了会报「认不出函数」。
+- 引用 `ref(book.<路径>)`：`BookStyle`（bookstyle.json）的实测值。
 - **实测常量不抄进 `.jpcss`**，一律用 `ref()` 引用：一是保证浮点逐位一致，二是重跑统计脚本后能自动跟随。
 - `extent` 里可用 `content`（区域内容高）。
 
