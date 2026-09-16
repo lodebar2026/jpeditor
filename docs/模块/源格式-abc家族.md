@@ -74,12 +74,8 @@
 
 ## 回归
 
-```bash
-npm run build && npm run build:cli
-node scripts/abc-check.mjs           # 与 abc2xml.py 逐字节（读入端不许动）
-node scripts/abc-native-check.mjs    # 原生解析 vs abc2xml 的语义 diff；回落率 <1% 才转正
-node scripts/abc-roundtrip.mjs       # .abc → ScoreDoc → .abc 语义等价 + 文本幂等
-node scripts/sync-check.mjs          # 含 .abc 两档的双向定位
+回归脚本、语料与基线不在本仓库（本地私有仓库）。
+
 # 基类重构不许影响 123——这是本模块最大的风险点：
 HYMN500=<500首语料根> node scripts/j123-migrate.mjs
 ```

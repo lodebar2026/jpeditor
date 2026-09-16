@@ -158,18 +158,7 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 ## 回归
 
-```bash
-npm run build
-node scripts/xml-roundtrip.mjs [曲名子串]    # 14 首 .jpwabc + ABC 底本：R 往返 / 反复 / 房号 / 符杠 / L 版面
-node scripts/omr-export-check.mjs [曲名子串]  # 真跑一遍识别：未改动直出底本、点选映射、改一处后整份重写不丢元素、弧线与符杠合法
-HYMN500=… node scripts/xml-direct-check.mjs   # 568 份 .musicxml 全量重写：十类关键元素计数不降、往返稳定
-HYMN500=… node scripts/jianpu-shape-check.mjs # 568 份 MusicXML → 简谱形状：简谱档与转 123 后逐音对照 jianpuInputOfXml
-node scripts/pu-export-check.mjs              # 文本谱夹具：音符序列、XML 可解析、无空小节
-```
-
-`scripts/xml-roundtrip.mjs` 的 R 组定点性从**第二轮**起算（第一轮 jpw→XML 会被导入端归一：
-`findRefrain` 把尾段歌词折成 chorus、首小节 `<attributes>` 让 `keyChange` 变 true），断言 `X2 === X1`
-且读回的引擎输入快照逐字段相同。
+回归脚本、语料与基线不在本仓库（本地私有仓库）。
 
 ## 已知不往返 / 容差
 

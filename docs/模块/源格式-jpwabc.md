@@ -53,15 +53,7 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
 
 ## 回归
 
-```bash
-node scripts/check-gt.mjs          # testdata 下各 .jpwabc 能正常解析排版
-node scripts/xml-roundtrip.mjs     # 与 MusicXML 往返
-node scripts/jpw-emit-check.mjs --cmp   # 写出端产物对基线逐字节 + .jpwabc 往返定点
-node scripts/jianpu-svg-dump.mjs --only=jpw --diff=testdata/r2-baseline/jianpu-svg.json   # 谱面三档逐页指纹
-node scripts/jpw-xml-check.mjs     # 导出 MusicXML：582 份读回快照与基线一致
-node scripts/sync-check.mjs        # 双向定位（含 .jpwabc 两档）
-node scripts/shot.mjs              # 渲染通用回归
-```
+回归脚本、语料与基线不在本仓库（本地私有仓库）。
 
 ## 已知限制
 

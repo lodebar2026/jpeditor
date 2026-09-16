@@ -19,13 +19,13 @@
 都先用脚本改好 MusicXML（KL2020 见 `scripts/kl2020-prep.mjs`，写 `<cue/>`、`<stem>`、`relative-x/relative-y`、
 `<text font-family>` 等标准写法），`.jpcss` 只管全书统一的版式。写了 `@song` 或 `角色[…]` 的样式表解析时直接报错。
 
-内置四份：
+内置一份 + 歌本样例三份（歌本样式照特定印刷本逐点量出，**不在本仓库**，本地私有仓库里留着）：
 
 | 文件 | 歌本 | 基准 |
 |---|---|---|
-| `src/style/books/hymn500.jpcss` | 诗歌 500 首成书（`engine: book`） | 现有 `rebuild.mjs` 输出逐字节不变 |
-| `src/style/books/kl2020.jpcss` | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF |
-| `src/style/books/kl2020-flow.jpcss` | 同上的**接排版叠加表**（只含与单曲版的差异，清单 `styleByFlow.continue` 指过来） | 1219 接排版 PDF |
+| `hymn500.jpcss`（不在本仓库） | 诗歌 500 首成书（`engine: book`） | 现有 `rebuild.mjs` 输出逐字节不变 |
+| `kl2020.jpcss`（不在本仓库） | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF |
+| `kl2020-flow.jpcss`（不在本仓库） | 同上的**接排版叠加表**（只含与单曲版的差异，清单 `styleByFlow.continue` 指过来） | 1219 接排版 PDF |
 | `src/style/books/pu-original.jpcss` | 文本谱原样档（`engine: pu`）：目前只有页脚区域，页头仍是 `paintHeader` | 展开档指纹与 page-check 不变 |
 
 ## 1. 词法

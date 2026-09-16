@@ -89,7 +89,7 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
 
 ## 开发
 
-构建与运行命令见 [docs/架构.md](docs/架构.md)，无头校验见各 [模块页](docs/模块/) 的「回归」一节。
+构建与运行命令见 [docs/架构.md](docs/架构.md)。回归脚本与测试语料不在本仓库。
 
 ## 进度
 

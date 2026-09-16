@@ -40,20 +40,7 @@
 
 ## 回归
 
-```bash
-node scripts/measure-all.mjs      # 批量实测准确率（音符/slur-tie/歌词/标题/词曲/对位/和弦 多档；GT 是各曲目录下的 gt.123）
-node scripts/gt-to-123.mjs        # 新增曲目时把 .jpwabc / gt.shige.pu（和弦取 gt.tomato.pu）生成 gt.123
-node scripts/bench-lyrics.mjs     # 歌词逐音节对齐（按 verse 汉字 CER）
-node scripts/bench-diff.mjs       # 识别 ↔ GT 的音符 token 逐项 diff
-node scripts/bench-meta.mjs       # 页眉元信息对 GT
-node scripts/beat-check.mjs <图…> # 节拍自检：按小节累计拍数对拍号，**不要 GT**（新语料先跑这条）
-node scripts/check-align.mjs      # 歌词↔音符「对位」（逐音符序列 Levenshtein）
-node scripts/omr-node-check.mjs   # Node ↔ 浏览器逐字符一致性（Node CLI 的验收依据）
-node scripts/shot-recog.mjs       # 识别模式 + 叠加层渲染
-node scripts/omr-cli.mjs <图…>    # CLI
-node scripts/pack-omr.mjs         # 把 OMR CLI 打成自包含分发包
-node scripts/pdf-diff.mjs && node scripts/pdf-mark.mjs   # 矢量 PDF：全书对 GT + 差异标记版 PDF
-```
+回归脚本、语料与基线不在本仓库（本地私有仓库）。
 
 ## 已知限制
 
