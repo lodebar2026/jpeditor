@@ -9,7 +9,7 @@
 //
 // | 来源 | 得到的条目 |
 // |---|---|
-// | `docs/待办.md` §2.2「无法表达」的 全语料实测 | 文字行 `W:` / 圆滑线 / 多段歌词 / 印刷段号 / 多声部 / 分曲 / 倚音 / 房号 |
+// | `docs/待办.md` §2.2「无法表达」的全语料实测 | 文字行 `W:` / 圆滑线 / 多段歌词 / 印刷段号 / 多声部 / 分曲 / 倚音 / 房号 |
 // | `docs/模块/模型-scoredoc.md` | `playOrder` 与 `style` 是 **MusicXML 装不下的两样**（`<ending>` 只能整小节） |
 // | `docs/模块/源格式-abc家族.md` | ABC 那一档的 clef/修饰、`Q:` 参照音符长度 |
 //
@@ -72,7 +72,7 @@ const allBut = (...gone: Feature[]): Set<Feature> => new Set(ALL.filter((f) => !
 
 /** 每种格式装得下哪些。**装不下的写在 `allBut(...)` 里，并在注释里写清依据。** */
 export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> = {
-  // 123 是按「装得下全部」设计的（`docs/格式/123格式.md`），实测 全语料只有 0.17% 表达不了，
+  // 123 是按「装得下全部」设计的（`docs/格式/123格式.md`），实测全语料只有 0.17% 表达不了，
   // 那些是转换层的账不是格式的账。
   // 音符堆 123 刻意不做（规范：和弦走符号，`.jpwabc` 的 `[1 3 5]` 语料 0 例）
   "123": allBut("harmonyOffset", "noteStack"),
