@@ -47,16 +47,7 @@ MusicXML 双向（导入为 `ScoreDoc`；简谱档与成书经 `model/jianpuinpu
 
 ## 回归
 
-```bash
-node scripts/xml-roundtrip.mjs      # .jpwabc：R 往返 / L 版面 + 反复 + 房号 + 符杠合法性 + 作者行
-node scripts/xml-direct-check.mjs   # 直通：568 份读入 + 全量重写后十类元素计数不降
-node scripts/jianpu-shape-check.mjs # MusicXML → 简谱形状：逐音对照 jianpuInputOfXml
-node scripts/staff-fields-check.mjs # 五线谱侧字段的填充与往返
-node scripts/xml-lyrics-check.mjs   # Sibelius 段号、lyric-font、非歌词标签不吞段
-node scripts/omr-export-check.mjs   # 真实识别：未改动直出底本、点选映射、改一处整份重写不丢元素
-node scripts/abc-check.mjs          # 与 python 原脚本逐字节对比
-node scripts/abc-shot.mjs           # 拖入 .abc 端到端渲染
-```
+回归脚本、语料与基线不在本仓库（本地私有仓库）。
 
 ## 已知限制
 

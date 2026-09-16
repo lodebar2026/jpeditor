@@ -1,5 +1,5 @@
 // 成书那一路的模板件：模板排版结果 → DrawList 图元，外加 `key-meter()` 组件（调号 + 叠排拍号 + 避让首行）。
-// 模板本身在 `style/books/hymn500.jpcss`，排版在 `style/template.ts`；这里只是成书特有的实现。
+// 模板本身是一份 `.jpcss` 歌本样式（样例不在本仓库），排版在 `style/template.ts`；这里只是成书特有的实现。
 //
 // 无 DOM 依赖（`scripts/rebuild.mjs` 在 Node 侧用）。
 import type { StyleRole } from "../style/sheet";

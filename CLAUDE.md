@@ -22,8 +22,8 @@ npx tsc --noEmit       # 仅类型检查
 npm run tauri dev      # 桌面应用（需 Rust）
 ```
 
-回归脚本全在 [scripts/](scripts/)（`node scripts/xxx.mjs`，一律从仓库根跑），
-各模块跑哪几条见各模块页的「回归」一节，公共引导见 [docs/架构.md](docs/架构.md) §8「工程约定」。
+回归脚本、语料与基线不在本仓库（本地私有仓库，从本仓库根跑 `node ../dev/scripts/xxx.mjs`）；
+`scripts/` 只留发布链路：`release.sh`、`pack-omr.mjs`、`win-crt.mjs`、`vcredist.mjs`。
 
 ## 约定
 

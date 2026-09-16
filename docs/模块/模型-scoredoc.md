@@ -94,14 +94,7 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 
 ## 回归
 
-```bash
-npm run build:cli
-PU_CORPUS=<文本谱语料根> node scripts/pu-scoredoc-check.mjs     # 语法树 → ScoreDoc → 排版行视图 逐字段零差异（含原文区间）
-PU_CORPUS=<文本谱语料根> HYMN500=<500首语料根> node scripts/j123-migrate.mjs
-npm run build && HYMN500=<500首语料根> node scripts/musicxml-open-check.mjs   # .musicxml 打开/转换/重写
-HYMN500=<500首语料根> node scripts/layout-attr-check.mjs    # 改一个音整份重写，版面坐标逐份不丢、重写是定点
-HYMN500=<500首语料根> node scripts/save-loss-check.mjs      # 保存前丢失清单：能力表自洽、planSave、存回本格式无损
-```
+回归脚本、语料与基线不在本仓库（本地私有仓库）。
 
 ## 已知限制
 
