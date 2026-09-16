@@ -56,6 +56,9 @@ docs/规范/
 # 遗留问题清单（本地待办，不入库）
 docs/遗留问题.md
 
+# jpcss 语法收敛的待办（本地保留，不入库）
+docs/jpcss-收敛待办.md
+
 # Swift 工具的编译产物（源码在 tools/*.swift，编译命令见 CLAUDE.md）
 tools/vision-ocr
 dist-pkg
