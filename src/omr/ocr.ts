@@ -5,8 +5,10 @@ import type { Binary, Rect } from "./types";
 import type { Surface } from "./surface";
 
 export interface OcrBackend {
-  /** 对 bin 上的一组 bbox 识别数字，返回与 rects 等长的数字数组（0-7）。 */
-  recognizeDigits(bin: Binary, rects: Rect[]): Promise<number[]>;
+  /** 对 bin 上的一组 bbox 识别数字，返回与 rects 等长的数字数组（0-7）。
+   *  `opts.rhythm`：读出字母 X 时返回 `RHYTHM_DIGIT`（节奏音符）。只有谱行音符那一路开——
+   *  拍号、倚音、连音数字、房号里不会有 X，开了反倒让 9 混进它们的合法值（`9/8` 拍）。 */
+  recognizeDigits(bin: Binary, rects: Rect[], opts?: { rhythm?: boolean }): Promise<number[]>;
   /** 可选：识别一组文本表面（用于中文歌词）。返回与输入等长的字符串数组。
    *  仅支持中文的后端（PaddleOCR）实现此方法；不实现 → 管线跳过歌词识别。 */
   recognizeTexts?(strips: Surface[]): Promise<string[]>;

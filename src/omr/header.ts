@@ -8,6 +8,7 @@ import { surfaceFromBinary, type Surface } from "./surface";
 import { clusterByY, median, overlapRatioX, unionRect, unionRects } from "./geom";
 import { accidentalOf } from "./accidental";
 
+const rcyOf = (r: Rect) => r.y + r.h / 2;
 const hanziCount = (s: string) => (s.match(/[一-鿿]/g) || []).length;
 
 export interface HeaderInfo {
@@ -74,6 +75,30 @@ function gapWideAt(bin: Binary, bbox: Rect, chars: { text: string; cx: number }[
   const med = median(blanks.map((b) => b[1])) || 1;
   const lo = chars[i].cx, hi = chars[i + 1].cx;
   return blanks.some(([bx, bw]) => bx + bw / 2 > lo && bx + bw / 2 <= hi && bw >= med * 1.6);
+}
+
+/** 中文标题的分句空当：「不怕劳累 不怕饥寒」「天不蓝了 水不清了」两半之间印着整整一字宽的白，
+ *  rec 不吐空格。两道门：
+ *  - **≥0.6 字高**：汉字的字间白本就只有 0.1~0.2 字高，这么宽只可能是有意排的空当；
+ *  - **≥2 倍于本行字间白的中位数**：有的歌本整行拉开字距排（「赞 美 一 神」「因 有 主 同 在」），
+ *    每道字间白都过得了第一道门，但它们彼此一样宽，不是分句——只有明显宽出一截的那道才算。
+ *  「字间白」取每对相邻汉字之间最宽的那一道（字内偏旁之间的窄白不算）。
+ *  只在两侧都是汉字时插，编号与标题之间（「1717 不怕…」）那道白不管——编号下游本来就要剥掉。 */
+function recoverHanziGaps(bin: Binary, text: string, bbox: Rect, chars?: { text: string; cx: number }[]): string {
+  const cs = [...text];
+  if (!chars || chars.length !== cs.length || hanziCount(text) < 4) return text;
+  const isHan = (c: string) => /[一-鿿]/.test(c);
+  const pairGap = new Map<number, number>();              // 左字下标 → 两字之间最宽的白
+  for (const [bx, bw] of inkBlanks(bin, bbox)) {
+    const mid = bx + bw / 2;
+    let i = -1;
+    while (i + 1 < chars.length && chars[i + 1].cx < mid) i++;
+    if (i >= 0 && i + 1 < cs.length && isHan(cs[i]) && isHan(cs[i + 1])) pairGap.set(i, Math.max(pairGap.get(i) ?? 0, bw));
+  }
+  if (pairGap.size < 3) return text;
+  const med = median([...pairGap.values()]);
+  const after = new Set([...pairGap].filter(([, w]) => w >= bbox.h * 0.6 && w >= med * 2).map(([i]) => i));
+  return cs.map((c, i) => (after.has(i) ? c + " " : c)).join("");
 }
 
 function recoverSpacesByInk(bin: Binary, text: string, bbox: Rect, chars?: { text: string; cx: number }[]): string {
@@ -425,7 +450,7 @@ export async function recognizeHeader(
     if (dets.length) {
       const lines: HLine[] = dets.map((d) => ({ text: d.text, charH: d.bbox.h, cx: d.bbox.x + d.bbox.w / 2, cy: d.bbox.y + d.bbox.h / 2, n: 1, bbox: d.bbox, chars: d.chars }));
       if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.log("[header/det]", lines.map((l) => `${Math.round(l.charH)}px@${Math.round(l.cx)},${Math.round(l.cy)}=${JSON.stringify(l.text)}`).join("  "));
-      classify(lines);
+      await classify(lines);
       return out;
     }
   }
@@ -485,7 +510,7 @@ export async function recognizeHeader(
   const small = merged.filter((c) => c.bbox.h < numH * 1.3);
   const lines = await ocrGroups([...splitBlocks(big), ...splitBlocks(small)]);
 
-  classify(lines);
+  await classify(lines);
   return out;
 
   // 归类：以 作/词/曲/编/译 开头紧跟冒号(作词：/词曲：…) → credits；其余最大字号中文行作标题。
@@ -520,6 +545,57 @@ export async function recognizeHeader(
     return fixed;
   }
 
+  /** 调号的音名整个读丢了时，回源图上**单独重读**。1697《温州的水 温州的山》印的是 `1=♭B`，♭ 与 B
+   *  都是上标小字，det 把「1 = ♭B 4/4 ♩=95」切成一行，行高照大号的「1」算，两个小字缩下去只剩
+   *  一个 `b`（`1=b4J=95`），parseMeta 与 repairKeyAccidental 都无从下手，整曲落回 C。
+   *  做法：`=` 的两道横右边**紧挨着**的几块墨（碰到比字宽还大的空当就停，后面是拍号/速度）。
+   *  其中位置明显偏高、形状判得出 ♭/♯ 的是升降号（accidentalOf），其余是音名——单独裁出来送 rec，
+   *  这回行高就是音名自己的高度。读不出 A–G 就原样放弃。返回五度圈数与所在行。 */
+  async function rereadKeyName(ls: HLine[]): Promise<{ fifths: number; line: HLine } | undefined> {
+    const line = ls.find((l) => /[1１]\s*[=＝]/.test(l.text));
+    if (!line || !ocr.recognizeTexts) return undefined;
+    const lb = line.bbox;
+    const band = comps
+      .filter((k) => rcyOf(k.bbox) >= lb.y && rcyOf(k.bbox) <= lb.y + lb.h && k.bbox.x >= lb.x && k.bbox.x + k.bbox.w <= lb.x + lb.w)
+      .sort((a, b) => a.bbox.x - b.bbox.x);
+    // `=`：两道扁横，上下叠着、左右对齐
+    const bars = band.filter((k) => k.bbox.w >= k.bbox.h * 2.5 && k.bbox.h <= lb.h * 0.15);
+    const eq = bars.find((a) => bars.some((b) => b !== a && overlapRatioX(a.bbox, b.bbox) >= 0.6 &&
+      Math.abs(rcyOf(a.bbox) - rcyOf(b.bbox)) <= lb.h * 0.3));
+    if (!eq) return undefined;
+    const eqRight = Math.max(...bars.filter((b) => overlapRatioX(eq.bbox, b.bbox) >= 0.6).map((b) => b.bbox.x + b.bbox.w));
+    const group: Component[] = [];
+    for (const k of band) {
+      if (k.bbox.x < eqRight || bars.includes(k)) continue;
+      const last = group[group.length - 1];
+      if (last) {
+        const gh = Math.max(...group.map((g) => g.bbox.h));
+        if (k.bbox.x - (last.bbox.x + last.bbox.w) > Math.max(4, gh * 0.6)) break;
+      } else if (k.bbox.x - eqRight > lb.h) break;                       // 离 `=` 太远：不是音名
+      group.push(k);
+      if (group.length > 3) return undefined;
+    }
+    if (!group.length) return undefined;
+    // 升降号：上标印得高——底边比其余块的底边高出两成字高以上，且形状判得出 ♭/♯
+    const lowest = Math.max(...group.map((g) => g.bbox.y + g.bbox.h));
+    let acc = "";
+    let letters = group;
+    for (const g of group) {
+      const lh = Math.max(...group.filter((o) => o !== g).map((o) => o.bbox.h), 0);
+      if (!lh || lowest - (g.bbox.y + g.bbox.h) < lh * 0.2) continue;
+      const kind = accidentalOf(bin, g.bbox);
+      if (kind !== "flat" && kind !== "sharp") continue;
+      acc = kind === "flat" ? "b" : "#";
+      letters = group.filter((o) => o !== g);
+      break;
+    }
+    const [text] = await recognizeTexts([buildStrip(surfaceFromBinary(bin), [unionRects(letters.map((g) => g.bbox))])]);
+    const m = /^\s*([A-G])\s*$/.exec(text ?? "");
+    if (!m) return undefined;
+    const f = NAT_FIFTHS[m[1]] + (acc === "b" ? -7 : acc === "#" ? 7 : 0);
+    return f >= -7 && f <= 7 ? { fifths: f, line } : undefined;
+  }
+
   /** 后缀式著作者的「名字 ↔ 职能词」之间照谱面补空当：`at` 是职能词在 `text` 里的起始下标，
    *  `charAt` 是它在 OCR 原始字位里的下标（文本补过空格时两者不同，默认相同）。
    *  **写成函数声明**：`classify` 在它下面、却先被调用，写成 const 会撞 TDZ。 */
@@ -529,7 +605,7 @@ export async function recognizeHeader(
       ? `${text.slice(0, at).trimEnd()} ${text.slice(at)}` : text;
   }
 
-  function classify(ls: HLine[]) {
+  async function classify(ls: HLine[]) {
     // 著作者前缀：`作词：`/`词曲：`，也含顿号/斜杠分列的 `词、曲：`、`作词/作曲：`。
     const creditRe = /^\s*[作詞词曲編编譯译]{1,2}(?:\s*[、，,/／]\s*[作詞词曲編编譯译]{1,2})*\s*[:：]/;
     // 后缀式著作者：中文谱很常见把职能写在名字**后面**、且不带冒号——"盛晓玫 词曲"、
@@ -599,6 +675,10 @@ export async function recognizeHeader(
       }
       rest.push(ln);                                // 非著作者行：标题、副标题、调号、页码…
       if (hanziCount(txt) < 2) continue;            // 跳过页码/调号/速度等（数字/符号为主）
+      // 调号行也不当标题：`1=C 3/4 4/4 5/4 混合拍` 带着「混合拍」三个汉字能过上一道门，
+      // 竖排拍号又把 det 框撑到两排字高（1717《不怕劳累 不怕饥寒》79px，真标题才 49px），
+      // 按字号比一比就把标题顶掉了。
+      if (/[1１]\s*[=＝]/.test(txt)) continue;
       // 标题 = 最大字号的中文行；**字号差不多（15% 以内）时取更宽的那一行**。det 给的框高
       // 只是个近似，同一本书里印在右上角的出版方（迦南诗选每页都印着「迦南诗歌」）会因框
       // 松紧不同，忽而比标题矮（2157：61 vs 77）、忽而比它高（2156：79 vs 68）——单看框高，
@@ -611,7 +691,7 @@ export async function recognizeHeader(
     if (titleLine) {
       // 去掉 "557." 之类的诗歌编号前缀，以及尾巴上的出处标记（17《不失足》标题右边印着
       // 「《旷》108」——那是选自哪本诗集的第几首，不是曲名的一部分）。
-      out.title = titleLine.text.trim()
+      out.title = recoverHanziGaps(bin, titleLine.text.trim(), titleLine.bbox, titleLine.chars)
         .replace(/^\s*\d{1,4}\s*[.．、]\s*/, "")
         .replace(/\s*《[^》]{0,8}》\s*\d{0,4}\s*$/, "");
       out.regions.push({ text: out.title, bbox: titleLine.bbox, chars: charsForText(out.title, titleLine.chars) });
@@ -622,6 +702,7 @@ export async function recognizeHeader(
     //    出版方「迦南诗歌」）与标题中心差得远，靠它一并挡掉。
     //  - 调号/速度/拍号即使居中也不能当副标题，故连同 parseMeta 认下的那两行一起排除。
     // 英文副标题按字距补回词间空格（det/CTC 不吐空格，"Thespiritof…" → "The spirit of…"）。
+    let subtitleLine: HLine | undefined;
     if (titleLine) {
       const tl = titleLine;
       const metaRe = /[1１]\s*[=＝]|[♩♪]|\d+\s*[/／]\s*\d+/;
@@ -631,14 +712,40 @@ export async function recognizeHeader(
       const gapTitle = (l: HLine) => (l.cy < tl.cy ? tl.bbox.y - l.cy : l.cy - (tl.bbox.y + tl.bbox.h));
       const cand = rest
         .filter((l) => l !== tl && l !== meta.fifthsLine && l !== meta.tempoLine)
-        .filter((l) => l.charH <= tl.charH * 1.05)
+        // 纯拉丁文的行放宽到 1.3 倍：det 框要把上伸/下伸部都包进去（`Pray` 的 P 顶到大写线、y 垂到
+        // 基线下），同样字号的框比汉字高一截。1677《祷告》的「Pray」框 73px、标题「1677 祷 告」才 67px，
+        // 1.05 一卡副标题就没了。
+        .filter((l) => l.charH <= tl.charH * (hanziCount(l.text) ? 1.05 : 1.3))
         .filter((l) => Math.abs(l.cx - tl.cx) <= tl.bbox.w * 0.35)
         .filter((l) => gapTitle(l) < firstStaffTopY - l.cy)
         .filter((l) => { const t = l.text.trim(); return t.length >= 2 && !metaRe.test(t) && !chordRe.test(t) && /[^\d\s.,:：、·]/.test(t); })
         .sort((a, b) => gapTitle(a) - gapTitle(b))[0];
       if (cand) {
+        subtitleLine = cand;
         out.subtitle = recoverSpacesByInk(bin, cand.text.trim(), cand.bbox, cand.chars);
         out.regions.push({ text: out.subtitle, bbox: cand.bbox, chars: charsForText(out.subtitle, cand.chars) });
+      }
+    }
+    // 署名只印一个名字、不带「词/曲」的：迦南诗选每页右上角都印着「迦南诗歌」，与调号同一排、
+    // 位置正是别的歌本印「作词/作曲」的地方，上面几条认职能词的规则一条都挨不上，整行被丢掉。
+    // 判据：纯汉字短行（2~8 字）、不是标题/副标题、**整行落在页面右侧 40% 里**、与调号行同一排、
+    // 在标题下一排，且本页没认出别的署名。后两条是抽检别的歌本收紧的：同一个位置上也常印分类标签
+    //（「敬拜赞美」「颂赞」「第一首」），有的还在标题那一排或更下面；有正经「作词/作曲」的页
+    // 更不该再猜（世上所有的民族的词曲档因此一度掉到 0）。
+    const keyLine = ls.find((l) => /[1１]\s*[=＝]/.test(l.text));
+    if (titleLine && keyLine && !out.credits.length) {
+      for (const l of rest) {
+        if (l === titleLine || l === subtitleLine || l === keyLine) continue;
+        const t = l.text.trim();
+        if (!/^[一-鿿]{2,8}$/.test(t)) continue;
+        if (l.bbox.x < bin.w * 0.6) continue;
+        if (Math.abs(l.cy - keyLine.cy) > Math.max(l.charH, keyLine.charH) * 0.6) continue;
+        // 标题单独占一排、署名在它**下一排**：整编本、赞美诗歌等是「调号 · 标题 · 分类」挤在同一排，
+        // 右边那个是分类标签（「救主耶稣」「崇敬颂赞 三一」），不是署名。
+        if (l.cy - titleLine.cy < titleLine.charH) continue;
+        if (/^第.{1,6}[首篇章]$/.test(t)) continue;                // 「第一首」这类编号
+        out.credits.push(t);
+        out.regions.push({ text: t, bbox: l.bbox, chars: charsForText(t, l.chars) });
       }
     }
     // 调号里的升降号读成了残字：`1=♭B` 的 ♭ 印成上标、只有一个数字的三分之一大，PP-OCR 常读成
@@ -647,6 +754,10 @@ export async function recognizeHeader(
     // 判 ♯/♭，把残字改写成 `b`/`#` 再解析一遍。只在 parseMeta 什么都没认出来时兜底，
     // 认出来的（`1=bB`、`1=G`）一概不动。
     if (meta.fifths === undefined && repairKeyAccidental(ls)) meta = parseMeta(ls);
+    if (meta.fifths === undefined) {
+      const k = await rereadKeyName(ls);
+      if (k) { meta.fifths = k.fifths; meta.fifthsLine = k.line; }
+    }
     out.fifths = meta.fifths;
     out.tempo = meta.tempo;
     out.beats = meta.beats;
@@ -664,6 +775,8 @@ export async function recognizeHeader(
       out.meters = geoMeters.map((m) => ({ beats: m.beats, beatType: m.beatType }));
       out.beats = geoMeters[0].beats;
       out.beatType = geoMeters[0].beatType;
+      // 拍号说明（「混合拍」）照旧从 det 文本里取：det 那路没凑出拍号，meterNote 也就没给。
+      out.meterNote ??= ls.map((l) => /([一-鿿]{1,4}拍)\s*$/.exec(l.text.trim())?.[1]).find(Boolean);
       const bbox = geoMeters.map((m) => m.bbox).reduce((a, b) => unionRect(a, b));
       out.regions.push({ text: out.meters.map((m) => `${m.beats}/${m.beatType}`).join(" "), bbox });
       return;

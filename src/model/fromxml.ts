@@ -784,6 +784,8 @@ function readMeasure(
           staff: num(c, "staff") ?? 1,
         };
         if (!pitchEl && notePos) ch.pos = notePos;
+        // 节奏音符（有声无音高）：写出端 toxml.ts 与识别端 omr/musicxml.ts 都写成 `<unpitched>`
+        if (!pitchEl && child(c, "unpitched")) ch.rhythm = true;
         if (child(c, "cue")) ch.cue = true;
         const type = childText(c, "type");
         if (type) ch.duration.type = type as NoteType;

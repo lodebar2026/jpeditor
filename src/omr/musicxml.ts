@@ -1,7 +1,7 @@
 // 把 RecognizedScore 输出为 MusicXML 3.0 partwise（参考 musicpp omr/musicxml.cpp / qtomr/toxml.cpp）。
 // 简谱数字→音高：可动 do，按 fifths 求调主音，数字 1-7 映射到自然音级，叠加八度点与升降。
 import type { RecognizedScore, JpNum, StaffRow } from "./types";
-import { rright } from "./types";
+import { rright, RHYTHM_DIGIT } from "./types";
 // 简谱数字→音高拼写：与 MusicXML 写出端的投影（model/xmlproject.ts）共用 jppitch.ts 同一份换算。
 import { jpPitch } from "../score/jppitch";
 import { harmonyXml } from "../score/harmonyxml";
@@ -84,6 +84,7 @@ function pairArcs(notes: JpNum[], fifths: number): ArcPairs {
   };
   const keyOf = (n: JpNum) => {
     if (n.digit === 0) return "rest";
+    if (n.digit === RHYTHM_DIGIT) return "rhythm";
     const p = pitchOf(n, fifths);
     return `${p.step}${p.alter}${p.octave}`;
   };
@@ -117,14 +118,14 @@ function pairArcs(notes: JpNum[], fifths: number): ArcPairs {
     if (n.tieStop) {
       const from = openTie.pop();
       // 两端音高必须相同，且都不能是休止符（延音线连到休止符在 MusicXML 里没有意义）。
-      if (from && n.digit !== 0 && keyOf(from) === keyOf(n)) {
+      if (from && n.digit !== 0 && n.digit !== RHYTHM_DIGIT && keyOf(from) === keyOf(n)) {
         slot(tie, n, {}).stop = true;
       } else {
         if (from) { const s = tie.get(from); if (s) delete s.start; } // 音高不符：两端一起剔除
         dropped++;
       }
     }
-    if (n.tieStart && n.digit !== 0) { openTie.push(n); slot(tie, n, {}).start = true; }
+    if (n.tieStart && n.digit !== 0 && n.digit !== RHYTHM_DIGIT) { openTie.push(n); slot(tie, n, {}).start = true; }
     else if (n.tieStart) dropped++;
   }
   for (const [k, n] of openSlur) { dropSlurStart(n, k); dropped++; }
@@ -246,6 +247,13 @@ function noteXml(num: JpNum, fifths: number, arcs: ArcPairs, beams?: Map<number,
     // 把它丢了，弧线只剩半条，MuseScore 就一路拖到下一条 slur 那里去。
     return grace + `<note><rest/><duration>${d.divisions}</duration><voice>1</voice>` +
       `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${timeModXml(num)}${notationsXml(num, arcs)}</note>`;
+  }
+  if (num.digit === RHYTHM_DIGIT) {
+    // 节奏音符 X：有声无音高 → <unpitched> + 斜线符头，同写出端 model/toxml.ts 的口径（读入端 fromxml.ts 认它）。
+    return grace + `<note><unpitched><display-step>B</display-step><display-octave>4</display-octave></unpitched>` +
+      `<duration>${d.divisions}</duration><voice>1</voice>` +
+      `<type>${d.type}</type>${"<dot/>".repeat(d.dots)}${timeModXml(num)}<notehead>slash</notehead>` +
+      `${beamXml(beams)}${notationsXml(num, arcs)}${lyricsXml(num)}</note>`;
   }
   const p = pitchOf(num, fifths);
   // 临时升降号：谱面上的 ♯/♭/♮ 是相对**调内音**的升降，故在调号给的 alter 上加减；

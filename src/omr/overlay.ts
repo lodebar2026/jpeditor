@@ -3,7 +3,7 @@
 // 附点/增时线/小节线/歌词，供用户逐音核对识别准确度。坐标与二值图同空间，直接用。
 
 import type { Binary, RecognizedScore, JpNum, Rect } from "./types";
-import { rcx, rcy, rright } from "./types";
+import { rcx, rcy, rright, RHYTHM_DIGIT } from "./types";
 import { surfaceFromBinary } from "./surface";
 import { clusterRectsByY, median } from "./geom";
 import { measureGlyphText } from "../common/measure";
@@ -76,7 +76,7 @@ function renderNum(g: SVGGElement, n: JpNum, noteH: number, cy: number, dotR: nu
   const top = cy - H / 2, bot = cy + H / 2; // 统一音符框上/下沿（替代各自 bbox.y/bottom）
 
   // 数字（0=休止 → 0）：字号反推自「墨迹高==统计原图音符高 H」，不再直接把 H 当 em 框（会偏小）。
-  g.appendChild(text(cx, cy, String(n.digit), digitFontSize(H)));
+  g.appendChild(text(cx, cy, n.digit === RHYTHM_DIGIT ? "X" : String(n.digit), digitFontSize(H)));
 
   // 减时下划线（div 条）：数字正下方，每条间距固定。先画，下方留出最末一条的位置，
   // 低音点要错到它下面（简谱约定：减时线在数字与低八度点之间）。
