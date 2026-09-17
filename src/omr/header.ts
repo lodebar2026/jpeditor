@@ -15,7 +15,7 @@ export interface HeaderInfo {
   title?: string;
   /** 副标题：印在标题正下方、字号不大于标题、与标题居中对齐的那一行（多是曲名的英译，
    *  如「2146 奉献的心志在燃烧」下的 "The spirit of devotion is burning"）。
-   *  → MusicXML `<credit-type>subtitle</credit-type>`、文本谱第二条标题行；.jpwabc 装不下，那一路会丢。 */
+   *  → `Work.subtitles`（123 第二条 `T:`）、文本谱第二条标题行；.jpwabc 装不下，那一路会丢。 */
   subtitle?: string;
   /** 著作者整行文本（如 "作词：叶薇心"），下游作为 credit 写入 WordsByAndMusicBy。 */
   credits: string[];

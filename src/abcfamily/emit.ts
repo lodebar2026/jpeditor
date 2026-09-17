@@ -400,7 +400,7 @@ export abstract class AbcFamilyEmitter {
       if (el.notations?.fermata) s += "!fermata!";
       for (const a of el.notations?.articulations ?? []) s += `!${a}!`;
       // 从 MusicXML 读进来的波音/颤音挂在 ornaments 上（`inverted-mordent`），写回简谱来源的同名记号（`!sby!`）——
-      // 不写就整个丢了：识别核对那条路（识别 → MusicXML → 123）里 1677《祷告》的两个波音就是这么没的。
+      // 不写就整个丢了：以前识别核对那条路（识别 → MusicXML → 123）里 1677《祷告》的两个波音就是这么没的。
       for (const o of el.notations?.ornaments ?? []) s += `!${ORNAMENT_NAME[o] ?? o}!`;
       const tp = mi.tupletStart.get(el.id);
       // 简写 `(N:`；normal≠2 时必须写完整形 `(N:p:q`（**两个冒号**，见 lex.ts 的正则注释）

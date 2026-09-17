@@ -76,7 +76,7 @@ export function parseEndingNums(s: string): Set<number> {
 
 // ---- 自动版面（无内嵌坐标时，如 OMR 生成的 MusicXML）----
 // 真实制谱软件（Sibelius/Finale）导出的 MusicXML 自带 <measure width>、音符 default-x、
-// <print new-system/new-page>，本工程默认信任之。OMR（omr/musicxml.ts）产出的 MusicXML
+// <print new-system/new-page>，本工程默认信任之。识别产出的 MusicXML（staffomr/toxml.ts）
 // 只有音高/时值、没有任何版面坐标 → 所有音符坍缩到 x≈0、谱表零宽。此处按节奏自动计算
 // 小节宽度、折行、并把音符横向铺开，使无坐标的谱也能正常混排显示。
 

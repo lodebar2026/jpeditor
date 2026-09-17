@@ -23,15 +23,14 @@
 | 场景 | 导出 |
 |---|---|
 | 混排预览（`app.mode === "mixed"`） | 底本原文（五线谱原文） |
-| 识别核对、123 文本一字未改（`App.importUnchanged`） | 底本原文，零损耗 |
 | `.jpwabc` | `scoreDocToMusicXml(jpwToScoreDoc(f))`（与 123 同一条投影） |
-| 其余（文本谱 / 123 / ABC / 改过的识别核对文本） | `scoreDocToMusicXml(app.currentScoreDoc())` |
+| 其余（文本谱 / 123 / ABC，含简谱识别出的 123 核对文本） | `scoreDocToMusicXml(app.currentScoreDoc())` |
 | `.musicxml` 文档 | 文档里就是 XML（原文，或 `editScoreDoc` 整份重写过的） |
 
 最后都过一遍 `annotateLayout`。
 
-简谱识别产物（`App.importOmrMusicXml`）：识别 XML 读成 `App.mixedDoc`（底本原文在 `mixedDoc.source`），经
-`loadScoreDoc → emit123` 转成 123 文本进代码区；点选映射由 `editor/omrmeta.ts` 重解析 123 取源区间。
+简谱识别产物（`App.importOmrDoc`）：识别结果直出 `ScoreDoc`（`omr/todoc.ts`）、`emit123` 成 123 文本进代码区，
+之后就是普通 123 文档，没有 MusicXML 底本；点选映射由 `editor/omrmeta.ts` 重解析 123 取源区间。
 
 ## 反方向：MusicXML → 简谱形状（`model/jianpuproject.ts`）
 
@@ -70,7 +69,7 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 - **记号原名**（`&dy`/`!dy!`）映射成 `<articulations>`/`<ornaments>`；力度、术语、伴奏括弧、Fine/D.C./D.S.、coda/segno
   变成带 offset 的 `<direction>`。本来就是 MusicXML 元素名的原样留下。
 - **增时线上的和弦**：`<harmony>` 排在所辖音符之前，拍位写进 `Harmony.offset`。
-- **符杠**：文本谱/123 的 `beams` 是减时线层数的占位（全是 continue），一个 begin 都没有的声部不写。
+- **符杠**：文本谱/123 的 `beams` 是减时线层数的占位（全是 continue），一个 begin 都没有的声部按拍自动分组（见下「符杠」）。
 - **歌词**：段号区间 `w1-3:` 展开成逐段的 `<lyric>`；副歌行（`refrain`）写 `number="chorus"`，与导入端互逆。
 - **`<voice>` 一律写 1**：简谱来源一个 part 就是一个声部，文本谱 `Q2:` 的声部号是 part 的事；写 2 导入端读不出音符。
 - **头部**：没有 `<credit>` 时由副标题、作者、`TR/TL` 生成（空串不写）；数字速度写首小节 metronome。
@@ -82,7 +81,7 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 `jpwToScoreDoc` → `xmlproject` 投影 → 唯一写出端，与 123/文本谱同一条路。`fromjpw` 只填简谱度数、
 不填绝对音高（从前照抄的假 `pitch` 八度恒为 0，会让投影层整首掉到第 0 八度），调号取 `.Title`，速度进 `Song.tempos`，
-房号由 `Song.playOrder` 反推（`xmlproject.ts::voltasOfPlayOrder`）。符杠不再写（与 123 一样交给读入端自动连）。
+房号由 `Song.playOrder` 反推（`xmlproject.ts::voltasOfPlayOrder`）。符杠与 123 一样按拍自动分组。
 `scripts/jpw-xml-check.mjs` 对 582 份读回快照守基线。
 
 ### 反复与房号
@@ -104,9 +103,16 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 ### 符杠
 
-简谱来源（文本谱/123/`.jpwabc`）的 `beams` 只是减时线层数的占位，**不写 `<beam>`**，交给读入端自动连（见上「投影」一节）。
-识别直出那边（`omr/musicxml.ts::beamsOfMeasure`）自己分组：一拍之内相邻的减时线音符连成一组，逐层 begin/continue/end，
-**休止符不带 `<beam>`**（简谱的减时线画在休止符下面，符杠跨过休止符）。
+简谱来源（文本谱/123/`.jpwabc`，含简谱识别出的 123）的 `beams` 只是减时线层数的占位，投影时**按拍自动分组**
+（`xmlproject.ts::autoBeams`）——不写的话读入端各按各的规则猜，跨拍、弱起处常与原谱不一致：
+
+- 分组：x/8 且拍数是 3 的倍数三个八分一组，其余一拍一组；组里是起点落在同一拍、带减时线、不超过一拍的相邻元素，
+  四分音符/四分休止打断。弱起小节（首小节不满）按小节末尾对齐拍位。
+- **休止符不带 `<beam>`**（没有符干），但带减时线的休止留在组里，符杠从上方跨过（`5_ 0_ 3_` 下划线本就连过休止）；
+  组首组尾的休止落在符杠外，只剩一个实音的组不连。
+- 逐层：第 L 层只在第 L−1 层连上的音之间找连续段，≥2 个实音 begin/continue/end，只剩一个写 hook
+  （在上一层那段里是头一个朝后 forward，否则 backward）。
+- 读入端（`fromxml.ts`/`jianpuproject.ts`）按 `<type>` 定减时线条数，不读分组，所以往返不受影响。
 
 `<beam number>` 是**层号**：按下标算，不能 `indexOf(值)`——两层同为 begin 时会都写成 1
 （`.musicxml` 重写原先就有这个 bug，500 首里 280 处）。
@@ -125,7 +131,7 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 `annotateLayout(doc, opt)` 是独立 pass，**不引用 `JinpuPainter`**——本应用屏幕上的简谱排版
 （可变纸张、乐句重排、翻页）不是给第三方看的版面，硬塞过去只会让 MuseScore 显示得又挤又怪。
 
-- **分行照原图**：底本里现成的 `<print new-system>` 原样沿用（识别直出按 `RecognizedScore.rows` 逐行写）。
+- **分行照原图**：底本里现成的 `<print new-system>` 原样沿用（简谱识别把 `RecognizedScore.rows` 的分行记成模型换行，123 `$` 写出后照样带过来）。
   一个 `<print>` 都没有时才按 `measuresPerSystem`（默认 4）合成——《基督更美》整首都是跨行小节，底本确实没有分行凭据。
 - **版面参数**：写死的 A4 常量表（`<scaling>` 7mm/40tenths，page 1233×1596，margin 70，
   system-distance 110 / top 170），按每行实际小节数把行宽分掉（按音符数加权，`+2` 常数项
@@ -143,17 +149,16 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 `<part-name>` 一律留空并带 `print-object="no"`：Dorico/MuseScore 会把它当乐器名显示在谱前，简谱没有这个概念。
 
-## 识别直出那边的配对（`omr/musicxml.ts`）
+## 简谱识别的弧线配对（`omr/todoc.ts::pairArcs`）
 
-识别路径导出的就是底本原文，不经过模型，所以弧线配对与符杠要自己做：
+识别出的弧线端点难免出错，建模型时先配对（导出 MusicXML 时模型里已经是配好的 Mark）：
 
 1. **剔除孤立记号**。谱面漏写一个 `)` 是常事——一个未闭合的 start 会把后续每个 stop 都吃掉，
    从那里开始所有弧线连锁错位（《主祢真伟大》实测 14 处重叠）。
-2. **给重叠的 slur 写 `number`**。
+2. **给重叠的 slur 编 `number`**。
 3. **端点落在休止符上的圆滑线整条作废**（识别错误；只丢一端会剩半条弧，MuseScore 把它一路拖到下一条 slur）。
 4. **tie 两端必须同音高、都不是休止符**，否则剔除。
 
-`QUARTER`（= `<divisions>`）取 16 而不是 4：32 分音符时 `QUARTER/8` 取 4 会得到 0.5 被 `round` 成 1。
 小节时值凑不满会被下游拟合成怪时值（Dorico 按 `<duration>` 重排出双附点）——根因在识别侧修，不在导出侧补休止。
 
 ## 回归

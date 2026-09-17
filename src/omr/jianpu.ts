@@ -1357,7 +1357,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   }
   for (const r of useRows) r.meters?.sort((a, b) => a.x - b.x);
 
-  // 反复线与一/二房：以冒号点对/顶括线几何识别，锚到相邻音符供 MusicXML 输出。
+  // 反复线与一/二房：以冒号点对/顶括线几何识别，锚到相邻音符，建模型时提升为小节线。
   await detectRepeatsAndEndings(bin, comps, c.dots, useRows, numH, ocr);
 
   // 多连音（三连音 ⌒3⌒）：先于 slur 认——括线的两半自己也够得着圆滑线的判据，认出来后

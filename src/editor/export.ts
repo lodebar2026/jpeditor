@@ -160,13 +160,12 @@ export async function exportMusicXml(app: App): Promise<void> {
 
 /** 当前文档 → MusicXML 文本。**保存回 `.musicxml` 原文件与「导出 MusicXML」共用这一条**。
  *
- *  只有两条路：有底本且没改过（混排预览、识别核对未动）→ 底本原样；否则由唯一写出端
+ *  只有两条路：混排预览有底本 → 底本原样；否则由唯一写出端
  *  `toxml.ts::scoreDocToMusicXml` 整份重写——`.jpwabc` 先经 `jpwToScoreDoc` 进模型，速度、房号（由 `.Repeat` 反推）、
  *  绝对音高都由投影层 `xmlproject.ts` 补（与 123/文本谱同一条路）。 */
 export function buildMusicXml(app: App): string {
   const base = app.mixedDoc?.source;
   if (base && app.mode === "mixed") return base; // 混排：底本即五线谱原文，原样给出
-  if (base && app.importUnchanged) return finishMusicXmlText(base); // 识别核对一字未改：零损耗
   let xml: string;
   if (app.docFormat === "jpwabc") {
     const f = JpwFile.fromString(app.getText());

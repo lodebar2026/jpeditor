@@ -11,7 +11,9 @@
 // 一律按 `flatten(rows[].nums)` 的下标编号。识别模式「原图对照」的点选定位
 // （app.ts::_rangeOfHit）因此不必分格式。
 import type { JpwMeta, RecognizedScore } from "./types";
-import { toMusicXml } from "./musicxml";
+import type { ScoreDoc } from "../model/doc";
+import { emit123 } from "../j123/emit";
+import { recognizedToDoc } from "./todoc";
 import { toPuText } from "./topu";
 import { DIALECTS, type Dialect } from "../pu/dialect";
 
@@ -20,11 +22,13 @@ export type OmrFormat = "123" | Dialect;
 
 export interface EmittedScore {
   /** 产物怎么落到编辑器里：
-   *  - `musicxml`：交 `App.importOmrMusicXml`（MusicXML 底本 → 123 核对文本，它自己产出 meta，故这里 meta 为 null）；
+   *  - `123`：交 `App.importOmrDoc`（123 核对文本由模型直出，点选定位的 meta 它按 123 文本自己算，故这里 meta 为 null）；
    *  - `pu`：文本谱原文，直接设进编辑器，meta 由 emitter 给出。 */
-  kind: "musicxml" | "pu";
+  kind: "123" | "pu";
   text: string;
   meta: JpwMeta | null;
+  /** `kind === "123"` 时的模型（`omr/todoc.ts`），`text` 就是它的 `emit123` */
+  doc?: ScoreDoc;
 }
 
 export interface ScoreEmitter {
@@ -39,7 +43,10 @@ export const OMR_EMITTERS: readonly ScoreEmitter[] = [
   {
     id: "123",
     label: "简谱 123",
-    emit: (rec) => ({ kind: "musicxml", text: toMusicXml(rec), meta: null }),
+    emit: (rec) => {
+      const doc = recognizedToDoc(rec);
+      return { kind: "123", text: emit123(doc), meta: null, doc };
+    },
   },
   ...(Object.values(DIALECTS).map((d) => ({
     id: d.id,

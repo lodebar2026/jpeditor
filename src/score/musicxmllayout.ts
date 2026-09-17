@@ -3,8 +3,8 @@
 //
 // **不引用 JinpuPainter**：本应用屏幕上的简谱排版（可变纸张、乐句重排、翻页）不是给第三方看的
 // 版面，硬塞过去只会显示得又挤又怪。这里只做两件事：
-//  1) 分行——识别底本里现成的 <print new-system>（omr/musicxml.ts 按 RecognizedScore.rows
-//     逐行写的，即原图的「一行几个小节」）原样沿用；没有的才按 measuresPerSystem 补。
+//  1) 分行——底本里现成的 <print new-system>（简谱来源由模型的换行写出；识别出的谱按原图分行记换行，
+//     即原图的「一行几个小节」）原样沿用；没有的才按 measuresPerSystem 补。
 //  2) 版面参数——一张写死的 A4 常量表，按每行实际小节数把行宽分掉。
 //
 // 底本自带 <defaults><scaling>（abc2xml 会输出）时整体跳过：作者已给的版面比我们合成的更贴切。

@@ -1,4 +1,4 @@
-// Node CLI 侧的简谱 OMR 入口：图片字节 → 文本谱 / MusicXML，**全程不起浏览器**。
+// Node CLI 侧的简谱 OMR 入口：图片字节 → 123 / 文本谱，**全程不起浏览器**。
 // 由 `npm run build:cli` 打成 dist-cli/omr.js，供 scripts/omr-cli.mjs 与 OMR 回归脚本 import。
 //
 // 与 cli/index.ts 的分工：那个是**矢量 PDF 版面**那一摊（vector/inventory/pdflayout），
@@ -13,21 +13,21 @@ import { omrProfile, omrProfileReset } from "../omr/paddleocr";
 setOmrRuntime(nodeRuntime);
 installNodeDecoder();
 
-export { OMR_EMITTERS, DEFAULT_OMR_FORMAT, isOmrFormat, omrProfile, omrProfileReset, threadInfo };
+export { OMR_EMITTERS, DEFAULT_OMR_FORMAT, isOmrFormat, omrEmitter, omrProfile, omrProfileReset, threadInfo };
 export type { OmrFormat };
 export { recognizeMusicppDetailed };
 // 换解码器用（默认 sharp；要接别的解码库从这里换）。
 export { setImageDecoder, decodeToBinary } from "../omr/decode";
 export type { ImageDecoder, RgbaImage } from "../omr/decode";
-export { toMusicXml } from "../omr/musicxml";
+export { recognizedToDoc } from "../omr/todoc";
 export { toPuText } from "../omr/topu";
 export type { RecognizedScore, Binary } from "../omr/types";
 
 export interface RecognizeResult {
-  /** 输出原文（文本谱原文或 MusicXML）。 */
+  /** 输出原文（123 或文本谱原文）。 */
   text: string;
-  /** `musicxml` = 交 MusicXML 导入路径；`pu` = 文本谱原文。 */
-  kind: "musicxml" | "pu";
+  /** `123` = 123 核对文本（模型直出）；`pu` = 文本谱原文。 */
+  kind: "123" | "pu";
   format: OmrFormat;
   /** 识别中间产物，回归脚本要拿它算指标。 */
   detail: Awaited<ReturnType<typeof recognizeMusicppDetailed>>;
