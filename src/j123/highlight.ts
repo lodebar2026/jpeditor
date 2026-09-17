@@ -52,12 +52,18 @@ function scanMusic(src: string, from: number, out: Span[]): void {
     const ch = src[i]!;
     const rest = src.slice(i);
     if (/\s/.test(ch) || ch === "`") {
-      i += 1; // 空白是符杠分组的依据，反引号只为可读性——都不上色
+      i += 1; // 空白与反引号只为可读性——都不上色
       continue;
     }
     // 和弦 `"Am7"` 与文字标注 `"^rit."`
     if (ch === '"') {
       push(until(src, i, '"'), "text");
+      continue;
+    }
+    // 不带引号的和弦 `Am7 1`：大写 A–G 开头、到空白为止（同 `dialect123.ts::scanBareChord`）
+    if (/[A-G]/.test(ch)) {
+      const m = /^\S+/.exec(rest)!;
+      push(i + m[0].length, "text");
       continue;
     }
     // 装饰与记号 `!fermata!` `!D.S.!`
