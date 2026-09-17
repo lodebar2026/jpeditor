@@ -122,6 +122,8 @@ export class WordsSection extends Section {
     let lineBegin = true;
     const punc = ".,;'!?。：，；！？“”｡､、";
     const reg = WordsSection.regLrcSpec;
+    /** 段首自成一项的「“」（见下方收尾处理） */
+    const openQuoteHeads = new Set<WordsItem>();
 
     while (pos < text.length) {
       const ch = text[pos];
@@ -193,7 +195,9 @@ export class WordsSection extends Section {
         }
       }
       if (ch.charCodeAt(0) < 0x7f) console.error("unsupported char?");
-      this.last().data.push(new WordsItem(ch));
+      const item = new WordsItem(ch);
+      if (ch === "“" && this.last().data.length === 0) openQuoteHeads.add(item);
+      this.last().data.push(item);
       pos++;
     }
 
@@ -210,6 +214,9 @@ export class WordsSection extends Section {
         }
         prev = d;
       }
+      // 段首就是「“」（`W2@1,1:` 下一行「“爱”之救赎…」）：它前面没有字可挂、自成一项，挪给下一个字后
+      // 只剩一个空项——整段歌词从第 2 个音起、写出再读回每轮再错一格。这一项本不占音符，去掉。
+      if (s.data.length > 1 && s.data[0]!.text === "" && openQuoteHeads.has(s.data[0]!)) s.data.shift();
     }
     return true;
   }
@@ -311,9 +318,12 @@ export class JpwFile {
 
   parse(lines: string[]): boolean {
     let offset = 0;
-    for (const [no, l] of lines.entries()) {
+    for (const [no, raw] of lines.entries()) {
       const at = offset;
-      offset += l.length + 1;
+      offset += raw.length + 1;
+      // JP-Word 存的是 Windows 换行（\r\n）：按 \n 切完行尾还挂着 \r。不去掉的话歌词段把每个行尾的 \r
+      // 当成一个音节，整段往后错一格（语料 567 份、3414 处，报「unsupported char?」）。偏移仍按原行长算。
+      const l = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
       if (l.startsWith("//")) continue;
       if (l.length === 0) continue;
       if (l.startsWith(".")) {
