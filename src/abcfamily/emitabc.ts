@@ -92,6 +92,9 @@ export class EmitterAbc extends AbcFamilyEmitter {
   /** 拉丁词必须空格分开，否则读回来粘成一个音节。 */
   protected override readonly lyricSeparator = " ";
 
+  /** ABC §5.1 的跳音符。 */
+  protected override readonly lyricSkip = "*";
+
   /** ABC 默认「代码换行即谱面换行」（§6.1），所以写真换行而不是 123 的 `$`。
    *  换页 ABC 没有对应记号，退化成换行。 */
   protected override breakText(): string {

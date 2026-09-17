@@ -49,6 +49,8 @@ export interface ParseDialect {
   /** **空白是不是符杠分组**。ABC §4.7 是（连写同杠、空格断开）；
    *  123 不是——符杠按拍自动算（排版 `beamGroupsOf`），空格只为好读、手写不必操心分组。 */
   spaceBeams: boolean;
+  /** 歌词里「跳过一个音符」的记号。123 用 `/`（同文本谱诗歌本，免 Shift）；ABC §5.1 是 `*`。 */
+  lyricSkip: "/" | "*";
 }
 
 // ───────────────────────── 123 ─────────────────────────
@@ -89,6 +91,7 @@ export const DIALECT_123: ParseDialect = {
   defaultLen: () => ({ num: 1, den: 4 }),
   lineEndIsBreak: false,
   spaceBeams: false,
+  lyricSkip: "/",
 };
 
 // ───────────────────────── 标准 ABC ─────────────────────────
@@ -186,4 +189,5 @@ export const DIALECT_ABC: ParseDialect = {
   defaultLen: (num, den) => (den > 0 && num / den >= 0.75 ? { num: 1, den: 8 } : { num: 1, den: 16 }),
   lineEndIsBreak: true,
   spaceBeams: true,
+  lyricSkip: "*",
 };

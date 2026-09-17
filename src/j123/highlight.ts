@@ -18,7 +18,7 @@ import { RangeSetBuilder } from "@codemirror/state";
 import { mark } from "../editor/deco";
 
 /** 字段行前缀的宽松形。与 `fields.ts::ASCII_PREFIX` / `CJK_PREFIX` 同形，但不查别名表。 */
-const FIELD_PREFIX = /^\s*([A-Za-z]|[一-鿿]{1,4})(\d+)?(?:-(\d+))?(?:@(\d+),(\d+))?\s*[:：]/;
+const FIELD_PREFIX = /^\s*([A-Za-z]|[一-鿿]{1,4})(\d+)?(?:-(\d+))?\s*[:：]/;
 
 /** 小节线族，**从长到短**（否则 `||` 永远匹配不到）。与 `lex.ts::BARLINES` 同序。 */
 const BARLINE_RE = /^(\[\|\]|\|::|::\||:\|:|::|\|:|:\||\|\]|\[\||\|\||\.\||\|)/;
@@ -146,8 +146,14 @@ function scanLyric(src: string, from: number, out: Span[]): void {
       i = to;
       continue;
     }
-    // `_` 续记号、`*` 跳音符、`|` 推进小节、`-` 拉丁断音节
-    if (ch === "_" || ch === "*" || ch === "|" || ch === "-" || ch === "~") {
+    // `\/` `\-` 转义：字面字符，当歌词
+    if (ch === "\\" && (src[i + 1] === "/" || src[i + 1] === "-")) {
+      out.push({ from: i, to: i + 2, cls: "lrc" });
+      i += 2;
+      continue;
+    }
+    // `_` 续记号、`/` 跳音符（ABC 借这份高亮，它的 `*` 也上色）、`|` 推进小节、`-` 拉丁断音节
+    if (ch === "_" || ch === "/" || ch === "*" || ch === "|" || ch === "-" || ch === "~") {
       out.push({ from: i, to: i + 1, cls: "slash" });
       i += 1;
       continue;
@@ -157,7 +163,8 @@ function scanLyric(src: string, from: number, out: Span[]): void {
       continue;
     }
     let end = i;
-    while (end < src.length && !"<{_*|-~".includes(src[end]!) && !/\s/.test(src[end]!)) end += 1;
+    while (end < src.length && !"<{_/*|-~\\".includes(src[end]!) && !/\s/.test(src[end]!)) end += 1;
+    if (end === i) end = i + 1; // 落单的 `\`
     out.push({ from: i, to: end, cls: "lrc" });
     i = end;
   }

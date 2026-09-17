@@ -47,8 +47,6 @@ export interface FieldLine {
   /** `w1:` / `w1-2:` / `段2：` 的段号；无则 undefined */
   verseFrom?: number;
   verseTo?: number;
-  /** `w@3,1:` 的锚点（小节, 音符），1 基 */
-  anchor?: { measure: number; note: number };
   /** `V:1` 的声部号 */
   voice?: number;
   value: string;
@@ -58,11 +56,11 @@ export interface FieldLine {
 }
 
 /** 字段行前缀。
- *  ASCII：`X:` `T:` `w1-2@3,1:` `V:1` ——字段名单字母（`w` 区分大小写，其余不分）。
+ *  ASCII：`X:` `T:` `w1-2:` `V:1` ——字段名单字母（`w` 区分大小写，其余不分）。
  *  中文：`标题：` `段2：` ——先查别名表。
  *  冒号 ASCII `:` 与全角 `：` 等价（语料里真有用全角的）。 */
-const ASCII_PREFIX = /^([A-Za-z])(\d+)?(?:-(\d+))?(?:@(\d+),(\d+))?\s*[:：]/;
-const CJK_PREFIX = /^([一-鿿]{1,4})(\d+)?(?:-(\d+))?(?:@(\d+),(\d+))?\s*[:：]/;
+const ASCII_PREFIX = /^([A-Za-z])(\d+)?(?:-(\d+))?\s*[:：]/;
+const CJK_PREFIX = /^([一-鿿]{1,4})(\d+)?(?:-(\d+))?\s*[:：]/;
 
 /** 试着把一行读成头部字段。不是字段行则返回 null（交给音乐体）。 */
 export function parseFieldLine(
@@ -101,7 +99,6 @@ export function parseFieldLine(
     if (v) f.voice = Number(v[1]);
   }
   if (m[3]) f.verseTo = Number(m[3]);
-  if (m[4] && m[5]) f.anchor = { measure: Number(m[4]), note: Number(m[5]) };
   return f;
 }
 
