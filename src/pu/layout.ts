@@ -908,7 +908,13 @@ export function layoutSong(
       const head = groupHeadroom(group, m);
       const baseHead = -m.annotationY;
       if (head > baseHead) y += head - baseHead;
-      if (group.texts.length > 0) y += Math.max(0, -m.textLineY - head);
+      // `W:` 文字行与和弦同处头顶那一槽，让位口径也同和弦（见 groupHeadroom）：墨迹顶再往上让一个数字高。
+      // 只让到基线（textLineY）的话，字顶正落在上一组的组间距里——gapGroup 收到「只空一行」之后，
+      // 上一组没有歌词时文字行就压到它的音符与小节线上（小兔子乖乖「前奏」压「引子」那行 16pt）。
+      // 不改 groupHeadroom：首组离页首的「空一行」按文字行墨迹顶另算（layoutSong 的 firstTop），那边不该多出这一截。
+      if (group.texts.length > 0) {
+        y += Math.max(0, -(m.textLineY - m.textLineSize * 0.85) + m.digitInkHeight - head);
+      }
 
       const beatCtx: BeatCtx = {
         meter: meterCursor,
