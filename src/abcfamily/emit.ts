@@ -241,6 +241,11 @@ export abstract class AbcFamilyEmitter {
     return song.key ? this.keyValue(song.key) : null;
   }
 
+  /** `M:` 的值。默认只写头一个拍号——并排的混合拍是 123 的扩展，标准 ABC 读不了（见 emit123）。 */
+  protected timeValue(song: Song): string | null {
+    return song.time ? `${song.time.beats}/${song.time.beatType}` : null;
+  }
+
   /** 头部里方言特有的行（ABC 的 `L:`）。默认没有。 */
   protected headerExtra(song: Song): string[] {
     void song;
@@ -505,7 +510,8 @@ export abstract class AbcFamilyEmitter {
     for (const c of song.identification?.creators ?? []) pushLines(L, "C", c.text);
     const k = this.keyText(song);
     if (k) L.push(`K:${k}`);
-    if (song.time) L.push(`M:${song.time.beats}/${song.time.beatType}`);
+    const mt = this.timeValue(song);
+    if (mt) L.push(`M:${mt}`);
     L.push(...this.headerExtra(song));
     for (const t of song.tempos ?? []) {
       L.push(typeof t === "number" ? `Q:1/4=${t}` : `Q:"${t}"`);

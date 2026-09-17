@@ -28,7 +28,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `src/model/doc.ts` | 类型定义（774 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
+| `src/model/doc.ts` | 类型定义（897 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
 | `src/model/helpers.ts` | 遍历/查询/构造 |
 | `src/model/jianpu.ts` | **简谱语义层**：音高↔度数、相对调号临时记号延续（`AccidentalCarry`，两个方向共用）、`attrsAt`、减时线/增时线/附点（`jianpuShape`）、和弦原文、旋律取音、延音线/跨元素记号按 id 找对端 |
 | `src/model/fromxml.ts` | ← MusicXML（**直通**，读不懂的挂 `Measure.raw` 原样留着） |

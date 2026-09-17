@@ -53,6 +53,8 @@ export interface Metadata {
   /** 无前缀的自由文字行（注记、勘误等） */
   remarks: string[];
   meters: Meter[];
+  /** 有谱调号行上拍号后面跟着的说明文字（`1=C3/4 4/4 混合拍`）。 */
+  timeNote?: string;
   tempos: Tempo[];
   /** 有谱 `XL:` `XR:` 序号 */
   indexLeft?: string;

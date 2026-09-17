@@ -1263,7 +1263,10 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       const pl = hi[0], pr = hi[hi.length - 1];
       if (pr - pl < b.w * 0.35) continue;                       // 峰都挤在一处 → 是弧顶，不是锯齿
       const valley = Math.max(...top.slice(pl, pr + 1).filter((v) => !isNaN(v)));
-      if (valley - peak < b.h * 0.3) continue;                  // 两峰之间没有谷 → 还是弧
+      // 谷深：大档按块高的三成；小号档改按**像素**——1727《主为我》的波音只有 13×7，谷实测
+      // 2px，而 0.3×7=2.1 差 0.1 就判成弧（两处波音全丢）。这么小的块上「三成」已细过像素栅格，
+      // 2px 就是能分辨的最小谷。圆的八度点根本没有两个峰，卡在上面那道，不靠这一道挡。
+      if (valley - peak < (big ? b.h * 0.3 : 2)) continue;      // 两峰之间没有谷 → 还是弧
       ornamentOf.set(owner, "upper-mordent");
       mordentDots.add(k);
     }

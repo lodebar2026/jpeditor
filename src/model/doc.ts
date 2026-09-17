@@ -862,6 +862,9 @@ export interface Song {
   time?: Time;
   /** 头部的其余拍号（文本谱 `P: 4/4 3/4`，第一个在 `time`） */
   extraTimes?: Time[];
+  /** 拍号后面印着的说明文字（「混合拍」）。文本谱有谱方言的调号行、123 的 `M:` 都写得下；
+   *  当前只在源格式之间往返，简谱排版还不画它。 */
+  timeNote?: string;
   /** 速度：数字为 BPM，字符串为文字术语（「欢快地」）。两者可并存 */
   tempos?: (number | string)[];
   /** [五线谱] */

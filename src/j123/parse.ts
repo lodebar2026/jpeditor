@@ -46,6 +46,7 @@ import {
   parsePlayOrder,
   parseTempo,
   parseTime,
+  parseTimes,
   type FieldLine,
   type RawPlayPass,
 } from "./fields";
@@ -1052,12 +1053,16 @@ function applyField(
       break;
     }
     case "M": {
-      const r = parseTime(f.value);
+      // 头部可并排写几个拍号（混合拍）＋一段说明文字；首个是起头拍号，其余进 `extraTimes`。
+      const r = parseTimes(f.value);
       if (r.error) report(ctx, "bad-time", r.error, f.source);
-      else if (r.time) {
-        song.time = r.time;
+      const [first, ...rest] = r.times;
+      if (first) {
+        song.time = first;
+        if (rest.length) song.extraTimes = rest;
+        if (r.note) song.timeNote = r.note;
         // ABC §3.1.7：没写 `L:` 时默认音长由 `M:` 推出来
-        if (!ctx.sawL) ctx.len = ctx.d.defaultLen(r.time.beats, r.time.beatType);
+        if (!ctx.sawL) ctx.len = ctx.d.defaultLen(first.beats, first.beatType);
       }
       break;
     }

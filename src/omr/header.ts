@@ -815,6 +815,16 @@ export async function recognizeHeader(
     let subtitleLine: HLine | undefined;
     if (titleLine) {
       const tl = titleLine;
+      // det 常把「曲号 曲名」切成两个框（1727《主为我》：`1727` 与 `主为我` 各一框，中间空着
+      // 两个字宽）——标题框只剩曲名，中心被右推、宽度只剩一半，下面那条「与标题居中对齐」就把
+      // 真副标题挡掉了（"Lord for me" 差 119px，门只有 89px）。判居中用「曲号+曲名」的合框。
+      const titleBox = ls.reduce((b, l) => {
+        if (l === tl || !/^\s*\d{1,4}\s*[.．、]?\s*$/.test(l.text)) return b;   // 只并纯数字的曲号框
+        if (overlapRatioY(l.bbox, tl.bbox) < 0.5) return b;                     // 须同一排
+        if (Math.abs(l.charH - tl.charH) > tl.charH * 0.3) return b;            // 须同字号
+        return unionRect(b, l.bbox);
+      }, tl.bbox);
+      const titleCx = titleBox.x + titleBox.w / 2;
       const metaRe = /[1１]\s*[=＝]|[♩♪]|\d+\s*[/／]\s*\d+/;
       // 和弦记号（"Am"、"G/D"、"Dm7"）：第一谱行的和弦印在页眉 ROI 里，一个个都是居中的短串。
       const chordRe = /^[A-G][#b♯♭]?(?:m|maj|min|dim|aug|sus|add)?\d*(?:\s*\/\s*[A-G][#b♯♭]?)?$/;
@@ -826,7 +836,7 @@ export async function recognizeHeader(
         // 基线下），同样字号的框比汉字高一截。1677《祷告》的「Pray」框 73px、标题「1677 祷 告」才 67px，
         // 1.05 一卡副标题就没了。
         .filter((l) => l.charH <= tl.charH * (hanziCount(l.text) ? 1.05 : 1.3))
-        .filter((l) => Math.abs(l.cx - tl.cx) <= tl.bbox.w * 0.35)
+        .filter((l) => Math.abs(l.cx - titleCx) <= titleBox.w * 0.35)
         .filter((l) => gapTitle(l) < firstStaffTopY - l.cy)
         .filter((l) => { const t = l.text.trim(); return t.length >= 2 && !metaRe.test(t) && !chordRe.test(t) && /[^\d\s.,:：、·]/.test(t); })
         .sort((a, b) => gapTitle(a) - gapTitle(b))[0];
@@ -897,7 +907,8 @@ export async function recognizeHeader(
       out.beats = geoMeters[0].beats;
       out.beatType = geoMeters[0].beatType;
       // 拍号说明（「混合拍」）照旧从 det 文本里取：det 那路没凑出拍号，meterNote 也就没给。
-      out.meterNote ??= ls.map((l) => /([一-鿿]{1,4}拍)\s*$/.exec(l.text.trim())?.[1]).find(Boolean);
+      // 说明后面常还印着速度（1727《主为我》det 读成 `1=c4混合拍J=75`），故容一段速度标记再收尾。
+      out.meterNote ??= ls.map((l) => /([一-鿿]{1,4}拍)\s*(?:[♩♪Jj]?\s*[=＝]\s*\d{1,3})?\s*$/.exec(l.text.trim())?.[1]).find(Boolean);
       const bbox = geoMeters.map((m) => m.bbox).reduce((a, b) => unionRect(a, b));
       out.regions.push({ text: out.meters.map((m) => `${m.beats}/${m.beatType}`).join(" "), bbox });
       return;
