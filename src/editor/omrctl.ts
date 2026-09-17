@@ -14,7 +14,9 @@ import {
   type OmrFormat, type RecogView,
 } from "../omr";
 import type { Binary, JpwMeta, RecognizedScore } from "../omr";
+import type { ScoreDoc } from "../model/doc";
 import { showConfirmDialog } from "./dialogs";
+import { metaFrom123 } from "./omrmeta";
 
 /** 是否 PDF 字节（mime 或 `%PDF-` 魔数）。与 `omr/decode.ts` 里那份同判据。 */
 function isPdfBytes(bytes: Uint8Array, mime?: string): boolean {
@@ -28,8 +30,6 @@ export interface OmrHost {
   readonly mode: "jp" | "mixed" | "recognize";
   /** 编辑器里的 CodeMirror 视图（点选定位要用）。 */
   readonly view: EditorView;
-  /** 最近一次 MusicXML 导入产出的代码区间映射（123 核对文本那条路的 meta 从这儿接管）。 */
-  readonly lastImportMeta: JpwMeta | null;
 
   getText(): string;
   setText(text: string): void;
@@ -40,12 +40,14 @@ export interface OmrHost {
   reload(text: string): void;
   /**
    * 五线谱识别产物落地：与打开 `.musicxml` 同一个模式（无代码区），默认进**混排视图**。
-   * 不走 `importOmrMusicXml`：五线谱的和弦、多声部、slur 在 `.jpwabc` 与简谱引擎里装不下。
+   * 不走 `importOmrDoc`：五线谱的和弦、多声部、slur 在 `.jpwabc` 与简谱引擎里装不下。
    * 返回 false 表示简谱那一侧转不出来（不影响混排预览）。
    */
   adoptStaffXml(xml: string): boolean;
-  /** 简谱识别产物（MusicXML 底本）落地：转成可编辑的 123 文本，并产出点选映射 `lastImportMeta`。 */
-  importOmrMusicXml(xml: string): void;
+  /** 简谱识别产物落地：识别直出的模型与它写成的 123 核对文本。 */
+  importOmrDoc(doc: ScoreDoc, text: string): void;
+  /** 识别产物有无变了：同步排版档按钮（简谱识别期间不露「五线谱」「混排」两档）。 */
+  syncViewModes(): void;
 
   /** 清空 #score-pane 与翻页状态（各预览铺页前都要做）。 */
   clearPages(): void;
@@ -232,7 +234,7 @@ export class OmrController {
 
   /**
    * 把一份识别结果按当前输出格式出成编辑器文本。格式清单与各自的产出在 omr/emit.ts 的
-   * 注册表里，这里只管把产物落到编辑器（两种落法：走 MusicXML 导入路径，或直接设文本）。
+   * 注册表里，这里只管把产物落到编辑器（123 按 123 文档落地，文本谱直接设文本）。
    * **不重跑识别。**
    *
    * 各 emitter 的 meta 都按同一套音符序（flatten(rows[].nums)）编号，
@@ -240,10 +242,10 @@ export class OmrController {
    */
   private emit(rec: RecognizedScore, bin: Binary): void {
     const out = omrEmitter(this.format).emit(rec);
-    if (out.kind === "musicxml") {
-      // importOmrMusicXml 开头会 clear()，故必须先导入、后回填本次产物。
-      this.host.importOmrMusicXml(out.text);
-      this.meta = this.host.lastImportMeta; // 接管导入时序列化产出的代码区间映射
+    if (out.kind === "123") {
+      // importOmrDoc 开头会 clear()，故必须先导入、后回填本次产物。
+      this.host.importOmrDoc(out.doc!, out.text);
+      this.meta = metaFrom123(out.text); // 点选映射按 123 文本的源区间生成
     } else {
       this.clear();
       this.host.adoptPuText(out.text);
@@ -255,6 +257,7 @@ export class OmrController {
     if (this.btnEl) this.btnEl.textContent = "原图对照";
     this.host.setContextControl(this.btnEl, true);
     this.host.setContextControl(this.formatFieldEl, true);
+    this.host.syncViewModes();
   }
 
   // ---------------- 核对视图 ----------------
@@ -454,5 +457,6 @@ export class OmrController {
       this.host.setRecognizeMode(false);
       this.setLayout(false);
     }
+    this.host.syncViewModes();
   }
 }

@@ -140,7 +140,7 @@ export function chordCandidates(
  *
  *  与 sectionMark 的落位**刻意不同**：段落总从整小节起、要回退到本小节首音；和弦不回退——
  *  它可落在小节内任意一拍。和弦也**不一定对着音符**：印在两音符之间时按 x 线性插值出
- *  `chordOffset`（本音符时值内的比例，0..1），由 MusicXML 那路折成 `<harmony><offset>`。 */
+ *  `chordOffset`（本音符时值内的比例，0..1），由 todoc.ts 决定挂音符还是挂增时线。 */
 export function placeChords(
   row: StaffRow, cands: ChordCand[], regions: TextRegion[],
 ): void {

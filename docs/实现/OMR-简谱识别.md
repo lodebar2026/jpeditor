@@ -1,6 +1,6 @@
 # 简谱图像识别（OMR，`src/omr/`）
 
-把简谱图片（PNG/JPG）识别成 MusicXML，再转成 123 进编辑器核对（`App.importOmrMusicXml`）。
+把简谱图片（PNG/JPG）识别成 `RecognizedScore`，直出 `ScoreDoc`（`todoc.ts`）再写成 123 进编辑器核对（`App.importOmrDoc`）。
 工具栏「识图」按钮 → `showRecognizeDialog`（[src/editor/dialogs.ts](../../src/editor/dialogs.ts)）选方式 →
 `App.recognizeFromImage`（[src/editor/app.ts](../../src/editor/app.ts)）。**两种方式**：
 
@@ -13,7 +13,7 @@
 如「耶稣普治」PDF 顶部的 `055/圣子耶稣`）；纯矢量 PDF（无内嵌图）退回 `page.render` 整页光栅化。多页竖向拼接。
 
 识别只有**一条路**：**完全本地**，浏览器/桌面均可、可离线。`decode.ts`(图→二值) → `jianpu.ts`
-  (连通域/几何启发式：数字块拆分、下划线 div、八度点、增时线) → `musicxml.ts`(→partwise)；
+  (连通域/几何启发式：数字块拆分、下划线 div、八度点、增时线) → `todoc.ts`(→简谱形状的 `ScoreDoc`)；
   数字/歌词/页眉 OCR 走本地 **PaddleOCR PP-OCRv6_small**（`paddleocr.ts`，onnxruntime-web 浏览器离线推理，
   逐数字格 / 歌词条 rec→CTC）。模型/字典在
   `public/redist/ocr/`（rec onnx `ch_PP-OCRv6_small_rec_infer.onnx` **~21MB** + `ppocrv6_dict.txt` **18708 字**
@@ -294,9 +294,9 @@ lt .81 rt .38 lb .63 rb .68，原先 0.45 的门把它判成了 ♯）。♮ 早
 方向正好反了（8《心持两意的人》第 1 行实测左上 0.43 / 右下 0.61 才是有墨的那两格，四格判据把它
 读成 ♯）；中间那两条横笔一压，四格比例本就不干净，而它们左右各占一半、对重心差相互抵消。
 记号挂在**右邻**那个音符上（`JpNum.accidental`），谱面上的 ♯ 是相对**调内音**的升降，
-故 MusicXML 那路在调号给的 alter 上加减，并按简谱规矩**在小节内延续**到同数字的后续音符
-（延续出来的只写 `<alter>`、不写 `<accidental>`——谱面上并没有再印一个记号）；.jpwabc 与文本谱
-那路照原样写记号，延续交给 `jppitch.ts::applyJpPitch`（那边本来就有这套状态）。
+按简谱规矩**在小节内延续**到同数字的后续音符。各路都只照原样写印出来的记号（延续出来的谱面上并没有再印）：
+模型那路记 `Degree.accidental`，延续交给 `model/jianpu.ts::AccidentalCarry`（导出 MusicXML 时由它算 `<alter>`）；
+.jpwabc 与文本谱那路延续交给 `jppitch.ts::applyJpPitch`（那边本来就有这套状态）。
 
 **分行（`groupRows`）要先用大块定行、小块随后挂靠**：变音记号这类块比数字矮、又骑在数字的
 左上角，中心比数字高小半格。一轮贪心是按 y 中心自上而下走的，小块会先跟头顶的弧帽结成一行，
@@ -337,7 +337,7 @@ lt .81 rt .38 lb .63 rb .68，原先 0.45 的门把它判成了 ♯）。♮ 早
 只有一个峰，两道都过不了。宽度封顶 0.6 字号，挡住「八度点粘着弧端」那种又宽又扁的块。认出来的块要从
 `dots` 里摘掉。另加一道：读出来是 0 的音符不挂波音（五线谱页上误认过三处休止）。抽检各歌本样张认出 5 处，
 全是真波音——1677 两处之外，1679《当年离家的时候》三处原先也都读成了高八度点。
-→ MusicXML `<notations><ornaments><inverted-mordent/>`、文本谱 `&sby`；.jpwabc
+→ `notations.ornaments`（123 `!sby!`，导出 MusicXML `<inverted-mordent/>`）、文本谱 `&sby`；.jpwabc
 装不下演奏记号（只认 fermata），那一路会丢。
 
 **倚音**（`JpNum.grace`）：主音符左上角的小号数字，**底下压着一两条与它同宽的减时线**，再由
@@ -361,8 +361,8 @@ lt .81 rt .38 lb .63 rb .68，原先 0.45 的门把它判成了 ♯）。♮ 早
 
 八度点**只认上面那个**：连到主音符的那道小弧挂在减时线下方，断成的碎块（实测 15×11）与八度点
 （13×14）一般大、也几乎正对着小数字（中心只偏 6px），认下面那个点等于给每个倚音都记上一个
-低八度。低八度的倚音因此少一个点（有损）。输出：MusicXML `<note><grace slash="yes"/>…`
-（无 duration、不占拍位）；文本谱写成音符后的引号备注 `"yy:…"`（两家都认这个写法）。
+低八度。低八度的倚音因此少一个点（有损）。输出：主音符之前一个 `grace` Chord（123 `{5}`，
+不占拍位；导出 MusicXML `<grace slash="yes"/>`）；文本谱写成音符后的引号备注 `"yy:…"`（两家都认这个写法）。
 **文本谱里减时线要少写一条**——倚音的基准时值是八分（`parse.ts::scanGraceNotes` 按 8 起算），
 谱面上那条八分的减时线不写，故 `div-1`：图上两条 → `"yy:3/"`。
 
@@ -370,7 +370,7 @@ lt .81 rt .38 lb .63 rb .68，原先 0.45 的门把它判成了 ♯）。♮ 早
 `detectSlurs` 的圆滑线判据（那里要求宽 ≥0.8 字号），弧本身常连归类都轮不上；而弧下那个点正落在
 八度点的窗口里，于是 16《爱心的功课》末行的 `5·6̂ 7̂` 读成了 `5. 6̇ 7̇`（高了一个八度）。判据：
 宽薄小弧（0.5~1.3 字号宽、扁平）+ 正下方居中的一个小点 + 再下方紧跟着数字；点随即从 `dots` 里
-摘掉，不再参与八度判定。→ MusicXML `<notations><fermata/>`、文本谱 `&yc`、.jpwabc `{YanYin}`。
+摘掉，不再参与八度判定。→ `notations.fermata`（123 `!fermata!`）、文本谱 `&yc`、.jpwabc `{YanYin}`。
 
 **顿音（▼）**（`JpNum.articulation`）：音符正上方一个**实心倒三角**（1640《主要在中国掌权》整首
 每音一个，实测 12×14px、字号 32）。它的尺寸恰好落在 `classify` 的「小点」档里，**本来就躺在
@@ -378,14 +378,14 @@ lt .81 rt .38 lb .63 rb .68，原先 0.45 的门把它判成了 ♯）。♮ 早
 与真八度点靠**形状**分：三角逐行墨宽从满宽单调收到一个尖（顶行 ≥0.8 块宽、底行 ≤0.4 块宽、中途
 不许变宽，容 1px 毛刺），圆点上下一样宽；再加填充率兜一道（三角 ≈0.5、圆点 ≈0.8，取 0.4~0.75）。
 **离数字比八度点远得多**（实测 0.7 字号，八度点是紧贴），故 owner 的搜索窗放到 1 个字号。
-→ MusicXML `<notations><articulations><staccato/>`（与 `model/xmlproject.ts` 的 `dy` 同口径）、文本谱 `&dy`；
+→ `notations.articulations: ["staccato"]`（与 `model/xmlproject.ts` 的 `dy` 同口径）、文本谱 `&dy`；
 .jpwabc 与简谱引擎输入装不下（`layout.ts` 那边只画重音）。**文本谱的 `dy` 字形改成 `articStaccatissimoAbove`
 （▼）**：简谱里数字正上方的圆点已经是高八度点，再用 `articStaccatoAbove` 画顿音两者分不开。
 37 张实拍图里只有这一首命中，没有误检。
 
 **终止线**：谱末那道 ‖ 是细线加粗线并排（16 实测 5px + 8px、相距 5px，普通小节线 4px）。两根都
 各自进了 `barlineXs`（中间切出的空小节由 `measuresOfRow` 滤掉），判据是「行末最后两根挨着、
-其中一根明显更粗」→ `StaffRow.finalBarline="end"` → MusicXML `<bar-style>light-heavy`、
+其中一根明显更粗」→ `StaffRow.finalBarline="end"` → 右线 `light-heavy`（123 `|]`）、
 文本谱 `|||`（诗歌本）。
 **「更粗的那根」只在中间的谱行上要求**：那里两根并排的还可能是分段用的复纵线，粗细是唯一可分
 的线索；**末行**行末的两根并排不作他想，就是终止线，而细粗之别常常印不出来——227《施比受更为
@@ -452,11 +452,10 @@ w/h≥4**——弧越长越扁（7.3），段落方框（"Chorus" 带框 w98 h36
 又是个数字、又与音符数吻合（37 张实拍图里只在这一首命中两处，无误检）。
 **必须先于 `detectSlurs` 认**：括线的两半自己就够得着圆滑线的判据（54/23=2.35 ≥1.8、高也够矮），
 眼下只因各自单独罩不住两个音才没变成假 slur——认出多连音后把这两块从 slur 的输入里摘掉，别留隐患。
-输出：MusicXML 每个音都带 `<time-modification>`（缺一个下游就按原时值算）+ 首尾 `<notations><tuplet>`，
-**duration 按比例缩、`<type>` 不动**（三连音的四分音符写的还是 `quarter`，少的三分之一由 time-modification
-表达）；文本谱写 `(y…)`，`topu.ts` 的拍位计算也跟着缩，否则本小节后面的音全被算成跨拍、`~`/`^` 乱写。
-为此 **`<divisions>` 从 16 改成 48**（=16×3）：三连音每音 2/3 拍，16 时算出 10.67，round 完一小节
-凑不满（3×11≠32）。文本谱的 `(y…)` 与圆滑线的 `(` 同用一套括号，解析端按**队列**（先开先闭）配对，
+输出：模型里组内每个音都带 `duration.timeMod`、首尾一条 `tuplet` Mark（123 `(3:`），时值记名义值，
+导出 MusicXML 时由 `xmlproject.ts` 按比例缩 duration、`<type>` 不动；文本谱写 `(y…)`，`topu.ts` 的拍位计算也跟着缩，
+否则本小节后面的音全被算成跨拍、`~`/`^` 乱写。时值单位 48 一拍（=16×3）：三连音每音 2/3 拍，16 时算出 10.67，
+round 完一小节凑不满（3×11≠32）。文本谱的 `(y…)` 与圆滑线的 `(` 同用一套括号，解析端按**队列**（先开先闭）配对，
 故多连音的 `(y` 写在圆滑线 `(` 之前、`)` 也先收；两者真交错嵌套时这套写法表达不了，手头没有那样的谱面。
 
 **嵌套的双弧**（`slur.ts::splitNestedArcs`）：两条弧共用一个端点时（外弧罩三个音、内弧只罩后两个），
@@ -472,14 +471,14 @@ w/h≥4**——弧越长越扁（7.3），段落方框（"Chorus" 带框 w98 h36
 ②笔画细（≤0.3 字号）；③有拱高（顶边高低差 ≥0.15 字号）——减时线/增时线/三连音括线一路平着走；
 ④双段区间的**某一头两段合拢**——两条弧本是一个连通块、必在某处相交，交点不在两头就说明
 它粘的是别的东西。模型侧 `JpNum.slurStart/slurStop` 因此改成**条数**（末音要同时收两条），
-一路到 MusicXML 的带 `number` 的两个 `<slur type="stop">`、文本谱的 `))`、`.jpwabc` 的 `(2_ (3__ 2__))`；
+一路到模型里两条收在同一音符上的 `slur` Mark（123 的 `))`）、文本谱的 `))`、`.jpwabc` 的 `(2_ (3__ 2__))`；
 编辑器 `Chord.slurEnds` 同样是计数，配对由 `ParserTemp.pairSlur` 栈式做（后开先闭）。
 
 **副标题**（`header.ts`）：标题正下方那行小字（多是曲名英译，"The spirit of devotion is burning"）。
 判据是**贴着标题、与标题居中对齐、字号不大于标题**：页眉 ROI 里还有第一谱行的和弦（`Am`、`G/D`
 一个个也居中），靠「离标题比离首谱行近」把它们挡开（另有和弦文法兜底）；印在两侧的调号与
-出版方（迦南诗选每页的「迦南诗歌」）离标题中心远，天然不入选。→ MusicXML
-`<credit-type>subtitle</credit-type>`、文本谱的第二条 `B:`/`T:`；**`.jpwabc` 的 `.Title` 段没有这个字段**
+出版方（迦南诗选每页的「迦南诗歌」）离标题中心远，天然不入选。→ `Work.subtitles`
+（123 第二条 `T:`）、文本谱的第二条 `B:`/`T:`；**`.jpwabc` 的 `.Title` 段没有这个字段**
 （既定，不扩语法），那一路会丢——`jpscore.ts` 因此显式跳过 subtitle 类 credit，否则英译会被
 当成作者印进 `WordsByAndMusicBy`。det 把一行切成两块的写法（「主祢真伟大」的
 "How Awesome / You Are" 分居标题两侧）目前不认。
@@ -506,8 +505,8 @@ Chorus/Intro 一视同仁地先剥掉，再判是不是注记行。1《以色列
 **段落标记**（Intro/Verse/Chorus/Coda 方框）：与和弦同处歌词带，被 cov 过滤当注记丢弃——但它标出了
 段落起点，对乐句排版有用。故被丢弃的短行（≤5 格）也送 rec（`Chunk.mark`，只提词不参与歌词装配），
 在任何块的 rec 原文里用 `SECTION_MARK_RE` 就地捞词（Chorus 常与和弦同块）。落位：方框印在**下一谱行**
-音符上方 → 归到该行、标记 x 所在**小节的首音**（`JpNum.sectionMark`）→ `<direction><words>`。
-`musicxml.ts` 吐 `<lyric number>`，下游 `model/fromxml.ts` 读进 `ScoreDoc` → 转 123 核对。
+音符上方 → 归到该行、标记 x 所在**小节的首音**（`JpNum.sectionMark`）→ `Chord.sectionWord`（123 `"^Chorus"`）。
+以前经 MusicXML `<direction><words>` 转手，读回 123 时整个丢了。
 ### 按 y 聚成行的五个阈值（`geom.ts::clusterByY`）
 
 「把墨块按纵向中心聚成一行」这个操作在管线里出现五次。实现只有一份（`omr/geom.ts::clusterByY` /
@@ -536,7 +535,7 @@ Chorus/Intro 一视同仁地先剥掉，再判是不是注记行。1《以色列
 吉他和弦（`Am` / `G/B` / `Gsus4` / `F#m7`）印在谱行音符**上方**，与段落方框同处歌词带。文法判定
 （`isAnnotationLine` / `CHORD_TOKEN_RE` / `chordCoverage`，见上）连同切词、归一、落位一并搬进
 `src/omr/chordline.ts`；`lyrics.ts` 只调不判。识别到的和弦挂上 `JpNum.chord`，由两路 emitter 输出：
-`musicxml.ts` → `<harmony>`（复用 `score/harmonyxml.ts`，与文本谱直出共用），`topu.ts` → `"hx:…"`。
+`todoc.ts` → `Chord.harmony` / `Sustain.harmony`（原文，导出 MusicXML 时由 `score/harmonyxml.ts` 解析），`topu.ts` → `"hx:…"`。
 **`.jpwabc` 装不下和弦**，jpwabc 那路输出会丢（与力度、渐强渐弱现状一致）——这是有意的，
 不为和弦扩 jpwabc 语法。
 
@@ -591,14 +590,14 @@ Chorus/Intro 一视同仁地先剥掉，再判是不是注记行。1《以色列
   和弦不回退，它可落在小节内任意一拍。比较基准取音符**左缘**而非中心（和弦记号左缘对齐所辖音符
   左缘；用中心比会给行首和弦凭空算出 0.35~0.40 的假偏移，密排行里音符半宽就占相邻间距近四成）。
   和弦落在两音符之间时按 x 线性插值出 `JpNum.chordOffset`（本音符时值内的比例 0..1），
-  MusicXML 那路折成 `<harmony><offset>`；文本谱 `"hx:"` 挂不住偏移，就近挂本音符（有损）。
+  模型那路正落在某条增时线那一拍上就挂增时线，否则就近挂本音符；文本谱 `"hx:"` 挂不住偏移，同样就近挂本音符（有损）。
   同一音符已有和弦时顺延到右邻空位（限一格），但**同名的不顺延**——同一拍点不会连奏两个相同和弦，
   那只是 OCR 跨 rec 块边界把一个记号读了两遍。
 - **一个音符可以带多个和弦**（`JpNum.extraChords`，tok + 拍内比例）：长音里逐拍换和弦时，后几个印在
   **增时线上方**（「世上所有的民族」第二行 `1 - - 0` 的第三拍上另有一个 C/G）。判据是 `frac > 0`
   ——记号明明落在本音符时值之内，就不是「字距挤在一起」，顺延给右邻会把它整整挪后一拍。
-  两路输出都保得住：MusicXML 各出一个带 `<offset>` 的 `<harmony>`（后续和弦量化到整拍，免得插值出的
-  1.89 拍落在两拍之间）；文本谱挂到对应那条增时线上（`1"hx:G" - -"hx:C/G" 0/`，`src/pu` 侧的
+  两路输出都保得住：模型挂到对应那条增时线（`Sustain.harmony`，123 `-"C/G"`；后续和弦先量化到整拍，免得插值出的
+  1.89 拍哪条增时线都挂不上）；文本谱挂到对应那条增时线上（`1"hx:G" - -"hx:C/G" 0/`，`src/pu` 侧的
   `SustainElement.chord` 支持解析/排版/绘制/导出）。同一拍位上撞车 = 谱面印了**两套并行编配**
   （「爱是不保留」上排括号里是另一套），只留 bbox 更低的那排——那才是主编配。
 - **和弦行仍照旧先装配、再整行剔除**（`dropKeys`）。看似绕，但装配这步有下游依赖：休止复原
@@ -644,7 +643,7 @@ Chorus/Intro 一视同仁地先剥掉，再判是不是注记行。1《以色列
 可加子串参数只测部分曲，如 `node scripts/measure-all.mjs 从前`）。**每首之间重载页面**——App 在同一 page 里
 复用会串味（「爱是不保留」单跑 slur/歌词 100%，跟在别的歌谱后面跑掉到 60%/42%），基线因此不可复现。
 **GT 与识别产物都是 123，同一套 tokenizer**（`scripts/gt123.mjs`）：识别侧走识别核对落地的真实路径
-（识别 MusicXML → `loadScoreDoc` → `emit123`，即 `App.importOmrMusicXml`），GT 是 `gt.123`。两处口径归一要知道：
+（`omrEmitter("123")`：`recognizedToDoc` → `emit123`，即 `App.importOmrDoc` 落地的那份），GT 是 `gt.123`。两处口径归一要知道：
 相邻的小节线算一根（`| $ |:` 与 `|:`）；**各段逐音位都同字、连续至少 4 个字的片段**算副歌共用，只留在第 1 段
 （`.jpwabc` 的 `W1-6` 转 123 后每段各抄一遍，识别那边印一遍挂在第 1 段）。
 
@@ -766,9 +765,9 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 - **只有谱行音符那一路开 `{ rhythm: true }`**。拍号、倚音、连音数字、房号都复用 `recognizeDigits`，
   其中拍号的合法值里有 9（`9/8`），不能让 X 混进去。
 - 只认**整格就是** `X`/`x`/`Ｘ`/`×`，不认夹在别的字里的 x。
-- 同音判断要排除它：隐含 tie 补检、`slur.ts` 的 tie/slur 分流、`musicxml.ts` 的 tie 配对——两个 X 挨着不是延音。
-- 输出：MusicXML 写 `<unpitched>` + `<notehead>slash</notehead>`（同 `model/toxml.ts`），`fromxml.ts` 读回
-  `Chord.rhythm`（以前不读，导入的节奏音符变成空和弦）；文本谱按方言写 `rhythmToken`（诗歌本 `X`、番茄 `9`）。
+- 同音判断要排除它：隐含 tie 补检、`slur.ts` 的 tie/slur 分流、`todoc.ts` 的 tie 配对——两个 X 挨着不是延音。
+- 输出：模型 `Chord.rhythm`（123 `X`，导出 MusicXML 时 `model/toxml.ts` 写 `<unpitched>` + `<notehead>slash</notehead>`，
+  `fromxml.ts` 读回 `Chord.rhythm`）；文本谱按方言写 `rhythmToken`（诗歌本 `X`、番茄 `9`）。
 
 ## 混合拍与曲中转拍号
 
@@ -851,6 +850,7 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 **MusicXML → 123 丢波音**（`abcfamily/emit.ts`）：MusicXML 读进来的波音、颤音挂在 `notations.ornaments`
 （`inverted-mordent`），123 写出端原先只写 `articulations`，识别核对那条路上 1677《祷告》的两个波音就这么没了。
 按 `xmlproject.ts::ORNAMENT_TAG` 反查写回简谱来源的同名记号（`!sby!` / `!xby!` / `!cy!`），对不上的写原名。
+（识别现在直出模型、不再经 MusicXML，但波音同样记在 `notations.ornaments`，走的还是这一条。）
 
 **分子分母从「没归类的小块」里补位**：拍号数字比音符小一号，高度正卡在 `classify` 数字块门槛
 （0.5 字号）上下。1717《不怕劳累 不怕饥寒》页眉 `3/4 4/4 5/4` 三个分母 18/17/18px、numH 36、门是 18——
@@ -868,14 +868,14 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 
 | 路径 | 页眉 | 曲中转拍号 |
 |---|---|---|
-| MusicXML | 首小节 `<time>` 取第一个拍号 | 该小节 `<attributes><time>`，符杠分组随之改用新拍号 |
-| `.jpwabc` | `KeyAndMeters` 只写得下一个 | 曲中写 `3/4`（`TimeSig`，经 MusicXML 导入 → `Measure.timeChange`） |
+| 模型 / 123 | `Song.time` 取第一个拍号，其余记 `Song.extraTimes`（123 写不出） | 该小节 `Measure.attrs.time`（123 行内 `[M:3/4]`） |
+| `.jpwabc` | `KeyAndMeters` 只写得下一个 | 曲中写 `3/4`（`TimeSig`） |
 | 文本谱 | 番茄 `P: 4/4 3/4 5/4`、诗歌本 `1=D4/4 3/4 5/4 混合拍`（两家头部都写得下多个） | 小节线后的引号备注 `"p:3/4"`（`parse.ts::interpretQuoted` → `BarlineElement.temporaryMeter`） |
 
 文本谱那一路的临时拍号由**该小节的左侧小节线**带出来；行首那一小节没有左侧小节线可挂
 （换行处图上本就没线），只好丢——挂到下一根线上会整整错开一小节，凭空补一根线又会多出一个空小节。
 
-## 输出格式：jpwabc / 番茄简谱 / 诗歌本文本谱
+## 输出格式：123 / 番茄简谱 / 诗歌本文本谱
 
 识别产物 `RecognizedScore`（`types.ts`）是**格式无关**的那一份，留在 `App._recogScore` 里；
 工具栏「核对」组的下拉换格式时只重走 emitter，**不重跑识别**（实测识别 ~3s，换格式 ~0.1s）。
@@ -883,12 +883,18 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
 
 | 格式 | 路径 |
 |---|---|
-| `jpwabc`（默认） | `musicxml.ts::toMusicXml` → `importOmrMusicXml`（转 123 核对，点选映射由 123 源区间生成） |
+| `123`（默认） | `todoc.ts::recognizedToDoc` → `emit123` → `App.importOmrDoc`（点选映射由 `omrmeta.ts` 按 123 源区间生成） |
 | `tomato` / `shige` | `topu.ts::toPuText` **直出文本谱原文**，编辑器切到 `docFormat="pu"` |
 
-**为什么文本谱直出、不过 MusicXML**：文本谱「一行 `Q:` 就是谱面一行」，而 `rows` 正是源图的行结构，
-天然对齐；逐音符的多段歌词 `JpNum.lyrics[verse]` 原样在手，不必经 MusicXML 读入端的段落/副歌再拆分；
-小节线按 `row.barlineXs` 落位，跨行开口小节也不用像 MusicXML 那路先合并再补。
+**为什么文本谱直出、不过模型**：文本谱「一行 `Q:` 就是谱面一行」，而 `rows` 正是源图的行结构，
+天然对齐；逐音符的多段歌词 `JpNum.lyrics[verse]` 原样在手；小节线按 `row.barlineXs` 落位，
+跨行开口小节也不用像模型那路先合并成一个小节。
+
+**为什么 123 那路不再经 MusicXML 转手**：识别结果本来就是简谱形状（度数、减时线、增时线），
+以前 `omr/musicxml.ts` 先拼成 MusicXML、读回后再由 `jianpuproject.ts` 猜回简谱形状——绕一圈丢东西：
+附点加增时线（2.5 拍）`<type>` 表达不了、丢半拍；速度、副标题、段落词、歌词段号读回 123 时全丢；
+还多出一份与 `model/toxml.ts` 并行的 MusicXML 写出端。改为直出后 25 首回归各档指标逐曲不变，
+123 文本只多出上述几类信息。简谱识别从此不产出 MusicXML（要的话就是普通 123 文档的导出）。
 
 **meta 的序号约定**：两个 emitter 都产出 `JpwMeta`，`noteRanges`/`lyricRanges` 一律按
 **`flatten(rows[].nums)` 的下标**编号。`app.ts::_rangeOfHit` 因此不必分格式——「原图对照」
@@ -909,7 +915,7 @@ det 漏检时退回**连通域几何法**(大/小字分层 + `splitBlocks` 按 x
   同理，要紧跟小节线写，挂到音符上会画在音符头顶而不是小节线上。
 - 圆滑线与连音线在文本谱里同写作 `(…)`。配对**用队列（先开先闭）不是栈**——`parse.ts` 的
   `)` 就是 `curves.shift()`，照它配才能「写出去什么样、读回来就什么样」；配不上对的整条丢弃，
-  端点落在休止符上的（识别错误）两端一起丢，与 `musicxml.ts::pairArcs` 同一取向。
+  端点落在休止符上的（识别错误）两端一起丢，与 `todoc.ts::pairArcs` 同一取向。
 - 右侧小节线不当场写、攒到下一小节的左侧再落笔：`:|` 紧接 `|:` 要合成一条 `:|:`，
   分开写会连着画出两道线。
 - 歌词行末尾落单的 `}` 会被读成「联合括号」（`parse.ts` 只看行尾字符，不管它是不是并字括号

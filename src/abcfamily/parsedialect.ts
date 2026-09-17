@@ -49,7 +49,7 @@ export interface ParseDialect {
 
 // ───────────────────────── 123 ─────────────────────────
 
-function duration123(beams: number, dots: number, sustains: number): Chord["duration"] {
+export function duration123(beams: number, dots: number, sustains: number): Chord["duration"] {
   const base = DIVISIONS >> Math.min(beams, 6);
   let total = base;
   // 附点：每个附点加上前一档的一半

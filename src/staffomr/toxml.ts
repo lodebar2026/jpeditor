@@ -269,9 +269,7 @@ const ARTICULATION: Record<string, string> = {
   caesura: "<caesura/>",
 };
 
-/** 单个 `<lyric>`。
- *  不复用 `xmlutil.ts::lyricElementXml`：那份把 `<syllabic>` 写死成 `single`（简谱逐字挂词，
- *  没有词内断音节这回事），五线谱的拉丁歌词要区分 `begin`/`end`。 */
+/** 单个 `<lyric>`。五线谱的拉丁歌词要区分 `begin`/`single`（简谱逐字挂词没有词内断音节这回事）。 */
 function lyricXml(l: { verse: number; text: string; hyphen: boolean }): string {
   const syllabic = l.hyphen ? "begin" : "single";
   return `<lyric number="${l.verse}"><syllabic>${syllabic}</syllabic><text>${escapeXml(l.text)}</text></lyric>`;

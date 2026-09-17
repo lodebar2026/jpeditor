@@ -1,4 +1,4 @@
-// 简谱数字 → 五线谱音高拼写（step/alter/octave）。原本内联在 src/omr/musicxml.ts，
+// 简谱数字 → 五线谱音高拼写（step/alter/octave）。原本内联在简谱识别的 MusicXML 直出里，
 // 因 MusicXML 导出（model/xmlproject.ts，原先还有 model/fromscore.ts）也要用同一套换算而提出来共享——
 // 两份实现一旦漂移，导出→导入的往返数字就会错，故只留这一处。
 //

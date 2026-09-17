@@ -36,7 +36,6 @@ import { showConfirmDialog } from "./dialogs";
 import { buildMusicXml, finishMusicXmlText } from "./export";
 import { scoreDocToMusicXml } from "../model/toxml";
 import { emit123 } from "../j123/emit";
-import { metaFrom123 } from "./omrmeta";
 import { emitAbc } from "../abcfamily/emitabc.entry";
 import { jpwToScoreDoc } from "../model/fromjpw";
 import { MixedPainter } from "../mixed/painter";
@@ -109,7 +108,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private _playCache: { doc: ScoreDoc; forExpanded: boolean; src: PlaySource | null } | null = null;
 
   /** 五线谱/混排档读的模型（MusicXML 形状）；null = 这份文档没有五线谱视图。
-   *  底本原文在 `mixedDoc.source`：识别核对没改过就原样存回（`export.ts::buildMusicXml`） */
+   *  底本原文在 `mixedDoc.source`：混排档导出 MusicXML 原样给出（`export.ts::buildMusicXml`） */
   mixedDoc: ScoreDoc | null = null;
   private _mixedPainter: MixedPainter | null = null;
   /** 排版模式切换（展开 / 原样 / 五线谱 / 混排）的四个按钮，见 `ViewMode`。 */
@@ -119,10 +118,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private _mixedAvailable = false;
   /** 简谱 OMR 的那一摊（识别、叠加核对、点选定位、输出格式）——见 editor/omrctl.ts。 */
   readonly omr: OmrController = new OmrController(this);
-  /** 最近一次 xml 导入的序列化映射，供 OmrController 接管为它的点选映射。 */
-  private _lastImportMeta: JpwMeta | null = null;
-  /** 识别核对：从识别底本转出的 123 原文。文本仍与它逐字相同 = 没改过，存回时给底本 */
-  private _omrBaseText: string | null = null;
   // 乐句排版：缓存导入时的「原始排版」文本以便无损切回；_phraseOn 记当前是否乐句排版。
   private _originalLayoutBtnEl: HTMLButtonElement | null = null;
   private _phraseBtnEl: HTMLButtonElement | null = null;
@@ -440,11 +435,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this.view.state.doc.toString();
   }
 
-  /** 当前文本是否与「识别底本转出的 123」逐字相同。
-   *  true = 用户没改过谱面，MusicXML 导出可以直接给底本原文（零损耗）。 */
-  get importUnchanged(): boolean {
-    return this._omrBaseText !== null && this.mixedDoc !== null && this.getText() === this._omrBaseText;
-  }
 
   setText(text: string): void {
     this.view.dispatch({
@@ -1094,7 +1084,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   importBytes(bytes: Uint8Array, name: string): void {
     // 任何新导入都使上一次的识别叠加产物失效（识别结果由 OmrController 在本调用之后重设）。
     this.omr.clear();
-    this._omrBaseText = null;
     // ABC 记谱：**原文就是源格式**，原生解析直接进编辑器（`reloadAbc`），不再转 MusicXML。
     // 原生解析读不动时由 `reloadAbc` 自己回落 abc2xml，这里不预先转。
     if (/\.abc$/i.test(name)) {
@@ -1159,28 +1148,21 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   }
 
   /**
-   * 简谱识别产物落地（`OmrHost.importOmrMusicXml`）：MusicXML 底本 + 可编辑的 123 转换文本。
-   *
-   * 与用户打开 `.musicxml` 不同：识别核对要在代码区里改简谱文本、点选定位靠转换文本的源区间
-   * （`lastImportMeta`，见 `omrmeta.ts`）。底本留在 `mixedDoc`（原文在 `source`）：没改过就原样存回，
-   * 改过就由 123 文本整份重写（`export.ts::buildMusicXml`）。
+   * 简谱识别产物落地（`OmrHost.importOmrDoc`）：识别直出的模型（`omr/todoc.ts`）写成 123 核对文本，
+   * 之后就是一份普通的 123 文档（导出 MusicXML 也由这份文本整份写出）。
    */
-  importOmrMusicXml(xml: string): void {
+  importOmrDoc(doc: ScoreDoc, text: string): void {
     this.omr.clear();
-    const doc = formatOf("musicxml").toScoreDoc!(xml);
-    const text = emit123(doc);
     const losses = planSave(doc, "123");
-    this._setDocFormat("123");
-    this._setMixedXml(xml);
-    this._mixedPainter = null; // reset so next showStaffPreview re-loads
-    this._setMixedAvailable(true);
+    this.mixedDoc = null;
+    this._mixedPainter = null;
+    this._setMixedAvailable(false);
     this._setMode("jp");
-    this._syncViewModeButtons();
-    this._lastImportMeta = metaFrom123(text); // 供 OmrController 接管为它的点选映射
-    this._omrBaseText = text; // 供「未改动就存回底本」判断
+    this._setDocFormat("123");
+    this.filePath = null;
     this.setText(text);
     if (losses.length) {
-      this.setStatus(`识别结果已转成 123 核对文本；有 ${losses.length} 样 123 表达不了，改动后导出 MusicXML 会丢`);
+      this.setStatus(`识别结果已转成 123 核对文本；有 ${losses.length} 样 123 表达不了，已略去`);
     }
   }
 
@@ -1496,6 +1478,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     for (const [mode, btn] of this._viewBtns) {
       const needsXml = mode === "staff" || mode === "mixed";
       btn.disabled = needsXml && !this._mixedAvailable;
+      // 简谱识别出来的谱没有五线谱视图可言，这两档直接不露（不只是置灰）
+      btn.hidden = needsXml && this.omr.hasResult;
       const on = mode === active;
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-pressed", String(on));
@@ -1503,16 +1487,16 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   }
 
   // ---------------- OmrHost：识别控制器要的那几样能力 ----------------
+  /** 识别产物有无变了，重算排版档按钮的显隐。 */
+  syncViewModes(): void {
+    this._syncViewModeButtons();
+  }
+
   /** 混排排版器（导出 PDF/PNG 要）。没进过混排预览就是 null。
    *  以前导出侧靠 `app["_mixedPainter"]` 索引签名绕过 private——字段一改名，编译期静默
    *  通过、运行期直接 return，「导出 PDF 点了没反应」且无报错。 */
   get mixedPainter(): MixedPainter | null {
     return this._mixedPainter;
-  }
-
-  /** 最近一次 MusicXML 导入产出的代码区间映射。 */
-  get lastImportMeta(): JpwMeta | null {
-    return this._lastImportMeta;
   }
 
   /** 清空谱面区与翻页/选中状态。 */
@@ -1789,7 +1773,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this.adapter.encode(this.getText());
   }
 
-  /** 盘上那份文件是不是 MusicXML（识别核对另存到 XML 路径时，编辑器里是简谱转换文本、盘上是 XML 底本）。 */
+  /** 盘上那份文件是不是 MusicXML（文本格式另存到 XML 路径时，编辑器里是简谱文本、盘上是 XML）。 */
   private get onDiskIsXml(): boolean {
     return this.filePath !== null && /\.(xml|musicxml)$/i.test(this.filePath);
   }
@@ -1797,7 +1781,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private async writeTo(path: string): Promise<void> {
     const { writeFile } = await import("@tauri-apps/plugin-fs");
     // `.musicxml` 那一档：文档里就是 XML（未改动是原文，改过的已由 `editScoreDoc` 整份重写）。
-    // 其余格式存到 XML 路径上（识别核对的 123 转换文本）：未改动给底本，改过由唯一写出端整份重写。
+    // 其余格式存到 XML 路径上：由唯一写出端整份重写。
     const bytes = this.docFormat === "musicxml"
       ? this.encodeForSave()
       : this.onDiskIsXml

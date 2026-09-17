@@ -227,7 +227,7 @@ async function build(target) {
   await writeFile(join(dir, "package.json"), JSON.stringify({
     name: NAME,
     version: VER,
-    description: "简谱图像识别命令行（图片 → 诗歌本/番茄文本谱 或 MusicXML），自包含离线运行",
+    description: "简谱图像识别命令行（图片 → 诗歌本/番茄文本谱 或 123 简谱），自包含离线运行",
     type: "module",
     bin: { [NAME]: "./omr-cli.mjs" },
     exports: { ".": "./omr.js" },
@@ -311,7 +311,7 @@ Win10/11 多半已装过，报「找不到 VCRUNTIME140.dll」时到微软官网
 ./omr-cli.mjs 图片.jpg --profile             # 附带分段耗时
 \`\`\``}
 
-格式：\`shige\`（诗歌本文本谱，默认）、\`tomato\`（番茄简谱）、\`jpwabc\`（MusicXML）。
+格式：\`shige\`（诗歌本文本谱，默认）、\`tomato\`（番茄简谱）、\`123\`（123 简谱）。
 输入只吃位图（jpg/png/webp/bmp/tiff），**不吃 PDF**。
 
 当库用：

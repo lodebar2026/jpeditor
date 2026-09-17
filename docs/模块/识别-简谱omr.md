@@ -4,21 +4,21 @@
 
 ## 职责
 
-简谱图片/PDF → MusicXML / 文本谱原文 / `.jpwabc`。**全本地、可离线**（连通域几何启发 + PaddleOCR）。
+简谱图片/PDF → 123（经 `ScoreDoc`）/ 文本谱原文。**不产出 MusicXML**（要的话就是 123 文档的导出；只有五线谱识别出 MusicXML）。**全本地、可离线**（连通域几何启发 + PaddleOCR）。
 另含矢量（文字转曲）PDF 的对象层抽取。
 
 ## 入口
 
 | 函数/文件 | 作用 |
 |---|---|
-| `recognizeMusicppDetailed` | `src/omr/recognize.ts:38` 顶层编排 |
+| `recognizeMusicppDetailed` | `src/omr/recognize.ts:16` 顶层编排 |
 | `src/omr/jianpu.ts`（1240 行） | 几何启发式主管线 |
 | `src/omr/lyrics.ts`（962 行） | 歌词识别与逐音节↔音符对齐 |
 | `src/omr/header.ts` | 页眉标题/词曲/调号（PP-OCRv4 DBNet 文本检测整片识别） |
 | `src/omr/paddleocr.ts` | PP-OCR 推理 |
 | `src/omr/overlay.ts` | 识别核对叠加层 |
 | `src/omr/emit.ts` | 输出格式注册表 |
-| `src/omr/topu.ts` / `musicxml.ts` | → 文本谱原文 / → MusicXML |
+| `src/omr/todoc.ts` / `topu.ts` | → 简谱形状的 `ScoreDoc`（123 由它 `emit123`）/ → 文本谱原文 |
 | `src/omr/vector.ts` / `inventory.ts` / `glyphdict.ts` | 矢量 PDF 对象层、归类、形状字典 |
 | `src/editor/omrctl.ts` | 编辑器侧控制器（识别 → 出文本 → 叠加核对 → 点选定位） |
 
@@ -26,7 +26,7 @@
 
 ```
 图片/PDF → 预处理/二值化 → 连通域 → 归类 → OCR（数字/歌词）→ RecognizedScore
-        → MusicXML / 文本谱原文 / .jpwabc（换格式只重走 emitter，绝不重跑识别）
+        → ScoreDoc → 123 / 文本谱原文（换格式只重走 emitter，绝不重跑识别）
 ```
 
 ## 关键判据

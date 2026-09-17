@@ -15,7 +15,7 @@
 // 挂在增时线上的歌词（文本谱 `-@`）与记号不写——MusicXML 里增时线不是独立的音符。
 
 import type {
-  Barline, Chord, Direction, Element, ElementId, Lyric, Mark, Measure, Notations, Part,
+  Barline, BeamVal, Chord, Direction, Element, ElementId, Lyric, Mark, Measure, Notations, Part,
   SourceOrnament, Song,
 } from "./doc";
 import { Fraction, lcm } from "../common/fraction";
@@ -524,9 +524,15 @@ function projectPart(
   tuplets: Map<ElementId, { actual: number; normal: number }>,
 ): void {
   let fifths = part.measures[0]?.attrs?.key?.fifths ?? songFifths;
-  // 文本谱/123 的 `beams` 是减时线层数的占位（全是 continue），不是符杠分组；一个 begin 都没有就不写
+  // 文本谱/123 的 `beams` 是减时线层数的占位（全是 continue），不是符杠分组；一个 begin 都没有就按拍自动分组（`autoBeams`）
   const realBeams = part.measures.some((m) => m.elements.some((el) => el.kind === "chord" && el.beams?.includes("begin")));
-  for (const m of part.measures) {
+  const quarter = SIMPLE_DIVISIONS * factor;
+  let time = part.measures[0]?.attrs?.time ?? { beats: 4, beatType: 4 };
+  for (const [mi, m] of part.measures.entries()) {
+    if (m.attrs?.time) time = m.attrs.time;
+    /** 各元素的减时线条数（投影前的占位），自动分组用 */
+    const levels = new Map<Element, number>();
+    for (const el of m.elements) levels.set(el, el.beams?.length ?? 0);
     if (m.attrs?.key) {
       if (m.attrs.key.fifths === 0 && m.attrs.key.spelling) {
         const f = MusicCommon.keyNameToFifth(m.attrs.key.spelling);
@@ -599,6 +605,78 @@ function projectPart(
       if (!m.barlines.length) delete m.barlines;
     }
     if (dirs.length) m.directions = [...(m.directions ?? []), ...dirs];
+    if (!realBeams) autoBeams(m, levels, quarter, time, mi === 0);
+  }
+}
+
+/**
+ * 按拍自动写符杠：简谱的减时线就是五线谱的符杠。不写的话读入端各按各的规则猜，跨拍、弱起处常与原谱不一致。
+ *
+ * - **按拍分组**：x/8 且拍数是 3 的倍数（3/8、6/8、9/8、12/8）三个八分一组，其余一拍一组（x/8 其余按四分一组）。
+ *   组里是「起点落在同一拍、带减时线、时值不超过一拍」的相邻元素；不带减时线的（四分音符、四分休止）打断分组。
+ * - **弱起小节**（首小节不满）按小节末尾对齐拍位，否则整小节的拍全错开。
+ * - **休止符不带 `<beam>`**：休止没有符干，挂不上符杠；但带减时线的休止照样留在组里，符杠从它上方跨过去
+ *   （`5_ 0_ 3_` 的下划线本就一路连过休止），只由两侧的实音承载 begin/end。组首组尾的休止自然落在符杠之外。
+ * - **逐层**：第 L 层只在第 L−1 层连上的音之间找连续段（中间有减时线少于 L 层的元素就断开），
+ *   ≥2 个实音 begin/continue/end；只剩一个的写 hook——在上一层那段里不是头一个就朝前勾（backward），否则朝后（forward）。
+ *   第一层只剩一个实音（其余都是休止）就整组不连，那个音按单音符尾写。
+ */
+function autoBeams(m: Measure, levels: ReadonlyMap<Element, number>, quarter: number, time: { beats: number; beatType: number }, first: boolean): void {
+  const beat = time.beatType >= 8 && time.beats % 3 === 0
+    ? (quarter * 4 / time.beatType) * 3
+    : Math.max(quarter * 4 / time.beatType, quarter);
+  const items: { el: Element; start: number; dur: number; level: number; solid: boolean }[] = [];
+  let pos = 0;
+  for (const el of m.elements) {
+    if (!timed(el)) continue;
+    const dur = el.duration?.divisions ?? 0;
+    const solid = el.kind === "chord" && !el.rest && el.printObject !== false;
+    items.push({ el, start: pos, dur, level: levels.get(el) ?? 0, solid });
+    pos += dur;
+  }
+  const full = time.beats * quarter * 4 / time.beatType;
+  const shift = first && pos > 0 && pos < full ? full - pos : 0;
+
+  const groups: (typeof items)[] = [];
+  let curBeat = -1;
+  for (const it of items) {
+    const b = Math.floor((it.start + shift) / beat + 1e-9);
+    if (it.level > 0 && it.dur <= beat) {
+      if (b !== curBeat) groups.push([]);
+      groups[groups.length - 1]!.push(it);
+      curBeat = b;
+    } else {
+      curBeat = -1;
+    }
+  }
+
+  const out = new Map<Element, BeamVal[]>();
+  for (const g of groups) {
+    const maxLevel = Math.max(...g.map((it) => it.level));
+    for (let level = 1; level <= maxLevel; level++) {
+      let i = 0;
+      while (i < g.length) {
+        if (g[i]!.level < level) { i++; continue; }
+        let j = i;
+        while (j + 1 < g.length && g[j + 1]!.level >= level) j++;
+        // 只有上一层连上了的实音才能往下一层连
+        const solid = g.slice(i, j + 1).filter((it) => it.solid && (level === 1 || out.get(it.el)?.length === level - 1));
+        const put = (it: (typeof items)[number], v: BeamVal) => out.set(it.el, [...(out.get(it.el) ?? []), v]);
+        if (solid.length >= 2) {
+          solid.forEach((it, k) => put(it, k === 0 ? "begin" : k === solid.length - 1 ? "end" : "continue"));
+        } else if (solid.length === 1 && level > 1) {
+          const it = solid[0]!;
+          const upper = out.get(it.el)![level - 2]!;
+          put(it, upper === "begin" || upper === "forward hook" ? "forward hook" : "backward hook");
+        }
+        i = j + 1;
+      }
+    }
+  }
+  for (const el of m.elements) {
+    const b = out.get(el);
+    if (b) el.beams = b;
+    else delete el.beams;
   }
 }
 

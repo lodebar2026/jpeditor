@@ -1,7 +1,7 @@
-// MusicXML **字符串生成**的公共件。识别结果的两份直出（omr/musicxml.ts、staffomr/toxml.ts）
+// MusicXML **字符串生成**的公共件。五线谱识别的直出（staffomr/toxml.ts）
 // 与唯一写出端的投影（model/xmlproject.ts 用 typeOfDuration）共用。
-// 抽到这里的都是「三处各写一份、且已经或即将漂移」的东西——尤其是 <barline> 的子元素顺序
-// （bar-style → ending → repeat，MusicXML DTD 强制），以前由三处各自记着，改一处漏两处。
+// 抽到这里的都是「几处各写一份、且已经或即将漂移」的东西——尤其是 <barline> 的子元素顺序
+// （bar-style → ending → repeat，MusicXML DTD 强制），以前由几处各自记着，改一处漏一处。
 // DOM 后处理那一路的工具在 ./xmldom.ts。
 import { Fraction } from "../common/fraction";
 
@@ -29,25 +29,6 @@ export function typeOfDuration(duration: Fraction): { type: string; dots: number
   }
   for (const [type, val] of BASES) if (q.compareTo(frac(val)) >= 0) return { type, dots: 0 };
   return { type: "64th", dots: 0 };
-}
-
-/** `<beam number="n">begin|continue|end</beam>`，按层号升序。 */
-export function beamXml(beams: Map<number, string> | undefined): string {
-  if (!beams) return "";
-  return [...beams.entries()].sort((a, b) => a[0] - b[0])
-    .map(([lv, v]) => `<beam number="${lv}">${v}</beam>`).join("");
-}
-
-/** 单个 `<lyric>`。number 可以是数字串，也可以是 "chorus"。 */
-export function lyricElementXml(number: string, text: string): string {
-  return `<lyric number="${escapeAttr(number)}"><syllabic>single</syllabic>` +
-    `<text>${escapeXml(text)}</text></lyric>`;
-}
-
-/** `<credit>`。type 省略则不写 `<credit-type>`。 */
-export function creditWordsXml(text: string, page = 1, type?: string): string {
-  const t = type ? `<credit-type>${escapeXml(type)}</credit-type>` : "";
-  return `<credit page="${page}">${t}<credit-words>${escapeXml(text)}</credit-words></credit>`;
 }
 
 export interface BarlineParts {

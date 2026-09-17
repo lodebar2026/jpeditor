@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// 简谱 OMR 命令行：图片 → 文本谱 / MusicXML，**不起浏览器**（onnxruntime-node 原生推理）。
+// 简谱 OMR 命令行：图片 → 文本谱 / 123，**不起浏览器**（onnxruntime-node 原生推理）。
 // 用法（仓库里从根跑；分发包里就在包目录跑）：
 //   node scripts/omr-cli.mjs 图片.jpg                      # 默认输出诗歌本文本谱到 stdout
-//   node scripts/omr-cli.mjs 图片.jpg -f 123 -o 曲.xml   # 换格式、写文件
+//   node scripts/omr-cli.mjs 图片.jpg -f 123 -o 曲.123   # 换格式、写文件
 //   node scripts/omr-cli.mjs 图片.jpg --profile             # 附带分段耗时与线程配置
 //   node scripts/omr-cli.mjs a.jpg b.jpg 谱子目录/ -o 出目录/ # 批量：一个进程跑完整批
 //   node scripts/omr-cli.mjs 图.jpg --thread-mode=always --threads=8   # 调线程策略
@@ -79,7 +79,7 @@ if (!imgs.length) { console.error("没有可识别的图片"); process.exit(1); 
 // -o 是目录（多图，或路径本身就是已存在的目录）时逐个写文件，否则当单个输出文件。
 const outIsDir = opts.out != null && (imgs.length > 1 || (existsSync(opts.out) && (await stat(opts.out)).isDirectory()));
 if (outIsDir) await mkdir(opts.out, { recursive: true });
-const EXT = { "123": ".musicxml" };
+const EXT = { "123": ".123" };
 
 let failed = 0;
 const t0all = performance.now();

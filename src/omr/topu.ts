@@ -1,6 +1,6 @@
 // 把 RecognizedScore 输出为**文本谱原文**（番茄简谱 / 诗歌本文本谱）。
 //
-// 与 musicxml.ts 的 toMusicXml() 平行，是识别结果的第二个 emitter。放在 src/omr/ 而不是
+// 与 todoc.ts 的 recognizedToDoc() 平行，是识别结果的第二个 emitter。放在 src/omr/ 而不是
 // src/pu/：src/pu/ 只保留「文本谱 → 模型」方向，输入既然是 OMR 的类型就归 OMR。
 //
 // **为什么直接从 RecognizedScore 出，而不是过一遍 Score**：
@@ -39,7 +39,7 @@ const JUMP_MARK: Record<string, string> = {
   "To Coda": "ty",
 };
 
-/** 一行按 barlineXs 切成小节；与 musicxml.ts::measuresOfRow 同一判据（音符左缘越过小节线即换节）。 */
+/** 一行按 barlineXs 切成小节；与 todoc.ts::measuresOfRow 同一判据（音符左缘越过小节线即换节）。 */
 function measuresOfRow(row: StaffRow): JpNum[][] {
   if (!row.barlineXs.length) return [row.nums];
   const measures: JpNum[][] = [];
@@ -57,7 +57,7 @@ function measuresOfRow(row: StaffRow): JpNum[][] {
   return measures.filter((m) => m.length);
 }
 
-/** 行是否以小节线收尾。否 → 末小节开口跨到下一行，行末不补小节线（与 MusicXML 那路同规矩）。 */
+/** 行是否以小节线收尾。否 → 末小节开口跨到下一行，行末不补小节线（与模型那路同规矩）。 */
 function rowEndsClosed(row: StaffRow): boolean {
   if (!row.nums.length || !row.barlineXs.length) return false;
   const lastRight = rright(row.nums[row.nums.length - 1]!.bbox);
@@ -123,7 +123,7 @@ class TextBuilder {
  *
  * 配对**用队列（先开先闭）而不是栈**：`parse.ts` 的 `)` 就是 `curves.shift()`，
  * 照它配才能保证「写出去什么样、读回来就什么样」。配不上对的整条丢弃——半条弧
- * 会被下一个 `)` 认领，画出一条横跨很远的假弧（同 musicxml.ts::pairArcs 的判断）。
+ * 会被下一个 `)` 认领，画出一条横跨很远的假弧（同 todoc.ts::pairArcs 的判断）。
  * 端点落在休止符上的弧是识别错误，两端一起丢。
  *
  * 返回按**全曲音符序**索引的开/闭计数。
@@ -357,7 +357,7 @@ export function toPuText(
         // 和弦 / 段落标记 → 音符上方的注释。写在音符**之后**：双引号注释挂的是前一个符号，
         // 写在前面会挂到上一个音符上（行首更是无处可挂，直接丢）。两条注释可以连着写，
         // 解析端 applyQuoted 分别落到 chord 与 annotation 两个字段上，不互相覆盖。
-        // 拍内偏移（chordOffset）在文本谱里表达不了，就近挂本音符（有损，MusicXML 那路保得住）。
+        // 拍内偏移（chordOffset）在文本谱里表达不了，就近挂本音符（有损；模型那路落在增时线整拍上的挂得住）。
         // 延长记号：文本谱写作音符后的 `&yc`（parse.ts 的 NOTE_COMMANDS）。
         if (n.fermata) tb.push("&yc");
         // 波音：文本谱写作音符后的 `&sby`（上波音，parse.ts 的 NOTE_COMMANDS）。
