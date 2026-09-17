@@ -1,7 +1,7 @@
 # jpeditor-web
 
 简谱（JP-Word / `.jpwabc`）与文本谱的排版与编辑器：Tauri 2 + TypeScript + SVG。
-排版、渲染、模型、编辑全在前端 TS；Rust 只做文件 I/O 与对话框。
+排版、渲染、模型、编辑全在前端 TS；Rust 只做原生加速（见架构决策 A3/A4）。
 
 文档分四层，**动某一块之前先翻对应那层**——那些阈值和判据多半是拿具体曲子换来的，别照直觉改：
 
@@ -13,19 +13,18 @@
 
 ## 命令
 
-```bash
-npm run dev            # Vite 开发服务器
-npm run build          # tsc 严格检查 + vite 打包
-npx tsc --noEmit       # 仅类型检查
-npm run tauri dev      # 桌面应用（需 Rust）
-```
-
+构建、类型检查、桌面调试命令见 [docs/架构.md](docs/架构.md)「技术栈与构建」。
 回归脚本、语料与基线不在本仓库（本地私有仓库，从本仓库根跑 `node ../dev/scripts/xxx.mjs`）；
 `scripts/` 只留发布链路：`release.sh`、`pack-omr.mjs`、`win-crt.mjs`、`vcredist.mjs`。
 
 ## 约定
 
 - 测试语料与 GT（`testdata/`）只留本地，不入库；`testdata/` 只放语料与 GT，回归基线、快照、报告等派生数据放本地私有仓库。
+  各模块页的「回归」一节同此。
 - 提交信息用简要中文，不要 `Co-Authored-By` 尾注。
-- 代码与工程上的约定（TS 严格模式、文件编码、Tauri 插件要同改哪几处）见
-  [docs/架构.md](docs/架构.md) 的「工程约定」与各模块页。
+- TS 严格模式 + `noUnusedLocals/Parameters`；生成代码用 `// @ts-nocheck` 豁免。
+- ANTLR 生成码在 `src/jpword/parser/`，**勿手改**；重生成步骤见 [源格式-jpwabc](docs/模块/源格式-jpwabc.md)。
+- **PUA 码位用 `String.fromCharCode(0x...)`**，切勿在源码里写字面 PUA 字符（Write 工具会损坏字节）。
+- 数 XML 元素的正则一律写 `<name[ >]`（否则 `<note>` 会命中 `<notehead>`）。
+- `window.__app` / `window.__book` 运行时暴露（`src/main.ts`）供无头校验用。
+- Tauri 新增插件要同改的四处见 [编辑器与播放](docs/模块/编辑器与播放.md)「Tauri 外壳」；其余见各模块页。
