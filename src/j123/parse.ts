@@ -50,9 +50,27 @@ import {
   type RawPlayPass,
 } from "./fields";
 import type { Token } from "../abcfamily/types";
+import { isLyricSlot, lyricSlots } from "../abcfamily/lyricslot";
 import {
   DIALECT_123, DIALECT_ABC, typeAndDots, type DefaultLen, type ParseDialect,
 } from "../abcfamily/parsedialect";
+
+/** 歌词块：一行曲（到 `$` 换行为止的连续音乐行），紧跟其后的 `w` 行从块的第一个对位格起对位
+ *  （规范 §5.1，同 ABC §5.1、文本谱 `Q:` 后跟 `C1:`）。
+ *  块在两处断开：跟过 `w` 行之后、或已经见过换行（`$`；ABC 是每个代码行）之后，下一条音乐行开新块。
+ *  只靠「跟过 `w`」不够：没有词的一行（前奏）会和下一行并成一块，下一行的词就从前奏第一个音挂起。 */
+interface LyricBlock {
+  /** 块首的对位格序号（声部内全局，`abcfamily/lyricslot.ts` 口径） */
+  start: number;
+  /** 块尾（不含）。下一块开始或整首收尾时才定 */
+  end?: number;
+  /** 块内各段写到哪一格：同一段分几条 `w1:` 写时接着往下挂 */
+  cursor: Map<string, number>;
+  /** 块内裸 `w:` 的个数：按出现顺序编段号 1、2、3… */
+  bare: number;
+  /** 块里已经换过行：下一条音乐行开新块 */
+  broken: boolean;
+}
 
 /** 一个声部在组装期的累积状态。 */
 interface PartBuild {
@@ -63,6 +81,23 @@ interface PartBuild {
   noteCount: number;
   /** 小节号计数 */
   measureNo: number;
+  /** 开着的弧/多连音、欠着的和弦记号、开着的房号。**按声部各存一份**：
+   *  交错写法里 `V:1` 的弧常跨行，中间隔着 `V:2` 的行，共用一份会配错对 */
+  openSlurs: OpenMark[];
+  openTuplets: OpenMark[];
+  pending: { chord?: string; annotations: string[]; decos: string[] };
+  openEnding: number[][];
+  /** 当前歌词块；`afterLyrics` 表示上一块已经跟过 `w` 行，下一条音乐行开新块 */
+  block?: LyricBlock;
+  afterLyrics: boolean;
+}
+
+/** 声部里到目前为止的对位格数（含还没收尾的小节）。 */
+function slotCount(pb: PartBuild): number {
+  let n = 0;
+  for (const m of pb.part.measures) for (const el of m.elements) if (isLyricSlot(el)) n++;
+  for (const el of pb.measure.elements) if (isLyricSlot(el)) n++;
+  return n;
 }
 
 interface Ctx {
@@ -110,7 +145,9 @@ function barlineFrom(value: string, times: number | undefined, source: SourceSpa
 /** 歌词行 → 音节数组。
  *
  *  - **CJK 连写逐字成音节**（规范 §5.2）；拉丁按空格与 `-` 分。
- *  - `_` 前一音节延长一音（melisma）、`*` 跳一个音符、`~` 与 `\-` 多字一音、`|` 推进到下一小节。
+ *  - `_` 前一音节延长一音（melisma）、跳音符（123 `/`、ABC `*`，见 `ParseDialect.lyricSkip`）、
+ *    `~` 与 `{}` 多字一音、`|` 推进到下一小节；`\-` `\/` 是字面字符。
+ *  - 123 里写了旧的 `*`：报 `lyric-old-skip`，仍当跳音符（不然整行静默错一格）。
  *  - 收尾标点并入前一字、不占音符格（`common/cjkpunct.ts` 的同一份规则）。
  *  - 段首 `<1.>` 是**印刷段号**，不占音符格（语料 55.6% 这么写）。 */
 export function parseLyricLine(
@@ -119,6 +156,8 @@ export function parseLyricLine(
   verseTo: number | undefined,
   source: SourceSpan,
   valueOffset?: number,
+  skip: "/" | "*" = "/",
+  warn?: (code: string, message: string) => void,
 ): { syllables: Lyric[]; label?: string } {
   const out: Lyric[] = [];
   let i = 0;
@@ -154,7 +193,13 @@ export function parseLyricLine(
     if (ch === " " || ch === "\t") { i++; continue; }
     tokStart = i;
     // 跳一个音符（该音符不配字）
-    if (ch === "*") { out.push(mk("")); i++; continue; }
+    if (ch === skip) { out.push(mk("")); i++; continue; }
+    if (ch === "*") {
+      warn?.("lyric-old-skip", "歌词跳音符已改用 `/`，`*` 暂按跳音符读");
+      out.push(mk(""));
+      i++;
+      continue;
+    }
     // 前一音节延长到这个音符
     if (ch === "_") {
       const prev = out[out.length - 1];
@@ -179,10 +224,10 @@ export function parseLyricLine(
       out.push(l);
       continue;
     }
-    // 转义的真连字符
-    if (ch === "\\" && body[i + 1] === "-") {
+    // 转义的真连字符 / 斜杠（拉丁词中间的在下面拉丁分支里吃掉，这里是紧跟在 CJK 或 `}` 后的）
+    if (ch === "\\" && (body[i + 1] === "-" || body[i + 1] === "/")) {
       const prev = out[out.length - 1];
-      if (prev) prev.text += "-";
+      if (prev) prev.text += body[i + 1]!;
       i += 2;
       continue;
     }
@@ -231,12 +276,18 @@ export function parseLyricLine(
       i++;
       continue;
     }
-    // 拉丁：到空白 / `-` / `_` / `*` 为止算一个音节；`-` 表示词内断音节
+    // 拉丁：到空白 / `-` / `_` / 跳音符为止算一个音节；`-` 表示词内断音节，`\-` `\/` 是词里的字面字符
     {
       let j = i;
-      while (j < body.length && !/[\s\-_*|{}]/.test(body[j]!) && !isCjk(body[j]!) && !isTrailingPunct(body[j]!)) j++;
+      let text = "";
+      while (j < body.length) {
+        const c = body[j]!;
+        if (c === "\\" && (body[j + 1] === "-" || body[j + 1] === "/")) { text += body[j + 1]!; j += 2; continue; }
+        if (/[\s\-_*|{}\\]/.test(c) || c === skip || isCjk(c) || isTrailingPunct(c)) break;
+        text += c;
+        j++;
+      }
       if (j === i) { i++; continue; }
-      let text = body.slice(i, j);
       i = j;
       let syllabic: Lyric["syllabic"] | undefined;
       if (body[i] === "-") {
@@ -278,11 +329,8 @@ function buildMusicLine(
   pb: PartBuild,
   tokens: readonly Token[],
   marks: Mark[],
-  openSlurs: OpenMark[],
-  openTuplets: OpenMark[],
-  pending: { chord?: string; annotations: string[]; decos: string[] },
-  openEnding: number[][],
 ): void {
+  const { openSlurs, openTuplets, pending, openEnding } = pb;
   // 用对象持有：`attach` 是闭包，直接给局部 let 赋值会让 TS 的控制流分析把它窄成 never
   const cur: {
     last: Element | null;
@@ -667,6 +715,7 @@ function buildMusicLine(
           ? pb.measure
           : pb.part.measures[pb.part.measures.length - 1] ?? pb.measure;
         ctx.breakAfter.set(target, t.value === "page" ? "page" : "system");
+        if (pb.block) pb.block.broken = true;
         break;
       }
 
@@ -741,31 +790,30 @@ function nthNoteId(part: Part, measureNo: number, n: number): ElementId | undefi
   return undefined;
 }
 
-/** 歌词挂到音符上。按**规范 §5.1**：锚点 `@m,n` 决定起点，缺省从声部第一个音符起。
+/** 歌词挂到对位格上：从 `start` 格起、到 `end` 格为止（歌词块的范围，规范 §5.1）。
  *
- *  返回**没挂上的音节数**。音节多于音符时多余的被忽略（ABC §5.1 的标准行为），
+ *  返回**超出块尾、有字的音节数**。多余的被忽略（ABC §5.1 的标准行为），
  *  但必须报出来——ABC 规范自己就写了「the program should warn the user」，
- *  而静默丢字在语料迁移时是灾难（迁移报表要靠这条诊断发现对位错）。 */
+ *  而静默丢字在语料迁移时是灾难（迁移报表要靠这条诊断发现对位错）。
+ *  超出的只是 `_` 与跳音符不算：行末 melisma 写 `主_`，那个 `_` 本就落在下一行的格上。 */
 function attachLyrics(
-  part: Part,
+  slots: readonly Element[],
   syllables: readonly Lyric[],
-  anchor: { measure: number; note: number } | undefined,
+  start: number,
+  end: number,
 ): number {
-  let mi = (anchor?.measure ?? 1) - 1;
-  let skip = (anchor?.note ?? 1) - 1;
-  let si = 0;
-  for (; mi < part.measures.length && si < syllables.length; mi++) {
-    const m = part.measures[mi]!;
-    for (const el of m.elements) {
-      if (el.kind !== "chord" || el.grace) continue;
-      if (skip > 0) { skip--; continue; }
-      if (si >= syllables.length) break;
-      const syl = syllables[si++]!;
-      if (syl.text === "" && !syl.extend) continue; // `*` 跳音符：该音符不配字
-      (el.lyrics ??= []).push(syl);
+  let over = 0;
+  for (let si = 0; si < syllables.length; si++) {
+    const syl = syllables[si]!;
+    const k = start + si;
+    if (k >= end || k >= slots.length) {
+      if (syl.text !== "") over++;
+      continue;
     }
+    if (syl.text === "" && !syl.extend) continue; // 跳音符：该音符不配字
+    (slots[k]!.lyrics ??= []).push(syl);
   }
-  return syllables.length - si;
+  return over;
 }
 
 export interface ParseOptions {
@@ -811,33 +859,33 @@ export function parseAbcFamily(
 
   const lines = text.split(/\r?\n/);
   let song: Song | null = null;
+  /** 当前声部 */
   let pb: PartBuild | null = null;
+  /** 本曲各声部，按首次出现的顺序。`V:n` 再次出现是**续写**该声部（ABC 语义，交错写法靠它） */
+  let builds = new Map<number, PartBuild>();
   let rawPlay: RawPlayPass[] = [];
   let marks: Mark[] = [];
-  const openSlurs: OpenMark[] = [];
-  const openTuplets: OpenMark[] = [];
-  const pending = { chord: undefined as string | undefined, annotations: [] as string[], decos: [] as string[] };
-  /** 开着的房号（`[1` 到结束线之间）。嵌套不合法，但用栈更稳 */
-  const openEnding: number[][] = [];
-  /** 待挂的歌词行：音乐体行读完后才挂 */
-  let pendingLyrics: { f: FieldLine; syl: Lyric[]; part?: Part }[] = [];
+  /** 待挂的歌词行：整首读完、小节都收尾后才挂 */
+  let pendingLyrics: PendingLyric[] = [];
 
   const finishSong = (): void => {
     if (!song) return;
-    if (pb) {
-      closeMeasure(ctx, pb);
-      if (pb.part.measures.length) song.parts.push(pb.part);
+    for (const b of builds.values()) {
+      closeMeasure(ctx, b);
+      if (b.block && b.block.end === undefined) b.block.end = slotCount(b);
+      if (b.part.measures.length) song.parts.push(b.part);
     }
-    for (const { f, syl, part } of pendingLyrics) {
+    const slotsOf = new Map<Part, Element[]>();
+    for (const { f, syl, part, block, start } of pendingLyrics) {
       // 歌词挂在它**紧跟的那个声部**上（四声部谱里词常挂在某一个声部下）
-      const target = part ?? song.parts[0];
-      if (!target) continue;
-      const left = attachLyrics(target, syl, f.anchor);
+      let slots = slotsOf.get(part);
+      if (!slots) slotsOf.set(part, (slots = lyricSlots(part).slots));
+      const left = attachLyrics(slots, syl, start, block.end ?? slots.length);
       if (left > 0) {
         report(
           ctx,
           "lyric-overflow",
-          `第 ${f.verseFrom ?? 1} 段歌词比音符多 ${left} 个音节，多出的被忽略`,
+          `第 ${f.verseFrom ?? 1} 段歌词比这几行的音符多 ${left} 个音节，多出的被忽略`,
           f.source,
         );
       }
@@ -855,6 +903,7 @@ export function parseAbcFamily(
     doc.songs.push(song);
     song = null;
     pb = null;
+    builds = new Map();
     marks = [];
     rawPlay = [];
   };
@@ -868,22 +917,21 @@ export function parseAbcFamily(
     measure: { number: "1", elements: [] },
     noteCount: 0,
     measureNo: 1,
+    openSlurs: [],
+    openTuplets: [],
+    pending: { annotations: [], decos: [] },
+    openEnding: [],
+    afterLyrics: false,
   });
-  const ensurePart = (voice = 1): PartBuild => {
-    pb ??= newPart(voice);
-    return pb;
+  /** `V:n` 切到声部 n：没有就新开，有就**续写**（不收尾它开着的小节）。四声部谱靠这个分开，否则会被拼成一串小节。 */
+  const startPart = (voice: number): PartBuild => {
+    ensureSong();
+    let b = builds.get(voice);
+    if (!b) builds.set(voice, (b = newPart(voice)));
+    pb = b;
+    return b;
   };
-  /** 当前声部。包一层是为了避开 TS 对闭包外 `let` 的控制流窄化（直接写 `pb?.part` 会被当成 never）。 */
-  const currentPart = (): Part | undefined => pb?.part;
-  /** `V:n` 开新声部：收掉当前声部、换一个。四声部谱靠这个分开，否则会被拼成一串小节。 */
-  const startPart = (voice: number): void => {
-    const s = ensureSong();
-    if (pb) {
-      closeMeasure(ctx, pb);
-      if (pb.part.measures.length) s.parts.push(pb.part);
-    }
-    pb = newPart(voice);
-  };
+  const ensurePart = (): PartBuild => pb ?? startPart(1);
 
   let offset = 0;
   for (let ln = 0; ln < lines.length; ln++) {
@@ -912,7 +960,11 @@ export function parseAbcFamily(
         s.work.number = f.value;
         continue;
       }
-      applyField(ctx, ensureSong(), f, startPart, currentPart(), pendingLyrics, (r) => { rawPlay = rawPlay.concat(r); });
+      if (f.name === "w") {
+        addLyricLine(ctx, ensurePart(), f, pendingLyrics);
+        continue;
+      }
+      applyField(ctx, ensureSong(), f, startPart, (r) => { rawPlay = rawPlay.concat(r); });
       continue;
     }
 
@@ -920,9 +972,16 @@ export function parseAbcFamily(
     const s = ensureSong();
     void s;
     const p = ensurePart();
+    // 上一块已经跟过歌词（或还没有块）：这一行开新歌词块
+    if (!p.block || p.afterLyrics || p.block.broken) {
+      const at = slotCount(p);
+      if (p.block) p.block.end = at;
+      p.block = { start: at, cursor: new Map(), bare: 0, broken: false };
+      p.afterLyrics = false;
+    }
     const lex = ctx.d.lex(raw, ln, lineOffset, 0);
     for (const e of lex.errors) report(ctx, "lex", e.message, e.source);
-    buildMusicLine(ctx, p, lex.tokens, marks, openSlurs, openTuplets, pending, openEnding);
+    buildMusicLine(ctx, p, lex.tokens, marks);
     // ABC §6.1：**代码里的换行就是谱面换行**（默认 `I:linebreak <EOL>`）。
     // 123 不吃这一条——它用显式的 `$`，简谱一行常写得很长，不该被源码折行绑死。
     // 语义同 `$`：「这一小节之后换行」，所以挂在刚收尾的那一个上。
@@ -931,10 +990,44 @@ export function parseAbcFamily(
         ? p.measure
         : p.part.measures[p.part.measures.length - 1];
       if (target && !ctx.breakAfter.has(target)) ctx.breakAfter.set(target, "system");
+      if (p.block) p.block.broken = true;
     }
   }
   finishSong();
   return doc;
+}
+
+/** 待挂的一条歌词行 */
+interface PendingLyric {
+  f: FieldLine;
+  syl: Lyric[];
+  part: Part;
+  block: LyricBlock;
+  /** 从第几个对位格起挂 */
+  start: number;
+}
+
+/** `w` 行：挂到当前声部**当前歌词块**上（规范 §5.1）。 */
+function addLyricLine(ctx: Ctx, pb: PartBuild, f: FieldLine, pendingLyrics: PendingLyric[]): void {
+  // 音乐行之前就写了词：给它一个从当前位置起的空块（多半全部超出、报 overflow）
+  const block = pb.block ??= { start: slotCount(pb), cursor: new Map(), bare: 0, broken: false };
+  pb.afterLyrics = true;
+  // 裸 `w:` 按块内顺序编段号（ABC §5.1：同一行音乐下的几条 `w:` 依次是各段）
+  const from = f.verseFrom ?? ++block.bare;
+  const { syllables, label } = parseLyricLine(
+    f.value, from, f.verseTo, f.source, f.valueOffset, ctx.d.lyricSkip,
+    (code, message) => report(ctx, code, message, f.source),
+  );
+  // 印刷段号不占音符格，挂在该段**第一个非空**音节上——空音节（跳音符）不会被挂到元素上
+  // （`attachLyrics` 会跳过），label 跟着它一起丢
+  if (label !== undefined) {
+    const first = syllables.find((x) => x.text !== "");
+    if (first) first.verseLabel = label;
+  }
+  const key = `${from}-${f.verseTo ?? from}`;
+  const start = block.cursor.get(key) ?? block.start;
+  block.cursor.set(key, start + syllables.length);
+  pendingLyrics.push({ f: f.verseFrom === undefined ? { ...f, verseFrom: from } : f, syl: syllables, part: pb.part, block, start });
 }
 
 function applyField(
@@ -942,8 +1035,6 @@ function applyField(
   song: Song,
   f: FieldLine,
   startPart: (voice: number) => void,
-  curPart: Part | undefined,
-  pendingLyrics: { f: FieldLine; syl: Lyric[]; part?: Part }[],
   addPlay: (r: RawPlayPass[]) => void,
 ): void {
   switch (f.name) {
@@ -989,17 +1080,6 @@ function applyField(
     case "V":
       startPart(f.voice ?? 1);
       break;
-    case "w": {
-      const { syllables, label } = parseLyricLine(f.value, f.verseFrom ?? 1, f.verseTo, f.source, f.valueOffset);
-      // 印刷段号不占音符格，挂在该段**第一个非空**音节上——空音节（`*`）不会被挂到元素上
-      // （`attachLyrics` 会跳过），label 跟着它一起丢
-      if (label !== undefined) {
-        const first = syllables.find((x) => x.text !== "");
-        if (first) first.verseLabel = label;
-      }
-      pendingLyrics.push({ f, syl: syllables, ...(curPart ? { part: curPart } : {}) });
-      break;
-    }
     case "W":
       (song.remarks ??= []).push(f.value);
       break;

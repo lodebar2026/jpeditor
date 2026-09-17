@@ -8,7 +8,7 @@
 //   - 字段用 ASCII 规范形（中文别名只在读入端认，不往外写）
 //   - 小节之间一个空格、小节线两侧各一个空格
 //   - 符杠分组内的音符**连写**（ABC §4.7 的空白规则），组间留一个空格；123 不分组、一律空格隔开
-//   - 歌词一行一段，CJK 连写不加空格
+//   - **一行曲一行词**：每个系统（`$` 换行处）写一行音乐，紧跟着这一行各段的 `w` 行（规范 §5.1），CJK 连写不加空格
 //
 // 幂等判据：`parse → emit → parse` 两次得到的 `ScoreDoc` 结构相等（id 除外，那是解析期分配的）。
 
@@ -25,6 +25,7 @@ import type {
 } from "../model/doc";
 import { isLyricCjk, isLyricOpenQuote, isLyricTrailingPunct } from "../common/cjkpunct";
 import { breakAfter } from "../model/helpers";
+import { lyricSlots } from "./lyricslot";
 import { harmonyText } from "../model/jianpu";
 import { ORNAMENT_TAG } from "../model/xmlproject";
 
@@ -54,25 +55,15 @@ function barlineText(b: Barline): string {
   }
 }
 
-/** 歌词行。CJK 连写不加空格；收尾标点贴回前一字。
+/** 一个系统（第 `from`–`to` 小节）的歌词行。CJK 连写不加空格；收尾标点贴回前一字。
  *
- *  **必须逐个音符走、空位补 `*`**：歌词是按音符位置对位的（规范 §5），
+ *  **必须逐个对位格走、空位补跳音符**：歌词是按音符位置对位的（规范 §5），
  *  若只把有词的音节顺序拼起来，中间空一个音符就会让后面所有字前移一格、末尾溢出丢字。
- *  `*` 是 ABC §5.1 的「跳过一个音符」。 */
-function lyricLines(part: Part, sep: string): string[] {
-  // 可挂歌词的位置：按元素顺序（倚音不算，它不占对位格）
-  const slots: Element[] = [];
-  for (const mea of part.measures) {
-    for (const el of mea.elements) {
-      if (el.kind === "chord" && el.grace) continue;
-      // 承接前音的延长（文本谱小节线后的 `-`）123 不表达，整个跳过（见 `doc.ts::Chord.continued`）
-      if (el.kind === "chord" && el.continued) continue;
-      // `y` 无时值、不占对位格（规范 §8.1 它只为挂和弦）；`x` 占（它是 Chord）
-      if (el.kind === "space" && el.spacer === "y") continue;
-      slots.push(el);
-    }
-  }
-  // 有哪些段
+ *  读入端从块首格起挂，所以**行首**的空位要写、行尾的不必写。
+ *  对位格的判据与读入端同一份（`lyricslot.ts`）。 */
+function lyricLines(part: Part, sep: string, skip: string, from: number, to: number): string[] {
+  const { slots } = lyricSlots(part, from, to);
+  // 这一行有哪些段
   const verses = new Map<string, { from: number; to?: number }>();
   for (const el of slots) {
     for (const l of el.lyrics ?? []) {
@@ -113,7 +104,7 @@ function lyricLines(part: Part, sep: string): string[] {
           continue;
         }
         // 空位：先攒着，后面真有字了再落下去
-        pendingSkips += (pendingSkips === "" ? "" : sep) + (hit?.extend ? "_" : "*");
+        pendingSkips += (pendingSkips === "" ? "" : sep) + (hit?.extend ? "_" : skip);
         continue;
       }
       // 词内分隔用 `-`，词间用方言的分隔符。
@@ -130,11 +121,14 @@ function lyricLines(part: Part, sep: string): string[] {
       const inWordNext = hit.syllabic === "begin" || hit.syllabic === "middle";
       const needBrace = [...hit.text].length > 1 && /[\u3400-\u9fff]/u.test(hit.text)
         && (inWordNext || !isOneCjkWithPunct(hit.text));
+      // 不包 `{}` 的拉丁词里的字面 `-` 与跳音符要转义，否则读回被拆开（`and/or`）
+      const bare = skip === "/" ? hit.text.replace(/[/-]/g, (c) => `\\${c}`) : hit.text;
       body += (hit.leadingPunctuation ?? "") +
-        (needBrace ? `{${hit.text}}` : hit.text) +
+        (needBrace ? `{${hit.text}}` : bare) +
         (hit.trailingPunctuation ?? "");
       prevSyllabic = hit.syllabic;
-      prevLatin = !hit.trailingPunctuation && isLatinEnd(hit.text);
+      // 以转义字符收尾（`How\-`）同样会被下一个拉丁词粘上，也要空格
+      prevLatin = !hit.trailingPunctuation && (isLatinEnd(hit.text) || (!needBrace && /[/-]$/.test(bare) && bare !== hit.text));
       if (hit.extend) {
         body += sep + "_";
         extendConsumes = true;
@@ -143,6 +137,8 @@ function lyricLines(part: Part, sep: string): string[] {
       }
     }
     if (body === "") continue;
+    // 词内分音节跨行（`mid-` 在行末）：`-` 照写，不然读回丢了 syllabic
+    if (prevSyllabic === "begin" || prevSyllabic === "middle") body += "-";
     out.push(`${name}:${label !== undefined ? `<${label}>` : ""}${body}`);
   }
   return out;
@@ -177,6 +173,21 @@ function pushLines(L: string[], name: string, value: string): void {
     const t = line.trim();
     if (t) L.push(`${name}:${t}`);
   }
+}
+
+/** 按声部的换行切出系统（小节下标闭区间）。最后一段开到无穷，别的声部小节多出来的也归它。 */
+function systemRanges(part: Part | undefined): [number, number][] {
+  const out: [number, number][] = [];
+  if (!part) return out;
+  let from = 0;
+  for (let i = 0; i < part.measures.length - 1; i++) {
+    if (breakAfter(part, i)) {
+      out.push([from, i]);
+      from = i + 1;
+    }
+  }
+  out.push([from, Number.MAX_SAFE_INTEGER]);
+  return out;
 }
 
 function playOrderText(song: Song): string {
@@ -285,6 +296,9 @@ export abstract class AbcFamilyEmitter {
    *  否则读回来会粘成一个音节、把后面所有字顶错一格。 */
   protected readonly lyricSeparator: string = "";
 
+  /** 歌词里的跳音符。123 是 `/`，ABC 是 `*`（与读入端 `ParseDialect.lyricSkip` 对称）。 */
+  protected readonly lyricSkip: string = "/";
+
   /** 符杠分组写不写成「连写」。ABC 写（§4.7 空白即分组）；123 不写——符杠按拍自动算，音符一律空格隔开。 */
   protected readonly spaceBeams: boolean = true;
 
@@ -349,9 +363,11 @@ export abstract class AbcFamilyEmitter {
     return `{${this.graceSlashText(ch)}${ch.notes.map((n) => this.noteText(n)).join("")}}`;
   }
 
-  /** 一个声部的音乐体。按小节拼，符杠分组内连写。 */
-  protected partBody(part: Part, song: Song): string {
-    const out: string[] = [];
+  /** 一个声部的音乐体，按 `ranges`（小节下标闭区间）切成几行。按小节拼，符杠分组内连写。 */
+  protected partSystems(part: Part, song: Song, ranges: readonly (readonly [number, number])[]): string[] {
+    let out: string[] = [];
+    const texts: string[] = [];
+    let ri = 0;
     // **只收两端都在本声部里的 Mark**：`song.marks` 是全曲共用的，而一条弧的两端
     // 必须落在同一个声部才画得出来。不校验就会输出**不配对的 `(`**——那不只是往返不幂等，
     // 是写出了非法的 123（解析回来会报「圆滑线里没有音符」）。
@@ -382,7 +398,13 @@ export abstract class AbcFamilyEmitter {
     let key = song.key ? this.keyValue(song.key) : "";
     const timeOf = (t: { beats: number; beatType: number } | undefined): string => (t ? `${t.beats}/${t.beatType}` : "");
     let time = timeOf(song.time);
+    /** 收一行：换行标记若是（或带着）真换行，join 出来的两侧空格要收掉；末尾的换行也收掉，否则歌词行前多一个空行 */
+    const flush = (): void => {
+      texts.push(out.filter((x) => x !== "").join(" ").replace(/ ?\n ?/g, "\n").replace(/\n+$/, ""));
+      out = [];
+    };
     for (let i = 0; i < part.measures.length; i++) {
+      while (ri < ranges.length - 1 && i > ranges[ri]![1]) { flush(); ri++; }
       const mea = part.measures[i]!;
       // 左线可能有**多条**（`.jpwabc` 允许 `|:|` 连写），按顺序全部输出
       const lefts = (mea.barlines ?? []).filter((b) => b.location === "left");
@@ -407,8 +429,9 @@ export abstract class AbcFamilyEmitter {
       const brk = breakAfter(part, i);
       if (brk && (!last || this.trailingBreak)) out.push(this.breakText(brk === "page"));
     }
-    // 换行标记若是（或带着）真换行，join 出来的两侧空格要收掉；末尾的换行也收掉，否则歌词行前多一个空行
-    return out.filter((s) => s !== "").join(" ").replace(/ ?\n ?/g, "\n").replace(/\n+$/, "");
+    flush();
+    while (texts.length < ranges.length) texts.push("");
+    return texts;
   }
 
 
@@ -524,11 +547,19 @@ export abstract class AbcFamilyEmitter {
     }
     for (const t of texts.sort((a, b) => a.system - b.system)) if (t.text) pushLines(L, "N", t.text);
 
-    for (let i = 0; i < song.parts.length; i++) {
-      const part = song.parts[i]!;
-      if (song.parts.length > 1) L.push(`V:${i + 1}`);
-      L.push(this.partBody(part, song));
-      for (const line of lyricLines(part, this.lyricSeparator)) L.push(line);
+    // **一行曲一行词**：按第一个声部的换行切系统，每个系统依次写各声部的音乐行与它的 `w` 行。
+    // 读入端把「上一批 `w` 行之后的音乐行」当一个歌词块、`w` 从块首对位（规范 §5.1），与这里一一对应。
+    const ranges = systemRanges(song.parts[0]);
+    const bodies = song.parts.map((part) => this.partSystems(part, song, ranges));
+    for (let r = 0; r < ranges.length; r++) {
+      for (let i = 0; i < song.parts.length; i++) {
+        const text = bodies[i]![r]!;
+        if (text === "") continue;
+        if (song.parts.length > 1) L.push(`V:${i + 1}`);
+        L.push(text);
+        const [from, to] = ranges[r]!;
+        for (const line of lyricLines(song.parts[i]!, this.lyricSeparator, this.lyricSkip, from, to)) L.push(line);
+      }
     }
     return L.join("\n");
   }
