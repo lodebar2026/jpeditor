@@ -870,13 +870,18 @@ function parseShigeKeyLine(meta: Metadata, value: string, tonic = "1"): void {
   }
   if (tonic !== "1") meta.tonic = tonic;
   const rest = value.trim().slice(m ? m[0].length : 0);
+  let tail: string | null = null;
   for (const mm of rest.matchAll(/(\d+)\s*\/\s*(\d+)/g)) {
     meta.meters.push({
       numerator: Number(mm[1]),
       denominator: Number(mm[2]),
       parenthesized: false,
     });
+    tail = rest.slice((mm.index ?? 0) + mm[0].length);
   }
+  // 末个拍号后面的说明文字（「混合拍」）：短、不含数字，原样留着（→ `Song.timeNote`、123 的 `M:`）。
+  const note = tail?.trim();
+  if (note && !/\d/.test(note) && note.length <= 8) meta.timeNote = note;
 }
 
 function applyMetadata(ctx: Ctx, meta: Metadata, key: string, value: string, column: number): void {

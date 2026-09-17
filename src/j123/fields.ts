@@ -203,6 +203,34 @@ export function parseTime(value: string): { time?: Time; error?: string } {
   return { time: { beats: Number(m[1]), beatType: Number(m[2]) } };
 }
 
+/** 头部的 `M:`：并排几个拍号（混合拍，规范 §3）＋可跟一段说明文字（`M:3/4 4/4 混合拍`）。
+ *  辅助拍号可包在括号里（`M:4/4 (2/4 1/4)`，同文本谱 `P: 4/4 ( 2/4 1/4 )`）。
+ *  单个拍号与 `C`/`C|`/`none` 仍走 `parseTime`；曲中的行内 `[M:]` 只认单个，也走它。 */
+export function parseTimes(value: string): { times: Time[]; note?: string; error?: string } {
+  const v = value.trim();
+  const times: Time[] = [];
+  let inParen = false;
+  let rest = v;
+  for (;;) {
+    const m = /^\s*(\()?\s*(\d+)\s*\/\s*(\d+)\s*(\))?/.exec(rest);
+    if (!m) break;
+    if (m[1]) inParen = true;
+    times.push({ beats: Number(m[2]), beatType: Number(m[3]), ...(inParen ? { parenthesized: true } : {}) });
+    if (m[4]) inParen = false;
+    rest = rest.slice(m[0].length);
+  }
+  const note = rest.trim();
+  // 说明文字只收**短的中文**（"混合拍"，谱面上就这一路）。剩下的是别的东西（`C`、`3/4x`）
+  // 一律当没认出来、退回 parseTime 去报错，免得把看不懂的拍号默默咽下。
+  const noteOk = !note || /^[一-鿿]{1,8}$/.test(note);
+  if (!times.length || !noteOk || (times.length === 1 && !note)) {
+    // 一个都没凑出来（`C`、`none`、看不懂的）或只有一个拍号且没说明 → 老路，报错口径一并沿用
+    const one = parseTime(v);
+    return { times: one.time ? [one.time] : [], error: one.error };
+  }
+  return { times, note: note || undefined };
+}
+
 // ───────────────────────── Q: 速度 ─────────────────────────
 
 /** `Q:1/4=76` / `Q:76` / `Q:"欢快地"` / `Q:1/4=76 "欢快地"` */

@@ -44,6 +44,22 @@ export class Emitter123 extends AbcFamilyEmitter {
     return newPage ? "$$\n" : "$\n";
   }
 
+  /** 混合拍：页眉并排印着的几个拍号都写进 `M:`（`M:3/4 4/4 混合拍`，见规范 §3）。
+   *  辅助拍号写在括号里的（文本谱 `P: 4/4 ( 2/4 )`）照原样带括号写出。 */
+  protected override timeValue(song: Song): string | null {
+    if (!song.time) return null;
+    const parts: string[] = [];
+    let inParen = false;
+    for (const t of [song.time, ...(song.extraTimes ?? [])]) {
+      const paren = t.parenthesized === true;
+      if (!paren && inParen) parts[parts.length - 1] += ")";
+      parts.push((paren && !inParen ? "(" : "") + `${t.beats}/${t.beatType}`);
+      inParen = paren;
+    }
+    if (inParen) parts[parts.length - 1] += ")";
+    return parts.join(" ") + (song.timeNote ? ` ${song.timeNote}` : "");
+  }
+
   /** MusicXML 读进来的歌先投成简谱形状：123 的 `-` 是增时线、`_` 是减时线，照 MusicXML 的 type/beam 直写会写错时值 */
   override emitSong(song: Song, fallbackNumber?: number): string {
     return super.emitSong(projectForJianpu(song), fallbackNumber);

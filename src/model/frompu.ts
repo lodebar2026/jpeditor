@@ -595,6 +595,7 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
     if (mRest.length) {
       song.extraTimes = mRest.map((m) => ({ beats: m.numerator, beatType: m.denominator, parenthesized: m.parenthesized }));
     }
+    if (meta.timeNote !== undefined) song.timeNote = meta.timeNote;
     if (meta.tempos.length) song.tempos = [...meta.tempos];
     if (meta.remarks.length) song.remarks = [...meta.remarks];
     // **所有七项都要看**：只写了 `TR:` 或只写了 `BL:` 的谱（语料里很常见）也得建起 pageText

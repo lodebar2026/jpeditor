@@ -507,6 +507,7 @@ function toMetadata(song: Song): Metadata {
     if (!t) continue;
     meta.meters.push({ numerator: t.beats, denominator: t.beatType, parenthesized: t.parenthesized ?? false });
   }
+  if (song.timeNote !== undefined) meta.timeNote = song.timeNote;
   for (const t of song.tempos ?? []) meta.tempos.push(t);
   meta.remarks.push(...(song.remarks ?? []));
   const pt = song.pageText;

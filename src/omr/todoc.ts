@@ -333,10 +333,11 @@ export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
     marks,
   };
   if (title !== undefined) song.work.title = title;
-  // 页眉并排印着的其余拍号（混合拍）
+  // 页眉并排印着的其余拍号（混合拍）与拍号后面那段说明文字（「混合拍」）
   if (score.meters && score.meters.length > 1) {
     song.extraTimes = score.meters.slice(1).map((mt) => ({ beats: mt.beats, beatType: mt.beatType }));
   }
+  if (score.meterNote) song.timeNote = score.meterNote;
   // 著作者整行（作词：…/作曲：…）：按行首标签定类型，没有标签的记 composer
   const creators = (score.credits ?? [])
     .map((c) => c.replace(/\n/g, " ").trim())
