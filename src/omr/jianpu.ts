@@ -8,7 +8,7 @@
 //   2. 带下划线的连音（如 6_5_）会粘成一个宽连通域，初版 classify 因 w>numH 直接丢弃 →
 //      现按列投影把宽块切成多个数字格。
 import type { Binary, Component, JpNum, Rect, StaffRow, RecognizedScore } from "./types";
-import { rright, rbottom, rcx, rcy } from "./types";
+import { rright, rbottom, rcx, rcy, RHYTHM_DIGIT } from "./types";
 import { connectedComponents } from "./ccl";
 import type { OcrBackend } from "./ocr";
 import { recognizeLyrics } from "./lyrics";
@@ -30,6 +30,7 @@ interface Classified {
   barlines: Component[]; // 小节线（高瘦竖条）
   hlines: Component[];   // 独立横线（增时线 '-' / 分隔线）
   dots: Component[];     // 小点（八度点/附点）
+  clean: boolean;        // 干净谱面（isCleanPage）：几条专治翻拍件毛病的判据在这种页上不开
 }
 
 // jianpu.cpp: findBarline/analyze_barline/analyze_hline/analyze_dot —— 按形状分类连通域。
@@ -240,6 +241,87 @@ function estimateNumH(comps: Component[]): number {
   return median(squarish.map((k) => k.bbox.h)) || 16;
 }
 
+/** 矩形内的墨迹占比。 */
+function inkFill(bin: Binary, r: Rect): number {
+  let ink = 0;
+  for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (bin.data[y * bin.w + x]) ink++;
+  return r.w * r.h ? ink / (r.w * r.h) : 0;
+}
+
+/** 矩形内的**实心**墨迹像素数：只数上下左右四邻都有墨的像素（一次腐蚀后剩下的面积）。 */
+function inkCount(bin: Binary, r: Rect): number {
+  const on = (x: number, y: number) => x >= 0 && y >= 0 && x < bin.w && y < bin.h && bin.data[y * bin.w + x] === 1;
+  let ink = 0;
+  for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++)
+    if (on(x, y) && on(x - 1, y) && on(x + 1, y) && on(x, y - 1) && on(x, y + 1)) ink++;
+  return ink;
+}
+
+function isCleanPage(comps: Component[], numH: number): boolean {
+  const barCands = comps.filter((k) =>
+    k.bbox.h >= numH * 0.85 && k.bbox.h <= numH * 1.6 && k.bbox.w <= Math.max(2, numH * 0.35));
+  const med = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[xs.length >> 1]! : 0);
+  return barCands.length >= 4 &&
+    med(barCands.map((k) => k.bbox.w)) >= 2 &&
+    med(barCands.map((k) => k.area / (k.bbox.w * k.bbox.h))) >= 0.95;
+}
+
+/** 圆滑线的端点粘着高八度点：谱面上弧从 `1̇` 的点旁起笔，两者 8-连通成一块（1697《温州的水 温州的山》
+ *  一房 `1̇⌒6`、二房 `2̇⌒1̇`、`1̇⌒6⌒6`，4 个点全丢，音高各低一个八度）。这块在归类里什么都不是，
+ *  点也就进不了点池；即便进了，整块弧的底边就是点的底边，buildJpNums 的「弧脚碎片」判据也会把它剔掉。
+ *  故在归类**之前**拆开：按列数墨——弧线那几列只有一两像素的笔画，点那几列是实心的一整段
+ *  （实测 6~8px vs 1~2px）。从块的左右两端往里扫，开头连着几列都明显比笔画厚、宽度像个点，
+ *  就把这几列切成点，其余列收成去掉点的弧。点须圆（宽高比 0.6~1.7）、底边低于弧的其余部分
+ *  （点挂在弧脚上，弧脚是弧的最低处）。
+ *  **只在干净谱面上用**（isCleanPage）：翻拍件的弧线笔画粗细不匀，端点的墨团与点分不开。 */
+function splitArcEndDots(bin: Binary, comps: Component[], numH: number): Component[] {
+  const out: Component[] = [];
+  let nextId = 2_000_000;
+  const mk = (r: Rect): Component => ({ id: nextId++, bbox: r, area: r.w * r.h, cx: rcx(r), cy: rcy(r) });
+  for (const k of comps) {
+    const b = k.bbox;
+    if (b.w < numH * 0.6 || b.h < numH * 0.2 || b.h > numH * 0.8 || b.w < b.h * 2) { out.push(k); continue; }
+    const col = columnInk(bin, b, 0, b.h);
+    const stroke = median(col.filter((v) => v > 0)) || 1;
+    if (stroke > numH * 0.12) { out.push(k); continue; }                   // 笔画本身就粗：不是细弧
+    const thick = Math.max(stroke * 2.5, numH * 0.15);
+    // 从一端往里：跳过空列，数连续的厚列；返回 [起列, 止列)（相对 b.x），不成点返回 null
+    const endRun = (fromLeft: boolean): [number, number] | null => {
+      const at = (i: number) => col[fromLeft ? i : b.w - 1 - i]!;
+      // 点的范围按「≥1.6 倍笔画」量（点的左右边缘那一两列墨少，按门槛量会从第一列就断掉，
+      // 实测 `6,8,8,9,8,8,5` 对笔画 3），其中要有列真正厚过门槛。
+      let i = 0;
+      while (i < b.w && at(i) === 0) i++;
+      const start = i;
+      let peak = 0;
+      while (i < b.w && at(i) >= stroke * 1.6) { peak = Math.max(peak, at(i)); i++; }
+      const runW = i - start;
+      if (peak < thick || runW < numH * 0.12 || runW > numH * 0.4 || b.w - i < numH * 0.4) return null;
+      return fromLeft ? [start, i] : [b.w - i, b.w - start];
+    };
+    const left = endRun(true), right = endRun(false);
+    if (!left && !right) { out.push(k); continue; }
+    // 先按两端都切来量弧的底边，再逐个验点；没过验的那一端列还给弧
+    const arc = tightBox(bin, b, left?.[1] ?? 0, right?.[0] ?? b.w, 0, b.h);
+    if (!arc) { out.push(k); continue; }
+    const asDot = (run: [number, number] | null): Rect | null => {
+      if (!run) return null;
+      const d = tightBox(bin, b, run[0], run[1], 0, b.h);
+      if (!d) return null;
+      const ratio = d.w / d.h;
+      if (d.w > numH * 0.45 || d.h > numH * 0.45 || d.h < numH * 0.12 || ratio < 0.6 || ratio > 1.7) return null;
+      return rbottom(d) > rbottom(arc) ? d : null;                           // 点挂在弧脚上，比弧低
+    };
+    const dl = asDot(left), dr = asDot(right);
+    if (!dl && !dr) { out.push(k); continue; }
+    const arcBox = tightBox(bin, b, dl ? left![1] : 0, dr ? right![0] : b.w, 0, b.h);
+    if (!arcBox) { out.push(k); continue; }
+    const dots = [dl, dr].filter((d): d is Rect => d !== null);
+    out.push(mk(arcBox), ...dots.map(mk));
+  }
+  return out;
+}
+
 function classify(comps: Component[], bin: Binary): { c: Classified; numH: number } {
   const numH = estimateNumH(comps);
   // 「干净谱面」判据：**看小节线直不直**。数字排版直接出的印刷本，小节线是一根绝对竖直、
@@ -249,13 +331,8 @@ function classify(comps: Component[], bin: Binary): { c: Classified; numH: numbe
   // （≥4 根）免得拿一两根的偶然值当判据。
   // 只有干净页才做下面的「减时线+八度点」粘连切分：脏页上碎渣挂在减时线下沿时长得跟八度点
   // 一模一样，切开就是凭空多一个八度。
-  const barCands = comps.filter((k) =>
-    k.bbox.h >= numH * 0.85 && k.bbox.h <= numH * 1.6 && k.bbox.w <= Math.max(2, numH * 0.35));
-  const med = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[xs.length >> 1]! : 0);
-  const pageClean = barCands.length >= 4 &&
-    med(barCands.map((k) => k.bbox.w)) >= 2 &&
-    med(barCands.map((k) => k.area / (k.bbox.w * k.bbox.h))) >= 0.95;
-  const c: Classified = { blocks: [], barlines: [], hlines: [], dots: [] };
+  const pageClean = isCleanPage(comps, numH);
+  const c: Classified = { blocks: [], barlines: [], hlines: [], dots: [], clean: pageClean };
   // 高瘦竖块可能是"八度点 + 窄数字"粘连体（数字不含点）：优先切开、把点与数字笔各归其类，
   // 否则会被下面的小节线判据整块吞掉而丢音（实测高八度 "1̇" 在单行简谱里 h 恰同真小节线）。
   const barCand = (w: number, h: number) =>
@@ -469,8 +546,10 @@ function groupRows(cores: DigitCore[], numH: number): DigitCore[][] {
  *  buildRowMeta 里「覆盖 70% 行高」那道判据 → **整行连音符带歌词一起丢**。
  *  判据只用几何：分数线与两个数字同 x 居中、上下间隙都在半个字号内。增时线 '-' 与减时线也是
  *  短横块，但前者没有正上/正下方紧贴的数字，后者上方是数字、下方是歌词（不在 cores 里），分得开。 */
-function meterCandidates(cores: DigitCore[], hlines: Component[], numH: number): MeterCand[] {
+function meterCandidates(cores: DigitCore[], hlines: Component[], numH: number, spare: DigitCore[] = []): MeterCand[] {
   const out: MeterCand[] = [];
+  const real = new Set(cores);
+  const pool = [...cores, ...spare];
   for (const h of hlines) {
     const hb = h.bbox;
     if (hb.w < numH * 0.35 || hb.w > numH * 1.6) continue; // 分数线与数字同宽量级
@@ -478,11 +557,18 @@ function meterCandidates(cores: DigitCore[], hlines: Component[], numH: number):
     const near = (k: DigitCore) => Math.abs(rcx(k.bbox) - hcx) <= Math.max(numH * 0.3, hb.w * 0.5);
     const pick = (cands: DigitCore[], key: (k: DigitCore) => number) =>
       cands.sort((a, b) => key(a) - key(b))[0];
-    const up = pick(cores.filter((k) => near(k) && hb.y - rbottom(k.bbox) >= -2 &&
+    const up = pick(pool.filter((k) => near(k) && hb.y - rbottom(k.bbox) >= -2 &&
       hb.y - rbottom(k.bbox) < numH * 0.55), (k) => hb.y - rbottom(k.bbox));
-    const dn = pick(cores.filter((k) => near(k) && k.bbox.y - rbottom(hb) >= -2 &&
+    const dn = pick(pool.filter((k) => near(k) && k.bbox.y - rbottom(hb) >= -2 &&
       k.bbox.y - rbottom(hb) < numH * 0.55), (k) => k.bbox.y - rbottom(hb));
     if (!up || !dn) continue;
+    // 补位块（spare）只能当**一头**，另一头必须是正经数字格，且两头字号相当——
+    // 同一个拍号的分子分母本是同一字号，差出两成的多半是凑巧夹着横线的别的东西。
+    if (!real.has(up) && !real.has(dn)) continue;
+    if (!real.has(up) || !real.has(dn)) {
+      const [a, b] = [up.bbox.h, dn.bbox.h].sort((x, y) => x - y);
+      if (a < b * 0.8) continue;
+    }
     // 分子分母都不宽于分数线（宽出去的多半是别的东西恰好上下夹着一条横线）
     if (up.bbox.w > hb.w * 1.5 || dn.bbox.w > hb.w * 1.5) continue;
     out.push({ line: h, up, dn, bbox: unionRect(unionRect(up.bbox, dn.bbox), hb) });
@@ -536,6 +622,13 @@ function buildJpNums(
   arcs: Component[], barlineXs: number[], dotSizes: number[],
 ): JpNum[] {
   const out: JpNum[] = [];
+  // 八度点是**实心**圆点，包围盒里的墨迹填充率高；房号「2.」这类小字即便糊成一团（二值化把笔画泡粗、
+  // 「2」和「.」连成一块），包围盒里也大半是空的。1697 二房的「2.」正摞在 `1̇` 的点上方，被数成第二个点（`1̈`）。
+  // **不按大小判**：试过「比本页八度点统计值小得多就剔」，翻拍件上高音点常印得比别的点小一号，
+  // 抽检时「赞美歌声三《感谢》」一页剔掉了 7 个真八度点。
+  // **只在干净谱面上判**：翻拍件的点边缘发毛、形状不规整，填充率常不到六成（抽检十来页掉了真点，
+  // 其中 1600《南非之行》、17《不失足》都有 GT）。
+  const dotSized = (kb: Rect) => !cls.clean || inkFill(bin, kb) >= 0.6;
   for (let i = 0; i < rowCores.length; i++) {
     const d = rowCores[i].bbox;
     const next = rowCores[i + 1]?.bbox;
@@ -630,18 +723,21 @@ function buildJpNums(
         // ——即弧脚下垂到与小斑重叠，小斑就是断开的弧脚。**关键**：真高八度点(如日光行3 弧下的 2'/3')
         // 的弧线整体在点**上方**(弧底缘高于点顶 → 不重叠)，或弧实为下方下划线(弧底缘远在点底之下)，
         // 两者都落在窗口外，不会误剔。(实测：基督弧底-点顶=+9/弧底-点底=-3 命中；日光 -5/-16 不命中。)
-        const isArcFoot = arcs.some((arc) => {
+        // **只在翻拍件上开**：干净谱面的弧线不会断脚，这条只会误伤——1697《温州的水 温州的山》二房
+        // `2̇⌒1̇` 右端的点被弧的右脚（垂到点的高度）判成弧脚，第一个 `1̇` 的点被房号括线（宽扁、
+        // 左端竖钩垂到点旁，也算进了弧候选）判成弧脚，两个高八度都丢了。
+        const isArcFoot = !cls.clean && arcs.some((arc) => {
           const ab = arc.bbox;
           return rbottom(ab) > kb.y && rbottom(ab) <= rbottom(kb) + numH * 0.15 &&
             rcx(kb) >= ab.x - numH * 0.4 && rcx(kb) <= rright(ab) + numH * 0.4;
         });
-        if (!isArcFoot && !hasSideMate(kb)) upDots.push(kb); // 上点 → 高八度（几点算几个八度见下面的裁决）
+        if (!isArcFoot && dotSized(kb) && !hasSideMate(kb)) upDots.push(kb); // 上点 → 高八度（几点算几个八度见下面的裁决）
       // 下点 → 低八度。额外一道门专防**歌词字的顶部笔画**：歌词带紧接在数字下方，字顶的短竖/点
       // （如「主」字上方那一笔）正落在数字正下方、dx≈0、间隙也与「减时线下方的低音点」几乎同高
       // （14~15px vs 真点 3~13px），靠位置分不开。改看**它下方还有没有墨**：八度点孤立、下方留白，
       // 字顶笔画下方紧接着字的其余笔画。（先试过宽高比，但小字号图上真点只有 2×3 像素、比值不可靠，
       // 世上所有的民族的真低音点被误剔、音符 100→99.3。）
-      } else if (gapBelow >= -1 && gapBelow < numH * 0.8 && inkBelow(bin, kb, numH) < 0.12 && !hasSideMate(kb)) {
+      } else if (gapBelow >= -1 && gapBelow < numH * 0.8 && inkBelow(bin, kb, numH) < 0.12 && dotSized(kb) && !hasSideMate(kb)) {
         downDots.push(kb); }
     }
     // 八度点是**竖排叠放**的：第二、三个点各自摞在前一个点的正上/正下方——同一条竖线上、
@@ -655,6 +751,13 @@ function buildJpNums(
         const diam = (kb.w + kb.h) / 2;
         if (prev) {
           if (Math.abs(rcx(kb) - rcx(prev)) > Math.max(2, diam * 0.9)) break;   // 不在同一条竖线上
+          // 同一个音的两个八度点是同一个字模印的，大小差不多：包围盒面积、实心面积都不能差出一倍。
+          // 摞在点上方的别的小块（房号小字、碎渣）大多在这里断掉。实心面积只在点够大时才比
+          //（小图上的点只有 2×3 像素，腐蚀完都是 0，比不出东西）。
+          const areaA = kb.w * kb.h, areaB = prev.w * prev.h;
+          if (Math.min(areaA, areaB) < Math.max(areaA, areaB) * 0.5) break;
+          const coreA = inkCount(bin, kb), coreB = inkCount(bin, prev);
+          if (Math.max(coreA, coreB) >= 6 && Math.min(coreA, coreB) < Math.max(coreA, coreB) * 0.5) break;
           const gap = up ? prev.y - rbottom(kb) : kb.y - rbottom(prev);
           if (gap < -1 || gap > diam * 1.6) break;                              // 与前一个点不相邻
         }
@@ -771,7 +874,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 去连通：把贯穿全高的小节线（常像"桥"把弧/增时线粘成一团）从像素上擦掉重做连通域，
   // 让弧/小节线/数字各自独立、以干净连通块流入下面的 classify 与 detectSlurs。
   const raw = connectedComponents(bin, 4);
-  const comps = mergeBrokenHlines(untangleBridged(raw, bin, estimateNumH(raw)), estimateNumH(raw));
+  let comps = mergeBrokenHlines(untangleBridged(raw, bin, estimateNumH(raw)), estimateNumH(raw));
+  if (isCleanPage(comps, estimateNumH(comps))) comps = splitArcEndDots(bin, comps, estimateNumH(comps));
   const { c, numH } = classify(comps, bin);
 
   // 数字块 → 数字格（拆分粘连/连音，并测各自下划线 div）。
@@ -795,7 +899,14 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 故把「扁而短的小块」也放进候选池：meterCandidates 要求正上、正下各紧贴一个数字，
   // 八度点/附点凑不齐这两条，不会误判。
   const flatDot = (k: Component) => k.bbox.w >= numH * 0.3 && k.bbox.w >= k.bbox.h * 2.5;
-  const meterCands = meterCandidates(allCores, [...c.hlines, ...c.dots.filter(flatDot)], numH);
+  // 拍号数字比音符小一号，高度就卡在 classify 数字块门槛（0.5 字号）上下：1717《不怕劳累 不怕饥寒》
+  // 页眉 `3/4 4/4 5/4` 三个分母 18/17/18px、numH 36，门是 18——中间那个 4 差 1px，没归进任何一类
+  // 被整个丢掉，4/4 就没了。这些没归类的小块单放一个补位池，只在凑拍号时借用（规矩见 meterCandidates）。
+  const classified = new Set<Component>([...c.blocks, ...c.barlines, ...c.hlines, ...c.dots]);
+  const spareCores: DigitCore[] = comps
+    .filter((k) => !classified.has(k) && k.bbox.w >= numH * 0.25 && k.bbox.h >= numH * 0.35 && k.bbox.h < numH * 0.55)
+    .map((k) => ({ bbox: k.bbox, div: 0 }));
+  const meterCands = meterCandidates(allCores, [...c.hlines, ...c.dots.filter(flatDot)], numH, spareCores);
   const meterMarks: { x: number; beats: number; beatType: number; bbox: Rect }[] = [];
   const meterCores = new Set<DigitCore>();
   const meterLines = new Set<Component>();
@@ -989,7 +1100,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       k.bbox.h < bandH * 0.7 ? { x: k.bbox.x, y: m.topY, w: k.bbox.w, h: bandH } : k.bbox,
     );
   });
-  const recog = await ocr.recognizeDigits(bin, recRects);
+  const recog = await ocr.recognizeDigits(bin, recRects, { rhythm: true });
   const digitCache = new Map<Rect, number>();
   allDigits.forEach((k, i) => digitCache.set(k.bbox, recog[i] ?? 0));
   const ocrDigit = (b: Rect) => digitCache.get(b) ?? 0;
@@ -1028,6 +1139,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     }
   }
 
+
   // 延长记号（fermata 𝄐）：音符头顶一段小弧、弧下扣一个点。整块只有半个字号宽，够不着
   // detectSlurs 的圆滑线判据（那里要求宽 ≥0.8 字号），弧本身常连归类都轮不上；而弧下那个点
   // 正落在八度点的窗口里，于是 16《爱心的功课》末行的 `5·6̂ 7̂` 读成了 `5. 6̇ 7̇`（高了一个八度）。
@@ -1062,6 +1174,55 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     }
   }
   // 弧下那个点不是八度点，别让 buildJpNums 收走。
+  // 补充一路：弧与别的弧粘成一块时（1697 末音 `6⌒6̂`：延长记号的弧顶接在前面那条圆滑线的尾巴上，
+  // 整块 59px，中心偏到了左边），上面「点居中于弧」一条就对不上。改从点出发：
+  //  · 数字正上方一个小点（宽高都不过 0.3 字号）；高八度点也长这样，分开它俩靠下一条的弧顶形状——
+  //    高八度点头上即便压着圆滑线，那也是长弧，两脚离得远；
+  //  · 点正上方 0.35 字号内贴着墨（弧顶）；从弧顶沿着墨往左右走到弧脚，两脚离点心 0.15~0.45 字号、
+  //    都比弧顶低 0.12 字号以上——弧是个窄帽子（1697 实测宽 17px、脚低 6~7px，字号 37）。
+  //    长圆滑线跨在音符上方时一走就走出半个字号，过不了脚距那一条。
+  {
+    const topInk = (x: number, y0: number, y1: number): number => {
+      const xi = Math.round(x);
+      if (xi < 0 || xi >= bin.w) return NaN;
+      for (let y = Math.max(0, Math.round(y0)); y < Math.min(bin.h, Math.round(y1)); y++) if (bin.data[y * bin.w + xi]) return y;
+      return NaN;
+    };
+    for (const m of staff) {
+      const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
+      for (const owner of m.rd) {
+        if (fermataOf.get(owner) || owner.bbox.h < medH * 0.85) continue;
+        const ob = owner.bbox;
+        const dotC = c.dots.find((o) => {
+          const b = o.bbox;
+          const gap = ob.y - rbottom(b);
+          return Math.abs(rcx(b) - rcx(ob)) <= numH * 0.25 && gap >= -1 && gap <= numH * 0.5 &&
+            b.w <= numH * 0.3 && b.h <= numH * 0.3;
+        });
+        if (!dotC) continue;
+        const db = dotC.bbox, cx = rcx(db);
+        const capTop = topInk(cx, db.y - numH * 0.35, db.y - 1);
+        if (isNaN(capTop)) continue;
+        // 沿弧往两边走到脚：列里（弧顶到点底这一带）有墨、且上缘没有重新抬起就继续，停下的那一列是弧脚。
+        // 「重新抬起」要算：1697 的弧脚与前面圆滑线的尾巴连着，不停就一路走进圆滑线里去了。
+        const foot = (dir: number): { dx: number; top: number } | null => {
+          let low: { dx: number; top: number } | null = null;           // 走过的最低点
+          for (let dx = 1; dx <= numH * 0.6; dx++) {
+            const t = topInk(cx + dir * dx, capTop, rbottom(db) + 1);
+            if (isNaN(t) || (low && t < low.top - 1)) break;           // 没墨了，或上缘又抬起来（接上了别的弧）
+            if (!low || t >= low.top) low = { dx, top: t };
+          }
+          return low;
+        };
+        const fl = foot(-1), fr = foot(1);
+        const capOk = (f: { dx: number; top: number } | null) =>
+          !!f && f.dx >= numH * 0.15 && f.dx <= numH * 0.45 && f.top - capTop >= numH * 0.12;
+        if (!capOk(fl) || !capOk(fr)) continue;
+        fermataOf.set(owner, true);
+        fermataDots.add(dotC);
+      }
+    }
+  }
   if (fermataDots.size) c.dots = c.dots.filter((o) => !fermataDots.has(o));
 
   // 波音（上波音 ∿）：音符正上方一小段**两个尖峰的锯齿**（2152《就是不一样》第 5、8 行）。
@@ -1070,17 +1231,23 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   //   · **形状**——弧是凸的、顶点在正中间；波音正中间是两峰之间的**谷**。取每列最高墨点连成
   //     上缘线，比「中间那几列的最高点」与「整块的最高点」：弧的差是 0，波音差着小半块高。
   // 带竖杠的下波音（∿ 中间一竖）过不了谷判据，认不出来——手头没有样张，不照着猜写判据。
+  // **小号波音**另开一档：迦南诗选 1677《祷告》的波音只有 16×9px（字号 48，即 0.33 × 0.19），
+  // 过不了上面那档的宽度门，尺寸又正落在 classify 的「小点」档里、被 buildJpNums 收成了高八度点
+  //（`6̃` 读成 `6̇`）。形状判据照用：真八度点是圆的（宽高比 ≈1）、上缘只有一个峰，过不了
+  // 宽高比与谷这两道。小号档宽度封顶 0.6 字号，挡住「八度点粘着弧端」那种又宽又扁的块。
   const ornamentOf = new Map<DigitCore, "upper-mordent">();
+  const mordentDots = new Set<Component>();
   for (const m of staff) {
     const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
     for (const k of comps) {
       const b = k.bbox;
-      if (b.w < numH * 0.6 || b.w > numH * 1.4) continue;
-      if (b.h < numH * 0.25 || b.h > numH * 0.6 || b.w / b.h < 1.6) continue;
+      const big = b.w >= numH * 0.6 && b.w <= numH * 1.4 && b.h >= numH * 0.25 && b.h <= numH * 0.6;
+      const small = b.w >= numH * 0.25 && b.w < numH * 0.6 && b.h >= numH * 0.12 && b.h < numH * 0.3;
+      if ((!big && !small) || b.w / b.h < 1.6) continue;
       // 正下方紧跟着一个正常字号的数字
       const owner = m.rd.find((n) => Math.abs(rcx(n.bbox) - rcx(b)) <= numH * 0.4 &&
         n.bbox.y - rbottom(b) >= -numH * 0.25 && n.bbox.y - rbottom(b) <= numH * 0.5 &&
-        n.bbox.h >= medH * 0.85);
+        n.bbox.h >= medH * 0.85 && ocrDigit(n.bbox) !== 0);        // 休止符不带波音
       if (!owner) continue;
       // 上缘线：每列最高的那个墨点（没墨的列跳过）
       const top: number[] = [];
@@ -1098,8 +1265,11 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       const valley = Math.max(...top.slice(pl, pr + 1).filter((v) => !isNaN(v)));
       if (valley - peak < b.h * 0.3) continue;                  // 两峰之间没有谷 → 还是弧
       ornamentOf.set(owner, "upper-mordent");
+      mordentDots.add(k);
     }
   }
+  // 小号波音本躺在 dots 里，摘掉才不会再被收成八度点。
+  if (mordentDots.size) c.dots = c.dots.filter((o) => !mordentDots.has(o));
 
   // 顿音（▼）：音符正上方一个**实心倒三角**（1640《主要在中国掌权》整首每音一个）。
   // 尺寸落在 classify 的「小点」档里（实测 12×14，字号 32），故它本已躺在 c.dots 里，
@@ -1140,6 +1310,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   }
   // 三角不是八度点，别让 buildJpNums 收走。
   if (staccatoComps.size) c.dots = c.dots.filter((o) => !staccatoComps.has(o));
+
 
   const allRows: StaffRow[] = staff.map((m) => {
     const nums = buildJpNums(bin, m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes);
@@ -1313,6 +1484,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       if (!flat[i].rowHasLyrics) continue;
       if (cur.lyrics?.some((t) => t && t.trim())) continue;          // 有词 → 新音节，不是延音
       if (cur.digit === 0 || prev.digit === 0) continue;             // 休止不参与
+      if (cur.digit === RHYTHM_DIGIT) continue;                      // 节奏音符无音高，谈不上同音延续
       if (cur.digit !== prev.digit || cur.octave !== prev.octave) continue;
       if (cur.tieStop || cur.slurStop || prev.tieStart || prev.slurStart) continue; // 已有弧
       prev.tieStart = true; cur.tieStop = true;
@@ -1323,3 +1495,5 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, title, subtitle, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
 }
+
+

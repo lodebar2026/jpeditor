@@ -29,9 +29,12 @@ export interface Component {
   cy: number;
 }
 
+/** 节奏音符 X（有声无音高）在 `JpNum.digit` 里的值。取 9：不与 0-7 撞，`digit !== 0` 的「实音」判断照旧成立。 */
+export const RHYTHM_DIGIT = 9;
+
 /** jianpu.cpp: struct jpnum —— 一个简谱音符（数字 + 修饰）。 */
 export interface JpNum {
-  digit: number; // 0-7（0=休止）
+  digit: number; // 0-7（0=休止）；RHYTHM_DIGIT(9)=节奏音符 X（有声无音高），同文本谱 AST 里番茄 `9` 的口径
   bbox: Rect;
   dot: number; // 附点数（右侧点）
   octave: number; // 八度偏移（上点+，下点-）

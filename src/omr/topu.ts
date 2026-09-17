@@ -12,7 +12,7 @@
 // 音节分隔符、头部字段写法），**不要在两套方言之间写 if**——那正是 DialectSpec 存在的理由。
 
 import type { RecognizedScore, JpNum, StaffRow, JpwMeta, JpwRange } from "./types";
-import { rright } from "./types";
+import { rright, RHYTHM_DIGIT } from "./types";
 import { dialectSpec, type Dialect, type DialectSpec } from "../pu/dialect";
 import type { BarlineType } from "../pu/ast";
 import { STEPS, tonicStep, keyAlter } from "../score/jppitch";
@@ -161,8 +161,8 @@ function graceToken(g: { digit: number; octave: number; div: number }, dialect: 
 /** 音符 token（不含其后的增时线）。修饰顺序：变音 → 八度 → 减时线 → 附点。 */
 function noteToken(n: JpNum, dialect: Dialect): string {
   const d = dialectSpec(dialect);
-  // digit 0 是休止；1–7 是唱名。识别不产出隐藏音符与节奏音符，故只有这两类。
-  let s = String(n.digit);
+  // digit 0 是休止；1–7 是唱名；RHYTHM_DIGIT 是节奏音符（番茄写 `9`、诗歌本写 `X`）。识别不产出隐藏音符。
+  let s = n.digit === RHYTHM_DIGIT ? d.rhythmToken : String(n.digit);
   // 临时升降号写在数字**后方**（两家都是），字符各按方言取：番茄 `#`/`$`/`=`、诗歌本 `#`/`b`/`♮`。
   if (n.accidental) {
     const ch = Object.entries(d.accidentals).find(([, sem]) => sem === n.accidental)?.[0];

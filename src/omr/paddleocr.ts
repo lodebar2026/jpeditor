@@ -10,7 +10,7 @@
 import type { OcrBackend } from "./ocr";
 import { blit, createSurface, surfaceFromBinary, type Surface } from "./surface";
 import type { Binary, Rect } from "./types";
-import { rright, rbottom } from "./types";
+import { rright, rbottom, RHYTHM_DIGIT } from "./types";
 // 模型/字典从哪来、用什么跑，由运行时注入（浏览器=ort-web，Node=onnxruntime-node）。
 import { omrRuntime } from "./runtime";
 
@@ -388,12 +388,18 @@ async function recognizeDigitCells(cells: Surface[]): Promise<string[]> {
 
 export function paddleOcrBackend(): OcrBackend {
   const backend = {
-    async recognizeDigits(bin: Binary, rects: Rect[]): Promise<number[]> {
+    async recognizeDigits(bin: Binary, rects: Rect[], opts?: { rhythm?: boolean }): Promise<number[]> {
       if (!rects.length) return [];
       await ensureSession();
       const src = surfaceFromBinary(bin);
       const texts = await recognizeDigitCells(rects.map((r) => cellOf(src, bin, r)));
-      return texts.map((text) => { const m = text.match(/[0-7]/); return m ? Number(m[0]) : 0; });
+      return texts.map((text) => {
+        const m = text.match(/[0-7]/);
+        if (m) return Number(m[0]);
+        // 节奏音符 X：rec 读得很干净（1717《不怕劳累 不怕饥寒》6 处全读成 "X"），只认整格就是这一个字，
+        // 不认混在别的字里的 x。以前落到 0，又被「0 却对到歌词」那条复原成了 3。
+        return opts?.rhythm && /^[XxＸｘ×]$/.test(text) ? RHYTHM_DIGIT : 0;
+      });
     },
     async rankDigits(bin: Binary, rects: Rect[]): Promise<number[][]> {
       if (!rects.length) return [];

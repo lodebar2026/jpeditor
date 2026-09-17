@@ -7,7 +7,7 @@
 //   - 八度上点很小(w,h ≤ 0.45×字号)；增时线 '-' 在数字**中线**、减时线在数字**下方** → 都不在上方，天然不混。
 //   - 数字块 h ≥ 0.55×字号 才算，弧线更矮 → 不会被当成假音符（classify 里已落到 hlines 或被丢弃）。
 import type { Binary, Component, JpNum, Rect, StaffRow } from "./types";
-import { rright, rbottom, rcx } from "./types";
+import { rright, rbottom, rcx, RHYTHM_DIGIT } from "./types";
 import { median } from "./geom";
 
 const between = (v: number, lo: number, hi: number) => v >= lo && v <= hi;
@@ -195,7 +195,8 @@ export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], n
       const start = covered[0], stop = covered[covered.length - 1];
       // tie：恰好相邻两音、且同音高(数字+八度相同)；否则按 slur。
       const sameIdx = row.nums.indexOf(start) + 1 === row.nums.indexOf(stop);
-      const samePitch = start.digit === stop.digit && start.octave === stop.octave && start.digit !== 0;
+      const samePitch = start.digit === stop.digit && start.octave === stop.octave &&
+        start.digit !== 0 && start.digit !== RHYTHM_DIGIT;
       if (covered.length === 2 && sameIdx && samePitch) {
         start.tieStart = true; stop.tieStop = true;
       } else {
