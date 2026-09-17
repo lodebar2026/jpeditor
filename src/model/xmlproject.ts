@@ -38,7 +38,7 @@ const ARTICULATION: Readonly<Record<string, string>> = {
   xhy: "falloff",
 };
 const FERMATA = /^(yc|ycy|fermata)$/i;
-const ORNAMENT_TAG: Readonly<Record<string, string>> = {
+export const ORNAMENT_TAG: Readonly<Record<string, string>> = {
   sby: "inverted-mordent",
   xby: "mordent",
   cy: "trill-mark",
