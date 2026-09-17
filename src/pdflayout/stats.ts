@@ -12,7 +12,7 @@
 import type { Rect } from "../omr/types";
 import type { PageSpec, TextRun, MarkSpec, SongPlacement } from "./spec";
 import type { BookProfile } from "../omr/bookprofile";
-import { defaultBookStyle, roleFontDefaults, type BookStyle, type RoleStyle } from "./bookstyle";
+import { defaultBookStyle, inkSampleOf, roleFontDefaults, type BookStyle, type RoleStyle } from "./bookstyle";
 import { STYLE_ROLES, type FontRef, type StyleRole } from "../style/sheet";
 
 /** 段落词（副歌/间奏…）印在和弦带里，字号是那一带的（实测 7pt 上下），
@@ -522,7 +522,9 @@ export function inferTocRule(pages: PageSpec[]): Partial<BookStyle["toc"]> {
   return out;
 }
 
-/** 统计 → BookStyle。`fonts` 不由统计产生（转曲 PDF 里没有字体资源），由调用方给。 */
+/** 统计 → BookStyle。`fonts` 不由统计产生（转曲 PDF 里没有字体资源），由调用方给。
+ *  原书量到的是**墨迹高**，样式里存的是**字号**：`inkRatio(role, sample)` 给出样本字在该角色字体里
+ *  「墨迹高 ÷ 字号」，由调用方量字体（本文件无 DOM、不读字体文件）。 */
 export function inferBookStyle(
   profile: BookProfile,
   pages: PageSpec[],
@@ -532,7 +534,8 @@ export function inferBookStyle(
     /** scripts/page-report.mjs 顺带落下的逐类字高（tuplet/verseNum/sectionWord 这几个角色
      *  在 PageSpec 里没有独立字段，只能从归类结果拿）。 */
     classHeights?: Record<string, number[]>;
-  } = {},
+    inkRatio: (role: StyleRole, sample: string) => number;
+  },
 ): { style: BookStyle; report: StyleReport } {
   const base = defaultBookStyle();
   const roleFont = roleFontDefaults();
@@ -541,7 +544,7 @@ export function inferBookStyle(
   const warnings: string[] = [];
 
   // 汉字档的字号**只按汉字量**：一档里混着数字、标点和「一」这种扁字，中位数会被压下去
-  //（目录条目 8.7 → 7.8，与歌词的比例就跟原书对不上了；fontSizeFor 反算时用的样本字也是「国」，
+  //（目录条目 8.7 → 7.8，与歌词的比例就跟原书对不上了；换算字号用的样本字也是「国」，见 bookstyle.ts::INK_SAMPLE，
   //  两边口径必须一致）。过滤后没样本的角色（纯西文的那几档）退回全部样本。
   const CJK_ROLES = new Set<StyleRole>([
     "lyric", "lyric2", "title", "credit", "story", "toc", "tocHeading", "tocSub",
@@ -574,13 +577,19 @@ export function inferBookStyle(
   const roles = {} as Record<StyleRole, RoleStyle>;
   const roleReport: Partial<Record<StyleRole, Summary>> = {};
   const derived: StyleRole[] = [];
+  /** 墨迹高 → 字号。量不出比例（缺字体、缺字）时报错，不静默当字号用。 */
+  const fontSize = (r: StyleRole, ink: number): number => {
+    const ratio = opt.inkRatio(r, inkSampleOf(r));
+    if (!(ratio > 0.2 && ratio < 1.6)) throw new Error(`角色 ${r} 量不出样本字「${inkSampleOf(r)}」的墨迹占比（${ratio}）`);
+    return Number((ink / ratio).toFixed(3));
+  };
   for (const r of STYLE_ROLES) {
     const sum = summarize(byRole.get(r) ?? []);
     roleReport[r] = sum;
     roles[r] = {
       font: roleFont[r].font,
       align: roleFont[r].align,
-      size: sum.n ? Number(sum.p50.toFixed(2)) : base.roles[r].size,
+      size: sum.n ? fontSize(r, Number(sum.p50.toFixed(2))) : base.roles[r].size,
       baselineAdjust: 0,
     };
     if (!sum.n) derived.push(r);
@@ -590,6 +599,7 @@ export function inferBookStyle(
 
   // 没有任何实测样本的角色，从同版式的邻近角色派生（**不是猜**：段号与歌词同号、
   // 段落词随歌词、三连音数字若连小字档都没采到就按印刷惯例取音符的 0.62）。
+  // 派生的是**字号**：段号是 Times、歌词是宋体，照搬墨迹高再按 Times 折算会大出三成。
   for (const r of derived) {
     const from: Partial<Record<StyleRole, StyleRole>> = { verseNum: "lyric", sectionWord: "lyric", category: "header", smufl: "note" };
     const src = from[r];
@@ -597,14 +607,16 @@ export function inferBookStyle(
       roles[r].size = roles[src].size;
       warnings.push(`角色 ${r} 无实测样本，派生自 ${src}（${roles[r].size}pt）`);
     } else if (r === "tuplet") {
-      roles[r].size = Number((roles.note.size * 0.62).toFixed(2));
+      roles[r].size = Number((roles.note.size * 0.62).toFixed(3));
       warnings.push(`角色 tuplet 无实测样本，按音符字号 × 0.62 派生（${roles[r].size}pt）`);
     } else {
       warnings.push(`角色 ${r} 无实测样本，沿用默认字号 ${roles[r].size}`);
     }
   }
 
-  const noteH = roles.note.size || med(ms.noteH) || 5;
+  // em 的基准是音符**字号**；「层距够不够近」这类判据仍按墨迹高比（原书量的就是墨迹）
+  const noteH = roles.note.size || 7;
+  const noteInk = roleReport.note?.n ? Number(roleReport.note.p50.toFixed(2)) : med(ms.noteH) || 5;
   const em = (v: number[]) => Number(((med(v) || 0) / noteH).toFixed(4));
   const pt = (v: number[]) => Number((med(v) || 0).toFixed(3));
 
@@ -660,9 +672,9 @@ export function inferBookStyle(
   const gDown = med(ms.octaveDotDownGap);
   const gDiv = med(ms.divLineGap);
   const spread = Math.max(gUp, gDown, gDiv) - Math.min(gUp, gDown, gDiv);
-  if (spread > noteH * 0.1) {
+  if (spread > noteInk * 0.1) {
     warnings.push(
-      `⚠ 层距不等：高音点上 ${gUp.toFixed(2)} / 低音点下 ${gDown.toFixed(2)} / 减时线 ${gDiv.toFixed(2)}（差 ${spread.toFixed(2)}pt > 0.1 字高），` +
+      `⚠ 层距不等：高音点上 ${gUp.toFixed(2)} / 低音点下 ${gDown.toFixed(2)} / 减时线 ${gDiv.toFixed(2)}（差 ${spread.toFixed(2)}pt > 0.1 墨迹高），` +
         `jpStackGap 需要拆成三个字段分别覆写`,
     );
   }
@@ -675,8 +687,8 @@ export function inferBookStyle(
     divLineGapEm: em(ms.divLineGap),
     divLineStepEm: em(ms.divLineStep),
     repeatDotDiam: pt(ms.repeatDotDiam),
-    // 房号（1./2.）与三连音的括线：原书量到的线宽与「脚」长（脚长按音符字高归一）
-    inkBracketWidth: pt(ms.bracketWidth),
+    // 房号（1./2.）与三连音的括线：原书量到的线宽与「脚」长（脚长按音符字号归一）
+    bracketWidth: pt(ms.bracketWidth),
     bracketFootEm: em(ms.bracketFootLen),
     // slurArcEm 不从原书量：那边量到的是 slur 对象的包围盒高（含描边外扩、且短弧居多），
     // 拿来当弧的凸起高度会扁得几乎没有弧度。用默认值，需要再调就改歌本样式表。

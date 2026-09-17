@@ -3,7 +3,7 @@
 // 复用本项目的 PageItem/Group/GraphicPath/GraphicLine/TextFrame 与 renderPageSvg，
 // 所以「导出 PPTX」那条路（collectShapes 认这几种图元）不用改就能吃文本谱的页面。
 //
-// 数字用系统字体按**墨迹居中**于步进锚点（字号由 digitInkHeight 反推），
+// 数字用系统字体按**墨迹居中**于步进锚点（字号取样式值 digitSize），
 // 圆点与线段自绘——位置逐点对齐原版，字形则是规范字形。
 //
 // 入口只收 `ScoreDoc`：先经 `pu/slots.ts::docView` 线性化成排版行（排版几何都按行写成），再定位、绘制。
@@ -46,22 +46,16 @@ import {
   type LyricMeasure,
 } from "./layout";
 import { BRACE_GLYPHS } from "./brace";
-import { applyDocOptions, applyUserOptions, contentWidth, metricsFor, noteMarkGap, puGraceMetrics, puGraceNotes, puSlurStyle, type PuMetrics, type PuUserOptions } from "./metrics";
+import { applyDocOptions, applyUserOptions, contentWidth, metricsFor, noteMarkGap, puGraceMetrics, puGraceNotes, puSlurStyle, withDigitInk, type PuMetrics, type PuUserOptions } from "./metrics";
 import { ACCOMP_BRACKET, ACCIDENTAL_GLYPH, BARLINE_MARKS, BRACKET, DYNAMICS, ORNAMENTS, TERMS } from "./glyph";
 
 /**
- * 反推数字字号：让数字墨迹高度等于版式量到的 `digitInkHeight`。
- * 不同字体的数字高宽比不同，但因为锚点按固定步进、字形按墨迹居中，
- * 位置仍与原版逐点一致。
- *
- * **提到模块级**：面板上的「基础字号」是 pt，要把它换算回 `scale` 就得先知道
- * 「这套版式原本是多少 pt」——那要在 metrics 定稿**之前**算，不能只有实例方法。
+ * 定稿度量：按数字字体实测「1」的墨迹占比填上 `digitInkHeight`（字号来自样式值 `digitSize`）。
+ * 不同字体的数字高宽比不同，但锚点按固定步进、字形按墨迹居中，位置仍与原版一致。
  */
-export function digitFontSizeOf(m: Pick<PuMetrics, "digitFamily" | "digitBold" | "digitInkHeight">): number {
-  const probe = new Font(m.digitFamily, 100, m.digitBold);
-  const b = probe.charBound("1");
-  const inkAt100 = Math.abs(b.bottom - b.top) || 71;
-  return (m.digitInkHeight * 100) / inkAt100;
+function resolveDigitInk(m: PuMetrics): PuMetrics {
+  const b = new Font(m.digitFamily, 100, m.digitBold).charBound("1");
+  return withDigitInk(m, (Math.abs(b.bottom - b.top) || 71) / 100);
 }
 
 /** 文本谱的出厂墨色。歌词比谱面略黑一点，是原版量出来的。 */
@@ -322,7 +316,7 @@ export class PuPainter implements PagePainter {
   private ink: number | null = null;
 
   constructor() {
-    this.metrics = metricsFor();
+    this.metrics = resolveDigitInk(metricsFor());
   }
 
   /** 样式表。改完要重排才看得见——调用方通常紧接着 `load`（见 App.reloadPu）。 */
@@ -343,13 +337,13 @@ export class PuPainter implements PagePainter {
   private resolveScale(docMetrics: PuMetrics): PuUserOptions | null {
     const o = this.userOptions;
     if (!o?.digitFontSize) return o;
-    const base = digitFontSizeOf(docMetrics);
+    const base = docMetrics.digitSize;
     return base > 0 ? { ...o, scale: o.digitFontSize / base } : o;
   }
 
   /** 这份文档在**不加手动字号**时的数字字号（pt）——面板拿它当「跟随版式」的默认值。 */
   baseDigitFontSize(doc: ScoreDoc): number {
-    return digitFontSizeOf(this.docMetricsOf(docView(doc)));
+    return this.docMetricsOf(docView(doc)).digitSize;
   }
 
   /** PagePainter：连续长图模式下宽高随谱而变，故不是常数。 */
@@ -369,7 +363,7 @@ export class PuPainter implements PagePainter {
     // 谱面自带的指令先生效，面板上的手动设置叠在最外层（用户说了算）
     setPuInk(this.ink);
     const docMetrics = this.docMetricsOf(doc);
-    this.metrics = applyUserOptions(docMetrics, this.resolveScale(docMetrics));
+    this.metrics = resolveDigitInk(applyUserOptions(docMetrics, this.resolveScale(docMetrics)));
     const m = this.metrics;
     this.pageWidth = m.pageWidth;
     this.pageHeight = m.pageHeight;
@@ -420,13 +414,8 @@ export class PuPainter implements PagePainter {
     for (const p of this.layout.pages) p.update();
   }
 
-  /**
-   * 反推数字字号：让数字墨迹高度等于原版的 digitInkHeight。
-   * 不同字体的数字高宽比不同，但因为锚点按固定步进、字形按墨迹居中，
-   * 位置仍与原版逐点一致。
-   */
   private makeDigitFont(): Font {
-    return new Font(this.metrics.digitFamily, digitFontSizeOf(this.metrics), this.metrics.digitBold);
+    return new Font(this.metrics.digitFamily, this.metrics.digitSize, this.metrics.digitBold);
   }
 
   /** 当前音符数字的字号（pt）。面板上的「基础字号」显示的就是它。 */

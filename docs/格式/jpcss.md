@@ -74,8 +74,8 @@
   纯简谱下 `em` = 音符字号，`sp` = 名义谱高 / 4。
 - 块上还可写 `preset`（`@jianpu { preset: pptx }`、`@staff { preset: musicpp }`）。
 - **成书**也读 `@jianpu`（`keys.ts` 的 `book` 一列，落到 `BookStyle.metrics` / `layout`）：间距类写 `em`
-  （基准是音符字高；`lyric-gap` `slur-thickness` `barline` `final-barline` 按歌词字号），线宽类（`bracket-width`、
-  `repeat-dot-diameter`）写裸数 pt。例：`@jianpu { system-gap: 1.2725em; beam-top: 0.2068em; verse-numbers: auto; }`。
+  （基准是音符字号；`lyric-gap` `slur-thickness` `barline` `final-barline` 按歌词字号），线宽类（`bracket-width`、
+  `repeat-dot-diameter`）写裸数 pt。例：`@jianpu { system-gap: 0.8575em; beam-top: 0.1393em; verse-numbers: auto; }`。
   数值原样存进字段、不在读样式表时乘字号，所以重排结果逐位不变。
 - 以前的 `@pu` 已删：文本谱原样档照原版实测，不由样式表逐字段覆盖（`@media (engine: pu)` 这一维仍在）。
 
@@ -113,7 +113,7 @@ credit, rights { font: hei-light; size: 8pt; features: hwid; }
 `features`（OpenType 特性，如 `hwid`）。认不出的属性报错。**对齐由槽位决定**（`left`/`center`/`inner`…），不写在角色上。
 
 成书另有两项：`align-mode`（逐字定位的口径：`pen` `ink-center` `left` `center` `right` `outer`，见 `sheet.ts::AlignMode`）
-与 `baseline-adjust`（基线修正，× 字号）。成书的角色 `size` 是原书量到的**墨迹高**（裸数 pt），由 `style/book.ts::fontSizeFor` 反算字号。
+与 `baseline-adjust`（基线修正，× 字号）。成书的角色 `size` 也是**字号**（裸数 pt）；原书量到的墨迹高由生成脚本按样本字的墨迹占比换算后才写进来，样式值里不出现墨迹高。
 
 角色表见 `src/style/sheet.ts::STYLE_ROLES`（20 个）与 `TEMPLATE_ROLES`（模板专用：`titleAlt` `epigraph` `epigraphRef`
 `rights` `scriptureRefs` `tags`）；认不出的角色名报 `行:列`。

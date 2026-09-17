@@ -91,7 +91,7 @@ export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
 };
 
-/** 角色的声明块。**字号是 font-size**（不是墨迹高；成书的墨迹口径在 `book` 块里）。
+/** 角色的声明块。**字号是 font-size**（不是墨迹高；成书也一样）。
  *  `note.size` 只收 pt 或 sp（em 相对它自己，没有意义）。 */
 export interface RoleDecl {
   size?: Length;
@@ -142,7 +142,7 @@ export interface StyleSheet {
   staff: { preset?: "musicpp"; overrides?: Record<string, Length | boolean> };
   /** **断句**（与谱式无关）：键是 `style/keys.ts::BREAK_KEYS`。现在只有成书读。 */
   break?: { overrides?: Record<string, Length | boolean> };
-  /** 成书的完整样式（`BookStyle`，字号是墨迹高）。只有 `engine: "book"` 用。 */
+  /** 成书的完整样式（`BookStyle`）。只有 `engine: "book"` 用。 */
   book?: BookStyle;
   /** 歌本模板：区域、装页、具名字体（`.jpcss` 的 `@template`/`@flow`/`@font-face`）。 */
   template?: TemplateSheet;

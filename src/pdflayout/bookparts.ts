@@ -38,7 +38,7 @@ export interface KeyMeterSpec {
  * 下排在下方 0.98em、线在上方 0.34em；主调与分数线之间空 0.37em。
  */
 /**
- * 调号里升降号的字号比（÷ 音名字号）与基线抬升量（× 音名墨迹高）。
+ * 调号里升降号的字号比（÷ 音名字号）与基线抬升量（× 音名字号）。
  *
  * **升降号写 ASCII 的 `#` / `b`**（用户口径，与和弦那边同一套）：`♯`/`♭` 那两个字符
  * 在成书用的方正字体里没有字形，排出来会回退到乐谱字体——绕个圈子又用上了 SMuFL。
@@ -46,18 +46,17 @@ export interface KeyMeterSpec {
  * 原书 002 实测：♭ 墨迹高 6.3、音名 8.0，♭ 的墨迹**顶**比音名顶高 3.9pt。换算到 ASCII：
  * 小写 `b` 的墨迹高约 0.72 em、大写音名约 0.66 em，所以
  *   字号 = (6.3 / 8.0) × (0.66 / 0.72) ≈ 0.72 个音名字号
- *   抬升 = (0.66 × sz + 3.9 − 0.72 × 0.72 × sz) / 8.14 ≈ 0.69 个音名墨迹高
+ *   抬升 = (0.66 × sz + 3.9 − 0.72 × 0.72 × sz) / 12.05 ≈ 0.466 个音名字号
  * 抬得不够就成了「升降号与音名顶部对齐」，该高出去的那截没了。
  */
 const KEY_ACC_SIZE = 0.72;
-const KEY_ACC_RISE = 0.69;
+const KEY_ACC_RISE = 0.466;
 
 export function keyMeterItems(style: BookStyle, km: KeyMeterSpec, x: number, baseline: number, measure: Measure, size?: number): DrawItem[] {
   const sz = size ?? style.roles.keyMeter.size;
-  // **比例的基准是墨迹高（roles.keyMeter.size），不是字号**。两者差一个「墨迹占 em 的比例」
-  // ——Times 的数字只占 0.66em，所以字号 12.05 时墨迹才 8.14。拿字号去乘这些比例，
-  // 分数线会长出一半、上下两个数字各错开三个点（实测 005 首的 4 被线压住）。
-  const ink = style.roles.keyMeter.size;
+  // 下面的比例都 × 样式里的调号字号（原书 12.05，墨迹高 8.14）。原先按墨迹高量的，
+  // 已乘 Times 数字的墨迹占比 0.676 折过来——别再拿墨迹高去乘，分数线会短三成、上下两个数字挤到线上。
+  const em = style.roles.keyMeter.size;
   const items: DrawItem[] = [];
   /**
    * 画一段带调号的文字（`1=♭B`，或括号里的移调建议 `(1=♭E)`）。
@@ -78,23 +77,23 @@ export function keyMeterItems(style: BookStyle, km: KeyMeterSpec, x: number, bas
     }
     const accSz = sz * KEY_ACC_SIZE;
     const accCh = acc[1] === "♯" ? "#" : acc[1] === "♭" ? "b" : acc[1];
-    items.push(textItem(accCh, "keyMeter", accSz, cur, baseline - ink * KEY_ACC_RISE));
+    items.push(textItem(accCh, "keyMeter", accSz, cur, baseline - em * KEY_ACC_RISE));
     cur += measure("keyMeter", accCh, accSz) * 1.05;
     const tail = `${acc[2]}${suffix}`;
     items.push(textItem(tail, "keyMeter", sz, cur, baseline));
     cur += measure("keyMeter", tail, sz);
     return cur - x0;
   };
-  let cx = x + putTonic("1=", km.tonic, "", x) + ink * 0.37;
+  let cx = x + putTonic("1=", km.tonic, "", x) + em * 0.25;
   if (km.beats && km.beatType) {
-    const ruleW = ink * 1.51;
+    const ruleW = em * 1.02;
     const top = String(km.beats);
     const bot = String(km.beatType);
     const mid = cx + ruleW / 2;
-    items.push(textItem(top, "keyMeter", sz, mid - measure("keyMeter", top, sz) / 2, baseline - ink * 0.65));
-    items.push(textItem(bot, "keyMeter", sz, mid - measure("keyMeter", bot, sz) / 2, baseline + ink * 0.98));
-    items.push({ t: "rect", x: cx, y: baseline - ink * 0.34, w: ruleW, h: 0.3, fill: 0x000000 });
-    cx += ruleW + ink * 0.32;
+    items.push(textItem(top, "keyMeter", sz, mid - measure("keyMeter", top, sz) / 2, baseline - em * 0.439));
+    items.push(textItem(bot, "keyMeter", sz, mid - measure("keyMeter", bot, sz) / 2, baseline + em * 0.662));
+    items.push({ t: "rect", x: cx, y: baseline - em * 0.23, w: ruleW, h: 0.3, fill: 0x000000 });
+    cx += ruleW + em * 0.216;
   }
   // 括号里的移调建议也走同一套（194 首的 `(1=♭E)`）
   if (km.altTonic) putTonic("(1=", km.altTonic, ")", cx);
@@ -267,7 +266,9 @@ export function annotationBlock(style: BookStyle, o: AnnotationOptions): Annotat
   const items: DrawItem[] = [];
   const textTop = o.top + padY;
   lines.forEach((l, i) => items.push(textItem(l, "story", size, o.left + padX, textTop + size + i * o.lineGap)));
-  const height = padY * 2 + size + Math.max(0, lines.length - 1) * o.lineGap;
+  // 无框时块底就是末行基线，字的下伸（按 0.25 字号估，与 line-check 的墨迹底同口径）得算进块高，
+  // 否则块贴着版心下界落时末行会压过页码那条线
+  const height = padY * 2 + size + Math.max(0, lines.length - 1) * o.lineGap + (padY > 0 ? 0 : size * 0.25);
   if (o.framed && o.tiles.length) {
     const box = { x: o.left, y: o.top, w: o.right - o.left, h: height };
     const d = ornamentFramePath(o.tiles, box, o.frameEdges ?? "TBLR");
@@ -310,9 +311,7 @@ export interface PageFrameOptions {
   measure: Measure;
   /** 页题（只印在第一页）。 */
   title?: string;
-  /** 各角色的**字号**（`browser.ts::fontSizeFor` 按墨迹比例反算过的）。
-   *  不给就退回 `roles[*].size`——那是从原书量到的**墨迹高**，各字族的墨迹占比不同
-   *  （行楷比黑体扁），直接当字号用会大小不一、行距也跟着错。 */
+  /** 各角色的字号覆盖。不给就取 `roles[*].size`。 */
   sizes?: Partial<Record<StyleRole, number>>;
 }
 
@@ -327,7 +326,8 @@ export function tocPages(style: BookStyle, items: TocItem[], o: PageFrameOptions
   let pageNo = o.startPageNo;
   // 版心下界按**页脚基线**算，不是 footer.band——band 是「页脚出现过的 y 范围」的下沿，
   // 比真正的可用高度保守 30pt（原书的花边框就压到 535，band 才 518）。
-  const bottomLimit = style.titleBlock.footerBaseline - style.roles.footer.size * 1.6;
+  // 留 1.1 个页脚字号（原先写的是 1.6 个墨迹高，Times 数字墨迹占字号 0.69）
+  const bottomLimit = style.titleBlock.footerBaseline - style.roles.footer.size * 1.1;
   const start = (withTitle: boolean) => {
     cur = [];
     y = t.firstBaseline;
@@ -398,7 +398,7 @@ export function indexPages(style: BookStyle, items: IndexItem[], o: PageFrameOpt
   const size = sizeOf("toc");
   const cols = Math.max(1, t.indexColumns);
   const colW = (t.right - t.left) / cols;
-  const bottomLimit = style.titleBlock.footerBaseline - style.roles.footer.size * 1.6;
+  const bottomLimit = style.titleBlock.footerBaseline - style.roles.footer.size * 1.1;
   const rowsPerCol = Math.max(1, Math.floor((bottomLimit - t.indexFirstBaseline) / t.indexLineGap) + 1);
   const perPage = rowsPerCol * cols;
   const pages: DrawPage[] = [];

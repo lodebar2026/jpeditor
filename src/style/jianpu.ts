@@ -8,7 +8,7 @@
 import type { LayoutOptions } from "../layout/options";
 import { Font } from "../layout/font";
 import { LYRIC_STACK_RATIO } from "../layout/painter";
-import { applyBookPreset, fontSizeFor } from "./book";
+import { applyBookPreset } from "./book";
 import { familyOfRole } from "./fonts";
 import { JIANPU_KEYS, ROLE_FONTS, type KeyDef } from "./keys";
 import type { StyleRole, StyleSheet } from "./sheet";
@@ -28,9 +28,9 @@ function rolePt(sheet: StyleSheet, role: "note" | "title" | "credit"): number | 
   return pt !== null && Number.isFinite(pt) && pt > 0 ? pt : undefined;
 }
 
-/** 排版器的构造字号。成书取歌词那一档（墨迹高反算的字号），其余取音符字号。 */
+/** 排版器的构造字号。成书取歌词那一档，其余取音符字号。 */
 export function jianpuFontSize(sheet: StyleSheet): number {
-  if (sheet.jianpu.preset === "book" && sheet.book) return fontSizeFor(sheet.book, "lyric");
+  if (sheet.jianpu.preset === "book" && sheet.book) return sheet.book.roles.lyric.size;
   return rolePt(sheet, "note") ?? PPTX_PAGE.fontSize;
 }
 
