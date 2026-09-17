@@ -5,7 +5,7 @@ import type { Binary, Component, Rect, TextRegion } from "./types";
 import type { OcrBackend } from "./ocr";
 import { mergeToChars, chunkCells, buildStrip } from "./lyrics";
 import { surfaceFromBinary, type Surface } from "./surface";
-import { clusterByY, median, overlapRatioX, unionRect, unionRects } from "./geom";
+import { clusterByY, median, overlapRatioX, overlapRatioY, unionRect, unionRects } from "./geom";
 import { accidentalOf } from "./accidental";
 
 const rcyOf = (r: Rect) => r.y + r.h / 2;
@@ -575,7 +575,15 @@ export async function recognizeHeader(
       group.push(k);
       if (group.length > 3) return undefined;
     }
-    if (!group.length) return undefined;
+    const k = await readKeyGroup(group);
+    return k ? { fifths: k.fifths, line } : undefined;
+  }
+
+  /** 读一组紧挨着的调号块（音名 + 可选升降号，1~3 块）：位置明显偏高、形状判得出 ♭/♯ 的是升降号
+   *  （accidentalOf），其余拼成一条单独送 rec——行高就是音名自己的高度。rec 连着升降号一起读出来
+   *  （`bB`、`Eb`）也收。读不出 A–G 就放弃。 */
+  async function readKeyGroup(group: Component[]): Promise<{ fifths: number; bbox: Rect } | undefined> {
+    if (!group.length || !ocr.recognizeTexts) return undefined;
     // 升降号：上标印得高——底边比其余块的底边高出两成字高以上，且形状判得出 ♭/♯
     const lowest = Math.max(...group.map((g) => g.bbox.y + g.bbox.h));
     let acc = "";
@@ -590,10 +598,112 @@ export async function recognizeHeader(
       break;
     }
     const [text] = await recognizeTexts([buildStrip(surfaceFromBinary(bin), [unionRects(letters.map((g) => g.bbox))])]);
-    const m = /^\s*([A-G])\s*$/.exec(text ?? "");
+    const m = /^\s*([b#♭♯]?)\s*([A-G])\s*([b#♭♯]?)\s*$/.exec(text ?? "");
+    if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.log("[header/keyGroup]", JSON.stringify(text), acc, group.map((g) => `${g.bbox.x},${g.bbox.y} ${g.bbox.w}x${g.bbox.h}`).join(" | "));
     if (!m) return undefined;
-    const f = NAT_FIFTHS[m[1]] + (acc === "b" ? -7 : acc === "#" ? 7 : 0);
-    return f >= -7 && f <= 7 ? { fifths: f, line } : undefined;
+    const a = acc || m[1] || m[3];
+    const f = NAT_FIFTHS[m[2]] + (a === "b" || a === "♭" ? -7 : a === "#" || a === "♯" ? 7 : 0);
+    return f >= -7 && f <= 7 ? { fifths: f, bbox: unionRects(group.map((g) => g.bbox)) } : undefined;
+  }
+
+  /** 调号的**单字符兜底**：det 连 `1=` 那一行都没检出来时（耶稣普治 `1 = D`：页宽 2000px 缩到 960，
+   *  小字宽字距只剩一个读空的碎框），不再指望文本行，直接在页眉的连通块里按位置关系找。
+   *  版式（testdata + 旷野人声/迦南诗选抽检）：调号总在第一谱行之上、**标题中线左侧**，
+   *  从左到右「`1` `=`」「上标升降号 + 音名」「拍号」「♩=速度」。两个锚点：
+   *  - **`=`**：两道上下对齐的扁横，左边紧挨一个读得出 1 的块——`二`/`三` 的横笔、`♩=95` 的 `=` 都靠这一条挡掉；
+   *    音名组取 `=` 右侧紧挨着的块。
+   *  - **拍号**：几何法认出的页眉分数拍号（geoMeters），音名组取它左侧紧挨着的块（不写 `1=` 的谱）。 */
+  /** 斜杠 `/`：墨集中在右上—左下那条对角带上（左上、右下两角基本空着）。 */
+  function isSlash(b: Rect): boolean {
+    let diag = 0, off = 0;
+    for (let y = Math.round(b.y); y < Math.round(b.y + b.h); y++) {
+      for (let x = Math.round(b.x); x < Math.round(b.x + b.w); x++) {
+        if (!bin.data[y * bin.w + x]) continue;
+        const u = (x - b.x) / Math.max(1, b.w - 1), v = (y - b.y) / Math.max(1, b.h - 1);
+        if (Math.abs(u + v - 1) <= 0.35) diag++; else off++;
+      }
+    }
+    return diag >= 8 && off <= diag * 0.15;
+  }
+
+  async function keyByGlyphs(titleLine: HLine | null): Promise<{ fifths: number; bbox: Rect } | undefined> {
+    const xMax = titleLine ? titleLine.cx : bin.w / 2;
+    const yMin = titleLine ? titleLine.bbox.y : 0, yMax = firstStaffTopY - numH * 0.1;
+    const inMeter = (k: Component) => !!geoMeters?.some((m) => overlapRatioX(m.bbox, k.bbox) > 0.5 &&
+      rcyOf(k.bbox) >= m.bbox.y && rcyOf(k.bbox) <= m.bbox.y + m.bbox.h);
+    const pool = comps
+      .filter((k) => rcyOf(k.bbox) >= yMin && rcyOf(k.bbox) <= yMax && k.cx < xMax && k.bbox.h <= numH * 2 && k.bbox.w <= numH * 2)
+      .sort((a, b) => a.bbox.x - b.bbox.x);
+    const isBar = (k: Component) => k.bbox.w >= k.bbox.h * 2.5 && k.bbox.h <= numH * 0.25 && k.bbox.w >= numH * 0.2 && k.bbox.w <= numH * 1.2;
+    const bars = pool.filter(isBar);
+    const dbg = (globalThis as { __omrDebug?: boolean }).__omrDebug;
+    /** 从 `from` 起沿 dir 方向取紧挨着的块（1~3 块），碰到横线、拍号块或比字宽还大的空当就停。 */
+    const chain = (edge: number, dir: 1 | -1, band: Rect, firstGap: number): Component[] => {
+      const cands = pool
+        .filter((k) => !isBar(k) && !inMeter(k) && (dir > 0 ? k.bbox.x >= edge : k.bbox.x + k.bbox.w <= edge))
+        .filter((k) => k.bbox.y <= band.y + band.h && k.bbox.y + k.bbox.h >= band.y)
+        .sort((a, b) => dir * (a.bbox.x - b.bbox.x));
+      const group: Component[] = [];
+      let cur = edge;
+      for (const k of cands) {
+        const gap = dir > 0 ? k.bbox.x - cur : cur - (k.bbox.x + k.bbox.w);
+        const gh = group.length ? Math.max(...group.map((g) => g.bbox.h)) : 0;
+        if (gap > (group.length ? Math.max(4, gh * 0.6) : firstGap)) break;
+        group.push(k);
+        cur = dir > 0 ? Math.max(cur, k.bbox.x + k.bbox.w) : Math.min(cur, k.bbox.x);
+        if (group.length > 3) return [];
+      }
+      return dir > 0 ? group : group.reverse();
+    };
+
+    // 锚点一：`1` `=`（音名在右）；也有反着印的 `C=1`（从前所珍爱，音名在左、`1` 在右）
+    for (const a of bars) for (const b of bars) {
+      const dy = rcyOf(b.bbox) - rcyOf(a.bbox);
+      if (a === b || dy <= 0 || dy > numH * 0.5 || overlapRatioX(a.bbox, b.bbox) < 0.6) continue;
+      const eq = unionRect(a.bbox, b.bbox);
+      for (const dir of [1, -1] as const) {
+        const gapTo = (k: Component) => (dir > 0 ? eq.x - (k.bbox.x + k.bbox.w) : k.bbox.x - (eq.x + eq.w));
+        const one = pool
+          .filter((k) => !isBar(k) && gapTo(k) >= -1 && gapTo(k) <= numH * 0.8 &&
+            k.bbox.h >= numH * 0.4 && rcyOf(eq) >= k.bbox.y && rcyOf(eq) <= k.bbox.y + k.bbox.h && k.bbox.w <= k.bbox.h * 0.75)
+          .sort((p, q) => gapTo(p) - gapTo(q))[0];
+        if (dbg) console.log("[header/keyEq]", dir > 0 ? "1=" : "=1", `eq ${eq.x},${eq.y} ${eq.w}x${eq.h}`, one ? `one ${one.bbox.x},${one.bbox.y} ${one.bbox.w}x${one.bbox.h}` : "no-one", `numH ${numH.toFixed(1)}`);
+        if (!one) continue;
+        const [d] = await ocr.recognizeDigits(bin, [one.bbox]);
+        if (d !== 1) continue;
+        const group = dir > 0 ? chain(eq.x + eq.w, 1, one.bbox, Math.max(numH, one.bbox.h))
+          : chain(eq.x, -1, one.bbox, Math.max(numH, one.bbox.h));
+        const k = await readKeyGroup(group);
+        if (k) return k;
+      }
+    }
+    // 锚点二：拍号左边紧挨着的音名（不写 `1=` 的谱：`♭E 4/4`、`E♭ 3/4`）。
+    // 拍号两种印法：几何法认出的分数拍号（geoMeters），与斜杠式——一块斜笔、左右各紧挨一个数字大小的块。
+    const starts: { x: number; band: Rect; what: string }[] = [];
+    for (const m of geoMeters ?? []) {
+      if (rcyOf(m.bbox) < yMin || rcyOf(m.bbox) > yMax || m.bbox.x + m.bbox.w / 2 > xMax) continue;
+      starts.push({ x: m.bbox.x, band: { x: m.bbox.x, y: m.bbox.y + m.bbox.h * 0.2, w: m.bbox.w, h: m.bbox.h * 0.6 }, what: `${m.beats}/${m.beatType}` });
+    }
+    for (const sl of pool) {
+      const sb = sl.bbox;
+      if (sb.h < numH * 0.4 || sb.w > sb.h * 0.8 || !isSlash(sb)) continue;
+      const side = (dir: 1 | -1) => pool.filter((k) => k !== sl && !isBar(k) &&
+        (dir > 0 ? k.bbox.x - (sb.x + sb.w) : sb.x - (k.bbox.x + k.bbox.w)) >= -2 &&
+        (dir > 0 ? k.bbox.x - (sb.x + sb.w) : sb.x - (k.bbox.x + k.bbox.w)) <= numH * 0.5 &&
+        k.bbox.h >= sb.h * 0.5 && k.bbox.h <= sb.h * 1.5 && overlapRatioY(k.bbox, sb) >= 0.5)
+        .sort((p, q) => dir * (p.bbox.x - q.bbox.x))[0];
+      const l = side(-1), r = side(1);
+      if (dbg) console.log("[header/keySlash]", `${sb.x},${sb.y} ${sb.w}x${sb.h}`, l ? "L" : "-", r ? "R" : "-");
+      if (!l || !r) continue;
+      starts.push({ x: l.bbox.x, band: unionRect(l.bbox, r.bbox), what: "slash" });
+    }
+    for (const st of starts.sort((a, b) => a.x - b.x)) {
+      const group = chain(st.x, -1, st.band, numH);
+      if (dbg) console.log("[header/keyMeter]", st.what, `@${st.x}`, group.length);
+      const k = await readKeyGroup(group);
+      if (k) return k;
+    }
+    return undefined;
   }
 
   /** 后缀式著作者的「名字 ↔ 职能词」之间照谱面补空当：`at` 是职能词在 `text` 里的起始下标，
@@ -758,13 +868,24 @@ export async function recognizeHeader(
       const k = await rereadKeyName(ls);
       if (k) { meta.fifths = k.fifths; meta.fifthsLine = k.line; }
     }
+    // 探针：强制走单字符兜底、只打日志不采纳（核对判据用）
+    if ((globalThis as { __keyGlyphProbe?: boolean }).__keyGlyphProbe) {
+      const g = await keyByGlyphs(titleLine);
+      console.log("[keyProbe]", JSON.stringify({ text: meta.fifths, glyph: g?.fifths ?? null, bbox: g?.bbox ?? null, numH }));
+    }
+    let glyphKeyBox: Rect | undefined;
+    if (meta.fifths === undefined) {
+      const g = await keyByGlyphs(titleLine);
+      if (g) { meta.fifths = g.fifths; glyphKeyBox = g.bbox; }
+    }
     out.fifths = meta.fifths;
     out.tempo = meta.tempo;
     out.beats = meta.beats;
     out.beatType = meta.beatType;
     out.meters = meta.meters;
     out.meterNote = meta.meterNote;
-    if (meta.fifths !== undefined && meta.fifthsLine) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: meta.fifthsLine.bbox });
+    const keyBox = meta.fifthsLine?.bbox ?? glyphKeyBox;
+    if (meta.fifths !== undefined && keyBox) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: keyBox });
     if (meta.tempo !== undefined && meta.tempoLine) out.regions.push({ text: `♩=${meta.tempo}`, bbox: meta.tempoLine.bbox });
     // **几何法读出的并排拍号优先**：det 是按行切的，`1=C 3/4 4/4` 这种调号与拍号挨得紧的
     // 页眉会被切成一整块（2156 实测读成 "1=Cz" + 孤零零一个 "4"），分子分母根本对不上，

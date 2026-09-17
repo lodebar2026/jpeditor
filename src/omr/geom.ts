@@ -36,6 +36,11 @@ export function overlapRatioX(a: Rect, b: Rect): number {
   return overlapX(a, b) / Math.min(a.w, b.w);
 }
 
+/** y 向重叠占**较矮那个**高度的比例。用于判「是否同一排」。 */
+export function overlapRatioY(a: Rect, b: Rect): number {
+  return Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)) / Math.min(a.h, b.h);
+}
+
 /** 按纵向中心贪心聚成行：升序扫过，落进「已有行中位 y 相差 < tol」的第一行，否则另起一行。
  *
  *  **tol 一律由调用方给**，不设默认值：各调用点的容差是拿具体曲子调出来的，语义也不同
