@@ -83,13 +83,9 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
 - macOS 首次打开提示“已损坏”或“无法验证开发者”？见
   [docs/macOS-打不开.md](docs/macOS-打不开.md)（应用未签名，属正常现象，一条命令即可解决）。
 
-## 技术栈
-
-技术栈、构建命令、分层与模块地图见 [docs/架构.md](docs/架构.md)。
-
 ## 开发
 
-构建与运行命令见 [docs/架构.md](docs/架构.md)。回归脚本与测试语料不在本仓库。
+技术栈、构建命令、分层与模块地图见 [docs/架构.md](docs/架构.md)。回归脚本与测试语料不在本仓库。
 
 ## 进度
 
