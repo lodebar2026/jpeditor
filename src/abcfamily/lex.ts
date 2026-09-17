@@ -8,6 +8,7 @@
 //   2. 休止长什么样（`scanRest`）——123 是 `0`，ABC 是 `z`/`Z`
 //   3. `-` 是什么（`hyphen`）——**123 是增时线、ABC 是 tie，这是两者的硬冲突之一**
 //   4. 多连音要不要冒号（`tupletNeedsColon`）——123 必需（音符是数字，`(3` 有歧义），ABC 可省
+//   5. 认不认不带引号的和弦（`scanBareChord`）——123 认（A–G 在它的音乐体里没被占用），ABC 不认
 //
 // 这里只做词法（切 token、记位置），语义（时值累计、符杠分组号、Mark 配对）归 `parse.ts`。
 
@@ -102,6 +103,14 @@ export abstract class AbcFamilyLexer {
     return null;
   }
 
+  /** 不带引号的和弦（123 扩展：`Am7 1`）。ABC 里 A–G 是音名，这一档没有。
+   *  返回和弦文本的长度与可选的诊断；**有诊断也照样当和弦**（半截文本也要给出大部分结果）。 */
+  protected scanBareChord(line: string, i: number): { len: number; error?: string } | null {
+    void line;
+    void i;
+    return null;
+  }
+
   /** 破碎节奏（ABC 的 `>` / `<`）。123 用附点与减时线直接写，这一档没有。 */
   protected scanBroken(line: string, i: number): { len: number; dir: number } | null {
     void line;
@@ -144,7 +153,7 @@ export abstract class AbcFamilyLexer {
       // 行内注释：`%` 到行尾（ABC 的注释符）
       if (ch === "%") break;
 
-      // 空白——**是符杠分组的依据，必须成 token**
+      // 空白——**是 ABC 符杠分组的依据，必须成 token**（123 不用它分组，见 `ParseDialect.spaceBeams`）
       if (ch === " " || ch === "\t") {
         while (i < line.length && (line[i] === " " || line[i] === "\t")) i++;
         push({ kind: "space", text: line.slice(start, i) }, start, i - start);
@@ -277,6 +286,16 @@ export abstract class AbcFamilyLexer {
           start,
           i - start,
         );
+        continue;
+      }
+
+      // 不带引号的和弦 `Am7 1`（123 扩展，规范 §8.1）：与 `"Am7"` 出同一种 token
+      const bare = this.scanBareChord(line, i);
+      if (bare) {
+        const body = line.slice(i, i + bare.len);
+        if (bare.error) errors.push({ message: bare.error, source: span(start, bare.len) });
+        i += bare.len;
+        push({ kind: "chord", text: body, value: body }, start, bare.len);
         continue;
       }
 

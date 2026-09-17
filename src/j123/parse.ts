@@ -4,14 +4,19 @@
 // 小节切分、时值累计、符杠分组、Mark 配对、歌词对位、`I:playorder` 的音符级端点回填。
 //
 // 几条判据（改之前先读）：
-//   - **符杠分组由空白决定**（ABC §4.7）：相邻音符之间没有 `space` token 就是同一组。
-//     落成 `Chord.beamGroup` 编号，不设 `~`/`^` 控制符。
+//   - **123 的空白不表示符杠分组**：符杠按拍自动算（排版 `beamGroupsOf`），空格只为好读。
+//     只有 ABC 方言按 §4.7 把「连写」落成 `Chord.beamGroup`（`ParseDialect.spaceBeams`）。
 //   - **歌词 CJK 连写逐字成音节**（规范 §5.2，对 ABC 的扩展）；拉丁词仍按空格/连字符分。
 //     收尾标点**并入前一字、不占音符格**，规则复用 `common/cjkpunct.ts`，别再写一份。
 //   - **`(N:` 的冒号必需**：简谱音符是数字，裸 `(3` 与圆滑线冲突，见规范「`(` 的歧义」。
 //   - 认不出的东西一律**报诊断、继续往下**——半截或写错的文本也要给出大部分结果。
 
-import { PU_LYRIC_PUNCTUATION, PU_LYRIC_QUOTES } from "../common/cjkpunct";
+import {
+  PU_LYRIC_QUOTES,
+  isLyricCjk as isCjk,
+  isLyricOpenQuote as isOpenQuote,
+  isLyricTrailingPunct as isTrailingPunct,
+} from "../common/cjkpunct";
 import type {
   Barline,
   Chord,
@@ -252,25 +257,6 @@ export function parseLyricLine(
   return res;
 }
 
-function isCjk(ch: string): boolean {
-  const c = ch.codePointAt(0) ?? 0;
-  return (
-    (c >= 0x3400 && c <= 0x4dbf) ||
-    (c >= 0x4e00 && c <= 0x9fff) ||
-    (c >= 0xf900 && c <= 0xfaff) ||
-    (c >= 0x20000 && c <= 0x2ebef)
-  );
-}
-
-function isTrailingPunct(ch: string): boolean {
-  // **引号也不占音符格**。直引号 `"` 分不出开闭，一律贴前字——位置上略有出入，
-  // 但对位是对的；而把它当成一个音节会让后面整行错位、末尾溢出丢字。
-  return PU_LYRIC_PUNCTUATION.includes(ch) || "”’｡、\"".includes(ch);
-}
-
-function isOpenQuote(ch: string): boolean {
-  return ch === "“" || ch === "‘";
-}
 
 
 // ───────────────────────── 组装 ─────────────────────────
@@ -364,7 +350,7 @@ function buildMusicLine(
   for (const t of tokens) {
     switch (t.kind) {
       case "space":
-        // 只影响符杠分组。**不能清 `sustainHost`**——`5 - 3 -` 这种带空格的写法是常态，
+        // 只影响 ABC 的符杠分组（123 不看）。**不能清 `sustainHost`**——`5 - 3 -` 这种带空格的写法是常态，
         // 增时线仍归最近的那个音符
         sawSpaceSinceLastNote = true;
         break;
@@ -390,7 +376,7 @@ function buildMusicLine(
         }
         if ((t.beams ?? 0) > 0) {
           ch.beams = Array.from({ length: t.beams! }, () => "continue" as const);
-          ch.beamGroup = beamGroup;
+          if (ctx.d.spaceBeams) ch.beamGroup = beamGroup;
         }
         applyTieAndBroken(ch);
         attach(ch);

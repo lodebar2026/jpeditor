@@ -7,7 +7,7 @@
 // 输出风格固定（**幂等的前提**）：
 //   - 字段用 ASCII 规范形（中文别名只在读入端认，不往外写）
 //   - 小节之间一个空格、小节线两侧各一个空格
-//   - 符杠分组内的音符**连写**（ABC §4.7 的空白规则），组间留一个空格
+//   - 符杠分组内的音符**连写**（ABC §4.7 的空白规则），组间留一个空格；123 不分组、一律空格隔开
 //   - 歌词一行一段，CJK 连写不加空格
 //
 // 幂等判据：`parse → emit → parse` 两次得到的 `ScoreDoc` 结构相等（id 除外，那是解析期分配的）。
@@ -23,6 +23,7 @@ import type {
   ScoreDoc,
   Song,
 } from "../model/doc";
+import { isLyricCjk, isLyricOpenQuote, isLyricTrailingPunct } from "../common/cjkpunct";
 import { breakAfter } from "../model/helpers";
 import { harmonyText } from "../model/jianpu";
 import { ORNAMENT_TAG } from "../model/xmlproject";
@@ -98,6 +99,8 @@ function lyricLines(part: Part, sep: string): string[] {
     /** 上一个字的 `syllabic`。词内分音节要写 `-`（`mid-dle-word`，ABC §5.1），
      *  不写就会粘成一个词、读回来音节数变少、后面所有字前移一格。 */
     let prevSyllabic: string | undefined;
+    /** 上一个写出的音节以拉丁字母/数字收尾（且中间没有 `*` `_` 隔开）——下一个也是拉丁词时要空格 */
+    let prevLatin = false;
     for (const el of slots) {
       const hit = (el.lyrics ?? []).find(
         (l) => l.number === slot.from && (l.numberTo ?? l.number) === (slot.to ?? slot.from),
@@ -113,28 +116,58 @@ function lyricLines(part: Part, sep: string): string[] {
         pendingSkips += (pendingSkips === "" ? "" : sep) + (hit?.extend ? "_" : "*");
         continue;
       }
-      // 词内分隔用 `-`，词间用方言的分隔符
+      // 词内分隔用 `-`，词间用方言的分隔符。
+      // 123 的分隔符是空串（CJK 连写），但**两个拉丁词挨着必须空格**：`主 a b` 写成 `主ab` 读回就粘成一个音节
       const inWord = prevSyllabic === "begin" || prevSyllabic === "middle";
-      body += (body === "" ? "" : inWord ? "-" : sep) + pendingSkips;
+      const wordSep = sep === "" && prevLatin && pendingSkips === "" && isLatinStart(hit.leadingPunctuation ?? hit.text) ? " " : sep;
+      body += (body === "" ? "" : inWord ? "-" : wordSep) + pendingSkips;
       pendingSkips = "";
       // **多字并一格要包 `{}`**：CJK 是逐字成音节的（规范 §5.2），
       // `1.圣` 这种并字（`.jpwabc` 的 `{1.[圣]}`）不包起来，读回时会被拆成多个音节、
       // 把后面所有字顶错一格，末尾还会溢出丢字。
-      const needBrace = [...hit.text].length > 1 && /[\u3400-\u9fff]/u.test(hit.text);
+      // 「一个字 + 标点」（`哦，` `“主` `主。”`）读回本来就是一个音节，不包——手写的样子就是这样。
+      // 但后面要接词内 `-` 的仍然包：CJK 分支不认字后的 `-`（211《等主来》的 `{来”}-`）。
+      const inWordNext = hit.syllabic === "begin" || hit.syllabic === "middle";
+      const needBrace = [...hit.text].length > 1 && /[\u3400-\u9fff]/u.test(hit.text)
+        && (inWordNext || !isOneCjkWithPunct(hit.text));
       body += (hit.leadingPunctuation ?? "") +
         (needBrace ? `{${hit.text}}` : hit.text) +
         (hit.trailingPunctuation ?? "");
       prevSyllabic = hit.syllabic;
+      prevLatin = !hit.trailingPunctuation && isLatinEnd(hit.text);
       if (hit.extend) {
         body += sep + "_";
         extendConsumes = true;
         prevSyllabic = undefined;
+        prevLatin = false;
       }
     }
     if (body === "") continue;
     out.push(`${name}:${label !== undefined ? `<${label}>` : ""}${body}`);
   }
   return out;
+}
+
+const LATIN_CH = /[\p{L}\p{N}']/u;
+/** 拉丁音节（非 CJK 的字母/数字）起头——`parseLyricLine` 的拉丁分支会把它和前面的拉丁词粘在一起 */
+function isLatinStart(text: string): boolean {
+  const c = [...text][0] ?? "";
+  return LATIN_CH.test(c) && !isLyricCjk(c);
+}
+function isLatinEnd(text: string): boolean {
+  const cs = [...text];
+  const c = cs[cs.length - 1] ?? "";
+  return LATIN_CH.test(c) && !isLyricCjk(c);
+}
+
+/** 「至多一个左引号 + 一个 CJK 字 + 若干收尾标点」——`parseLyricLine` 不包 `{}` 也读成**一个**音节的形状。
+ *  口径与读入端同一份（`common/cjkpunct.ts`），改一边就要看另一边。 */
+function isOneCjkWithPunct(text: string): boolean {
+  const cs = [...text];
+  let k = 0;
+  if (cs.length > 1 && isLyricOpenQuote(cs[0]!)) k = 1;
+  if (!isLyricCjk(cs[k] ?? "")) return false;
+  return cs.slice(k + 1).every(isLyricTrailingPunct);
 }
 
 /** 字段值里的换行会把后续内容变成裸行（第二轮解析就当成音乐体了）。
@@ -252,10 +285,18 @@ export abstract class AbcFamilyEmitter {
    *  否则读回来会粘成一个音节、把后面所有字顶错一格。 */
   protected readonly lyricSeparator: string = "";
 
+  /** 符杠分组写不写成「连写」。ABC 写（§4.7 空白即分组）；123 不写——符杠按拍自动算，音符一律空格隔开。 */
+  protected readonly spaceBeams: boolean = true;
+
   /** 换行/换页怎么写。123 用显式的 `$`/`$$`；ABC 默认是**代码换行即谱面换行**
    *  （§6.1 的 `I:linebreak <EOL>`），所以那一档写真换行。 */
   protected breakText(newPage: boolean): string {
     return newPage ? "$$" : "$";
+  }
+
+  /** 和弦符号怎么写。ABC 只有引号形 `"Am7"`；123 能省就省（见 `emit123.ts`）。 */
+  protected chordSymbolText(text: string): string {
+    return `"${text}"`;
   }
 
   /** 最后一小节后面还写不写换行标记。123 写（`$` 无害且要保幂等）；
@@ -366,8 +407,8 @@ export abstract class AbcFamilyEmitter {
       const brk = breakAfter(part, i);
       if (brk && (!last || this.trailingBreak)) out.push(this.breakText(brk === "page"));
     }
-    // 换行标记若是真换行，join 出来的两侧空格要收掉
-    return out.filter((s) => s !== "").join(" ").replace(/ ?\n ?/g, "\n");
+    // 换行标记若是（或带着）真换行，join 出来的两侧空格要收掉；末尾的换行也收掉，否则歌词行前多一个空行
+    return out.filter((s) => s !== "").join(" ").replace(/ ?\n ?/g, "\n").replace(/\n+$/, "");
   }
 
 
@@ -392,7 +433,7 @@ export abstract class AbcFamilyEmitter {
       // 和弦符号前置（规范 §8.1）
       // 从 MusicXML 读进来的和弦是结构化的（根音 + kind），没有原文就按结构拼出来
       const chordText = el.harmony ? harmonyText(el.harmony) : "";
-      if (chordText) s += `"${chordText}"`;
+      if (chordText) s += this.chordSymbolText(chordText);
       // 段落词/注记走 ABC §4.19 的注记写法（`^` = 标在上方）
       // 增时线上的注记（文本谱 `- "…"`）123 挂不到 `-` 上，并到宿主音符写出（宿主自己没有时）
       const word = ch?.sectionWord ?? ch?.sustains?.find((su) => su.sectionWord !== undefined)?.sectionWord;
@@ -416,9 +457,9 @@ export abstract class AbcFamilyEmitter {
         midIdx++;
         prevGroup = undefined;
       }
-      // 符杠分组：同组连写、不同组之间留空格
+      // 符杠分组（ABC）：同组连写、不同组之间留空格
       const group = ch?.beamGroup;
-      const sameGroup = group !== undefined && group === prevGroup;
+      const sameGroup = this.spaceBeams && group !== undefined && group === prevGroup;
       if (pieces.length && sameGroup) pieces[pieces.length - 1] += s;
       else pieces.push(s);
       prevGroup = group;

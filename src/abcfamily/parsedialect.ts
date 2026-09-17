@@ -1,10 +1,11 @@
-// 组装期的方言钩子：`parse.ts` 的**组装逻辑两种方言完全共用**（小节切分、符杠分组、
+// 组装期的方言钩子：`parse.ts` 的**组装逻辑两种方言完全共用**（小节切分、
 // Mark 配对、歌词对位、`I:playorder` 回填），只有这几处必须按方言分：
 //
 //   - 一个 token 的**时值**怎么算（123 是减时线/附点相对，ABC 是分数 × `L:`）
 //   - 一个 note token 变成什么样的 `Note`（123 给 `degree`，ABC 给 `pitch`）
 //   - `K:` 怎么读（123 首调 `1=F`，ABC 音名 `F` / `Em` / `D bass`）
 //   - `-` 是增时线还是 tie
+//   - 空白算不算符杠分组（ABC 算，123 不算、按拍自动）
 //
 // `ScoreDoc.Note` 本来就是 `degree` 与 `pitch` 并存、可互推（`model/helpers.ts`），
 // 所以两套 token 汇进同一个模型，不需要第二个模型。
@@ -45,6 +46,9 @@ export interface ParseDialect {
   /** **代码里的换行是不是谱面换行**。ABC §6.1 默认是（`I:linebreak <EOL>`）；
    *  123 不是——它用显式的 `$`，因为简谱一行往往写得很长、不该被源码折行绑死。 */
   lineEndIsBreak: boolean;
+  /** **空白是不是符杠分组**。ABC §4.7 是（连写同杠、空格断开）；
+   *  123 不是——符杠按拍自动算（排版 `beamGroupsOf`），空格只为好读、手写不必操心分组。 */
+  spaceBeams: boolean;
 }
 
 // ───────────────────────── 123 ─────────────────────────
@@ -84,6 +88,7 @@ export const DIALECT_123: ParseDialect = {
   hyphen: "sustain",
   defaultLen: () => ({ num: 1, den: 4 }),
   lineEndIsBreak: false,
+  spaceBeams: false,
 };
 
 // ───────────────────────── 标准 ABC ─────────────────────────
@@ -180,4 +185,5 @@ export const DIALECT_ABC: ParseDialect = {
   // ABC §3.1.7：`M:` 的值 ≥ 0.75 用 1/8，否则 1/16
   defaultLen: (num, den) => (den > 0 && num / den >= 0.75 ? { num: 1, den: 8 } : { num: 1, den: 16 }),
   lineEndIsBreak: true,
+  spaceBeams: true,
 };

@@ -218,6 +218,30 @@ export const PU_LYRIC_PUNCTUATION = "，。！？、；：,.!?;:…—～~《》
 /** `pu/parse.ts`：引号。左引号领起下一个字，右引号贴前一个字（正是 CLREQ 的 open/close 语义）。 */
 export const PU_LYRIC_QUOTES = "“”‘’\"";
 
+// ── 123 歌词行的切分口径：`j123/parse.ts::parseLyricLine` 读、`abcfamily/emit.ts` 判要不要包 `{}`，**两边必须同一份** ──
+
+/** CJK 字：歌词里一字一音节。 */
+export function isLyricCjk(ch: string): boolean {
+  const c = ch.codePointAt(0) ?? 0;
+  return (
+    (c >= 0x3400 && c <= 0x4dbf) ||
+    (c >= 0x4e00 && c <= 0x9fff) ||
+    (c >= 0xf900 && c <= 0xfaff) ||
+    (c >= 0x20000 && c <= 0x2ebef)
+  );
+}
+
+/** 并入前一字、不占音符格的标点。**引号也不占音符格**：直引号 `"` 分不出开闭，一律贴前字——
+ *  位置上略有出入，但对位是对的；而把它当成一个音节会让后面整行错位、末尾溢出丢字。 */
+export function isLyricTrailingPunct(ch: string): boolean {
+  return PU_LYRIC_PUNCTUATION.includes(ch) || "”’｡、\"".includes(ch);
+}
+
+/** 领起后一个字的左引号。 */
+export function isLyricOpenQuote(ch: string): boolean {
+  return ch === "“" || ch === "‘";
+}
+
 /** `mixed/model.ts::LyricLayout.widthInfo`：判「哪些字算 CJK 主体」时要排除的标点。 */
 export const MIXED_PUNCT = "「」（），。！；：、“”？｡";
 
