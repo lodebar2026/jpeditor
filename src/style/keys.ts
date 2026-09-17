@@ -22,7 +22,7 @@ export interface KeyDef {
   /** `MixedOptions` 上的字段名（可带一级子路径，如 `lineWidths.stem`）；缺 = 混排/五线谱不支持。 */
   mixed?: string;
   /** 成书 `BookStyle` 上的路径（`metrics.systemGapEm`、`layout.verseNumbers`…）；缺 = 成书不读。
-   *  字段名以 `Em` 结尾的，样式表里**必须**写 `em` 单位，数值原样存进字段（不乘字号，浮点逐位不变）；
+   *  字段名以 `Em` 结尾的，样式表里**必须**写 `em` 单位（基准是字号，不是墨迹高），数值原样存进字段（不乘字号，浮点逐位不变）；
    *  其余长度写裸数（pt）。成书这一路由 `style/bookjpcss.ts` 读，不经 `LayoutOptions` 的覆写。 */
   book?: string;
   /** 不支持的那一侧的说法，进报错信息。 */
@@ -38,7 +38,7 @@ export const ROLE_FONTS: Partial<Record<StyleRole, { layout?: string; mixed?: st
 };
 
 /** `@jianpu`：简谱内容。
- *  成书一列（`book`）里 `em` 的基准是音符字高，只有 `lyric-gap` / `slur-thickness` / `barline` /
+ *  成书一列（`book`）里 `em` 的基准是音符字号，只有 `lyric-gap` / `slur-thickness` / `barline` /
  *  `final-barline` 按歌词字号——`style/book.ts::applyBookPreset` 原来就是这么乘的。 */
 export const JIANPU_KEYS: Record<string, KeyDef> = {
   "note-bold": { kind: "bool", layout: "noteBold", note: "混排的简谱数字不单独加粗" },
@@ -52,7 +52,7 @@ export const JIANPU_KEYS: Record<string, KeyDef> = {
   "lyric-stack": { kind: "len", layout: "lyricStack", book: "metrics.lyricToLyricEm" },
   "chord-gap": { kind: "len", layout: "chordGap", book: "metrics.chordToNoteEm" },
   "chord-plain": { kind: "bool", layout: "chordPlainText", book: "metrics.chordPlain" },
-  "bracket-width": { kind: "len", layout: "bracketWidth", book: "metrics.inkBracketWidth" },
+  "bracket-width": { kind: "len", layout: "bracketWidth", book: "metrics.bracketWidth" },
   "bracket-foot": { kind: "len", layout: "bracketFoot", book: "metrics.bracketFootEm" },
   "repeat-dot-diameter": { kind: "len", book: "metrics.repeatDotDiam", note: "纯简谱的反复点按半径（repeatDotRadius）自算" },
   "slur-thickness": { kind: "len", layout: "slurTieThickness", book: "metrics.slurThicknessEm" },

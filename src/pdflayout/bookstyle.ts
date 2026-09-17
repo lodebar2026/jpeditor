@@ -8,7 +8,9 @@
 // 不是拍脑袋的常量——「保留原书的字体与间距特征」就落在这里。
 //
 // 单位约定（**改字段前先看这条**）：
-//   - 随字号缩放的量一律存 em（`*Em` 后缀），基准是**音符字高** `roles.note.size`；
+//   - 角色的 `size` 是**字号**（font-size，pt），不是墨迹高。原书只量得到墨迹高，
+//     换成字号在生成时做（`stats.ts::inferBookStyle` 的 `inkRatio`，按各角色的样本字实测字体）。
+//   - 随字号缩放的量一律存 em（`*Em` 后缀），基准是**音符字号** `roles.note.size`；
 //     换字号时版式自动跟随。
 //   - 不随字号缩放的量（线宽、点直径、页面尺寸、页边距）存 pt。
 //
@@ -18,7 +20,7 @@ import { STYLE_ROLES, mergeStyle, type AlignMode, type DeepPartial, type FontRef
 export interface RoleStyle {
   /** 引用 BookStyle.fonts 的键。 */
   font: string;
-  /** 字号（pt）：同类型字形高度的中位数。 */
+  /** 字号（font-size，pt）：同类型字形墨迹高的中位数 ÷ 样本字的墨迹占比（见 `INK_SAMPLE`）。 */
   size: number;
   /** 基线修正（× size）：PageSpec 的 baselineY 是**字形下缘中位数**、不是真基线，
    *  换字体后拉丁/数字行会整体错半个字。由 `scripts/relayout.mjs --calibrate` 标定一次写回。 */
@@ -27,7 +29,7 @@ export interface RoleStyle {
   color?: number;
 }
 
-/** 间距。命名规则：`*Em` 随字号缩放（基准 roles.note.size；个别项按歌词字号，见 `style/book.ts`），其余为 pt。
+/** 间距。命名规则：`*Em` 随字号缩放（基准音符字号 roles.note.size；个别项按歌词字号，见 `style/book.ts`），其余为 pt。
  *  每一项的量法见 docs/实现/矢量PDF识别.md 的「重排」一节与 stats.ts 的注释。
  *  **只留排版真正读的量**：原书量到而排版不用的（`ink*` 描边宽、各处到谱行的距离…）只进
  *  `bookstyle-report.md` 作比对，不进这里。样式表里的写法见 `style/keys.ts` 的 `book` 一列。 */
@@ -38,8 +40,8 @@ export interface BookMetrics {
   /** 相邻歌词字的**间隙** ÷ 歌词字号。排版器只保证歌词不重叠，字距会压到 0；
    *  原书的歌词字之间是有呼吸的，不给这道间隙，一行会挤进三十几个字。 */
   lyricGapEm?: number;
-  /** 房号/三连音括线的线宽（pt）与「脚」长 ÷ 音符字高。从原书量的（inventory 的 `bracket` 类）。 */
-  inkBracketWidth?: number;
+  /** 房号/三连音括线的线宽（pt）与「脚」长 ÷ 音符字号。从原书量的（inventory 的 `bracket` 类）。 */
+  bracketWidth?: number;
   bracketFootEm?: number;
 
   // —— 纵向栅格（减时线，见 docs/实现/简谱纵向栅格.md）——
@@ -59,14 +61,15 @@ export interface BookMetrics {
   //
   // 引擎的 slurTieThickness / jpBeamWidth / barlineWidth 是**按 fontSize≈28 调出来的绘制厚度**，
   // 不是原书的描边宽（0.19pt 上下），所以一律存 `*Em`（× 字号）。
-  /** 弧的**凸起高度**（× 音符字高）。引擎的弧高公式是按 fontSize≈28 的绝对像素调的，
+  /** 弧的**凸起高度**（× 音符字号）。引擎的弧高公式是按 fontSize≈28 的绝对像素调的，
    *  换成成书的小字号后按比例缩会扁成一条线，所以这里给一个明确的物理目标，
    *  由 style/book.ts::applyBookPreset 反算缩放系数。 */
   slurArcEm: number;
-  /** 弧顶的**上限**与**下限**，× 音符字高（与 `slurArcEm` 同口径）。
+  /** 弧顶的**上限**与**下限**，× 音符字号（与 `slurArcEm` 同口径）。
    *  对数公式两头都失控：长跨度一路长高去顶和弦，短跨度塌成一条直线。
-   *  原书实测（1205 条，页 40-240）：跨度 0-25pt 的弧高恒为 0.41 × 音符高
-   *  （最短两桶完全相同，说明原书短弧是**定高**的），60-90pt 也才 0.66。
+   *  原书实测（1205 条，页 40-240）：跨度 0-25pt 的弧高恒为 0.41 × 音符墨迹高
+   *  （最短两桶完全相同，说明原书短弧是**定高**的），60-90pt 也才 0.66；
+   *  Times 数字墨迹占字号 0.674，折成字号口径是 0.276 / 0.445。
    *  上限另有一道「压在和弦带下面」的钳制，见 browser.ts。 */
   slurMaxArcEm?: number;
   slurMinArcEm?: number;
@@ -232,6 +235,21 @@ export function defaultFonts(): Record<string, FontRef> {
   };
 }
 
+/** 各角色量墨迹高用的样本字：原书量到的是墨迹高，除以这个字在该角色字体里的「墨迹高 ÷ 字号」就是字号。
+ *  没列的角色（汉字档）一律用「国」——`stats.ts` 汉字档也只按汉字取样，两边口径一致。 */
+export const INK_SAMPLE: Partial<Record<StyleRole, string>> = {
+  note: "5",
+  tuplet: "3",
+  chord: "G",
+  keyMeter: "4",
+  footer: "8",
+  verseNum: "1",
+};
+
+export function inkSampleOf(role: StyleRole): string {
+  return INK_SAMPLE[role] ?? "国";
+}
+
 /** 各角色默认引用哪个字体（字号由统计填，这里只给字体与对齐口径）。 */
 const ROLE_FONT: Record<StyleRole, { font: string; align: AlignMode }> = {
   title: { font: "wei", align: "center" },
@@ -283,7 +301,7 @@ export function defaultBookStyle(): BookStyle {
       systemGapEm: 2.2,
       noteStepEm: 1.5,
       lyricGapEm: 0.1,
-      inkBracketWidth: 0,
+      bracketWidth: 0,
       bracketFootEm: 0,
       divLineGapEm: 0.17,
       divLineStepEm: 0.17,
@@ -291,9 +309,10 @@ export function defaultBookStyle(): BookStyle {
       chordToNoteEm: 1.3,
       chordPlain: true,
       lyricToLyricEm: 1.5,
-      slurArcEm: 0.9,
-      slurMaxArcEm: 0.66,
-      slurMinArcEm: 0.41,
+      // 原是 × 音符墨迹高的 0.9 / 0.66 / 0.41，× 0.674（Times 数字墨迹占字号）折成字号口径
+      slurArcEm: 0.607,
+      slurMaxArcEm: 0.445,
+      slurMinArcEm: 0.276,
       slurFlatSpanSteps: 4,
       slurFlatNotes: 0,
       slurFlatRatio: 7,
@@ -381,7 +400,7 @@ export function roleOf(s: BookStyle, role: StyleRole): RoleStyle {
   return s.roles[role] ?? s.roles.lyric;
 }
 
-/** em → pt（基准：音符字高）。 */
+/** em → pt（基准：音符字号）。 */
 export function emToPt(s: BookStyle, em: number): number {
   return em * s.roles.note.size;
 }

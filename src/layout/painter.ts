@@ -344,8 +344,8 @@ export class JinpuPainter extends ScorePainter {
    * 编辑器那一路只在曲中转调/转拍号时才画（`KeySig` / `TimeSig` 两个 Entry），
    * 首调与首拍号历来只存在 `.Title` 的字段里，排不上纸。
    *
-   * 纵向那几个间距按成书实测反算（基准是署名字号 `roles.credit.size` = 8.99pt）：
-   * 行距 `creditLineGap` 13.1 = 1.46 个署名字号；调号拍号的基线与**最后一行**署名齐
+   * 纵向那几个间距按成书实测反算（基准是署名字号 `roles.credit.size` = 11.01pt，墨迹高 8.99）：
+   * 行距 `creditLineGap` 13.1 = 1.19 个署名字号；调号拍号的基线与**最后一行**署名齐
    * （成书 `keyMeterBaseline` 117.94 落在第二行署名 116.08 上，两行署名是常态）。
    */
   private bookHead(w: number): Group {
@@ -389,7 +389,7 @@ export class JinpuPainter extends ScorePainter {
     // 词曲署名：右对齐，一行一条
     const cf = fnt.makeWithSize(creditSize);
     const cfm = cf.metrics;
-    const gap = creditSize * 1.46;
+    const gap = creditSize * 1.19;
     const base = ypos - cfm.ascent;
     credits.forEach((t, i) => {
       const tf = new TextFrame();

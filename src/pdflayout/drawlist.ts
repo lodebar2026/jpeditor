@@ -111,9 +111,12 @@ export interface DrawBook {
 }
 
 export interface SpecToDrawOptions {
+  /** 该角色样本字（`bookstyle.ts::inkSampleOf`）的「墨迹高 ÷ 字号」。PageSpec 量到的是墨迹高，
+   *  样式里是字号，两边比较、落值都要经它换算。由调用方量字体（本文件无 DOM）。 */
+  inkRatio: (role: StyleRole) => number;
   /** 读不出的字形（PageSpec 里是 "�"）按形状键回填。 */
   fallbackChar?: (key: string) => string | null;
-  /** 次号歌词的分档阈值（pt）。默认 lyric 字号 − 0.6。 */
+  /** 次号歌词的分档阈值（墨迹高，pt）。默认 lyric 墨迹高 − 0.6。 */
   lyric2Cut?: number;
 }
 
@@ -153,13 +156,13 @@ function bodyHeight(run: TextRun): number {
   return median(hs.filter((h) => h >= m)) || m;
 }
 
-export function specToDrawPage(spec: PageSpec, style: BookStyle, opt: SpecToDrawOptions = {}): SpecToDrawResult {
+export function specToDrawPage(spec: PageSpec, style: BookStyle, opt: SpecToDrawOptions): SpecToDrawResult {
   const items: DrawItem[] = [];
   let filled = 0;
   let unread = 0;
   let keptOwnSize = 0;
   const unreadKeys: { key: string; role: StyleRole }[] = [];
-  const lyric2Cut = opt.lyric2Cut ?? style.roles.lyric.size - 0.6;
+  const lyric2Cut = opt.lyric2Cut ?? style.roles.lyric.size * opt.inkRatio("lyric") - 0.6;
 
   // ── 线框：image/shading 这一版不还原（原件里各只有 1 处，另走原样嵌入）
   for (const f of spec.frames) {
@@ -190,8 +193,10 @@ export function specToDrawPage(spec: PageSpec, style: BookStyle, opt: SpecToDraw
     // 只有当这一行明显不属于该档（差 25% 以上）时才保留它自己的字号，
     // 否则像目录里混排的大小字会被强行拉平。
     let size = roleStyle.size;
-    if (body > 0 && Math.abs(body - roleStyle.size) / roleStyle.size > 0.25) {
-      size = Number(body.toFixed(2));
+    const ratio = opt.inkRatio(role);
+    const ink = size * ratio;
+    if (body > 0 && Math.abs(body - ink) / ink > 0.25) {
+      size = Number((body / ratio).toFixed(2));
       keptOwnSize++;
     }
     const chars = run.chars;

@@ -48,7 +48,10 @@ export interface PuMetrics {
   bodyLeftPad: number;
 
   // ---- 音符字形 ----
-  /** 数字墨迹高度：据此反推字号，保证与原版等大 */
+  /** 音符数字的**字号**（pt）。样式值只收字号——原版量到的数字墨迹高 17.9，按量版时的字体折成字号落值。 */
+  digitSize: number;
+  /** 数字「1」的**墨迹高**：`digitSize` × 字体实测的墨迹占比，由 `withDigitInk` 在 painter 定稿时填，
+   *  **不是样式值**。纵向栅格（减时线、八度点、记号槽位）是贴着墨迹排的，拿它当内部单位。 */
   digitInkHeight: number;
   /** 高音点中心相对数字锚点的 y（负为上） */
   octaveUpY: number;
@@ -136,7 +139,7 @@ export interface PuMetrics {
    *  ——见 puSlurStyle / puSlurRise，两处同一个数。 */
   slurHeight: number;
   /** 跨度超过它改画扁平长连音线（见 layout.ts 的 SlurTieBase.initFlat）。
-   *  取 12 × 数字墨迹高，与 .jpwabc 谱面那边的 `numberSize * 8` 同一量级。 */
+   *  约 8.6 个数字字号，与 .jpwabc 谱面那边的 `numberSize * 8` 同一量级。 */
   slurFlatSpan: number;
   /** 弧线厚度。与 .jpwabc 谱面同值（layout.ts 的 slurTieThickness = 6） */
   slurThickness: number;
@@ -178,7 +181,9 @@ const PRINT: PuMetrics = {
   justifyMinFill: 0.7,
   bodyLeftPad: 3,
 
-  digitInkHeight: 17.9,
+  // 原版量到数字墨迹高 17.9；苹方粗体「1」墨迹占字号 0.714，折成字号 25.07，落整数
+  digitSize: 25,
+  digitInkHeight: NaN, // 派生量，见 withDigitInk
   octaveUpY: -14,
   octaveDownY: 13,
   octaveDotGap: 5.5,
@@ -223,12 +228,12 @@ const PRINT: PuMetrics = {
   laneOrnament: -17,
   laneSlur: -25,
   laneSlurStep: 5,
-  slurStackGap: 4.3, // 17.9/0.70/6
+  slurStackGap: 4.3, // ≈ 数字字号 25 / 6
   laneWedge: -44,
   laneVolta: -53,
   laneLevelStep: 6,
   slurHeight: 7,
-  slurFlatSpan: 215, // 17.9 × 12
+  slurFlatSpan: 215, // ≈ 数字字号 25 × 8.6
   slurThickness: 6,
   wedgeMouth: 7,
   wedgeWidth: 1.3,
@@ -244,8 +249,8 @@ const PRINT: PuMetrics = {
 /**
  * 诗歌本的尺寸按**诗歌本 App 自己导出的《圣哉三一歌》长图**逐项量得
  * （四声部、四段歌词、四个 system；底本在本地 `testdata/pu/ref/圣哉三一歌.pdf`）。
- * 量法：抽出内嵌位图 → 二值化 → 连通域；以数字「1」的墨迹高为 1 个 digitInkHeight
- * （底本上 119px），曲行锚点取数字墨迹的竖直中心（= painter 画数字的锚点），
+ * 量法：抽出内嵌位图 → 二值化 → 连通域；以数字「1」的墨迹高为 1 个单位（原版 17.9pt，
+ * 底本上 119px），曲行锚点取数字墨迹的竖直中心（= painter 画数字的锚点），
  * 歌词基线取汉字墨迹反推（**字号不等于墨迹**，PingFang SC 的「圣/哉/清」墨迹分别是
  * 字号的 0.829 / 0.905 / 0.917，三条路都指向字号 24.6）。
  *
@@ -262,13 +267,15 @@ const PRINT: PuMetrics = {
  * 弧线的粗细与弧高。
  */
 function applyShige(m: PuMetrics): PuMetrics {
-  const k = m.digitInkHeight / 17.9; // 相对 print profile 的整体缩放
+  const k = m.digitSize / PRINT.digitSize; // 相对 print profile 的整体缩放
   return {
     ...m,
     justify: true, // 诗歌本/印刷原版各 system 都对齐到版心右缘
     // 底本的数字是**粗**的：中部笔画 / 墨迹高 = 0.227，苹方常规只有 0.126、黑体更细（0.111）。
     // 各系统字体里最接近的是 Helvetica/Arial Bold（0.21）。
     digitFamily: "Helvetica Neue, Helvetica, Arial, PingFang SC, sans-serif",
+    // 墨迹高同样是 17.9；Helvetica Neue 粗体「1」墨迹占字号 0.700，折成字号 25.57，落到 .5
+    digitSize: 25.5 * k,
     // 底本量得字号 24.5（汉字墨迹 ≈ 0.846 字号 → 1.15 × 数字墨迹）、行距 29.6，
     // 这里**有意都往上放**：实际渲染下 24.5 的歌词偏小，字号回 27 之后行距也得跟着回 35，
     // 否则四段歌词叠起来会挤。字号与行距是一对，改一个必须改另一个。
@@ -301,8 +308,15 @@ const DIALECT_TWEAK: Record<Dialect, (m: PuMetrics) => PuMetrics> = {
   shige: applyShige,
 };
 
+/** 方言的版式。数字墨迹高还没填（要量字体），排版前经 `withDigitInk` 定稿。 */
 export function metricsFor(dialect: Dialect = "tomato"): PuMetrics {
-  return alignNoteMarks(DIALECT_TWEAK[dialect]({ ...PRINT }));
+  return DIALECT_TWEAK[dialect]({ ...PRINT });
+}
+
+/** 定稿：按数字字体实测的「墨迹高 ÷ 字号」填上数字墨迹高，再把减时线、八度点贴上去。
+ *  放在所有缩放（谱面 `FontSize:`、面板字号）之后做——那些只动字号，墨迹高跟着字号走。 */
+export function withDigitInk(m: PuMetrics, inkPerPt: number): PuMetrics {
+  return alignNoteMarks({ ...m, digitInkHeight: m.digitSize * inkPerPt });
 }
 
 /**
@@ -419,7 +433,7 @@ export function applyDocOptions(
 /** 音符栅格那一族尺寸：改音符字号，步进、八度点、减时线都得等比跟随。
  *  `applyDocOptions` 的 `q=` 与 `applyUserOptions` 的整体缩放共用这张表。 */
 const NOTE_GRID_KEYS = [
-  "digitInkHeight", "octaveUpY", "octaveDownY", "octaveDotGap", "octaveDotRadius",
+  "digitSize", "octaveUpY", "octaveDownY", "octaveDotGap", "octaveDotRadius",
   "dotOffsetX", "dotRadius", "underlineY", "underlineGap", "underlineWidth",
   "underlineHalfSpan", "barlineHeight", "sustainWidth", "sustainHalfLength",
   "stepPlain", "stepBeamed", "stepBarline", "stepPerDot", "slurStackGap", "slurFlatSpan",
@@ -445,7 +459,7 @@ export interface PuUserOptions {
   /** 整体字号缩放（1 = 原尺寸）。纸与边距不跟着缩——版心不变，字大了每行就放得少。
    *  面板不直接给它：那边给的是**字号 pt**（`digitFontSize`），由 PuPainter 换算过来。 */
   scale?: number;
-  /** 音符数字的字号（pt）。0/缺省 = 跟随版式量到的原尺寸。 */
+  /** 音符数字的字号（pt）。0/缺省 = 跟随版式的 `digitSize`。 */
   digitFontSize?: number;
   /** 换纸：实际纸张尺寸（pt）。两个一起给才算数——只给一个等于把纸拉长/压扁。 */
   pageWidth?: number;
