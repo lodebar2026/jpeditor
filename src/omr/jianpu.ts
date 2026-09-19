@@ -381,6 +381,64 @@ function splitBarDash(bin: Binary, comps: Component[], numH: number): Component[
   return out;
 }
 
+/** 小节线顶上粘着表情记号：迦南诗选 1775《十字架的路上》「渐慢rit」的「渐」印得太低，左半的笔画压在下一小节
+ *  开头那根小节线的顶上，两者成了一块 30×82（字号 33）——太高太宽不像小节线，竖笔又只占块高七成，
+ *  untangleBridged 的「贯穿 ≥0.8 块高」也不认，这根小节线就丢了，两小节并成一个。
+ *  判据：从块底往上逐行看，每行都**只有一段**细墨（≤max(3, 0.15 字号)）、且与最底一行左右对得上，
+ *  这样的行连续够一根小节线长（≥1.2 字号）；再往上剩下的墨也得够高（≥0.4 字号），确是另一样东西。
+ *  拆成小节线 + 上面那块，交给 classify 各归各类。数字的竖笔（1、4、7）不到 1.2 字号，挨不上。 */
+function splitBarCap(bin: Binary, comps: Component[], numH: number): Component[] {
+  const out: Component[] = [];
+  let nextId = 4_000_000;
+  const maxBar = Math.max(3, Math.round(numH * 0.15));
+  for (const k of comps) {
+    const b = k.bbox;
+    if (b.h < numH * 1.8 || b.h > numH * 4 || b.w > numH * 1.5) { out.push(k); continue; }
+    // 只看本块自己的像素：矩形里常混着邻块（1775 右边那个 6 和它的减时线），在矩形里重做连通域、
+    // 取包围盒铺满整个矩形的那一块。
+    const sub: Binary = { w: b.w, h: b.h, data: new Uint8Array(b.w * b.h) };
+    for (let yy = 0; yy < b.h; yy++) for (let xx = 0; xx < b.w; xx++) sub.data[yy * b.w + xx] = bin.data[(b.y + yy) * bin.w + b.x + xx];
+    const labels = new Int32Array(b.w * b.h);
+    const self = connectedComponents(sub, 1, labels).filter((p) => p.bbox.w === b.w && p.bbox.h === b.h)
+      .sort((p, q) => q.area - p.area)[0];
+    if (!self) { out.push(k); continue; }
+    const own: Binary = { w: b.w, h: b.h, data: new Uint8Array(b.w * b.h) };
+    for (let i = 0; i < labels.length; i++) own.data[i] = labels[i] === self.id ? 1 : 0;
+    // 一行里的墨段：只有一段时返回 [x0, x1)，否则 null
+    const run = (yy: number): [number, number] | null => {
+      let x0 = -1, x1 = -1;
+      for (let xx = 0; xx < b.w; xx++) {
+        if (!own.data[yy * b.w + xx]) continue;
+        if (x0 < 0) x0 = xx;
+        else if (xx > x1) return null;              // 前一段已断开，又见墨：不止一段
+        x1 = xx + 1;
+      }
+      return x0 < 0 ? null : [x0, x1];
+    };
+    const base = run(b.h - 1);
+    if (!base || base[1] - base[0] > maxBar) { out.push(k); continue; }
+    let n = 0;
+    for (let yy = b.h - 1; yy >= 0; yy--) {
+      const r = run(yy);
+      if (!r || r[1] - r[0] > maxBar || Math.abs(r[0] - base[0]) > 1 || Math.abs(r[1] - base[1]) > 1) break;
+      n++;
+    }
+    const at: Rect = { x: 0, y: 0, w: b.w, h: b.h };
+    const top = n >= numH * 1.2 && n < b.h ? tightBox(own, at, 0, b.w, 0, b.h - n) : null;
+    if (!top || top.h < numH * 0.4) { out.push(k); continue; }
+    const bar = tightBox(own, at, 0, b.w, b.h - n, b.h)!;
+    const mk = (r: Rect): Component => {
+      let area = 0;
+      for (let yy = r.y; yy < r.y + r.h; yy++) for (let xx = r.x; xx < r.x + r.w; xx++) area += own.data[yy * b.w + xx];
+      const abs = { x: b.x + r.x, y: b.y + r.y, w: r.w, h: r.h };
+      return { id: nextId++, bbox: abs, area, cx: rcx(abs), cy: rcy(abs) };
+    };
+    probe("splitBarCap");
+    out.push(mk(bar), mk(top));
+  }
+  return out;
+}
+
 /** 估计数字字号：取"近似方形且较大"连通块的高度中位数。 */
 function estimateNumH(comps: Component[]): number {
   const squarish = comps.filter((k) => {
@@ -1034,6 +1092,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const raw = connectedComponents(bin, 4);
   let comps = mergeBrokenHlines(untangleBridged(raw, bin, estimateNumH(raw)), estimateNumH(raw));
   comps = splitBarDash(bin, comps, estimateNumH(comps));
+  comps = splitBarCap(bin, comps, estimateNumH(comps));
   if (isCleanPage(comps, estimateNumH(comps))) comps = splitArcEndDots(bin, comps, estimateNumH(comps));
   const { c, numH } = classify(comps, bin);
 

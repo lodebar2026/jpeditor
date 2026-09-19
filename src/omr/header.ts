@@ -686,7 +686,8 @@ export async function recognizeHeader(
         const group = dir > 0 ? chain(eq.x + eq.w, 1, one.bbox, Math.max(numH, one.bbox.h))
           : chain(eq.x, -1, one.bbox, Math.max(numH, one.bbox.h));
         const k = await readKeyGroup(group);
-        if (k) return k;
+        // 框连同 `1=` 一起给：叠加视图框全调号，页眉「与调号同一排」也按整个调号的高度比。
+        if (k) return { ...k, bbox: unionRects([one.bbox, eq, k.bbox]) };
       }
     }
     // 锚点二：拍号左边紧挨着的音名（不写 `1=` 的谱：`♭E 4/4`、`E♭ 3/4`）。
@@ -736,8 +737,12 @@ export async function recognizeHeader(
   async function standaloneNumber(tl: HLine, ls: HLine[]): Promise<{ text: string; bbox: Rect } | undefined> {
     const sameRow = (b: Rect, h: number) => overlapRatioY(b, tl.bbox) >= 0.3 && h >= tl.charH * 0.5 &&
       (b.x >= tl.bbox.x + tl.bbox.w || b.x + b.w <= tl.bbox.x);
+    // det 框外扩得松：迦南诗选 1765「1765　主啊 求你回来吧」两框横向交叠 28px（{309,w191} 与 {472,…}），
+    // 严格不交叠就把曲号挡了。det 框改看**中心**落在标题框外；回源图找的连通块是紧框，仍用上面那条。
+    const sameRowDet = (b: Rect, h: number) => overlapRatioY(b, tl.bbox) >= 0.3 && h >= tl.charH * 0.5 &&
+      (b.x + b.w / 2 >= tl.bbox.x + tl.bbox.w || b.x + b.w / 2 <= tl.bbox.x);
     const byDist = (a: Rect, b: Rect) => Math.abs(a.x + a.w / 2 - tl.cx) - Math.abs(b.x + b.w / 2 - tl.cx);
-    const det = ls.filter((l) => l !== tl && /^\s*\d{1,4}\s*[.．、]?\s*$/.test(l.text) && sameRow(l.bbox, l.charH))
+    const det = ls.filter((l) => l !== tl && /^\s*\d{1,4}\s*[.．、]?\s*$/.test(l.text) && sameRowDet(l.bbox, l.charH))
       .sort((a, b) => byDist(a.bbox, b.bbox))[0];
     if (det) return { text: det.text.replace(/\D/g, ""), bbox: det.bbox };
     // 曲号与不写 `1=` 的调号拍号挨着印，det 并成一行（旷野人声 16《爱心的功课》：`16bE4/4`）：
@@ -925,28 +930,6 @@ export async function recognizeHeader(
         out.regions.push({ text: out.subtitle, bbox: cand.bbox, chars: charsForText(out.subtitle, cand.chars) });
       }
     }
-    // 署名只印一个名字、不带「词/曲」的：迦南诗选每页右上角都印着「迦南诗歌」，与调号同一排、
-    // 位置正是别的歌本印「作词/作曲」的地方，上面几条认职能词的规则一条都挨不上，整行被丢掉。
-    // 判据：纯汉字短行（2~8 字）、不是标题/副标题、**整行落在页面右侧 40% 里**、与调号行同一排、
-    // 在标题下一排，且本页没认出别的署名。后两条是抽检别的歌本收紧的：同一个位置上也常印分类标签
-    //（「敬拜赞美」「颂赞」「第一首」），有的还在标题那一排或更下面；有正经「作词/作曲」的页
-    // 更不该再猜（世上所有的民族的词曲档因此一度掉到 0）。
-    const keyLine = ls.find((l) => /[1１]\s*[=＝]/.test(l.text));
-    if (titleLine && keyLine && !out.credits.length) {
-      for (const l of rest) {
-        if (l === titleLine || l === subtitleLine || l === keyLine) continue;
-        const t = l.text.trim();
-        if (!/^[一-鿿]{2,8}$/.test(t)) continue;
-        if (l.bbox.x < bin.w * 0.6) continue;
-        if (Math.abs(l.cy - keyLine.cy) > Math.max(l.charH, keyLine.charH) * 0.6) continue;
-        // 标题单独占一排、署名在它**下一排**：整编本、赞美诗歌等是「调号 · 标题 · 分类」挤在同一排，
-        // 右边那个是分类标签（「救主耶稣」「崇敬颂赞 三一」），不是署名。
-        if (l.cy - titleLine.cy < titleLine.charH) continue;
-        if (/^第.{1,6}[首篇章]$/.test(t)) continue;                // 「第一首」这类编号
-        out.credits.push(t);
-        out.regions.push({ text: t, bbox: l.bbox, chars: charsForText(t, l.chars) });
-      }
-    }
     // 调号里的升降号读成了残字：`1=♭B` 的 ♭ 印成上标、只有一个数字的三分之一大，PP-OCR 常读成
     // 引号一类的东西（227《施比受更为有福》读成 `1=″B`），`parseMeta` 的 `[b#♭♯]` 一条都对不上，
     // 整个调号就落回默认的 C。此时**回头看形状**：那个字的位置上有一块墨，交给 accidentalOf
@@ -976,6 +959,32 @@ export async function recognizeHeader(
     const keyBox = meta.fifthsLine?.bbox ?? glyphKeyBox;
     if (meta.fifths !== undefined && keyBox) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: keyBox });
     if (meta.tempo !== undefined && meta.tempoLine) out.regions.push({ text: `♩=${meta.tempo}`, bbox: meta.tempoLine.bbox });
+    // 署名只印一个名字、不带「词/曲」的：迦南诗选每页右上角都印着「迦南诗歌」，与调号同一排、
+    // 位置正是别的歌本印「作词/作曲」的地方，上面几条认职能词的规则一条都挨不上，整行被丢掉。
+    // 判据：纯汉字短行（2~8 字）、不是标题/副标题、**整行落在页面右侧 40% 里**、与调号行同一排、
+    // 在标题下一排，且本页没认出别的署名。后两条是抽检别的歌本收紧的：同一个位置上也常印分类标签
+    //（「敬拜赞美」「颂赞」「第一首」），有的还在标题那一排或更下面；有正经「作词/作曲」的页
+    // 更不该再猜（世上所有的民族的词曲档因此一度掉到 0）。
+    // 调号行 det 漏读时（1765 那排 `1=C 4/4` 只读出个 `à`，调号是 keyByGlyphs 按字形认的），
+    // 同一排就拿字形兜底给的调号框来比。
+    const keyLine = ls.find((l) => /[1１]\s*[=＝]/.test(l.text));
+    const keyRow = keyLine ? { cy: keyLine.cy, h: keyLine.charH }
+      : glyphKeyBox ? { cy: glyphKeyBox.y + glyphKeyBox.h / 2, h: glyphKeyBox.h } : undefined;
+    if (titleLine && keyRow && !out.credits.length) {
+      for (const l of rest) {
+        if (l === titleLine || l === subtitleLine || l === keyLine) continue;
+        const t = l.text.trim();
+        if (!/^[一-鿿]{2,8}$/.test(t)) continue;
+        if (l.bbox.x < bin.w * 0.6) continue;
+        if (Math.abs(l.cy - keyRow.cy) > Math.max(l.charH, keyRow.h) * 0.6) continue;
+        // 标题单独占一排、署名在它**下一排**：整编本、赞美诗歌等是「调号 · 标题 · 分类」挤在同一排，
+        // 右边那个是分类标签（「救主耶稣」「崇敬颂赞 三一」），不是署名。
+        if (l.cy - titleLine.cy < titleLine.charH) continue;
+        if (/^第.{1,6}[首篇章]$/.test(t)) continue;                // 「第一首」这类编号
+        out.credits.push(t);
+        out.regions.push({ text: t, bbox: l.bbox, chars: charsForText(t, l.chars) });
+      }
+    }
     // **几何法读出的并排拍号优先**：det 是按行切的，`1=C 3/4 4/4` 这种调号与拍号挨得紧的
     // 页眉会被切成一整块（2156 实测读成 "1=Cz" + 孤零零一个 "4"），分子分母根本对不上，
     // parseMixedMeters 无从下手、只落下一个 4/4。而 jianpu.ts::meterCandidates 那套判据
