@@ -67,29 +67,124 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
     tryCut(b.h - Math.round(numH * 0.6), b.h - Math.round(numH * 0.12), false);
 }
 
-/** 减时线与紧贴其下的低八度点粘成一块：扁长的线下沿挂着个小墨斑，整块高度跳到 0.33 字号
- *  （迦南诗选《竭力保守》第 6 行 `2̲ 1̳ 6̳` 实测 207×15，numH 45），过不了「横线要够扁」那道门
- *  → 第二条减时线与那个低八度点**一起消失**，那一拍时值翻倍、音高还高了八度。
- *  按行墨宽切开：线那几行的墨宽≈整块宽，点那几行只有点径。返回 null 表示不是这种粘连。
- *  **只在干净谱面上用**（调用处按整页碎渣比把门，见 classify）：脏页上减时线下沿粘的碎渣
- *  与八度点同形，切开等于凭空多一个八度。 */
-function splitMergedUnderlineDot(bin: Binary, b: Rect, numH: number): { line: Component; dot: Component } | null {
-  if (b.w < numH * 0.6 || b.w < b.h * 4) return null;
-  if (b.h <= Math.max(3, numH * 0.32) || b.h > numH * 0.6) return null;
-  const ink = rowInk(bin, b);
-  let v = -1;
-  for (let y = 0; y < b.h; y++) if (ink[y]! < b.w * 0.5) { v = y; break; }
-  if (v <= 0) return null;                       // 顶上就不是整条线 → 不是「线+点」
-  const mk = (y0: number, y1: number): Component | null => {
-    const t = tightBox(bin, b, 0, b.w, y0, y1);
-    return t ? { id: -1, bbox: t, area: t.w * t.h, cx: rcx(t), cy: rcy(t) } : null;
+/** 本页减时线的**统计线粗**：够宽够扁的横线的高度中位数（同伴 3px、切慕 2px）。
+ *  剥线时按它量「线带该有多厚」，挂在线上的毛刺/点才不会被算成线。没有横线则 0（不剥）。 */
+function strokeLineH(comps: Component[], numH: number): number {
+  const hs = comps
+    .filter((k) => k.bbox.w >= numH * 0.6 && k.bbox.h <= Math.max(3, numH * 0.32) && k.bbox.w >= k.bbox.h * 3)
+    .map((k) => k.bbox.h);
+  return hs.length >= 3 ? median(hs) : 0;
+}
+
+/** 减时线粘着别的墨：**按统计线粗把横线墨迹剥掉，再看剩下的是什么**。两种粘法：
+ *
+ *  · 线 + 挂在线下的低八度点（「线型」）：扁长的线下沿挂着一两个小墨斑，整块高过一条线，
+ *    过不了「横线要够扁」那道门，也不是点、不是数字，**整块被丢**——那几拍的减时线和低音点一起没了
+ *    （迦南诗选《竭力保守》`2̲ 1̳ 6̳` 207×15；《切慕》末行 `0̲6̣̲` 27×7；《同伴》首行 `0 3̣ 6̣ 7̣` 47×7，
+ *    线顶还多个毛刺像素、线下挂两个点）。线行按「最长横向游程 ≥ 0.8 块宽」认。
+ *  · 数字 + 它下面的线（+ 线下的点）（「数字型」）：数字的尾笔碰到减时线，线跑进了数字块里，
+ *    buildJpNums 只在块外找线，这个音就没了减时线；块被撑高，还连累同行别的数字 rec 补高时把线裁进去
+ *    （《同伴》「灵」19×22；第 3 行 `6̣ 7̣` 的 6 连线带两点 47×26，把同行的 7 读成了 1）。
+ *    **数字底部总是窄的，减时线却要盖住整个数字宽**：先量块上部数字体的宽 bodyW，线行的游程要比它
+ *    **宽出一截**（2 的底横、7 的顶横本就与数字等宽，只要求「不窄于」会把 2 的底笔剥掉），
+ *    线带上方还得有一段窄「颈」（6 的尾巴、2 的底笔都窄于线），上下一样宽的不切。
+ *
+ *  线带找到后向上下吸收毛边行（墨量 ≥ 0.3 线宽），总厚不超过统计线粗 + 1。剥掉线带、对剩下的像素
+ *  重做连通域，每一块都得说得清是什么：≤3px 的毛刺丢掉；线下方圆而实的小块是点；（数字型）线上方
+ *  一个整字高的块是数字。**有一块说不清就整块放弃**，退回原来的归类——宁可漏也不凭空造出音符或八度。
+ *  **只在干净谱面上用**（调用处把门）：脏页上线下沿粘的碎渣与八度点同形，切开等于凭空多一个八度。 */
+function stripUnderline(
+  bin: Binary, k: Component, numH: number, lineH: number,
+): { lines: Component[]; dots: Component[]; digits: Component[] } | null {
+  const b = k.bbox;
+  if (lineH <= 0 || b.h <= lineH + 1) return null;                 // 高度对得上一条线 → 不用剥
+  const lineMode = b.w >= numH * 0.6 && b.h <= numH * 0.6;
+  const digitMode = !lineMode && b.h >= numH * 1.15 && b.h <= numH * 2 && b.w >= numH * 0.3;
+  if (!lineMode && !digitMode) return null;
+  // 本块自己的像素（包围盒里可能还躺着别的块，如《同伴》那个 6 连线块的框里就有右邻的 7）。
+  const sub: Binary = { w: b.w, h: b.h, data: new Uint8Array(b.w * b.h) };
+  for (let y = 0; y < b.h; y++) for (let x = 0; x < b.w; x++) sub.data[y * b.w + x] = bin.data[(b.y + y) * bin.w + b.x + x];
+  const labels = new Int32Array(b.w * b.h);
+  const parts = connectedComponents(sub, 1, labels);
+  const self = parts.find((p) => p.bbox.w === b.w && p.bbox.h === b.h) ?? parts.sort((p, q) => q.area - p.area)[0];
+  if (!self) return null;
+  const on = (x: number, y: number) => labels[y * b.w + x] === self.id;
+  const rowCount = (y: number) => { let n = 0; for (let x = 0; x < b.w; x++) if (on(x, y)) n++; return n; };
+  const rowRun = (y: number) => {
+    let best = 0, cur = 0;
+    for (let x = 0; x < b.w; x++) { if (on(x, y)) { if (++cur > best) best = cur; } else cur = 0; }
+    return best;
   };
-  const line = mk(0, v), dot = mk(v, b.h);
-  if (!line || !dot) return null;
-  if (line.bbox.h > Math.max(3, numH * 0.32)) return null;                  // 线须仍是细线
-  const dw = dot.bbox.w, dh = dot.bbox.h;
-  if (dw > numH * 0.5 || dh > numH * 0.5 || dw < numH * 0.1 || dh < numH * 0.1) return null; // 点须像点
-  return { line, dot };
+  const rowSpan = (y: number) => {
+    let lo = -1, hi = -1;
+    for (let x = 0; x < b.w; x++) if (on(x, y)) { if (lo < 0) lo = x; hi = x; }
+    return lo < 0 ? 0 : hi - lo + 1;
+  };
+  const runs = Array.from({ length: b.h }, (_, y) => rowRun(y));
+  let need: number;
+  let yFrom = 0;                                                    // 线带只在这一行以下找
+  if (lineMode) need = Math.max(numH * 0.6, b.w * 0.8);
+  else {
+    let bodyW = 0;
+    for (let y = 0; y < Math.min(b.h, Math.round(numH * 0.8)); y++) bodyW = Math.max(bodyW, rowSpan(y));
+    need = Math.max(numH * 0.6, bodyW + Math.max(2, numH * 0.1));
+    yFrom = Math.round(numH * 0.7);
+  }
+  // 连续的线行成一条线带（可能两条：双减时线）
+  const bands: Array<[number, number]> = [];
+  for (let y = yFrom; y < b.h; y++) {
+    if (runs[y] < need) continue;
+    const last = bands[bands.length - 1];
+    if (last && last[1] === y - 1) last[1] = y; else bands.push([y, y]);
+  }
+  if (!bands.length) return null;
+  const cut = new Uint8Array(b.h);
+  for (const band of bands) {
+    const lineW = Math.max(...runs.slice(band[0], band[1] + 1));
+    if (digitMode) {
+      // 颈：线带上方紧挨的那一行得明显窄于线（上下一样宽 = 数字自己的横笔，不是粘上来的线）
+      const above = band[0] - 1;
+      if (above < 0 || rowSpan(above) >= lineW * 0.6) return null;
+    }
+    // 吸收毛边行，总厚不超过统计线粗 + 1
+    let [y0, y1] = band;
+    const maxH = lineH + 1;
+    if (y1 - y0 + 1 > maxH) return null;                             // 比线还厚：不是减时线
+    while (y1 - y0 + 1 < maxH) {
+      const up = y0 - 1 >= 0 && (!digitMode || y0 - 1 >= yFrom) ? rowCount(y0 - 1) : 0;
+      const dn = y1 + 1 < b.h ? rowCount(y1 + 1) : 0;
+      if (up >= lineW * 0.3 && up >= dn) y0--;
+      else if (dn >= lineW * 0.3) y1++;
+      else break;
+    }
+    for (let y = y0; y <= y1; y++) cut[y] = 1;
+    band[0] = y0; band[1] = y1;
+  }
+  const mkComp = (r: Rect, area: number): Component => ({ id: -1, bbox: r, area, cx: rcx(r), cy: rcy(r) });
+  const lines: Component[] = [];
+  for (const [y0, y1] of bands) {
+    let x0 = b.w, x1 = -1, area = 0;
+    for (let y = y0; y <= y1; y++) for (let x = 0; x < b.w; x++) if (on(x, y)) { area++; if (x < x0) x0 = x; if (x > x1) x1 = x; }
+    lines.push(mkComp({ x: b.x + x0, y: b.y + y0, w: x1 - x0 + 1, h: y1 - y0 + 1 }, area));
+  }
+  // 剥掉线带后剩下的像素逐块认
+  const rest: Binary = { w: b.w, h: b.h, data: new Uint8Array(b.w * b.h) };
+  for (let y = 0; y < b.h; y++) if (!cut[y]) for (let x = 0; x < b.w; x++) if (on(x, y)) rest.data[y * b.w + x] = 1;
+  const topBand = bands[0][0], botBand = bands[bands.length - 1][1];
+  const dots: Component[] = [], digits: Component[] = [];
+  for (const p of connectedComponents(rest, 1)) {
+    if (p.area <= 3) continue;                                      // 毛刺
+    const r: Rect = { x: b.x + p.bbox.x, y: b.y + p.bbox.y, w: p.bbox.w, h: p.bbox.h };
+    const pc = mkComp(r, p.area);
+    const ratio = r.w / r.h;
+    if (p.bbox.y > botBand && r.w >= numH * 0.1 && r.h >= numH * 0.1 && r.w <= numH * 0.5 && r.h <= numH * 0.5 &&
+        ratio >= 0.6 && ratio <= 1.7 && p.area >= r.w * r.h * 0.6) { dots.push(pc); continue; }
+    if (digitMode && p.bbox.y + p.bbox.h <= topBand && r.h >= numH * 0.85 && r.h <= numH * 1.25) { digits.push(pc); continue; }
+    return null;                                                    // 说不清是什么 → 整块不动
+  }
+  if (digitMode && !digits.length) return null;
+  if (lineMode && !dots.length) return null;                        // 只剩一条线：交给原来的横线判据
+  return { lines, dots, digits };
 }
 
 /** 倚音底下的减时线条数：从块底往下 0.6 字高内，逐行看有没有一条与它同宽的横墨，连着的算一条。
@@ -333,6 +428,7 @@ function classify(comps: Component[], bin: Binary): { c: Classified; numH: numbe
   // 一模一样，切开就是凭空多一个八度。
   const pageClean = isCleanPage(comps, numH);
   const c: Classified = { blocks: [], barlines: [], hlines: [], dots: [], clean: pageClean };
+  const lineH = pageClean ? strokeLineH(comps, numH) : 0;
   // 高瘦竖块可能是"八度点 + 窄数字"粘连体（数字不含点）：优先切开、把点与数字笔各归其类，
   // 否则会被下面的小节线判据整块吞掉而丢音（实测高八度 "1̇" 在单行简谱里 h 恰同真小节线）。
   const barCand = (w: number, h: number) =>
@@ -350,17 +446,20 @@ function classify(comps: Component[], bin: Binary): { c: Classified; numH: numbe
     // 3.5 被排除、落到下面的数字块判据；而粗终止线 ▮（实测 w15 h56 → h/w≈3.7）仍 ≥3.5 保留。
     // 早先用 h/w≥2.2 会把 "1" 当小节线整片丢掉（本行八处 "1" 全失，见「哦愿我有千万舌头」）。
     if (h >= numH * 1.3 && w <= numH * 0.6 && h / w >= 3.5) { c.barlines.push(k); continue; }
-    // 扁长块粘着个小墨斑 → 减时线 + 低八度点，切开各归各类（判据见 splitMergedUnderlineDot）。
+    // 减时线粘着低八度点 / 数字：剥掉线带，各归各类（判据见 stripUnderline）。
     if (pageClean) {
-      const sp = splitMergedUnderlineDot(bin, k.bbox, numH);
-      if (sp) { c.hlines.push(sp.line); c.dots.push(sp.dot); continue; }
+      const sp = stripUnderline(bin, k, numH, lineH);
+      if (sp) { c.hlines.push(...sp.lines); c.dots.push(...sp.dots); c.blocks.push(...sp.digits); continue; }
     }
     // 独立横线：扁宽（增时线/分隔），且不够高不足以含数字。
     // 宽度门 0.6 字号是照减时线（要盖住整个数字）定的，**增时线可以短得多**：迦南诗选那批
     // 粗体版面的 '-' 实测只有 0.48 字号宽（23px / numH 48），过不了门就整根丢掉——那批曲子
     // 每小节末尾的长音全变短，小节时值对不上。补一条「细长条」通道：宽 ≥0.4 字号且长宽比 ≥3
     // （真 '-' 实测 23×6 = 3.8 倍）。比值这条挡住了同宽度量级的碎渣（多是近方的小块）。
-    if ((w >= numH * 0.6 || (w >= numH * 0.4 && w >= h * 3)) && h <= Math.max(3, numH * 0.32)) {
+    // 比值的「高」用**平均墨厚**（面积 / 宽），不用包围盒高：线下沿挂一个毛刺像素，包围盒就高出一截——
+    // 《同伴》「语，」`2 - -` 的第一条 '-' 实测 10×4、面积 25（厚 2.5），按包围盒 10 < 12 被挡，少了一拍。
+    // 近方的碎渣平均墨厚与包围盒高相当，照样挡得住。
+    if ((w >= numH * 0.6 || (w >= numH * 0.4 && w >= (k.area / w) * 3)) && h <= Math.max(3, numH * 0.32)) {
       c.hlines.push(k); continue;
     }
     // 小点：八度点/附点

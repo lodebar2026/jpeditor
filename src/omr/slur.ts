@@ -12,6 +12,19 @@ import { median } from "./geom";
 
 const between = (v: number, lo: number, hi: number) => v >= lo && v <= hi;
 
+/** 有墨的列里，最低墨点落在块底（末两行）的占比。字母立在基线上占比高，拱形的弧只有两脚着底。 */
+function flatBottomShare(bin: Binary, b: Rect): number {
+  let cols = 0, onBase = 0;
+  for (let x = b.x; x < b.x + b.w; x++) {
+    let low = -1;
+    for (let y = b.y + b.h - 1; y >= b.y; y--) if (bin.data[y * bin.w + x]) { low = y; break; }
+    if (low < 0) continue;
+    cols++;
+    if (low >= b.y + b.h - 2) onBase++;
+  }
+  return cols ? onBase / cols : 0;
+}
+
 /**
  * 一个弧连通块里**套着的第二条弧**：两条弧共用一个端点（外弧罩三音、内弧只罩后两音）时，
  * 内弧的收尾一段与外弧交叠、被 4-连通粘成同一个块，包围盒只剩外弧那一条。
@@ -181,7 +194,12 @@ export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], n
       // （w/h≈0.67）、减时线与增时线又都不在上方带里，放到 1.8 不会把它们放进来。
       if (b.w / b.h < (b.h > numH * 1.05 ? 4 : 1.8)) return false;
       // 底边落在 [数字顶 - 1.2字号, 数字顶 + 0.25字号]：即整体在数字上方、最多略压数字顶缘。
-      return between(rbottom(b), rowTop - numH * 1.2, rowTop + numH * 0.25);
+      if (!between(rbottom(b), rowTop - numH * 1.2, rowTop + numH * 0.25)) return false;
+      // 和弦字母也在这一带、也够宽够扁：`Em` 连成一块（《切慕》31×15）、`Bm` 的 m（17×9），
+      // 条条门都过，凭空多出 `(0 6)` 这样的弧。分开它们靠**底边**：字母立在基线上，横笔与衬线
+      // 让大半列的最低墨点都落在块底；弧是拱形，只有两只脚着底，中间各列的最低点都悬在上面。
+      // 只对够高的块判（≥0.4 字号）：扁平的小弧拱高只有一两像素，中间列本就贴着块底。
+      return b.h < numH * 0.4 || flatBottomShare(bin, b) < 0.5;
     });
 
     // 一个连通块里可能藏着两条弧（内弧与外弧交叠粘连），拆开逐条处理。
