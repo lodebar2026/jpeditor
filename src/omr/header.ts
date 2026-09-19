@@ -7,6 +7,7 @@ import { mergeToChars, chunkCells, buildStrip } from "./lyrics";
 import { surfaceFromBinary, type Surface } from "./surface";
 import { clusterByY, median, overlapRatioX, overlapRatioY, unionRect, unionRects } from "./geom";
 import { accidentalOf } from "./accidental";
+import { probe } from "./probe";
 
 const rcyOf = (r: Rect) => r.y + r.h / 2;
 const hanziCount = (s: string) => (s.match(/[一-鿿]/g) || []).length;
@@ -233,6 +234,7 @@ function parseMeta(lines: HLine[]): MetaInfo {
       if (!validBeats(Number(m[3])) || !validBeatType(Number(m[4]))) continue;
       const f = m[2] ? toFifths(m[1], m[2]) : NAT_FIFTHS[m[1]];
       if (f === undefined) continue;
+      probe("key.bareNote");
       res.fifths = f;
       res.fifthsLine = l;
       break;
@@ -250,6 +252,7 @@ function parseMeta(lines: HLine[]): MetaInfo {
   // 同一碎片里并排写着几个斜杠式拍号（"1=A 3/4 4/4 混合拍"）先认这一路。
   const inline = parseInlineMeters(lines, res.fifthsLine);
   if (inline) {
+    probe("meter.inline");
     res.meters = inline.meters;
     res.beats = inline.meters[0]!.beats;
     res.beatType = inline.meters[0]!.beatType;
@@ -259,6 +262,7 @@ function parseMeta(lines: HLine[]): MetaInfo {
   }
   const mixed = parseMixedMeters(lines, res.fifthsLine);
   if (mixed) {
+    probe("meter.mixed");
     res.meters = mixed.meters;
     res.beats = mixed.meters[0].beats;
     res.beatType = mixed.meters[0].beatType;
@@ -269,6 +273,7 @@ function parseMeta(lines: HLine[]): MetaInfo {
   // 拍号：分子/分母。简谱常写成 "X/4"（或与调号同块 "1=C 2/4"）；OCR 偶把斜杠丢成空格或上下竖排。
   const tm = parseTime(lines, res.fifthsLine);
   if (tm) {
+    probe("meter.parseTime");
     res.beats = tm.beats; res.beatType = tm.beatType; res.timeBBox = tm.bbox;
     res.meters = [{ beats: tm.beats, beatType: tm.beatType }];
   }
@@ -455,6 +460,7 @@ export async function recognizeHeader(
     if (dets.length) {
       const lines: HLine[] = dets.map((d) => ({ text: d.text, charH: d.bbox.h, cx: d.bbox.x + d.bbox.w / 2, cy: d.bbox.y + d.bbox.h / 2, n: 1, bbox: d.bbox, chars: d.chars }));
       if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.log("[header/det]", lines.map((l) => `${Math.round(l.charH)}px@${Math.round(l.cx)},${Math.round(l.cy)}=${JSON.stringify(l.text)}`).join("  "));
+      probe("header.det");
       await classify(lines);
       return out;
     }
@@ -466,6 +472,7 @@ export async function recognizeHeader(
     return cy < firstStaffTopY - numH * 0.1 && b.h >= numH * 0.4 && b.w >= numH * 0.2;
   });
   if (!region.length) return out;
+  probe("header.geometric");
 
   const src = surfaceFromBinary(bin);
   // 行 = 一组连通块；整体 rec（自然区域分块）。返回 {text,charH,cx,cy,n}。
@@ -867,13 +874,15 @@ export async function recognizeHeader(
         t = t.slice(pm[0].length);
         // 竖排拍号紧贴标题时会被 det 并进标题框（175《日光之上》读成 `4日光之上`，那个 4 是 4/4 的分子）：
         // 那块墨几何法已认成拍号（geoMeters），剥掉但不当曲号。
-        if (!pm[1].split("").some((_, i) => meterInkAt(titleLine!, i))) { out.number = pm[1]; out.numberSide = "left"; }
+        if (!pm[1].split("").some((_, i) => meterInkAt(titleLine!, i))) { probe("number.prefix"); out.number = pm[1]; out.numberSide = "left"; }
+        else probe("number.meterInk");
       }
       out.title = t.replace(/\s*《[^》]{0,8}》\s*\d{0,4}\s*$/, "");
       out.regions.push({ text: out.title, bbox: titleLine.bbox, chars: charsForText(out.title, titleLine.chars) });
       if (!out.number) {
         const n = await standaloneNumber(titleLine, ls);
         if (n) {
+          probe("number.standalone");
           out.number = n.text; numberBox = n.bbox;
           out.numberSide = n.bbox.x + n.bbox.w / 2 < titleLine.cx ? "left" : "right";
           out.regions.push({ text: n.text, bbox: n.bbox });
@@ -911,6 +920,7 @@ export async function recognizeHeader(
         .sort((a, b) => gapTitle(a) - gapTitle(b))[0];
       if (cand) {
         subtitleLine = cand;
+        probe("subtitle");
         out.subtitle = recoverSpacesByInk(bin, cand.text.trim(), cand.bbox, cand.chars);
         out.regions.push({ text: out.subtitle, bbox: cand.bbox, chars: charsForText(out.subtitle, cand.chars) });
       }
@@ -942,10 +952,10 @@ export async function recognizeHeader(
     // 整个调号就落回默认的 C。此时**回头看形状**：那个字的位置上有一块墨，交给 accidentalOf
     // 判 ♯/♭，把残字改写成 `b`/`#` 再解析一遍。只在 parseMeta 什么都没认出来时兜底，
     // 认出来的（`1=bB`、`1=G`）一概不动。
-    if (meta.fifths === undefined && repairKeyAccidental(ls)) meta = parseMeta(ls);
+    if (meta.fifths === undefined && repairKeyAccidental(ls)) { probe("key.repairAccidental"); meta = parseMeta(ls); }
     if (meta.fifths === undefined) {
       const k = await rereadKeyName(ls);
-      if (k) { meta.fifths = k.fifths; meta.fifthsLine = k.line; }
+      if (k) { probe("key.reread"); meta.fifths = k.fifths; meta.fifthsLine = k.line; }
     }
     // 探针：强制走单字符兜底、只打日志不采纳（核对判据用）
     if ((globalThis as { __keyGlyphProbe?: boolean }).__keyGlyphProbe) {
@@ -955,7 +965,7 @@ export async function recognizeHeader(
     let glyphKeyBox: Rect | undefined;
     if (meta.fifths === undefined) {
       const g = await keyByGlyphs(titleLine);
-      if (g) { meta.fifths = g.fifths; glyphKeyBox = g.bbox; }
+      if (g) { probe("key.glyphs"); meta.fifths = g.fifths; glyphKeyBox = g.bbox; }
     }
     out.fifths = meta.fifths;
     out.tempo = meta.tempo;
@@ -970,8 +980,13 @@ export async function recognizeHeader(
     // 页眉会被切成一整块（2156 实测读成 "1=Cz" + 孤零零一个 "4"），分子分母根本对不上，
     // parseMixedMeters 无从下手、只落下一个 4/4。而 jianpu.ts::meterCandidates 那套判据
     // （一条短分数线、上下各紧贴一个数字）在页眉上同样成立，两个拍号都干净地读了出来。
-    // 只在**它数出来的更多**时接管：det 那路认得斜杠式与调号同块的写法，单个拍号仍归它。
-    if (geoMeters && geoMeters.length > (meta.meters?.length ?? 0)) {
+    // **个数打平时也归几何法**：几何法只认竖排拍号（分数线 + 上下各一个数字），每个数字按自己的连通块
+    // 紧框单独读；det 却是整片页眉缩到 960 边长再检测，小号拍号数字的框常只套住半截——迦南诗选
+    // 1773/1784 上面那个 4 只框到中下截（{155,195,14,14}，字实为 {153,187,20,26}），读成 "2"，
+    // 拍号成了 2/4。38 张实测几何法认出的竖排拍号无一读错，与 det 不一致的两处都是几何法对。
+    // det 那路只在它**数出来的更多**时胜出：斜杠式、与调号同块的写法几何法根本不触发。
+    if (geoMeters && geoMeters.length > 0 && geoMeters.length >= (meta.meters?.length ?? 0)) {
+      probe(geoMeters.length > (meta.meters?.length ?? 0) ? "meter.geoMore" : "meter.geoTie");
       out.meters = geoMeters.map((m) => ({ beats: m.beats, beatType: m.beatType }));
       out.beats = geoMeters[0].beats;
       out.beatType = geoMeters[0].beatType;
