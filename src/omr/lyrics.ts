@@ -12,6 +12,7 @@ import type { ChordCand } from "./chordline";
 import { chordCandidates, isAnnotationLine, placeChords } from "./chordline";
 import { clusterByY, findLineByY, median } from "./geom";
 import { blit, createSurface, surfaceFromBinary, type Surface } from "./surface";
+import { probe } from "./probe";
 
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
 // 歌词里贴在字尾的标点。简谱印刷用全角，但 PP-OCR 常把 ，；：！？ 识成半角 , ; : ! ? ——
@@ -906,7 +907,7 @@ export async function recognizeLyrics(
       if (seen.has(verse)) continue;           // 每个视觉行只看它首次出现的那一谱行（= 标号那行）
       seen.add(verse);
       const nums = parseVerseLabel(raw);
-      if (nums) verseLabels.set(verse, nums);
+      if (nums) { probe("lyrics.verseLabel"); verseLabels.set(verse, nums); }
     }
     // 只在标签成套时才信：首行必须标 1、号不重复、至少两行有标签。零星误读（歌词里恰好有
     // 数字、OCR 把字读成数字）达不到这几条，映射整体作废、退回"行序即段号"。

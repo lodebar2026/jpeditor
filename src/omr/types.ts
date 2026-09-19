@@ -78,9 +78,10 @@ export interface JpNum {
   // 各路都只照原样写印出来的记号，延续由读端处理（模型 `model/jianpu.ts::AccidentalCarry`、
   // .jpwabc/文本谱 jppitch.ts::applyJpPitch）。
   accidental?: "sharp" | "flat" | "natural";
-  // 波音（上波音 ∿，音符正上方一小段两个尖峰的锯齿）。带竖杠的下波音不识别（见 jianpu.ts）。
-  // → `notations.ornaments: ["inverted-mordent"]`（123 `!sby!`）；文本谱 `&sby`；.jpwabc 装不下。
-  ornament?: "upper-mordent";
+  // 波音（音符正上方一小段两个尖峰的锯齿；中间穿一道竖杠的是下波音，见 jianpu.ts）。
+  // 上波音 → `notations.ornaments: ["inverted-mordent"]`（123 `!sby!`、文本谱 `&sby`）；
+  // 下波音 → `["mordent"]`（123 `!xby!`、文本谱 `&xby`）；.jpwabc 装不下。
+  ornament?: "upper-mordent" | "lower-mordent";
   // 倚音（谱面上是主音符左上角的小号数字，底下压着一两条减时线、再由一小段弧连到主音符）。
   // 一个主音符可以带一串（`"yy:5 4# 4b"`），故是数组、按 x 排序。
   // → 主音符之前的 `grace` Chord（不占拍位，123 `{5}`）；文本谱 `"yy:…"`。

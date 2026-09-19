@@ -246,9 +246,11 @@ export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
 
       const notations: NonNullable<Chord["notations"]> = {};
       if (n.fermata) notations.fermata = true;
-      // 顿音 ▼ = staccato（与文本谱 `&dy` 同一口径）；上波音 ∿ = inverted-mordent（123 写回 `!sby!`）。
+      // 顿音 ▼ = staccato（与文本谱 `&dy` 同一口径）；上波音 ∿ = inverted-mordent（123 写回 `!sby!`），
+      // 带竖杠的下波音 = mordent（`!xby!`）。
       if (n.articulation === "staccato") notations.articulations = ["staccato"];
       if (n.ornament === "upper-mordent") notations.ornaments = ["inverted-mordent"];
+      else if (n.ornament === "lower-mordent") notations.ornaments = ["mordent"];
       if (Object.keys(notations).length) ch.notations = notations;
 
       // 段落标记（Intro/Verse/Chorus/Coda…，谱面上多印成方框）→ 段落词

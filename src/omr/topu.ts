@@ -363,8 +363,9 @@ export function toPuText(
         // 拍内偏移（chordOffset）在文本谱里表达不了，就近挂本音符（有损；模型那路落在增时线整拍上的挂得住）。
         // 延长记号：文本谱写作音符后的 `&yc`（parse.ts 的 NOTE_COMMANDS）。
         if (n.fermata) tb.push("&yc");
-        // 波音：文本谱写作音符后的 `&sby`（上波音，parse.ts 的 NOTE_COMMANDS）。
+        // 波音：文本谱写作音符后的 `&sby`（上波音）/ `&xby`（下波音），见 parse.ts 的 NOTE_COMMANDS。
         if (n.ornament === "upper-mordent") tb.push("&sby");
+        else if (n.ornament === "lower-mordent") tb.push("&xby");
         // 顿音：文本谱写作音符后的 `&dy`（parse.ts 的 NOTE_COMMANDS）。
         if (n.articulation === "staccato") tb.push("&dy");
         // 倚音：写成音符后面的引号备注 `"yy:…"`（parse.ts::interpretQuoted → graceBefore）。

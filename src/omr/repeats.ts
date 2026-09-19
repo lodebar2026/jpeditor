@@ -5,6 +5,7 @@ import type { Binary, Component, Rect, StaffRow } from "./types";
 import { rcx, rcy, rright } from "./types";
 import type { OcrBackend } from "./ocr";
 import { median } from "./geom";
+import { probe } from "./probe";
 
 function detectRepeatBarlines(dots: Component[], rows: StaffRow[], numH: number): void {
   for (const row of rows) {
@@ -38,11 +39,11 @@ function detectRepeatBarlines(dots: Component[], rows: StaffRow[], numH: number)
       if (colonX < barX) {
         // :|| —— 冒号在竖线左侧，结束反复；锚到左侧最后一个音符。
         const prev = [...row.nums].reverse().find((n) => rcx(n.bbox) < barX);
-        if (prev) prev.repeatBackward = true;
+        if (prev) { probe("repeat.backward"); prev.repeatBackward = true; }
       } else {
         // ||: —— 冒号在竖线右侧，开始反复；锚到右侧第一个音符。
         const next = row.nums.find((n) => rcx(n.bbox) > barX);
-        if (next) next.repeatForward = true;
+        if (next) { probe("repeat.forward"); next.repeatForward = true; }
       }
     }
   }
@@ -162,6 +163,7 @@ export async function detectRepeatsAndEndings(
     const covered = e.row.nums.filter((n) =>
       rcx(n.bbox) >= b.x - numH * 0.5 && rcx(n.bbox) <= rright(b) + numH * 0.5);
     if (!covered.length) return;
+    probe("ending");
     covered[0].endingStart = number;
     covered[covered.length - 1].endingStop = number;
   });
