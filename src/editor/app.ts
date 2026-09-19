@@ -1531,6 +1531,18 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this.setText(text);
   }
 
+  /** `.jpwabc` 产物落地：同 `adoptPuText`，格式换成 `.jpwabc`。 */
+  adoptJpwabcText(text: string): void {
+    this.mixedDoc = null;
+    this._mixedPainter = null;
+    this._setMixedAvailable(false);
+    this._disablePhrase();
+    this._setMode("jp");
+    this._setDocFormat("jpwabc");
+    this.filePath = null;
+    this.setText(text);
+  }
+
   /** 预览模式切换的**唯一**入口：退出当前模式的副作用 + 进入新模式的副作用。
    *
    *  以前这三连（`mode = …` / `_setMixedLayout` / 按钮同步）在五处各写一遍，

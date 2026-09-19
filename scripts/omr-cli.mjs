@@ -79,7 +79,9 @@ if (!imgs.length) { console.error("没有可识别的图片"); process.exit(1); 
 // -o 是目录（多图，或路径本身就是已存在的目录）时逐个写文件，否则当单个输出文件。
 const outIsDir = opts.out != null && (imgs.length > 1 || (existsSync(opts.out) && (await stat(opts.out)).isDirectory()));
 if (outIsDir) await mkdir(opts.out, { recursive: true });
-const EXT = { "123": ".123" };
+const EXT = { "123": ".123", jpwabc: ".jpwabc" };
+// .jpwabc 按 JP-Word 的 UTF-16LE 带 BOM 落盘，其余 UTF-8
+const encodeOut = (r) => (r.format === "jpwabc" ? Buffer.from("\ufeff" + r.text, "utf16le") : Buffer.from(r.text, "utf-8"));
 
 let failed = 0;
 const t0all = performance.now();
@@ -100,10 +102,10 @@ for (const img of imgs) {
 
   if (outIsDir) {
     const dst = join(opts.out, basename(img, extname(img)) + (EXT[r.format] ?? ".txt"));
-    await writeFile(dst, r.text, "utf-8");
+    await writeFile(dst, encodeOut(r));
     console.error(`已写入 ${dst}`);
   } else if (opts.out) {
-    await writeFile(opts.out, r.text, "utf-8");
+    await writeFile(opts.out, encodeOut(r));
     console.error(`已写入 ${opts.out}`);
   } else {
     if (imgs.length > 1) process.stdout.write(`# ===== ${basename(img)} =====\n`);

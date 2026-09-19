@@ -13,18 +13,20 @@
 import type { JpwMeta, RecognizedScore } from "./types";
 import type { ScoreDoc } from "../model/doc";
 import { emit123 } from "../j123/emit";
+import { emitJpwabc } from "../model/tojpw";
 import { recognizedToDoc } from "./todoc";
 import { toPuText } from "./topu";
 import { DIALECTS, type Dialect } from "../pu/dialect";
 
 /** 识别结果的输出格式。文本谱两种方言各算一种。 */
-export type OmrFormat = "123" | Dialect;
+export type OmrFormat = "123" | "jpwabc" | Dialect;
 
 export interface EmittedScore {
   /** 产物怎么落到编辑器里：
    *  - `123`：交 `App.importOmrDoc`（123 核对文本由模型直出，点选定位的 meta 它按 123 文本自己算，故这里 meta 为 null）；
+   *  - `jpwabc`：`.jpwabc` 原文（与 123 同出自 `todoc` 的模型），直接设进编辑器；没有点选映射，meta 为 null；
    *  - `pu`：文本谱原文，直接设进编辑器，meta 由 emitter 给出。 */
-  kind: "123" | "pu";
+  kind: "123" | "jpwabc" | "pu";
   text: string;
   meta: JpwMeta | null;
   /** `kind === "123"` 时的模型（`omr/todoc.ts`），`text` 就是它的 `emit123` */
@@ -46,6 +48,15 @@ export const OMR_EMITTERS: readonly ScoreEmitter[] = [
     emit: (rec) => {
       const doc = recognizedToDoc(rec);
       return { kind: "123", text: emit123(doc), meta: null, doc };
+    },
+  },
+  {
+    id: "jpwabc",
+    label: "简谱 JPWABC",
+    emit: (rec) => {
+      const text = emitJpwabc(recognizedToDoc(rec));
+      if (text === null) throw new Error("识别结果里没有可输出的曲行");
+      return { kind: "jpwabc", text, meta: null };
     },
   },
   ...(Object.values(DIALECTS).map((d) => ({
