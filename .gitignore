@@ -25,9 +25,9 @@ pdf-out/
 staff-out/
 pptx-out/
 
-# 测试语料与 GT 一律**只留本地**，不入库（语料本身是版权材料）。
-# testdata/ 只放语料与 GT；回归基线、快照、报告等派生数据在同级私有仓库 dev/data/。
-testdata/
+# 测试语料与 GT 不入本仓库（语料本身是版权材料），实体在同级私有仓库 dev/testdata/，这里是指过去的符号链接。
+# testdata/ 只放语料与 GT；回归基线、快照、报告等派生数据在 dev/data/。
+/testdata
 
 # pdf.js 位图解码器 wasm：来自 pdfjs-dist 包，构建时从 node_modules 拷入（见 vite.config.ts），不入库
 public/redist/pdfjs
