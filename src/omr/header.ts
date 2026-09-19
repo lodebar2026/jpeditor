@@ -17,6 +17,11 @@ export interface HeaderInfo {
    *  如「2146 奉献的心志在燃烧」下的 "The spirit of devotion is burning"）。
    *  → `Work.subtitles`（123 第二条 `T:`）、文本谱第二条标题行；.jpwabc 装不下，那一路会丢。 */
   subtitle?: string;
+  /** 曲号：内联在标题前（「277 从前所珍爱」「557. …」）或单独印在标题同一排的一侧（旷野人声
+   *  「不失足 … 17」、赞美诗歌 1717「1 … 圣哉三一」）。→ `Work.number`（123 `X:`）、诗歌本 `XL:`/`XR:`。 */
+  number?: string;
+  /** 曲号印在标题左边还是右边（内联前缀算左）。诗歌本文本谱据此选 `XL:`/`XR:`。 */
+  numberSide?: "left" | "right";
   /** 著作者整行文本（如 "作词：叶薇心"），下游作为 credit 写入 WordsByAndMusicBy。 */
   credits: string[];
   /** 调号五度圈数（识别到 "1=♭B" 等时给出，否则 undefined→上游用默认 0）。 */
@@ -715,6 +720,59 @@ export async function recognizeHeader(
       ? `${text.slice(0, at).trimEnd()} ${text.slice(at)}` : text;
   }
 
+  /** 单独印在标题同一排一侧的曲号（旷野人声「不失足 … 17」、迦南诗选「1　带着你的欢笑」）。
+   *  判据：纯数字 1~4 位、与标题同一排（上下重叠 ≥0.3：印在右上角的常比标题高出半截，
+   *  《我今来就你》的「5」只重叠 0.48）、字高不低于标题一半——《》后面那个小号出处数字（「《旷》108」
+   *  已并在标题框里）和页脚页码都过不了这两条。det 给了独立框就用它；det 把它整个漏了的
+   * （赞美诗歌 1717《圣哉三一》左边那个细长的「1」，det 一个框都没给）回源图找：同一排、不在任何
+   *  det 框里、够高的连通块，按横向间隙聚组后逐组 rec，读出纯数字才算。 */
+  async function standaloneNumber(tl: HLine, ls: HLine[]): Promise<{ text: string; bbox: Rect } | undefined> {
+    const sameRow = (b: Rect, h: number) => overlapRatioY(b, tl.bbox) >= 0.3 && h >= tl.charH * 0.5 &&
+      (b.x >= tl.bbox.x + tl.bbox.w || b.x + b.w <= tl.bbox.x);
+    const byDist = (a: Rect, b: Rect) => Math.abs(a.x + a.w / 2 - tl.cx) - Math.abs(b.x + b.w / 2 - tl.cx);
+    const det = ls.filter((l) => l !== tl && /^\s*\d{1,4}\s*[.．、]?\s*$/.test(l.text) && sameRow(l.bbox, l.charH))
+      .sort((a, b) => byDist(a.bbox, b.bbox))[0];
+    if (det) return { text: det.text.replace(/\D/g, ""), bbox: det.bbox };
+    // 曲号与不写 `1=` 的调号拍号挨着印，det 并成一行（旷野人声 16《爱心的功课》：`16bE4/4`）：
+    // 行首数字后面**紧跟升降号或音名**才算曲号——`1=C`、`3/4` 的数字后面是 `=`、`/`，挨不上。
+    for (const l of ls) {
+      if (l === tl || !sameRow(l.bbox, l.charH)) continue;
+      const m = /^\s*(\d{1,4})\s*(?=[b#♭♯]?[A-G](?![a-z]))/.exec(l.text);
+      if (!m || m[1].split("").some((_, i) => meterInkAt(l, i))) continue;
+      // 叠加框只框数字那段：右界取末位数字与下一个字的逐字位中点（逐字位对不上就框整行）
+      const off = l.text.length - l.text.trimStart().length, k = off + m[1].length;
+      const cs = l.chars && l.chars.length === l.text.length ? l.chars : undefined;
+      const x1 = cs && k < cs.length ? (cs[k - 1].cx + cs[k].cx) / 2 : l.bbox.x + l.bbox.w;
+      return { text: m[1], bbox: { ...l.bbox, w: Math.max(1, x1 - l.bbox.x) } };
+    }
+    const inDet = (b: Rect) => ls.some((l) => overlapRatioX(b, l.bbox) > 0 && overlapRatioY(b, l.bbox) > 0);
+    const cs = comps.filter((c) => sameRow(c.bbox, c.bbox.h) && !inDet(c.bbox)).sort((a, b) => a.bbox.x - b.bbox.x);
+    const groups: Component[][] = [];
+    for (const c of cs) {
+      const g = groups[groups.length - 1], last = g?.[g.length - 1];
+      if (last && c.bbox.x - (last.bbox.x + last.bbox.w) <= tl.charH * 0.5) g.push(c);
+      else groups.push([c]);
+    }
+    const cands = groups.map((g) => ({ g, bbox: unionRects(g.map((k) => k.bbox)) }))
+      .filter(({ bbox }) => bbox.w <= tl.charH * 3.2)
+      .sort((a, b) => byDist(a.bbox, b.bbox));
+    if (!cands.length) return undefined;
+    const src = surfaceFromBinary(bin);
+    const texts = await recognizeTexts(cands.map(({ g }) => buildStrip(src, mergeToChars(g, tl.charH))));
+    for (let i = 0; i < cands.length; i++) {
+      const t = texts[i].trim();
+      if (/^\d{1,4}$/.test(t)) return { text: t, bbox: cands[i].bbox };
+    }
+    return undefined;
+  }
+
+  /** 行里第 i 个字的墨是不是已被几何法认成了拍号（`geoMeters`：分数线上下各贴一个数字）。 */
+  function meterInkAt(ln: HLine, i: number): boolean {
+    const off = ln.text.length - ln.text.trimStart().length;
+    const ch = ln.chars && ln.chars.length === ln.text.length ? ln.chars[off + i] : undefined;
+    return !!ch && (geoMeters ?? []).some((m) => ch.cx >= m.bbox.x && ch.cx <= m.bbox.x + m.bbox.w && overlapRatioY(m.bbox, ln.bbox) > 0.5);
+  }
+
   async function classify(ls: HLine[]) {
     // 著作者前缀：`作词：`/`词曲：`，也含顿号/斜杠分列的 `词、曲：`、`作词/作曲：`。
     const creditRe = /^\s*[作詞词曲編编譯译]{1,2}(?:\s*[、，,/／]\s*[作詞词曲編编譯译]{1,2})*\s*[:：]/;
@@ -798,13 +856,29 @@ export async function recognizeHeader(
       else if (ln.charH > titleLine.charH * 1.25) titleLine = ln;
       else if (ln.charH >= titleLine.charH * 0.85 && ln.bbox.w > titleLine.bbox.w) titleLine = ln;
     }
+    let numberBox: Rect | undefined;
     if (titleLine) {
-      // 去掉 "557." 之类的诗歌编号前缀，以及尾巴上的出处标记（17《不失足》标题右边印着
-      // 「《旷》108」——那是选自哪本诗集的第几首，不是曲名的一部分）。
-      out.title = recoverHanziGaps(bin, titleLine.text.trim(), titleLine.bbox, titleLine.chars)
-        .replace(/^\s*\d{1,4}\s*[.．、]\s*/, "")
-        .replace(/\s*《[^》]{0,8}》\s*\d{0,4}\s*$/, "");
+      // 曲号前缀（"277从前所珍爱"、"557. …"）拆出来进 number；尾巴上的出处标记照旧剥掉、**不当曲号**
+      // （17《不失足》标题右边印着「《旷》108」——那是选自哪本诗集的第几首，不是曲名的一部分）。
+      // 前缀后面必须紧跟汉字，免得「1=C」这类残片被拆。
+      let t = recoverHanziGaps(bin, titleLine.text.trim(), titleLine.bbox, titleLine.chars);
+      const pm = /^\s*(\d{1,4})\s*[.．、]?\s*(?=[一-鿿])/.exec(t);
+      if (pm) {
+        t = t.slice(pm[0].length);
+        // 竖排拍号紧贴标题时会被 det 并进标题框（175《日光之上》读成 `4日光之上`，那个 4 是 4/4 的分子）：
+        // 那块墨几何法已认成拍号（geoMeters），剥掉但不当曲号。
+        if (!pm[1].split("").some((_, i) => meterInkAt(titleLine!, i))) { out.number = pm[1]; out.numberSide = "left"; }
+      }
+      out.title = t.replace(/\s*《[^》]{0,8}》\s*\d{0,4}\s*$/, "");
       out.regions.push({ text: out.title, bbox: titleLine.bbox, chars: charsForText(out.title, titleLine.chars) });
+      if (!out.number) {
+        const n = await standaloneNumber(titleLine, ls);
+        if (n) {
+          out.number = n.text; numberBox = n.bbox;
+          out.numberSide = n.bbox.x + n.bbox.w / 2 < titleLine.cx ? "left" : "right";
+          out.regions.push({ text: n.text, bbox: n.bbox });
+        }
+      }
     }
     let meta = parseMeta(ls);
     // 副标题：标题**正下方**、字号不大于标题、与标题居中对齐的那一行。
@@ -818,12 +892,7 @@ export async function recognizeHeader(
       // det 常把「曲号 曲名」切成两个框（1727《主为我》：`1727` 与 `主为我` 各一框，中间空着
       // 两个字宽）——标题框只剩曲名，中心被右推、宽度只剩一半，下面那条「与标题居中对齐」就把
       // 真副标题挡掉了（"Lord for me" 差 119px，门只有 89px）。判居中用「曲号+曲名」的合框。
-      const titleBox = ls.reduce((b, l) => {
-        if (l === tl || !/^\s*\d{1,4}\s*[.．、]?\s*$/.test(l.text)) return b;   // 只并纯数字的曲号框
-        if (overlapRatioY(l.bbox, tl.bbox) < 0.5) return b;                     // 须同一排
-        if (Math.abs(l.charH - tl.charH) > tl.charH * 0.3) return b;            // 须同字号
-        return unionRect(b, l.bbox);
-      }, tl.bbox);
+      const titleBox = numberBox ? unionRect(tl.bbox, numberBox) : tl.bbox;
       const titleCx = titleBox.x + titleBox.w / 2;
       const metaRe = /[1１]\s*[=＝]|[♩♪]|\d+\s*[/／]\s*\d+/;
       // 和弦记号（"Am"、"G/D"、"Dm7"）：第一谱行的和弦印在页眉 ROI 里，一个个都是居中的短串。

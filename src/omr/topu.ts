@@ -187,13 +187,16 @@ function headerLines(score: RecognizedScore, d: DialectSpec, tb: TextBuilder, me
   const push = (s: string) => tb.push(s + "\n");
 
   if (h.versionLine) push(h.versionLine);
-  if (score.title) {
-    tb.push(`${h.titleField}:`);
-    meta.titleRange = tb.push(score.title);
+  // 曲号：诗歌本按印在标题哪一侧写 `XL:`/`XR:`；番茄没有曲号字段，拼回标题前（谱面上本来也是连着印的）。
+  const inTitle = score.number && !h.indexFields ? `${score.number} ` : "";
+  if (score.title || inTitle) {
+    tb.push(`${h.titleField}:${inTitle}`);
+    meta.titleRange = tb.push(score.title ?? "");
     tb.push("\n");
   }
   // 副标题：两家方言都是「第一条标题行是主标题，其余为副标题」，再写一条同名字段即可。
   if (score.subtitle) push(`${h.titleField}:${score.subtitle}`);
+  if (score.number && h.indexFields) push(`${h.indexFields[score.numberSide ?? "left"]}:${score.number}`);
   for (const c of score.credits ?? []) {
     tb.push(`${h.creditField}:`);
     const range = tb.push(c);
