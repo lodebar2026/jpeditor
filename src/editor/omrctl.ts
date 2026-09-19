@@ -67,6 +67,8 @@ export interface OmrHost {
   setRecognizeMode(on: boolean): void;
   /** 文本谱产物落地前的清场：丢掉混排底本、切 docFormat、清文件路径。 */
   adoptPuText(text: string): void;
+  /** `.jpwabc` 产物落地：切 docFormat、清文件路径，再设文本。 */
+  adoptJpwabcText(text: string): void;
   /** 上下文相关控件的显隐（工具条）。 */
   setContextControl(el: Element | null, on: boolean): void;
   syncContextGroup(el: Element | null | undefined): void;
@@ -246,6 +248,10 @@ export class OmrController {
       // importOmrDoc 开头会 clear()，故必须先导入、后回填本次产物。
       this.host.importOmrDoc(out.doc!, out.text);
       this.meta = metaFrom123(out.text); // 点选映射按 123 文本的源区间生成
+    } else if (out.kind === "jpwabc") {
+      this.clear();
+      this.host.adoptJpwabcText(out.text);
+      this.meta = null; // .jpwabc 没有点选映射
     } else {
       this.clear();
       this.host.adoptPuText(out.text);

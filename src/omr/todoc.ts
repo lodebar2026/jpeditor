@@ -308,11 +308,15 @@ export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
     const endingStop = [...notes].reverse().find((n) => n.endingStop !== undefined)?.endingStop;
     const repeatBackward = notes.some((n) => n.repeatBackward);
     const jump = notes.find((n) => n.jumpMark)?.jumpMark;
-    if (endingStop !== undefined || repeatBackward || endStyleIdx.has(idx) || jump) {
+    // 普通小节线也要显式写出：`.jpwabc` 写出端按右线出 `|`，没有就把相邻小节并成一个。
+    // 曲末那小节图上没收线的不补（遵图片小节线）。
+    const closed = idx < allMeasures.length - 1 || !openTail;
+    if (endingStop !== undefined || repeatBackward || endStyleIdx.has(idx) || jump || closed) {
       const b: Barline = { location: "right" };
       // 反复线与终止线不叠（终止线由 StaffRow.finalBarline 另管）
       if (repeatBackward) { b.style = "light-heavy"; b.repeat = "backward"; }
       else if (endingStop === undefined && endStyleIdx.has(idx)) b.style = "light-heavy";
+      else if (closed) b.style = "regular";
       if (endingStop !== undefined) b.ending = endingOf(endingStop, "stop");
       // 跳转记号（D.C./D.S./Fine/To Coda）：识别时锚在本小节某音符上，记在小节末
       if (jump) {

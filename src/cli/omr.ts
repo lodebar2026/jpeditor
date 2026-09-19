@@ -24,10 +24,10 @@ export { toPuText } from "../omr/topu";
 export type { RecognizedScore, Binary } from "../omr/types";
 
 export interface RecognizeResult {
-  /** 输出原文（123 或文本谱原文）。 */
+  /** 输出原文（123、.jpwabc 或文本谱原文）。 */
   text: string;
-  /** `123` = 123 核对文本（模型直出）；`pu` = 文本谱原文。 */
-  kind: "123" | "pu";
+  /** `123` = 123 核对文本（模型直出）；`jpwabc` = .jpwabc 原文；`pu` = 文本谱原文。 */
+  kind: "123" | "jpwabc" | "pu";
   format: OmrFormat;
   /** 识别中间产物，回归脚本要拿它算指标。 */
   detail: Awaited<ReturnType<typeof recognizeMusicppDetailed>>;
