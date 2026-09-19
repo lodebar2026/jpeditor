@@ -168,9 +168,12 @@ export function buildStrip(src: Surface, cells: Rect[], H = STRIP_H, maxGap = In
 export function chunkCells(cells: Rect[], maxGap = Infinity): Rect[][] {
   const n = cells.length;
   if (n <= 1) return n ? [cells] : [];
+  // 折算高度不低于本行字格高的中位：扁字「一」只有 5px 高，按自身高度折算成 374px 宽，
+  // 一进块就「达标」被单独关块（迦南诗选 1790 末行「一生跟主」的「一」孤零零一块，rec 读成 `_`）。
+  const refH = median(cells.map((r) => r.h));
   const widthAtH = (rs: Rect[]) => {
     const y0 = Math.min(...rs.map((r) => r.y)), y1 = Math.max(...rs.map((r) => r.y + r.h));
-    return compactSegs(rs, maxGap).contentW * STRIP_H / (y1 - y0);
+    return compactSegs(rs, maxGap).contentW * STRIP_H / Math.max(y1 - y0, refH);
   };
   const k = Math.max(1, Math.ceil(widthAtH(cells) / STRIP_MAXW)); // 需要的块数
   if (k <= 1) return [cells];
@@ -285,6 +288,27 @@ function mergePunctBlocks(blocks: ProjBlock[], charW: number, longGap: number): 
     const p = out[i - 1];
     p.x1 = Math.max(p.x1, b.x1); p.dyTop = Math.min(p.dyTop, b.dyTop); p.dyBot = Math.max(p.dyBot, b.dyBot);
     out.splice(i, 1);                                 // 移除后：其后块的 gapBefore（即那道长空白）不变，仍正确
+  }
+  return out;
+}
+
+/** 把左右结构字裂开的两半并回一个字块：迦南诗选 1775「忠仆」的「仆」，亻 与 卜 隔 8px，投影分字的
+ *  偏旁门（0.22 字号 ≈ 7px）差一点没并上，亻 落进前一个 rec 块、卜 落进后一个，读成「忠卜」。
+ *  这一行字距 16~19px，门不能整体放宽。判据：两块间隙 < 0.3 字宽、至少一块是窄块（< 0.6 字宽）、
+ *  两块都够字高（≥0.8 字高：英文小字、标点挨不上），且并起来仍是一个字的宽（≤1.15 字宽）——两个正常宽的
+ *  汉字并起来远超这个宽度。 */
+function mergeSplitHalves(blocks: ProjBlock[], charW: number, charH: number): ProjBlock[] {
+  if (blocks.length < 2) return blocks;
+  const out = [{ ...blocks[0] }];
+  const w = (b: ProjBlock) => b.x1 - b.x0 + 1;
+  const tall = (b: ProjBlock) => b.dyBot - b.dyTop >= charH * 0.8;
+  for (let i = 1; i < blocks.length; i++) {
+    const b = blocks[i], p = out[out.length - 1];
+    if (b.gapBefore < charW * 0.3 && Math.min(w(p), w(b)) < charW * 0.6 && tall(p) && tall(b) &&
+        b.x1 - p.x0 + 1 <= charW * 1.15) {
+      probe("lyrics.splitHalves");
+      p.x1 = b.x1; p.dyTop = Math.min(p.dyTop, b.dyTop); p.dyBot = Math.max(p.dyBot, b.dyBot);
+    } else out.push({ ...b });
   }
   return out;
 }
@@ -438,7 +462,7 @@ export async function recognizeLyrics(
     const longGap = charW * 0.6; // 长空白（乐句/标点后）→ 分块边界
     const maxGap = charW * 0.35; // 拼条时字间空白上限（去掉过宽字距 → 同条能多并几字，不压扁）
     // 把尾随标点小墨块并入前一字块（字块 = 汉字 + 尾随标点，裁条时一起 rec）。
-    const mergedBlocks = lineBlocks.map((blocks) => mergeSmallTextBlocks(mergePunctBlocks(blocks, charW, longGap), charW, charH));
+    const mergedBlocks = lineBlocks.map((blocks) => mergeSmallTextBlocks(mergePunctBlocks(mergeSplitHalves(blocks, charW, charH), charW, longGap), charW, charH));
     if (TR) TR.charW = charW;
 
     // S4 注记过滤：真歌词行横向铺满谱行；"(副歌)"/"徐震宇译"/CCLI 版权等注记只占局部。
