@@ -61,8 +61,14 @@ const normalizeJump = (s: string): string => {
 // （`3.5.` = 第 3、5 段唱同一行）。段号小、点更小，OCR 常把点整个吞掉（实测读出 `1沧海…`、
 // `35江山…`），故分隔符一律可选、连写的数字按**逐位**拆成多个段号（简谱段号极少超过 9）。
 const VERSE_LABEL_RE = /^[\s(（[]*((?:\d[\s.．、,，/]*){1,4})/;
+// 中文数字段号 `一、` `二.`：分隔符**必须有**——没有分隔符的「一」多半就是歌词首字（「一生」）。
+// 它是汉字，装配时不会像阿拉伯数字那样被自然丢弃，得在装配里显式跳过（见 CN_LABEL_AT）。
+const CN_NUM = "一二三四五六七八九十";
+const CN_LABEL_RE = new RegExp(`^[\\s(（[]*([${CN_NUM}])\\s*([、.．])`);
 /** 行首段号 → 段号列表；不是段号则 null。 */
 function parseVerseLabel(raw: string): number[] | null {
+  const cn = CN_LABEL_RE.exec(raw);
+  if (cn) return (raw.slice(cn[0].length).match(/[一-鿿]/g) ?? []).length < 2 ? null : [CN_NUM.indexOf(cn[1]) + 1];
   const m = VERSE_LABEL_RE.exec(raw);
   if (!m) return null;
   const nums = [...m[1].replace(/\D/g, "")].map(Number).filter((n) => n >= 1);
@@ -606,6 +612,18 @@ export async function recognizeLyrics(
     };
 
     const rawText = rawTexts[s];
+    // 行首的中文段号（`一、是你怜悯…`）：落在本谱行第一个音符左侧才算，跳过不占音符。
+    // 阿拉伯数字段号是非汉字、装配时自然被丢；中文数字是汉字，不跳就被当成一个音节
+    // 落到首音上（《切慕》首音是休止 0，接了「一、」后被「0 对上歌词」复原成了 1）。
+    let labelEnd = 0;
+    {
+      const cn = isFirstChunk && rowIdx >= 0 ? CN_LABEL_RE.exec(rawText) : null;
+      const first = rowIdx >= 0 ? staff[rowIdx].nums[0] : undefined;
+      if (cn && first) {
+        const lx = textsPos ? fracToSrcX(textsPos[s][0]?.xFrac ?? 0) : cells[0].x;
+        if (lx < rcx(first.bbox)) labelEnd = cn[0].length;
+      }
+    }
     // 段落方框 Intro/Verse/Chorus/Coda：可能独占一块（被 cov 过滤的短行），也可能与和弦行同块
     // （"Gsus4G" 与 "Chorus" 同一 verse 行）。在任何块里就地捞出，x 取该词首字。
     // **上方带（above）除外**：那条带是为和弦新开的，本不在旧管线的视野里，让它也产出段落标记
@@ -697,6 +715,7 @@ export async function recognizeLyrics(
       let at = 0;
       for (const { ch, xFrac } of textsPos![s]) {
         const pos = at; at += ch.length;
+        if (pos < labelEnd) continue;                               // 中文段号
         if (jumpSpan && pos >= jumpSpan[0] && pos < jumpSpan[1]) { flushLatin(); continue; } // 记号不是歌词
         const sx = fracToSrcX(xFrac);
         if (isHanzi(ch)) {
@@ -733,6 +752,7 @@ export async function recognizeLyrics(
       let at = 0;
       for (const ch of texts![s]) {
         const pos = at; at += ch.length;
+        if (pos < labelEnd) continue;                                // 中文段号
         if (jumpSpan && pos >= jumpSpan[0] && pos < jumpSpan[1]) { flushLatin(); continue; } // 记号不是歌词
         if (isHanzi(ch)) { flushLatin(); toks.push(lead + ch); lead = ""; }
         else if (isLatin(ch) || (pend && isApostrophe(ch))) pend += ch;
@@ -907,13 +927,15 @@ export async function recognizeLyrics(
   // 段号被当成非汉字丢弃、不占音符位，故这一份只能在这里另存。
   // **逐谱行各记各的**：多段谱常只在第一谱行印号（后续行照行序共用映射），谱面没印的行就不写。
   // 号取重映射后的规范写法（`3.5.`），OCR 把点吞成 `35` 也能还原成谱面那个样子。
+  // 中文数字段号照谱面原样（`一、`）：段号在各格式里都是自由文本，写成 `1.` 反倒与谱面不符。
   if (verseLabels.size) {
     for (const [key, raw] of rawByKey) {
       const [rowIdx, visual] = key.split(":").map(Number);
       if (rowIdx < 0 || !perLine.has(key) || !parseVerseLabel(raw)) continue;
       const targets = versesOf(visual);
       const row = staff[rowIdx];
-      (row.lyricLabels ??= [])[targets[0] - 1] = targets.map((n) => `${n}.`).join("");
+      const cn = CN_LABEL_RE.exec(raw);
+      (row.lyricLabels ??= [])[targets[0] - 1] = cn ? cn[1] + cn[2] : targets.map((n) => `${n}.`).join("");
     }
   }
 
@@ -929,6 +951,7 @@ export async function recognizeLyrics(
     placed.sort((a, b) => a.x - b.x);
     const M = placed.length;
     let ni = 0;
+    const restHits: Array<{ ni: number; x: number; ch: string }> = []; // 落到休止上的字（事后复核）
     for (let k = 0; k < M; k++) {
       const { x, ch } = placed[k];
       // 给后续字各留一个音符的上限：第 k 字最多落到 notes.length-(M-k)。
@@ -951,8 +974,27 @@ export async function recognizeLyrics(
       if (!isStrayMark) {
         if (!nt.lyrics) nt.lyrics = [];
         for (const p of targets) nt.lyrics[p - 1] = (nt.lyrics[p - 1] || "") + ch;
+        if (nt.digit === 0) restHits.push({ ni, x, ch });
       }
       if (ni < notes.length - 1) ni++;
+    }
+    // 休止符不接词：字落到休止上，而它的右邻（同一小节、本段还空着）才是这个字的主。
+    // 不看右邻是不是弧的收尾：弧此时还没核过（和弦字母被当成弧，要等和弦认出来才撤，见 jianpu）。
+    // 休止与右邻印得很紧时（《切慕》末行 `0̲6̣̲` 两音中心只差 0.8 字号），字位左缘对音符中心的
+    // 最近邻会偏向左边的休止（第 4 段「荣」字位过了休止中心 0.36 字号）。只管**紧挨着的一对**
+    // （中心距 ≤1.2 字号），且字位要**明显**过了休止中心（≥0.2 字号）：被误读成 0 的真音符，字就正压
+    // 在它中心上（沧海一声笑小图上一个误读的 `3` 实测差 0、右邻远在 2.8 字号外），不能挪。
+    // 挪不动的留给 jianpu 的「0 对上歌词」复原兜底。
+    for (const { ni: ri, x, ch } of restHits) {
+      const rest = notes[ri], nx = notes[ri + 1];
+      if (!nx || nx.digit === 0) continue;
+      if (rcx(nx.bbox) - rcx(rest.bbox) > numH * 1.2) continue;       // 只管印得紧挨着的一对（`06` `03`）
+      if (x < rcx(rest.bbox) + numH * 0.2) continue;                  // 字位明显过了休止中心
+      if (staff[rowIdx].barlineXs.some((bx) => bx > rcx(rest.bbox) && bx < rcx(nx.bbox))) continue;
+      if (targets.some((p) => nx.lyrics?.[p - 1])) continue;
+      if (targets.some((p) => rest.lyrics?.[p - 1] !== ch)) continue;  // 只挪整字（休止上只落了这一个字）
+      nx.lyrics ??= [];
+      for (const p of targets) { nx.lyrics[p - 1] = ch; rest.lyrics![p - 1] = ""; }
     }
     if (TR) (TR.aligned ??= {})[key] = notes.map((n) => ({ noteX: rcx(n.bbox), noteBox: n.bbox, lyric: n.lyrics?.[verse] || "" }));
   }
