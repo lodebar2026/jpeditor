@@ -112,7 +112,7 @@ export function mergeToChars(line: Component[], charH: number): Rect[] {
 // 一个 rec 块：本乐谱行(rowIdx)某 verse 的若干相邻字格（拼一条横图整体 rec）。
 // above=true 的块来自**第 0 谱行上方**那条带（rowIdx=-1）：那里没有可归属的歌词行，只可能是
 // 和弦/段落方框，故永不参与歌词装配。
-interface Chunk { rowIdx: number; verse: number; cells: Rect[]; maxGap: number; mark?: boolean; above?: boolean; }
+interface Chunk { rowIdx: number; verse: number; cells: Rect[]; maxGap: number; mark?: boolean; above?: boolean; margin?: boolean; }
 
 // 调试可视化用：设 globalThis.__lyricTrace={} 后 recognizeLyrics 逐步把各阶段 I/O 记进来（供生成算法说明 HTML）。
 export interface LyricTrace {
@@ -141,6 +141,22 @@ function compactSegs(cells: Rect[], maxGap: number): { segs: { cx0: number; cx1:
     if (i < cells.length - 1) cx += Math.max(0, Math.min(cells[i + 1].x - (cells[i].x + w), maxGap));
   }
   return { segs, contentW: cx };
+}
+
+/** 用 OCR 字位 xFrac → 源图 x。strip 是**压缩条**（字间空白被压到 maxGap），故按同一压缩布局
+ *  把 xFrac 落到对应字格、再映回该格源图 x（不能再用自然 span 线性映，否则压缩处会错位）。 */
+function fracToSrcXOf(cells: Rect[], maxGap: number): (xFrac: number) => number {
+  const { segs, contentW } = compactSegs(cells, maxGap);
+  const stripW = contentW + STRIP_PAD * 2;
+  return (xFrac: number) => {
+    const cc = xFrac * stripW - STRIP_PAD; // 压缩条内容坐标
+    for (const sg of segs) if (cc <= sg.cx1) {
+      const t = Math.max(0, Math.min(1, (cc - sg.cx0) / Math.max(1, sg.cx1 - sg.cx0)));
+      return sg.sx0 + t * sg.sw;
+    }
+    const last = segs[segs.length - 1];
+    return last.sx0 + last.sw;
+  };
 }
 
 /** 裁一块字格所覆盖的**自然连续区域**(保留原始字间距/渲染，不重拼)，缩到高 STRIP_H 整体 rec。
@@ -544,7 +560,18 @@ export async function recognizeLyrics(
       // S5 直接按 STRIP_MAXW 宽上限把整行字格切成 rec 块（不再逐长空白断段）：散字尽量并进同一条
       // 自然区域整体 rec——多字上下文远比逐字准（实测单字 ~85% vs 自然区域 ~98%）。宽上限已含字间空白，
       // 真正的大段乐句空白会撑到上限自然断开，不会把整行压扁。
-      for (const chunkCellsArr of chunkCells(cells, maxGap)) {
+      // 行首**边注**：整格落在本谱行第一个音符左缘之外、与后面的字隔开一段——不写分隔符的中文段号
+      // （8085《祭司的国度》`二 既已蒙召…`）、页边竖排的「（副）」。它与歌词拼在一条里送 rec 会带歪
+      // 上下文（实测读成「二已蒙召」，把「既」吞了），故单独成块、另起一批 rec；读出汉字才按边注
+      // 处理（见趟 1），否则（阿拉伯数字段号、和弦）照普通块装配，与原来无异。
+      let body = cells;
+      const c0 = cells[0], c1 = cells[1];
+      if (!above && c1 && rright(c0) < row.nums[0].bbox.x && c1.x - rright(c0) >= c1.h * 0.5) {
+        chunks.push({ rowIdx: i, verse, cells: [c0], maxGap, margin: true });
+        strips.push(buildStrip(src, [c0], STRIP_H, maxGap));
+        body = cells.slice(1);
+      }
+      for (const chunkCellsArr of chunkCells(body, maxGap)) {
         chunks.push({ rowIdx: i, verse, cells: chunkCellsArr, maxGap, above });
         strips.push(buildStrip(src, chunkCellsArr, STRIP_H, maxGap));
         if (TR) { const x0 = Math.min(...chunkCellsArr.map((r) => r.x)), y0 = Math.min(...chunkCellsArr.map((r) => r.y));
@@ -561,11 +588,11 @@ export async function recognizeLyrics(
   // 会漂——实测把上方带的块（多是页眉碎块与音符上方的下划线）混进同一批，「沧海一声笑」六段词的
   // 歌词从 99.4% 掉到 80.8%，而那些块本身一个字都没进歌词。分两批调用，索引按原 chunk 序填回。
   const recPos = ocr.recognizeTextsPos?.bind(ocr);
-  const mainIdx: number[] = [], aboveIdx: number[] = [];
-  chunks.forEach((c, i) => (c.above ? aboveIdx : mainIdx).push(i));
+  const mainIdx: number[] = [], aboveIdx: number[] = [], marginIdx: number[] = [];
+  chunks.forEach((c, i) => (c.above ? aboveIdx : c.margin ? marginIdx : mainIdx).push(i));
   const textsPos: { ch: string; xFrac: number }[][] | null = posMode ? new Array(chunks.length) : null;
   const texts: string[] | null = posMode ? null : new Array(chunks.length);
-  for (const idxs of [mainIdx, aboveIdx]) {
+  for (const idxs of [mainIdx, aboveIdx, marginIdx]) {
     if (!idxs.length) continue;
     const st = idxs.map((i) => strips[i]);
     if (textsPos) { const r = await recPos!(st); idxs.forEach((ci, k) => { textsPos[ci] = r[k]; }); }
@@ -579,6 +606,14 @@ export async function recognizeLyrics(
   const perLine = new Map<string, Array<{ x: number; ch: string; region?: TextRegion }>>();
   const rawByKey = new Map<string, string>();   // 每 (row,verse) 的 rec 原文（供和弦/段落标记行判定）
   const lineSeen = new Set<string>();
+  // 行首边注块（分块时单独拿出来的那格）读出汉字 → 不进歌词；是单个中文数字就收作段号。
+  // 「一」只是一横，单独 rec 常读成横线或「1」：横线一律认作「一」；「1」只在本页别的边注
+  // 读出了中文数字时才认（《祭司的国度》`二` 读对、`一` 读成 `1`）——阿拉伯段号总带点（`1.`）。
+  const marginNote = new Set<number>();                            // 按边注处理的块
+  const marginLabel = new Map<string, string>();                   // (row,verse) → 中文段号
+  const marginText = (s: number) =>
+    (textsPos ? textsPos[s].map((c) => c.ch).join("") : texts![s]).replace(/[\s()（）]/g, "").replace(/^[-‐‑–—]$/, "一");
+  const cnMarginPage = chunks.some((c, s) => c.margin && marginText(s).length === 1 && CN_NUM.includes(marginText(s)));
   const marks: { rowIdx: number; word: string; x: number }[] = []; // 段落标记（印在下一谱行上方）
   const jumps: { rowIdx: number; word: string; x: number; y: number; key: string }[] = []; // 跳转记号
   const chordCands = new Map<number, ChordCand[]>();   // rowIdx（和弦所在带的上一谱行）→ 待落位的记号
@@ -599,6 +634,15 @@ export async function recognizeLyrics(
     // 它本就该被丢弃、不占音符位。不排除的话「沧海一声笑」六段词的段号会全变成「一」字。
     // 上方带（above）不改判：那里根本没有歌词，把短横改成汉字只会让整行不再被判为和弦行。
     const notes0 = rowIdx >= 0 ? staff[rowIdx].nums : [];
+    if (chunks[s].margin) {
+      const bare = cnMarginPage && marginText(s) === "1" ? "一" : marginText(s);
+      if (/[一-鿿]/.test(bare)) {
+        probe("lyrics.marginNote");
+        marginNote.add(s);
+        if (bare.length === 1 && CN_NUM.includes(bare)) marginLabel.set(`${rowIdx}:${verse}`, bare);
+        continue;
+      }
+    }
     const beforeFirstNote = notes0.length > 0 && rright(cells[cells.length - 1]) < rcx(notes0[0].bbox);
     if (!above && !beforeFirstNote && /^[-‐‑–—1]$/.test(rawText.trim())) {
       rawText = "一";
@@ -618,23 +662,12 @@ export async function recognizeLyrics(
 
   // ── 趟 2：段落标记/跳转记号就地捞取 + 歌词装配 ──
   for (let s = 0; s < chunks.length; s++) {
+    if (marginNote.has(s)) continue;
     const { rowIdx, verse, cells, maxGap } = chunks[s];
     const key = `${rowIdx}:${verse}`;
     const isFirstChunk = !lineSeen.has(key);
     lineSeen.add(key);
-    // 用 OCR 字位 xFrac → 源图 x。strip 是**压缩条**（字间空白被压到 maxGap），故按同一压缩布局
-    // 把 xFrac 落到对应字格、再映回该格源图 x（不能再用自然 span 线性映，否则压缩处会错位）。
-    const { segs, contentW } = compactSegs(cells, maxGap);
-    const stripW = contentW + STRIP_PAD * 2;
-    const fracToSrcX = (xFrac: number) => {
-      const cc = xFrac * stripW - STRIP_PAD; // 压缩条内容坐标
-      for (const sg of segs) if (cc <= sg.cx1) {
-        const t = Math.max(0, Math.min(1, (cc - sg.cx0) / Math.max(1, sg.cx1 - sg.cx0)));
-        return sg.sx0 + t * sg.sw;
-      }
-      const last = segs[segs.length - 1];
-      return last.sx0 + last.sw;
-    };
+    const fracToSrcX = fracToSrcXOf(cells, maxGap);
 
     const rawText = rawTexts[s];
     // 行首的中文段号（`一、是你怜悯…`）：落在本谱行第一个音符左侧才算，跳过不占音符。
@@ -930,7 +963,8 @@ export async function recognizeLyrics(
       if (rowIdx < 0) continue;
       if (seen.has(verse)) continue;           // 每个视觉行只看它首次出现的那一谱行（= 标号那行）
       seen.add(verse);
-      const nums = parseVerseLabel(raw);
+      const cnMargin = marginLabel.get(key);
+      const nums = parseVerseLabel(raw) ?? (cnMargin ? [CN_NUM.indexOf(cnMargin) + 1] : null);
       if (nums) { probe("lyrics.verseLabel"); verseLabels.set(verse, nums); }
     }
     // 只在标签成套时才信：首行必须标 1、号不重复、至少两行有标签。零星误读（歌词里恰好有
@@ -956,11 +990,12 @@ export async function recognizeLyrics(
   if (verseLabels.size) {
     for (const [key, raw] of rawByKey) {
       const [rowIdx, visual] = key.split(":").map(Number);
-      if (rowIdx < 0 || !perLine.has(key) || !parseVerseLabel(raw)) continue;
+      const cnMargin = marginLabel.get(key);
+      if (rowIdx < 0 || !perLine.has(key) || !(parseVerseLabel(raw) || cnMargin)) continue;
       const targets = versesOf(visual);
       const row = staff[rowIdx];
       const cn = CN_LABEL_RE.exec(raw);
-      (row.lyricLabels ??= [])[targets[0] - 1] = cn ? cn[1] + cn[2] : targets.map((n) => `${n}.`).join("");
+      (row.lyricLabels ??= [])[targets[0] - 1] = cn ? cn[1] + cn[2] : cnMargin ?? targets.map((n) => `${n}.`).join("");
     }
   }
 

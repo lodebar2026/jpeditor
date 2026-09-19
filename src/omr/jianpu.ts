@@ -39,7 +39,9 @@ interface Classified {
  *  （点 + 竖笔），落进"终止/粗小节线"判据被整块丢弃 —— 但**数字字形不含点**，故顶/底部这个
  *  与主笔隔着低墨谷的小墨斑必是八度点。按行墨廓在谷处切开，返回 { dot, digit } 两个合成连通块
  *  （dot 归 c.dots 供 buildJpNums 记八度、digit 归 c.blocks 正常识别）；非此形态返回 null。 */
-function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Component; digit: Component } | null {
+function splitMergedOctaveDot(
+  bin: Binary, b: Rect, numH: number, strict = false,
+): { dot: Component; digit: Component } | null {
   // 仅"过高、但仍有真实笔宽的窄竖块"才可能是点+数字笔：真小节线常细至 1~2px（下限剔之），
   // 数字笔即便是最窄的 "1" 也有可观宽度（≈0.3~0.55字号）。
   if (b.h <= numH * 1.05 || b.w < numH * 0.3 || b.w > numH * 0.6) return null;
@@ -54,6 +56,7 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
     let v = -1, vMin = Infinity;
     for (let y = winLo; y < winHi; y++) if (ink[y] < vMin) { vMin = ink[y]; v = y; }
     if (v < 0 || vMin > strokeInk * 0.6) return null; // 无清晰低墨谷 → 非点+笔（真小节线墨廓均匀）
+    if (strict && vMin > 1) return null;              // 严格：谷处近乎断开（只剩一个像素粘着）
     const dotSeg = dotAtTop ? mk(0, v) : mk(v + 1, b.h);
     const digSeg = dotAtTop ? mk(v + 1, b.h) : mk(0, v);
     if (!dotSeg || !digSeg) return null;
@@ -62,6 +65,8 @@ function splitMergedOctaveDot(bin: Binary, b: Rect, numH: number): { dot: Compon
     // 宽度下限把 1~2px 的细小节线/扫描竖纹挡在门外（它们墨廓也会有单像素起伏被误当"谷"）。
     if (dh > numH * 0.5 || dotSeg.bbox.w > numH * 0.5 || dotSeg.bbox.w < numH * 0.13) return null;
     if (dgh < numH * 0.55 || dgh > numH * 1.7 || digSeg.bbox.w > numH * 0.7 || digSeg.bbox.w < numH * 0.28) return null;
+    // 严格：点近乎方形、且明显窄于数字——3、5 的顶横扁而与数字等宽，过不了。
+    if (strict && (dotSeg.bbox.w > dh * 1.7 || dh > dotSeg.bbox.w * 1.7 || dotSeg.bbox.w > digSeg.bbox.w * 0.8)) return null;
     probe("splitMergedOctaveDot");
     return { dot: dotSeg, digit: digSeg };
   };
@@ -548,10 +553,14 @@ function classify(comps: Component[], bin: Binary): { c: Classified; numH: numbe
   // 否则会被下面的小节线判据整块吞掉而丢音（实测高八度 "1̇" 在单行简谱里 h 恰同真小节线）。
   const barCand = (w: number, h: number) =>
     (h >= numH * 0.85 && w <= Math.max(2, numH * 0.35)) || (h >= numH * 1.3 && w <= numH * 0.6 && h / w >= 2.2);
+  // 点贴得近时整块只高 1.25 字号、够不上小节线候选（《祭司的国度》末行「权」的 1̇，点与竖笔只隔
+  // 一个像素粘连，7×20 / numH 16），直接当数字块就把点裹进数字里、丢了八度。这类「窄而略高」的块
+  // 也试切，但走严格判据（strict）：3、5 的顶横与竖笔之间也有细腰，宽松判据会把顶横当点切下来。
   for (const k of comps) {
     const { w, h } = k.bbox;
-    if (barCand(w, h)) {
-      const sp = splitMergedOctaveDot(bin, k.bbox, numH);
+    const cand = barCand(w, h);
+    if (cand || (w <= numH * 0.6 && h > numH * 1.05)) {
+      const sp = splitMergedOctaveDot(bin, k.bbox, numH, !cand);
       if (sp) { c.dots.push(sp.dot); c.blocks.push(sp.digit); continue; }
     }
     // 小节线：细高竖条（高 ≳ 字号，宽很窄）
