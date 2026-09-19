@@ -1495,6 +1495,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 拿 header **已采纳**的字段区域当禁区交给 recognizeLyrics 剔，比在文法上猜可靠得多——
   // det 框里那个真和弦 `Am` 不会被 header 采纳，故不在禁区里。
   let title: string | undefined, subtitle: string | undefined, credits: string[] | undefined;
+  let number: string | undefined, numberSide: RecognizedScore["numberSide"];
   let fifths = 0, tempo: number | undefined;
   let beats = 4, beatType = 4;
   let meters: RecognizedScore["meters"], meterNote: string | undefined;
@@ -1502,7 +1503,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   if (ocr.recognizeTexts && useRows.length) {
     const h = await recognizeHeader(bin, comps, useRows[0].topY, numH, ocr,
       headerMeters.sort((a, b) => a.bbox.x - b.bbox.x));
-    title = h.title; subtitle = h.subtitle; credits = h.credits.length ? h.credits : undefined;
+    title = h.title; subtitle = h.subtitle; number = h.number; numberSide = h.numberSide; credits = h.credits.length ? h.credits : undefined;
     if (h.fifths !== undefined) fifths = h.fifths;
     if (h.beats !== undefined && h.beatType !== undefined) { beats = h.beats; beatType = h.beatType; }
     meters = h.meters; meterNote = h.meterNote;
@@ -1595,7 +1596,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   const dotDiam = dotSizes.length ? median(dotSizes) : undefined;
 
-  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, title, subtitle, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
+  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, number, numberSide, title, subtitle, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
 }
 
 

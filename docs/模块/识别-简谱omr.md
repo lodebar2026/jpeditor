@@ -14,7 +14,7 @@
 | `recognizeMusicppDetailed` | `src/omr/recognize.ts:16` 顶层编排 |
 | `src/omr/jianpu.ts`（1240 行） | 几何启发式主管线 |
 | `src/omr/lyrics.ts`（962 行） | 歌词识别与逐音节↔音符对齐 |
-| `src/omr/header.ts` | 页眉标题/词曲/调号（PP-OCRv4 DBNet 文本检测整片识别；调号认不出时按单字符 + 位置兜底） |
+| `src/omr/header.ts` | 页眉标题/曲号/词曲/调号（PP-OCRv4 DBNet 文本检测整片识别；调号认不出时按单字符 + 位置兜底）。曲号 → 123 `X:`、诗歌本 `XL:`/`XR:`、番茄拼回标题前 |
 | `src/omr/paddleocr.ts` | PP-OCR 推理 |
 | `src/omr/overlay.ts` | 识别核对叠加层 |
 | `src/omr/emit.ts` | 输出格式注册表 |

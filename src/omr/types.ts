@@ -137,6 +137,10 @@ export interface RecognizedScore {
   meters?: { beats: number; beatType: number }[];
   meterNote?: string; // 拍号后跟着的说明文字（"混合拍"）
   rows: StaffRow[];
+  // 曲号（页眉印着的歌本内编号）：→ `Work.number`（123 `X:`、MusicXML `<work-number>`）、
+  // 诗歌本文本谱 `XL:`/`XR:`（按印在标题哪一侧）；番茄没有曲号字段，拼回标题前。
+  number?: string;
+  numberSide?: "left" | "right";
   title?: string;
   // 副标题（多是曲名英译）：→ `Work.subtitles`（123 第二条 `T:`）、文本谱的第二条
   // 标题行。`.jpwabc` 的 `.Title` 段没有这个字段（既定，不扩语法），走那一路会丢。

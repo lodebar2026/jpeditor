@@ -48,6 +48,8 @@ export interface HeaderStyle {
   versionLine?: string;
   /** 标题字段名 */
   titleField: string;
+  /** 曲号字段名（印在标题左/右侧各一个，诗歌本 `XL:`/`XR:`）。没有就把曲号拼回标题前 */
+  indexFields?: { left: string; right: string };
   /** 著作者字段名 */
   creditField: string;
   /** 速度字段名 */
@@ -132,6 +134,7 @@ const SHIGE: DialectSpec = {
   wordSeparator: " ",
   header: {
     titleField: "T",
+    indexFields: { left: "XL", right: "XR" },
     creditField: "Z",
     tempoField: "J",
     keyMeter: "combined", // 诗歌本把调号与拍号写在一行：`1=G4/4`
