@@ -203,6 +203,24 @@ function parseMeta(lines: HLine[]): MetaInfo {
     const nat = l.text.match(/1\s*[=＝]\s*([A-G])(?![b#♭♯a-z])/);
     if (nat && nat[1] in NAT_FIFTHS) { res.fifths = NAT_FIFTHS[nat[1]]; res.fifthsLine = l; break; }
   }
+  // 用中文写调名、不写 `1=` 的：「D 大调」（8085《祭司的国度》）、「♭E 调」。小调按简谱首调唱名
+  // 记作关系大调（「A 小调」即 6=A → 1=C）。音名前后只许有升降号，整片须短——歌词、标题里
+  // 碰巧带「调」字的长句不认。
+  if (res.fifths === undefined) {
+    for (const l of lines) {
+      const t = l.text.replace(/\s+/g, "");
+      const m = t.length <= 6 && t.match(/^([b#♭♯]?)([A-G])([b#♭♯]?)(大调|小调|调)$/);
+      if (!m) continue;
+      const f = toFifths(m[2], m[1] || m[3]);
+      if (f === undefined) continue;
+      const g = m[4] === "小调" ? f - 3 : f;
+      if (g < -7 || g > 7) continue;
+      probe("key.cjkName");
+      res.fifths = g;
+      res.fifthsLine = l;
+      break;
+    }
+  }
   // 否则：独立升降号碎片 + 右侧最近大写音名碎片（"♭B" 被 OCR 拆成 "b" / "B4" 两块时）。
   if (res.fifths === undefined) {
     const accs = lines.filter((l) => /^[b#♭♯]$/.test(l.text.trim()));
