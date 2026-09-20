@@ -1366,7 +1366,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     try {
       const out = relayout(text, this._puPhraseMeasure());
       if (out === text) {
-        this.setStatus("这份谱没有可重排的曲行");
+        this.setStatus("行结构没变：乐句断点与现在的分行一致");
         return;
       }
       this._origLayoutText = text;

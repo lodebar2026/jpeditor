@@ -23,7 +23,7 @@ import { emitAbc } from "../abcfamily/emitabc.entry";
 import type { ScoreDoc } from "../model/doc";
 import { loadScoreDoc } from "../model/fromxml";
 import { fillDegreesFromPitch } from "../model/jianpu";
-import { relayoutDocBreaks, relayoutJpwabcText } from "../model/relayout";
+import { relayoutDocBreaks, relayoutJpwabcText, spliceComments } from "../model/relayout";
 import { jpwToScoreDoc } from "../model/fromjpw";
 import { JpwFile } from "../jpword/jpwfile";
 
@@ -102,11 +102,16 @@ const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 const stripBom = (bytes: Uint8Array): Uint8Array =>
   bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes;
 
-/** 123/ABC 的重排：断点写进模型（`$` 只落在小节之后，故小节中间的断点挪到下一根小节线），整份重出。 */
+/** 123/ABC 的重排：断点写进模型（`$` 只落在小节之后，故小节中间的断点挪到下一根小节线），整份重出。
+ *  重出会丢注释（注释不进模型），所以再把原文的注释按「跟着哪个和弦」缝回去（`spliceComments`）。 */
 function emitFrom(
-  doc: ScoreDoc, measure: FitMeasure | null, emit: (doc: ScoreDoc) => string, text: string,
+  text: string, measure: FitMeasure | null,
+  parse: (text: string) => ScoreDoc, emit: (doc: ScoreDoc) => string,
 ): string {
-  return relayoutDocBreaks(doc, { measure, midBreaks: "snap" }) ? emit(doc) : text;
+  const doc = parse(text);
+  if (!relayoutDocBreaks(doc, { measure, midBreaks: "snap" })) return text;
+  const out = emit(doc);
+  return spliceComments(text, doc, out, parse(out));
 }
 
 const JPWABC: FormatAdapter = {
@@ -176,7 +181,7 @@ const J123: FormatAdapter = {
   caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true },
   reload: (host, text) => host.reload123(text),
   toScoreDoc: parse123,
-  relayoutText: (text, measure) => emitFrom(parse123(text), measure, emit123, text),
+  relayoutText: (text, measure) => emitFrom(text, measure, parse123, emit123),
 };
 
 /** ABC —— 与 123 同源的那一支（123 是 ABC 方言）。**原生解析直出 `ScoreDoc`**，
@@ -203,7 +208,7 @@ const ABC: FormatAdapter = {
   caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true },
   reload: (host, text) => host.reloadAbc(text),
   toScoreDoc: parseAbc,
-  relayoutText: (text, measure) => emitFrom(parseAbc(text), measure, emitAbc, text),
+  relayoutText: (text, measure) => emitFrom(text, measure, parseAbc, emitAbc),
 };
 
 /** MusicXML —— 五线谱主格式。**没有代码区**：编辑器文档里存的就是 XML 原文（不显示），
