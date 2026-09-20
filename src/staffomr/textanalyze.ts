@@ -462,6 +462,9 @@ export function buildLyricLines(pg: SPage, lyrics: PObj[], dict?: TextGlyphLooku
   // 跨系统连接一变，音符档从 85.23% 掉到 82.53%、扫描件从 67.07% 掉到 62.17%。
   // 改成链式：段与段之间本来就是等距排下来的，中间没有空当；
   // 页脚离最后一段远得很，链断在那里。
+  // **只在位图路放这一条**（文本对象是合成的，`#` 打头的字体）。矢量路那本
+  // 每首最多两段，用不上链式；开着反而收进本不该收的行——实测赞美之泉的歌词档
+  // 94.95% → 94.88%，连带「同一版」那一档的曲目集合也动了（时值 97.71% → 97.62%）。
   const chainGap = maxGap / 3 * 0.8;
   for (const r of rows) {
     // 上方最近的那行谱
@@ -481,6 +484,7 @@ export function buildLyricLines(pg: SPage, lyrics: PObj[], dict?: TextGlyphLooku
       // 接不上已收的最后一段就不要（`rows` 已按 top 排好，最后一段就是最靠下的那段）
       const prev = a[a.length - 1];
       if (!prev || r.top - prev.bottom > chainGap) continue;
+      if (!r.objs.every((o) => o.run?.font.startsWith("#"))) continue;
     }
     a.push({ top: r.top, bottom: r.bottom, objs: r.objs });
     byStaff.set(best, a);
