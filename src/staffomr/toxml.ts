@@ -269,9 +269,14 @@ const ARTICULATION: Record<string, string> = {
   caesura: "<caesura/>",
 };
 
-/** 单个 `<lyric>`。五线谱的拉丁歌词要区分 `begin`/`single`（简谱逐字挂词没有词内断音节这回事）。 */
-function lyricXml(l: { verse: number; text: string; hyphen: boolean }): string {
-  const syllabic = l.hyphen ? "begin" : "single";
+/**
+ * 单个 `<lyric>`。五线谱的拉丁歌词要分**词内的四种位置**
+ * （简谱逐字挂词没有词内断音节这回事，一律 `single`）：
+ * `hyphen` = 这个音节后面还有连字符，`cont` = 前面来的也是同一个词。
+ * `a-bid-eth` 三段正好走遍 begin / middle / end。
+ */
+function lyricXml(l: { verse: number; text: string; hyphen: boolean; cont: boolean }): string {
+  const syllabic = l.cont ? (l.hyphen ? "middle" : "end") : l.hyphen ? "begin" : "single";
   return `<lyric number="${l.verse}"><syllabic>${syllabic}</syllabic><text>${escapeXml(l.text)}</text></lyric>`;
 }
 

@@ -584,7 +584,7 @@ export interface StaffNote {
   beams: number;
   x: number;
   /** 挂在这个音符上的歌词，按段（verse）。 */
-  lyrics?: { verse: number; text: string; hyphen: boolean }[];
+  lyrics?: { verse: number; text: string; hyphen: boolean; cont: boolean }[];
   /** 挂在这个音符上的和弦符号（归一后的原文，如 `Am`、`G/B`、`Dm7`）。 */
   chord?: string;
   /**

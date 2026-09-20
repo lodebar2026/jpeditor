@@ -47,6 +47,13 @@ const ROW_GAP = 0.9;
 /** 一行歌词至少要有几个字格才算数（少于这个多半是力度记号、小节号一类）。 */
 const MIN_CELLS = 3;
 
+/** **最后一行谱**下方的歌词带留多少个线距（中间的谱行以下一行的上缘为界）。
+ *  原来是 16 格（四个谱表高），够合唱谱那种两三段词；
+ *  独唱谱一页八段词（《坚固保障》中文四段 + 英文四段）要 20 格开外
+ *  ——16 格时末行谱下面的英文第 2、3、4 段整片落在带外，一条都切不出来。
+ *  取 24 格；再往下就是页脚的版权行了。 */
+const TAIL_BAND = 24;
+
 const median = (a: number[]) => (a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : 0);
 
 const rbottom = (r: Rect) => r.y + r.h;
@@ -66,9 +73,9 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
   const sp = unit.space;
   for (let i = 0; i < staves.length; i++) {
     const st = staves[i];
-    // 带的下界：下一行谱的上缘；最后一行取「四个谱表高」——够罩住两三段歌词，
-    // 又不至于把页脚的版权行收进来。
-    const limit = i + 1 < staves.length ? staves[i + 1].top : st.bottom + sp * 16;
+    // 带的下界：下一行谱的上缘；最后一行取 `TAIL_BAND` 个线距
+    // ——够罩住整页最多的那几段歌词，又不至于把页脚的版权行收进来。
+    const limit = i + 1 < staves.length ? staves[i + 1].top : st.bottom + sp * TAIL_BAND;
     const band = blobs.filter((c) => {
       const b = c.bbox;
       if (b.y < st.bottom + sp * 0.3 || rbottom(b) > limit) return false;
@@ -172,6 +179,8 @@ export interface LyricStrip {
   data: Uint8Array;
   /** 每个字格在条内的 x 区间（0~1 的分数），按 x 排。 */
   cells: { x0: number; x1: number; box: Rect }[];
+  /** 这条在**页面**上的盒。拉丁行按 `xFrac` 算字的位置要用它（汉字行走字格，用不上）。 */
+  box: Rect;
   /** 字号（字格高的中位数），合成文本对象时当 `sizeDev`。 */
   charH: number;
 }
@@ -192,6 +201,7 @@ export function stripOf(bin: { w: number; h: number; data: Uint8Array }, row: Ly
     w,
     h,
     data,
+    box: { x: x0, y: y0, w, h },
     charH: row.charH,
     cells: row.cells.map((c) => ({ x0: (c.x - x0) / w, x1: (c.x + c.w - x0) / w, box: c })),
   };
@@ -320,5 +330,110 @@ export function mapCharsToCells(strip: LyricStrip, chars: OcrChar[]): { box: Rec
     else if (how === 2) i--;
     else break;
   }
+  return out;
+}
+
+
+// ── 拉丁歌词 ────────────────────────────────────────────────────────────────
+//
+// 汉字那一套（`mergeToChars` 按字高并格 → `mapCharsToCells` 把 OCR 的字摊到格上）
+// 立在**汉字等宽见方**这个前提上。英文词宽差着数倍，照搬必错位。
+// 所以拉丁行**绕开字格**，直接拿 OCR 的 `{ch, xFrac}` 逐字造盒，
+// 断词断音节交给矢量路现成的 `splitSyllables`——那一步本来就是给拉丁歌词写的
+// （遇空格断词、遇 `-` 断音节并记下 `hyphen`），一行不改就能用。
+//
+// 语种**按 OCR 的结果判，不按几何猜**：几何上中英文行的高度、字距都重叠得厉害，
+// 而字认出来之后是哪种文字一目了然。
+
+/** 判拉丁行的三道闸：拉丁字母在**成字的字符**（字母 + 汉字）里占到这个比例、
+ *  整行的字母不少于这么多个、并且**至少有一个连字符**。
+ *
+ *  三道都要。前两道挡 OCR 的垫背字：认不出的墨迹会吐拉丁字母
+ *  （`LYRIC_CH` 那条注记着「实测 `l` 一个就出现二十几次」），汉字行只收 CJK、
+ *  这些字自然被滤掉；拉丁行一开，它们就成了假英文行。
+ *
+ *  第三道挡**页眉页脚与版权行**，它们是货真价实的整行英文，前两道拦不住
+ *  ——实测破碎那份六页的书眉（`NEWHEARTMUSICMINISTRIES73REVEREYOURGLORY`）
+ *  与版权行整片被收成歌词，谱行的「有没有词」一变，`score.ts::assignSlots`
+ *  的跨系统连接跟着变，扫描件音符档 67.07% → 66.72%。
+ *  判据是**连字符**：歌词是逐音节排在音符下面的（`Mas-ter`、`Up-on`、`bul-wark`），
+ *  一整行下来必带；书眉、版权、脚注一个也没有。
+ *  代价是整行全是单音节词的歌词行会漏掉（实测主，差遣我有一行 `takeupthecross;`），
+ *  拿它换掉六行书眉，划算。 */
+const LATIN_FRAC = 0.9;
+const LATIN_MIN = 20;
+const LATIN_MIN_HYPHEN = 1;
+
+/** 收得下的拉丁歌词字符：字母、撇号（`God's`）、连字符、以及贴字尾的半角标点。 */
+const LATIN_CH = /[A-Za-z'\u2019\-\u2013\u2014,.;:!?]/;
+
+/** 词间空白：条子里连着这么多列没有墨（相对字号）就算一个词界。
+ *  PP-OCR 的 rec **不吐空格**（字表里没有），词界只能自己判。
+ *  **按条子里真的空白判，不按 `xFrac` 的间距判**：`xFrac` 是 CTC 估的位置，
+ *  一个字常差半个字宽，按它判出来的词界一半是错的
+ *  （实测 `bul-wark nev-er` 判成 `warkney- er`，音节一错位整行就对不上音符）。
+ *  **0.7 个字号**，不是排印意义上的词距（0.3~0.5 em）：歌词是**逐音节排在音符下面**的，
+ *  词与词之间拉开的是音符间距。实测十二行英文歌词的空白游程：中位 2~5px、
+ *  七成位 7~15px、九成位 18~35px（字号 13~17px）——两头分得很开，
+ *  0.7 个字号落在中间那片空当里。取 0.28 那一档（照排印词距）整行碎成单字母
+ *  （`w orld`、`M an`）。 */
+const SPACE_GAP = 0.7;
+
+/** 这一行是拉丁歌词吗。 */
+export function isLatinRow(chars: OcrChar[]): boolean {
+  let latin = 0;
+  let cjk = 0;
+  for (const c of chars) {
+    if (/[A-Za-z]/.test(c.ch)) latin++;
+    else if (/[\u4e00-\u9fff]/.test(c.ch)) cjk++;
+  }
+  const hyphens = chars.filter((c) => /[-\u2013\u2014]/.test(c.ch)).length;
+  return latin >= LATIN_MIN && hyphens >= LATIN_MIN_HYPHEN && latin / (latin + cjk) >= LATIN_FRAC;
+}
+
+/**
+ * 拉丁行：OCR 字符 → 逐字符的盒（页面坐标），**词间的空格按间距补出来**。
+ *
+ * 出来的东西交给 `makeTextObj` 造成文本对象，再由 `splitSyllables` 断成音节。
+ * 盒的高度一律取整条的高：`xFrac` 只给得出 x，字的上下缘量不出来，
+ * 而下游只拿 x 去对音符。
+ */
+export function latinCells(strip: LyricStrip, chars: OcrChar[]): { box: Rect; ch: string }[] {
+  const keep = chars.filter((c) => LATIN_CH.test(c.ch)).sort((a, b) => a.xFrac - b.xFrac);
+  if (!keep.length) return [];
+  // 条内的**空白列区间**（分数坐标），按 x 排：词界就在这些区间里
+  const col = new Int32Array(strip.w);
+  for (let y = 0; y < strip.h; y++)
+    for (let x = 0; x < strip.w; x++) if (strip.data[y * strip.w + x]) col[x]++;
+  const minGap = Math.max(2, strip.charH * SPACE_GAP);
+  const blanks: [number, number][] = [];
+  let run = 0;
+  for (let x = 0; x <= strip.w; x++) {
+    if (x < strip.w && !col[x]) {
+      run++;
+      continue;
+    }
+    if (run >= minGap) blanks.push([(x - run) / strip.w, x / strip.w]);
+    run = 0;
+  }
+  const gaps = keep.slice(1).map((c, i) => c.xFrac - keep[i].xFrac).filter((g) => g > 0).sort((a, b) => a - b);
+  const pitch = gaps.length ? gaps[gaps.length >> 1] : 1 / Math.max(1, keep.length);
+  const out: { box: Rect; ch: string }[] = [];
+  const boxAt = (x0: number, x1: number, ch: string) => ({
+    box: {
+      x: strip.box.x + x0 * strip.box.w,
+      y: strip.box.y,
+      w: Math.max(1, (x1 - x0) * strip.box.w),
+      h: strip.box.h,
+    },
+    ch,
+  });
+  keep.forEach((c, i) => {
+    const next = keep[i + 1];
+    const end = next ? Math.min(c.xFrac + pitch, next.xFrac) : Math.min(1, c.xFrac + pitch);
+    out.push(boxAt(c.xFrac, end, c.ch));
+    // 两个字之间**夹着一段空白列**就补个空格（`splitSyllables` 见空格断词）
+    if (next && blanks.some((b) => b[0] >= c.xFrac && b[1] <= next.xFrac)) out.push(boxAt(end, next.xFrac, " "));
+  });
   return out;
 }

@@ -20,16 +20,17 @@ import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adap
 import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, groupByLeftInk, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
 import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
-import { findLyricRows, foldLyricChars, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
+import { findLyricRows, foldLyricChars, isLatinRow, latinCells, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
 import { buildHeadMasks, headFromStemBlock, splitHeadCluster } from "./headmask";
 import { headProb, trainHeadClassifier } from "./headclass";
 import { findStaffLabels, labelKey, normalizeLabel, type LabelStrip } from "./stafflabel";
+import { findHarmonyStrips, harmonyKey, harmonyTokens, type HarmonyStrip, type HarmonyToken } from "./harmony";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
 import { findRasterSlurs } from "./slur";
 import { ContourLedger } from "./ledger";
-import { attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
+import { attachHarmonies, attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
 import { attachSlurs, markSlurNotes, reconnectSlurs, type SlurArc } from "../staffomr/slur";
 import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
 import { completeStaffLines } from "./dewarp";
@@ -75,6 +76,13 @@ export interface RasterPageResult {
    * 与歌词条同一套架构：这里只切条，认字靠离线缓存。见 `stafflabel.ts`。
    */
   labelStrips: LabelStrip[];
+  /**
+   * 这一页各谱行上方的**和弦带**（`gen-rasterharmony.mjs` 拿它送 OCR）。
+   * 与歌词条、标签条同一套架构：这里只切条，认字靠离线缓存。见 `harmony.ts`。
+   */
+  harmonyStrips: HarmonyStrip[];
+  /** 切出来的和弦记号（缓存里查得到才有）。已挂到音符的 `chord` 上。 */
+  harmonies: HarmonyToken[];
   /** 谱行下标 → 规范化的声部名（`S1`/`A`/`P`…）。缓存里查得到才有。 */
   staffLabels: Map<number, string>;
   /**
@@ -112,6 +120,8 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   slurs: [],
   lyricStrips: [],
   labelStrips: [],
+  harmonyStrips: [],
+  harmonies: [],
   staffLabels: new Map(),
   lyricStats: { rows: 0, hit: 0, parity: 0 },
   carryTime,
@@ -403,12 +413,18 @@ export async function recognizeRasterPage(
     lyricOcr?: Map<string, OcrChar[]>;
     /** 声部标签的 OCR 缓存（`scripts/gen-rasterlabels.mjs` 的产物）。见 `stafflabel.ts`。 */
     labelOcr?: Map<string, string>;
+    /** 和弦条的 OCR 缓存（`scripts/gen-rasterharmony.mjs` 的产物）。见 `harmony.ts`。
+     *  值的类型与歌词缓存共用（`OcrChar`）——两边都是「整条送 rec，回来字符带条内 x」。 */
+    harmonyOcr?: Map<string, OcrChar[]>;
     /** 排查用：把连通块与「谁被认领了」带出来（`debugBlobs` 字段）。识别判据一条不改。 */
     debug?: boolean;
     /**
-     * 谱表带之外的墨一律抹掉（上下各 `STAFF_BAND` 个线距）。
-     * **立 GT 底稿专用**：和弦字母与歌词字会被收成符头（见下面那一处的实测），
-     * 而底稿本来就不要歌词。识别正路别开——开了歌词就没了。
+     * 谱表带之外的墨一律抹掉（上下各 `STAFF_BAND` 个线距）。**排查用，正路别开**。
+     *
+     * 从前立 GT 底稿要靠它挡住和弦字母（字母被收成符头，见下面那一处的实测）；
+     * 现在和弦带在找符头**之前**就按检测框认领掉了（`harmony.ts`），那条理由没了。
+     * 留着是因为排查「某个东西是不是带外的墨引起的」时一开就见分晓。
+     * **开了歌词与和弦都没有**。
      */
     staffBandOnly?: boolean;
   } = {},
@@ -455,6 +471,50 @@ export async function recognizeRasterPage(
     .map((l) => ({ x0: l.left, y0: l.y, x1: l.right, y1: l.y, lw: l.y1 - l.y0 + 1, maxLw: l.y1 - l.y0 + 1 }));
   const prims = findPrimitives(nl, unit, gridYs, staffLefts);
   const blobs = findBlobs(nl, prims, unit, ledgerGrid(gridYs, unit));
+
+  // ── 和弦带：**先于符头认领** ──────────────────────────────────────────────
+  //
+  // 独唱谱在谱表上方印和弦字母。`C`、`D`、`G` 都是圈，正落在空心符头那一档里
+  // （`HOLLOW_BAND` 上下各让三格，字母就在里面）——实测《坚固保障》整页因此
+  // 多出六个 D6/E6 全音符、四个 C3 四分音符。从前是拿 `staffBandOnly` 把带外的墨
+  // 整片抹掉换干净的，那是遮挡不是识别，和弦与歌词一起没了。
+  //
+  // 现在按**检测框**认领：缓存里有这条带的 OCR 结果才认领，没有就什么也不做
+  // ——合唱谱那批没有和弦带缓存，这一段对它是空转，基线不动。
+  const harmonyStrips = findHarmonyStrips(
+    raster.bin,
+    groups.map((g, i) => ({
+      box: {
+        left: Math.max(...g.lines.map((l) => l.left)),
+        right: Math.min(...g.lines.map((l) => l.right)),
+        top: g.lines[0].y,
+      },
+      index: i,
+    })),
+    unit,
+  );
+  const harmonies: HarmonyToken[] = [];
+  const harmonyIds = new Set<number>();
+  const harmonyMasks: Rect[] = [];
+  {
+    for (const strip of harmonyStrips) {
+      const chars = opts.harmonyOcr?.get(harmonyKey(strip));
+      if (!chars?.length) continue; // 缓存没命中：这条没跑过 OCR，宁可不认领
+      harmonies.push(...harmonyTokens(strip, chars));
+      // **认领按条的盒，不按切出来的记号**：记号的 x 是 CTC 估的，误差常有半个字；
+      // 条的盒是列投影裁紧的，正是要挡掉的那一簇墨。
+      harmonyMasks.push(strip.box);
+    }
+    // 条贴着墨迹裁，往外放半格容下笔画的毛边
+    const pad = unit.space * 0.5;
+    for (const c of blobs) {
+      const b = c.bbox;
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      if (harmonyMasks.some((m) => cx > m.x - pad && cx < m.x + m.w + pad && cy > m.y - pad && cy < m.y + m.h + pad))
+        harmonyIds.add(c.id);
+    }
+  }
 
   // ── contour 层与认领账本 ─────────────────────────────────────────────────
   //
@@ -535,8 +595,8 @@ export async function recognizeRasterPage(
     restSyms.push({ box: b, code: "restHBar" });
   }
 
-  const heads = findRasterHeads(nl, blobs.filter((c) => !restIds.has(c.id)), prims.vSegs, unit, onGrid, inBand, matchHollow);
-  const claimed = new Set([...heads.map((h) => h.comp.id), ...restIds]);
+  const heads = findRasterHeads(nl, blobs.filter((c) => !restIds.has(c.id) && !harmonyIds.has(c.id)), prims.vSegs, unit, onGrid, inBand, matchHollow);
+  const claimed = new Set([...heads.map((h) => h.comp.id), ...restIds, ...harmonyIds]);
 
   // ── 空心符头：按**内腔（洞）**再找一遍 ───────────────────────────────────
   //
@@ -545,7 +605,9 @@ export async function recognizeRasterPage(
   // 尺寸像内腔的往外扩一圈就是符头；骑线的头内腔被谱线豁成两半，先并回去。
   // 判据全在 `notehead.ts::hollowHeadsFromHoles`。
   const holes = mergeHoles(findHoles(raster.bin, Math.max(4, Math.round(unit.space * unit.space * 0.06))), unit);
-  const takenBoxes = heads.map((h) => h.box);
+  // 和弦字母的**内腔**也是洞（`D`/`G`/`B`/`A` 都有），不挡住就从这一路漏回来
+  // ——检测框一并算「已被占」。
+  const takenBoxes = [...heads.map((h) => h.box), ...harmonyMasks];
   // 带宽照 `HOLLOW_BAND`（±3 格）。扫过 ±1.5 / ±2 / ±3 格，三档一样
   // ——这一路的过检不在带边上。
   const stacked: RasterSym[] = hollowHeadsFromHoles(nl, holes, unit, prims.vSegs, inBand, takenBoxes);
@@ -1088,6 +1150,19 @@ export async function recognizeRasterPage(
     if (name) staffLabels.set(st.staff, name);
   }
 
+  // ── 和弦：挂到音符上 ────────────────────────────────────────────────────
+  //
+  // 记号在上面（找符头之前）就切好了，这里只把它们造成文本对象交给矢量路那一套
+  // ——分行、拼根音与后缀、挂给**下方 x 最近**的音符，一行不改。
+  if (harmonies.length) {
+    const objs = harmonies.map((t, i) =>
+      makeTextObj(pg.objs.length + i, { cells: [{ box: t.box, ch: t.text }], sizeDev: t.box.h }));
+    for (const o of objs) o.addTag("Harmony");
+    pg.objs.push(...objs);
+    // `merge = false`：记号已经按和弦文法切好了，别再按左右相接拼一次
+    attachHarmonies(pg, notes, objs, false);
+  }
+
   // ── 歌词 ────────────────────────────────────────────────────────────────
   //
   // **不走 `analyzeText`**：那一步靠「带连字符的音节」「音节间的延长线」当锚点
@@ -1118,8 +1193,12 @@ export async function recognizeRasterPage(
       const chars = ocr!.get(stripKey(strip));
       if (!chars) continue; // 缓存没命中：这一条没跑过 OCR，宁可留空不编造
       lyricStats.hit++;
-      const cells = mapCharsToCells(strip, chars);
-      if (foldLyricChars(chars).length === strip.cells.length) lyricStats.parity++;
+      // **拉丁行绕开字格**：字格那一套是按汉字等宽见方切的，英文词宽差着数倍。
+      // 逐字造盒、按间距补词间空格，断词断音节交给 `splitSyllables`（见 `lyric.ts`）。
+      const latin = isLatinRow(chars);
+      const cells = latin ? latinCells(strip, chars) : mapCharsToCells(strip, chars);
+      // 「字数 == 格数」这个结构指标只对汉字行有意义（拉丁行压根不切格）
+      if (!latin && foldLyricChars(chars).length === strip.cells.length) lyricStats.parity++;
       if (!cells.some((c) => c.ch)) continue;
       const o = makeTextObj(pg.objs.length + objs.length, { cells, sizeDev: strip.charH });
       o.addTag("Lyric");
@@ -1168,6 +1247,8 @@ export async function recognizeRasterPage(
     contours: cmap,
     ledger,
     lyricStrips,
+    harmonyStrips,
+    harmonies,
     labelStrips,
     staffLabels,
     wedges,

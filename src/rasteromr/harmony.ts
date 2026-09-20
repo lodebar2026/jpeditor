@@ -1,0 +1,190 @@
+// 谱行**上方的和弦字母**：切条、算指纹、把 OCR 回来的字串切成一个个和弦记号。
+//
+// 独唱谱（领唱谱、诗歌本式的五线谱）在谱表上方印和弦字母：`C`、`Am`、`G/B`、`D7`、`E/G♯`。
+// 矢量路早就认（`staffomr/textanalyze.ts::attachHarmonies`，靠 PDF 的文本层），
+// 位图路一处都没有——全仓从来没有一行给 `StaffNote.chord` 赋过值。
+//
+// **照歌词那条路走**（`lyric.ts` + `gen-rasterlyrics.mjs`），不是照标签那条：
+// 切条 → 按**条的内容指纹**寻址的离线 OCR 缓存（`gen-rasterharmony.mjs` →
+// `rasterharmony.json`）→ 识别时纯查表。连缓存的值类型都共用歌词那边的 `OcrChar`。
+//
+// **定位自己做，不请 DBNet**（标签那条是请的）。两者的差别在于带里有什么：
+// 标签带里压着上一行谱的歌词与弧线，几何闸分不开；和弦带里只有一行和弦字母，
+// 列投影一打就是干净的簇——实测《坚固保障》三条带，**簇内字距 ≤10px、簇间 ≥16px**
+// （线距 15px），中间空得一干二净。而 DBNet 在这个尺度上反而框不全：
+// 整页 42 个和弦只框出 30 个，`Dm`→`om`、`G C`→`C10`、`E/G♯ Am`→`E1`+`An`+`1`。
+// 逐簇裁紧、各自送 rec，短拉丁串就认得准了。
+//
+// **切成记号靠和弦文法**，不靠簇的边界：簇偶尔会并掉两个挨得近的和弦
+// （实测系统三末尾 `Dm G` 只隔 9px），`CHORD_TOKEN_RE` 要求根音是大写 A–G，
+// 从左往右贪心地咬，`DmG` 自然断回 `Dm` + `G`。
+import type { Binary, Rect } from "../omr/types";
+import type { RasterUnit } from "./staffline";
+import type { OcrChar } from "./lyric";
+import { CHORD_TOKEN_RE } from "../staffomr/textanalyze";
+
+/** 带的窗口（线距的倍数）：顶线上方这一段。
+ *
+ *  下界 1.0 格：贴着顶线的是**符头、加线、符杠的梢**，收进来会被当成和弦字母。
+ *  上界 3.2 格：《坚固保障》的和弦字母印在顶线上方 1.6 格处、字高约一格。
+ *  再往上是上一个系统的歌词。 */
+const BAND_TOP = 3.2;
+const BAND_BOTTOM = 1.0;
+
+/** 簇间的空白：相邻两段墨拉开这么多个线距才算是两个和弦。
+ *  实测三条带的间隙**两极分化**（簇内 ≤0.67 格、簇间 ≥1.07 格），0.75 格落在空当里。
+ *  并掉的那一两对由和弦文法断回来，所以这道闸宁松不紧——切错了断不回去。 */
+const CLUSTER_GAP = 0.75;
+
+/** 一簇至少要有这么宽、这么多墨才算数（相对线距 / 相对簇的面积）。
+ *  挡掉带里的孤立噪点与谱线的碎渣。 */
+const MIN_W = 0.25;
+const MIN_INK = 8;
+
+/** 一条和弦条：**一簇墨**的裸像素 + 它在页面上的盒。 */
+export interface HarmonyStrip {
+  w: number;
+  h: number;
+  /** 逐像素 0/1，长 `w*h`，1 = 墨。 */
+  data: Uint8Array;
+  box: Rect;
+  /** 这条属于第几行谱（`SPage.staves` 的下标）。 */
+  staff: number;
+}
+
+/**
+ * 切出各谱行上方的和弦条（一簇一条）。`staves` 给每行谱的盒（页面坐标）。
+ *
+ * **几何是死的**——同一页跑几次裁出来的条一模一样，指纹才稳得住。
+ * 认字是 OCR 缓存的事，切成记号是 `harmonyTokens` 的事。
+ */
+export function findHarmonyStrips(
+  bin: Binary,
+  staves: { box: { left: number; right: number; top: number }; index: number }[],
+  unit: RasterUnit,
+): HarmonyStrip[] {
+  const sp = unit.space;
+  const out: HarmonyStrip[] = [];
+  for (const st of staves) {
+    const y0 = Math.max(0, Math.round(st.box.top - sp * BAND_TOP));
+    const y1 = Math.max(0, Math.round(st.box.top - sp * BAND_BOTTOM));
+    const x0 = Math.max(0, Math.round(st.box.left));
+    const x1 = Math.min(bin.w, Math.round(st.box.right));
+    if (y1 - y0 < 4 || x1 - x0 < 8) continue;
+    // 列投影 → 游程 → 按空白并成簇
+    const col = new Int32Array(x1 - x0);
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) if (bin.data[y * bin.w + x]) col[x - x0]++;
+    const gap = Math.max(2, Math.round(sp * CLUSTER_GAP));
+    const runs: [number, number][] = [];
+    let s = -1;
+    for (let i = 0; i <= col.length; i++) {
+      const ink = i < col.length && col[i] > 0;
+      if (ink && s < 0) s = i;
+      if (!ink && s >= 0) {
+        const last = runs[runs.length - 1];
+        if (last && s - last[1] - 1 < gap) last[1] = i - 1;
+        else runs.push([s, i - 1]);
+        s = -1;
+      }
+    }
+    for (const [a, b] of runs) {
+      if (b - a + 1 < sp * MIN_W) continue;
+      // 纵向也裁紧：条越紧，rec 越准
+      let ya = y1;
+      let yb = y0;
+      let ink = 0;
+      for (let y = y0; y < y1; y++)
+        for (let x = x0 + a; x <= x0 + b; x++)
+          if (bin.data[y * bin.w + x]) {
+            ink++;
+            if (y < ya) ya = y;
+            if (y > yb) yb = y;
+          }
+      if (ink < MIN_INK || yb < ya) continue;
+      const box = { x: x0 + a, y: ya, w: b - a + 1, h: yb - ya + 1 };
+      const data = new Uint8Array(box.w * box.h);
+      for (let y = 0; y < box.h; y++)
+        for (let x = 0; x < box.w; x++) data[y * box.w + x] = bin.data[(box.y + y) * bin.w + box.x + x];
+      out.push({ w: box.w, h: box.h, data, box, staff: st.index });
+    }
+  }
+  return out;
+}
+
+/** 条的**内容指纹**（与 `lyric.ts::stripKey` / `stafflabel.ts::labelKey` 同一套）。 */
+export function harmonyKey(s: HarmonyStrip): string {
+  let h1 = 0x811c9dc5;
+  for (let i = 0; i < s.data.length; i++) {
+    h1 ^= s.data[i];
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+  }
+  return `H${s.w}x${s.h}-${h1.toString(36)}`;
+}
+
+/** 切出来的一个和弦记号（页面坐标）。 */
+export interface HarmonyToken {
+  text: string;
+  box: Rect;
+  staff: number;
+}
+
+/**
+ * OCR 读岔的归一。
+ *
+ * 前几条是**等价写法**（全角升降号、全角斜杠、夹进来的空白），没有判断。
+ * 后两条是**形近纠正**，只敢在和弦这个小字表里做：
+ *   - `卜`/`ト`/`下`/`尸` → `F`：底本线距才 15px，`F` 的横画糊成一团，
+ *     中文 rec 最爱吐这几个字（实测《坚固保障》两个 `F` 都读成 `卜`）。
+ *     这几个字在和弦记号里**根本不存在**，改它不会误伤真字。
+ *   - **结尾**的 `i`/`í`/`j`/`l` → `7`：`E7` 读成 `Ei`。只改结尾，
+ *     因为 `dim` / `min` 这些后缀里的 `i` 在词中间——那里一改就把后缀毁了。
+ */
+function normalizeChordText(s: string): string {
+  return s
+    .replace(/[\s·・,.]/g, "")
+    .replace(/[♯＃]/g, "#")
+    .replace(/[♭]/g, "b")
+    .replace(/[／∕丨|]/g, "/")
+    .replace(/[（）()]/g, "")
+    .replace(/[卜ト下尸]/g, "F");
+}
+
+/** 整条拼完之后再做的**结尾**形近纠正（见 `normalizeChordText` 的第二条）。 */
+const fixTail = (s: string): string => s.replace(/(?<=[A-G][#b]?)[iíjl]$/, "7");
+
+/**
+ * 一条的 OCR 字符序列 → 一个个和弦记号。
+ *
+ * **靠文法切**：`CHORD_TOKEN_RE` 要求根音是大写 A–G，从左往右贪心地咬，咬不动就跳一个字符。
+ * 每个记号的 x 由它头尾两个字符的 `xFrac` 定；字数对不上（归一化删过字）就整条当一个记号的盒。
+ */
+export function harmonyTokens(strip: HarmonyStrip, chars: OcrChar[]): HarmonyToken[] {
+  const kept: { ch: string; xFrac: number }[] = [];
+  for (const c of chars) {
+    const t = normalizeChordText(c.ch);
+    for (const ch of t) kept.push({ ch, xFrac: c.xFrac });
+  }
+  const raw = fixTail(kept.map((c) => c.ch).join(""));
+  const out: HarmonyToken[] = [];
+  const px = (frac: number) => strip.box.x + frac * strip.box.w;
+  let i = 0;
+  while (i < raw.length) {
+    const m = CHORD_TOKEN_RE.exec(raw.slice(i));
+    if (!m || !m[0]) {
+      i++;
+      continue;
+    }
+    const a = i;
+    const b = i + m[0].length - 1;
+    i += m[0].length;
+    const x0 = px(kept[a].xFrac);
+    const x1 = px(kept[b].xFrac);
+    out.push({
+      text: m[0],
+      box: { x: Math.min(x0, x1), y: strip.box.y, w: Math.max(1, Math.abs(x1 - x0)), h: strip.box.h },
+      staff: strip.staff,
+    });
+  }
+  return out;
+}

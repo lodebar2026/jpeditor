@@ -42,8 +42,10 @@ function collectTexts(pg: SPage): { texts: PObj[]; hlines: Box[] } {
 const isStepChar = (c: string): boolean => c >= "A" && c <= "G";
 
 /** 单个和弦记号的语法。与 `src/omr/chordline.ts::CHORD_TOKEN_RE` 同一条
- *  （根音必须大写、长后缀在前），**改一处要两处一起改**。 */
-const CHORD_TOKEN_RE = /^[A-G][#♯b♭]?(?:maj|min|dim|aug|sus|add|m|M)?\d*(?:sus\d*|add\d*)?(?:\/[A-G][#♯b♭]?)?/;
+ *  （根音必须大写、长后缀在前），**改一处要两处一起改**。
+ *  位图路切和弦带也用它（`rasteromr/harmony.ts::harmonyTokens`）——那边是导出复用，
+ *  **别再抄第三份**。 */
+export const CHORD_TOKEN_RE = /^[A-G][#♯b♭]?(?:maj|min|dim|aug|sus|add|m|M)?\d*(?:sus\d*|add\d*)?(?:\/[A-G][#♯b♭]?)?/;
 
 export interface TextAnalysis {
   lyric: PObj[];
@@ -364,6 +366,8 @@ export function splitSyllables(o: PObj, dict?: TextGlyphLookup): Syllable[] {
   const run = o.run;
   if (!run) return [];
   const em = run.sizeDev || 1;
+  /** 合成字体（`#` 打头）：位图路自己造的文本对象，没有真字体那些字形上的讲究。 */
+  const synth = run.font.startsWith("#");
   const out: Syllable[] = [];
   let cur: { chars: string[]; left: number; right: number; glyphs: VecGlyph[] } | null = null;
   const flush = (hyphen: boolean) => {
@@ -394,7 +398,10 @@ export function splitSyllables(o: PObj, dict?: TextGlyphLookup): Syllable[] {
     // 所以这一条只会打中它。从前是靠形近补字歪打正着把它标成「1」、
     // 再被「纯数字不是歌词」那条剔掉的，字典一重建就露馅（歌词里冒出一串 `!`）。
     // `bboxEstimated` 的不算数：那是没有轮廓、按 advance 估的盒，量不出真墨迹。
-    if (!g.bboxEstimated && g.bbox.w >= em * 0.8 && g.bbox.h >= em * 0.8 && c && /^[\x20-\x7e]$/.test(c)) {
+    // **合成字体不适用这一条**（位图路造的 `#ocr` / `#raster`）：它讲的是某套 PDF 字体的
+    // 全角空格字形，而合成对象的盒是按 OCR 的 `xFrac` 摊出来的，一个拉丁字母的盒
+    // 轻易就过 0.8 em——实测《坚固保障》四行英文歌词整片被这条吃掉，一个音节都没剩。
+    if (!synth && !g.bboxEstimated && g.bbox.w >= em * 0.8 && g.bbox.h >= em * 0.8 && c && /^[\x20-\x7e]$/.test(c)) {
       flush(false);
       continue;
     }
@@ -441,11 +448,21 @@ export function buildLyricLines(pg: SPage, lyrics: PObj[], dict?: TextGlyphLooku
       row.bottom = Math.max(row.bottom, o.box.bottom);
     } else rows.push({ top: o.box.top, bottom: o.box.bottom, objs: [o] });
   }
-  const byStaff = new Map<Staff, { top: number; objs: PObj[] }[]>();
-  // 歌词离它那行谱有多远才算「不是这行的」：三个谱表高。
+  const byStaff = new Map<Staff, { top: number; bottom: number; objs: PObj[] }[]>();
+  // 歌词离它那行谱有多远才算「不是这行的」：**第一段**不过三个谱表高。
   // 不设上限的话，页脚的版权声明会被算成最后一行谱的歌词
   // （实测 p154 的 "Copyright 1953 S. K. Hine…" 就是这么混进去的）。
   const maxGap = Math.max(...pg.staves.map((s) => s.box.bottom - s.box.top), 1) * 3;
+  // **后面几段按「接着上一段」收**，不各自量到谱行的距离。
+  //
+  // 独唱谱一页能印八段（《坚固保障》中文四段 + 英文四段），第五段起就出了三个
+  // 谱表高——文本对象造得好好的，这里一条也不收。而单把上限放大到六个谱表高
+  // **会打坏合唱谱**：那批多收进来的行让几条谱行凭空「有了词」，
+  // `score.ts::assignSlots` 定谱行身份正靠「谱号 + 有没有词 + 音域」三样，
+  // 跨系统连接一变，音符档从 85.23% 掉到 82.53%、扫描件从 67.07% 掉到 62.17%。
+  // 改成链式：段与段之间本来就是等距排下来的，中间没有空当；
+  // 页脚离最后一段远得很，链断在那里。
+  const chainGap = maxGap / 3 * 0.8;
   for (const r of rows) {
     // 上方最近的那行谱
     let best: Staff | null = null;
@@ -458,9 +475,14 @@ export function buildLyricLines(pg: SPage, lyrics: PObj[], dict?: TextGlyphLooku
         best = st;
       }
     }
-    if (!best || bestD > maxGap) continue;
+    if (!best) continue;
     const a = byStaff.get(best) ?? [];
-    a.push({ top: r.top, objs: r.objs });
+    if (bestD > maxGap) {
+      // 接不上已收的最后一段就不要（`rows` 已按 top 排好，最后一段就是最靠下的那段）
+      const prev = a[a.length - 1];
+      if (!prev || r.top - prev.bottom > chainGap) continue;
+    }
+    a.push({ top: r.top, bottom: r.bottom, objs: r.objs });
     byStaff.set(best, a);
   }
   const out: LyricLine[] = [];
@@ -480,7 +502,7 @@ interface NoteLike {
   staff: Staff;
   rest: boolean;
   x: number;
-  lyrics?: { verse: number; text: string; hyphen: boolean }[];
+  lyrics?: { verse: number; text: string; hyphen: boolean; cont: boolean }[];
   chord?: string;
 }
 
@@ -495,11 +517,15 @@ export function attachLyrics(notes: NoteLike[], lines: LyricLine[]): void {
     const cand = notes.filter((n) => n.staff === line.staff && !n.rest).sort((a, b) => a.x - b.x);
     if (!cand.length) continue;
     let ni = 0;
+    // 上一个音节末尾带连字符 → 这一个是**词中的续段**，MusicXML 的 `syllabic`
+    // 要出 `middle`/`end` 而不是 `single`（`a-bid-eth` 的中段）。
+    let cont = false;
     for (const syl of line.syllables) {
       // 往前推到「再往前就更远」为止
       while (ni + 1 < cand.length && Math.abs(cand[ni + 1].x - syl.cx) < Math.abs(cand[ni].x - syl.cx)) ni++;
       const n = cand[ni];
-      (n.lyrics ??= []).push({ verse: line.verse, text: syl.text, hyphen: syl.hyphen });
+      (n.lyrics ??= []).push({ verse: line.verse, text: syl.text, hyphen: syl.hyphen, cont });
+      cont = syl.hyphen;
       if (ni + 1 < cand.length) ni++;
     }
   }
@@ -509,10 +535,13 @@ export function attachLyrics(notes: NoteLike[], lines: LyricLine[]): void {
  * 和弦文本 → 挂到音符上。
  *
  * 谱面把根音与后缀印成**两个文本对象**（`D` + `m7`），`markHarmonySuffix` 已经各自打了标，
- * 这里按「同一行、左右相接」再拼回一个记号；根音里的升降号是音乐字体的字形
+ * 这里按「同一行、左右相接」再拼回一个记号；**位图路传 `merge = false`**
+ * ——那边一个对象就是一个完整记号（`rasteromr/harmony.ts` 已按和弦文法切好），
+ * 再拼一次会把谱面上挨着印的两个和弦并成一个（实测《坚固保障》42 个只剩 32 个）。
+ * 根音里的升降号是音乐字体的字形
  * （`accidentalFlat` / `accidentalSharp`），照本仓和弦的写法**提到根音之后**写成 ASCII。
  */
-export function attachHarmonies(pg: SPage, notes: NoteLike[], harmonies: PObj[]): void {
+export function attachHarmonies(pg: SPage, notes: NoteLike[], harmonies: PObj[], merge = true): void {
   const sp = pg.normalStaffSpace || pg.space;
   // **先按行归组、行内再按 x 排**。直接 `sort(top, left)` 不行：根音与后缀的
   // 基线差个零点几 pt（`D`@y128 与 `m7`@y127），一排下来会把所有根音排到所有后缀前面，
@@ -536,7 +565,7 @@ export function attachHarmonies(pg: SPage, notes: NoteLike[], harmonies: PObj[])
       // 同一个和弦记号的根音与后缀是紧挨着的两个对象（`D` + `m7`、`B` + `Maj7`、`A` + `dim`）。
       // 门槛取两个线距——`A dim` 中间有个空格，实测 10pt ≈ 2 格；
       // 而同一行里相邻的两个和弦间隔十格开外，不会误并。
-      if (last && o.box.left - last.box.right < 2 * sp) {
+      if (merge && last && o.box.left - last.box.right < 2 * sp) {
         last.text += t;
         last.box = {
           left: last.box.left,
@@ -565,11 +594,25 @@ export function attachHarmonies(pg: SPage, notes: NoteLike[], harmonies: PObj[])
   for (const g of groups) {
     const text = g.text.replace(/\s+/g, "");
     if (!text) continue;
-    // 和弦印在音符**上方**：挂给它下面那行谱里 x 最近、且不在它左边太多的那个音符
+    // **先定谱行，再在行内找音符**。原来是「下方所有谱行里 x 最近的那个」，
+    // 一页只有一行谱时看不出问题；一页三个系统时就串行了——下一个系统同一个 x
+    // 上的音符离得一样近，抢走了本行的和弦（实测《坚固保障》42 个和弦只落上 17 个，
+    // 而且整片挂到别的系统去）。谱行取**下方最近**的那一行，与 `buildLyricLines`
+    // 给歌词找谱行的规矩正好对称（那边是上方最近）。
+    let staff: Staff | null = null;
+    let staffD = Infinity;
+    for (const st of pg.staves) {
+      const d = st.box.top - g.box.bottom;
+      if (d < 0 || d >= staffD) continue;
+      staffD = d;
+      staff = st;
+    }
+    if (!staff) continue;
+    // 行内挂给 x 最近、且不在它左边太多的那个音符
     let best: NoteLike | null = null;
     let bestD = Infinity;
     for (const n of notes) {
-      if (n.staff.box.top < g.box.bottom) continue; // 只看和弦下方的谱行
+      if (n.staff !== staff) continue;
       const d = Math.abs(n.x - g.box.left);
       if (d < bestD) {
         bestD = d;

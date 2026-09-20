@@ -17,6 +17,7 @@ export * from "./rasterglyphs";
 export * from "./notehead";
 export * from "./lyric";
 export * from "./stafflabel";
+export * from "./harmony";
 export * from "./contour";
 export * from "./ledger";
 export * from "./wedge";
