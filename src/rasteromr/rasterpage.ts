@@ -22,6 +22,7 @@
 // 过半就是翻了，整幅取反。
 import type { Binary } from "../omr/types";
 import { applyTrackWarp, completeStaffLines, trackCurves } from "./dewarp";
+import { descreen, halftoneRatio, HALFTONE_BAND, HALFTONE_RATIO } from "./descreen";
 import { findStaffLines, groupStaves } from "./staffline";
 
 /** 一页取到的位图，连同它在页面坐标里的位置（识别坐标 ↔ 页面坐标要用）。 */
@@ -36,12 +37,16 @@ export interface RasterPage {
    * 改一条谱线判据就从扫描档跳进干净档，把干净档的平均从 71% 拖到 55%）。
    */
   kind: "mask" | "gray1" | "rgb";
+  /** 量出来的网点率（`halftoneRatio`）。超过 `HALFTONE_RATIO` 的这一页做过去网。 */
+  halftone: number;
   /** 位图像素 → PDF 页面点的缩放（页宽 / 位图宽）。 */
   scale: number;
   /** 页面尺寸（PDF 点）。 */
   pageWidth: number;
   pageHeight: number;
 }
+
+const median = (a: number[]) => (a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : 0);
 
 /** 墨迹占比超过这个数就判定极性反了。整页乐谱实测约一成，留足余量。 */
 const INK_FLIP_RATIO = 0.5;
@@ -83,6 +88,19 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   for (let i = 0; i < bin.data.length; i++) ink += bin.data[i];
   if (ink > w * h * INK_FLIP_RATIO) for (let i = 0; i < bin.data.length; i++) bin.data[i] ^= 1;
 
+  // **半调网点的底本先去网**（`descreen.ts`）。整页抖动印刷的谱（心领那本）符头是
+  // 打散的网点，填充率那一档全过不去——实测整页 83 个音符只认出 20 个。
+  // **只对量出来是网点页的做**：干净位图与普通扫描件的笔画本来就是实心的，
+  // 做一遍只是把细节磨掉（门槛与两档的实测值见 `HALFTONE_RATIO`）。
+  // 位置在推平之前：网点会把逐列游程打断，推平那一步也指望这张图是实的。
+  // 一行谱都没找到的页面（封面、歌词页）不做：没有尺子定窗口，也没有东西要认。
+  const groups = groupStaves(findStaffLines(bin));
+  const space = median(groups.map((g) => g.space));
+  const inBand = (y: number) =>
+    groups.some((g) => y > g.lines[0].y - g.space * HALFTONE_BAND && y < g.lines[4].y + g.space * HALFTONE_BAND);
+  const halftone = space > 0 ? halftoneRatio(bin, inBand) : 0;
+  if (halftone > HALFTONE_RATIO) descreen(bin, space);
+
   // **先按逐列的黑白游程把弯的谱线推平**（`dewarp.ts`），再让 `deskew` 收拾残余的整页倾斜。
   //
   // **推平之后要自己验一道**：照 `deskew` 那条「没有明显好过不动就不动」的规矩，
@@ -93,7 +111,7 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   deskew(bin);
 
   const vp = page.getViewport({ scale: 1 });
-  return { bin, kind, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
+  return { bin, kind, halftone, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
 }
 
 /** 行投影找出来的谱行数不到逐列游程看见的这个比例，才判这一页「弯得行投影已经废了」。 */

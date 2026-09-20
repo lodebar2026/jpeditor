@@ -370,6 +370,10 @@ function ownLegers(heads: { box: Rect }[], bin: Binary, onGrid: (y: number) => b
   return out;
 }
 
+/** `staffBandOnly` 时谱表上下各留这么多个线距。扫过 1.5 / 2 / 3.5 格（《坚固保障》，和弦字母在上方 1.6 格处）：
+ *  音符 74 / 75 / 80，其中 3.5 格那档有 5 个是被当成全音符的和弦字母。2 格是拐点。 */
+const STAFF_BAND = 2;
+
 /** 位图符杠 → 矢量路的 `BeamShape`（`buildNotes` / `findTuplets` 吃这个）。 */
 function toBeamShapes(beams: BeamQuad[]): BeamShape[] {
   return beams.map((b) => {
@@ -401,6 +405,12 @@ export async function recognizeRasterPage(
     labelOcr?: Map<string, string>;
     /** 排查用：把连通块与「谁被认领了」带出来（`debugBlobs` 字段）。识别判据一条不改。 */
     debug?: boolean;
+    /**
+     * 谱表带之外的墨一律抹掉（上下各 `STAFF_BAND` 个线距）。
+     * **立 GT 底稿专用**：和弦字母与歌词字会被收成符头（见下面那一处的实测），
+     * 而底稿本来就不要歌词。识别正路别开——开了歌词就没了。
+     */
+    staffBandOnly?: boolean;
   } = {},
 ): Promise<RasterPageResult> {
   const raster = await rasterizePage(pdfPage, OPS);
@@ -413,6 +423,23 @@ export async function recognizeRasterPage(
   const rowLines = findStaffLines(raster.bin);
   const { lines, groups } = completeStaffLines(raster.bin, rowLines, groupStaves(rowLines));
   if (!groups.length) return empty(blank, raster, unit, opts.carryTime);
+
+  // **只留谱表带**（默认不开，立 GT 底稿时才开）。独唱谱那种谱表上方印和弦字母的底本，
+  // 字母「C」是个圈，正落在空心符头那一档里（`HOLLOW_BAND` 上下各让三格，字母就在里面）；
+  // 谱表下方的歌词字同理被收成实心符头——实测《坚固保障》整页多出六个 D6/E6 全音符、
+  // 四个 C3 四分音符。歌词与和弦都不要的场合（出 GT 底稿）直接把带外的墨抹掉最省事。
+  // **识别判据一条不改**：抹的是输入，不是判据。
+  if (opts.staffBandOnly) {
+    const bin = raster.bin;
+    const keep = new Uint8Array(bin.h);
+    for (const g of groups) {
+      const sp = (g.lines[4].y - g.lines[0].y) / 4;
+      const y0 = Math.max(0, Math.round(g.lines[0].y - sp * STAFF_BAND));
+      const y1 = Math.min(bin.h - 1, Math.round(g.lines[4].y + sp * STAFF_BAND));
+      for (let y = y0; y <= y1; y++) keep[y] = 1;
+    }
+    for (let y = 0; y < bin.h; y++) if (!keep[y]) bin.data.fill(0, y * bin.w, (y + 1) * bin.w);
+  }
 
   const nl = removeStaffLines(raster.bin, lines.map((l) => l.y), unit);
   const staffLefts = groups.map((g) => Math.max(...g.lines.map((l) => l.left)));
