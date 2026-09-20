@@ -539,12 +539,15 @@ export async function recognizeLyrics(
         if (n.endingStop !== undefined && s >= 0) { endingSpans.push([s, rright(n.bbox)]); s = -1; }
       }
     }
+    // cov 量的是**与音符横跨范围的重叠**，不是行本身有多宽：歌词铺在音符底下，谱后正文/右侧边注
+    // 再长也在音符旁边。1811《心愿》末行右侧那段注记（x600~1290，音符只到 x520）按「行宽/音符跨度」
+    // 算 cov 1.53，反压过真词「处处是春天」（0.67）当上了 W1；按重叠算它是 0，直接落榜。
     const covOf = (lx0: number, lx1: number): number => {
-      let best = (lx1 - lx0) / noteSpan;
+      let best = Math.max(0, Math.min(lx1, noteX1) - Math.max(lx0, noteX0)) / noteSpan;
       for (const [a, b] of endingSpans) {
         const ov = Math.min(lx1, b) - Math.max(lx0, a);
         if (ov <= 0 || ov < (lx1 - lx0) * 0.8) continue; // 行须基本落在这一房内
-        best = Math.max(best, (lx1 - lx0) / Math.max(1, b - a));
+        best = Math.max(best, ov / Math.max(1, b - a));
       }
       return best;
     };

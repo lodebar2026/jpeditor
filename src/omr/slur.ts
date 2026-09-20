@@ -179,8 +179,7 @@ export function tupletCandidates(bin: Binary, comps: Component[], rows: StaffRow
 }
 
 export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], numH: number): void {
-  for (const row of rows) {
-    if (row.nums.length < 2) continue;
+  const arcsOf = (row: StaffRow): Component[] => {
     // 用数字顶边的**中位数**（而非 min）作行顶基准：个别音符 bbox 顶边偏高（拆块/噪声）
     // 会把 min 拉到弧线高度，导致「弧底贴行顶」的判据误杀真弧（实测行4 三条弧全漏即此因）。
     const rowTop = median(row.nums.map((n) => n.bbox.y));
@@ -225,10 +224,48 @@ export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], n
       if (hanzi) probe("arc.hanziReject");
       return !hanzi;
     });
+    return arcs;
+  };
+  const perRow = rows.map((row) => (row.nums.length ? arcsOf(row) : []));
 
+  // **跨行圆滑线**：一条弧跨过换行时，谱面上画成两半——上一行行末一段拖到右界，下一行行首一段
+  // 从左界起笔。两半各自都罩得住音符，照行内判据会变成两条闭合的弧，跨行那条就丢了
+  //（1806《因着耶稣我最富有》末行 `6 5 6` 上那条本是倒数第二行 `6̣.1̇` 接下来的，识别成了
+  //  `((6 5 6-))` 两条同罩三音的弧）。两头的形是可分的：
+  //   · 上一行的**开口弧**右端顶到本行右界（末条小节线/终止线，实测 1333 对 1334.5）；
+  //     行内正常收尾的弧离右界还差一个音（同首实测 1278/1066/1051）。
+  //   · 下一行的**收口弧**左端起在首音**左缘之前**（实测 66 对 68）；行内起弧的那条从首音
+  //     **质心**附近起笔（同行另一条弧的左脚在 80，首音质心 81），分得开。
+  //   两条都满足才配对——单有一头（如同首第 3 行行末那条拖到右界的、下一行没有对应半弧）照旧
+  //   留给行内判据与隐含 tie 兜底。
+  const crossed = new Set<Component>();
+  const coveredBy = (row: StaffRow, b: Rect) =>
+    row.nums.filter((n) => between(rcx(n.bbox), b.x - numH * 0.5, rright(b) + numH * 0.5));
+  for (let i = 0; i + 1 < rows.length; i++) {
+    const row = rows[i], next = rows[i + 1];
+    if (!row.nums.length || !next.nums.length) continue;
+    const rowRight = Math.max(...row.barlineXs, ...row.nums.map((n) => rright(n.bbox)));
+    const open = perRow[i].find((c) => rright(c.bbox) >= rowRight - numH * 0.3 && coveredBy(row, c.bbox).length);
+    const head = perRow[i + 1].find((c) => c.bbox.x <= next.nums[0].bbox.x && coveredBy(next, c.bbox).length);
+    if (!open || !head) continue;
+    const start = coveredBy(row, open.bbox)[0];
+    const stopList = coveredBy(next, head.bbox);
+    probe("slur.crossRow");
+    start.slurStart = (start.slurStart ?? 0) + 1;
+    const stop = stopList[stopList.length - 1];
+    stop.slurStop = (stop.slurStop ?? 0) + 1;
+    crossed.add(open); crossed.add(head);
+  }
+
+  rows.forEach((row, ri) => {
+    if (row.nums.length < 2) return;
     // 一个连通块里可能藏着几条弧（内弧与外弧交叠粘连），拆开逐条处理。
     // 内弧排在外弧之后：这样「起弧」的顺序是外→内，与 pairArcs 的栈式配对（后开先闭）对得上。
-    for (const a of arcs.flatMap((c) => splitNestedArcs(bin, c.bbox, numH))) {
+    // 已认作跨行半弧的整块不再拆内弧：续弧与同罩这几个音的行内弧收在同一只脚上、粘成一个连通块
+    // （1806 末行实测 x66~230 一块），splitNestedArcs 分不出哪条是续弧的下半截，拆出来的两条会
+    // 同起同止、变成一对重复的弧（旧输出 `((6 5 6-))`）。宁可只记跨行那条——**代价是同块里那条
+    // 行内弧跟着丢**，但重复的弧会误导演奏，丢一条只是少个记号。
+    for (const a of perRow[ri].filter((c) => !crossed.has(c)).flatMap((c) => splitNestedArcs(bin, c.bbox, numH))) {
       // 找弧线横向覆盖的音符（质心落在弧线 x 跨度内，左右各放宽 0.5 字号容端点偏移）。
       // 弧线常画在两音"符头之间"而非正压音符质心，左缘可比首音质心偏右半个字号
       //（实测基督更美行5 `(3_5_)`：弧 x129、首音 3 质心 114，差 15px≈0.3字号，0.3 容差差 0.6px 漏掉）。
@@ -248,5 +285,5 @@ export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], n
         stop.slurStop = (stop.slurStop ?? 0) + 1;
       }
     }
-  }
+  });
 }
