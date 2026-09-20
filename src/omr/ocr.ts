@@ -15,6 +15,10 @@ export interface OcrBackend {
   /** 可选：识别一组文本表面，**每字带其在该表面内容宽度上的水平位置** xFrac∈[0,1]（取 CTC 峰值时间步）。
    *  歌词↔音符对齐用：据此把识别字落回源图 x，免去"字数↔连通块格数"按序硬配（错位根源）。 */
   recognizeTextsPos?(strips: Surface[]): Promise<{ ch: string; xFrac: number }[][]>;
+  /** 可选：对一批文本表面逐字返回候选字（含 top1 本身，置信度降序）。
+   *  与 `recognizeTexts` 同一条 CTC run 划分，只是多取几名——用于上层据上下文改判
+   *  （如整页都是简体时，个别繁体字形多半是形近误判，换成候选里的简体形）。 */
+  rankTextChars?(strips: Surface[], k?: number): Promise<{ ch: string; alts: string[] }[][]>;
   /** 可选：对每个 bbox 返回数字候选 0-7 的置信度降序排列（首位即 recognizeDigits 的次优来源）。
    *  用于上层据上下文（如有歌词的音符不可能是休止 0）剔除误判、取次优候选。 */
   rankDigits?(bin: Binary, rects: Rect[]): Promise<number[][]>;

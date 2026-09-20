@@ -319,6 +319,50 @@ function digitClassIdx(): number[] {
   return _digitIdx;
 }
 
+/**
+ * 一条文本画布 → 逐字候选（含 top1 本身，置信度降序）。
+ *
+ * 走的是 `inferLogits` 那条整张 `[T,C]` 的路（`rankDigits` 同款），不是常规识别的 argmax 通道：
+ * 后者在原生侧就把 logits 压成了索引，TS 这边拿不到次优。字符的划分与 `recognizeCharsPosMany`
+ * 同口径（一段连续非空标签 run = 一个字），每个 run 里对各类取该区间的最大 logit 排序。
+ * 只给「疑似形近误判」的少数条重跑，故按条推理、不批量。
+ */
+async function rankCharsOf(cell: Surface, maxW: number, k: number): Promise<{ ch: string; alts: string[] }[]> {
+  const { arr, T, C } = await inferLogits(cell, maxW);
+  const chars = _chars!;
+  const out: { ch: string; alts: string[] }[] = [];
+  const argmaxAt = (t: number): number => {
+    const base = t * C; let best = 0, bv = -Infinity;
+    for (let c = 0; c < C; c++) { const v = arr[base + c]; if (v > bv) { bv = v; best = c; } }
+    return best;
+  };
+  const flush = (cls: number, i0: number, t1: number): void => {
+    const ch = chars[cls] ?? "";
+    if (!ch) return;
+    // 该 run 的时间步里各类的最大分 → 前 k 名
+    const top: { c: number; v: number }[] = [];
+    for (let c = 1; c < C; c++) {
+      let mx = -Infinity;
+      for (let t = i0; t < t1; t++) { const v = arr[t * C + c]; if (v > mx) mx = v; }
+      if (top.length < k || mx > top[top.length - 1]!.v) {
+        top.push({ c, v: mx });
+        top.sort((a, b) => b.v - a.v);
+        if (top.length > k) top.pop();
+      }
+    }
+    out.push({ ch, alts: top.map((x) => chars[x.c] ?? "").filter((x) => x) });
+  };
+  let prev = -1, i0 = 0;
+  for (let t = 0; t <= T; t++) {
+    const best = t < T ? argmaxAt(t) : -1;
+    if (best !== prev) {
+      if (prev > 0) flush(prev, i0, t);
+      i0 = t; prev = best;
+    }
+  }
+  return out;
+}
+
 /** 单数字格 → 候选数字按置信度降序（取各数字类在所有时间步上的最大 logit 排序）。
  * 用于退化字形（贪心解码出空/非数字、默认成 0=休止）时，由上层据上下文（如歌词）剔除 0 取次优。 */
 async function rankDigitCandidates(cell: Surface): Promise<number[]> {
@@ -414,6 +458,17 @@ export function paddleOcrBackend(): OcrBackend {
       await ensureSession();
       // 全部歌词条一次 IPC（Rust 内部逐条推理=算力最优，往返只 1 次）。
       return (await recognizeCharsPosMany(strips, "auto")).map((cp) => cp.map((c) => c.ch).join(""));
+    },
+    async rankTextChars(strips: Surface[], k = 5): Promise<{ ch: string; alts: string[] }[][]> {
+      if (!strips.length) return [];
+      await ensureSession();
+      const out: { ch: string; alts: string[] }[][] = [];
+      // maxW 要与 recognizeTexts 的 "auto" 同口径，否则时间步数不同、run 划分对不上
+      for (const c of strips) {
+        const maxW = Math.min(REC_MAXW_LONG, Math.max(REC_MAXW, Math.ceil(REC_H * (c.width / c.height))));
+        out.push(await rankCharsOf(c, maxW, k));
+      }
+      return out;
     },
     async recognizeTextsPos(strips: Surface[]): Promise<{ ch: string; xFrac: number }[][]> {
       if (!strips.length) return [];

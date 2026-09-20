@@ -13,6 +13,7 @@ import { chordCandidates, isAnnotationLine, placeChords } from "./chordline";
 import { clusterByY, findLineByY, median } from "./geom";
 import { blit, createSurface, surfaceFromBinary, type Surface } from "./surface";
 import { probe } from "./probe";
+import { simplifiedOf } from "./hanvariant";
 
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
 // 歌词里贴在字尾的标点。简谱印刷用全角，但 PP-OCR 常把 ，；：！？ 识成半角 , ; : ! ? ——
@@ -377,6 +378,48 @@ function fillLeadingVerses(staff: StaffRow[]): void {
   }
 }
 
+/**
+ * 整页都是简体时，**个别**读成繁体的字改判回简体。
+ *
+ * PP-OCR 的字典繁简同收，字形相近的一对（「别 / 別」只差左上角）常被读错一边。谱面本身却是
+ * 整页统一的：76《天上有粮》十来行歌词只有「别」被读成「別」，而它的署名「詞曲：巧兒」倒真是
+ * 繁体——所以判据是**按本页歌词区统计**，并且只动那几个孤零零的繁体字，页眉不参与。
+ *
+ * 光按统计换还不够稳（表里混着「乾→干」这类并非形近的异体归一），故再要一条：**简体形必须出现在
+ * 该字的 OCR 候选里**（`rankTextChars`，走 logits 那条路取 top-k）。字形不像，两者不会同时上榜。
+ * 只对含孤立繁体的那一两条重跑推理，代价可忽略。
+ */
+async function simplifyStrayTraditional(
+  ocr: OcrBackend, strips: Surface[], mainIdx: number[],
+  textOf: (s: number) => string, setChar: (s: number, k: number, ch: string) => void,
+): Promise<void> {
+  if (!ocr.rankTextChars) return;
+  let trad = 0, simp = 0;
+  const hits: number[] = []; // 含繁体字的条
+  for (const s of mainIdx) {
+    let any = false;
+    for (const ch of textOf(s)) {
+      if (!/[\u3400-\u4dbf\u4e00-\u9fff]/.test(ch)) continue;
+      if (simplifiedOf(ch)) { trad++; any = true; } else simp++;
+    }
+    if (any) hits.push(s);
+  }
+  // 孤立才算误判：整页至多两个繁体字、且简体字是它的十倍以上（繁体谱面一整页都是繁体，碰不到这条）
+  if (!trad || trad > 2 || simp < trad * 10) return;
+  const ranked = await ocr.rankTextChars(hits.map((s) => strips[s]!));
+  hits.forEach((s, i) => {
+    const alt = ranked[i];
+    const text = textOf(s);
+    if (!alt || alt.length !== [...text].length) return; // run 划分对不上就整条不动
+    [...text].forEach((ch, k) => {
+      const sc = simplifiedOf(ch);
+      if (!sc || !alt[k]!.alts.includes(sc)) return;
+      probe("lyrics.tradToSimp");
+      setChar(s, k, sc);
+    });
+  });
+}
+
 /** 识别歌词与和弦并写回各音符（lyrics[] / chord）；返回二者各自的源图定位+字号
  *  （识别模式按原位/原字号叠加）。staff 为乐谱行(按出现顺序)，comps 为全图连通块。 */
 export async function recognizeLyrics(
@@ -598,6 +641,15 @@ export async function recognizeLyrics(
     if (textsPos) { const r = await recPos!(st); idxs.forEach((ci, k) => { textsPos[ci] = r[k]; }); }
     else { const r = await ocr.recognizeTexts(st); idxs.forEach((ci, k) => { texts![ci] = r[k]; }); }
   }
+  // 整页简体里蹦出来的个别繁体字：形近误判，据候选改回简体（页眉不参与，只看歌词那批）
+  await simplifyStrayTraditional(
+    ocr, strips, mainIdx,
+    (s) => (textsPos ? textsPos[s]!.map((c) => c.ch).join("") : texts![s]!),
+    (s, k, ch) => {
+      if (textsPos) textsPos[s]![k]!.ch = ch;
+      else texts![s] = [...texts![s]!].map((c, i) => (i === k ? ch : c)).join("");
+    },
+  );
   if (TR) TR.recPerChunk = textsPos ?? texts!.map((s) => [...s].map((ch) => ({ ch, xFrac: 0 })));
 
   // 每块识别字汇总到 (row,verse)，再按 x 单调最近分配给音符。
