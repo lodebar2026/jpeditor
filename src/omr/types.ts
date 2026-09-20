@@ -71,6 +71,9 @@ export interface JpNum {
   endingStop?: string;      // 本音符所在小节结束该房
   // 跳转记号（D.C./D.S./Fine/To Coda…），印在本谱行音符附近 → 小节右线上的记号（导出 MusicXML 时落成 <direction>+<sound>）。
   jumpMark?: string;
+  // segno 𝄋：跳转的**目标**，不是跳转本身，故挂本音符所在小节的**左**线（记号名 `hs`，123 `!segno!`）。
+  // 字形由 segno.ts 几何识别，与 OCR 出来的文字记号 jumpMark 分开。
+  segno?: boolean;
   // 曲中转拍号：谱面上「3/4」直接印在谱行里（多见于混合拍的曲子），锚在**其右侧第一个音符**上，
   // 建模型时提升为该小节的 `Measure.attrs.time`（123 写成行内 `[M:3/4]`）。
   timeChange?: { beats: number; beatType: number };
@@ -112,6 +115,10 @@ export interface StaffRow {
   // 行末那道小节线是不是**终止线**（细+粗两根并排 ‖）。→ 右线 `style: "light-heavy"`（123 `|]`）、
   // 文本谱 `|||`（诗歌本）/`||`（番茄）。反复线由 JpNum.repeatBackward 另管，两者不叠。
   finalBarline?: "end";
+  // 本行里的**复纵线**（细细双线 ‖）位置，取并排两根中**右侧**那根的 x（与 barlineXs 里的值同源）。
+  // → 右线 `style: "light-light"`（123 `||`）、文本谱 `||`。反复线 `:‖` 的两根也会落进来，
+  // 下游一律让 repeatBackward 优先，两者不叠。
+  doubleBarXs?: number[];
   // 本行歌词行首印着的**段号**（`1.`、`3.5.`），下标 = 段号所属的 verse（0 基）。
   // 段号在装配时本就被丢弃、不占音符位，这里另存一份原样输出：文本谱写成歌词行前置说明
   // `C1:<1.>…`（pu/parse.ts::stripLyricAnnotation，排在细竖线与首字之间）。

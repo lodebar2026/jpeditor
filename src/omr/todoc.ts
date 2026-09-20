@@ -14,18 +14,31 @@ import { jpPitch } from "../score/jppitch";
 import type { RecognizedScore, JpNum, StaffRow } from "./types";
 import { rright, RHYTHM_DIGIT } from "./types";
 
+/** 一行切出来的一个小节：音符，以及它右边界那根线的 x（行末开口收尾时为 null）。 */
+interface RowMeasure { notes: JpNum[]; rightX: number | null }
+
 // 把一行按小节线 x 切成小节。
-function measuresOfRow(row: StaffRow): JpNum[][] {
-  if (!row.barlineXs.length) return [row.nums];
-  const measures: JpNum[][] = [];
+function measuresOfRow(row: StaffRow): RowMeasure[] {
+  if (!row.barlineXs.length) return [{ notes: row.nums, rightX: null }];
+  const measures: RowMeasure[] = [];
   let cur: JpNum[] = [];
   let bi = 0;
   for (const n of row.nums) {
-    while (bi < row.barlineXs.length && n.bbox.x > row.barlineXs[bi]) { measures.push(cur); cur = []; bi++; }
+    while (bi < row.barlineXs.length && n.bbox.x > row.barlineXs[bi]!) {
+      measures.push({ notes: cur, rightX: row.barlineXs[bi]! }); cur = []; bi++;
+    }
     cur.push(n);
   }
-  measures.push(cur);
-  return measures.filter((m) => m.length);
+  // 行末剩下的线（若最后一个音符右侧还有线）里取最后一根：那才是本行末小节的右界。
+  measures.push({ notes: cur, rightX: bi < row.barlineXs.length ? row.barlineXs[row.barlineXs.length - 1]! : null });
+  // 空小节（复纵线/终止线并排两根之间切出来的）不成节，但它的右界要**顺延给前一个小节**——
+  // 否则小节右界停在左边那根上，认不出复纵线（doubleBarXs 记的是右边那根）。
+  const out: RowMeasure[] = [];
+  for (const m of measures) {
+    if (m.notes.length) out.push(m);
+    else if (out.length && m.rightX !== null) out[out.length - 1]!.rightX = m.rightX;
+  }
+  return out;
 }
 
 // 一行是否以小节线收尾（最后一个音符右侧仍有小节线）。否→末小节是"开口"的，
@@ -118,6 +131,7 @@ const JUMP_ORNAMENT: Record<string, string> = {
   "D.C.": "dc",
   "D.S.": "ds",
   "Fine": "fine",
+  "To Coda": "ty",
 };
 
 const chordSymbol = (text: string): Harmony => ({ root: { step: "C", alter: 0 }, kind: "", text });
@@ -163,6 +177,7 @@ export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
   const allMeasures: JpNum[][] = [];
   const rowStartIdx = new Set<number>();
   const endStyleIdx = new Set<number>();   // 右边界是终止线（‖）的小节
+  const doubleIdx = new Set<number>();     // 右边界是复纵线（细细双线 ‖）的小节
   // 行首段号（`1.`）挂到该行每段第一个有词的音符上（`Lyric.verseLabel`）
   const labelOf = new Map<JpNum, string[]>();
   let openTail = false;
@@ -175,9 +190,16 @@ export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
     }
     const ms = measuresOfRow(row);
     if (!ms.length) continue;
-    if (openTail && allMeasures.length) allMeasures[allMeasures.length - 1].push(...ms.shift()!);
-    else if (allMeasures.length) rowStartIdx.add(allMeasures.length);
-    allMeasures.push(...ms);
+    const doubleXs = new Set(row.doubleBarXs ?? []);
+    const markDouble = (m: RowMeasure, idx: number) => {
+      if (m.rightX !== null && doubleXs.has(m.rightX)) doubleIdx.add(idx);
+    };
+    if (openTail && allMeasures.length) {
+      const first = ms.shift()!;
+      allMeasures[allMeasures.length - 1].push(...first.notes);
+      markDouble(first, allMeasures.length - 1);
+    } else if (allMeasures.length) rowStartIdx.add(allMeasures.length);
+    for (const m of ms) { allMeasures.push(m.notes); markDouble(m, allMeasures.length - 1); }
     if (row.finalBarline === "end") endStyleIdx.add(allMeasures.length - 1);
     openTail = !rowEndsClosed(row);
   }
@@ -299,10 +321,13 @@ export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
     const barlines: Barline[] = [];
     const endingStart = notes.find((n) => n.endingStart !== undefined)?.endingStart;
     const repeatForward = notes.some((n) => n.repeatForward);
-    if (endingStart !== undefined || repeatForward) {
+    // segno 是跳转的**目标**（D.S. 跳回来落在这条线上），故挂左线；图上它印在本小节起头的上方。
+    const segno = notes.some((n) => n.segno);
+    if (endingStart !== undefined || repeatForward || segno) {
       const b: Barline = { location: "left" };
       if (repeatForward) { b.style = "heavy-light"; b.repeat = "forward"; }
       if (endingStart !== undefined) b.ending = endingOf(endingStart, "start");
+      if (segno) b.ornaments = [{ name: "hs", level: 0 }];
       barlines.push(b);
     }
     const endingStop = [...notes].reverse().find((n) => n.endingStop !== undefined)?.endingStop;
@@ -316,6 +341,9 @@ export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
       // 反复线与终止线不叠（终止线由 StaffRow.finalBarline 另管）
       if (repeatBackward) { b.style = "light-heavy"; b.repeat = "backward"; }
       else if (endingStop === undefined && endStyleIdx.has(idx)) b.style = "light-heavy";
+      // 复纵线与房尾**可以同时出现**（76《天上有粮》一房末就是 `[1 … ||`，图上没画反复冒号），
+      // 故不像终止线那样给 endingStop 让位。
+      else if (doubleIdx.has(idx)) b.style = "light-light";
       else if (closed) b.style = "regular";
       if (endingStop !== undefined) b.ending = endingOf(endingStop, "stop");
       // 跳转记号（D.C./D.S./Fine/To Coda）：识别时锚在本小节某音符上，记在小节末

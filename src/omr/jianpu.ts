@@ -15,6 +15,7 @@ import { recognizeLyrics } from "./lyrics";
 import { recognizeHeader } from "./header";
 import { detectSlurs, tupletCandidates } from "./slur";
 import { detectRepeatsAndEndings } from "./repeats";
+import { detectSegno } from "./segno";
 import { median, overlapX, unionRect } from "./geom";
 import { accidentalOf } from "./accidental";
 import { probe } from "./probe";
@@ -1353,19 +1354,33 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 终止线：谱末那道 ‖ 是细线加粗线并排（16《爱心的功课》实测 5px + 8px、相距 5px，
   // 而普通小节线 4px）。两根线都各自进了 barlineXs（中间切出的空小节由 measuresOfRow 滤掉），
   // 这里只认「行末最后两根挨着、其中一根明显更粗」这一形，标在该行上供下游写成 `|||` / light-heavy。
+  // 复纵线（细细双线 ‖）：同一形态、只差粗细，故与终止线在同一趟里分流。曲中分段、房尾收口
+  // 都写它（76《天上有粮》一房末实测两根各 6px、中心距 9px、字号 44）。两根都各自进了
+  // barlineXs，不标出来的话下游只看得见一条普通线（中间切出的空小节由 measuresOfRow 滤掉）。
   {
     const medW = median(staff.flatMap((m) => m.bars.map((b) => b.bbox.w))) || 1;
     for (const m of staff) {
-      const n = m.bars.length;
-      if (n < 2) continue;
-      const last = m.bars[n - 1], prev = m.bars[n - 2];
-      if (rcx(last.bbox) - rcx(prev.bbox) > numH * 0.5) continue;      // 不是并排的两根
-      // 「更粗的那根」只在**中间的谱行**上要求：那里两根并排的还可能是分段用的复纵线，粗细是
-      // 唯一可分的线索。**末行**行末的两根并排不作他想，就是终止线——而且细粗之别常印不出来：
-      // 227《施比受更为有福》末行那道 ‖ 实测 5px + 7px、中位 5px，比 1.5 倍差一点点就整个丢了
-      // （同一首歌的另一版 1123 是 6px + 10px，同一条判据一个过一个不过，说明门槛卡在噪声上）。
-      if (m !== staff[staff.length - 1] && Math.max(last.bbox.w, prev.bbox.w) < medW * 1.5) continue;
-      (m as { finalBarline?: "end" }).finalBarline = "end";
+      for (let i = 1; i < m.bars.length; i++) {
+        const prev = m.bars[i - 1]!, cur = m.bars[i]!;
+        const gap = rcx(cur.bbox) - rcx(prev.bbox);
+        if (gap > numH * 0.5 || gap < 2) continue;   // 不是并排的两根 / 同一根被噪声切成两块
+        const thick = Math.max(cur.bbox.w, prev.bbox.w) >= medW * 1.5;
+        const rowLast = i === m.bars.length - 1;
+        // 「更粗的那根」只在**中间的谱行**上要求：那里两根并排的还可能是分段用的复纵线，粗细是
+        // 唯一可分的线索。**末行**行末的两根并排不作他想，就是终止线——而且细粗之别常印不出来：
+        // 227《施比受更为有福》末行那道 ‖ 实测 5px + 7px、中位 5px，比 1.5 倍差一点点就整个丢了
+        // （同一首歌的另一版 1123 是 6px + 10px，同一条判据一个过一个不过，说明门槛卡在噪声上）。
+        if (rowLast && (thick || m === staff[staff.length - 1])) {
+          (m as { finalBarline?: "end" }).finalBarline = "end";
+          continue;
+        }
+        if (thick) continue;   // 行中出现细+粗：宁可当普通线，别把终止线形态乱扣到曲中
+        // 两根等粗 → 复纵线。再要求高度相近：被切开的数字竖笔、噪声细纹与真线并排时高度差得远。
+        if (Math.abs(cur.bbox.h - prev.bbox.h) > Math.max(cur.bbox.h, prev.bbox.h) * 0.25) continue;
+        probe("barline.double");
+        // 记**右侧**那根的 x：切小节时跨过的最后一根就是它，下游按右界对齐。
+        ((m as { doubleBarXs?: number[] }).doubleBarXs ??= []).push(rcx(cur.bbox));
+      }
     }
   }
 
@@ -1635,7 +1650,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       const g = graceOf.get(k); if (g && nums[j]) nums[j].grace = g;
     });
     return { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums,
-      finalBarline: (m as { finalBarline?: "end" }).finalBarline };
+      finalBarline: (m as { finalBarline?: "end" }).finalBarline,
+      doubleBarXs: (m as { doubleBarXs?: number[] }).doubleBarXs };
   });
 
   // 剔除「和弦标记行」等伪乐谱行：五线谱上方的 G/D7/Am… 和弦字母被 OCR 成非数字→几乎全是
@@ -1679,6 +1695,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   // 反复线与一/二房：以冒号点对/顶括线几何识别，锚到相邻音符，建模型时提升为小节线。
   await detectRepeatsAndEndings(bin, comps, c.dots, useRows, numH, ocr);
+  // segno 𝄋（跳转目标）：字形识别，锚到下方音符所在小节的左线。
+  detectSegno(comps, useRows, numH);
 
   // 多连音（三连音 ⌒3⌒）：先于 slur 认——括线的两半自己也够得着圆滑线的判据，认出来后
   // 要把它们从 detectSlurs 的输入里摘掉。「几连」靠 OCR 读括线上那个小号数字；
@@ -1745,13 +1763,24 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     if (chordRegions) probe("chords");
   }
 
-  // 房内只印一行歌词时，歌词识别天然把它放在 W1；但二房的这行实际属于第 2 遍，应迁到 W2。
-  // 否则 MusicXML 导入器会把一/二房尾句误判成「两遍共用的副歌」，展开时交叉拼接。
+  // 房内只印一行歌词时，歌词识别天然把它放在 W1；这行词属于第几遍，看这个房是不是**与前一个房
+  // 挤在同一谱行**：
+  //   · 同行并排（`… [1 … :| [2 … |]`，沧海一声笑的 `[1,2,3,5` `[4` `[6` 也是）——W1 那条词行
+  //     已经被前一个房占掉了，后面这个房的词只能是另一遍的，按房号首号迁到 W[n-1]；
+  //   · 房**独占谱行**（76《天上有粮》的 `[2` 起一整行、1697《温州的水 温州的山》的 `[2` 在末行）——
+  //     那行的 W1 就是它自己的头一行词，迁走只会让 W1 整片空出来（`w1:////////…`）、
+  //     房尾那个落在 endingStop 之后的字还会被撕在 W1 上。这种一律不迁：识别如实记谱面，
+  //     「第几遍唱第几段」交给演唱顺序层（`score/playorder.ts`）去推。
   // 多房共用一个括号时（`1. 2. 3. 5.`）里面那行词属于**首个**房次，故一律按首号迁。
   for (const row of useRows) {
     let ending = 0, raw = "";
+    let seenEnding = false; // 本谱行前面已经出现过房 → 后面的房与它并排在同一条词行上
     for (const n of row.nums) {
-      if (n.endingStart !== undefined) { raw = n.endingStart; ending = parseInt(raw, 10) || 0; }
+      if (n.endingStart !== undefined) {
+        raw = n.endingStart;
+        ending = seenEnding ? parseInt(raw, 10) || 0 : 0;
+        seenEnding = true;
+      }
       if (ending > 1 && n.lyrics?.[0] && !n.lyrics[ending - 1] && n.lyrics.filter(Boolean).length === 1) {
         n.lyrics[ending - 1] = n.lyrics[0];
         n.lyrics[0] = "";

@@ -38,23 +38,34 @@ const JUMP_MARK: Record<string, string> = {
   "Fine": "fine",
   "To Coda": "ty",
 };
+/** segno 𝄋 的文本谱记号名（glyph.ts::BARLINE_MARKS 里 `hs` = U+E047 segno）。 */
+const SEGNO_MARK = "hs";
 
-/** 一行按 barlineXs 切成小节；与 todoc.ts::measuresOfRow 同一判据（音符左缘越过小节线即换节）。 */
-function measuresOfRow(row: StaffRow): JpNum[][] {
-  if (!row.barlineXs.length) return [row.nums];
-  const measures: JpNum[][] = [];
+/** 一行切出来的一个小节：音符 + 右边界那根线的 x（行末开口收尾时为 null）。 */
+interface RowMeasure { notes: JpNum[]; rightX: number | null }
+
+/** 一行按 barlineXs 切成小节；与 todoc.ts::measuresOfRow 同一判据（音符左缘越过小节线即换节，
+ *  并排两根线中间切出的空小节把右界顺延给前一小节）。 */
+function measuresOfRow(row: StaffRow): RowMeasure[] {
+  if (!row.barlineXs.length) return [{ notes: row.nums, rightX: null }];
+  const measures: RowMeasure[] = [];
   let cur: JpNum[] = [];
   let bi = 0;
   for (const n of row.nums) {
     while (bi < row.barlineXs.length && n.bbox.x > row.barlineXs[bi]!) {
-      measures.push(cur);
+      measures.push({ notes: cur, rightX: row.barlineXs[bi]! });
       cur = [];
       bi++;
     }
     cur.push(n);
   }
-  measures.push(cur);
-  return measures.filter((m) => m.length);
+  measures.push({ notes: cur, rightX: bi < row.barlineXs.length ? row.barlineXs[row.barlineXs.length - 1]! : null });
+  const out: RowMeasure[] = [];
+  for (const m of measures) {
+    if (m.notes.length) out.push(m);
+    else if (out.length && m.rightX !== null) out[out.length - 1]!.rightX = m.rightX;
+  }
+  return out;
 }
 
 /** 行是否以小节线收尾。否 → 末小节开口跨到下一行，行末不补小节线（与模型那路同规矩）。 */
@@ -66,7 +77,13 @@ function rowEndsClosed(row: StaffRow): boolean {
 
 /** 小节线类型 → 该方言的写法。方言表按「从长到短」排，这里反查取第一个匹配的。 */
 function barlineCode(dialect: Dialect, type: BarlineType): string {
-  const found = dialectSpec(dialect).barlines.find(([, t]) => t === type);
+  const table = dialectSpec(dialect).barlines;
+  // 复纵线取**最后**一条匹配：诗歌本的表里 `||/`（沿用番茄的规范外写法、只认不写）必须排在
+  // 规范写法 `||` 前面才切得开，取第一条就会把规范外那种写出去。番茄的 double 只有 `||/` 一条，
+  // 取最后一条同样对。其余线型各方言只有一条写法，照旧取第一条。
+  const found = type === "double"
+    ? [...table].reverse().find(([, t]) => t === type)
+    : table.find(([, t]) => t === type);
   return found ? found[0] : "|";
 }
 
@@ -273,7 +290,12 @@ export function toPuText(
         pendingJump = null;
       }
     };
-    measures.forEach((notes, mi) => {
+    const doubleXs = new Set(row.doubleBarXs ?? []);
+    measures.forEach((mea, mi) => {
+      const notes = mea.notes;
+      // segno 𝄋 挂**本小节的左线**（跳转落点），故要赶在下面那几条 writeBarline 之前排队。
+      const segnoHere = notes.some((n) => n.segno);
+      if (segnoHere) pendingJump = SEGNO_MARK;
       const change = notes.find((n) => n.timeChange)?.timeChange;
       if (change) {
         pendingMeter = `${change.beats}/${change.beatType}`;
@@ -284,6 +306,8 @@ export function toPuText(
       else if (pendingRight !== null) writeBarline(pendingRight);
       else if (forward) writeBarline("repeat-start");
       else if (mi > 0) writeBarline("normal");
+      // 行首那一小节没有左线可挂：补一条虚拟线把记号立住（同房号 `[` 落在行首时的做法）。
+      else if (segnoHere) writeBarline("hidden");
       // 行首那一小节没有左侧小节线可挂（换行处图上本就没线），临时拍号只好丢——
       // 挂到下一根线上会整整错开一小节，凭空补一根线又会多出一个空小节。
       pendingMeter = null;
@@ -399,6 +423,8 @@ export function toPuText(
         pendingVolta = false;
       }
       if (notes.some((n) => n.repeatBackward)) pendingRight = "repeat-end";
+      // 复纵线（细细双线）：反复线优先，两者不叠。
+      else if (mea.rightX !== null && doubleXs.has(mea.rightX)) pendingRight = "double";
       const jump = notes.find((n) => n.jumpMark)?.jumpMark;
       if (jump && JUMP_MARK[jump]) pendingJump = JUMP_MARK[jump]!;
     });

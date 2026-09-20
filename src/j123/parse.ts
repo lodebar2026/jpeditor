@@ -11,6 +11,7 @@
 //   - **`(N:` 的冒号必需**：简谱音符是数字，裸 `(3` 与圆滑线冲突，见规范「`(` 的歧义」。
 //   - 认不出的东西一律**报诊断、继续往下**——半截或写错的文本也要给出大部分结果。
 
+import { jumpOrnamentName } from "../abcfamily/jumpmarks";
 import {
   PU_LYRIC_QUOTES,
   isLyricCjk as isCjk,
@@ -592,9 +593,22 @@ function buildMusicLine(
         pending.annotations.push((t.value ?? "").replace(/^[\^_<>@]/, ""));
         break;
 
-      case "deco":
-        pending.decos.push(t.value ?? "");
+      case "deco": {
+        const deco = t.value ?? "";
+        // 跳转记号不是音符上的装饰，而是挂在小节线上的（`Barline.ornaments`）。
+        // 写在线**之后**（小节还一个元素都没有）的是**左线**上的记号——segno/coda 这类跳转目标；
+        // 写在线之前的攒着，等下面 `case "barline"` 把它挂到那条右线上。
+        const jump = jumpOrnamentName(deco);
+        if (jump && pb.measure.elements.length === 0) {
+          const bls = (pb.measure.barlines ??= []);
+          const left = bls.find((b) => b.location === "left");
+          if (left) (left.ornaments ??= []).push({ name: jump, level: 0 });
+          else bls.push({ location: "left", ornaments: [{ name: jump, level: 0 }], source: t.source });
+          break;
+        }
+        pending.decos.push(deco);
         break;
+      }
 
       case "grace": {
         const ch: Chord = {
@@ -686,6 +700,12 @@ function buildMusicLine(
 
       case "barline": {
         const bl = barlineFrom(t.value ?? "normal", t.repeatTimes, t.source);
+        // 线**之前**攒下的跳转记号（`… 6 !fine! |]`）挂这条线，别落到音符的 articulations 上
+        const jumps = pending.decos.map((d) => jumpOrnamentName(d)).filter((v): v is string => !!v);
+        if (jumps.length) {
+          pending.decos = pending.decos.filter((d) => !jumpOrnamentName(d));
+          bl.ornaments = jumps.map((name) => ({ name, level: 0 }));
+        }
         // **小节里还没有元素 = 这是左线**（行首的 `|`、或紧跟上一根），不收尾，
         // 否则会凭空多出一个空小节
         if (pb.measure.elements.length === 0) {

@@ -28,6 +28,7 @@ import { breakAfter } from "../model/helpers";
 import { lyricSlots } from "./lyricslot";
 import { harmonyText } from "../model/jianpu";
 import { ORNAMENT_TAG } from "../model/xmlproject";
+import { BARLINE_ORNAMENT_NAME } from "./jumpmarks";
 
 /** MusicXML 的 `<ornaments>` 元素名 → 123 记号名：`xmlproject.ts::ORNAMENT_TAG` 反过来（同名的取第一个）。 */
 const ORNAMENT_NAME: Readonly<Record<string, string>> = Object.fromEntries(
@@ -38,6 +39,11 @@ export interface MarkIndex {
   slurStart: Map<number, number>;
   slurEnd: Map<number, number>;
   tupletStart: Map<number, { actual: number; normal: number }>;
+}
+
+/** 小节线上的记号 → `!segno!` 之类的 token（认不出的名字原样写出，别默默丢）。 */
+function barlineOrnaments(b: Barline): string[] {
+  return (b.ornaments ?? []).map((o) => `!${BARLINE_ORNAMENT_NAME[o.name] ?? o.name}!`);
 }
 
 /** 小节线归一名 → 文本。与 `abcfamily/lex.ts::BARLINES` 互逆，两种方言共用。 */
@@ -418,6 +424,8 @@ export abstract class AbcFamilyEmitter {
       for (const left of lefts) {
         // 只有房号、没有实际线时不写线（`[1` 自己就是起点标记）
         if (left.style !== undefined) out.push(barlineText(left));
+        // 跳转记号紧跟这条线（segno 是跳转目标，落点就是这条线）
+        out.push(...barlineOrnaments(left));
         if (left === lastEnding) out.push(`[${left.ending!.numbers.join(",")}`);
       }
       const k = mea.attrs?.key ? this.keyValue(mea.attrs.key) : key;
@@ -428,6 +436,8 @@ export abstract class AbcFamilyEmitter {
       time = t;
       out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }));
       const right = (mea.barlines ?? []).find((b) => b.location === "right");
+      // 右线的记号写在线**之前**（`… 6 !fine! |]`）：唱到这儿才跳，读回来也按这个位置认。
+      if (right) out.push(...barlineOrnaments(right));
       out.push(right ? barlineText(right) : "|");
       // 模型记「下一小节起新系统」（`doc.ts::Print`），源码的 `$` 写在本小节之后
       const last = i === part.measures.length - 1;
