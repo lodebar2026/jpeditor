@@ -8,6 +8,12 @@ import { jpwToScoreDoc } from "../model/fromjpw";
 import { jianpuInputOfJpw } from "../model/jianpuinput";
 import { PlayItem } from "../score/playorder";
 import type { MetaData } from "../smufl/smufl";
+import { isTauriRuntime } from "./fileio";
+import { FEEDBACK_EMAIL, openFeedbackMail } from "./feedback";
+import {
+  APP_VERSION, HOMEPAGE, checkForUpdate, isAutoCheckEnabled, openExternal,
+  promptUpdate, setAutoCheckEnabled,
+} from "./update";
 
 // ---- 记谱法示例的渲染 -------------------------------------------------------
 // 从 app.ts 搬来：它用的是一次性的 painter、不碰实时谱面，和编辑器本身没有关系，
@@ -478,6 +484,78 @@ function cropExamples(root: HTMLElement): void {
   }
 }
 
+// ---- 关于页 ----------------------------------------------------------------
+// 版本号 + 主页；检查更新 / 意见反馈 / 自动检查开关三样只在桌面版出现
+// （Web 版刷新即最新，也没有邮件客户端可唤起）。
+
+function buildAboutPane(): HTMLElement {
+  const pane = el("div", "help-pane");
+  pane.append(el("div", "about-name", "简谱编辑器 jpeditor"));
+  pane.append(el("div", "about-version", `版本 ${APP_VERSION}`));
+
+  const home = el("button", "about-link", HOMEPAGE);
+  home.onclick = () => {
+    if (isTauriRuntime()) void openExternal(HOMEPAGE);
+    else window.open(HOMEPAGE, "_blank", "noopener");
+  };
+  pane.append(labeledRow("项目主页", home));
+
+  if (!isTauriRuntime()) return pane;
+
+  // 状态行：检查更新与反馈都往这里写结果，不额外弹错误框。
+  const status = el("div", "about-status");
+  status.hidden = true;
+  const say = (msg: string) => {
+    status.textContent = msg;
+    status.hidden = false;
+  };
+
+  const checkBtn = el("button", undefined, "检查更新");
+  checkBtn.onclick = () => {
+    checkBtn.disabled = true;
+    say("正在检查…");
+    void checkForUpdate()
+      .then(async (r) => {
+        if (r === null) say("检查失败，请确认网络后重试");
+        else if (r === "latest") say("已是最新版本");
+        else {
+          say(`发现新版本 ${r.version}`);
+          await promptUpdate(r);
+        }
+      })
+      .finally(() => {
+        checkBtn.disabled = false;
+      });
+  };
+
+  const mailBtn = el("button", undefined, "意见反馈");
+  mailBtn.onclick = () => {
+    void openFeedbackMail().catch(() => {
+      say(`无法唤起邮件客户端，请手动发信至 ${FEEDBACK_EMAIL}`);
+    });
+  };
+
+  const row = el("div", "about-buttons");
+  row.append(checkBtn, mailBtn);
+  pane.append(row, status);
+
+  const auto = el("input");
+  auto.type = "checkbox";
+  auto.checked = isAutoCheckEnabled();
+  auto.onchange = () => setAutoCheckEnabled(auto.checked);
+  const autoLabel = el("label", "about-auto");
+  autoLabel.append(auto, document.createTextNode(" 启动时自动检查更新"));
+  pane.append(autoLabel);
+
+  return pane;
+}
+
+function labeledRow(label: string, control: HTMLElement): HTMLElement {
+  const row = el("div", "about-row");
+  row.append(el("span", "about-label", label), control);
+  return row;
+}
+
 // ---- 对话框 ----------------------------------------------------------------
 
 export function showHelpDialog(app: App): void {
@@ -486,34 +564,42 @@ export function showHelpDialog(app: App): void {
 
   const title = el("div", "modal-title", "帮助");
 
-  // 标签页头
-  const tabs = el("div", "help-tabs");
-  const tabFeature = el("button", "help-tab active", "功能帮助");
-  const tabNotation = el("button", "help-tab", "记谱法");
-  tabs.append(tabFeature, tabNotation);
-
-  // 内容区
-  const content = el("div", "help-content");
-  const featurePane = buildFeatureHelp();
+  // 标签页：{ 标签, 内容, 首次显示时的补做 }
   const notationPane = buildNotationHelp(app);
-  notationPane.style.display = "none";
-  content.append(featurePane, notationPane);
+  const pages: { label: string; pane: HTMLElement; onFirstShow?: () => void }[] = [
+    { label: "功能帮助", pane: buildFeatureHelp() },
+    {
+      label: "记谱法",
+      pane: notationPane,
+      // getBBox only works once the pane is visible; crop on first reveal.
+      onFirstShow: () => cropExamples(notationPane),
+    },
+    { label: "关于", pane: buildAboutPane() },
+  ];
 
-  let cropped = false;
-  const activate = (feature: boolean) => {
-    tabFeature.classList.toggle("active", feature);
-    tabNotation.classList.toggle("active", !feature);
-    featurePane.style.display = feature ? "" : "none";
-    notationPane.style.display = feature ? "none" : "";
-    // getBBox only works once the pane is visible; crop on first reveal.
-    if (!feature && !cropped) {
-      cropExamples(notationPane);
-      cropped = true;
+  const tabs = el("div", "help-tabs");
+  const content = el("div", "help-content");
+  const tabBtns = pages.map((pg, i) => {
+    const btn = el("button", i === 0 ? "help-tab active" : "help-tab", pg.label);
+    pg.pane.style.display = i === 0 ? "" : "none";
+    tabs.append(btn);
+    content.append(pg.pane);
+    return btn;
+  });
+
+  const shown = new Set<number>([0]);
+  const activate = (idx: number) => {
+    pages.forEach((pg, i) => {
+      tabBtns[i].classList.toggle("active", i === idx);
+      pg.pane.style.display = i === idx ? "" : "none";
+    });
+    if (!shown.has(idx)) {
+      shown.add(idx);
+      pages[idx].onFirstShow?.();
     }
     content.scrollTop = 0;
   };
-  tabFeature.onclick = () => activate(true);
-  tabNotation.onclick = () => activate(false);
+  tabBtns.forEach((btn, i) => (btn.onclick = () => activate(i)));
 
   const footer = el("div", "modal-footer");
   const closeBtn = el("button", undefined, "关闭");

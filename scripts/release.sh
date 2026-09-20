@@ -22,9 +22,10 @@ export GH_TOKEN
 echo "==> bump 版本 → ${VER}"
 sed -i '' "s/\"version\": \"[0-9][0-9.]*\"/\"version\": \"${VER}\"/" package.json src-tauri/tauri.conf.json
 sed -i '' "s/^version = \"[0-9][0-9.]*\"/version = \"${VER}\"/" src-tauri/Cargo.toml
+sed -i '' "s/\"softwareVersion\": \"[0-9][0-9.]*\"/\"softwareVersion\": \"${VER}\"/" index.html
 ( cd src-tauri && cargo update -p jpeditor --precise "${VER}" >/dev/null 2>&1 || true )
 
-git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+git add package.json index.html src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
 git commit -m "发布 ${TAG}"
 git push origin main
 

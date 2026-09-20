@@ -7,6 +7,14 @@
     "core:default",
     "core:webview:allow-internal-toggle-devtools",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/*" },
+        { "url": "https://lodebar2026.github.io/*" },
+        { "url": "mailto:*" }
+      ]
+    },
     "dialog:default",
     "fs:allow-read-file",
     "fs:allow-write-file",

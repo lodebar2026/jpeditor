@@ -631,6 +631,26 @@ button:focus-visible, select:focus-visible {
    back into the flow of their card. */
 .help-render svg.help-svg { position: static; inset: auto; display: block; }
 
+/* 关于页（帮助对话框第三个标签页）：浅底，沿用 .help-pane 的字号与行高 */
+.about-name { font-size: 16px; font-weight: bold; color: #222; }
+.about-version { color: #666; margin: 2px 0 14px; }
+.about-row { display: flex; align-items: baseline; gap: 8px; margin: 6px 0; }
+.about-label { color: #555; }
+.about-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: #1565ff;
+  font-size: 13px;
+}
+.about-link:hover { text-decoration: underline; }
+.about-buttons { display: flex; gap: 8px; margin: 16px 0 8px; }
+.about-buttons button { padding: 6px 14px; cursor: pointer; }
+.about-buttons button:disabled { cursor: default; opacity: .6; }
+.about-status { color: #555; margin: 4px 0 8px; min-height: 18px; }
+.about-auto { display: flex; align-items: center; gap: 6px; color: #444; cursor: pointer; }
+
 /* CodeMirror follows the dark workspace while syntax colours keep their semantic roles. */
 #code-pane .cm-editor { height: 100%; background: var(--panel); color: #e8e8e8; }
 #code-pane .cm-scroller { overflow: auto; }

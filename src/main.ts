@@ -8,6 +8,7 @@ import { showOptionsDialog, showHanConvDialog, showSongInfoDialog } from "./edit
 import { showExportDialog } from "./editor/export";
 import { showHelpDialog } from "./editor/help";
 import { isTauriRuntime } from "./editor/fileio";
+import { maybeAutoCheck } from "./editor/update";
 import { MixedPainter } from "./mixed/painter";
 
 // Built-in sample (圣哉，圣哉，圣哉) — same content as CodeEditor.kt `scr`.
@@ -260,6 +261,10 @@ async function boot() {
 
   // 自动加载上次打开的文件（仅 Tauri；失败则保持示例文本）
   if (await app.tryRestoreLastFile()) revealWorkspace();
+
+  // 静默检查新版本（仅桌面版，自身还会判开关与 24h 节流）。延后是为了不和
+  // 启动页、OMR 模型加载抢资源；查不到就什么都不做。
+  setTimeout(() => void maybeAutoCheck(), 8000);
 }
 
 

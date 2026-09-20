@@ -1,5 +1,5 @@
 import { defineConfig, type Plugin } from "vite";
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +17,10 @@ function copyPdfjsWasm(): Plugin {
   return { name: "copy-pdfjs-wasm", buildStart: copy, configureServer: copy };
 }
 
+// 应用版本号只在 package.json 维护一处（release.sh 同步 tauri.conf.json / Cargo.toml），
+// 构建期注入成 __APP_VERSION__ 供「关于」页与更新检查用——别在前端再抄一份常量。
+const pkgVersion = JSON.parse(readFileSync(`${here}/package.json`, "utf-8")).version as string;
+
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
@@ -29,6 +33,7 @@ const base = process.env.BASE_PATH || "/";
 export default defineConfig(async () => ({
   base,
   plugins: [copyPdfjsWasm()],
+  define: { __APP_VERSION__: JSON.stringify(pkgVersion) },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
