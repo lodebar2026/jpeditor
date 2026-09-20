@@ -15,10 +15,17 @@ import { puHighlighter } from "../pu/highlight";
 import { j123Highlighter } from "../j123/highlight";
 import { decodeJpwabc, encodeJpwabc } from "./fileio";
 import { parsePu } from "../pu";
+import { relayoutPuText } from "../pu/relayout";
+import type { FitMeasure } from "../pu/phrase";
 import { parse123, parseAbc } from "../j123/parse";
+import { emit123 } from "../j123/emit";
+import { emitAbc } from "../abcfamily/emitabc.entry";
 import type { ScoreDoc } from "../model/doc";
 import { loadScoreDoc } from "../model/fromxml";
 import { fillDegreesFromPitch } from "../model/jianpu";
+import { relayoutDocBreaks, relayoutJpwabcText } from "../model/relayout";
+import { jpwToScoreDoc } from "../model/fromjpw";
+import { JpwFile } from "../jpword/jpwfile";
 
 /** 可打开的源格式。`musicxml` 没有代码区（`caps.textEditor === false`），只看谱面、转成文本格式再编辑。 */
 export type DocFormatId = "jpwabc" | "pu" | "123" | "abc" | "musicxml";
@@ -52,7 +59,7 @@ export interface FormatCaps {
   /** 谱面走哪套排版：`scoredoc` = 解析成 `ScoreDoc` 后原样档走 `PuPainter`、展开档经 `jianpuInputOfDoc`
    *  （文本谱、123、ABC）；`jpwabc` = `.jpwabc` 经 `jianpuInputOfJpw` 走简谱引擎（两档）。 */
   layout: "scoredoc" | "jpwabc";
-  /** 乐句重排（`pu/relayout.ts` 重排的是文本谱原文，认的是文本谱语法）。 */
+  /** 有没有「按乐句重排」（要有 `FormatAdapter.relayoutText`）。`.musicxml` 没有代码区，不给。 */
   phraseRelayout: boolean;
 }
 
@@ -78,6 +85,15 @@ export interface FormatAdapter {
   reload(host: FormatHost, text: string): boolean;
   /** 这种格式怎么得到一份 `ScoreDoc`（`caps.layout === "scoredoc"` 时必须给）。 */
   toScoreDoc?(text: string): ScoreDoc;
+  /**
+   * 「按乐句重排」怎么写回原文（`caps.phraseRelayout` 时必须给）。断句本身与格式无关
+   * （`score/phrase.ts`），各格式的差别只在写回那一步：文本谱只搬原文片段（`pu/relayout.ts`），
+   * 123/ABC 把断点写进模型再整份重出，`.jpwabc` 只挪 `.Voice` 里的 `$`（见 `model/relayout.ts`）。
+   *
+   * @param measure 行长尺子（展开档才有；没有就按出厂的小节数目标断，也就是一句一行）
+   * @returns 新原文；没有可重排的曲行时原样返回 `text`
+   */
+  relayoutText?(text: string, measure: FitMeasure | null): string;
 }
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -85,6 +101,13 @@ const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
 /** 123 读取时忽略 BOM（规范 §1）。 */
 const stripBom = (bytes: Uint8Array): Uint8Array =>
   bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes;
+
+/** 123/ABC 的重排：断点写进模型（`$` 只落在小节之后，故小节中间的断点挪到下一根小节线），整份重出。 */
+function emitFrom(
+  doc: ScoreDoc, measure: FitMeasure | null, emit: (doc: ScoreDoc) => string, text: string,
+): string {
+  return relayoutDocBreaks(doc, { measure, midBreaks: "snap" }) ? emit(doc) : text;
+}
 
 const JPWABC: FormatAdapter = {
   id: "jpwabc",
@@ -95,8 +118,15 @@ const JPWABC: FormatAdapter = {
   label: () => "JPWABC",
   title: (host) => host.painterTitle.split("\n")[0] ?? "",
   profileKnob: "jp",
-  caps: { mixed: true, hanConvert: true, textEditor: true, layout: "jpwabc", phraseRelayout: false },
+  caps: { mixed: true, hanConvert: true, textEditor: true, layout: "jpwabc", phraseRelayout: true },
   reload: (host, text) => host.reloadJpwabc(text),
+  // `.jpwabc` 是分节文件：只重切 `.Voice` 的行，别的节（样式、歌词、分页描述）一个字不动。
+  // 尺子不用：这一路的展开档走的是另一套引擎输入，拿 `jianpuInputOfDoc` 那把尺子量不对。
+  relayoutText: (text) => {
+    const f = JpwFile.fromString(text);
+    if (!f) return text;
+    return relayoutJpwabcText(text, jpwToScoreDoc(f));
+  },
 };
 
 const PU: FormatAdapter = {
@@ -121,6 +151,7 @@ const PU: FormatAdapter = {
   caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true },
   reload: (host, text) => host.reloadPu(text),
   toScoreDoc: (text) => parsePu(text),
+  relayoutText: (text, measure) => relayoutPuText(text, parsePu(text), { measure }),
 };
 
 /** 123 —— 简谱主格式。原生解析直出 `ScoreDoc`；排版直接吃 `ScoreDoc`。
@@ -142,9 +173,10 @@ const J123: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: false },
+  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true },
   reload: (host, text) => host.reload123(text),
   toScoreDoc: parse123,
+  relayoutText: (text, measure) => emitFrom(parse123(text), measure, emit123, text),
 };
 
 /** ABC —— 与 123 同源的那一支（123 是 ABC 方言）。**原生解析直出 `ScoreDoc`**，
@@ -168,9 +200,10 @@ const ABC: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: false },
+  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true },
   reload: (host, text) => host.reloadAbc(text),
   toScoreDoc: parseAbc,
+  relayoutText: (text, measure) => emitFrom(parseAbc(text), measure, emitAbc, text),
 };
 
 /** MusicXML —— 五线谱主格式。**没有代码区**：编辑器文档里存的就是 XML 原文（不显示），

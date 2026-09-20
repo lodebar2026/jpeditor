@@ -225,6 +225,23 @@ button:focus-visible, select:focus-visible {
   font-weight: 700;
 }
 .pane-meta { color: var(--text-muted); font-size: 9px; }
+/* 代码区标题栏里的下拉（识别输出格式）：占的就是格式标签那个位置，所以做得比工具条上的更小 */
+.pane-select-field { position: relative; display: inline-flex; align-items: center; }
+.pane-select-field select {
+  height: 22px;
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 20px 0 8px;
+  background: #0b0b0b;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.pane-select-field select:hover { border-color: rgba(255, 255, 255, 0.22); color: var(--text); }
+.pane-select-field select:focus-visible { border-color: var(--green); }
+.pane-select-field .select-chevron { right: 7px; font-size: 11px; }
 .pane-heading-actions { display: flex; align-items: center; gap: 10px; }
 .preview-mode-switch {
   display: flex;

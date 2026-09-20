@@ -24,3 +24,6 @@ export { emitJpwabc, writeJpwabc } from "../model/tojpw";
 // 文本谱与 `.jpwabc` 读入：迁移工具要拿它们当输入
 export { parsePu, parsePuAst, sniffDialect } from "../pu";
 export { JpwFile, RepeatSection } from "../jpword/jpwfile";
+// 按乐句重排（写回原文那一步；断句本身在 score/phrase.ts）
+export { relayoutDocBreaks, relayoutJpwabcText } from "../model/relayout";
+export { phraseCuts, puPhraseLines } from "../pu/phrase";

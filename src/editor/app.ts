@@ -5,7 +5,7 @@ import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { PuPainter } from "../pu/painter";
-import { parsePu, relayoutPuText, sniffDialect, dialectSpec, type Dialect } from "../pu";
+import { parsePu, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
 import { eachChord } from "../model/helpers";
 import type { ElementId, ScoreDoc } from "../model/doc";
@@ -477,6 +477,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     this._jpwDoc = doc;
     if (!score) return false;
+    this._syncPhraseBase(text);
 
     const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
     this._breakDesc = breakDesc; // 导出 PPTX 时另排一遍要用同一份分页描述
@@ -512,14 +513,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     this._scoreDoc = { text, doc: sdoc };
     this._puScoreCache = null; // 文本变了，引擎输入要重建
-    // 乐句重排：**用户手改过的文本就是新的「原样」基准**（切回按钮要还原到它）。
-    // 重排后又手改的，也按「这就是新的原样」算——否则一按「原样」就把用户后来的编辑抹了。
-    if (this._phraseOn && text !== this._phraseText) {
-      this._phraseOn = false;
-      this._setPhraseActive(false);
-    }
-    if (!this._phraseOn) this._origLayoutText = text;
-    this._setPhraseAvailable(true);
+    this._syncPhraseBase(text);
     const dialect = (sdoc.puDialect ?? "tomato") as Dialect;
     this._puDialect = dialect;
     this._syncFormatLabel();
@@ -547,8 +541,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     this._scoreDoc = { text, doc };
     this._puScoreCache = null; // 文本变了，引擎输入要重建
-    // 乐句重排认的是文本谱语法（`pu/relayout.ts` 重排的是原文本身），123 这一档不给
-    this._disablePhrase();
+    this._syncPhraseBase(text);
     this._syncFormatLabel();
     if (!this._layoutScoreDoc(doc, "123")) return false;
     this._reportDiagnostics("123", doc.diagnostics);
@@ -572,7 +565,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     if (notes === 0) return this._reloadAbcFallback(text, "原生解析没读出音符");
     this._scoreDoc = { text, doc };
     this._puScoreCache = null;
-    this._disablePhrase();
+    this._syncPhraseBase(text);
     this._syncFormatLabel();
     if (!this._layoutScoreDoc(doc, "ABC")) return false;
     this._reportDiagnostics("ABC", doc.diagnostics);
@@ -876,8 +869,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       effects: this._highlightCompartment.reconfigure(this.adapter.highlighter),
     });
     if (!this.adapter.caps.mixed) {
-      // 混排是简谱那侧的上下文工具，文本谱不适用；乐句重排两种格式都有
-      // （文本谱走 `pu/relayout.ts`，重排的是原文本身），可用性由 reloadPu 定。
+      // 混排是简谱那侧的上下文工具，文本谱不适用；乐句重排各格式各有写回原文的办法
+      // （`formats.ts::relayoutText`），可用性由各自的 reload 定。
       this._disablePhrase();
       this.mixedDoc = null;
       this._setMixedAvailable(false);
@@ -1215,7 +1208,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
     this._scoreDoc = { text, doc };
     this._puScoreCache = null;
-    this._disablePhrase();
+    this._syncPhraseBase(text);
     this._syncFormatLabel();
     if (!this._layoutScoreDoc(doc, "MusicXML")) return false;
     this._reportDiagnostics("MusicXML", doc.diagnostics);
@@ -1274,6 +1267,23 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this.setStatus(`已转成 ${target} 新文档（未保存，原 MusicXML 未改动）`);
   }
 
+  /** 每次重排/重渲染后同步乐句重排的基准文本与按钮可用性。
+   *
+   *  **用户手改过的文本就是新的「原样」基准**（切回按钮要还原到它）。重排后又手改的，
+   *  也按「这就是新的原样」算——否则一按「原样」就把用户后来的编辑抹了。 */
+  private _syncPhraseBase(text: string): void {
+    if (!this.adapter.caps.phraseRelayout) {
+      this._disablePhrase();
+      return;
+    }
+    if (this._phraseOn && text !== this._phraseText) {
+      this._phraseOn = false;
+      this._setPhraseActive(false);
+    }
+    if (!this._phraseOn) this._origLayoutText = text;
+    this._setPhraseAvailable(true);
+  }
+
   private _disablePhrase(): void {
     this._origLayoutText = null;
     this._phraseOn = false;
@@ -1296,6 +1306,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     el.hidden = !visible;
     if (el instanceof HTMLButtonElement) el.disabled = !visible;
     this._syncContextGroup(el);
+    // 识别输出格式下拉长在代码区标题栏里，露出来就顶掉那儿的格式标签
+    if (el.id === "recog-format-field") this._syncFormatLabel();
   }
 
   private _syncContextGroup(el: HTMLElement | null): void {
@@ -1327,17 +1339,18 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this._phraseBtnEl?.setAttribute("aria-pressed", String(phrase));
   }
 
-  /** 原样排版与按乐句重排之间切换。只有文本谱支持（重排的是原文本身）。 */
+  /** 原样排版与按乐句重排之间切换。 */
   setPhraseLayout(phrase: boolean): void {
-    if (this.adapter.caps.phraseRelayout) this._setPuPhraseLayout(phrase);
+    if (this.adapter.caps.phraseRelayout) this._setPhraseLayout(phrase);
   }
 
   /**
-   * 文本谱的「按乐句重排」：**重排的是原文本身**（`pu/relayout.ts`），两档因此同时就位
-   * ——原样档一行 `Q:` 就是谱面一行，展开档的行边界由 `model/jianpuinput.ts` 转成换行条目。
+   * 「按乐句重排」：**重排的是原文本身**，两档因此同时就位——文本谱一行 `Q:`（123 一个 `$`）
+   * 就是谱面一行，展开档的行边界由 `model/jianpuinput.ts` 转成换行条目。怎么写回原文由各格式
+   * 的适配器给（`editor/formats.ts::relayoutText`）。
    * 切回「原样」= 把重排前那份原文放回去（逐字相同，Ctrl+Z 也能整体撤销）。
    */
-  private _setPuPhraseLayout(phrase: boolean): void {
+  private _setPhraseLayout(phrase: boolean): void {
     if (this._phraseOn === phrase) return;
     const base = this._origLayoutText;
     if (!phrase) {
@@ -1347,16 +1360,13 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this.setText(base);
       return;
     }
+    const relayout = this.adapter.relayoutText;
+    if (!relayout) return;
     const text = this.getText();
-    const doc = this.docFormat === "pu" ? this.currentScoreDoc() : null;
-    if (!doc) {
-      this.setStatus("文本谱解析失败，无法按乐句重排");
-      return;
-    }
     try {
-      const out = relayoutPuText(text, doc, { measure: this._puPhraseMeasure() });
+      const out = relayout(text, this._puPhraseMeasure());
       if (out === text) {
-        this.setStatus("这份文本谱没有可重排的曲行");
+        this.setStatus("这份谱没有可重排的曲行");
         return;
       }
       this._origLayoutText = text;
@@ -1365,8 +1375,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this._setPhraseActive(true);
       this.setText(out);
     } catch (e) {
-      console.error("文本谱乐句重排失败", e);
-      this.setStatus("按乐句重排失败");
+      console.error("乐句重排失败", e);
+      this.setStatus("按乐句重排失败：" + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -1604,9 +1614,13 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this.adapter.label(this);
   }
 
+  /** 同步代码区右上角：有识别产物时那儿是输出格式下拉（`#recog-format-field`），标签让位。 */
   private _syncFormatLabel(): void {
     const meta = document.getElementById("code-pane-meta");
-    if (meta && meta.textContent !== "只读") meta.textContent = this._formatLabel();
+    if (!meta) return;
+    if (meta.textContent !== "只读") meta.textContent = this._formatLabel();
+    const field = document.getElementById("recog-format-field");
+    meta.hidden = !!field && !field.hidden;
   }
 
   private async _renderMixedPages(): Promise<void> {

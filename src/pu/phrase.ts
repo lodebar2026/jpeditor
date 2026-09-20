@@ -21,10 +21,10 @@ import { computePhraseBreaks } from "../score/phrase";
 import { chordsOf, type PhraseChord } from "../score/phraseinput";
 import type { JChord, JScore } from "../layout/input";
 import { elementQuarters, linesOfVoice, tupletRatios, voiceNumbers } from "./ast";
-import type { MusicElement, NoteElement, PuSong, ScoreLine } from "./ast";
+import type { MusicElement, NoteElement, PuSong, ScoreLine, SourceSpan } from "./ast";
 import { phrasePartOfSong } from "./phrasesong";
 import { jianpuInputOfDoc } from "../model/jianpuinput";
-import type { ScoreDoc } from "../model/doc";
+import type { ElementId, ScoreDoc } from "../model/doc";
 import { docView } from "./slots";
 
 /** 乐句排版时一页排几行。分页与断句共用这一个数。 */
@@ -213,4 +213,53 @@ export function puPhraseLines(
     l.pageAfter = pageAt.has(i + 1) && i + 1 < lines.length;
   });
   return lines;
+}
+
+/**
+ * 一个断点：**新行从这个元素起**。
+ *
+ * 两个消费者各取所需：写回 `ScoreDoc` 的那条路（123/ABC，`model/relayout.ts`）按 `id` 找回
+ * 模型里的元素；改写原文的那条路（`.jpwabc`）按 `source` 在原文上下刀。小节线没有 `ElementId`
+ * （模型里它挂在 `Measure.barlines` 上，不是元素），所以 `|:` 领起的新行 `id` 取它后面那个音
+ * ——落到小节级换行上是同一个位置；`source` 仍是 `|:` 自己的，原文才切得对。
+ */
+export interface PhraseCut {
+  id: ElementId | null;
+  source: SourceSpan | null;
+  /** 这一行另起一页 */
+  page: boolean;
+}
+
+/**
+ * 按乐句重排的断点（不含第一行的行首）。**与格式无关**：`puPhraseLines` 只经断句输入读谱，
+ * 文本谱 / 123 / ABC / `.jpwabc` 拼出的 `ScoreDoc` 都吃得下。
+ */
+export function phraseCuts(
+  sdoc: ScoreDoc, songIdx = 0, opt: { measure?: FitMeasure | null } = {},
+): PhraseCut[] | null {
+  const lines = puPhraseLines(sdoc, songIdx, opt);
+  if (!lines) return null;
+  const view = docView(sdoc);
+  const song = view.songs[songIdx];
+  if (!song) return null;
+  const streams = new Map(voiceNumbers(song).map((v) => [v, voiceStream(song, v)] as const));
+  const cuts: PhraseCut[] = [];
+  lines.forEach((line, i) => {
+    if (i === 0) return;
+    // 各声部同拍位起头，取哪一条都落在同一个位置；段首那一条最全（主旋律优先排在前）
+    const seg = line.segs[0];
+    const st = seg ? streams.get(seg.voice) : undefined;
+    if (!seg || !st) return;
+    let id: ElementId | null = null;
+    let source: SourceSpan | null = null;
+    for (let k = seg.from; k < seg.to; k++) {
+      const el = st.elements[k]!;
+      if (source === null && el.source.length > 0) source = el.source;
+      const got = view.idOf.get(el);
+      if (id === null && got !== undefined) id = got;
+      if (id !== null && source !== null) break;
+    }
+    cuts.push({ id, source, page: lines[i - 1]!.pageAfter });
+  });
+  return cuts;
 }

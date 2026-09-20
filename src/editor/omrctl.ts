@@ -122,10 +122,12 @@ export class OmrController {
     el.value = this.view;
   }
 
-  /** 注册识别输出格式下拉（选项由这里填，同 bindSpeedSelect 的写法）。 */
+  /** 注册识别输出格式下拉（选项由这里填，同 bindSpeedSelect 的写法）。
+   *  它长在**代码区标题栏**里、顶掉那儿的格式标签（`index.html` 的 `#recog-format-field`）：
+   *  切的本来就是代码区里这份文本是什么格式，摆在工具条上离得远、还要多一条标签解释。 */
   bindFormatSelect(el: HTMLSelectElement): void {
     this.formatSelectEl = el;
-    this.formatFieldEl = el.closest(".toolbar-select-field") ?? el;
+    this.formatFieldEl = el.closest(".pane-select-field, .toolbar-select-field") ?? el;
     el.replaceChildren();
     for (const { id, label } of OMR_EMITTERS) {
       const opt = document.createElement("option");
