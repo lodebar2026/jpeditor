@@ -343,7 +343,8 @@ function autoPlaceNotes(score: StaffLayout): void {
   }
 }
 
-/** 歌词 y：逐 system 取该行符头/朝下符干/下方记号/下方连音数字/下方 slur-tie 的最低点，各 verse 行整齐地排在它下面。
+/** 歌词 y：逐 system 取该行符头/朝下符干/下方记号/下方连音数字/下方 slur-tie 的最低点，各 verse 行整齐地排在它下面；
+ *  离谱表底线至少 `AUTO_LYRIC_STAFF_GAP`。
  *  弧取画出来的真实曲线底（`slurEnds`/`tiedEnds` + `arcExtent`，与绘制同一份几何），跨行的弧按本行那一截。
  *  要在 `autoPlaceTuplets` 之后：连音数字的上下在那里才定。 */
 function autoPlaceLyricsY(score: StaffLayout): void {
@@ -389,7 +390,7 @@ function autoPlaceLyricsY(score: StaffLayout): void {
         maxDown = Math.max(maxDown, (ly + ry) / 2 + numH / 2 + 2);
       }
     }
-    const base = maxDown + ascent + AUTO_LYRIC_GAP;
+    const base = Math.max(maxDown + AUTO_LYRIC_GAP, 40 + AUTO_LYRIC_STAFF_GAP) + ascent;
     for (const mif of sys.measures) {
       for (const part of score.parts) {
         const md = part.measures[mif.index];
@@ -425,7 +426,8 @@ function autoStaffDistances(score: StaffLayout): void {
 // 标题居中大字，作词/作曲逐行居中小字，堆叠在标题下方。
 const AUTO_TITLE_FS = 20;   // pt
 const AUTO_CREDIT_FS = 11;  // pt
-const AUTO_LYRIC_GAP = 5;    // 音符/符干/弧最低点到首行歌词字顶的净空（tenths）
+const AUTO_LYRIC_GAP = 10;   // 音符/符干/弧最低点到首行歌词字顶的净空（tenths）
+const AUTO_LYRIC_STAFF_GAP = 20; // 谱表底线到首行歌词字顶至少留的距离（音符都在谱表里时不至于贴着线）
 const AUTO_LYRIC_ROW = 22;   // 相邻 verse 行距的下限（按字号 × 1.1 取大）
 const AUTO_DIRECTION_Y = 46; // 速度记号默认高度（谱表上方）
 const AUTO_STAFF_GAP = 12;   // 上一谱表最低处到下一谱表最高处的净空
