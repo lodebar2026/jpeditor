@@ -32,6 +32,9 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  * - Move harmonies to harmonyY
  * - Scale P2 lyric font × 0.8
  */
+/** 混排简谱层顶（数字顶）到自动放置的文字记号基线的净空：留给简谱层上方的弧与高音点（tenths） */
+const MIXED_TEXT_CLEAR = 16;
+
 export function formatMixedScore(score: StaffLayout): void {
   if (score.parts.length === 0) return;
 
@@ -43,6 +46,21 @@ export function formatMixedScore(score: StaffLayout): void {
 
   // Calculate mixed staff y positions (needs chords/slurs in place)
   p.calcMixedStaffY();
+
+  // 自动铺排的速度/文字记号：缺省高度只让开了五线谱，混排时简谱层（连同其上的弧、高音点）在它上面，抬过去。
+  // 带 default-y 的原文不动（照 musicpp）。
+  const eng = score.options;
+  for (const sys of score.systems) {
+    for (const st of sys.staves) {
+      if (st.part() !== p || st.partStaff !== p.staves[0]) continue;
+      const floor = -st.minY + eng.mixStaffDist + eng.mixStaffHeight + MIXED_TEXT_CLEAR;
+      for (const m of sys.measures) {
+        for (const t of p.measures[m.index]?.textBlocks ?? []) {
+          if (t.autoY && t.staff === 0 && t.y < floor) t.y = floor;
+        }
+      }
+    }
+  }
 
   // Move harmony y to harmonyY
   for (const sys of score.systems) {

@@ -227,7 +227,10 @@ function autoPlaceNotes(score: StaffLayout): void {
       // 字号统一到歌词字号（含节拍音符字形），避免 OMR 速度记号偏小。
       const lyrSize = score.defaults.lyricFont.size;
       for (const t of md.textBlocks) {
-        if (t.y <= 0) t.y = AUTO_DIRECTION_Y;
+        if (t.y <= 0) {
+          t.y = AUTO_DIRECTION_Y;
+          t.autoY = true;
+        }
         for (const it of t.data) {
           if (it.font.size > 0) it.font = it.font.scaled(lyrSize / it.font.size);
         }
@@ -323,6 +326,26 @@ function autoLayoutHeader(score: StaffLayout): void {
   score.credits = creds;
 }
 
+
+/** 自动铺排的谱（文本格式转来的、识别出的）：连音的音符全在同一组符杠下、符干同向时，
+ *  数字放到符杠那一端、不画方括号（常规制谱做法）。缺省画在符头一侧带括号，
+ *  会与同在符头一侧的延音线/圆滑线挤在一起。带版面坐标的 MusicXML 不走这里，仍照 musicpp。 */
+function autoPlaceTuplets(score: StaffLayout): void {
+  for (const part of score.parts) {
+    const groups = part.measures.flatMap((md) => md.beams);
+    for (const t of part.tuplets) {
+      if (!t.startNote || !t.endNote || t.bracket !== null) continue;
+      const chl = t.startChord();
+      const chr = t.endChord();
+      const g = groups.find((bg) => bg.chords.includes(chl) && bg.chords.includes(chr));
+      if (!g || g.doubleDir) continue;
+      const span = g.chords.slice(g.chords.indexOf(chl), g.chords.indexOf(chr) + 1);
+      if (span.some((c) => !c.rest && c.stemUp !== chl.stemUp)) continue;
+      t.above = chl.stemUp;
+      t.bracket = false;
+    }
+  }
+}
 
 function layoutAttr(score: StaffLayout): void {
   for (const mif of score.measures) {
@@ -724,6 +747,7 @@ export function finishMixedScore(score: StaffLayout, input: LayoutInput, partGro
   if (autoLayout) autoJustifySystems(score);
   layoutAttr(score);
   if (autoLayout) autoPlaceNotes(score);
+  if (autoLayout) autoPlaceTuplets(score);
   updateEntPos(score);
   updateDataXPos(score);
 

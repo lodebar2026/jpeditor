@@ -580,19 +580,7 @@ function drawTuplet(eng: MixedOptions, container: Group, obj: Tuplet): void {
       bracket = chl.beams.length === 0;
     }
 
-    if (above === chl.stemUp) {
-      ply = chl.tailY(true) - 10 * sign;
-    } else {
-      ply = chl.stemY() - 15 * sign;
-    }
-    if (above === chr.stemUp) {
-      pry = chr.tailY(true) - 10 * sign;
-    } else {
-      pry = chr.stemY() - 15 * sign;
-    }
-
-    ply -= sign * 10;
-    pry -= sign * 10;
+    [ply, pry] = obj.staffEnds();
 
     const hlen = 10;
     if (bracket) {

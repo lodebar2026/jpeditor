@@ -1378,6 +1378,8 @@ export class MeasureText extends TextBlock {
   staff = 0;
   /** x 是否相对拍位（updateDataXPos 再加拍位 x）；false 时 x 就是小节内坐标（只写 default-x 的 `<words>`） */
   relative = true;
+  /** y 是自动铺排给的缺省高度（原文没写 default-y）：混排时要让到简谱层之上（`formatMixedScore`） */
+  autoY = false;
 
   constructor(measure: PartMeasureLayout) {
     super();
@@ -1973,6 +1975,14 @@ export class Tuplet extends SpanOverNotes {
   timeModification = new Fraction(1);
   bracket: boolean | null = null;
 
+  /** 五线谱上括号/数字两端的 y（render.cpp::drawTuplet：在符杠一侧贴符尾，在符头一侧离符干端 15，再外推 10）。 */
+  staffEnds(): [number, number] {
+    const sign = this.above ? 1 : -1;
+    const endY = (ch: ChordLayout) =>
+      (this.above === ch.stemUp ? ch.tailY(true) - 10 * sign : ch.stemY() - 15 * sign) - sign * 10;
+    return [endY(this.startChord()), endY(this.endChord())];
+  }
+
   static makeNumber(t: number): string {
     const zero = GlyphCodes.tuplet0.charCodeAt(0);
     let res = "";
@@ -2425,6 +2435,16 @@ export class SysStaff {
         const top = cubicMinY(pl.y, pt0.y, pt1.y, pr.y);
         miny = Math.min(miny, top - 1);
       }
+    }
+
+    // 放到上方的连音数字（自动铺排：符杠在上时数字随符杠，见 layoutpass.ts::autoPlaceTuplets）
+    const fsScale = eng.musicFont.size / 40;
+    for (const t of pt.tuplets) {
+      if (!t.above || !sys.contains(t.startTick) || !sys.contains(t.endTick)) continue;
+      const [ly, ry] = t.staffEnds();
+      const g0 = Tuplet.makeNumber(t.timeModification.denominator)[0] ?? "";
+      const numH = (smuflTop(eng.meta, g0) - smuflBottom(eng.meta, g0)) * fsScale;
+      miny = Math.min(miny, (ly + ry) / 2 - numH / 2 - 2);
     }
 
     this.minY = miny;

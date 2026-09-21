@@ -888,7 +888,9 @@ class DocPartLoader {
     }
     const pm = met.tempo?.perMinuteText?.trim() ?? (met.tempo?.perMinute !== undefined ? String(met.tempo.perMinute) : undefined);
     if (pm !== undefined) {
-      blk.add(" = " + pm, wordFont);
+      // 「=」左边用不折叠空格：SVG 吞掉文本开头的普通空格（量宽也一样），「♩」与「=」就贴死了；
+      // 右边那个在字中间不会被吞，两边于是等宽
+      blk.add(any ? "\u00a0= " + pm : "= " + pm, wordFont);
       any = true;
     }
     return any;
