@@ -42,14 +42,15 @@ function flatBottomShare(bin: Binary, b: Rect): number {
  * 长度门（≥0.8 字号）看的是**延伸之后**的内弧：1777《福音传到你那里》`2 3 3` 的内弧 `3⌒3` 双段区间
  * 只有 25 列（字号 35），并进外弧右端后实为 51px；1782 的两条内弧双段只有 18、11 列。
  */
-function splitNestedArcs(bin: Binary, a: Rect, numH: number): Rect[] {
+function splitNestedArcs(bin: Binary, a: Rect, numH: number, mask: Rect[] = []): Rect[] {
   const x1 = a.x + a.w, y1 = a.y + a.h;
+  const masked = (x: number, y: number) => mask.some((m) => x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h);
   // 每列的竖向墨段（只取前两段：再多的是噪点，本就不该出现在弧上方带里）。
   const runsAt = (x: number): Array<[number, number]> => {
     const runs: Array<[number, number]> = [];
     let s = -1;
     for (let y = a.y; y < y1; y++) {
-      if (bin.data[y * bin.w + x]) { if (s < 0) s = y; }
+      if (bin.data[y * bin.w + x] && !masked(x, y)) { if (s < 0) s = y; }
       else if (s >= 0) { runs.push([s, y - 1]); s = -1; }
     }
     if (s >= 0) runs.push([s, y1 - 1]);
@@ -114,7 +115,8 @@ function splitNestedArcs(bin: Binary, a: Rect, numH: number): Rect[] {
   // 两条内弧**首尾相接**：1863《至暂至轻的苦楚算什么》`5 3 3--` 上外弧罩三音，底下 `5⌒3`、`3⌒3`
   // 两条内弧左右各并进外弧一头、在中间那个 3 上脚碰脚，双段区间一路连通、下面那一段是个 M 形，
   // 当一条内弧就与母块同宽被丢。按下面那一段的**尖谷**切开：谷点（顶边最低处，限在区间中部）比两侧
-  // 各自的拱顶都低出 0.2 字号以上，才是两条弧的交脚，不是一条弧顶上的起伏。
+  // 各自的拱顶都低出 0.15 字号以上，才是两条弧的交脚，不是一条弧顶上的起伏（1850 第 3 行 `2 3 3` 左内弧左脚并进外弧、
+  // 露出来的只有一截，谷只比它的拱顶低 6px，字号 33）。单条弧的最低处必在区间一头，中部取不出两侧都更高的谷。
   const lowerTop = (x: number): number | null => {
     const r = cols.get(x)!;
     return r.length >= 2 ? r[r.length - 1][0] : null;
@@ -130,7 +132,7 @@ function splitNestedArcs(bin: Binary, a: Rect, numH: number): Rect[] {
     let lt = Infinity, rt = Infinity;
     for (let x = l; x < cx; x++) { const t = lowerTop(x); if (t !== null) lt = Math.min(lt, t); }
     for (let x = cx + 1; x <= h; x++) { const t = lowerTop(x); if (t !== null) rt = Math.min(rt, t); }
-    const need = Math.max(3, numH * 0.2);
+    const need = Math.max(3, numH * 0.15);
     return cy - lt >= need && cy - rt >= need ? cx : null;
   };
   const inners = spans.flatMap(([l, h]): Array<Rect | null> => {
@@ -348,7 +350,11 @@ export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], n
     // （1806 末行实测 x66~230 一块），splitNestedArcs 分不出哪条是续弧的下半截，拆出来的两条会
     // 同起同止、变成一对重复的弧（旧输出 `((6 5 6-))`）。宁可只记跨行那条——**代价是同块里那条
     // 行内弧跟着丢**，但重复的弧会误导演奏，丢一条只是少个记号。
-    for (const a of perRow[ri].filter((c) => !crossed.has(c)).flatMap((c) => splitNestedArcs(bin, c.bbox, numH))) {
+    // 弧包围盒里的小点（高八度点，含 splitArcInnerDots 从弧块里切出来的）不算弧的笔画：1850 `6 1̇ 1̇` 两条内弧的
+    // 交脚正压在点上，点那一坨让「下面那一段」又厚又跳，整块拆不开。
+    const dotsIn = (b: Rect) => comps.filter((o) => o.bbox.w <= numH * 0.45 && o.bbox.h <= numH * 0.45 &&
+      o.bbox.x >= b.x && rright(o.bbox) <= rright(b) && o.bbox.y >= b.y && rbottom(o.bbox) <= rbottom(b)).map((o) => o.bbox);
+    for (const a of perRow[ri].filter((c) => !crossed.has(c)).flatMap((c) => splitNestedArcs(bin, c.bbox, numH, dotsIn(c.bbox)))) {
       // 找弧线横向覆盖的音符（质心落在弧线 x 跨度内，左右各放宽 0.5 字号容端点偏移）。
       // 弧线常画在两音"符头之间"而非正压音符质心，左缘可比首音质心偏右半个字号
       //（实测基督更美行5 `(3_5_)`：弧 x129、首音 3 质心 114，差 15px≈0.3字号，0.3 容差差 0.6px 漏掉）。

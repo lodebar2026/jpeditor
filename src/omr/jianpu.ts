@@ -547,6 +547,69 @@ function splitArcEndDots(bin: Binary, comps: Component[], numH: number): Compone
   return out;
 }
 
+/** 高八度点**溶在弧块中间**：1850《最难的事主已做成》`6 1̇ 1̇` 上一条外弧罩三音、底下 `6⌒1̇`、`1̇⌒1̇` 两条内弧
+ *  首尾相接——交脚正压在第一个 1̇ 的点上，外弧与右内弧的右脚又一起落在第二个 1̇ 的点上，两个点和三条弧是一个块。
+ *  splitArcEndDots 只从块的两头往里找，中间那个点够不着；右端那个也过不了它「点比弧低」一关（外弧左脚比点还低 1px）。
+ *  这里逐列看**最低那一段墨**的长度：弧线（含两条内弧的交脚，1863 实测 2~4px）只有笔画粗细，点那几列是实心一整段
+ *  （1850 实测 6~7px、笔画 2~3px）。连续几列都厚过 2.2 倍笔画、宽像个点、切出来的框够圆够实，就把这几列最低那段
+ *  另收成一个点；弧块原样保留（点挖不出来，弧的包围盒不动，detectSlurs 照旧用它）。只在干净谱面上用（同上）。 */
+function splitArcInnerDots(bin: Binary, comps: Component[], numH: number): Component[] {
+  const out: Component[] = [];
+  let nextId = 2_500_000;
+  for (const k of comps) {
+    out.push(k);
+    const b = k.bbox;
+    if (b.w < numH * 1.2 || b.h < numH * 0.25 || b.h > numH * 0.9 || b.w < b.h * 2) continue;
+    // 得是**拱起来**的弧块：上缘两头都比最高处低 0.3 字号以上。减时线下沿挂着低八度点的块也又宽又扁，
+    // 上缘却是平的（1801 `7̣` 的点被这样切出一个重复的来，高低点相消）。
+    const topAt = (x: number) => { let y = b.y; while (y < b.y + b.h && !bin.data[y * bin.w + x]) y++; return y; };
+    const peakY = Math.min(...Array.from({ length: b.w }, (_, i) => topAt(b.x + i)));
+    const edge = Math.max(2, Math.round(numH * 0.1));
+    if (topAt(b.x + edge) - peakY < numH * 0.3 || topAt(b.x + b.w - 1 - edge) - peakY < numH * 0.3) continue;
+    // 每列最低那一段墨 [top, bottom]（没墨为 null）
+    const low: Array<[number, number] | null> = [];
+    const runs: number[] = [];
+    for (let x = b.x; x < b.x + b.w; x++) {
+      let y = b.y + b.h - 1;
+      while (y >= b.y && !bin.data[y * bin.w + x]) y--;
+      if (y < b.y) { low.push(null); continue; }
+      const bot = y;
+      while (y >= b.y && bin.data[y * bin.w + x]) y--;
+      low.push([y + 1, bot]);
+      runs.push(bot - y);
+    }
+    const stroke = median(runs) || 1;
+    if (stroke > numH * 0.12) continue;                                   // 笔画本身就粗：不是细弧
+    // 门槛 1.8 倍笔画（splitArcEndDots 是 2.2）：1850 的点 7×6、弧笔画 3px，最厚才 2 倍。交脚那几列只有笔画的
+    // 一两倍，再有下面「够圆、够实、两侧不比它低」三道兜着。
+    const thick = Math.max(stroke * 1.8, numH * 0.15);
+    const len = (i: number) => (low[i] ? low[i]![1] - low[i]![0] + 1 : 0);
+    for (let i = 0; i < b.w; ) {
+      if (len(i) < stroke * 1.6) { i++; continue; }
+      const s = i;
+      let peak = 0;
+      while (i < b.w && len(i) >= stroke * 1.6) { peak = Math.max(peak, len(i)); i++; }
+      const w = i - s;
+      if (peak < thick || w < numH * 0.12 || w > numH * 0.45) continue;
+      let y0 = Infinity, y1 = -1;
+      for (let j = s; j < i; j++) { y0 = Math.min(y0, low[j]![0]); y1 = Math.max(y1, low[j]![1]); }
+      const d: Rect = { x: b.x + s, y: y0, w, h: y1 - y0 + 1 };
+      const ratio = d.w / d.h;
+      if (d.h > numH * 0.45 || d.h < numH * 0.12 || ratio < 0.5 || ratio > 1.7 || inkFill(bin, d) < 0.6) continue;
+      // 点挂在弧的**下沿**：两侧紧邻（0.3 字号内）那几列最低墨点都不比它低——否则是弧的一只脚上凑出来的厚块
+      const side = Math.round(numH * 0.3);
+      let lower = false;
+      for (let j = Math.max(0, s - side); j < Math.min(b.w, i + side); j++) {
+        if ((j < s || j >= i) && low[j] && low[j]![1] > y1 + 1) lower = true;
+      }
+      if (lower) continue;
+      probe("splitArcInnerDots");
+      out.push({ id: nextId++, bbox: d, area: Math.round(inkFill(bin, d) * d.w * d.h), cx: rcx(d), cy: rcy(d) });
+    }
+  }
+  return out;
+}
+
 function classify(comps: Component[], bin: Binary): { c: Classified; numH: number } {
   const numH = estimateNumH(comps);
   // 「干净谱面」判据：**看小节线直不直**。数字排版直接出的印刷本，小节线是一根绝对竖直、
@@ -1137,7 +1200,10 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   let comps = mergeBrokenHlines(untangleBridged(raw, bin, estimateNumH(raw)), estimateNumH(raw));
   comps = splitBarDash(bin, comps, estimateNumH(comps));
   comps = splitBarCap(bin, comps, estimateNumH(comps));
-  if (isCleanPage(comps, estimateNumH(comps))) comps = splitArcEndDots(bin, comps, estimateNumH(comps));
+  if (isCleanPage(comps, estimateNumH(comps))) {
+    comps = splitArcEndDots(bin, comps, estimateNumH(comps));
+    comps = splitArcInnerDots(bin, comps, estimateNumH(comps));
+  }
   const { c, numH } = classify(comps, bin);
 
   // 数字块 → 数字格（拆分粘连/连音，并测各自下划线 div）。
