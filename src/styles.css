@@ -267,9 +267,6 @@ button:focus-visible, select:focus-visible {
 .preview-mode-switch button:disabled { color: #555; cursor: not-allowed; }
 #code-pane { flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--panel); }
 
-/* Five-line staff preview is rendered from MusicXML; keep source visible but read-only. */
-#body.mixed #code-pane-shell { background: #151515; }
-
 #start-screen {
   position: absolute;
   inset: 0;

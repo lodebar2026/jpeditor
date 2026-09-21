@@ -102,6 +102,9 @@ async function svgToBytes(svg: SVGSVGElement, scale: number, bg = "#fff"): Promi
 }
 
 function baseName(app: App): string {
+  // 五线谱/混排档不重排简谱那侧（在这两档里打开的文档，简谱排版器还停在上一份），标题取混排排版器的
+  const mixedTitle = app.mode === "mixed" ? app.mixedPainter?.title.split("\n")[0] : "";
+  if (mixedTitle) return mixedTitle;
   if (app.adapter.caps.layout === "scoredoc") {
     const t = app.puScore()?.title.split("\n")[0];
     if (t) return t;
@@ -165,18 +168,29 @@ export async function exportMusicXml(app: App): Promise<void> {
  *  绝对音高都由投影层 `xmlproject.ts` 补（与 123/文本谱同一条路）。 */
 export function buildMusicXml(app: App): string {
   const base = app.mixedDoc?.source;
-  if (base && app.mode === "mixed") return base; // 混排：底本即五线谱原文，原样给出
-  let xml: string;
+  // `.musicxml` 的混排：底本即五线谱原文，原样给出（文本格式的混排底本是由下面这条派生的，不算原文）
+  if (base && app.docFormat === "musicxml" && app.mode === "mixed") return base;
+  return sourceMusicXml(app);
+}
+
+/** 当前**源文**经唯一写出端投成 MusicXML（不看混排底本），补好给第三方软件看的版面。 */
+export function sourceMusicXml(app: App): string {
+  return finishMusicXmlText(sourceMusicXmlBare(app));
+}
+
+/** 同上，但**不补版面坐标**（`annotateLayout`）。文本格式进五线谱/混排走这一份（`App._ensureMixedDoc`
+ *  写出后再读回成 `mixedDoc`）：`annotateLayout` 的音符坐标是按小节宽均分的粗略值、次行起不给
+ *  谱号调号留位，混排排版器见了坐标就照用，行首音会压在谱号下；不带坐标它自己铺排（`layoutpass.ts::autoPlaceNotes`，
+ *  五线谱识别的产物也走这条）。 */
+export function sourceMusicXmlBare(app: App): string {
   if (app.docFormat === "jpwabc") {
     const f = JpwFile.fromString(app.getText());
     if (!f) throw new Error("这份 .jpwabc 读不出来");
-    xml = scoreDocToMusicXml(jpwToScoreDoc(f));
-  } else {
-    const doc = app.currentScoreDoc();
-    if (!doc) throw new Error("这份谱里没有可导出的曲行");
-    xml = scoreDocToMusicXml(doc);
+    return scoreDocToMusicXml(jpwToScoreDoc(f));
   }
-  return finishMusicXmlText(xml);
+  const doc = app.currentScoreDoc();
+  if (!doc) throw new Error("这份谱里没有可导出的曲行");
+  return scoreDocToMusicXml(doc);
 }
 
 /** MusicXML 的共同收尾：解析校验 → 补版面 → 序列化 → 补回 XML 声明。
@@ -259,6 +273,8 @@ const isMixed = (app: App): boolean => app.mode === "mixed";
 /** 走 `ScoreDoc` 排版的格式（文本谱、123、ABC）：导出项与简谱那档不同。 */
 const isPu = (app: App): boolean => app.adapter.caps.layout === "scoredoc" && !isMixed(app);
 const isJp = (app: App): boolean => !isPu(app) && !isMixed(app);
+/** 另存为源格式：文本格式在五线谱/混排档也有源文可存；`.musicxml` 的混排档走「转成 … 编辑」。 */
+const canSaveAsText = (app: App): boolean => !isMixed(app) || app.docFormat !== "musicxml";
 
 /** 顺序即对话框里的顺序。 */
 const EXPORT_ITEMS: readonly ExportItem[] = [
@@ -296,12 +312,12 @@ const EXPORT_ITEMS: readonly ExportItem[] = [
   // 确认了才写——这条路与上面那些「导出成别的媒介」不同，它换的是源格式本身。
   {
     label: "123（简谱源格式）",
-    available: (app) => !isMixed(app) && app.docFormat !== "123",
+    available: (app) => canSaveAsText(app) && app.docFormat !== "123",
     run: (app) => app.saveAsFormat("123"),
   },
   {
     label: "ABC（记谱源格式）",
-    available: (app) => !isMixed(app) && app.docFormat !== "abc",
+    available: (app) => canSaveAsText(app) && app.docFormat !== "abc",
     run: (app) => app.saveAsFormat("abc"),
   },
 ];
@@ -313,10 +329,8 @@ export function showExportDialog(app: App): void {
   box.className = "modal-box";
   const title = document.createElement("div");
   title.className = "modal-title";
-  // 文本谱这一档不加后缀：「导出 · 文本谱」会被读成「导出成文本谱」，而条目里
-  // 一个文本谱格式都没有。
-  title.textContent =
-    app.adapter.caps.layout === "scoredoc" ? "导出" : app.mode === "mixed" ? "导出 · 五线谱" : "导出 · 简谱";
+  // 不加「· 五线谱」「· 简谱」之类的后缀：会被读成「导出成五线谱」。PNG/PDF 导出的就是当前谱面视图。
+  title.textContent = "导出";
   const list = document.createElement("div");
   list.style.cssText = "display:flex;flex-direction:column;gap:8px";
   const error = document.createElement("div");

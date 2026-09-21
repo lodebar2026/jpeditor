@@ -52,8 +52,6 @@ export interface FormatHost {
 export interface FormatCaps {
   /** 有没有代码区。`.musicxml` 没有：打开只进谱面视图（五线谱编辑那一路），要编辑先转成文本格式（新文档）。 */
   textEditor: boolean;
-  /** 有没有五线谱/混排这一路（混排是简谱那侧的上下文工具，文本谱与 123 不适用）。 */
-  mixed: boolean;
   /** 整篇简繁转换（`convertJpwabc` 认的是 `.Title`/`.Words` 段结构）。 */
   hanConvert: boolean;
   /** 谱面走哪套排版：`scoredoc` = 解析成 `ScoreDoc` 后原样档走 `PuPainter`、展开档经 `jianpuInputOfDoc`
@@ -127,7 +125,7 @@ const JPWABC: FormatAdapter = {
   label: () => "JPWABC",
   title: (host) => host.painterTitle.split("\n")[0] ?? "",
   profileKnob: "jp",
-  caps: { mixed: true, hanConvert: true, textEditor: true, layout: "jpwabc", phraseRelayout: true, originalEngine: "jianpu" },
+  caps: { hanConvert: true, textEditor: true, layout: "jpwabc", phraseRelayout: true, originalEngine: "jianpu" },
   reload: (host, text) => host.reloadJpwabc(text),
   // `.jpwabc` 是分节文件：只重切 `.Voice` 的行，别的节（样式、歌词、分页描述）一个字不动。
   // 尺子不用：这一路的展开档走的是另一套引擎输入，拿 `jianpuInputOfDoc` 那把尺子量不对。
@@ -157,7 +155,7 @@ const PU: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "pu" },
+  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "pu" },
   reload: (host, text) => host.reloadPu(text),
   toScoreDoc: (text) => parsePu(text),
   relayoutText: (text, measure) => relayoutPuText(text, parsePu(text), { measure }),
@@ -182,7 +180,7 @@ const J123: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "jianpu" },
+  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "jianpu" },
   reload: (host, text) => host.reload123(text),
   toScoreDoc: parse123,
   relayoutText: (text, measure) => emitFrom(text, measure, parse123, emit123),
@@ -209,7 +207,7 @@ const ABC: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { mixed: false, hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "jianpu" },
+  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "jianpu" },
   reload: (host, text) => host.reloadAbc(text),
   toScoreDoc: parseAbc,
   relayoutText: (text, measure) => emitFrom(text, measure, parseAbc, emitAbc),
@@ -231,7 +229,7 @@ const MUSICXML: FormatAdapter = {
     return m ? m[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { textEditor: false, layout: "scoredoc", phraseRelayout: false, mixed: true, hanConvert: false, originalEngine: "pu" },
+  caps: { textEditor: false, layout: "scoredoc", phraseRelayout: false, hanConvert: false, originalEngine: "pu" },
   reload: (host, text) => host.reloadMusicXml(text),
   // MusicXML 只给绝对音高，简谱排版要度数
   toScoreDoc: (text) => {
