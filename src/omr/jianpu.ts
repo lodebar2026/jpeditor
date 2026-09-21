@@ -1859,31 +1859,9 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     if (chordRegions) probe("chords");
   }
 
-  // 房内只印一行歌词时，歌词识别天然把它放在 W1；这行词属于第几遍，看这个房是不是**与前一个房
-  // 挤在同一谱行**：
-  //   · 同行并排（`… [1 … :| [2 … |]`，沧海一声笑的 `[1,2,3,5` `[4` `[6` 也是）——W1 那条词行
-  //     已经被前一个房占掉了，后面这个房的词只能是另一遍的，按房号首号迁到 W[n-1]；
-  //   · 房**独占谱行**（76《天上有粮》的 `[2` 起一整行、1697《温州的水 温州的山》的 `[2` 在末行）——
-  //     那行的 W1 就是它自己的头一行词，迁走只会让 W1 整片空出来（`w:////////…`）、
-  //     房尾那个落在 endingStop 之后的字还会被撕在 W1 上。这种一律不迁：识别如实记谱面，
-  //     「第几遍唱第几段」交给演唱顺序层（`score/playorder.ts`）去推。
-  // 多房共用一个括号时（`1. 2. 3. 5.`）里面那行词属于**首个**房次，故一律按首号迁。
-  for (const row of useRows) {
-    let ending = 0, raw = "";
-    let seenEnding = false; // 本谱行前面已经出现过房 → 后面的房与它并排在同一条词行上
-    for (const n of row.nums) {
-      if (n.endingStart !== undefined) {
-        raw = n.endingStart;
-        ending = seenEnding ? parseInt(raw, 10) || 0 : 0;
-        seenEnding = true;
-      }
-      if (ending > 1 && n.lyrics?.[0] && !n.lyrics[ending - 1] && n.lyrics.filter(Boolean).length === 1) {
-        n.lyrics[ending - 1] = n.lyrics[0];
-        n.lyrics[0] = "";
-      }
-      if (n.endingStop !== undefined && n.endingStop === raw) { ending = 0; raw = ""; }
-    }
-  }
+  // 房内的歌词**不按房号迁段**：段号（W1/W2…）只表示排版——词印在第几行就是第几段，与第几遍唱无关。
+  // 房下只印一行词就留在 W1（沧海一声笑 `[4`「一襟晚照」、1811《心愿》同行的 `[2`）；
+  // 「第几遍唱哪行词」交给演唱顺序层（`score/playorder.ts`）去推。
 
   // digit=0 误判复原（取数字候选排序里首个非零值）。两条独立线索，任一命中即复原：
   //  ① 休止符不带歌词，故「digit=0 却对齐到歌词」几乎必是退化字形被 CTC 误判成空白→默认 0；
