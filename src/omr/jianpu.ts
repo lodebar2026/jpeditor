@@ -14,7 +14,7 @@ import type { OcrBackend } from "./ocr";
 import { recognizeLyrics } from "./lyrics";
 import { recognizeHeader } from "./header";
 import { recognizeTrailingStanzas } from "./stanzas";
-import { detectSlurs, tupletCandidates } from "./slur";
+import { detectSlurs, resolveSlurRefits, tupletCandidates } from "./slur";
 import { detectRepeatsAndEndings } from "./repeats";
 import { detectSegno } from "./segno";
 import { median, overlapX, unionRect } from "./geom";
@@ -1820,7 +1820,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 圆滑线/连音线：检测音符上方弧形连通块 → 置位起止音符（不依赖 OCR 后端）。
   // comps 之外再补上与数字粘连切出的弧帽（arcComps）。与小节线粘连的弧已在 untangleBridged
   // 去连通阶段还原为 comps 里的独立连通块，这里天然一并检测。
-  detectSlurs(bin, [...comps, ...arcComps].filter((k) => !tupComps.has(k)), useRows, numH);
+  const slurRefits = detectSlurs(bin, [...comps, ...arcComps].filter((k) => !tupComps.has(k)), useRows, numH);
 
   // 页眉：标题/作词/作曲/调号/速度（同样仅 PaddleOCR 后端）。
   // **必须排在歌词/和弦识别之前**：第一谱行的「上方带」（和弦所在）与页眉 ROI 在几何上是重叠的，
@@ -1858,6 +1858,8 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     // 要排在下面「digit=0 复原」「隐含 tie 补检」之前——两者都看音符有没有词。
     const st = await recognizeTrailingStanzas(bin, useRows, numH, ocr, lyricRegions);
     if (st.length) stanzaRegions = st;
+    // 弧配音两可的（整体右偏的弧），等各段歌词都落位后按一字多音的形裁决。
+    resolveSlurRefits(slurRefits);
   }
   {
     const verses = Math.max(0, ...useRows.flatMap((r) => r.nums.map((n) => n.lyrics?.length ?? 0)));

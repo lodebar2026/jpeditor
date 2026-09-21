@@ -178,7 +178,61 @@ export function tupletCandidates(bin: Binary, comps: Component[], rows: StaffRow
   return out;
 }
 
-export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], numH: number): void {
+/** 按弧的**两端**配起止音：弧宽对音距、整体偏移取一半——整体右偏的弧（左脚起在首音右缘外）宽度不变，
+ *  照样落回原来那几个音；单看「质心落在弧跨度内」会少罩首音。 */
+function fitEnds(nums: JpNum[], a: Rect, numH: number): JpNum[] | null {
+  let best: [number, number, number] | null = null;
+  for (let i = 0; i < nums.length; i++) {
+    const dL = a.x - rcx(nums[i].bbox);
+    if (Math.abs(dL) > numH * 1.2) continue;
+    for (let j = i + 1; j < nums.length; j++) {
+      const dR = rright(a) - rcx(nums[j].bbox);
+      if (Math.abs(dR) > numH * 1.2) continue;
+      const cost = Math.abs(dR - dL) + Math.abs(dL + dR) / 2;
+      if (!best || cost < best[2]) best = [i, j, cost];
+    }
+  }
+  return best ? nums.slice(best[0], best[1] + 1) : null;
+}
+
+/** 弧配音的两种读法对不上、留待歌词裁决的一条弧。 */
+export interface SlurRefit { nums: JpNum[]; covered: JpNum[]; fit: JpNum[] }
+
+function markArc(nums: JpNum[], covered: JpNum[], d: 1 | -1): void {
+  const start = covered[0], stop = covered[covered.length - 1];
+  // tie：恰好相邻两音、且同音高(数字+八度相同)；否则按 slur。
+  const sameIdx = nums.indexOf(start) + 1 === nums.indexOf(stop);
+  const samePitch = start.digit === stop.digit && start.octave === stop.octave &&
+    start.digit !== 0 && start.digit !== RHYTHM_DIGIT;
+  if (covered.length === 2 && sameIdx && samePitch) {
+    if (d > 0) { probe("tie"); start.tieStart = true; stop.tieStop = true; }
+    else { start.tieStart = undefined; stop.tieStop = undefined; }
+  } else {
+    if (d > 0) probe("slur");
+    start.slurStart = (start.slurStart ?? 0) + d || undefined;
+    stop.slurStop = (stop.slurStop ?? 0) + d || undefined;
+  }
+}
+
+/** 一字多音的形：起音有词、其后各音在**各段**都没词。 */
+const melismaShaped = (ns: JpNum[]) => ns.length >= 2 && !!ns[0].lyrics?.some((t) => t) &&
+  ns.slice(1).every((n) => !n.lyrics?.some((t) => t));
+
+/** 歌词识别之后裁决 detectSlurs 留下的两可弧：按两端配出的音组是一字多音的形、按质心罩出的不是，才改用前者。
+ *  整体右偏半个音的排版（圣徒诗歌 11《仰看穹苍浩大无穷》）：`(7̣ 1)` 的弧左脚起在 7 右缘之外，质心法只罩到 1
+ *  整条漏掉；`(3 4 5)` 的弧只罩到 `4 5`——起音 4 没词，不是一字多音的形。行末拖向下一行的半弧
+ *  （1677《祷告》`6̣ (5̣ |`）两端法会把前一个音拉进来，但那个音有词，不改。没配词的谱不动。 */
+export function resolveSlurRefits(refits: SlurRefit[]): void {
+  for (const { nums, covered, fit } of refits) {
+    if (!melismaShaped(fit) || melismaShaped(covered)) continue;
+    probe("slur.refitByLyrics");
+    if (covered.length >= 2) markArc(nums, covered, -1);
+    markArc(nums, fit, 1);
+  }
+}
+
+export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], numH: number): SlurRefit[] {
+  const refits: SlurRefit[] = [];
   const arcsOf = (row: StaffRow): Component[] => {
     // 用数字顶边的**中位数**（而非 min）作行顶基准：个别音符 bbox 顶边偏高（拆块/噪声）
     // 会把 min 拉到弧线高度，导致「弧底贴行顶」的判据误杀真弧（实测行4 三条弧全漏即此因）。
@@ -270,20 +324,14 @@ export function detectSlurs(bin: Binary, comps: Component[], rows: StaffRow[], n
       // 弧线常画在两音"符头之间"而非正压音符质心，左缘可比首音质心偏右半个字号
       //（实测基督更美行5 `(3_5_)`：弧 x129、首音 3 质心 114，差 15px≈0.3字号，0.3 容差差 0.6px 漏掉）。
       const covered = row.nums.filter((n) => between(rcx(n.bbox), a.x - numH * 0.5, rright(a) + numH * 0.5));
-      if (covered.length < 2) continue;
-      const start = covered[0], stop = covered[covered.length - 1];
-      // tie：恰好相邻两音、且同音高(数字+八度相同)；否则按 slur。
-      const sameIdx = row.nums.indexOf(start) + 1 === row.nums.indexOf(stop);
-      const samePitch = start.digit === stop.digit && start.octave === stop.octave &&
-        start.digit !== 0 && start.digit !== RHYTHM_DIGIT;
-      if (covered.length === 2 && sameIdx && samePitch) {
-        probe("tie");
-        start.tieStart = true; stop.tieStop = true;
-      } else {
-        probe("slur");
-        start.slurStart = (start.slurStart ?? 0) + 1;
-        stop.slurStop = (stop.slurStop ?? 0) + 1;
+      // 另按两端配一遍；两种读法的起止音不同，记下来等歌词裁决（resolveSlurRefits），此处仍按质心法。
+      const fit = fitEnds(row.nums, a, numH);
+      if (fit && (fit[0] !== covered[0] || fit[fit.length - 1] !== covered[covered.length - 1])) {
+        refits.push({ nums: row.nums, covered, fit });
       }
+      if (covered.length < 2) continue;
+      markArc(row.nums, covered, 1);
     }
   });
+  return refits;
 }
