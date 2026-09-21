@@ -111,7 +111,36 @@ function splitNestedArcs(bin: Binary, a: Rect, numH: number): Rect[] {
     else if (lo >= 0 && ++gap > 2) { spans.push([lo, hi]); lo = -1; gap = 0; }
   }
   if (lo >= 0) spans.push([lo, hi]);
-  const inners = spans.map(([l, h]) => innerOf(l, h)).filter((r): r is Rect => r !== null);
+  // 两条内弧**首尾相接**：1863《至暂至轻的苦楚算什么》`5 3 3--` 上外弧罩三音，底下 `5⌒3`、`3⌒3`
+  // 两条内弧左右各并进外弧一头、在中间那个 3 上脚碰脚，双段区间一路连通、下面那一段是个 M 形，
+  // 当一条内弧就与母块同宽被丢。按下面那一段的**尖谷**切开：谷点（顶边最低处，限在区间中部）比两侧
+  // 各自的拱顶都低出 0.2 字号以上，才是两条弧的交脚，不是一条弧顶上的起伏。
+  const lowerTop = (x: number): number | null => {
+    const r = cols.get(x)!;
+    return r.length >= 2 ? r[r.length - 1][0] : null;
+  };
+  const cuspOf = (l: number, h: number): number | null => {
+    const len = h - l + 1;
+    let cx = -1, cy = -1;
+    for (let x = l + Math.floor(len * 0.25); x <= h - Math.floor(len * 0.25); x++) {
+      const t = lowerTop(x);
+      if (t !== null && t > cy) { cy = t; cx = x; }
+    }
+    if (cx < 0) return null;
+    let lt = Infinity, rt = Infinity;
+    for (let x = l; x < cx; x++) { const t = lowerTop(x); if (t !== null) lt = Math.min(lt, t); }
+    for (let x = cx + 1; x <= h; x++) { const t = lowerTop(x); if (t !== null) rt = Math.min(rt, t); }
+    const need = Math.max(3, numH * 0.2);
+    return cy - lt >= need && cy - rt >= need ? cx : null;
+  };
+  const inners = spans.flatMap(([l, h]): Array<Rect | null> => {
+    const whole = innerOf(l, h);
+    if (whole) return [whole];
+    const cx = cuspOf(l, h);
+    if (cx === null) return [];
+    probe("nestedArc.cusp");
+    return [innerOf(l, cx), innerOf(cx, h)];
+  }).filter((r): r is Rect => r !== null);
   for (let i = 0; i < inners.length; i++) probe(inners.length > 1 ? "nestedArc.multi" : "nestedArc");
   return [a, ...inners];
 }

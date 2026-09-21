@@ -609,6 +609,13 @@ function classify(comps: Component[], bin: Binary): { c: Classified; numH: numbe
     if ((w >= numH * 0.6 || (w >= numH * 0.4 && w >= (k.area / w) * 2.6)) && h <= Math.max(3, numH * 0.32)) {
       c.hlines.push(k); continue;
     }
+    // 更短的 '-'：迦南诗选 1863《至暂至轻的苦楚算什么》小节末的 `3 - -` 印成两根 8×4 的短横（字号 24，
+    // 只有 0.33 字号宽），尺寸落进下面「小点」那道门，被读成附点——`3 - -` 成了 `3.`。同页真附点 5×4。
+    // 两者分在**扁度**：附点近圆（宽/平均墨厚 ≈1.25），短横 2 倍；门开在 1.8、宽另要 ≥0.28 字号、
+    // 高 ≤0.2 字号（附点再扁也不会只有这么薄）。
+    if (w >= numH * 0.28 && w >= (k.area / w) * 1.8 && h <= numH * 0.2) {
+      probe("hline.shortDash"); c.hlines.push(k); continue;
+    }
     // 小点：八度点/附点
     if (w <= numH * 0.45 && h <= numH * 0.45) { c.dots.push(k); continue; }
     // 数字块：高度接近字号（可略高于字号以容纳粘连的下划线），宽度不限（连音会更宽）。

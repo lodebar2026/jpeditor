@@ -682,7 +682,13 @@ function buildMusicLine(
           }
           break;
         }
-        const open = openSlurs.pop();
+        // 一个音符**收一条又起一条**（ABC §4.11 `(c d (e) f g a)` = c→e、e→a 两条）：栈顶那条正是
+        // 在本音符上刚起的，`)` 收的是它底下那条更早的；只有一条开着时 `(1)` 才是单音弧。
+        // 识别出的 `5 3 3` 上外弧 + 首尾相接的两条内弧就写作 `((5 (3) 3))`（1863）。
+        const top = openSlurs[openSlurs.length - 1];
+        const open = top && top.start && top.start === cur.last?.id && openSlurs.length >= 2
+          ? openSlurs.splice(openSlurs.length - 2, 1)[0]
+          : openSlurs.pop();
         if (!open) {
           report(ctx, "unmatched-slur", "多余的 `)`", t.source);
           break;
