@@ -247,7 +247,11 @@ export type NoteType =
   | "maxima" | "long" | "breve" | "whole" | "half" | "quarter"
   | "eighth" | "16th" | "32nd" | "64th" | "128th" | "256th";
 
-/** 时值。`divisions` 相对所在小节 `MeasureAttrs.divisions`（MusicXML 的算法）。 */
+/** 简谱来源（123/ABC/文本谱/`.jpwabc`/识别）的时值单位：一个四分音符 = 48 个 divisions。
+ *  48 = 2⁴×3，到 32 分音符与三连音都是整数；只有 MusicXML 读进来的歌按各小节 `MeasureAttrs.divisions` 算。 */
+export const SIMPLE_DIVISIONS = 48;
+
+/** 时值。`divisions` 相对所在小节 `MeasureAttrs.divisions`（MusicXML 的算法）；简谱来源没有该字段，分母是 `SIMPLE_DIVISIONS`。 */
 export interface Duration {
   divisions: number;
   /** 符号时值。倚音与无时值占位可缺省 */

@@ -18,14 +18,13 @@ import type {
   Barline, BeamVal, Chord, Direction, Element, ElementId, Lyric, Mark, Measure, Notations, Part,
   SourceOrnament, Song,
 } from "./doc";
+import { SIMPLE_DIVISIONS } from "./doc";
 import { Fraction, lcm } from "../common/fraction";
 import { AccidentalCarry } from "./jianpu";
 import { MusicCommon } from "../score/jppitch";
 import { typeOfDuration } from "../score/xmlutil";
 import { DYNAMICS, TERMS } from "../pu/glyph";
 
-/** 简谱来源的时值单位：一个四分音符 = 48（`frompu.ts` / `j123` / `fromjpw.ts` 同口径）。 */
-const SIMPLE_DIVISIONS = 48;
 
 /** 记号原名 → `<articulations>` 元素名（`&xx` 与 123 的 `!xx!` 同名）。 */
 const ARTICULATION: Readonly<Record<string, string>> = {
@@ -406,7 +405,7 @@ function divisionFactor(song: Song, tuplets: Map<ElementId, { actual: number; no
 
 /** 延音线：简谱来源只在音上标了起止（`Note.tie`），`<tied>` 要按 id 配成对。
  *  两端必须是同一个实音，配不上的两头都去掉——孤立的 start 会让下游软件把线一路拖下去。 */
-function tiesToMarks(song: Song): void {
+export function tiesToMarks(song: Song): void {
   if (song.marks.some((m) => m.type === "tied")) return;
   for (const p of song.parts) {
     let open: { chord: Chord; note: Chord["notes"][number] }[] = [];

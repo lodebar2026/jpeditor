@@ -145,7 +145,7 @@ function barlineFrom(value: string, times: number | undefined, source: SourceSpa
   return b;
 }
 
-// 时值换算（`DIVISIONS` 与两种方言各自的算法）在 `abcfamily/parsedialect.ts`。
+// 时值换算（基准 `model/doc.ts::SIMPLE_DIVISIONS`，两种方言各自的算法）在 `abcfamily/parsedialect.ts`。
 
 /** 歌词行 → 音节数组。
  *

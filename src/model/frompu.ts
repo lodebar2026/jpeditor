@@ -43,6 +43,7 @@ import type {
   Song,
   Sustain,
 } from "./doc";
+import { SIMPLE_DIVISIONS } from "./doc";
 import { normalizeSpelling } from "../j123/fields";
 import { IdGen, emptyDoc, emptySong } from "./helpers";
 import { creatorOf } from "./metakeys";
@@ -85,18 +86,16 @@ function beamsOf(duration: number): number {
   return n;
 }
 
-const DIVISIONS = 48;
-
 function durationFrom(duration: number, dots: number, sustains: number): Chord["duration"] {
   const beams = beamsOf(duration);
-  const base = DIVISIONS >> Math.min(beams, 6);
+  const base = SIMPLE_DIVISIONS >> Math.min(beams, 6);
   let total = base;
   let add = base;
   for (let k = 0; k < dots; k++) {
     add = Math.floor(add / 2);
     total += add;
   }
-  total += sustains * DIVISIONS;
+  total += sustains * SIMPLE_DIVISIONS;
   const types = ["quarter", "eighth", "16th", "32nd", "64th", "128th", "256th"] as const;
   return { divisions: total, type: types[Math.min(beams, 6)]!, dots };
 }

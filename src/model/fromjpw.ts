@@ -13,24 +13,22 @@
 import { JpwFile, RepeatSection, type Section } from "../jpword/jpwfile";
 import type { Token } from "antlr4";
 import { MusicCommon, applyJpPitch, type JpKeyState } from "../score/jppitch";
-import type { Barline, BeamVal, Chord, Lyric, Mark, Measure, Part, PlayPass, ScoreDoc, Song, SourceSpan, Sustain } from "./doc";
+import { SIMPLE_DIVISIONS, type Barline, type BeamVal, type Chord, type Lyric, type Mark, type Measure, type Part, type PlayPass, type ScoreDoc, type Song, type SourceSpan, type Sustain } from "./doc";
 import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "./helpers";
 import type { BreakKind } from "./helpers";
 import { creatorTypeOf } from "./metakeys";
 
-/** 简谱来源的时值单位：一个四分音符 = 48 */
-const DIVISIONS = 48;
 
 /** 减时线/附点/增时线 → 模型时值（名义时值，连音比例另记在 Mark 上）。 */
 export function durationOf(beams: number, dots: number, beats: number): Chord["duration"] {
-  const base = DIVISIONS >> Math.min(beams, 6);
+  const base = SIMPLE_DIVISIONS >> Math.min(beams, 6);
   let total = base;
   let add = base;
   for (let k = 0; k < dots; k++) {
     add = Math.floor(add / 2);
     total += add;
   }
-  total += beats * DIVISIONS;
+  total += beats * SIMPLE_DIVISIONS;
   const types = ["quarter", "eighth", "16th", "32nd", "64th", "128th", "256th"] as const;
   return { divisions: total, type: types[Math.min(beams, 6)]!, dots };
 }

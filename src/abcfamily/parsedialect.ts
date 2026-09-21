@@ -10,14 +10,11 @@
 // `ScoreDoc.Note` 本来就是 `degree` 与 `pitch` 并存、可互推（`model/helpers.ts`），
 // 所以两套 token 汇进同一个模型，不需要第二个模型。
 
-import type { Chord, Key, Note, NoteType, Pitch } from "../model/doc";
+import { SIMPLE_DIVISIONS, type Chord, type Key, type Note, type NoteType, type Pitch } from "../model/doc";
 import { parseKey as parseKey123 } from "../j123/fields";
 import { LEXER_123 } from "./dialect123";
 import { LEXER_ABC } from "./dialectabc";
 import type { LexResult, Token } from "./types";
-
-/** 基准：四分音符 = `DIVISIONS`，够表达到 64 分音符与三连音。两种方言共用。 */
-export const DIVISIONS = 48;
 
 const TYPE_BY_BEAMS = ["quarter", "eighth", "16th", "32nd", "64th", "128th", "256th"] as const;
 
@@ -56,7 +53,7 @@ export interface ParseDialect {
 // ───────────────────────── 123 ─────────────────────────
 
 export function duration123(beams: number, dots: number, sustains: number): Chord["duration"] {
-  const base = DIVISIONS >> Math.min(beams, 6);
+  const base = SIMPLE_DIVISIONS >> Math.min(beams, 6);
   let total = base;
   // 附点：每个附点加上前一档的一半
   let add = base;
@@ -65,7 +62,7 @@ export function duration123(beams: number, dots: number, sustains: number): Chor
     total += add;
   }
   // 增时线：每条加一个四分音符（简谱语义：`-` 延长一拍）
-  total += sustains * DIVISIONS;
+  total += sustains * SIMPLE_DIVISIONS;
   const type = TYPE_BY_BEAMS[Math.min(beams, TYPE_BY_BEAMS.length - 1)]!;
   return { divisions: total, type, dots };
 }
@@ -105,7 +102,7 @@ const TYPES_BY_POWER: NoteType[] = [
  *  **破碎节奏（`a>b`）改完 divisions 必须回头调它**：只改 divisions 不改 type，
  *  写出来是 `B/`、读回来却是「八分音符 12 divisions」，往返一轮就变形。 */
 export function typeAndDots(divisions: number): { type: NoteType; dots: number } {
-  let unit = DIVISIONS * 4; // 全音符
+  let unit = SIMPLE_DIVISIONS * 4; // 全音符
   let power = 0;
   while (unit > divisions && power < 8) {
     unit = unit / 2;
@@ -129,7 +126,7 @@ export function typeAndDots(divisions: number): { type: NoteType; dots: number }
 function durationAbc(num: number, den: number, len: DefaultLen): Chord["duration"] {
   // 以四分音符为 1 的拍数 = (num/den) × (len.num/len.den) × 4
   const beats = (num * len.num * 4) / (den * len.den);
-  const divisions = Math.max(1, Math.round(beats * DIVISIONS));
+  const divisions = Math.max(1, Math.round(beats * SIMPLE_DIVISIONS));
   return { divisions, ...typeAndDots(divisions) };
 }
 

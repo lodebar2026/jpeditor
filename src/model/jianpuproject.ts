@@ -11,28 +11,55 @@
 //
 // 模型本身不动（`.musicxml` 重写要逐字节稳定），在克隆上投影，按 `Song` 对象缓存。
 //
+// 原生 ABC（`j123/parse.ts::parseAbc`）是第三种：时值只在 `divisions`（分母 `SIMPLE_DIVISIONS`，与简谱来源同口径），
+// 却没有 `attrs.divisions`，也不带 `beams`/`sustains`。不投的话全曲一律画成四分音符（减时线、增时线全丢），
+// 所以同走这一层（`isDurationShaped`）；音上的延音线顺带配成 `tied` 记号。
+//
 // 判据对照：简谱引擎输入的 MusicXML 形状分支（`jianpuinput.ts::xmlDuration`）读时值的口径，
 // 回归 `scripts/jianpu-shape-check.mjs` 逐音比对。
 
-import type { Chord, Element, ElementId, Harmony, Measure, Song } from "./doc";
+import { SIMPLE_DIVISIONS, type Chord, type Element, type ElementId, type Harmony, type Measure, type Song } from "./doc";
 import { harmonyText, jianpuShape, nominalQuarters } from "./jianpu";
-import { isXmlShaped } from "./xmlproject";
+import { isXmlShaped, tiesToMarks } from "./xmlproject";
 
-/** 简谱来源的时值单位：一个四分音符 = 48（与 `frompu.ts` / `j123` / `xmlproject.ts` 同口径） */
-const Q = 48;
+/** 简谱来源的时值单位（四分音符的 divisions） */
+const Q = SIMPLE_DIVISIONS;
 
 const cache = new WeakMap<Song, Song>();
 
+/** 时值只记在 `divisions` 里的简谱来源（原生 ABC）：全曲没有一条减时线、一个增时线，
+ *  却有不是四分的音。123/文本谱/识别产物只要有一个八分或长音就带着 `beams`/`sustains`，不会被认错；
+ *  全是四分的那种认不认都一样。 */
+function isDurationShaped(song: Song): boolean {
+  let offShape = false;
+  for (const p of song.parts) {
+    for (const m of p.measures) {
+      for (const el of m.elements) {
+        if (el.kind !== "chord" || el.grace || el.continued) continue;
+        if (el.beams?.length || el.sustains?.length) return false;
+        if (!offShape) {
+          const s = jianpuShape(nominalQuarters(el, Q));
+          offShape = s.beams > 0 || s.sustains > 0 || s.dots !== el.duration.dots;
+        }
+      }
+    }
+  }
+  return offShape;
+}
+
 export function projectForJianpu(src: Song): Song {
-  if (!isXmlShaped(src)) return src;
   const hit = cache.get(src);
   if (hit) return hit;
+  const xml = isXmlShaped(src);
+  if (!xml && !isDurationShaped(src)) return src;
   const song: Song = structuredClone(src);
-  creatorsFromCredits(song);
+  if (xml) creatorsFromCredits(song);
+  // ABC 的延音线只标在音上（`C3- C3`），简谱画成弧要按 id 配成 `tied` 记号（`slots.ts` 归弧线）
+  else tiesToMarks(song);
   let nextId = maxId(song) + 1;
   const newId = (): ElementId => nextId++;
   for (const part of song.parts) {
-    let divisions = 1;
+    let divisions = xml ? 1 : Q;
     let carry: Harmony[] = [];
     for (const m of part.measures) {
       if (m.attrs?.divisions !== undefined) divisions = m.attrs.divisions;
@@ -117,6 +144,11 @@ function projectMeasure(m: Measure, divisions: number, newId: () => ElementId, c
     }
     const ch = el;
     const q = nominalQuarters(ch, divisions);
+    // ABC 的倚音不带时值（`{/D}`）：原样留着，`slots.ts` 按八分画（与 123 的倚音同）
+    if (ch.grace && q <= 0) {
+      out.push(ch);
+      continue;
+    }
     const s = jianpuShape(q);
     const shaped: Chord["duration"] = { divisions: ch.grace ? 0 : Math.round(q * Q), dots: s.dots };
     if (ch.duration.type) shaped.type = ch.duration.type;

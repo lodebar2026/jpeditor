@@ -3,13 +3,13 @@
 // **默认音长固定写 `L:1/8`**：写出端要幂等，就不能让默认音长随内容浮动——
 // 同一份 `ScoreDoc` 第二次写出必须逐字相同。读入端照样认任意 `L:`。
 
-import type { Chord, Element, Key, Note } from "../model/doc";
+import { SIMPLE_DIVISIONS, type Chord, type Element, type Key, type Note, type Song } from "../model/doc";
 import { AbcFamilyEmitter } from "./emit";
-import { DIVISIONS } from "./parsedialect";
-import { keySpelling } from "../model/jianpu";
+import { keySpelling, nominalQuarters } from "../model/jianpu";
+import { isXmlShaped } from "../model/xmlproject";
 
 /** 写出端固定的默认音长：八分音符。 */
-const UNIT = DIVISIONS / 2;
+const UNIT = SIMPLE_DIVISIONS / 2;
 
 /** 前置变音记号。 */
 const ACC_TEXT: Readonly<Record<string, string>> = {
@@ -37,8 +37,32 @@ function lengthSuffix(divisions: number): string {
   return `${num}/${den}`;
 }
 
+/** MusicXML 读进来的歌：`divisions` 以各小节 `attrs.divisions` 为分母，换成写出端的口径（四分 = `SIMPLE_DIVISIONS`）。
+ *  多连音取名义时值——ABC 的 `(3` 后面写的就是名义音长。在克隆上改，模型不动。 */
+function withAbcDivisions(src: Song): Song {
+  const song: Song = structuredClone(src);
+  for (const part of song.parts) {
+    let divisions = 1;
+    for (const m of part.measures) {
+      if (m.attrs?.divisions !== undefined) divisions = m.attrs.divisions;
+      for (const el of m.elements) {
+        if (el.kind === "chord" && el.grace) continue;
+        if ((el.kind === "chord" || el.kind === "space") && el.duration) {
+          el.duration = { ...el.duration, divisions: Math.round(nominalQuarters(el, divisions) * SIMPLE_DIVISIONS) };
+        }
+      }
+    }
+  }
+  return song;
+}
+
 export class EmitterAbc extends AbcFamilyEmitter {
   protected readonly versionLine = "%abc-2.1";
+
+  /** MusicXML 形状的歌先换时值口径，否则 `L:1/8` 下写出的是原始 divisions（八分写成 `E1/8`）。 */
+  override emitSong(song: Song, fallbackNumber?: number): string {
+    return super.emitSong(isXmlShaped(song) ? withAbcDivisions(song) : song, fallbackNumber);
+  }
 
   /** 音名 + 八度：第 4 八度大写、第 5 八度小写，再往外用 `'` 与 `,`（ABC §4.1）。 */
   protected noteText(n: Note): string {

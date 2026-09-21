@@ -6,10 +6,10 @@
 // 现在直出模型：123 核对文本 = `emit123(本文件产物)`，要 MusicXML 就走唯一写出端 `model/toxml.ts`（经 `xmlproject.ts` 投影）。
 //
 // **无 DOM 依赖**（Node CLI 要 import 它）。
-import type { Barline, Chord, Harmony, Mark, Measure, Note, ScoreDoc, Song, Sustain } from "../model/doc";
+import { SIMPLE_DIVISIONS as Q, type Barline, type Chord, type Harmony, type Mark, type Measure, type Note, type ScoreDoc, type Song, type Sustain } from "../model/doc";
 import { IdGen, emptyDoc } from "../model/helpers";
 import { creatorOf } from "../model/metakeys";
-import { duration123, DIVISIONS as Q } from "../abcfamily/parsedialect";
+import { duration123 } from "../abcfamily/parsedialect";
 import { jpPitch } from "../score/jppitch";
 import type { RecognizedScore, JpNum, StaffRow } from "./types";
 import { rright, RHYTHM_DIGIT } from "./types";
