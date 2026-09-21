@@ -290,9 +290,10 @@ export interface Harmony {
 }
 
 export interface Lyric {
-  /** 段号。MusicXML 的 `number`，123 的 `w1:` */
+  /** 段号。MusicXML 的 `number`；123 里由 `w:` 的出现顺序定（第 1 条 `w:` 是第 1 段） */
   number: number;
-  /** 段号区间的上界：`w1-6:` 时为 6，单段时缺省 */
+  /** 段号区间的上界：`.jpwabc` 的 `W1-6:`、文本谱 `C1-2:` 用；单段时缺省。
+   *  **123 不表达区间**（写出时逐段各抄一遍），所以这一项不会从 `.123` 读出来 */
   numberTo?: number;
   text: string;
   /** `<syllabic>`：single / begin / middle / end */

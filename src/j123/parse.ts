@@ -49,6 +49,7 @@ import {
   parseTime,
   parseTimes,
   type FieldLine,
+  type FieldName,
   type RawPlayPass,
 } from "./fields";
 import type { Token } from "../abcfamily/types";
@@ -66,10 +67,12 @@ interface LyricBlock {
   start: number;
   /** 块尾（不含）。下一块开始或整首收尾时才定 */
   end?: number;
-  /** 块内各段写到哪一格：同一段分几条 `w1:` 写时接着往下挂 */
-  cursor: Map<string, number>;
-  /** 块内裸 `w:` 的个数：按出现顺序编段号 1、2、3… */
-  bare: number;
+  /** 块内各段写到哪一格：同一段用 `+:` 分几条写时接着往下挂 */
+  cursor: Map<number, number>;
+  /** 块内 `w:` 的条数：按出现顺序编段号 1、2、3…（规范 §5.1，同 ABC §5.1） */
+  verses: number;
+  /** 上一条 `w:` 是第几段：`+:` 续行接着写它 */
+  lastVerse?: number;
   /** 块里已经换过行：下一条音乐行开新块 */
   broken: boolean;
 }
@@ -154,8 +157,7 @@ function barlineFrom(value: string, times: number | undefined, source: SourceSpa
  *  - 段首 `<1.>` 是**印刷段号**，不占音符格（语料 55.6% 这么写）。 */
 export function parseLyricLine(
   body: string,
-  verseFrom: number,
-  verseTo: number | undefined,
+  verse: number,
   source: SourceSpan,
   valueOffset?: number,
   skip: "/" | "*" = "/",
@@ -178,12 +180,11 @@ export function parseLyricLine(
   let prefix = "";
 
   const mk = (text: string): Lyric => {
-    const l: Lyric = { number: verseFrom, text };
+    const l: Lyric = { number: verse, text };
     if (prefix && text !== "") {
       l.leadingPunctuation = prefix;
       prefix = "";
     }
-    if (verseTo !== undefined && verseTo !== verseFrom) l.numberTo = verseTo;
     if (valueOffset !== undefined && text !== "") {
       l.source = { line: source.line, column: valueOffset - source.offset + tokStart, offset: valueOffset + tokStart, length: text.length };
     }
@@ -897,7 +898,7 @@ export function parseAbcFamily(
       if (b.part.measures.length) song.parts.push(b.part);
     }
     const slotsOf = new Map<Part, Element[]>();
-    for (const { f, syl, part, block, start } of pendingLyrics) {
+    for (const { f, verse, syl, part, block, start } of pendingLyrics) {
       // 歌词挂在它**紧跟的那个声部**上（四声部谱里词常挂在某一个声部下）
       let slots = slotsOf.get(part);
       if (!slots) slotsOf.set(part, (slots = lyricSlots(part).slots));
@@ -906,7 +907,7 @@ export function parseAbcFamily(
         report(
           ctx,
           "lyric-overflow",
-          `第 ${f.verseFrom ?? 1} 段歌词比这几行的音符多 ${left} 个音节，多出的被忽略`,
+          `第 ${verse} 段歌词比这几行的音符多 ${left} 个音节，多出的被忽略`,
           f.source,
         );
       }
@@ -955,6 +956,8 @@ export function parseAbcFamily(
   const ensurePart = (): PartBuild => pb ?? startPart(1);
 
   let offset = 0;
+  /** 上一条字段名：`+:` 续行接着写它（ABC §3.1.18） */
+  let lastField: FieldName | undefined;
   for (let ln = 0; ln < lines.length; ln++) {
     const raw = lines[ln]!;
     const lineOffset = offset;
@@ -974,6 +977,16 @@ export function parseAbcFamily(
 
     const f = parseFieldLine(raw, ln, lineOffset);
     if (f) {
+      // `+:` 续行（ABC §3.1.18）：只支持歌词行——`w:` 太长要拆几条写时用它，
+      // 别的字段续行语料里没有、也没有消费方，报一条提示后丢掉
+      if (f.cont) {
+        if (lastField === "w") addLyricLine(ctx, ensurePart(), f, pendingLyrics);
+        else {
+          report(ctx, "cont-unsupported", "`+:` 只支持歌词行续写（紧跟在 `w:` 之后）", f.source);
+        }
+        continue;
+      }
+      lastField = f.name;
       // `X:` 开新曲
       if (f.name === "X") {
         finishSong();
@@ -990,6 +1003,7 @@ export function parseAbcFamily(
     }
 
     // 音乐体
+    lastField = undefined;
     const s = ensureSong();
     void s;
     const p = ensurePart();
@@ -997,7 +1011,7 @@ export function parseAbcFamily(
     if (!p.block || p.afterLyrics || p.block.broken) {
       const at = slotCount(p);
       if (p.block) p.block.end = at;
-      p.block = { start: at, cursor: new Map(), bare: 0, broken: false };
+      p.block = { start: at, cursor: new Map(), verses: 0, broken: false };
       p.afterLyrics = false;
     }
     const lex = ctx.d.lex(raw, ln, lineOffset, 0);
@@ -1021,6 +1035,8 @@ export function parseAbcFamily(
 /** 待挂的一条歌词行 */
 interface PendingLyric {
   f: FieldLine;
+  /** 这一行是第几段（段号由 `w:` 的出现顺序定） */
+  verse: number;
   syl: Lyric[];
   part: Part;
   block: LyricBlock;
@@ -1028,15 +1044,28 @@ interface PendingLyric {
   start: number;
 }
 
-/** `w` 行：挂到当前声部**当前歌词块**上（规范 §5.1）。 */
+/** `w` 行：挂到当前声部**当前歌词块**上（规范 §5.1）。
+ *  `f.cont`（`+:`）接着写上一条 `w:` 的那一段，不占新段位。 */
 function addLyricLine(ctx: Ctx, pb: PartBuild, f: FieldLine, pendingLyrics: PendingLyric[]): void {
+  // 旧写法 `w1:`／`w1-2:`：段号已废（段号由出现顺序定），这一行整条丢掉并报错——
+  // 放进去会把段位算错，掉进音乐体又会炸出一串词法错
+  if (f.legacyVerse !== undefined) {
+    report(
+      ctx,
+      "lyric-verse-number",
+      `歌词行不带段号（\`w${f.legacyVerse}:\` 已废）：写 \`w:\`，一行曲下按出现顺序编段，同段续写用 \`+:\`。这一行已丢弃`,
+      f.source,
+    );
+    return;
+  }
   // 音乐行之前就写了词：给它一个从当前位置起的空块（多半全部超出、报 overflow）
-  const block = pb.block ??= { start: slotCount(pb), cursor: new Map(), bare: 0, broken: false };
+  const block: LyricBlock = pb.block ??= { start: slotCount(pb), cursor: new Map(), verses: 0, broken: false };
   pb.afterLyrics = true;
-  // 裸 `w:` 按块内顺序编段号（ABC §5.1：同一行音乐下的几条 `w:` 依次是各段）
-  const from = f.verseFrom ?? ++block.bare;
+  // `w:` 按块内顺序编段号（ABC §5.1：同一行音乐下的几条 `w:` 依次是各段）
+  const from = f.cont ? block.lastVerse ?? ++block.verses : ++block.verses;
+  block.lastVerse = from;
   const { syllables, label } = parseLyricLine(
-    f.value, from, f.verseTo, f.source, f.valueOffset, ctx.d.lyricSkip,
+    f.value, from, f.source, f.valueOffset, ctx.d.lyricSkip,
     (code, message) => report(ctx, code, message, f.source),
   );
   // 印刷段号不占音符格，挂在该段**第一个非空**音节上——空音节（跳音符）不会被挂到元素上
@@ -1045,10 +1074,9 @@ function addLyricLine(ctx: Ctx, pb: PartBuild, f: FieldLine, pendingLyrics: Pend
     const first = syllables.find((x) => x.text !== "");
     if (first) first.verseLabel = label;
   }
-  const key = `${from}-${f.verseTo ?? from}`;
-  const start = block.cursor.get(key) ?? block.start;
-  block.cursor.set(key, start + syllables.length);
-  pendingLyrics.push({ f: f.verseFrom === undefined ? { ...f, verseFrom: from } : f, syl: syllables, part: pb.part, block, start });
+  const start = block.cursor.get(from) ?? block.start;
+  block.cursor.set(from, start + syllables.length);
+  pendingLyrics.push({ f, verse: from, syl: syllables, part: pb.part, block, start });
 }
 
 function applyField(

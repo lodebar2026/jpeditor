@@ -24,7 +24,7 @@ import type {
   Song,
 } from "../model/doc";
 import { isLyricCjk, isLyricOpenQuote, isLyricTrailingPunct } from "../common/cjkpunct";
-import { breakAfter } from "../model/helpers";
+import { breakAfter, lyricOfVerse } from "../model/helpers";
 import { lyricSlots } from "./lyricslot";
 import { harmonyText } from "../model/jianpu";
 import { ORNAMENT_TAG } from "../model/xmlproject";
@@ -66,26 +66,21 @@ function barlineText(b: Barline): string {
  *  **必须逐个对位格走、空位补跳音符**：歌词是按音符位置对位的（规范 §5），
  *  若只把有词的音节顺序拼起来，中间空一个音符就会让后面所有字前移一格、末尾溢出丢字。
  *  读入端从块首格起挂，所以**行首**的空位要写、行尾的不必写。
- *  对位格的判据与读入端同一份（`lyricslot.ts`）。 */
+ *  对位格的判据与读入端同一份（`lyricslot.ts`）。
+ *
+ *  **段号由 `w:` 的出现顺序定**（ABC §5.1，123 规范 §5.1）：这里从第 1 段数到本系统的最大段号，
+ *  中间没词的那一段写一条空 `w:` 把段位顶住（丢了会让后面的段整体前移一段）；尾部没词的不写。
+ *  段号区间（文本谱 `C1-2:`）与副歌行在这里**逐段各抄一遍**——ABC 没有区间写法。
+ *  同段拆几条写的 `+:` 续行只在读入端认，写出端一段一行写完。 */
 function lyricLines(part: Part, sep: string, skip: string, from: number, to: number): string[] {
   const { slots } = lyricSlots(part, from, to);
-  // 这一行有哪些段
-  const verses = new Map<string, { from: number; to?: number }>();
+  // 本系统一共几段（区间行按上界算）
+  let maxVerse = 0;
   for (const el of slots) {
-    for (const l of el.lyrics ?? []) {
-      const key = `${l.number}-${l.numberTo ?? l.number}`;
-      if (!verses.has(key)) {
-        const v: { from: number; to?: number } = { from: l.number };
-        if (l.numberTo !== undefined) v.to = l.numberTo;
-        verses.set(key, v);
-      }
-    }
+    for (const l of el.lyrics ?? []) maxVerse = Math.max(maxVerse, l.numberTo ?? l.number);
   }
-  const out: string[] = [];
-  for (const slot of [...verses.values()].sort((a, b) => a.from - b.from)) {
-    const name = slot.to !== undefined && slot.to !== slot.from
-      ? `w${slot.from}-${slot.to}`
-      : `w${slot.from}`;
+  const bodies: string[] = [];
+  for (let verse = 1; verse <= maxVerse; verse++) {
     let body = "";
     let label: string | undefined;
     /** 末尾连续的空位不必写出来（ABC：音节少于音符是合法的） */
@@ -99,9 +94,8 @@ function lyricLines(part: Part, sep: string, skip: string, from: number, to: num
     /** 上一个写出的音节以拉丁字母/数字收尾（且中间没有 `*` `_` 隔开）——下一个也是拉丁词时要空格 */
     let prevLatin = false;
     for (const el of slots) {
-      const hit = (el.lyrics ?? []).find(
-        (l) => l.number === slot.from && (l.numberTo ?? l.number) === (slot.to ?? slot.from),
-      );
+      // 区间与副歌的包含判断与排版取词同一份（`helpers.ts::lyricOfVerse`）
+      const hit = lyricOfVerse(el.lyrics, verse) ?? undefined;
       if (hit?.verseLabel !== undefined && label === undefined) label = hit.verseLabel;
       if (hit === undefined || hit.text === "") {
         if (extendConsumes) {
@@ -142,12 +136,13 @@ function lyricLines(part: Part, sep: string, skip: string, from: number, to: num
         prevLatin = false;
       }
     }
-    if (body === "") continue;
     // 词内分音节跨行（`mid-` 在行末）：`-` 照写，不然读回丢了 syllabic
-    if (prevSyllabic === "begin" || prevSyllabic === "middle") body += "-";
-    out.push(`${name}:${label !== undefined ? `<${label}>` : ""}${body}`);
+    if (body !== "" && (prevSyllabic === "begin" || prevSyllabic === "middle")) body += "-";
+    bodies.push(body === "" ? "" : `${label !== undefined ? `<${label}>` : ""}${body}`);
   }
-  return out;
+  // 尾部没词的段不必写（ABC：段数少于最大段号是合法的）
+  while (bodies.length > 0 && bodies[bodies.length - 1] === "") bodies.pop();
+  return bodies.map((b) => `w:${b}`);
 }
 
 const LATIN_CH = /[\p{L}\p{N}']/u;

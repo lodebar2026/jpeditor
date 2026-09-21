@@ -724,7 +724,7 @@ function directionOf(o: SourceOrnament): Direction | null {
   return null;
 }
 
-/** 段号区间（`w1-3:`）展开成逐段的 `<lyric>`；空字不写。副歌行（`refrain`）写一条 chorus。 */
+/** 段号区间（文本谱 `C1-2:`、`.jpwabc` 的 `W1-6:`）展开成逐段的 `<lyric>`；空字不写。副歌行（`refrain`）写一条 chorus。 */
 function lyricsOf(lyrics: readonly Lyric[] | undefined): Lyric[] {
   const out: Lyric[] = [];
   for (const l of lyrics ?? []) {

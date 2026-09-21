@@ -15,7 +15,7 @@ export type FieldName =
   | "I" | "U" | "W" | "w";
 
 /** 中文别名 → ASCII 规范形。语料里没有中文字段名的先例，这是本格式新增的入口形式。
- *  `段：` 与 `歌词：` 都归到 `w`——段号由后缀数字给（`段1：` / `w1:`）。 */
+ *  `段：` 与 `歌词：` 都归到 `w`，**两者等价、都不带段号**（段号由 `w:` 的出现顺序定，规范 §5.1）。 */
 export const CJK_FIELD_ALIAS: Readonly<Record<string, FieldName>> = {
   曲号: "X",
   标题: "T",
@@ -44,11 +44,13 @@ export const CJK_INSTRUCTION_ALIAS: Readonly<Record<string, string>> = {
 /** 一行头部字段的解析结果。 */
 export interface FieldLine {
   name: FieldName;
-  /** `w1:` / `w1-2:` / `段2：` 的段号；无则 undefined */
-  verseFrom?: number;
-  verseTo?: number;
   /** `V:1` 的声部号 */
   voice?: number;
+  /** `+:` 续行：接着写上一条同名字段（ABC §3.1.18）。`name` 由调用方按上一条字段填 */
+  cont?: true;
+  /** 旧写法里 `w` 后面的段号（`w1:` `w1-2:` `段2：`）。**123 的歌词行不带段号**，
+   *  留着只为能报一条像样的诊断——不然这一行会掉进音乐体、炸出一串词法错 */
+  legacyVerse?: string;
   value: string;
   source: SourceSpan;
   /** `value` 首字符的全文偏移（点选定位要落到字上） */
@@ -56,11 +58,14 @@ export interface FieldLine {
 }
 
 /** 字段行前缀。
- *  ASCII：`X:` `T:` `w1-2:` `V:1` ——字段名单字母（`w` 区分大小写，其余不分）。
- *  中文：`标题：` `段2：` ——先查别名表。
- *  冒号 ASCII `:` 与全角 `：` 等价（语料里真有用全角的）。 */
+ *  ASCII：`X:` `T:` `w:` `V:1` ——字段名单字母（`w` 区分大小写，其余不分）。
+ *  中文：`标题：` `歌词：` ——先查别名表。
+ *  冒号 ASCII `:` 与全角 `：` 等价（语料里真有用全角的）。
+ *  数字组只为 `V1:` 与旧 `w1:` 留着（后者报诊断用，见 `FieldLine.legacyVerse`）。 */
 const ASCII_PREFIX = /^([A-Za-z])(\d+)?(?:-(\d+))?\s*[:：]/;
 const CJK_PREFIX = /^([一-鿿]{1,4})(\d+)?(?:-(\d+))?\s*[:：]/;
+/** `+:` 续行（ABC §3.1.18）：不是字段名，接着上一条字段往下写 */
+const CONT_PREFIX = /^\+\s*[:：]/;
 
 /** 试着把一行读成头部字段。不是字段行则返回 null（交给音乐体）。 */
 export function parseFieldLine(
@@ -68,6 +73,17 @@ export function parseFieldLine(
   lineNo: number,
   offset: number,
 ): FieldLine | null {
+  const c = CONT_PREFIX.exec(line);
+  if (c) {
+    return {
+      // `name` 是占位：调用方按上一条字段名改写（认不出上一条就报诊断、丢掉这一行）
+      name: "w",
+      cont: true,
+      value: line.slice(c[0].length).trim(),
+      source: { line: lineNo, column: 0, offset, length: line.length },
+      valueOffset: offset + c[0].length + (/^\s*/.exec(line.slice(c[0].length))?.[0].length ?? 0),
+    };
+  }
   let m = ASCII_PREFIX.exec(line);
   let name: FieldName | undefined;
   if (m) {
@@ -88,17 +104,16 @@ export function parseFieldLine(
     valueOffset: offset + m[0].length + (/^\s*/.exec(line.slice(m[0].length))?.[0].length ?? 0),
   };
   if (m[2]) {
-    const n = Number(m[2]);
-    if (name === "V") f.voice = n;
-    else f.verseFrom = n;
+    if (name === "V") f.voice = Number(m[2]);
+    // 歌词行的段号已废（规范 §5.1：段号由 `w:` 的出现顺序定），原样留给上层报诊断
+    else f.legacyVerse = m[3] ? `${m[2]}-${m[3]}` : m[2];
   }
-  // `V:` 的声部号写在**冒号之后**（`V:1`、`V:2 name="Bass"`，ABC §3.1.20 与规范 §7 都是这样），
-  // 不像 `w1:` 那样写在前面。只认前缀数字会让 `V:1`/`V:2` 全归声部 1、几个声部拼成一串。
+  // `V:` 的声部号写在**冒号之后**（`V:1`、`V:2 name="Bass"`，ABC §3.1.20 与规范 §7 都是这样）。
+  // 只认前缀数字会让 `V:1`/`V:2` 全归声部 1、几个声部拼成一串。
   if (name === "V" && f.voice === undefined) {
     const v = /^(\d+)/.exec(f.value);
     if (v) f.voice = Number(v[1]);
   }
-  if (m[3]) f.verseTo = Number(m[3]);
   return f;
 }
 

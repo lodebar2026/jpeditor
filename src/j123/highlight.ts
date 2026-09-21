@@ -17,8 +17,10 @@ import {
 import { RangeSetBuilder } from "@codemirror/state";
 import { mark } from "../editor/deco";
 
-/** 字段行前缀的宽松形。与 `fields.ts::ASCII_PREFIX` / `CJK_PREFIX` 同形，但不查别名表。 */
-const FIELD_PREFIX = /^\s*([A-Za-z]|[一-鿿]{1,4})(\d+)?(?:-(\d+))?\s*[:：]/;
+/** 字段行前缀的宽松形。与 `fields.ts::ASCII_PREFIX` / `CJK_PREFIX` / `CONT_PREFIX` 同形，但不查别名表。
+ *  `+` 是 ABC 的续行字段（§3.1.18，123 只用它续歌词行）；`w` 后的数字是**旧写法**，
+ *  解析器会报诊断，这里照旧上色（高亮要能在写错的文本上照样工作）。 */
+const FIELD_PREFIX = /^\s*(\+|[A-Za-z]|[一-鿿]{1,4})(\d+)?(?:-(\d+))?\s*[:：]/;
 
 /** 小节线族，**从长到短**（否则 `||` 永远匹配不到）。与 `lex.ts::BARLINES` 同序。 */
 const BARLINE_RE = /^(\[\|\]|\|::|::\||:\|:|::|\|:|:\||\|\]|\[\||\|\||\.\||\|)/;
@@ -170,12 +172,13 @@ function scanLyric(src: string, from: number, out: Span[]): void {
   }
 }
 
-function scanLine(line: string, base: number, out: Span[]): void {
-  if (line.trim().length === 0) return;
+/** 上一行是不是歌词行（`+:` 续行跟着它上色）。返回这一行是不是歌词行。 */
+function scanLine(line: string, base: number, out: Span[], prevLyric: boolean): boolean {
+  if (line.trim().length === 0) return false;
   // `%%directive` 等价 `I:`，`%` 是注释，`%abc`/`%123` 版本声明也落这儿
   if (line.trimStart().startsWith("%")) {
     out.push({ from: base, to: base + line.length, cls: "comment" });
-    return;
+    return prevLyric;
   }
   const f = FIELD_PREFIX.exec(line);
   if (f) {
@@ -183,24 +186,27 @@ function scanLine(line: string, base: number, out: Span[]): void {
     out.push({ from: base, to: base + at, cls: "metakey" });
     const spans: Span[] = [];
     const name = f[1]!;
-    if (name === "w" || name === "歌词" || name === "段") scanLyric(line, at, spans);
+    const lyric = name === "w" || name === "歌词" || name === "段" || (name === "+" && prevLyric);
+    if (lyric) scanLyric(line, at, spans);
     else if (name === "W" || name === "文字" || name === "N" || name === "注") {
       spans.push({ from: at, to: line.length, cls: "text" });
     } else spans.push({ from: at, to: line.length, cls: "metaval" });
     for (const s of spans) out.push({ from: base + s.from, to: base + s.to, cls: s.cls });
-    return;
+    return lyric;
   }
   const spans: Span[] = [];
   scanMusic(line, 0, spans);
   for (const s of spans) out.push({ from: base + s.from, to: base + s.to, cls: s.cls });
+  return false;
 }
 
 function buildDeco(view: EditorView): DecorationSet {
   const text = view.state.doc.toString();
   const out: Span[] = [];
   let base = 0;
+  let lyric = false;
   for (const line of text.split("\n")) {
-    scanLine(line, base, out);
+    lyric = scanLine(line, base, out, lyric);
     base += line.length + 1;
   }
   out.sort((a, b) => a.from - b.from || a.to - b.to);

@@ -122,7 +122,7 @@ export interface StaffRow {
   // 本行歌词行首印着的**段号**（`1.`、`3.5.`），下标 = 段号所属的 verse（0 基）。
   // 段号在装配时本就被丢弃、不占音符位，这里另存一份原样输出：文本谱写成歌词行前置说明
   // `C1:<1.>…`（pu/parse.ts::stripLyricAnnotation，排在细竖线与首字之间）。
-  // 只在段号成套可信时才填（见 lyrics.ts 的 verseLabels）；模型那路记在该段首字的 `Lyric.verseLabel`（123 `w1:<1.>`）。
+  // 只在段号成套可信时才填（见 lyrics.ts 的 verseLabels）；模型那路记在该段首字的 `Lyric.verseLabel`（123 `w:<1.>`）。
   lyricLabels?: string[];
 }
 
