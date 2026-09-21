@@ -1909,6 +1909,8 @@ export class MeasureLayout {
   dataPos = 0;
   dataEnd = 0;
   showBarNumber = false;
+  /** `<measure implicit="yes">`：不计小节号（小节中间换行拆出的后半、弱起） */
+  implicit = false;
   sibKeyOffset = 0;
 
   entPos = new TickMap<number>();

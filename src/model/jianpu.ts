@@ -181,9 +181,16 @@ function onsets(m: Measure, divisions: number): Map<Element, number> {
  *    赞美之泉 085《复兴的火》第 6 小节 `F A♭ C D` 和弦之后旋律的 A♭，简谱引擎与混排都印 `b6`。
  *    123 也只写这一路（`emit123.ts::emits`），读回时 `AccidentalCarry.pitch` 同样只沿旋律延续，两边对得上
  *  - 其余音（内声部、第二 voice）跟全部音延续，只供五线谱侧与导出参考 */
+/** 小节中间换行拆成的后半（前一小节右线隐藏、本小节 `implicit`，`xmlproject.ts::splitInlineBreaks`）：
+ *  仍是同一个小节，临时记号接着前半延续。 */
+export function continuesMeasure(prev: Measure | undefined, m: Measure): boolean {
+  return !!m.implicit && !!prev?.barlines?.some((b) => b.location === "right" && b.style === "none");
+}
+
 export function assignDegrees(part: Part, initialKey: Key): void {
   const r: ResolvedAttrs = { divisions: 1, key: initialKey };
-  part.measures.forEach((m) => {
+  let lanes = new Map<number, { melody: AccidentalCarry; all: AccidentalCarry }>();
+  part.measures.forEach((m, mi) => {
     applyAttrs(r, m, 1);
     const at = onsets(m, r.divisions);
     const order = m.elements
@@ -193,7 +200,7 @@ export function assignDegrees(part: Part, initialKey: Key): void {
     for (const el of m.elements) {
       if (el.kind === "chord" && el.voice < (melodyVoice.get(el.staff) ?? Infinity)) melodyVoice.set(el.staff, el.voice);
     }
-    const lanes = new Map<number, { melody: AccidentalCarry; all: AccidentalCarry }>();
+    if (!continuesMeasure(part.measures[mi - 1], m)) lanes = new Map();
     for (const { el } of order) {
       if (el.kind !== "chord") continue;
       let lane = lanes.get(el.staff);

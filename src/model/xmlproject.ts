@@ -11,6 +11,8 @@
 // 判据：首小节带 `attrs.divisions` 的是 MusicXML 形状，原样返回（保证 `.musicxml` 重写逐字节不变）；
 // 其余在克隆上投影，不改调用方的文档。
 //
+// 小节中间换行（源文写明的）拆成两个小节、中间隐藏线（`splitInlineBreaks`）。
+//
 // 已知不表达：承接前音的增时线（`Chord.continued`）按普通音符写、不补 tie；
 // 挂在增时线上的歌词（文本谱 `-@`）与记号不写——MusicXML 里增时线不是独立的音符。
 
@@ -63,7 +65,8 @@ export interface ProjectOptions {
 export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Song {
   if (isXmlShaped(src)) return src;
   const song: Song = structuredClone(src);
-  if (options.lineStarts?.size) applyLineStarts(song, options.lineStarts);
+  // 源文的小节中间换行在下一小节上还另记了一份小节级的；照简谱视图重断的没有
+  const relined = !!options.lineStarts?.size && applyLineStarts(song, options.lineStarts);
   const fifths = fifthsOf(song);
   const hosts = sustainHosts(song);
   const tuplets = tupletRatios(song);
@@ -72,9 +75,14 @@ export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Son
 
   tiesToMarks(song);
   normalizeMarks(song, hosts);
+  const tupletInner = tupletInnerChords(song, tuplets, hosts);
+  /** 拆出来的后半小节的编号（`X1`、`X2`…）；各声部同步拆，各自从头数 */
+  let xno: { n: number };
   for (const [pi, part] of song.parts.entries()) {
+    xno = { n: 0 };
     if (pi === 0) applyVoltas(part, voltasOfPlayOrder(song));
-    joinOpenMeasures(part);
+    splitInlineBreaks(part, tupletInner, !relined, xno);
+    joinOpenMeasures(part, xno);
     mergeEmptyMeasures(part);
     moveForwardRepeats(part);
     const first = part.measures[0];
@@ -105,32 +113,55 @@ export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Son
 
 // ───────────────────────── 头部 ─────────────────────────
 
-/** 小节级换行（`print.newSystem`）改成「简谱视图里起行的那些小节」：行首音是小节首音就在该小节起行，
- *  落在小节中间（弱起谱的乐句尾常这样）顺延到下一小节——MusicXML 只能在小节线处换行（同 `joinOpenMeasures`）。
- *  `newPage` 不动。行首音都在第一声部，其余声部按小节序号跟它走。一个也对不上（id 过期）就不改。 */
-function applyLineStarts(song: Song, starts: ReadonlySet<ElementId>): void {
+/** 换行改成「简谱视图里起行的那些音」：行首音是小节首音就在该小节起行（`print.newSystem`）。
+ *  落在小节中间的：源文本来就在那里换行（`Chord.lineBreakAfter`，弱起谱的乐句尾常这样）就留着它，由 `splitInlineBreaks` 拆小节；
+ *  简谱一行排不下、自己在小节中间折的，只是简谱版面宽度的产物，顺延到下一小节。多声部各声部的切点对不齐，也顺延。`newPage` 不动。行首音都在第一声部，其余声部按小节序号跟它走。
+ *  一个也对不上（id 过期）就不改。 */
+function applyLineStarts(song: Song, starts: ReadonlySet<ElementId>): boolean {
   const breaks = new Set<number>();
+  const inline: Chord[] = [];
   for (const part of song.parts) {
     let pending = false;
     let hit = false;
     part.measures.forEach((m, i) => {
-      const chords = m.elements.filter((e): e is Chord => e.kind === "chord");
-      const first = chords.length > 0 && starts.has(chords[0]!.id);
-      if (first || chords.some((c) => starts.has(c.id))) hit = true;
-      if (i > 0 && (first || pending)) breaks.add(i);
-      pending = chords.slice(1).some((c) => starts.has(c.id));
+      if (i > 0 && pending) breaks.add(i);
+      pending = false;
+      const els = m.elements;
+      const head = els.findIndex((e) => e.kind === "chord");
+      els.forEach((el, k) => {
+        if (el.kind !== "chord" || !starts.has(el.id)) return;
+        hit = true;
+        // 行首前面紧挨着的倚音跟着它走
+        let j = k;
+        while (j > 0 && els[j - 1]!.kind === "chord" && (els[j - 1] as Chord).grace) j--;
+        if (k === head || j === 0) {
+          if (i > 0) breaks.add(i);
+          return;
+        }
+        const prev = els[j - 1]!;
+        if (inlineBreakOf(prev) && song.parts.length === 1) inline.push(prev as Chord);
+        else pending = true;
+      });
     });
     if (hit) break;
     breaks.clear();
+    inline.length = 0;
   }
-  if (breaks.size === 0) return;
+  if (breaks.size === 0 && inline.length === 0) return false;
   for (const part of song.parts) {
     part.measures.forEach((m, i) => {
+      for (const el of m.elements) {
+        if (el.kind !== "chord") continue;
+        delete el.lineBreakAfter;
+        for (const su of el.sustains ?? []) delete su.lineBreakAfter;
+      }
       if (m.print) delete m.print.newSystem;
       if (breaks.has(i)) m.print = { ...(m.print ?? {}), newSystem: true };
       else if (m.print && Object.keys(m.print).length === 0) delete m.print;
     });
   }
+  for (const ch of inline) ch.lineBreakAfter = "system";
+  return true;
 }
 
 function fifthsOf(song: Song): number {
@@ -267,24 +298,159 @@ function applyVoltas(part: Part, voltas: ReadonlyMap<number, Volta>): void {
 
 // ───────────────────────── 小节结构 ─────────────────────────
 
-/** 行尾没有小节线的小节（文本谱/123 跨行接着写同一小节）与下一行开头并成一个：
- *  MusicXML 表达不了小节中间换行，拆成两个短小节时值就不对了。换行顺延到并完之后的下一小节。 */
-function joinOpenMeasures(part: Part): void {
+/** 小节中间换行拆出来的后半小节 → 它的前半（`autoBeams` 从前半的末尾接着数拍）。 */
+const continuationOf = new WeakMap<Measure, Measure>();
+/** 被切过的小节的各段（含前半）：真符杠在切点两侧要收口（`closeBeams`）。 */
+const splitPieces = new WeakSet<Measure>();
+
+/** 连音内部（不是连音最后一个）的和弦：在它后面换行会把连音劈开，不拆。 */
+function tupletInnerChords(
+  song: Song,
+  tuplets: ReadonlyMap<ElementId, unknown>,
+  hosts: ReadonlyMap<ElementId, ElementId>,
+): Set<ElementId> {
+  const ends = new Set<ElementId>();
+  for (const mk of song.marks) if (mk.type === "tuplet") ends.add(hosts.get(mk.end) ?? mk.end);
+  return new Set([...tuplets.keys()].filter((id) => !ends.has(id)));
+}
+
+/** 这个和弦（或它的增时线）之后原位换行吗。 */
+function inlineBreakOf(el: Element): "system" | "page" | undefined {
+  if (el.kind !== "chord") return undefined;
+  return el.lineBreakAfter ?? el.sustains?.find((su) => su.lineBreakAfter)?.lineBreakAfter;
+}
+
+/**
+ * **小节中间换行**（`Chord.lineBreakAfter`）拆成两个小节：前半的右线是隐藏线（`bar-style none`），
+ * 后半 `implicit="yes"`（不计小节号，编号写 `X1`…）并起新行——MusicXML 只能在小节线处换行，
+ * 这样五线谱与简谱在同一个音上换行，小节时值两半合起来仍是整小节。
+ * 增时线上的换行按宿主和弦之后算（不在音符中间切）；切点落在连音中间的不拆，顺延到下一小节。
+ * `swallow`：源文的小节中间换行在下一小节上还另记了一份小节级的（见 `Chord.lineBreakAfter`），拆过就删掉它。
+ */
+function splitInlineBreaks(part: Part, tupletInner: ReadonlySet<ElementId>, swallow: boolean, xno: { n: number }): void {
   const out: Measure[] = [];
-  let deferred: Measure["print"];
+  let dropPrint = false;
+  let deferred: "system" | "page" | undefined;
+  for (const m of part.measures) {
+    if (dropPrint && m.print) {
+      delete m.print.newSystem;
+      delete m.print.newPage;
+      if (Object.keys(m.print).length === 0) delete m.print;
+    }
+    dropPrint = false;
+    if (deferred) {
+      m.print = { ...(m.print ?? {}), ...(deferred === "page" ? { newPage: true } : { newSystem: true }) };
+      deferred = undefined;
+    }
+    const cuts: { at: number; kind: "system" | "page" }[] = [];
+    m.elements.forEach((el, k) => {
+      const kind = inlineBreakOf(el);
+      if (!kind || el.kind !== "chord") return;
+      delete el.lineBreakAfter;
+      for (const su of el.sustains ?? []) delete su.lineBreakAfter;
+      const rest = m.elements.slice(k + 1);
+      if (rest.length === 0 || rest.every((e) => !timed(e) && e.kind === "space")) return; // 在小节末：就是小节级换行
+      if (tupletInner.has(el.id)) {
+        if (!swallow) deferred = kind;
+        return;
+      }
+      cuts.push({ at: k + 1, kind });
+    });
+    if (cuts.length === 0) {
+      out.push(m);
+      continue;
+    }
+    dropPrint = swallow;
+    const pieces = splitMeasure(m, cuts, xno);
+    out.push(...pieces);
+  }
+  part.measures = out;
+}
+
+/** 把一个小节在 `cuts` 各处切开。元素级的附属物（小节中间的线、direction、小节中间的 attributes）按位置分过去。 */
+function splitMeasure(m: Measure, cuts: readonly { at: number; kind: "system" | "page" }[], xno: { n: number }): Measure[] {
+  const bounds = [0, ...cuts.map((c) => c.at), m.elements.length];
+  // 各段起点的时值（源口径的 divisions），给带 offset / onset 的附属物换基准
+  const startTime: number[] = [];
+  let t = 0;
+  m.elements.forEach((el, k) => {
+    const b = bounds.indexOf(k);
+    if (b >= 0 && b < bounds.length - 1) startTime[b] = t;
+    if (timed(el)) t += Math.round(el.duration?.divisions ?? 0);
+  });
+  const pieceOf = (after: number | undefined): number => {
+    const a = after ?? 0;
+    let p = 0;
+    while (p + 1 < bounds.length - 1 && a >= bounds[p + 1]!) p++;
+    return p;
+  };
+  const pieces: Measure[] = [];
+  for (let p = 0; p < bounds.length - 1; p++) {
+    const first = p === 0;
+    const last = p === bounds.length - 2;
+    const from = bounds[p]!;
+    const piece: Measure = first
+      ? { ...m, elements: m.elements.slice(from, bounds[p + 1]) }
+      : { number: `X${++xno.n}`, implicit: true, elements: m.elements.slice(from, bounds[p + 1]) };
+    if (first) {
+      delete piece.barlines;
+      delete piece.directions;
+      delete piece.laterAttrs;
+      delete piece.trailing;
+    } else {
+      piece.print = cuts[p - 1]!.kind === "page" ? { newPage: true } : { newSystem: true };
+      continuationOf.set(piece, pieces[p - 1]!);
+    }
+    const bars: Barline[] = [];
+    for (const b of m.barlines ?? []) {
+      if (b.location === "left" ? first : b.location === "right" ? last : pieceOf(b.afterElements) === p) {
+        bars.push(b.location === "middle" ? { ...b, afterElements: (b.afterElements ?? 0) - from } : b);
+      }
+    }
+    if (!last) bars.push({ location: "right", style: "none" });
+    if (bars.length) piece.barlines = bars;
+    const dirs = (m.directions ?? []).filter((d) => pieceOf(d.afterElements) === p).map((d) => rebase(d, from, startTime[p]!));
+    if (dirs.length) piece.directions = dirs;
+    const later = (m.laterAttrs ?? []).filter((a) => pieceOf(a.afterElements) === p).map((a) => rebase(a, from, startTime[p]!));
+    if (later.length) piece.laterAttrs = later;
+    if (last && m.trailing) piece.trailing = m.trailing;
+    splitPieces.add(piece);
+    pieces.push(piece);
+  }
+  return pieces;
+}
+
+function rebase<T extends { afterElements?: number; offset?: number; onset?: number }>(x: T, from: number, time: number): T {
+  if (from === 0) return x;
+  const y = { ...x };
+  if (y.afterElements !== undefined) y.afterElements -= from;
+  if (y.offset !== undefined) y.offset = Math.max(0, y.offset - time);
+  if (y.onset !== undefined) y.onset = Math.max(0, y.onset - time);
+  return y;
+}
+
+/** 行尾没有小节线的小节（文本谱/123 跨行接着写同一小节）：下一段起新行就同 `splitInlineBreaks` 那样
+ *  前半隐藏右线、后半 `implicit`；不换行的（只是没写小节线）与下一小节并成一个。 */
+function joinOpenMeasures(part: Part, xno: { n: number }): void {
+  const out: Measure[] = [];
   for (const m of part.measures) {
     const prev = out[out.length - 1];
     const prevOpen = prev && prev.elements.length > 0 && !prev.barlines?.some((b) => b.location === "right");
     if (prevOpen && m.elements.length > 0 && !m.attrs && !m.barlines?.some((b) => b.location === "left")) {
+      if (m.print?.newSystem || m.print?.newPage) {
+        (prev.barlines ??= []).push({ location: "right", style: "none" });
+        m.number = `X${++xno.n}`;
+        m.implicit = true;
+        continuationOf.set(m, prev);
+        splitPieces.add(prev);
+        splitPieces.add(m);
+        out.push(m);
+        continue;
+      }
       prev.elements.push(...m.elements);
       if (m.barlines) prev.barlines = [...(prev.barlines ?? []), ...m.barlines];
       if (m.trailing) prev.trailing = [...(prev.trailing ?? []), ...m.trailing];
-      if (m.print?.newSystem || m.print?.newPage) deferred = { ...(deferred ?? {}), ...m.print };
       continue;
-    }
-    if (deferred) {
-      m.print = { ...deferred, ...(m.print ?? {}) };
-      deferred = undefined;
     }
     out.push(m);
   }
@@ -561,7 +727,12 @@ function projectPart(
   const realBeams = part.measures.some((m) => m.elements.some((el) => el.kind === "chord" && el.beams?.includes("begin")));
   const quarter = SIMPLE_DIVISIONS * factor;
   let time = part.measures[0]?.attrs?.time ?? { beats: 4, beatType: 4 };
+  /** 各小节末在原小节里的拍位（拆开的后半从前半末尾接着数） */
+  const ends = new Map<Measure, number>();
+  const carries = new Map<Measure, AccidentalCarry>();
   for (const [mi, m] of part.measures.entries()) {
+    const cont = continuationOf.get(m);
+    const onset = cont ? (ends.get(cont) ?? 0) : 0;
     if (m.attrs?.time) time = m.attrs.time;
     /** 各元素的减时线条数（投影前的占位），自动分组用 */
     const levels = new Map<Element, number>();
@@ -573,8 +744,9 @@ function projectPart(
       }
       fifths = m.attrs.key.fifths;
     }
-    /** 小节内延续的临时记号（简谱语义层，与 `assignDegrees` 同一份规则） */
-    const carry = new AccidentalCarry();
+    /** 小节内延续的临时记号（简谱语义层，与 `assignDegrees` 同一份规则）；拆开的后半接着前半 */
+    const carry = (cont && carries.get(cont)) || new AccidentalCarry();
+    carries.set(m, carry);
     const dirs: Direction[] = [];
     let pos = 0;
     for (const el of m.elements) {
@@ -638,7 +810,9 @@ function projectPart(
       if (!m.barlines.length) delete m.barlines;
     }
     if (dirs.length) m.directions = [...(m.directions ?? []), ...dirs];
-    if (!realBeams) autoBeams(m, levels, quarter, time, mi === 0);
+    ends.set(m, onset + pos);
+    if (!realBeams) autoBeams(m, levels, quarter, time, mi === 0 && continuationOf.get(part.measures[1]!) !== m, onset);
+    else if (splitPieces.has(m)) closeBeams(m);
   }
 }
 
@@ -654,12 +828,15 @@ function projectPart(
  *   ≥2 个实音 begin/continue/end；只剩一个的写 hook——在上一层那段里不是头一个就朝前勾（backward），否则朝后（forward）。
  *   第一层只剩一个实音（其余都是休止）就整组不连，那个音按单音符尾写。
  */
-function autoBeams(m: Measure, levels: ReadonlyMap<Element, number>, quarter: number, time: { beats: number; beatType: number }, first: boolean): void {
+function autoBeams(
+  m: Measure, levels: ReadonlyMap<Element, number>, quarter: number, time: { beats: number; beatType: number },
+  first: boolean, onset: number,
+): void {
   const beat = time.beatType >= 8 && time.beats % 3 === 0
     ? (quarter * 4 / time.beatType) * 3
     : Math.max(quarter * 4 / time.beatType, quarter);
   const items: { el: Element; start: number; dur: number; level: number; solid: boolean }[] = [];
-  let pos = 0;
+  let pos = onset;
   for (const el of m.elements) {
     if (!timed(el)) continue;
     const dur = el.duration?.divisions ?? 0;
@@ -710,6 +887,21 @@ function autoBeams(m: Measure, levels: ReadonlyMap<Element, number>, quarter: nu
     const b = out.get(el);
     if (b) el.beams = b;
     else delete el.beams;
+  }
+}
+
+/** 拆开的小节：符杠不能跨过切点。段末的音 begin/continue → 收尾，段首的 continue/end → 起头；只剩自己一个的去掉。 */
+function closeBeams(m: Measure): void {
+  const beamed = m.elements.filter((el): el is Chord => el.kind === "chord" && !!el.beams?.length);
+  const head = beamed[0];
+  const tail = beamed[beamed.length - 1];
+  if (head?.beams && head.beams[0] !== "begin") {
+    if (head.beams[0] === "end") delete head.beams;
+    else head.beams = head.beams.map((b) => (b === "continue" ? "begin" : b === "end" ? "forward hook" : b));
+  }
+  if (tail?.beams && tail.beams[0] !== "end") {
+    if (tail.beams[0] === "begin") delete tail.beams;
+    else tail.beams = tail.beams.map((b) => (b === "continue" ? "end" : b === "begin" ? "backward hook" : b));
   }
 }
 

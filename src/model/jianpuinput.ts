@@ -20,7 +20,7 @@ import type {
   JBreak, JChord, JCredit, JDirection, JKey, JLyric, JMeasure, JNote, JScore, JTime,
 } from "../layout/input";
 import { measureDuration } from "../layout/input";
-import { AccidentalCarry, degreeFromPitch } from "./jianpu";
+import { AccidentalCarry, continuesMeasure, degreeFromPitch } from "./jianpu";
 import type {
   Barline, Chord as DocChord, Direction, DirectionPart, ElementId, Harmony, Measure as DocMeasure, MeasureAttrs,
   Mark as DocMark, Note as DocNote, Part as DocPart, Pitch, ScoreDoc, Song,
@@ -150,7 +150,11 @@ export function jianpuInputOfXml(song: Song): JScore {
   const src = song.parts[0];
   if (!src) throw new Error("no part");
   const measures = loadXmlPart(src, song);
-  for (const m of measures) initXmlMeasure(m);
+  let carry = new AccidentalCarry();
+  for (const m of measures) {
+    if (!continuesMeasure(src.measures[m.index - 1], src.measures[m.index]!)) carry = new AccidentalCarry();
+    initXmlMeasure(m, carry);
+  }
   findRefrain(measures);
   const playData = playDataOfDoc(song);
   playData.tempo = tempoOfDoc(song);
@@ -475,7 +479,7 @@ function directionMarks(d: Direction): JDirection[] {
 
 /** 读完一小节：只留 voice ≤ 1、和弦取最高音（歌词并到它上面），再按调号推唱名与记号（倚音先于主音）。
  *  **经简谱语义层**：唱名与八度点 `degreeFromPitch`、小节内延续的记号 `AccidentalCarry.mark`；双升/双降印成 `#`/`b`。 */
-function initXmlMeasure(m: JMeasure): void {
+function initXmlMeasure(m: JMeasure, carry: AccidentalCarry): void {
   m.entries = m.entries.filter((e) => e.kind !== "chord" || (e as XChord).voice <= 1);
   for (const ch of chords(m)) {
     if (ch.notes.length <= 1) continue;
@@ -493,7 +497,6 @@ function initXmlMeasure(m: JMeasure): void {
     v.lyrics = lrc;
     ch.notes = [v];
   }
-  const carry = new AccidentalCarry();
   const init = (nt: XNote): void => {
     const pitch = { step: nt.step as Pitch["step"], alter: nt.alter, octave: nt.octave };
     const key = { fifths: m.key.fifths };

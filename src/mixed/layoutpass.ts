@@ -675,7 +675,7 @@ function buildSystemsAndPages(score: StaffLayout, input: LayoutInput, autoBreaks
       mid++;
     }
   }
-  for (const i of newSystem) if (i > 0) score.measures[i].showBarNumber = true;
+  for (const i of newSystem) if (i > 0 && !score.measures[i].implicit) score.measures[i].showBarNumber = true;
   for (let i = 0; i < score.measures.length; i++) {
     const mif = score.measures[i];
     const needNewSys = score.systems.length === 0 || newSystem.has(i);

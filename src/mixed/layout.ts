@@ -296,6 +296,7 @@ class DocPartLoader {
     const dur = new Fraction(end, div);
     if (dur.compareTo(mif.dur) > 0) mif.dur = dur;
     mif.number = m.number;
+    if (m.implicit) mif.implicit = true;
     if (m.width !== undefined) mif.width = m.width;
 
     const md = this.part.newMeasure();
