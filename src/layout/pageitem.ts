@@ -484,6 +484,40 @@ export interface SlurStyle {
    * `"down"` 只给混排的五线谱层用：那里 slur/tie 跟着符干走，符干朝上时弧在音符下方。
    */
   side?: "up" | "down";
+  /**
+   * 中间挖掉 `[x0, x1]` 这一截（页面 x），只画两头——三连音的「两段弧」风格（数字坐在断口里，
+   * 见 `Line.addTuplet`）。切的是**同一条月牙**，所以音符那一端照样收尖、断口处是弧中段的厚度，
+   * 与同页的 slur 同一套形状语言，不另画等宽线。有 gap 时一律画弧，不走扁平式。
+   */
+  gap?: { x0: number; x1: number };
+}
+
+/** 三次贝塞尔在 `[a, b]` 这一段（de Casteljau 切两刀）。 */
+function bezierSeg(p: readonly [Point, Point, Point, Point], a: number, b: number): [Point, Point, Point, Point] {
+  const lerp = (u: Point, v: Point, t: number): Point => new Point(u.x + (v.x - u.x) * t, u.y + (v.y - u.y) * t);
+  const split = (q: readonly [Point, Point, Point, Point], t: number): [[Point, Point, Point, Point], [Point, Point, Point, Point]] => {
+    const p01 = lerp(q[0], q[1], t), p12 = lerp(q[1], q[2], t), p23 = lerp(q[2], q[3], t);
+    const p012 = lerp(p01, p12, t), p123 = lerp(p12, p23, t);
+    const m = lerp(p012, p123, t);
+    return [[q[0], p01, p012, m], [m, p123, p23, q[3]]];
+  };
+  const head = b >= 1 ? [p[0], p[1], p[2], p[3]] as [Point, Point, Point, Point] : split(p, b)[0];
+  return a <= 0 ? head : split(head, a / b)[1];
+}
+
+/** 三次贝塞尔上 x 取 `x` 的参数 t（x(t) 单调时二分；弧线两端同高，天然单调）。 */
+function bezierTAtX(p: readonly [Point, Point, Point, Point], x: number): number {
+  const xAt = (t: number): number => {
+    const u = 1 - t;
+    return u * u * u * p[0].x + 3 * u * u * t * p[1].x + 3 * u * t * t * p[2].x + t * t * t * p[3].x;
+  };
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (xAt(mid) < x) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
 }
 
 export abstract class SlurTieBase extends Group {
@@ -541,6 +575,10 @@ export abstract class SlurTieBase extends Group {
     const arcH = SlurTieBase.arcHeight(dist, style) * 0.75;
     const flatByRatio = style.flatRatio !== undefined && style.flatRatio > 0
       && arcH > 0 && dist / arcH > style.flatRatio;
+    if (style.gap) {
+      this.initArc(pl, pr, style);
+      return;
+    }
     if (style.forceFlat || flatByRatio
         || (style.flatSpan !== undefined && style.flatSpan > 0 && dist > style.flatSpan)) {
       this.initFlat(pl, pr, dist, style);
@@ -560,24 +598,46 @@ export abstract class SlurTieBase extends Group {
     // outline stroked along a curve offset by lw0/4.
     // (The earlier port pushed pt0 along x instead of y, which flattened the
     // left end and made the arc visibly lopsided.)
-    const obj = new GraphicPath();
-    obj.fill = true;
-    obj.stroke = false;
-    obj.fillColor = clr;
-    obj.moveTo(pl);
-    obj.cubicTo(pt0, pt1, pr);
-    obj.cubicTo(pt1.offset(0, lw0 / 2), pt0.offset(0, lw0 / 2), pl);
-    obj.close();
+    const upper: [Point, Point, Point, Point] = [pl, pt0, pt1, pr];
+    const lower: [Point, Point, Point, Point] = [pl, pt0.offset(0, lw0 / 2), pt1.offset(0, lw0 / 2), pr];
+    const mid: [Point, Point, Point, Point] = [pl, pt0.offset(0, lw0 / 4), pt1.offset(0, lw0 / 4), pr];
+    // 要画的参数区间：整条是 [0,1]；挖了中段就是两头两截（三条曲线的控制点只差 y，x(t) 相同，共用一个 t）
+    const spans: [number, number][] = [];
+    if (style.gap) {
+      const tl = bezierTAtX(upper, style.gap.x0);
+      const tr = bezierTAtX(upper, style.gap.x1);
+      spans.push([0, tl], [tr, 1]);
+    } else {
+      spans.push([0, 1]);
+    }
+    const paths: GraphicPath[] = [];
+    for (const [a, b] of spans) {
+      const up = bezierSeg(upper, a, b);
+      const lo = bezierSeg(lower, a, b);
+      const obj = new GraphicPath();
+      obj.fill = true;
+      obj.stroke = false;
+      obj.fillColor = clr;
+      obj.moveTo(up[0]);
+      obj.cubicTo(up[1], up[2], up[3]);
+      if (lo[3].x !== up[3].x || lo[3].y !== up[3].y) obj.lineTo(lo[3]); // 断口那一端是平头
+      obj.cubicTo(lo[2], lo[1], lo[0]);
+      obj.close();
+      paths.push(obj);
+    }
+    for (const [a, b] of spans) {
+      const md = bezierSeg(mid, a, b);
+      const outline = new GraphicPath();
+      outline.fill = false;
+      outline.stroke = true;
+      outline.strokeWidth = style.outlineWidth ?? 0.7;
+      outline.strokeColor = clr;
+      outline.moveTo(md[0]);
+      outline.cubicTo(md[1], md[2], md[3]);
+      paths.push(outline);
+    }
 
-    const outline = new GraphicPath();
-    outline.fill = false;
-    outline.stroke = true;
-    outline.strokeWidth = style.outlineWidth ?? 0.7;
-    outline.strokeColor = clr;
-    outline.moveTo(pl);
-    outline.cubicTo(pt0.offset(0, lw0 / 4), pt1.offset(0, lw0 / 4), pr);
-
-    this.finish([obj, outline]);
+    this.finish(paths);
   }
 
   /**

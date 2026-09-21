@@ -24,7 +24,7 @@ import type {
   Song,
 } from "../model/doc";
 import { isLyricCjk, isLyricOpenQuote, isLyricTrailingPunct } from "../common/cjkpunct";
-import { breakAfter, lyricOfVerse } from "../model/helpers";
+import { breakAfter, lyricOfVerse, type BreakKind } from "../model/helpers";
 import { lyricSlots } from "./lyricslot";
 import { harmonyText } from "../model/jianpu";
 import { ORNAMENT_TAG } from "../model/xmlproject";
@@ -72,8 +72,8 @@ function barlineText(b: Barline): string {
  *  中间没词的那一段写一条空 `w:` 把段位顶住（丢了会让后面的段整体前移一段）；尾部没词的不写。
  *  段号区间（文本谱 `C1-2:`）与副歌行在这里**逐段各抄一遍**——ABC 没有区间写法。
  *  同段拆几条写的 `+:` 续行只在读入端认，写出端一段一行写完。 */
-function lyricLines(part: Part, sep: string, skip: string, from: number, to: number): string[] {
-  const { slots } = lyricSlots(part, from, to);
+function lyricLines(part: Part, sep: string, skip: string, sys: SystemRange): string[] {
+  const { slots } = lyricSlots(part, sys.from, sys.to, sys.fromEl, sys.toEl);
   // 本系统一共几段（区间行按上界算）
   let maxVerse = 0;
   for (const el of slots) {
@@ -176,18 +176,53 @@ function pushLines(L: string[], name: string, value: string): void {
   }
 }
 
-/** 按声部的换行切出系统（小节下标闭区间）。最后一段开到无穷，别的声部小节多出来的也归它。 */
-function systemRanges(part: Part | undefined): [number, number][] {
-  const out: [number, number][] = [];
+/** 一个系统：第 `from`–`to` 小节（闭区间）。切在小节中间时，首小节从第 `fromEl` 个元素起、末小节到第 `toEl` 个止（不含）。 */
+interface SystemRange {
+  from: number;
+  to: number;
+  fromEl: number;
+  toEl: number;
+  /** 系统末是**小节中间**的换行（`Chord.lineBreakAfter`）：`$` 写在 `toEl` 那个元素之前 */
+  inline?: BreakKind;
+}
+
+/** 这个元素之后原位换行（和弦或它的增时线带 `lineBreakAfter`）。 */
+function inlineBreakOf(el: Element): BreakKind | null {
+  if (el.kind !== "chord") return null;
+  if (el.lineBreakAfter) return el.lineBreakAfter;
+  for (const su of el.sustains ?? []) if (su.lineBreakAfter) return su.lineBreakAfter;
+  return null;
+}
+
+/**
+ * 按声部的换行切出系统。最后一段开到无穷，别的声部小节多出来的也归它。
+ * **小节中间换行**照原位切（同 `.jpwabc`，读入端 `j123/parse.ts` 记在 `Chord.lineBreakAfter`）；
+ * 同一处换行在下一小节上还有一份小节级的 `print`（「这一小节之后」），那一份就不再切第二次。
+ * 原位切只对这个声部（第一声部）有意义，别的声部照小节归系统。
+ */
+function systemRanges(part: Part | undefined): SystemRange[] {
+  const out: SystemRange[] = [];
   if (!part) return out;
   let from = 0;
-  for (let i = 0; i < part.measures.length - 1; i++) {
-    if (breakAfter(part, i)) {
-      out.push([from, i]);
+  let fromEl = 0;
+  for (let i = 0; i < part.measures.length; i++) {
+    const els = part.measures[i]!.elements;
+    let inlineHere = false;
+    for (let j = 0; j < els.length - 1; j++) {
+      const kind = inlineBreakOf(els[j]!);
+      if (!kind) continue;
+      out.push({ from, to: i, fromEl, toEl: j + 1, inline: kind });
+      from = i;
+      fromEl = j + 1;
+      inlineHere = true;
+    }
+    if (i < part.measures.length - 1 && !inlineHere && breakAfter(part, i)) {
+      out.push({ from, to: i, fromEl, toEl: Infinity });
       from = i + 1;
+      fromEl = 0;
     }
   }
-  out.push([from, Number.MAX_SAFE_INTEGER]);
+  out.push({ from, to: Number.MAX_SAFE_INTEGER, fromEl, toEl: Infinity });
   return out;
 }
 
@@ -369,8 +404,9 @@ export abstract class AbcFamilyEmitter {
     return `{${this.graceSlashText(ch)}${ch.notes.map((n) => this.noteText(n)).join("")}}`;
   }
 
-  /** 一个声部的音乐体，按 `ranges`（小节下标闭区间）切成几行。按小节拼，符杠分组内连写。 */
-  protected partSystems(part: Part, song: Song, ranges: readonly (readonly [number, number])[]): string[] {
+  /** 一个声部的音乐体，按 `ranges` 切成几行。按小节拼，符杠分组内连写。
+   *  `inlineCuts`：照 `ranges` 在小节中间切（只有切系统所依据的那个声部才这么做）。 */
+  protected partSystems(part: Part, song: Song, ranges: readonly SystemRange[], inlineCuts: boolean): string[] {
     let out: string[] = [];
     const texts: string[] = [];
     let ri = 0;
@@ -410,8 +446,16 @@ export abstract class AbcFamilyEmitter {
       out = [];
     };
     for (let i = 0; i < part.measures.length; i++) {
-      while (ri < ranges.length - 1 && i > ranges[ri]![1]) { flush(); ri++; }
+      while (ri < ranges.length - 1 && i > ranges[ri]!.to) { flush(); ri++; }
       const mea = part.measures[i]!;
+      // 本小节里的原位换行：切成几段，各段之间写 `$` 并收一行（左线、调号拍号归首段，右线归末段）
+      const cuts: { at: number; kind: BreakKind }[] = [];
+      if (inlineCuts) {
+        for (let r = ri; r < ranges.length - 1 && ranges[r]!.to === i; r++) {
+          const inl = ranges[r]!.inline;
+          if (inl) cuts.push({ at: ranges[r]!.toEl, kind: inl });
+        }
+      }
       // 左线可能有**多条**（`.jpwabc` 允许 `|:|` 连写），按顺序全部输出
       const lefts = (mea.barlines ?? []).filter((b) => b.location === "left");
       // 123 一处只能起一个房号；文本谱解析器会留下与新房号重叠的不收口房号，只写最后一个（读回也只认它）
@@ -429,14 +473,23 @@ export abstract class AbcFamilyEmitter {
       const t = mea.attrs?.time ? timeOf(mea.attrs.time) : time;
       if (t !== time) out.push(`[M:${t}]`);
       time = t;
-      out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }));
+      let el0 = 0;
+      for (const cut of cuts) {
+        out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }, el0, cut.at));
+        out.push(this.breakText(cut.kind === "page"));
+        flush();
+        ri++;
+        el0 = cut.at;
+      }
+      out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }, el0));
       const right = (mea.barlines ?? []).find((b) => b.location === "right");
       // 右线的记号写在线**之前**（`… 6 !fine! |]`）：唱到这儿才跳，读回来也按这个位置认。
       if (right) out.push(...barlineOrnaments(right));
       out.push(right ? barlineText(right) : "|");
       // 模型记「下一小节起新系统」（`doc.ts::Print`），源码的 `$` 写在本小节之后
       const last = i === part.measures.length - 1;
-      const brk = breakAfter(part, i);
+      // 原位换行过的小节，下一小节上那份小节级 `print` 是同一处换行，不再写第二个 `$`
+      const brk = cuts.length ? null : breakAfter(part, i);
       if (brk && (!last || this.trailingBreak)) out.push(this.breakText(brk === "page"));
     }
     flush();
@@ -445,14 +498,16 @@ export abstract class AbcFamilyEmitter {
   }
 
 
-  protected measureBody(mea: Measure, mi: MarkIndex): string {
+  /** `from` / `to`：只写这一段元素（小节中间换行时一小节分两段写，见 `partSystems`）。 */
+  protected measureBody(mea: Measure, mi: MarkIndex, from = 0, to = Infinity): string {
     const pieces: string[] = [];
     let prevGroup: number | undefined;
     // 小节**中间**的小节线（`[|]` 不可见线多是这种）：按它在元素流里的位置插回去。
     // 小节线是独立的条目，丢了就会把两个小节并成一个。
     const mid = (mea.barlines ?? []).filter((b) => b.location === "middle");
     let midIdx = 0;
-    for (const el of mea.elements) {
+    for (const [j, el] of mea.elements.entries()) {
+      if (j < from || j >= to) continue;
       if (!this.emits(el, mea)) continue;
       const ch = el.kind === "chord" ? el : null;
       if (ch?.continued) continue; // 同 `lyricLines`
@@ -497,7 +552,8 @@ export abstract class AbcFamilyEmitter {
       else pieces.push(s);
       prevGroup = group;
     }
-    while (midIdx < mid.length) { pieces.push(barlineText(mid[midIdx]!)); midIdx++; }
+    // 余下的中间线归末段（小节中间换行时前一段不带它们）
+    if (to >= mea.elements.length) while (midIdx < mid.length) { pieces.push(barlineText(mid[midIdx]!)); midIdx++; }
     return pieces.join(" ");
   }
 
@@ -561,15 +617,16 @@ export abstract class AbcFamilyEmitter {
     // **一行曲一行词**：按第一个声部的换行切系统，每个系统依次写各声部的音乐行与它的 `w` 行。
     // 读入端把「上一批 `w` 行之后的音乐行」当一个歌词块、`w` 从块首对位（规范 §5.1），与这里一一对应。
     const ranges = systemRanges(song.parts[0]);
-    const bodies = song.parts.map((part) => this.partSystems(part, song, ranges));
+    const bodies = song.parts.map((part, pi) => this.partSystems(part, song, ranges, pi === 0));
     for (let r = 0; r < ranges.length; r++) {
       for (let i = 0; i < song.parts.length; i++) {
         const text = bodies[i]![r]!;
         if (text === "") continue;
         if (song.parts.length > 1) L.push(`V:${i + 1}`);
         L.push(text);
-        const [from, to] = ranges[r]!;
-        for (const line of lyricLines(song.parts[i]!, this.lyricSeparator, this.lyricSkip, from, to)) L.push(line);
+        // 原位切只对第一声部成立，别的声部按整小节取词
+        const sys = i === 0 ? ranges[r]! : { ...ranges[r]!, fromEl: 0, toEl: Infinity };
+        for (const line of lyricLines(song.parts[i]!, this.lyricSeparator, this.lyricSkip, sys)) L.push(line);
       }
     }
     return L.join("\n");

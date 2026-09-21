@@ -77,6 +77,11 @@ export abstract class ScorePainter implements PagePainter {
     return hit.page;
   }
 
+  /** 元素 `id` 第一次出现在第几页（光标同步翻页用）；没画出来为 null。 */
+  pageOfChord(id: ElementId): number | null {
+    return this.hitFor(id, 0)?.page ?? null;
+  }
+
   /** 元素 `id` 第 `pass` 遍那个音的 `<g>`（滚动到可见用）；没画出来为 null。 */
   chordGroupEl(id: ElementId, pass = 0): SVGGElement | null {
     const hit = this.hitFor(id, pass);
@@ -326,11 +331,13 @@ export class JinpuPainter extends ScorePainter {
     };
     const out: string[] = [];
     for (const c of this.score.credit) {
-      if (c.type === "title") continue;
+      if (c.type === "title" || c.type === "subtitle") continue; // 副标题跟标题一起居中，见 bookHead
       for (const raw of c.text.split(/\r?\n/)) {
         const t = raw.trim();
         if (!t) continue;
-        out.push(/[:：]/.test(t) || !c.type ? t : `${LABEL[c.type] ?? c.type}：${t}`);
+        // 已经自带标签的（「作词：X」「X 词曲」「X 曲」）照原文，不再叠一个
+        const labeled = /[:：]/.test(t) || /(?:词曲|作词|作曲|编曲|译词|制谱)\s*$|(?:^|\s)[词曲]\s*$/.test(t);
+        out.push(labeled || !c.type ? t : `${LABEL[c.type] ?? c.type}：${t}`);
       }
     }
     return out;
@@ -360,6 +367,8 @@ export class JinpuPainter extends ScorePainter {
     for (const it of this.score.credit) if (it.type === "title") titles.push(it.text);
     if (titles.length === 0 && this.score.title.trim().length > 0) titles.push(this.score.title);
 
+    // 副标题（123/ABC 的第二条 `T:`）：标题底下居中，字号同署名
+    const subtitles = this.score.credit.filter((c) => c.type === "subtitle").map((c) => c.text);
     const credits = this.creditLines();
     // **窄纸要缩排**：标题与署名的字号是照长图那张 1000 宽的纸定的，换到 A4/A5 就装不下
     //（署名是右对齐的，量出来比版心还长时 x 直接成负数，整块探到纸外去——
@@ -372,7 +381,7 @@ export class JinpuPainter extends ScorePainter {
       return need > 0 ? need : 0;
     };
     const avail = Math.max(1, right - left);
-    const need = Math.max(headScale(opt.titleSize, titles), headScale(opt.creditSize, credits));
+    const need = Math.max(headScale(opt.titleSize, titles), headScale(opt.creditSize, [...subtitles, ...credits]));
     const k = need > avail ? avail / need : 1;
     const titleSize = opt.titleSize * k;
     const creditSize = opt.creditSize * k;
@@ -380,6 +389,13 @@ export class JinpuPainter extends ScorePainter {
     let ypos = 0;
     for (const t of titles) {
       const obj = this.multipleLineText(t, fnt.makeWithSize(titleSize), w, opt.color);
+      obj.y = ypos;
+      obj.update();
+      pg.add(obj);
+      ypos += obj.height;
+    }
+    for (const t of subtitles) {
+      const obj = this.multipleLineText(t, fnt.makeWithSize(creditSize), w, opt.color);
       obj.y = ypos;
       obj.update();
       pg.add(obj);

@@ -159,9 +159,10 @@ export function showOptionsDialog(app: App): void {
   const isMixed = app.mode === "mixed"; // 五线谱 / 混排：走 MixedPainter
   /** 展开档：两种格式同一个排版器（ExpandedPainter），摆同一组设置。 */
   const isPpt = !isMixed && view === "expanded";
-  /** 走 `PuPainter` 的**原样档**（文本谱与 123）：版面由量好的 metrics 定。 */
-  const isPu = !isMixed && !isPpt && app.adapter.caps.layout === "scoredoc";
-  /** 简谱排版器那条路（展开档或 .jpwabc 原样档）——下面绝大多数项只有它吃。 */
+  /** 走 `PuPainter` 的**原样档**（文本谱、多声部的 123/ABC）：版面由量好的 metrics 定。
+   *  单声部 123/ABC 的原样档走简谱引擎（`App._originalOnEngine`），与 `.jpwabc` 原样档摆同一组设置。 */
+  const isPu = !isMixed && !isPpt && app.puPainter !== null;
+  /** 简谱排版器那条路（展开档，或 `.jpwabc` / 单声部 123、ABC 的原样档）——下面绝大多数项只有它吃。 */
   const isJp = !isMixed && !isPu;
   const isJianpu = isJp && view === "original";
   /** 「每页行数」写进 `.jpwabc` 的 `.Layout` 段，文本谱与 123 没有这个段

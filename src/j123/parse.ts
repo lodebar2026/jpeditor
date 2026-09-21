@@ -95,6 +95,15 @@ interface PartBuild {
   /** 当前歌词块；`afterLyrics` 表示上一块已经跟过 `w` 行，下一条音乐行开新块 */
   block?: LyricBlock;
   afterLyrics: boolean;
+  /** 刚见过的 `$` 落在小节中间还是小节末，要看后面先来的是音符还是小节线：先记下 `$` 前的最后一个和弦
+   *  （及它当时有几条增时线），同一小节里再来音符才落成 `lineBreakAfter`（同 `.jpwabc`，见 `fromjpw.ts`） */
+  inlineBreak: { host: Chord; sustains: number; kind: BreakKind } | null;
+}
+
+/** 见到 `$`（或 ABC 的代码行末）：当前小节已有和弦时先记下，是不是小节中间换行等后面来的是什么再定（`PartBuild.inlineBreak`）。 */
+function noteInlineBreak(pb: PartBuild, kind: BreakKind): void {
+  const last = pb.measure.elements[pb.measure.elements.length - 1];
+  pb.inlineBreak = last?.kind === "chord" ? { host: last, sustains: last.sustains?.length ?? 0, kind } : null;
 }
 
 /** 声部里到目前为止的对位格数（含还没收尾的小节）。 */
@@ -390,6 +399,22 @@ function buildMusicLine(
         ...(arts.length ? { articulations: arts } : {}),
       };
       pending.decos = [];
+    }
+    // 上一个 `$` 后面同一小节里又来了音符：那是**小节中间**换行，在原位记一份（`Chord.lineBreakAfter`；
+    // `$` 之后才补上的增时线不算——那时换行落在已有的最后一条增时线后面）
+    if (pb.inlineBreak) {
+      const { host, sustains, kind } = pb.inlineBreak;
+      const su = host.sustains ?? [];
+      const at = su.length > sustains && sustains > 0 ? su[sustains - 1]! : host;
+      at.lineBreakAfter = kind;
+      pb.inlineBreak = null;
+    }
+    // 123：`$` 同时结束这一批歌词（`ParseDialect.breakEndsLyricBlock`），同一代码行里 `$` 之后的音符另起一批
+    if (ctx.d.breakEndsLyricBlock && pb.block?.broken) {
+      const at = slotCount(pb);
+      pb.block.end = at;
+      pb.block = { start: at, cursor: new Map(), verses: 0, broken: false };
+      pb.afterLyrics = false;
     }
     pb.measure.elements.push(el);
     cur.last = el;
@@ -721,6 +746,7 @@ function buildMusicLine(
           bl.ending = { numbers: nums, type: "stop", text: nums.join(",") };
         }
         (pb.measure.barlines ??= []).push(bl);
+        pb.inlineBreak = null; // `$` 之后先到的是小节线：小节末换行，小节级那一份就够了
         closeMeasure(ctx, pb);
         beamGroup = 0;
         sawSpaceSinceLastNote = true;
@@ -737,6 +763,7 @@ function buildMusicLine(
           ? pb.measure
           : pb.part.measures[pb.part.measures.length - 1] ?? pb.measure;
         ctx.breakAfter.set(target, t.value === "page" ? "page" : "system");
+        noteInlineBreak(pb, t.value === "page" ? "page" : "system");
         if (pb.block) pb.block.broken = true;
         break;
       }
@@ -944,6 +971,7 @@ export function parseAbcFamily(
     pending: { annotations: [], decos: [] },
     openEnding: [],
     afterLyrics: false,
+    inlineBreak: null,
   });
   /** `V:n` 切到声部 n：没有就新开，有就**续写**（不收尾它开着的小节）。四声部谱靠这个分开，否则会被拼成一串小节。 */
   const startPart = (voice: number): PartBuild => {
@@ -1024,7 +1052,10 @@ export function parseAbcFamily(
       const target = p.measure.elements.length > 0
         ? p.measure
         : p.part.measures[p.part.measures.length - 1];
-      if (target && !ctx.breakAfter.has(target)) ctx.breakAfter.set(target, "system");
+      if (target && !ctx.breakAfter.has(target)) {
+        ctx.breakAfter.set(target, "system");
+        noteInlineBreak(p, "system");
+      }
       if (p.block) p.block.broken = true;
     }
   }

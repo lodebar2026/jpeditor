@@ -21,7 +21,7 @@ const TITLE_RATIO = PPTX_PAGE.titleSize / PPTX_PAGE.fontSize;
 const CREDIT_RATIO = PPTX_PAGE.creditSize / PPTX_PAGE.fontSize;
 
 /** 角色字号（pt）。只认 pt——note 是 em 的基准，不能相对自己。 */
-function rolePt(sheet: StyleSheet, role: "note" | "title" | "credit"): number | undefined {
+function rolePt(sheet: StyleSheet, role: "note" | "title" | "credit" | "chord"): number | undefined {
   const v = sheet.roles[role]?.size;
   if (v === undefined) return undefined;
   const pt = resolveLength(v, { em: NaN, sp: NaN });
@@ -61,7 +61,15 @@ export function applyJianpuStyle(opt: LayoutOptions, sheet: StyleSheet): void {
       opt.titleSize = s.titleSize;
       opt.creditSize = s.creditSize;
     }
-    if (preset === "original") applyOriginalPreset(opt, isLongImage(sheet));
+    if (preset === "original") {
+      applyOriginalPreset(opt, isLongImage(sheet));
+      // 和弦（123/ABC 原样档走引擎后才有）：`chord` 角色给了字号就用，没给按音符字号的 0.6（引擎缺省那一档）。
+      // `.jpwabc` 的投影不带和弦，这一项对它不起作用。
+      opt.chordSize = rolePt(sheet, "chord") ?? opt.numberSize * 0.6;
+      // 和弦基线离音符墨迹顶留一道空（0 = 贴着数字）；段落词（123 的 `"^副歌"`）与和弦同一带、同字号
+      opt.chordGap = opt.numberSize * 0.25;
+      opt.sectionWordSize = opt.chordSize;
+    }
     else if (preset === "pptx") applyPptxPreset(opt);
   }
   applyFonts(opt, sheet);

@@ -48,6 +48,9 @@ export interface ParseDialect {
   spaceBeams: boolean;
   /** 歌词里「跳过一个音符」的记号。123 用 `/`（同文本谱诗歌本，免 Shift）；ABC §5.1 是 `*`。 */
   lyricSkip: "/" | "*";
+  /** **`$` 是不是同时结束一批歌词**。123 是（同 `.jpwabc`：一行曲一批 `w:`，同一代码行里 `$` 之后的音符另起一批，
+   *  不与前一行共用）；ABC 不是——§5.1 的 `w:` 对的是它前面那条**代码行**，行内的 `$` 只是谱面换行。 */
+  breakEndsLyricBlock: boolean;
 }
 
 // ───────────────────────── 123 ─────────────────────────
@@ -89,6 +92,7 @@ export const DIALECT_123: ParseDialect = {
   lineEndIsBreak: false,
   spaceBeams: false,
   lyricSkip: "/",
+  breakEndsLyricBlock: true,
 };
 
 // ───────────────────────── 标准 ABC ─────────────────────────
@@ -187,4 +191,5 @@ export const DIALECT_ABC: ParseDialect = {
   lineEndIsBreak: true,
   spaceBeams: true,
   lyricSkip: "*",
+  breakEndsLyricBlock: false,
 };

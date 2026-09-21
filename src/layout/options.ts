@@ -68,6 +68,10 @@ export class LayoutOptions {
   /** 房号/三连音括线的线宽与「脚」（下垂那一小段）的长度。0 = 按字号推算。 */
   bracketWidth = 0;
   bracketFoot = 0;
+  /** 三连音的画法：`bracket` = 括线（两端下垂脚、数字坐在横线断口里）；`arc` = **两段弧**——
+   *  同页 slur 那条月牙挖掉中段、数字坐在断口里（音符端收尖，见 `SlurStyle.gap`）。
+   *  两种都与弧同属上方带 layer 0 参与堆叠（`Line.stackAbove`）。 */
+  tupletStyle: "bracket" | "arc" = "bracket";
   /** 多段歌词的排法：0 = **逐段重复整条谱行**（jpword/musicpp 的老行为，流行敬拜谱常见）；
    *  >0 = **一行谱下叠多行词**（传统圣诗本的排法，原书 500 首就是这样），值为段间行距。
    *  只在「无反复、纯多段」（PlayData.isSimpple）的曲子上生效——有反复房号的谱

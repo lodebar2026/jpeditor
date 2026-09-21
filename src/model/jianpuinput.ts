@@ -9,7 +9,7 @@
 // 每个和弦带元素 id：点选、试听高亮、断句量宽都按它认。
 
 import { Fraction } from "../common/fraction";
-import { DYNAMICS } from "../pu/glyph";
+import { BARLINE_MARKS, DYNAMICS, TERMS } from "../pu/glyph";
 import { GlyphCodes } from "../smufl/smufl";
 import { harmonyToText } from "../score/harmonyparse";
 import { SECTION_WORD_RE } from "../score/phraseinput";
@@ -615,7 +615,7 @@ function songInput(song: PuSong, idOf: (el: NoteElement) => ElementId | null, fo
   for (const v of voices) {
     const lines = linesOfVoice(song, v);
     if (lines.length === 0) continue;
-    parts.push({ measures: rowsPart(lines, time, key, idOf, forExpanded, forExpanded ? pageEnds(song, v) : undefined) });
+    parts.push({ measures: rowsPart(lines, time, key, idOf, forExpanded, forExpanded ? pageEnds(song, v) : undefined, !forExpanded) });
   }
   if (parts.length === 0) return null;
   return { parts, title: meta.titles[0] ?? "", credit, playData };
@@ -657,6 +657,7 @@ function rowsPart(
   idOf: (el: NoteElement) => ElementId | null,
   renumberVerses: boolean,
   pageEndSet?: ReadonlySet<ScoreLine>,
+  decorate = false,
 ): JMeasure[] {
   const measures: JMeasure[] = [];
   let measure: JMeasure | null = null;
@@ -738,6 +739,14 @@ function rowsPart(
           default: mea.barline = BarStyle.NONE;
         }
         mea.entries.push({ kind: "bar", position: new Fraction(0) });
+        // 小节线上的跳转记号（`&fine` `&dc` `&ds` `&ty` `&hs`）贴着这条小节线、挂在它前面那个音上
+        if (decorate && lastChord) {
+          for (const orn of el.ornaments) {
+            const bm = BARLINE_MARKS[orn.name];
+            if (bm?.text) lastChord.directions.push({ text: bm.text, music: false, italic: false, atBarEnd: true });
+            else if (bm?.glyph) lastChord.directions.push({ text: bm.glyph, music: true, italic: false, atBarEnd: true });
+          }
+        }
         newMeasureNeeded = true;
         return;
       }
@@ -771,17 +780,20 @@ function rowsPart(
       if (tup.ends) nt.tupletEnd = true;
       if (nt.tupletBegin || nt.tupletEnd) tupletNotes.push(nt);
 
+      // **先收后起**：同一个音既收前一条弧又起下一条（123 的 `(3_ | (3:(3_) 3_)`、ABC 的连续 tie）时，
+      // 先起的话 `slurOpen` 被这个音顶掉，前一条弧就收到自己身上、整条丢了（secret base 跨小节那条）。
       const slur = marksEdgeAt(line.marks, index, "slur");
-      if (slur.starts) {
-        ch.slurStart = true;
-        slurOpen = ch;
-      }
       if (slur.ends) {
         ch.slurEnds++;
         if (slurOpen) slurOpen.slurEndChord = ch;
         slurOpen = null;
       }
+      if (slur.starts) {
+        ch.slurStart = true;
+        slurOpen = ch;
+      }
       for (const orn of el.ornaments) if (orn.name === "yc" || orn.name === "ycy") ch.fermata = true;
+      if (decorate) decorateChord(ch, el);
 
       ch.duration = nominal(ch);
       mea.entries.push(ch);
@@ -796,6 +808,21 @@ function rowsPart(
   pairTuplets(tupletNotes);
   layoutTimes(measures, true);
   return measures;
+}
+
+/**
+ * 原样档（`decorate`）才要的那几样：和弦、段落词、重音、力度/术语、倚音。展开档不画它们（投影片只要旋律与词）。
+ * 只收引擎画得出的：奏法记号引擎只有重音（`entry.ts::addNotations`），其余 `&xx` 暂不出现。
+ */
+function decorateChord(ch: JChord, el: NoteElement): void {
+  if (el.chord) ch.harmony = el.chord;
+  if (el.annotation) ch.sectionWord = el.annotation;
+  for (const orn of el.ornaments) {
+    if (orn.name === "zy") ch.articulations.push("accent");
+    else if (DYNAMICS[orn.name]) ch.directions.push({ text: DYNAMICS[orn.name]!, music: true, italic: false });
+    else if (TERMS[orn.name]) ch.directions.push({ text: TERMS[orn.name]!, music: false, italic: true });
+  }
+  ch.graceNotes = el.graceBefore.map((g) => ({ number: String(g.pitch), jpOctave: g.octave, jpAlter: jpAlterOf(g) }));
 }
 
 /** 按时值排出各条目的拍位与小节起点。`scaleInner`：多连音起止之间的音也乘 2/3（`.jpwabc` 旧口径只乘首尾两个）。 */

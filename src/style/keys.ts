@@ -54,6 +54,7 @@ export const JIANPU_KEYS: Record<string, KeyDef> = {
   "chord-plain": { kind: "bool", layout: "chordPlainText", book: "metrics.chordPlain" },
   "bracket-width": { kind: "len", layout: "bracketWidth", book: "metrics.bracketWidth" },
   "bracket-foot": { kind: "len", layout: "bracketFoot", book: "metrics.bracketFootEm" },
+  "tuplet-style": { kind: "word", layout: "tupletStyle", note: "取 bracket（括线）/ arc（两段弧）；成书与混排不支持" },
   "repeat-dot-diameter": { kind: "len", book: "metrics.repeatDotDiam", note: "纯简谱的反复点按半径（repeatDotRadius）自算" },
   "slur-thickness": { kind: "len", layout: "slurTieThickness", book: "metrics.slurThicknessEm" },
   "slur-arc": { kind: "len", book: "metrics.slurArcEm", note: "弧高目标只有成书反算缩放用" },

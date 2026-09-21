@@ -168,7 +168,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
    *  排版、分行度量（`_phraseFit`）都认它——两处若各用各的纸，行长会按 A 张纸算、
    *  按 B 张纸排。 */
   get layoutPage(): { w: number; h: number } {
-    if (this.jpProfile === "pptx") return { w: this.pageW, h: this.pageH };
+    if (this.layoutMode === "expanded") return { w: this.pageW, h: this.pageH };
     const paper = PAPER_SIZES[this.jpPaper];
     // 长图：宽固定，高度由内容说了算（传进去的只是个不参与分页的占位）
     if (!paper) return { w: LONG_IMAGE_WIDTH, h: LONG_IMAGE_WIDTH };
@@ -591,11 +591,20 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
   }
 
+  /** 原样档这一份 `ScoreDoc` 走不走简谱引擎（`JinpuPainter`）：格式说走（`caps.originalEngine`），
+   *  且投影出来只有一条旋律——引擎只排 `parts[0]`，多声部的曲子仍回落 `PuPainter`。 */
+  private _originalOnEngine(): boolean {
+    if (this.adapter.caps.originalEngine !== "jianpu" || this.layoutMode !== "original") return false;
+    const score = this.puScore(false);
+    return score !== null && score.parts.length === 1;
+  }
+
   /** 经 `ScoreDoc` 排版并铺页（文本谱、123、ABC 共用）：
-   *  展开档先投影成简谱引擎输入、与 `.jpwabc` 同一个排版器；原样档走 `PuPainter`（印刷原版的观感）。 */
+   *  展开档先投影成简谱引擎输入、与 `.jpwabc` 同一个排版器；原样档 123/ABC 的单声部曲子同样投影后
+   *  交给引擎（与 `.jpwabc` 原样档同一个 `JinpuPainter`），文本谱与多声部走 `PuPainter`（印刷原版的观感）。 */
   private _layoutScoreDoc(doc: ScoreDoc, what: string): boolean {
     try {
-      if (this.layoutMode === "expanded") {
+      if (this.layoutMode === "expanded" || this._originalOnEngine()) {
         this._puPainter = null;
         // 同一份文本只投影一次（puScore 有缓存）；点选与高亮按元素 id 认
         const score = this.puScore();
@@ -708,7 +717,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** 需要的话翻页并滚动到可视区（复用播放高亮那一套做法）。 */
   private _scrollSyncIntoView(el: Element | undefined, entry: SyncEntry): void {
     if (!el) return;
-    const page = this._puPainter?.pageOfNote(entry.id) ?? null;
+    const page = this._puPainter
+      ? this._puPainter.pageOfNote(entry.id)
+      : this.painter.pageOfChord(entry.id);
     if (page !== null && page !== this.pageIndex) this.pageIndex = page;
     el.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
@@ -1035,10 +1046,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   /** PlaybackHost：播到某个元素 → 谱面高亮 + 保证可见。
    *  高亮留在 App 而不进控制器：各排版器按 id 找音的办法不同，那属于「谁在画谱面」。 */
   highlightPlaying(id: ElementId | null, pass: number): void {
-    // 原样档：「原版」谱面直接按元素 id 索引。
-    if (this.adapter.caps.layout === "scoredoc" && this.layoutMode === "original") {
-      const painter = this._puPainter;
-      if (!painter) return;
+    // 文本谱原样档：「原版」谱面直接按元素 id 索引（走引擎的 123/ABC 原样档落到下面那条路）。
+    const painter = this._puPainter;
+    if (painter) {
       const pg = painter.highlight(id, Math.max(0, pass - 1));
       if (id !== null && pg !== null) {
         if (pg !== this.pageIndex) this.pageIndex = pg;
@@ -1389,6 +1399,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
    * 没有尺子时 `phrase.ts` 按出厂的小节数目标断，也就是一句一行——印刷原版要的正是这个。
    */
   private _puPhraseMeasure(): FitMeasure | null {
+    // 123/ABC 原样档走引擎时（`_originalOnEngine`）量它自己那张纸、那个字号，与 `.jpwabc` 原样档同口径
+    if (this._originalOnEngine()) return (score) => this._fitOf(score, this.layoutPage.w, this.fontSize);
     if (this.layoutMode !== "expanded") return null;
     // 量的是断行模块自己投影的那份输入，所以给的是函数不是结果。
     return (score) => this._fitOf(score, this.pageW, jianpuSizes(this.styleOf("expanded")).fontSize);

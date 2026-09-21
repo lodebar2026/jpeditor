@@ -180,16 +180,20 @@ function pushInline(row: RowBuild, items: readonly InlineItem[] | undefined, mea
   }
 }
 
-function buildRow(measures: readonly Measure[]): RowBuild {
+/** `ranges`：切在小节中间的那几个小节只取 `[from, to)` 这一段元素（见 `SystemRow.ranges`）；
+ *  右小节线与小节尾的夹层只归最后一段。 */
+function buildRow(measures: readonly Measure[], ranges?: ReadonlyMap<Measure, readonly [number, number]>): RowBuild {
   const row: RowBuild = { elements: [], refs: [], indexOf: new Map(), anchors: [], measureSpan: new Map() };
   for (const mea of measures) {
     const first = row.elements.length;
+    const [from, to] = ranges?.get(mea) ?? [0, mea.elements.length];
+    const tail = to >= mea.elements.length;
     // **左小节线不输出为元素**：`PuDoc` 里 barline 元素就是小节分隔，行首再来一根会凭空
     // 多出一个空小节（引擎输入随即 `measure has no chord` 抛错）。
     // 它携带的信息已由「前一小节的右线」与房号的 volta mark 承载。
     let pendingGrace: NoteElement[] = [];
     let lastNote: NoteElement | null = null;
-    for (const el of mea.elements) {
+    for (const el of mea.elements.slice(from, to)) {
       if (el.kind === "space") {
         // `y`（无时值占位）与 `x`（不可见休止）都落成**隐藏音符**：
         // `PuDoc` 没有无时值占位，`hidden` 的 0 是最接近的东西。
@@ -252,13 +256,13 @@ function buildRow(measures: readonly Measure[]): RowBuild {
       }
     }
     // 只有房号、没有线的「右线」是行末补出来挂 ending 的，原文那里没有小节线
-    const right = (mea.barlines ?? []).find((b) => b.location === "right");
+    const right = tail ? (mea.barlines ?? []).find((b) => b.location === "right") : undefined;
     if (right && right.style !== undefined) {
       pushInline(row, right.before, mea);
       row.elements.push(puBar(right));
       row.refs.push({ barline: right, measure: mea });
     }
-    pushInline(row, mea.trailing, mea);
+    if (tail) pushInline(row, mea.trailing, mea);
     // 跨度只数有归属的符号与小节线（夹层不算），房号的起止偏移以此为基准（`Ending.startOffset/endOffset`）
     let f = -1;
     let l = -1;
@@ -533,22 +537,55 @@ interface SystemRow {
   /** `print.system`（文本谱来源才有） */
   system: number | undefined;
   measures: Measure[];
+  /** 切在小节中间的小节：这一行只取它 `[from, to)` 这一段元素（见 `splitSystems`） */
+  ranges?: Map<Measure, [number, number]>;
+  /** 这一行是从小节中间接着起的：首小节的 `print` 属于上一行，不是这一行的 */
+  cont?: boolean;
 }
 
-/** 一个声部按系统切开（模型口径：带 `print` 的小节**起**新系统，见 `doc.ts::Print`）。 */
+/** 和弦（或它的某条增时线）之后原位换行（`Chord.lineBreakAfter`，`.jpwabc` 与 123 的小节中间 `$`）。 */
+const breaksInline = (el: Chord | Space): boolean =>
+  el.kind === "chord" && (el.lineBreakAfter !== undefined || (el.sustains ?? []).some((su) => su.lineBreakAfter !== undefined));
+
+/**
+ * 一个声部按系统切开（模型口径：带 `print` 的小节**起**新系统，见 `doc.ts::Print`）。
+ * **小节中间换行**（`Chord.lineBreakAfter`）照原位切：那一小节分成两段、各归一行，
+ * 下一小节上同源的那条小节级 `print`（「这一小节之后换行」的另一份记法）就不再断第二次。
+ */
 function splitSystems(part: Part): SystemRow[] {
   const rows: SystemRow[] = [];
   let cur: Measure[] = [];
+  let ranges = new Map<Measure, [number, number]>();
+  let cont = false;
   let sys: number | undefined;
+  /** 上一小节里已经在原位断过：这一小节的 `print` 是同一处换行 */
+  let swallow = false;
+  const flush = (): void => {
+    if (cur.length) rows.push({ system: sys, measures: cur, ...(ranges.size ? { ranges } : {}), ...(cont ? { cont } : {}) });
+    cur = [];
+    ranges = new Map();
+    cont = false;
+  };
   for (const m of part.measures) {
     if (m.print?.newSystem || m.print?.newPage) {
-      if (cur.length) rows.push({ system: sys, measures: cur });
-      cur = [];
+      if (!swallow) flush();
       sys = m.print.system;
     }
+    swallow = false;
+    let from = 0;
+    m.elements.forEach((el, i) => {
+      if (i === m.elements.length - 1 || !breaksInline(el)) return;
+      ranges.set(m, [from, i + 1]);
+      cur.push(m);
+      flush();
+      cont = true;
+      from = i + 1;
+      swallow = true;
+    });
+    if (from > 0) ranges.set(m, [from, m.elements.length]);
     cur.push(m);
   }
-  if (cur.length) rows.push({ system: sys, measures: cur });
+  flush();
   return rows.length ? rows : [{ system: undefined, measures: [] }];
 }
 
@@ -596,7 +633,7 @@ function toPuSong(song: Song, index: number, rawLines: readonly string[]): SongV
     return m ? Number(m[1]) : pi + 1;
   };
   // 各声部的全部行先建好——跨行记号要看别的行有没有端点
-  const builds = perPart.map((rows) => rows.map((row) => buildRow(row.measures)));
+  const builds = perPart.map((rows) => rows.map((row) => buildRow(row.measures, row.ranges)));
   const voltas = perPart.map((rows, pi) => rowVoltas(rows.map((r) => r.measures), builds[pi]!));
 
   const systems = new Map<number, { pi: number; r: number }[]>();
@@ -619,7 +656,8 @@ function toPuSong(song: Song, index: number, rawLines: readonly string[]): SongV
     for (const { pi, r } of systems.get(key)!) {
       const part = song.parts[pi]!;
       const build = builds[pi]![r]!;
-      const p = perPart[pi]![r]!.measures[0]?.print;
+      const sr = perPart[pi]![r]!;
+      const p = sr.cont ? undefined : sr.measures[0]?.print;
       if (bySystem && p?.newPage) newPage = true;
       if (p?.texts) {
         texts = p.texts;

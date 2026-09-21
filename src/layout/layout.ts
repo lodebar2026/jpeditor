@@ -9,7 +9,7 @@ import { GlyphCodes } from "../smufl/smufl";
 import { BandItem, bandTop, stackUpperBand } from "./upperband";
 import { BarStyle, StartStopDiscontinue } from "../score/enums";
 import { measureDuration, type JChord, type JMeasure, type JNote, type JScore } from "./input";
-import { getOrNull, PageItem, GraphicPath, Group, TextFrame, SmuflText, JpNumber, Lyric, Tie, slurStyleOf, type SlurStyle, type SlurTieBase } from "./pageitem";
+import { getOrNull, PageItem, GraphicPath, Group, TextFrame, SmuflText, JpNumber, Lyric, Tie, Slur, slurStyleOf, type SlurStyle, type SlurTieBase } from "./pageitem";
 import { Entry, KeySig, TimeSig, NoteEntry, Barline, LineBreak, BeamLine, EntryItemInfo, entryBounds, normalizeEntryX, placeSectionWord, sectionWordHangLeft, sectionWordRun, type SectionWordSlot } from "./entry";
 import { LayoutOptions } from "./options";
 
@@ -1323,13 +1323,33 @@ export class Line {
       // 书级重排那一路的小字号下会宽出一大截空），两边各留一道约 0.15em 的气。
       const halfGap = inkHalfW + txt.font.size * 0.15;
       const inkHalfH = ((box.bBoxNE[1] - box.bBoxSW[1]) / 2) * sp;
-      path.moveTo(0, 0);
-      path.lineTo(0, y);
-      path.lineTo(width / 2 - halfGap, y);
-      path.moveTo(width, 0);
-      path.lineTo(width, y);
-      path.lineTo(width / 2 + halfGap, y);
-      tupGrp.add(path);
+      // 线那一截的顶（相对 tupGrp，负 = 上方）：括线是横线那条，两段弧是弧顶
+      let lineTop = y - path.strokeWidth / 2;
+      let numY = y; // 数字墨迹中心落的高度
+      if (opt.tupletStyle === "arc") {
+        // **两段弧**：同页 slur 那条月牙从中间挖掉数字那一截（`SlurStyle.gap`），
+        // 两端照样收尖、断口处是弧中段的厚度；弧高、厚度、描边全随 `slurStyleOf`。
+        const arc = new Slur();
+        arc.init(new Point(0, 0), new Point(width, 0), {
+          ...slurStyleOf(opt),
+          gap: { x0: width / 2 - halfGap, x1: width / 2 + halfGap },
+        });
+        arc.update();
+        arc.classes.add("tuplet-arc");
+        tupGrp.add(arc);
+        lineTop = arc.y;
+        // 数字骑在弧顶那条线上（弧在断口处已接近顶点，取包围盒顶再往下半个厚度）
+        numY = arc.y + opt.slurTieThickness / 4;
+        txt.y = numY - inkCy;
+      } else {
+        path.moveTo(0, 0);
+        path.lineTo(0, y);
+        path.lineTo(width / 2 - halfGap, y);
+        path.moveTo(width, 0);
+        path.lineTo(width, y);
+        path.lineTo(width / 2 + halfGap, y);
+        tupGrp.add(path);
+      }
       tupGrp.add(txt);
       this.group.add(tupGrp);
       // 墨迹盒现画现记（见 `Line.tupletBoxes`）：横线在 `y`（负 = 上方），竖脚落到 0，
@@ -1342,11 +1362,11 @@ export class Line {
         key: tupGrp,
         x0: left,
         x1: left + width,
-        top: ypos + y - path.strokeWidth / 2,
+        top: ypos + lineTop,
         bottom: ypos,
         numX0: left + width / 2 - halfGap,
         numX1: left + width / 2 + halfGap,
-        numTop: ypos + y - inkHalfH,
+        numTop: ypos + numY - inkHalfH,
       });
     }
   }
