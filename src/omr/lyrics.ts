@@ -18,13 +18,13 @@ import { simplifiedOf } from "./hanvariant";
 const isHanzi = (c: string) => /[一-鿿]/.test(c);
 // 歌词里贴在字尾的标点。简谱印刷用全角，但 PP-OCR 常把 ，；：！？ 识成半角 , ; : ! ? ——
 // 一并收下、统一折成全角（与 GT 一致；半角句点 . 不收，避免撞段号 "1." / 小数点）。
-const LYRIC_PUNCT = /[，。、；：！？…—,;:!?]/;
+export const LYRIC_PUNCT = /[，。、；：！？…—,;:!?]/;
 const PUNCT_FULL: Record<string, string> = { ",": "，", ";": "；", ":": "：", "!": "！", "?": "？" };
-const normPunct = (ch: string) => PUNCT_FULL[ch] ?? ch;
+export const normPunct = (ch: string) => PUNCT_FULL[ch] ?? ch;
 // 引号（都不占音符）：开引号 “‘ **领起后一字**（如 “阿门”里的 “ 贴 阿），闭引号 ”’ **贴前一字**。
 // PP-OCR 对中文引号输出全角（实测 rec 已能读出 “ ”），故一并收下；半/全角开闭都认。
-const LYRIC_QUOTE_OPEN = /[“‘"']/;
-const LYRIC_QUOTE_CLOSE = /[”’]/;
+export const LYRIC_QUOTE_OPEN = /[“‘"']/;
+export const LYRIC_QUOTE_CLOSE = /[”’]/;
 // 英文歌词：一个音节 = 一串字母(可含撇号 don't)，音节间以连字符相连（"How-awe-some-you-are"），
 // 词间以空白相隔。故拉丁串按 **连字符** 与 **空白**(rec 不吐空格 → 按源图字距)切成音节单元，
 // 每个音节占一个音符，与汉字单元同等对待。
@@ -65,7 +65,7 @@ const normalizeJump = (s: string): string => {
 const VERSE_LABEL_RE = /^[\s(（[]*((?:\d[\s.．、,，/]*){1,4})/;
 // 中文数字段号 `一、` `二.`：分隔符**必须有**——没有分隔符的「一」多半就是歌词首字（「一生」）。
 // 它是汉字，装配时不会像阿拉伯数字那样被自然丢弃，得在装配里显式跳过（见 CN_LABEL_AT）。
-const CN_NUM = "一二三四五六七八九十";
+export const CN_NUM = "一二三四五六七八九十";
 const CN_LABEL_RE = new RegExp(`^[\\s(（[]*([${CN_NUM}])\\s*([、.．])`);
 /** 行首段号 → 段号列表；不是段号则 null。 */
 function parseVerseLabel(raw: string): number[] | null {

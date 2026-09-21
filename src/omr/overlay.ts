@@ -311,6 +311,8 @@ function buildOverlayGroup(
   }
   if (opts?.lyrics !== false) {
     renderLyricsAligned(g, score.lyricRegions ?? [], lyrH);
+    // 谱后单独排版的附段：诗行不跟音符对齐，整行按源图框原位画（同页眉画法）。
+    if (!rowSet) for (const r of score.stanzaRegions ?? []) renderHeaderRegion(g, r, "omr-lyric");
   }
   // 和弦记号：印在谱行上方，按源图框原位绘制（与页眉同一套画法——整段一串、无逐字位）。
   for (const r of score.chordRegions ?? []) {

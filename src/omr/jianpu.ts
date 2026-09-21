@@ -13,6 +13,7 @@ import { connectedComponents } from "./ccl";
 import type { OcrBackend } from "./ocr";
 import { recognizeLyrics } from "./lyrics";
 import { recognizeHeader } from "./header";
+import { recognizeTrailingStanzas } from "./stanzas";
 import { detectSlurs, tupletCandidates } from "./slur";
 import { detectRepeatsAndEndings } from "./repeats";
 import { detectSegno } from "./segno";
@@ -1847,11 +1848,16 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 歌词：仅当后端支持中文文本识别(PaddleOCR)时，识别乐谱行下方歌词并按 x 对齐到音符。
   let lyricRegions: RecognizedScore["lyricRegions"];
   let chordRegions: RecognizedScore["chordRegions"];
+  let stanzaRegions: RecognizedScore["stanzaRegions"];
   if (ocr.recognizeTexts) {
     const lyricComps = fermataArcs.size ? comps.filter((k) => !fermataArcs.has(k)) : comps;
     const lr = await recognizeLyrics(bin, lyricComps, useRows, numH, ocr, headerRegions);
     lyricRegions = lr.lyrics.length ? lr.lyrics : undefined;
     chordRegions = lr.chords.length ? lr.chords : undefined;
+    // 谱后单独排版的附段（第 2…N 段印成诗行、不跟音符对齐）：照第 1 段的音位骨架填进去。
+    // 要排在下面「digit=0 复原」「隐含 tie 补检」之前——两者都看音符有没有词。
+    const st = await recognizeTrailingStanzas(bin, useRows, numH, ocr, lyricRegions);
+    if (st.length) stanzaRegions = st;
   }
   {
     const verses = Math.max(0, ...useRows.flatMap((r) => r.nums.map((n) => n.lyrics?.length ?? 0)));
@@ -1930,7 +1936,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   const dotDiam = dotSizes.length ? median(dotSizes) : undefined;
 
-  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, number, numberSide, title, subtitle, credits, tempo, headerRegions, lyricRegions, chordRegions, dotDiam };
+  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, number, numberSide, title, subtitle, credits, tempo, headerRegions, lyricRegions, chordRegions, stanzaRegions, dotDiam };
 }
 
 

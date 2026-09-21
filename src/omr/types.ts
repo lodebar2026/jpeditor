@@ -158,6 +158,9 @@ export interface RecognizedScore {
   headerRegions?: TextRegion[]; // 页眉文本的源图定位（识别模式按原位叠加）
   lyricRegions?: TextRegion[]; // 歌词单字的源图定位+字号（识别模式按原图位置/大小叠加）
   chordRegions?: TextRegion[]; // 和弦记号的源图定位（识别模式按原位叠加）
+  // 谱后单独排版的附段歌词（诗行，不跟音符对齐）：收下的各行原文与源图框，识别模式按原位叠加。
+  // 内容已按第 1 段的音位骨架写进各音符的 lyrics[1..]，见 stanzas.ts。
+  stanzaRegions?: TextRegion[];
   dotDiam?: number; // 八度点/附点在源图的统计直径（识别模式按原图大小画点，非按字号推算）
 }
 
