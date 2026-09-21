@@ -55,9 +55,15 @@ export function isXmlShaped(song: Song): boolean {
   return song.parts.some((p) => p.measures[0]?.attrs?.divisions !== undefined);
 }
 
-export function projectForMusicXml(src: Song): Song {
+export interface ProjectOptions {
+  /** 换行改照这些音起行（简谱视图实际排出的各行首音，`App.jianpuLineStarts`）。不给就用模型里的换行（源文的行） */
+  lineStarts?: ReadonlySet<ElementId> | null;
+}
+
+export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Song {
   if (isXmlShaped(src)) return src;
   const song: Song = structuredClone(src);
+  if (options.lineStarts?.size) applyLineStarts(song, options.lineStarts);
   const fifths = fifthsOf(song);
   const hosts = sustainHosts(song);
   const tuplets = tupletRatios(song);
@@ -98,6 +104,34 @@ export function projectForMusicXml(src: Song): Song {
 }
 
 // ───────────────────────── 头部 ─────────────────────────
+
+/** 小节级换行（`print.newSystem`）改成「简谱视图里起行的那些小节」：行首音是小节首音就在该小节起行，
+ *  落在小节中间（弱起谱的乐句尾常这样）顺延到下一小节——MusicXML 只能在小节线处换行（同 `joinOpenMeasures`）。
+ *  `newPage` 不动。行首音都在第一声部，其余声部按小节序号跟它走。一个也对不上（id 过期）就不改。 */
+function applyLineStarts(song: Song, starts: ReadonlySet<ElementId>): void {
+  const breaks = new Set<number>();
+  for (const part of song.parts) {
+    let pending = false;
+    let hit = false;
+    part.measures.forEach((m, i) => {
+      const chords = m.elements.filter((e): e is Chord => e.kind === "chord");
+      const first = chords.length > 0 && starts.has(chords[0]!.id);
+      if (first || chords.some((c) => starts.has(c.id))) hit = true;
+      if (i > 0 && (first || pending)) breaks.add(i);
+      pending = chords.slice(1).some((c) => starts.has(c.id));
+    });
+    if (hit) break;
+    breaks.clear();
+  }
+  if (breaks.size === 0) return;
+  for (const part of song.parts) {
+    part.measures.forEach((m, i) => {
+      if (m.print) delete m.print.newSystem;
+      if (breaks.has(i)) m.print = { ...(m.print ?? {}), newSystem: true };
+      else if (m.print && Object.keys(m.print).length === 0) delete m.print;
+    });
+  }
+}
 
 function fifthsOf(song: Song): number {
   const k = song.key;

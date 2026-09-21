@@ -1182,11 +1182,19 @@ export class Line {
     }
   }
 
+  /** 断行之后每一行首个音符的和弦 id（`JChord.id` = `ScoreDoc` 元素 id）。五线谱自动铺排拿它当优选断点
+   *  （`App.jianpuLineStarts`）；展开档一个和弦每遍出现一次，用的人自己去重。 */
+  lineStarts: number[] = [];
+
   layout(width: number, height: number, opt: LayoutOptions): Group[] {
     this.lyricGap = opt.lyricGap;
     this.dropDoubledBarlines(opt);
     this.calcXPos();
     const lines = this.doLineBreak(width);
+    this.lineStarts = lines.flatMap((l) => {
+      const e = l.entries.find((x): x is NoteEntry => x instanceof NoteEntry && x.chord.id !== null);
+      return e?.chord.id != null ? [e.chord.id] : [];
+    });
     // 段落词挂在**行末那个音符**上时，它标的其实是下一行的起句（「（副歌）」印在主歌
     // 最后一行的行尾没有意义，副歌是从下一行开始唱的）——挪到下一行行首那个音符上。
     // 锚点是按「第几个音符」记的，重排后的断行与原书不同，落到行末是常事（013 首）。
@@ -1819,6 +1827,8 @@ export class Line {
 export class Layout {
   options: LayoutOptions;
   pages: Group[] = [];
+  /** 上一次 `fromScore` 各行首音的和弦 id，见 `Line.lineStarts` */
+  lineStarts: number[] = [];
   constructor(public fontSize: number) {
     this.options = new LayoutOptions(fontSize);
   }
@@ -1971,6 +1981,7 @@ export class Layout {
     const l = this.buildLine(scr, dur);
     l.connectTextFrames();
     for (const g of l.layout(cw, ch, this.options)) this.pages.push(g);
+    this.lineStarts = l.lineStarts;
     this.shiftToMargin();
   }
 

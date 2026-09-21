@@ -7,9 +7,10 @@ import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { emitJpwabc } from "../model/tojpw";
 import { asset } from "../common/asset";
 import { scoreDocToMusicXml } from "../model/toxml";
+import { loadScoreDoc } from "../model/fromxml";
 import { jpwToScoreDoc } from "../model/fromjpw";
 import { JpwFile } from "../jpword/jpwfile";
-import { annotateLayout } from "../score/musicxmllayout";
+import { engraveScoreDoc } from "../mixed/engrave";
 import { colorToCss } from "../common/geom";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -155,7 +156,7 @@ const MUSICXML_MIME = "application/vnd.recordare.musicxml+xml";
 /** 导出 MusicXML（简谱档与混排档）。 */
 export async function exportMusicXml(app: App): Promise<void> {
   await saveBytes(
-    new TextEncoder().encode(buildMusicXml(app)),
+    new TextEncoder().encode(await buildMusicXml(app)),
     `${baseName(app)}.musicxml`,
     MUSICXML_MIME,
   );
@@ -166,47 +167,40 @@ export async function exportMusicXml(app: App): Promise<void> {
  *  只有两条路：混排预览有底本 → 底本原样；否则由唯一写出端
  *  `toxml.ts::scoreDocToMusicXml` 整份重写——`.jpwabc` 先经 `jpwToScoreDoc` 进模型，速度、房号（由 `.Repeat` 反推）、
  *  绝对音高都由投影层 `xmlproject.ts` 补（与 123/文本谱同一条路）。 */
-export function buildMusicXml(app: App): string {
+export async function buildMusicXml(app: App): Promise<string> {
   const base = app.mixedDoc?.source;
   // `.musicxml` 的混排：底本即五线谱原文，原样给出（文本格式的混排底本是由下面这条派生的，不算原文）
   if (base && app.docFormat === "musicxml" && app.mode === "mixed") return base;
   return sourceMusicXml(app);
 }
 
-/** 当前**源文**经唯一写出端投成 MusicXML（不看混排底本），补好给第三方软件看的版面。 */
-export function sourceMusicXml(app: App): string {
-  return finishMusicXmlText(sourceMusicXmlBare(app));
-}
-
-/** 同上，但**不补版面坐标**（`annotateLayout`）。文本格式进五线谱/混排走这一份（`App._ensureMixedDoc`
- *  写出后再读回成 `mixedDoc`）：`annotateLayout` 的音符坐标是按小节宽均分的粗略值、次行起不给
- *  谱号调号留位，混排排版器见了坐标就照用，行首音会压在谱号下；不带坐标它自己铺排（`layoutpass.ts::autoPlaceNotes`，
- *  五线谱识别的产物也走这条）。 */
-export function sourceMusicXmlBare(app: App): string {
-  if (app.docFormat === "jpwabc") {
-    const f = JpwFile.fromString(app.getText());
-    if (!f) throw new Error("这份 .jpwabc 读不出来");
-    return scoreDocToMusicXml(jpwToScoreDoc(f));
-  }
-  const doc = app.currentScoreDoc();
-  if (!doc) throw new Error("这份谱里没有可导出的曲行");
+/** 当前**源文**经唯一写出端投成 MusicXML（不看混排底本），带上给第三方软件看的版面坐标：
+ *  由五线谱引擎按设置里的纸排一遍、坐标写回模型（`mixed/engrave.ts`），与屏幕上的五线谱同一套分行。
+ *  谱里自带版面的原样不动。 */
+export async function sourceMusicXml(app: App): Promise<string> {
+  const doc = loadScoreDoc(sourceMusicXmlBare(app));
+  await engraveScoreDoc(doc, app.staffPage);
   return scoreDocToMusicXml(doc);
 }
 
-/** MusicXML 的共同收尾：解析校验 → 补版面 → 序列化 → 补回 XML 声明。
- *  XMLSerializer 不输出 XML 声明（DOCTYPE 会保留），不补回部分软件拒绝打开。 */
-export function finishMusicXmlText(xml: string): string {
-  const doc = new DOMParser().parseFromString(xml, "application/xml");
-  if (doc.querySelector("parsererror")) throw new Error("生成的 MusicXML 无法解析");
-  annotateLayout(doc); // 分行沿用底本 <print>，版面参数用 A4 常量表
-  let out = new XMLSerializer().serializeToString(doc);
-  if (!out.startsWith("<?xml")) out = `<?xml version="1.0" encoding="UTF-8"?>\n${out}`;
-  return out;
+/** 同上，但**不带版面坐标**。文本格式进五线谱/混排走这一份（`App._ensureMixedDoc` 写出后再读回成 `mixedDoc`）：
+ *  排版器见了坐标就照用，不带坐标才自己铺排（`layoutpass.ts`，五线谱识别的产物也走这条）。 */
+export function sourceMusicXmlBare(app: App): string {
+  // 换行照简谱视图实际排出的行（五线谱自动铺排拿它当优选断点）；`.jpwabc` 用排版器那份模型，元素 id 才对得上
+  const lineStarts = app.jianpuLineStarts();
+  if (app.docFormat === "jpwabc") {
+    const f = JpwFile.fromString(app.getText());
+    if (!f) throw new Error("这份 .jpwabc 读不出来");
+    return scoreDocToMusicXml(app.jpwDoc ?? jpwToScoreDoc(f), { lineStarts });
+  }
+  const doc = app.currentScoreDoc();
+  if (!doc) throw new Error("这份谱里没有可导出的曲行");
+  return scoreDocToMusicXml(doc, { lineStarts });
 }
 
 /** 文本谱/123/ABC → MusicXML。`.musicxml` 那一档文档里就是 XML（原文或 `editScoreDoc` 整份重写过的），原样给出。 */
 export async function exportPuMusicXml(app: App): Promise<void> {
-  const text = app.docFormat === "musicxml" ? app.getText() : buildMusicXml(app);
+  const text = app.docFormat === "musicxml" ? app.getText() : await buildMusicXml(app);
   await saveBytes(new TextEncoder().encode(text), `${baseName(app)}.musicxml`, MUSICXML_MIME);
 }
 

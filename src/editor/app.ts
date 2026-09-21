@@ -33,7 +33,7 @@ import { formatOf, type DocFormatId, type FormatAdapter, type FormatHost } from 
 import { SyncIndex, type SyncEntry } from "./sync";
 import { describeLosses, planSave, type TargetFormat } from "../model/capability";
 import { showConfirmDialog } from "./dialogs";
-import { buildMusicXml, finishMusicXmlText, sourceMusicXmlBare } from "./export";
+import { buildMusicXml, sourceMusicXmlBare } from "./export";
 import { scoreDocToMusicXml } from "../model/toxml";
 import { emit123 } from "../j123/emit";
 import { emitAbc } from "../abcfamily/emitabc.entry";
@@ -109,7 +109,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /** 五线谱/混排档读的模型（MusicXML 形状）；null = 还没有（或读不出）五线谱视图。
    *  `.musicxml`：底本原文在 `mixedDoc.source`，混排档导出 MusicXML 原样给出（`export.ts::buildMusicXml`）；
-   *  文本格式：进五线谱时由源文派生（`_ensureMixedDoc`），`_mixedDerivedText` 记它由哪份源文来。 */
+   *  文本格式：进五线谱时由源文派生（`_ensureMixedDoc`），`_mixedDerivedText` 记它由哪份源文与哪套简谱设置来（`_mixedDeriveKey`）。 */
   mixedDoc: ScoreDoc | null = null;
   private _mixedDerivedText: string | null = null;
   private _mixedPainter: MixedPainter | null = null;
@@ -246,16 +246,18 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
    *  所以档位或设置一变就整个重建——排版器本身很轻，重的是随后的 reload。 */
   private _rebuildPainter(): void {
     const score = this.painter.score;
-    if (this.layoutMode === "expanded") {
-      this.painter = new ExpandedPainter(this.expandedOptions());
-    } else {
-      const sheet = this.styleOf("original", "jianpu");
-      const p = new JinpuPainter(jianpuFontSize(sheet));
-      p.layout.options.smuflMeta = this.meta;
-      applyJianpuStyle(p.layout.options, sheet);
-      this.painter = p;
-    }
+    this.painter = this._makePainter();
     this.painter.score = score;
+  }
+
+  /** 按当前档与设置新造一个排版器（`_rebuildPainter` 与 `jianpuLineStarts` 共用）。 */
+  private _makePainter(): ExpandedPainter | JinpuPainter {
+    if (this.layoutMode === "expanded") return new ExpandedPainter(this.expandedOptions());
+    const sheet = this.styleOf("original", "jianpu");
+    const p = new JinpuPainter(jianpuFontSize(sheet));
+    p.layout.options.smuflMeta = this.meta;
+    applyJianpuStyle(p.layout.options, sheet);
+    return p;
   }
 
   /** 展开档的设置——**只在这里组一次**：两种格式、屏幕预览与导出 PPTX 都吃这一份。 */
@@ -264,8 +266,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   }
 
   /** 把一份引擎输入交给当前排版器排版（展开档用自己的投影片尺寸，原样档用 `layoutPage`）。 */
-  private _layoutScore(score: JScore, breakDesc: string | null): void {
-    const p = this.painter;
+  private _layoutScore(score: JScore, breakDesc: string | null, p = this.painter): void {
     if (p instanceof ExpandedPainter) {
       p.load(score, breakDesc);
       return;
@@ -313,6 +314,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this._rebuildPainter();
     this.saveSettings();
     this.reload(this.getText());
+    // `.musicxml` 的五线谱/混排不经 reload 重排；谱里没写纸的要跟设置里的纸走
+    if (this.mode === "mixed" && this.docFormat === "musicxml") void this._renderMixedPages();
   }
 
   /** 字号落到**当前档**那一套里。原样档只收基础字号——那一档的标题/词曲是派生的，
@@ -336,6 +339,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this._rebuildPainter();
     this.saveSettings();
     this.reload(this.getText());
+    // `.musicxml` 的五线谱/混排不经 reload 重排；谱里没写纸的要跟设置里的纸走
+    if (this.mode === "mixed" && this.docFormat === "musicxml") void this._renderMixedPages();
   }
 
   /** Restore persisted render settings; call before mountEditor() so first render uses them.
@@ -476,16 +481,59 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
   }
 
+  /** 简谱视图此刻会排出的各行首音（和弦 id），五线谱自动铺排拿它当优选断点（`xmlproject.ts::applyLineStarts`）。
+   *  另造一个排版器按当前档与纸排一遍，不动屏幕上那个（混排档里屏幕上那个可能还是旧文本排的）。
+   *  走 `PuPainter` 的（文本谱原样档、多声部）返回 null：那一路一行就是 `ScoreDoc` 里的一行，不用另给。 */
+  jianpuLineStarts(): ReadonlySet<number> | null {
+    let score: JScore | null = null;
+    let breakDesc: string | null = null;
+    try {
+      if (this.adapter.caps.layout === "jpwabc") {
+        const f = JpwFile.fromString(this.getText());
+        const doc = this.jpwDoc;
+        if (!f || !doc) return null;
+        score = jianpuInputOfJpw(doc);
+        breakDesc = f.getSection(LayoutSection)?.desc ?? null;
+      } else if (this.layoutMode === "expanded" || this._originalOnEngine()) {
+        score = this.puScore();
+      }
+      if (!score) return null;
+      const p = this._makePainter();
+      this._layoutScore(score, breakDesc, p);
+      return new Set(p.layout.lineStarts);
+    } catch (e) {
+      console.warn("量简谱断行失败，按源文换行", e);
+      return null;
+    }
+  }
+
+  /** `.jpwabc` 当前源文的模型（与简谱排版器、导出同一份，元素 id 对得上）。 */
+  get jpwDoc(): ScoreDoc | null {
+    return this._jpwDoc;
+  }
+
+  /** 五线谱/混排档在谱里没写纸时用的纸：设置里原样档那张（文本谱取它自己那一档），长图 `heightPt = null`。 */
+  get staffPage(): { widthPt: number; heightPt: number | null } {
+    const paper = PAPER_SIZES[this.docFormat === "pu" ? this.puPaper : this.jpPaper];
+    return paper ? { widthPt: paper[0], heightPt: paper[1] } : { widthPt: LONG_IMAGE_WIDTH, heightPt: null };
+  }
+
+  /** 派生五线谱要看的设置：简谱的档、纸、字号变了，断点跟着变，得重新派生。 */
+  private _mixedDeriveKey(): string {
+    const pg = this.layoutPage;
+    return [this.getText(), this.layoutMode, this.jpPaper, this.puPaper, this.fontSize, pg.w, pg.h].join("\u0000");
+  }
+
   /** 五线谱/混排档的模型备好了没有。`.musicxml` 就是打开时读的那份；文本格式把**当前源文**经
    *  唯一写出端投成 MusicXML（`export.ts::sourceMusicXmlBare`，与导出 MusicXML 同一条路、只是不补版面坐标）
    *  再读回——混排排版器只吃 MusicXML 形状。源文没变不重做。 */
   private _ensureMixedDoc(): boolean {
     if (this.docFormat === "musicxml") return this.mixedDoc !== null;
-    const text = this.getText();
-    if (this.mixedDoc && this._mixedDerivedText === text) return true;
+    const key = this._mixedDeriveKey();
+    if (this.mixedDoc && this._mixedDerivedText === key) return true;
     try {
       this.mixedDoc = formatOf("musicxml").toScoreDoc!(sourceMusicXmlBare(this));
-      this._mixedDerivedText = text;
+      this._mixedDerivedText = key;
       return true;
     } catch (e) {
       console.error("转五线谱失败", e);
@@ -617,7 +665,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       const xml = abcToMusicXml(text);
       this._setMixedXml(xml);
       if (!this.mixedDoc) return false;
-      this._mixedDerivedText = text; // 进五线谱就用这份，不再走原生那条（它读不动）
+      this._mixedDerivedText = this._mixedDeriveKey(); // 进五线谱就用这份，不再走原生那条（它读不动）
       const score = jianpuInputOfXml(this.mixedDoc.songs[0]!);
       this._layoutScore(score, null);
       this.renderPages();
@@ -1262,7 +1310,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     const doc = this.currentScoreDoc();
     if (!doc) return false;
     mutate(doc);
-    this.setText(finishMusicXmlText(scoreDocToMusicXml(doc)));
+    this.setText(scoreDocToMusicXml(doc));
     if (this.mode === "mixed") void this._renderMixedPages();
     return true;
   }
@@ -1673,6 +1721,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this._mixedPainter.showJianpuLayer = this.mixedShowJianpuLayer;
     }
     this._mixedPainter.hideBarNumber = this.mixedHideBarNumber;
+    this._mixedPainter.page = this.staffPage;
     if (this.mixedDoc) {
       await this._mixedPainter.load(this.mixedDoc);
     }
@@ -1855,7 +1904,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     const bytes = this.docFormat === "musicxml"
       ? this.encodeForSave()
       : this.onDiskIsXml
-        ? new TextEncoder().encode(buildMusicXml(this))
+        ? new TextEncoder().encode(await buildMusicXml(this))
         : this.encodeForSave();
     await writeFile(path, bytes);
   }

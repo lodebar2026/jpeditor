@@ -55,7 +55,7 @@ async function boot() {
     { family: "Bravura Text", size: 20 },
     { family: "PingFang SC", size: 28 },
   ]);
-  const meta = await MetaData.load();
+  const meta = await MetaData.shared();
 
   const codePane = document.getElementById("code-pane")!;
   const scorePane = document.getElementById("score-pane")!;
@@ -114,10 +114,10 @@ async function boot() {
     ...parse, ...emit, ...fromjpw, ...frompu, ...helpers, ...jianpuinput, pu,
     ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw, ...xmlproject,
   }));
-  // `.jpwabc` ↔ MusicXML 的读入与版面注入暴露，供 scripts/xml-roundtrip.mjs 回归
+  // `.jpwabc` ↔ MusicXML 的读入与导出版面（`engraveScoreDoc`：五线谱引擎排好写回模型）暴露，供 scripts/xml-roundtrip.mjs 回归
   // （写出端只有 `model/toxml.ts`，在 `__j123` 里）。
   win.__xmlout = Promise.all([
-    import("./score/musicxmllayout"), import("./model/jianpuinput"), import("./model/fromxml"),
+    import("./mixed/engrave"), import("./model/jianpuinput"), import("./model/fromxml"),
     import("./model/fromjpw"), import("./jpword/jpwfile"), import("./jpword/parse"),
   ]).then(([layout, jianpuinput, fromxml, fromjpw, jpwfile, parse]) =>
     ({ ...layout, ...jianpuinput, ...fromxml, ...fromjpw, ...jpwfile, ...parse }));

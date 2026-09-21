@@ -19,10 +19,10 @@ MusicXML 双向（导入为 `ScoreDoc`；简谱档与成书经 `model/jianpuinpu
 | `loadScoreDoc(xml)` | `src/model/fromxml.ts` | → `ScoreDoc`（**直通，读得最全**；读不懂的挂 `Measure.raw`） |
 | `scoreDocToMusicXml(doc)` | `src/model/toxml.ts` | **唯一写出端**；简谱来源先经 `model/xmlproject.ts` 投影 |
 | `projectForJianpu(song)` | `src/model/jianpuproject.ts` | MusicXML 形状 → 简谱形状（简谱档排版、转 123 之前） |
-| `annotateLayout(...)` | `src/score/musicxmllayout.ts` | 版面注入 |
+| `engraveScoreDoc(doc, page)` | `src/mixed/engrave.ts` | 导出的版面坐标：五线谱引擎排一遍、写回模型（与屏幕同一套） |
 | `abcToMusicXml(abc, opts)` | `src/abc/abc2xml.ts:2150` | ABC → MusicXML（**只作对照基准与 fallback**，日常路径走 `parseAbc`） |
 
-`src/score/xmldom.ts` 是 DOM 后处理公共件（`child`/`children`/`childText`/`setText`/`insertOrdered`/`fragment`）。
+`src/score/xmldom.ts` 是 DOM 读取小工具（`child`/`children`/`childText`），`fromxml.ts` 用。
 
 ## 吃什么吐什么
 
@@ -37,7 +37,9 @@ MusicXML 双向（导入为 `ScoreDoc`；简谱档与成书经 `model/jianpuinpu
   所以以前「有底本就 patch」的取舍（`.jpwabc` 装得少、重生成 = 降采样）已经退役，增量 patch 删了。
 - MusicXML 形状的文档（首小节带 `attrs.divisions`）不经投影，重写逐字节稳定。
 - `.jpwabc` 的房号由 `.Repeat` 反推（`xmlproject.ts::voltasOfPlayOrder`，读 `Song.playOrder`），并自动给除最后一房外每房补 backward repeat。
-- **`annotateLayout` 不引用 `JinpuPainter`**：屏幕上的简谱版面不导给第三方；底本自带 `<defaults>` 时整体跳过。
+- **导出的版面由五线谱引擎给**（`engraveScoreDoc`）：纸取设置、断行照简谱视图的行、坐标就是屏幕上五线谱的坐标，
+  读回来走「带版面」那条路、排出来与导出前一致。以前另有一套 DOM 版面注入（A4 常量表、每行 4 小节、音符均分），已删。
+  底本自带 `<defaults>` 或小节宽/`default-x` 时一字不改。
 - MuseScore 兼容：有任何 `<credit>` 就不再用 `<work-title>` 生成标题 → 缺 title credit 时补一条；
   `<part-name>` 留空并 `print-object="no"`。
 - ABC 是**全量忠实移植** abc2xml.py（非子集裁剪），函数/类名与 python 对应，**改行为前先核对原文**。

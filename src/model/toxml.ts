@@ -35,7 +35,7 @@ import type {
   Time,
 } from "./doc";
 import { harmonyXml as chordTextXml } from "../score/harmonyxml";
-import { projectForMusicXml } from "./xmlproject";
+import { projectForMusicXml, type ProjectOptions } from "./xmlproject";
 
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -618,7 +618,7 @@ function partXml(o: Out, d: number, part: Part, song: Song): void {
   o.push(d, "</part>");
 }
 
-export interface ToXmlOptions {
+export interface ToXmlOptions extends ProjectOptions {
   /** 取第几首（多曲文件、文本谱 `-----` 分曲）。默认第一首 */
   song?: number;
 }
@@ -628,7 +628,9 @@ export interface ToXmlOptions {
 export function scoreDocToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): string {
   const src = doc.songs[options.song ?? 0];
   if (!src) throw new Error("这份文档里没有曲子");
-  const song = projectForMusicXml(src);
+  const song = projectForMusicXml(src, options);
+  // 文本格式投影出来的一律署上本应用（<encoding><software>）：混排引擎据此认 `<harmony><offset>` 等本写出端的写法
+  const projected = song !== src;
   const o = new Out();
   o.push(0, '<?xml version="1.0" encoding="UTF-8"?>');
   o.push(
@@ -644,7 +646,7 @@ export function scoreDocToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): s
     o.push(1, "</work>");
   }
   if (song.work.movementTitle) o.push(1, tag("movement-title", song.work.movementTitle));
-  if (song.identification || song.meta) {
+  if (song.identification || song.meta || projected) {
     o.push(1, "<identification>");
     for (const c of song.identification?.creators ?? []) {
       o.push(2, `<creator type="${escAttr(c.type)}">${esc(c.text)}</creator>`);

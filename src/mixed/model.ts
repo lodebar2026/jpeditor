@@ -12,7 +12,7 @@ import { Font } from "../layout/font";
 import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
 import { MIXED_PUNCT, type CompressMode } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
-import type { Chord as DocChord, Harmony as DocHarmony, Lyric as DocLyric, Note as DocNote, Song } from "../model/doc";
+import type { Chord as DocChord, Direction as DocDirection, Harmony as DocHarmony, Lyric as DocLyric, Note as DocNote, Song } from "../model/doc";
 import { beamCount } from "../model/jianpu";
 
 const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -1380,6 +1380,8 @@ export class MeasureText extends TextBlock {
   relative = true;
   /** y 是自动铺排给的缺省高度（原文没写 default-y）：混排时要让到简谱层之上（`formatMixedScore`） */
   autoY = false;
+  /** `ScoreDoc` 里对应的 `<direction>`（导出时把排好的高度写回，`engrave.ts`） */
+  src: DocDirection | null = null;
 
   constructor(measure: PartMeasureLayout) {
     super();
@@ -1393,6 +1395,34 @@ export class BeamGroup {
   chords: ChordLayout[] = [];
   jp = false;
   doubleDir = false;
+
+  /** 源谱没写符干方向时，整组**一起**定一个方向：离中线（line = −4）最远的音在上方就朝下、在下方就朝上；
+   *  上下一样远看哪边的音多，还一样就朝下（常规制谱）。逐和弦各猜会让同一根符杠两头符干反向。 */
+  unifyStemDir(): void {
+    let above = 0, below = 0, nAbove = 0, nBelow = 0;
+    for (const ch of this.chords) {
+      if (ch.rest) continue;
+      for (const nt of ch.notes) {
+        const dev = nt.line() + 4; // > 0 在中线之上
+        if (dev > 0) { above = Math.max(above, dev); nAbove++; }
+        else if (dev < 0) { below = Math.max(below, -dev); nBelow++; }
+      }
+    }
+    const up = below > above || (below === above && nBelow > nAbove);
+    for (const ch of this.chords) ch.stemUp = up;
+  }
+
+  /** 方向定好之后（或音符 x 变了）重排：休止（不画符干）跟本组首个实音，再标 `doubleDir`、按斜率算各符干长。 */
+  refresh(): void {
+    if (this.chords.length === 0) return;
+    // beam-over-rest：符杠内的休止符无 <stem>，stemUp 取默认 true。若两侧音符均为
+    // stem-down，会被误判 doubleDir；而 doubleDir 的 calcSlopeLen 分支不做「下符头避让」
+    // （非 doubleDir 分支才有 +35 最小符干），导致八度等宽和弦的符杠穿过下符头。
+    const ref = this.chords.find((ch) => !ch.rest) ?? this.chords[0]!;
+    for (const ch of this.chords) if (ch.rest) ch.stemUp = ref.stemUp;
+    this.doubleDir = this.chords.some((ch) => ch.stemUp !== ref.stemUp);
+    this.format(0);
+  }
 
   /** 最小二乘斜率（styler.cpp::leastSquare）。 */
   private static leastSquare(pts: { x: number; y: number }[]): number {
@@ -2208,12 +2238,14 @@ export class PartLayout {
         if (vec.length < 2) continue;
         vec.sort((a, b) => a.note.writtenPitch - b.note.writtenPitch);
         const mid = Math.floor(vec.length / 2);
+        // 同一个单音上起的弧（圆滑线带着延音线）：没有上下之分，弧朝上的谱都朝上
+        const oneNote = this.score.arcsAbove && vec.every((pt) => pt.note === vec[0]!.note);
         for (let i = 0; i < vec.length; i++) {
           const pt = vec[i];
           if (pt.hasDir) continue;
           pt.hasDir = true;
           pt.other!.hasDir = true;
-          pt.up = i >= mid;
+          pt.up = oneNote || i >= mid;
           pt.other!.up = pt.up;
         }
       }
@@ -2240,7 +2272,7 @@ export class PartLayout {
       } else {
         let ch = sl.startNote!.chord;
         if (fGe(ch.noteType, new Fraction(4))) ch = sl.endNote!.chord;
-        const up = !ch.stemUp;
+        const up = this.score.arcsAbove || !ch.stemUp;
         sl.above = up;
         pta.up = up;
         ptb.up = up;
@@ -2379,6 +2411,18 @@ function cubicMinY(p0: number, p1: number, p2: number, p3: number): number {
   return min;
 }
 
+/** 和弦符号画出来的上下沿，相对 `HarmonyLayout.y`（向上为正）：`drawHarmony` 把基线放在 `y − descent`。 */
+export function harmonyBand(score: StaffLayout): [number, number] {
+  const eng = score.options;
+  const m = new Font(eng.wordFont, eng.harmonySize / score.scaling).metrics;
+  return [-m.ascent - m.descent, -2 * m.descent];
+}
+
+/** 同上，最大值。 */
+function cubicMaxY(p0: number, p1: number, p2: number, p3: number): number {
+  return -cubicMinY(-p0, -p1, -p2, -p3);
+}
+
 export class SysStaff {
   partStaff: PartStaff;
   distance = 0;
@@ -2407,13 +2451,14 @@ export class SysStaff {
 
   /** SysStaff::calcMixedStaffY（model.cpp:2849）。slur bbox 通过回调求得（渲染层提供）。 */
   calcMixedStaffY(sys: Sys): void {
-    let miny = -10; // 防止混排简谱离五线谱太近
     const eng = sys.score.options;
     const first = sys.firstMeasure;
     const cnt = sys.measures.length;
     const pt = this.part();
     const nota = this.partStaff.getNotation(sys.measures[0].offset);
     const mixed = nota === Notation.Mixed;
+    // 防止混排简谱离五线谱太近；纯五线谱（自动铺排的五线谱档）就从顶线量起
+    let miny = mixed ? -10 : 0;
     for (let m = first; m < first + cnt; m++) {
       const mea = pt.measures[m];
       for (const ch of mea.chords) {
@@ -2445,6 +2490,27 @@ export class SysStaff {
       const g0 = Tuplet.makeNumber(t.timeModification.denominator)[0] ?? "";
       const numH = (smuflTop(eng.meta, g0) - smuflBottom(eng.meta, g0)) * fsScale;
       miny = Math.min(miny, (ly + ry) / 2 - numH / 2 - 2);
+    }
+
+    // 自动铺排（原谱没坐标）再看几样 musicpp 不看的上沿：符头（朝下符干的高音）、上方记号、上方延音线、
+    // 跨行的上方弧。五线谱档的和弦也靠这个 minY 定高（`painter.ts::placeAboveStaff`）
+    if (sys.score.autoLayout) {
+      const sub = this.partStaff.subIndex;
+      for (let m = first; m < first + cnt; m++) {
+        for (const ch of pt.measures[m]?.chords ?? []) {
+          if (ch.rest || ch.notes[0]?.staff !== sub) continue;
+          let top = Infinity;
+          for (const nt of ch.notes) top = Math.min(top, nt.cy() - 6);
+          if (fLt(ch.noteType, new Fraction(4)) && ch.stemUp) top = Math.min(top, ch.tailY(true));
+          if (ch.hasNotation(true)) top -= 20;
+          miny = Math.min(miny, top);
+        }
+      }
+      const arcs = [
+        ...pt.tied.map((t) => tiedEnds(sys, eng, t, Notation.Normal)),
+        ...pt.slurs.map((sl) => slurEnds(sys, eng, sl, Notation.Normal)),
+      ];
+      for (const e of arcs) if (e?.above) miny = Math.min(miny, arcExtent(e)[0] - 2);
     }
 
     this.minY = miny;
@@ -2541,7 +2607,8 @@ export class SysStaff {
     for (let m = first; m < first + cnt; m++) {
       const mea = pt.measures[m];
       for (const h of mea.harmonies) {
-        let y = h.y + 10;
+        // 自动铺排按真实字高（和弦字号按 scaling 折算后约 18 tenths）；带坐标的谱照 musicpp 的 10
+        let y = h.y + (sys.score.autoLayout ? harmonyBand(sys.score)[0] : 10);
         if (hasEnding) y += 25;
         if (y > maxY) maxY = y;
       }
@@ -2846,6 +2913,9 @@ export class MixedOptions {
   /** 谱行包围盒里文字的行高按字号算（原排版程序口径，歌本 `pdflayout/songbook.ts` 开）；缺省按字体 ascent−descent */
   textLineHeightBySize = false;
   harmonySize = 9;
+  /** 谱里没写 `<page-layout>` 时用的纸（pt，编辑器设置里那张）；`heightPt` 为 null 是长图（不分页）。
+   *  不给就用 `MixedDefaults`（A4）。写了 `<page-layout>` 的谱（歌本、第三方）照用自己的。 */
+  page: { widthPt: number; heightPt: number | null } | null = null;
   jpTopDy = 0;
   // ── 简谱层附件相对数字的位置。缺省值即原排版程序的常量
   //    （render.cpp::drawNotesJianPu 875-947、BeamLevelData::drawJianPu:159），单位 tenths；
@@ -2882,6 +2952,9 @@ export class MixedOptions {
   }
 }
 
+/** MusicXML 生态惯用的 `<scaling>`：7mm 对 40 tenths，折成 pt / tenths。 */
+export const DEFAULT_SCALING = (7 * 72) / 25.4 / 40;
+
 export class MixedDefaults {
   pageWidth = 1200;
   pageHeight = 1697;
@@ -2899,6 +2972,8 @@ export enum Encoder {
   Sibelius,
   Finale,
   MuseScore,
+  /** 本应用的写出端（`model/toxml.ts`，文本格式派生与导出的 MusicXML） */
+  Jpeditor,
 }
 
 export interface ScoreCredit {
@@ -2914,8 +2989,10 @@ export interface ScoreCredit {
 export class StaffLayout {
   /** `ScoreDoc` 里对应的曲子 */
   readonly song: Song;
-  /** 版面单位换算：pt / tenths（`<scaling>` 算出，页面尺寸与字号都按它换到 tenths） */
-  scaling = 1;
+  /** 版面单位换算：pt / tenths（`<scaling>` 算出，页面尺寸与字号都按它换到 tenths）。
+   *  没写 `<scaling>` 取 MusicXML 惯用的 7mm/40tenths——从前初值是 1，缺 `<defaults>` 的谱（文本格式派生、识别出的）
+   *  一切按 pt 给的字号（和弦、标题、音乐文字）都只剩一半。 */
+  scaling = DEFAULT_SCALING;
   measures: MeasureLayout[] = [];
   parts: PartLayout[] = [];
   pages: MPage[] = [];
@@ -2927,6 +3004,15 @@ export class StaffLayout {
   defaults = new MixedDefaults();
   /** 排好的标题块（原谱没有坐标时由 `autoLayoutHeader` 重排） */
   credits: ScoreCredit[] = [];
+  /** 原谱不带版面坐标、由 `layoutpass.ts` 自动铺排（文本格式派生、识别出的）。纵向避让那几条只对它开 */
+  autoLayout = false;
+  /** 没写朝向的圆滑线、没有多声部/和弦可依的延音线一律画在音符上方（让开下面的歌词）：自动铺排的谱，以及本应用导出的谱
+   *  （读回来要与导出前一样）。别的谱照 musicpp：圆滑线缺省在下、延音线与符干反向。 */
+  get arcsAbove(): boolean {
+    return this.autoLayout || this.encoder === Encoder.Jpeditor;
+  }
+  /** 长图：不分页，页高由内容定（排版时 `defaults.pageHeight` 只是名义值，装页后 `painter.ts` 换成实际高） */
+  longImage = false;
 
   constructor(options: MixedOptions, song: Song) {
     this.options = options;
@@ -2939,6 +3025,7 @@ export class StaffLayout {
     for (const sw of this.song.identification?.software ?? []) {
       if (sw.includes("Sibelius")) e = Encoder.Sibelius;
       else if (sw.includes("MuseScore")) e = Encoder.MuseScore;
+      else if (sw === "jpeditor") e = Encoder.Jpeditor;
     }
     return e;
   }
@@ -3102,4 +3189,165 @@ export function slurTiedPosForJp(
   pl.y -= eng.jpTopDy;
   pr.y -= eng.jpTopDy;
   return [pl, pr];
+}
+
+// ---------------- slur / tie 画在哪（绘制与避让共用） ----------------
+
+/** 一条弧在本系统里的两端（系统内坐标，y 相对第一谱表顶线、向下为正）与朝向。 */
+export interface ArcEnds {
+  plx: number;
+  ply: number;
+  prx: number;
+  pry: number;
+  above: boolean;
+}
+
+/** Tie（render.cpp::drawTied）在本系统里画出来的两端。本系统画不出来返回 null。 */
+export function tiedEnds(
+  sys: Sys,
+  eng: MixedOptions,
+  obj: Tied,
+  forceNota?: Notation,
+): ArcEnds | null {
+  const begin = sys.beginTick();
+  const end = sys.endTick();
+  if (fGe(obj.startTick, end)) return null;
+  if (fLt(obj.endTick, begin)) return null;
+
+  const hasPrev = fLt(obj.startTick, begin);
+  const hasNext = fGe(obj.endTick, end);
+
+  const chl = obj.startChord();
+  const chr = obj.endChord();
+  let ntl = obj.startNote;
+  let ntr = obj.endNote;
+
+  if (hasPrev) { ntl = null; }
+  else if (hasNext) { ntr = null; }
+
+  let nota = chl.notes[0].partStaff().getNotation(chl.tick());
+  if (forceNota !== undefined) nota = forceNota;
+
+  let above = obj.above;
+  let plx = 0, ply = 0, prx = 0, pry = 0;
+
+  if (nota === Notation.JianPu || nota === Notation.Mixed) {
+    above = true;
+    if (chr.voice > 1 && hasPrev) return null;
+    const [pl, pr] = slurTiedPosForJp(eng, chl, chr);
+    plx = pl.x; ply = pl.y;
+    prx = pr.x; pry = pr.y;
+  } else {
+    if (ntl) {
+      const rx = ntl.rightXForTie(eng.meta) + 3;
+      plx = rx + chl.measure.xpos();
+    }
+    if (ntr) {
+      prx = ntr.x - 3 + chr.measure.xpos();
+    }
+
+    const nt = ntl ?? ntr!;
+    const ch = ntl ? chl : chr;
+    const stfY = ch.measure.staffY(nt.staff);
+    ply = pry = nt.cy() + stfY;
+
+    if (obj.yOffsetType !== 0) {
+      ply -= obj.yOffsetType * 8;
+      pry = ply;
+      let xOffLeft = false;
+      const four = new Fraction(4);
+      if (fLt(chl.noteType, four)) {
+        xOffLeft = chl.stemUp !== above;
+      } else {
+        xOffLeft = true;
+      }
+      if (ntl && xOffLeft) {
+        plx = ntl.cx(eng.meta) + chl.measure.xpos();
+      }
+      let xOffRight = false;
+      if (fLt(chr.noteType, four)) {
+        if (chr.stemUp) xOffRight = true;
+      } else {
+        xOffRight = true;
+      }
+      if (ntr && xOffRight) {
+        prx = ntr.cx(eng.meta) + chr.measure.xpos();
+      }
+    }
+  }
+
+  if (hasPrev) {
+    if (nota === Notation.JianPu) {
+      plx = 0;
+    } else {
+      plx = sys.measures[0].dataPos;
+    }
+  }
+  if (hasNext) {
+    const last = sys.measures[sys.measures.length - 1];
+    prx = last.xpos() + last.dataEnd;
+  }
+
+  return { plx, ply, prx, pry, above };
+}
+
+/** slur 在本系统里画出来的两端（render.cpp::drawSlur）。本系统画不出来返回 null。 */
+export function slurEnds(
+  sys: Sys,
+  eng: MixedOptions,
+  slur: Slur,
+  forceNota?: Notation,
+): ArcEnds | null {
+  const begin = sys.beginTick();
+  const end = sys.endTick();
+  if (fGe(slur.startTick, end)) return null;
+  if (fLt(slur.endTick, begin)) return null;
+  if (!slur.startNote) return null;
+
+  const hasPrev = fLt(slur.startTick, begin);
+  const hasNext = fGe(slur.endTick, end);
+
+  let chl = hasPrev ? null : slur.startChord();
+  let chr = hasNext ? null : slur.endChord();
+
+  const refCh = chl ?? chr!;
+  let nota = refCh.notes[0].partStaff().getNotation(refCh.tick());
+  if (forceNota !== undefined) nota = forceNota;
+
+  let above = slur.above;
+  let plx = 0, ply = 0, prx = 0, pry = 0;
+
+  if (nota === Notation.JianPu) {
+    above = true; // 简谱层 slur 一律朝上（render.cpp::drawSlur）
+    if (!chr || !chl) return null;
+    const [pl, pr] = slurTiedPosForJp(eng, chl, chr, true);
+    plx = pl.x; ply = pl.y;
+    prx = pr.x; pry = pr.y;
+  } else {
+    const [pl, pr] = slurTiedPos(eng, chl, chr, above);
+    plx = pl.x; ply = pl.y;
+    prx = pr.x; pry = pr.y;
+  }
+
+  if (hasPrev) {
+    plx = sys.measures[0].dataPos;
+  }
+  if (hasNext) {
+    const last = sys.measures[sys.measures.length - 1];
+    prx = last.xpos() + last.dataEnd;
+  }
+
+  return { plx, ply, prx, pry, above };
+}
+
+/** 弧（连同月牙的厚度）画出来的纵向范围 [顶, 底]：几何与 `render.ts::drawSlurTied` 同一份（`SlurTieBase` + `mixedSlurStyle`）。 */
+export function arcExtent(e: ArcEnds): [number, number] {
+  const style = mixedSlurStyle(e.above);
+  const pl = new Point(e.plx, e.ply);
+  const pr = new Point(e.prx, e.pry);
+  const [p0, p1, cos] = SlurTieBase.calcSlurPoints(pl, pr, style);
+  const lw = style.thickness / cos / 2; // 回程两个控制点下压的量
+  const top = Math.min(cubicMinY(pl.y, p0.y, p1.y, pr.y), cubicMinY(pl.y, p0.y + lw, p1.y + lw, pr.y));
+  const bot = Math.max(cubicMaxY(pl.y, p0.y, p1.y, pr.y), cubicMaxY(pl.y, p0.y + lw, p1.y + lw, pr.y));
+  return [top, bot];
 }

@@ -10,7 +10,7 @@
 |---|---|
 | `src/model/toxml.ts::scoreDocToMusicXml` | **唯一写出端**：MusicXML 形状的 `ScoreDoc` → 文本。按固定元素次序序列化，`Measure.raw` 原位吐回 |
 | `src/model/xmlproject.ts::projectForMusicXml` | **投影**：简谱来源留空的语义字段补齐成 MusicXML 形状（见下） |
-| `src/score/musicxmllayout.ts` | 版面注入：`<defaults>`、分行、小节宽度、`default-x` |
+| `src/mixed/engrave.ts::engraveScoreDoc` | 版面坐标：五线谱引擎按设置里的纸排一遍，`<defaults>`、分行分页、系统/谱表间距、小节宽、音符 `default-x`、歌词/和弦/文字 `default-y`、标题块写回模型 |
 | `src/editor/export.ts::buildMusicXml` | 调度：有底本且没改过给底本，否则整份重写 |
 
 只有这一份写出端、不做底本增量 patch：`ScoreDoc` 加上 `Measure.raw` 装得下 MusicXML 的内容，整份重写不是降采样。
@@ -27,7 +27,7 @@
 | 其余（文本谱 / 123 / ABC，含简谱识别出的 123 核对文本） | `scoreDocToMusicXml(app.currentScoreDoc())` |
 | `.musicxml` 文档 | 文档里就是 XML（原文，或 `editScoreDoc` 整份重写过的） |
 
-最后都过一遍 `annotateLayout`。
+文本格式导出时再经 `engraveScoreDoc` 补版面坐标（`export.ts::sourceMusicXml`）；带版面的原样不动。
 
 简谱识别产物（`App.importOmrDoc`）：识别结果直出 `ScoreDoc`（`omr/todoc.ts`）、`emit123` 成 123 文本进代码区，
 之后就是普通 123 文档，没有 MusicXML 底本；点选映射由 `editor/omrmeta.ts` 重解析 123 取源区间。
@@ -128,21 +128,25 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 ## 版面
 
-`annotateLayout(doc, opt)` 是独立 pass，**不引用 `JinpuPainter`**——本应用屏幕上的简谱排版
-（可变纸张、乐句重排、翻页）不是给第三方看的版面，硬塞过去只会让 MuseScore 显示得又挤又怪。
+版面坐标由**五线谱引擎**给（`mixed/engrave.ts::engraveScoreDoc`）：与屏幕上的五线谱同一套——
+同一张纸（设置里原样档的纸，`App.staffPage`）、同一套断行（简谱视图实际排出的行当优选断点，见 [混排](混排.md) 自动铺排）、
+同一套自动铺排，排完把结果写回 `ScoreDoc` 再由写出端序列化。不碰 DOM。
 
-- **分行照原图**：底本里现成的 `<print new-system>` 原样沿用（简谱识别把 `RecognizedScore.rows` 的分行记成模型换行，123 `$` 写出后照样带过来）。
-  一个 `<print>` 都没有时才按 `measuresPerSystem`（默认 4）合成——《基督更美》整首都是跨行小节，底本确实没有分行凭据。
-- **版面参数**：写死的 A4 常量表（`<scaling>` 7mm/40tenths，page 1233×1596，margin 70，
-  system-distance 110 / top 170），按每行实际小节数把行宽分掉（按音符数加权，`+2` 常数项
-  避免单音符小节被压扁），小节内 `default-x` 均分。
-- 底本自带 `<defaults>`（abc2xml 会输出）时**整体跳过**：作者已给的版面比合成的更贴切。
+- 写回的：`<defaults>`（scaling 7mm/40tenths、page-layout、边距）、每行首小节的 `<print new-system|new-page>` 与
+  `system-layout`（页首 `top-system-distance`、其余 `system-distance`）、多谱表的 `staff-layout`、各小节 `width`、
+  音符 `default-x`、猜出来的符干方向（`<stem>`，符杠组已统一）、歌词/和弦 `default-y`、自动放置的速度/文字记号的 `default-y` 与字号、标题块。
+- 源文带来的换行先清掉，一律按排出来的。
+- 读回来走「带版面」那条路（`hasEmbeddedLayout`），排出来与导出前一致。以前那套 DOM 注入（A4 常量表 1233×1596、
+  没有分行凭据时每行 4 小节、音符按小节宽均分）的坐标是粗略值：次行起不给谱号调号留位，读回来行首音压在谱号下，已删。
+- 底本自带 `<defaults>`（abc2xml 会输出）或小节宽/`default-x` 时**一字不改**：作者已给的版面比排出来的更贴切。
+- 本写出端投影出来的一律署 `<encoding><software>jpeditor</software>`：混排引擎据此认 `<harmony><offset>`（长音中间换和弦；
+  musicpp 只认 MuseScore 写的）。
 
 ### `<credit>` 的坐标：另一个坐标系
 
 **`<credit>` 的原点在页面左下角、y 轴向上**，和小节里那些 `default-y`（相对五线谱顶线）不是
 一回事。不写坐标的话 MuseScore 按缺省 0 处理，那正是页面底边——词曲行会掉到页脚。
-`layoutCredits()` 按谱面惯例摆：标题居中放页顶，著作者行右对齐排在标题下方，逐行下移。
+标题块由 `layoutpass.ts::autoLayoutHeader` 排：标题居中放页顶，著作者行居中堆在标题下方，逐行下移（字号 pt）。
 
 还有一条 MuseScore 的规则要迁就：**只要文件里有任何 `<credit>`，它就完全以 credit 为准，
 不再拿 `<work-title>` 生成标题框**。所以缺 title credit 时补一条。

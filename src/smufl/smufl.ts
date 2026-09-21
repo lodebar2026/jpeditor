@@ -231,6 +231,16 @@ export class MetaData {
     return md;
   }
 
+  private static _shared: Promise<MetaData> | null = null;
+
+  /** 缺省那份字形度量，全应用只取一次（混排排版器与导出 MusicXML 共用）。 */
+  static shared(): Promise<MetaData> {
+    return (MetaData._shared ??= MetaData.load().catch((e) => {
+      MetaData._shared = null;
+      throw e;
+    }));
+  }
+
   static async load(url = asset("redist/bravura_metadata.json")): Promise<MetaData> {
     const resp = await fetch(url);
     const raw = (await resp.json()) as RawMetadata;

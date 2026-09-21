@@ -35,11 +35,12 @@ import {
   mixedSlurStyle,
   fGe,
   fLt,
-  slurTiedPos,
-  slurTiedPosForJp,
   smuflBottom,
   smuflTop,
   smuflWidth,
+  slurEnds,
+  tiedEnds,
+  harmonyBand,
 } from "./model";
 import { Font } from "../layout/font";
 import { layoutHarmonySegs } from "../layout/harmony";
@@ -350,144 +351,14 @@ function drawSlurTied(
   container.add(arc);
 }
 
-/** Draw tie (render.cpp::drawTied). */
-function drawTied(
-  sys: Sys,
-  eng: MixedOptions,
-  container: Group,
-  obj: Tied,
-  forceNota?: Notation,
-): void {
-  const begin = sys.beginTick();
-  const end = sys.endTick();
-  if (fGe(obj.startTick, end)) return;
-  if (fLt(obj.endTick, begin)) return;
-
-  const hasPrev = fLt(obj.startTick, begin);
-  const hasNext = fGe(obj.endTick, end);
-
-  const chl = obj.startChord();
-  const chr = obj.endChord();
-  let ntl = obj.startNote;
-  let ntr = obj.endNote;
-
-  if (hasPrev) { ntl = null; }
-  else if (hasNext) { ntr = null; }
-
-  let nota = chl.notes[0].partStaff().getNotation(chl.tick());
-  if (forceNota !== undefined) nota = forceNota;
-
-  let above = obj.above;
-  let plx = 0, ply = 0, prx = 0, pry = 0;
-
-  if (nota === Notation.JianPu || nota === Notation.Mixed) {
-    above = true;
-    if (chr.voice > 1 && hasPrev) return;
-    const [pl, pr] = slurTiedPosForJp(eng, chl, chr);
-    plx = pl.x; ply = pl.y;
-    prx = pr.x; pry = pr.y;
-  } else {
-    if (ntl) {
-      const rx = ntl.rightXForTie(eng.meta) + 3;
-      plx = rx + chl.measure.xpos();
-    }
-    if (ntr) {
-      prx = ntr.x - 3 + chr.measure.xpos();
-    }
-
-    const nt = ntl ?? ntr!;
-    const ch = ntl ? chl : chr;
-    const stfY = ch.measure.staffY(nt.staff);
-    ply = pry = nt.cy() + stfY;
-
-    if (obj.yOffsetType !== 0) {
-      ply -= obj.yOffsetType * 8;
-      pry = ply;
-      let xOffLeft = false;
-      const four = new Fraction(4);
-      if (fLt(chl.noteType, four)) {
-        xOffLeft = chl.stemUp !== above;
-      } else {
-        xOffLeft = true;
-      }
-      if (ntl && xOffLeft) {
-        plx = ntl.cx(eng.meta) + chl.measure.xpos();
-      }
-      let xOffRight = false;
-      if (fLt(chr.noteType, four)) {
-        if (chr.stemUp) xOffRight = true;
-      } else {
-        xOffRight = true;
-      }
-      if (ntr && xOffRight) {
-        prx = ntr.cx(eng.meta) + chr.measure.xpos();
-      }
-    }
-  }
-
-  if (hasPrev) {
-    if (nota === Notation.JianPu) {
-      plx = 0;
-    } else {
-      plx = sys.measures[0].dataPos;
-    }
-  }
-  if (hasNext) {
-    const last = sys.measures[sys.measures.length - 1];
-    prx = last.xpos() + last.dataEnd;
-  }
-
-  drawSlurTied(container, plx, ply, prx, pry, above);
+function drawTied(sys: Sys, eng: MixedOptions, container: Group, obj: Tied, forceNota?: Notation): void {
+  const e = tiedEnds(sys, eng, obj, forceNota);
+  if (e) drawSlurTied(container, e.plx, e.ply, e.prx, e.pry, e.above);
 }
 
-/** Draw slur (render.cpp::drawSlur). */
-function drawSlur(
-  sys: Sys,
-  eng: MixedOptions,
-  container: Group,
-  slur: Slur,
-  forceNota?: Notation,
-): void {
-  const begin = sys.beginTick();
-  const end = sys.endTick();
-  if (fGe(slur.startTick, end)) return;
-  if (fLt(slur.endTick, begin)) return;
-  if (!slur.startNote) return;
-
-  const hasPrev = fLt(slur.startTick, begin);
-  const hasNext = fGe(slur.endTick, end);
-
-  let chl = hasPrev ? null : slur.startChord();
-  let chr = hasNext ? null : slur.endChord();
-
-  const refCh = chl ?? chr!;
-  let nota = refCh.notes[0].partStaff().getNotation(refCh.tick());
-  if (forceNota !== undefined) nota = forceNota;
-
-  let above = slur.above;
-  let plx = 0, ply = 0, prx = 0, pry = 0;
-
-  if (nota === Notation.JianPu) {
-    above = true; // 简谱层 slur 一律朝上（render.cpp::drawSlur）
-    if (!chr || !chl) return;
-    const [pl, pr] = slurTiedPosForJp(eng, chl, chr, true);
-    plx = pl.x; ply = pl.y;
-    prx = pr.x; pry = pr.y;
-  } else {
-    const [pl, pr] = slurTiedPos(eng, chl, chr, above);
-    plx = pl.x; ply = pl.y;
-    prx = pr.x; pry = pr.y;
-  }
-
-  if (hasPrev) {
-    plx = sys.measures[0].dataPos;
-  }
-  if (hasNext) {
-    const last = sys.measures[sys.measures.length - 1];
-    prx = last.xpos() + last.dataEnd;
-  }
-
-  drawSlurTied(container, plx, ply, prx, pry, above);
+function drawSlur(sys: Sys, eng: MixedOptions, container: Group, slur: Slur, forceNota?: Notation): void {
+  const e = slurEnds(sys, eng, slur, forceNota);
+  if (e) drawSlurTied(container, e.plx, e.ply, e.prx, e.pry, e.above);
 }
 
 // -----------------------------------------------------------------------
@@ -627,14 +498,18 @@ function drawEnding(container: Group, obj: Ending, sys: Sys, mixed: boolean): vo
     right -= scr.measures[idx].sibKeyOffset;
   }
 
+  // yPos − 30 是房号数字的基线、再往上 20 是括线
   let yPos: number | null = null;
-  if (mixed && sys.staves.length > 0) {
+  if ((mixed || scr.autoLayout) && sys.staves.length > 0) {
     const eng = scr.options;
     const st = sys.staves[0];
     if (st.hasHarmony) {
-      yPos = -st.harmonyY + 12;
-    } else {
+      // 自动铺排的和弦按真实字高（约 18 tenths）：数字基线放到和弦顶上方 4；带坐标的谱照 musicpp
+      yPos = scr.autoLayout ? -(st.harmonyY + 3 + harmonyBand(scr)[0]) + 26 : -st.harmonyY + 12;
+    } else if (mixed) {
       yPos = -st.minY - eng.mixStaffDist - eng.mixStaffHeight;
+    } else {
+      yPos = Math.min(20, st.minY + 26); // 20 = 不给 yPos 时的缺省位置；高音、上方弧再往上让
     }
   }
 

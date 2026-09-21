@@ -73,6 +73,7 @@ import {
   barGlyphFromStyle,
   convertDynamicsStr,
   finishMixedScore,
+  hasEmbeddedLayout,
   metNoteGlyph,
   parseEndingNums,
   type LayoutInput,
@@ -145,6 +146,8 @@ class DocPartLoader {
   docChordById = new Map<number, DocChord>();
   stemYMap = new Map<NoteLayout, number>(); // note → stem default-y
   stemNotes = new Set<NoteLayout>(); // 有 <stem> 元素的音符（parser.cpp stemDir）
+  /** 方向是猜的（整个和弦都没写 `<stem>`）的和弦：组内全是猜的符杠组整组统一方向（`BeamGroup.unifyStemDir`） */
+  guessedStem = new Set<ChordLayout>();
   hasBeamEl = false; // 本声部是否出现过 <beam>（无则自动按拍分组符杠，供 OMR 谱用）
   transposeSteps = 0;
   /** 当前小节的 divisions 与简谱叠层的旋律（和弦 → 印的那个音） */
@@ -306,8 +309,10 @@ class DocPartLoader {
     if (m.attrs) this.processAttributes(m.attrs, mif.offset);
 
     const tickOf = (divs: number): Fraction => new Fraction(divs, div);
+    // `<harmony><offset>`（长音中间换和弦）：musicpp 只认 MuseScore 写的；本应用自己写出的（文本格式派生、导出）也认
+    const enc = this.score.encoder;
     const harmonyDelta = (h: Harmony): Fraction =>
-      this.score.encoder === Encoder.MuseScore && h.offset !== undefined ? new Fraction(Math.round(h.offset), div) : new Fraction(0);
+      (enc === Encoder.MuseScore || enc === Encoder.Jpeditor) && h.offset !== undefined ? new Fraction(Math.round(h.offset), div) : new Fraction(0);
 
     // 小节中间的 <attributes> 要在读到那个位置时就设上：后面的音读的时候就要用谱号定符干方向（nt.line()）
     const laterAttrsAt = (i: number): void => {
@@ -357,6 +362,10 @@ class DocPartLoader {
     }
 
     md.sortChords();
+    // 符杠组先整组定方向，再建 NoteEntry（二度错位 autoFlip 看的是方向）、算符干长（calcStemLen/formatBeams）
+    for (const g of md.beams) {
+      if (g.chords.every((ch) => ch.rest || this.guessedStem.has(ch))) g.unifyStemDir();
+    }
     md.layoutNotes(this.score.options.meta, this.score.encoder === Encoder.Sibelius);
     // layoutNotations 不在此处调用：它依赖最终符干长度（fermataBelow 等记号按 tailY 定位），
     // 而 stemLen 要等 calcStemLen/formatBeams 之后才就绪。改在 load 里统一后处理，
@@ -427,6 +436,7 @@ class DocPartLoader {
       // Sibelius 导出的和弦音都不写 <stem>，逐音猜会把首音明写的方向覆盖掉（KL2020《为基督大业》）。
       ch.stemUp = nt.line() < -4;
       this.stemNotes.add(nt);
+      this.guessedStem.add(ch);
     }
 
 
@@ -569,6 +579,7 @@ class DocPartLoader {
         sl.startNote = start.notes[start.notes.length - 1];
         sl.endNote = ch.notes[ch.notes.length - 1];
         if (above !== null) sl.above = above;
+        else if (this.score.arcsAbove) sl.above = true;
       } else {
         const tm = this.docChordById.get(mk.start)?.duration.timeMod;
         const tup = this.part.newTuplet();
@@ -698,6 +709,7 @@ class DocPartLoader {
   /** <direction> 文本（words / dynamics / metronome），对应 musicpp loader.cpp::processDirection。 */
   private processDirection(d: Direction, md: PartMeasureLayout, tick: Fraction): void {
     const blk = md.newText();
+    blk.src = d;
     blk.offset = tick;
     blk.staff = (d.staff ?? 1) - 1;
     let hasText = false;
@@ -877,6 +889,8 @@ class DocPartLoader {
 
   /** <metronome>（<beat-unit> + <per-minute>），对应 loader.cpp::processMetronome。 */
   private processMetronome(blk: MeasureText, met: DirectionPart): boolean {
+    const dy = met.pos?.defaultY;
+    if (dy !== undefined) blk.y = dy;
     const wordFont = this.makeWordsFont(met.font);
     // webview 只注册了 "Bravura" @font-face（styles.css）；"BravuraText" 未注册会回退成
     // 缺字形的方框。Bravura 含同一套 metNote 字形，故用 Bravura。
@@ -970,17 +984,6 @@ class DocPartLoader {
       const flush = () => {
         if (run.length >= 2) {
           const g = new BeamGroup();
-          // 符杠组内符干方向须统一：取离中线(line=-4)最远的音符决定——在中线之上则整组朝下，
-          // 否则朝上（否则同一符杠两端符干反向，符杠画歪/穿头）。
-          let extreme = 0; // line+4，绝对值最大者胜
-          for (const c of run) {
-            for (const nt of c.notes) {
-              const dev = nt.line() + 4;
-              if (Math.abs(dev) > Math.abs(extreme)) extreme = dev;
-            }
-          }
-          const groupUp = extreme < 0;
-          for (const c of run) c.stemUp = groupUp;
           for (let i = 0; i < run.length; i++) {
             const ch = run[i];
             const lv = levelsOf(ch);
@@ -996,6 +999,13 @@ class DocPartLoader {
               );
             }
             g.chords.push(ch);
+          }
+          // 组是在 layoutNotes 之后才建的：定完方向把二度错位按新方向重排
+          g.unifyStemDir();
+          for (const ch of run) {
+            for (const nt of ch.notes) nt.flipped = false;
+            ch.doubleSide = false;
+            ch.autoFlip();
           }
           md.beams.push(g);
         }
@@ -1064,17 +1074,7 @@ class DocPartLoader {
   private formatBeams(): void {
     for (const md of this.part.measures) {
       for (const g of md.beams) {
-        if (g.chords.length === 0) continue;
-        // beam-over-rest：符杠内的休止符无 <stem>，stemUp 取默认 true。若两侧音符均为
-        // stem-down，会被误判 doubleDir；而 doubleDir 的 calcSlopeLen 分支不做「下符头避让」
-        // （非 doubleDir 分支才有 +35 最小符干），导致八度等宽和弦的符杠穿过下符头。
-        // 休止符不画符干，把方向对齐到本组首个真实音符即可消除假 doubleDir。
-        const ref = g.chords.find((ch) => !ch.rest) ?? g.chords[0];
-        for (const ch of g.chords) {
-          if (ch.rest) ch.stemUp = ref.stemUp;
-        }
-        g.doubleDir = g.chords.some((ch) => ch.stemUp !== ref.stemUp);
-        g.format(0);
+        g.refresh();
       }
     }
   }
@@ -1207,8 +1207,10 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
   const score = new StaffLayout(options, song);
 
   const def = song.defaults;
+  if (def?.scaling && def.scaling.millimeters > 0 && def.scaling.tenths > 0) {
+    score.scaling = (def.scaling.millimeters * 72) / 25.4 / def.scaling.tenths;
+  }
   if (def) {
-    if (def.scaling) score.scaling = (def.scaling.millimeters * 72) / 25.4 / def.scaling.tenths;
     const pl = def.pageLayout;
     if (pl) {
       if (pl.pageWidth !== undefined) score.defaults.pageWidth = pl.pageWidth;
@@ -1235,7 +1237,14 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
       score.defaults.wordFont = new Font(family, ptToTenths(sz));
     }
   }
-  if (score.scaling === 0) score.scaling = (7.0 * 72) / 25.4 / 40.0;
+  // 谱里没写纸：用编辑器设置那张（长图不分页，页高由内容定）
+  const page = options.page;
+  if (page && !def?.pageLayout) {
+    score.defaults.pageWidth = page.widthPt / score.scaling;
+    // 长图先按 √2 比例给个名义页高（标题 credit 的 y 从页底量，得有个有限值），装页后由 painter 换成内容高
+    score.defaults.pageHeight = (page.heightPt ?? page.widthPt * Math.SQRT2) / score.scaling;
+    score.longImage = page.heightPt === null;
+  }
 
   for (const c of song.credits ?? []) {
     score.credits.push({
@@ -1248,6 +1257,8 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
       fontSize: c.fontSize || 0,
     });
   }
+
+  score.autoLayout = !hasEmbeddedLayout(song);
 
   const numMeasures = song.parts[0]?.measures.length ?? 0;
   for (let i = 0; i < numMeasures; i++) {

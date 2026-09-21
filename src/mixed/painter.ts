@@ -11,7 +11,7 @@ import { renderPageSvg } from "../layout/painter";
 import type { ItemVisitor } from "../layout/walk";
 import { colorToCss } from "../common/geom";
 import type { PagePainter } from "../layout/pagepainter";
-import { LCR, MixedOptions, StaffLayout, Notation, ScoreCredit, Sys } from "./model";
+import { harmonyBand, LCR, MixedOptions, StaffLayout, Notation, ScoreCredit, Sys } from "./model";
 import { layoutStaff } from "./layout";
 import type { ScoreDoc } from "../model/doc";
 import { drawSystem } from "./render";
@@ -34,6 +34,8 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  */
 /** 混排简谱层顶（数字顶）到自动放置的文字记号基线的净空：留给简谱层上方的弧与高音点（tenths） */
 const MIXED_TEXT_CLEAR = 16;
+/** 五线谱档：谱表内容上沿到和弦符号墨迹底的净空（tenths） */
+const HARMONY_STAFF_GAP = 6;
 
 export function formatMixedScore(score: StaffLayout): void {
   if (score.parts.length === 0) return;
@@ -44,37 +46,7 @@ export function formatMixedScore(score: StaffLayout): void {
   // Set Mixed notation for first staff from tick 0
   p.staves[0].notation.set(new Fraction(0), Notation.Mixed);
 
-  // Calculate mixed staff y positions (needs chords/slurs in place)
-  p.calcMixedStaffY();
-
-  // 自动铺排的速度/文字记号：缺省高度只让开了五线谱，混排时简谱层（连同其上的弧、高音点）在它上面，抬过去。
-  // 带 default-y 的原文不动（照 musicpp）。
-  const eng = score.options;
-  for (const sys of score.systems) {
-    for (const st of sys.staves) {
-      if (st.part() !== p || st.partStaff !== p.staves[0]) continue;
-      const floor = -st.minY + eng.mixStaffDist + eng.mixStaffHeight + MIXED_TEXT_CLEAR;
-      for (const m of sys.measures) {
-        for (const t of p.measures[m.index]?.textBlocks ?? []) {
-          if (t.autoY && t.staff === 0 && t.y < floor) t.y = floor;
-        }
-      }
-    }
-  }
-
-  // Move harmony y to harmonyY
-  for (const sys of score.systems) {
-    for (const st of sys.staves) {
-      if (st.part() !== p) continue;
-      for (const m of sys.measures) {
-        const md = p.measures[m.index];
-        if (!md) continue;
-        for (const h of md.harmonies) {
-          h.y = st.harmonyY + 3;
-        }
-      }
-    }
-  }
+  placeAboveStaff(score, true);
 
   // P2 lyric font × 0.8
   const lastPart = score.parts[score.parts.length - 1];
@@ -87,6 +59,40 @@ export function formatMixedScore(score: StaffLayout): void {
   // 成品《受苦圣徒，到基督前》各行谱表间距正是 staff-distance 原值）
 }
 
+/** 第一声部谱表上方那一摞：量上沿（`calcMixedStaffY`）→ 和弦 y → 自动放置的速度/文字记号抬过去。
+ *  混排（`formatMixedScore`）与自动铺排的五线谱档共用；带坐标的五线谱档不走（和弦、文字照原文的 default-y）。 */
+export function placeAboveStaff(score: StaffLayout, mixed: boolean): void {
+  const p = score.parts[0];
+  if (!p || p.staves.length === 0) return;
+  // Calculate mixed staff y positions (needs chords/slurs in place)
+  p.calcMixedStaffY();
+
+  const eng = score.options;
+  const [harmTop, harmBot] = harmonyBand(score);
+  for (const sys of score.systems) {
+    for (const st of sys.staves) {
+      if (st.part() !== p) continue;
+      // 纯五线谱：和弦底贴着谱表上沿（高音、朝上符干、上方弧）再留一点空。`calcMixedStaffY` 的 harmonyY
+      // 是给混排算的——里头按简谱层的高音点、弧中段再往上加，放到五线谱上就离得太远
+      if (!mixed) st.harmonyY = -st.minY + HARMONY_STAFF_GAP - harmBot - 3;
+      // Move harmony y to harmonyY
+      for (const m of sys.measures) {
+        for (const h of p.measures[m.index]?.harmonies ?? []) h.y = st.harmonyY + 3;
+      }
+      if (st.partStaff !== p.staves[0]) continue;
+      // 自动铺排的速度/文字记号：缺省高度只让开了五线谱。混排时简谱层（连同其上的弧、高音点）在它上面，抬过去；
+      // 自动铺排时和弦行也在它下面，再抬过和弦。带 default-y 的原文不动（照 musicpp）。
+      let floor = mixed ? -st.minY + eng.mixStaffDist + eng.mixStaffHeight + MIXED_TEXT_CLEAR : -st.minY + MIXED_TEXT_CLEAR;
+      if (score.autoLayout && st.hasHarmony) floor = Math.max(floor, st.harmonyY + 3 + harmTop + MIXED_TEXT_CLEAR / 2);
+      for (const m of sys.measures) {
+        for (const t of p.measures[m.index]?.textBlocks ?? []) {
+          if (t.autoY && t.staff === 0 && t.y < floor) t.y = floor;
+        }
+      }
+    }
+  }
+}
+
 // -----------------------------------------------------------------------
 // M5: 分页+标题块（paoSingleScore 的 getFrames/flowLayout/drawFrames 移植）
 
@@ -94,6 +100,8 @@ export function formatMixedScore(score: StaffLayout): void {
 const PAGE_HEIGHT_FALLBACK = 1870;
 const FRAME_GAP = 20;
 const TITLE_OFFSET = 170; // hh(150) + 20
+/** 自动铺排：标题块最低一行的基线到首行谱内容顶的余量（含该行字的下伸） */
+const TITLE_GAP = 30;
 
 interface FrameItem {
   system: Sys;
@@ -129,12 +137,13 @@ function getFrames(score: StaffLayout): FrameItem[] {
 
 function flowLayout(items: FrameItem[], ph: number): LayoutFrame[] {
   const result: LayoutFrame[] = [];
-  let ypos = ph * 2; // force newPage on first frame
+  let ypos = 0;
   let lastMrg = 0;
-  for (const frm of items) {
+  for (const [i, frm] of items.entries()) {
     const mrg = Math.max(lastMrg, FRAME_GAP);
     const bot = ypos + frm.height;
-    const np = bot + mrg > ph;
+    // 首帧总是开新页；长图（ph = Infinity）此后不再分页
+    const np = i === 0 || bot + mrg > ph;
     const lf: LayoutFrame = { height: frm.height, ypos: 0, newPage: np };
     if (np) {
       lastMrg = 0;
@@ -241,12 +250,15 @@ export class MixedPainter implements PagePainter {
   private score: StaffLayout | null = null;
   private meta: MetaData | null = null;
   private _pages: Group[] = [];
+  private _placed: { sys: Sys; page: number; top: number }[] = [];
   /** 隐藏小节号（用户选项）。下次 load 生效。 */
   hideBarNumber = false;
   /** false renders the original staff notation only; true adds the legacy jianpu layer. */
   showJianpuLayer = true;
   /** computed 样式表（主题 `staff`）。下次 load 生效，见 `style/staff.ts`。 */
   style: StyleSheet = computeStyleForPaper([THEMES.staff], { engine: "staff" });
+  /** 谱里没写纸时用的那张（pt，编辑器设置；`heightPt` null = 长图）。下次 load 生效，见 `MixedOptions.page`。 */
+  page: MixedOptions["page"] = null;
 
   /** Width of one page in tenths. */
   get pageWidthTenths(): number {
@@ -275,6 +287,11 @@ export class MixedPainter implements PagePainter {
     return { w: this.pageWidthTenths, h: this.pageHeightTenths };
   }
 
+  /** 排好的版面，连同各系统落在第几页（0 基）、首谱表顶线离页顶多远（tenths）。导出 MusicXML 写版面坐标用（`engrave.ts`）。 */
+  get placed(): { score: StaffLayout; systems: readonly { sys: Sys; page: number; top: number }[] } | null {
+    return this.score ? { score: this.score, systems: this._placed } : null;
+  }
+
   /** 曲名（首行），导出文件名用。 */
   get title(): string {
     return this.score?.title.split("\n")[0] ?? "";
@@ -288,16 +305,18 @@ export class MixedPainter implements PagePainter {
 
   private async _options(): Promise<MixedOptions> {
     if (!this.meta) {
-      this.meta = await MetaData.load();
+      this.meta = await MetaData.shared();
     }
     const options = new MixedOptions(this.meta);
     applyStaffStyle(options, this.style);
     options.hideBarNumber = this.hideBarNumber;
+    options.page = this.page;
     return options;
   }
 
   private _layout(score: StaffLayout): void {
     if (this.showJianpuLayer) formatMixedScore(score);
+    else if (score.autoLayout) placeAboveStaff(score, false);
     this.score = score;
 
     // M5: flow layout
@@ -305,13 +324,31 @@ export class MixedPainter implements PagePainter {
     if (items.length > 0) {
       // Add title block (credits) to first frame
       items[0].credits = score.credits.filter(c => c.page === 0);
-      items[0].musicYOffset = TITLE_OFFSET;
-      items[0].height += TITLE_OFFSET;
+      // 自动铺排的标题块由 autoLayoutHeader 从上往下堆，词曲行多了会高过缺省的 TITLE_OFFSET：按最低那行让开
+      const d = score.defaults;
+      const lowest = Math.min(...items[0].credits.map((c) => c.y));
+      const offset = score.autoLayout && items[0].credits.length
+        ? Math.max(TITLE_OFFSET, d.pageHeight - lowest - d.topMargin + TITLE_GAP)
+        : TITLE_OFFSET;
+      items[0].musicYOffset = offset;
+      items[0].height += offset;
     }
     const d = score.defaults;
-    const pageHeight = this.pageHeightTenths;
-    const ph = pageHeight - d.topMargin - d.bottomMargin;
-    const layout = flowLayout(items, ph);
+    let pageHeight = this.pageHeightTenths;
+    const layout = flowLayout(items, score.longImage ? Infinity : pageHeight - d.topMargin - d.bottomMargin);
+    if (score.longImage) {
+      // 长图：整首一页，页高 = 内容底 + 上下边距。credit 的 y 从页底量，页高变了整体跟着挪，离页顶的距离不变
+      const last = layout[layout.length - 1];
+      const contentH = last ? last.ypos + last.height : 0;
+      const h = Math.max(contentH + d.topMargin + d.bottomMargin, d.topMargin + d.bottomMargin + TITLE_OFFSET);
+      for (const c of score.credits) c.y += h - pageHeight;
+      d.pageHeight = pageHeight = h;
+    }
+    let pageNo = -1;
+    this._placed = items.map((it, i) => {
+      if (layout[i]!.newPage) pageNo++;
+      return { sys: it.system, page: pageNo, top: d.topMargin + layout[i]!.ypos + it.topY + it.musicYOffset };
+    });
     this._pages = drawFrames(
       score, items, layout, d.leftMargin, d.topMargin, pageHeight, this.pageWidthTenths,
     );
