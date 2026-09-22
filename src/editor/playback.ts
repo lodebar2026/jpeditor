@@ -1,7 +1,7 @@
 // 试听播放的编辑器侧控制器：播放器实例、速度倍率与分声部音量、播放按钮与速度下拉。
 //
-// 从 App 里切出来的一块。**谱面高亮不在这里**——各排版器怎么按元素 id 找到自己画的那个音
-// （PuPainter 直接按 id、ScorePainter 经 id → Chord），那属于「谁在画谱面」，留在 App。
+// 从 App 里切出来的一块。**谱面高亮不在这里**——按元素 id + 遍次找到画出来的那个音
+// （`ScorePainter.highlight`），那属于「谁在画谱面」，由 App 转给排版器。
 // 控制器只通过 PlaybackHost 要「当前该播哪份谱」（由 ScoreDoc 拼的 `PlaySource`）与「高亮到这个元素」。
 import { ScorePlayer, type PlayPoint, type PlayState } from "./player";
 import { SPEED_STEPS, TEMPO, type PlayOptions, type PlaySource } from "../score/timeline";

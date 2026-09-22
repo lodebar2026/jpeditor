@@ -59,13 +59,14 @@ export interface FormatCaps {
   textEditor: boolean;
   /** 整篇简繁转换（`convertJpwabc` 认的是 `.Title`/`.Words` 段结构）。 */
   hanConvert: boolean;
-  /** 谱面走哪套排版：`scoredoc` = 解析成 `ScoreDoc` 后原样档走 `PuPainter`、展开档经 `jianpuInputOfDoc`
+  /** 谱面走哪套排版：`scoredoc` = 解析成 `ScoreDoc` 后原样档看 `originalLayout`、展开档经 `jianpuInputOfDoc`
    *  （文本谱、123、ABC）；`jpwabc` = `.jpwabc` 经 `jianpuInputOfJpw` 走简谱引擎（两档）。 */
   layout: "scoredoc" | "jpwabc";
-  /** `scoredoc` 这一路**原样档**用哪个排版器：`jianpu` = 投影成简谱引擎输入、与 `.jpwabc` 原样档同一个
-   *  `ScorePainter`（123、ABC；多声部的曲子仍回落 `PuPainter`，引擎只排一条旋律）；
-   *  `pu` = `PuPainter`（文本谱的印刷原版观感、MusicXML）。`jpwabc` 本来就走引擎。 */
-  originalEngine: "jianpu" | "pu";
+  /** `scoredoc` 这一路**原样档**用哪种布局算法（排版器都是同一个 `ScorePainter`）：
+   *  `jianpu` = 投影成简谱引擎输入、与 `.jpwabc` 原样档同一套（123、ABC；多声部的曲子仍回落原样文档布局，
+   *  引擎只排一条旋律）；`document` = 原样文档布局（`layout/original/`，文本谱的印刷原版观感、MusicXML）。
+   *  `jpwabc` 本来就走引擎。 */
+  originalLayout: "jianpu" | "document";
   /** 有没有「按乐句重排」（要有 `FormatAdapter.relayoutText`）。`.musicxml` 没有代码区，不给。 */
   phraseRelayout: boolean;
 }
@@ -133,7 +134,7 @@ const JPWABC: FormatAdapter = {
   label: () => "JPWABC",
   title: (host) => host.painterTitle.split("\n")[0] ?? "",
   profileKnob: "jp",
-  caps: { hanConvert: true, textEditor: true, layout: "jpwabc", phraseRelayout: true, originalEngine: "jianpu" },
+  caps: { hanConvert: true, textEditor: true, layout: "jpwabc", phraseRelayout: true, originalLayout: "jianpu" },
   reload: (host, text) => host.reloadJpwabc(text),
   // `.jpwabc` 是分节文件：只重切 `.Voice` 的行，别的节（样式、歌词、分页描述）一个字不动。
   // 尺子不用：这一路的展开档走的是另一套引擎输入，拿 `jianpuInputOfDoc` 那把尺子量不对。
@@ -164,7 +165,7 @@ const PU: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "pu" },
+  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalLayout: "document" },
   reload: (host, text) => host.reloadPu(text),
   toScoreDoc: (text) => parsePu(text),
   relayoutText: (text, measure) => relayoutPuText(text, parsePu(text), { measure }),
@@ -172,7 +173,7 @@ const PU: FormatAdapter = {
 };
 
 /** 123 —— 简谱主格式。原生解析直出 `ScoreDoc`；排版直接吃 `ScoreDoc`。
- *  档位旋钮跟文本谱同一个（`puProfile`）：两者都走 `PuPainter`（原样）/`ScorePainter`（展开）这一对。 */
+ *  档位旋钮跟文本谱同一个（`puProfile`）：两者的原样档都可走原样文档布局、展开档都投影成简谱引擎输入。 */
 const J123: FormatAdapter = {
   id: "123",
   defaultExt: ".123",
@@ -190,7 +191,7 @@ const J123: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "jianpu" },
+  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalLayout: "jianpu" },
   reload: (host, text) => host.reload123(text),
   toScoreDoc: parse123,
   relayoutText: (text, measure) => emitFrom(text, measure, parse123, emit123),
@@ -218,7 +219,7 @@ const ABC: FormatAdapter = {
     return first ? first[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalEngine: "jianpu" },
+  caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalLayout: "jianpu" },
   reload: (host, text) => host.reloadAbc(text),
   toScoreDoc: parseAbc,
   relayoutText: (text, measure) => emitFrom(text, measure, parseAbc, emitAbc),
@@ -241,7 +242,7 @@ const MUSICXML: FormatAdapter = {
     return m ? m[1]!.trim() : "";
   },
   profileKnob: "pu",
-  caps: { textEditor: false, layout: "scoredoc", phraseRelayout: false, hanConvert: false, originalEngine: "pu" },
+  caps: { textEditor: false, layout: "scoredoc", phraseRelayout: false, hanConvert: false, originalLayout: "document" },
   reload: (host, text) => host.reloadMusicXml(text),
   // MusicXML 只给绝对音高，简谱排版要度数
   toScoreDoc: (text) => {

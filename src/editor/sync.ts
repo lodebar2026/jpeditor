@@ -7,11 +7,10 @@
 //
 // 索引建在 **`ScoreDoc` 的 `source: SourceSpan`** 上——每个音符、每个歌词音节解析时就记了它在
 // 原文里的位置（文本谱经 `model/frompu.ts` 转来时照样带着）。有代码区的四种格式（文本谱、123、ABC、
-// `.jpwabc`）共用同一套代码。条目按**元素 id** 认，谱面那一侧（`PuPainter.noteGroupEl(id)` /
-// 简谱引擎的 `chordGroupEl(id)`）也按 id 取。
+// `.jpwabc`）共用同一套代码。条目按**元素 id** 认，谱面那一侧（`ScorePainter.entryEl(id)` /
+// `lyricEl` / `partEls`）也按 id 取，两路页面树的差别由排版器自己消化。
 //
-// **不进 `PagePainter` 接口**：架构 §3.1 明写「高亮不在接口里——三者语义不同」。
-// 这里只用各排版器已有的公开取元素方法（`noteGroupEl` / `chordGroupEl`），
+// 这里不碰页面树，只经 App（VisualHost）拿排版器给的 `<g>`，
 // 高亮靠加 CSS 类完成，**不重渲染**（沿用编辑器既有判据）。
 //
 // ## 条目的种类

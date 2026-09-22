@@ -4,7 +4,6 @@
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { Compartment, EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { PuPainter } from "../pu/painter";
 import { parsePu, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
 import { eachChord } from "../model/helpers";
@@ -58,8 +57,8 @@ export type ViewMode = JianpuLayoutMode | "staff" | "mixed";
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 
 export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost, FileSwitchHost, VisualHost {
-  /** 预览排版器（唯一的 `ScorePainter`）：简谱原样 / 展开档与五线谱 / 混排档都由它排、铺页、高亮。
-   *  文本谱与多声部的原样档另走 `_puPainter`（退役中，见 docs/实现/PuPainter退役.md），那时这个闲着。 */
+  /** 预览排版器（唯一的 `ScorePainter`）：简谱原样 / 展开档、原样文档（文本谱与多声部）、五线谱 / 混排档
+   *  都由它排、铺页、高亮。 */
   painter: ScorePainter;
   view!: EditorView;
   scorePane: HTMLElement;
@@ -74,7 +73,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   puProfile: "print" | "slide" = "slide";
   /** 简谱版面档：`normal` = 当前观感；`pptx` = 排版重构之前的笔画（导出 PPTX 用的那一档）。 */
   jpProfile: JpProfileName = "pptx";
-  private _puPainter: PuPainter | null = null;
   /** 最近一次排版用的 `.Layout` 分页描述（导出 PPTX 按展开档另排一遍时要用同一份）。 */
   private _breakDesc: string | null = null;
   /** 已解析出的文本谱方言，用于代码区标签（解析前未知）。 */
@@ -470,7 +468,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   /** 简谱视图此刻会排出的各行首音（和弦 id），五线谱自动铺排拿它当优选断点（`xmlproject.ts::applyLineStarts`）。
    *  另造一个排版器按当前档与纸排一遍，不动屏幕上那个（混排档里屏幕上那个可能还是旧文本排的）。
-   *  走 `PuPainter` 的（文本谱原样档、多声部）返回 null：那一路一行就是 `ScoreDoc` 里的一行，不用另给。 */
+   *  走原样文档布局的（文本谱原样档、多声部）返回 null：那一路一行就是 `ScoreDoc` 里的一行，不用另给。 */
   jianpuLineStarts(): ReadonlySet<number> | null {
     let score: JScore | null = null;
     let breakDesc: string | null = null;
@@ -481,7 +479,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         if (!f || !doc) return null;
         score = jianpuInputOfJpw(doc);
         breakDesc = f.getSection(LayoutSection)?.desc ?? null;
-      } else if (this.layoutMode === "expanded" || this._originalOnEngine()) {
+      } else if (this.layoutMode === "expanded" || this._originalOnJianpu()) {
         score = this.puScore();
       }
       if (!score) return null;
@@ -570,7 +568,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
 
   /** 文本谱（番茄 / 诗歌本）：解析 → 排版 → 渲染。展开档先投影成简谱引擎输入、与 `.jpwabc` 同一个排版器；
-   *  原样档走文本谱专用的 PuPainter（印刷原版的观感）。 */
+   *  原样档走原样文档布局（印刷原版的观感）。 */
   reloadPu(text: string): boolean {
     let sdoc: ScoreDoc;
     try {
@@ -598,7 +596,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   }
 
   /** FormatHost：`.123`（简谱主格式）解析 → 排版 → 渲染。
-   *  原生解析直出 `ScoreDoc`，与文本谱共用同一对排版器（原样档 `PuPainter` / 展开档 `ScorePainter`）。 */
+   *  原生解析直出 `ScoreDoc`，与文本谱共用同一套排版（原样档看声部数选布局 / 展开档投影成简谱引擎输入）。 */
   reload123(text: string): boolean {
     let doc: ScoreDoc;
     try {
@@ -666,21 +664,20 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     }
   }
 
-  /** 原样档这一份 `ScoreDoc` 走不走简谱引擎（`ScorePainter` 原样档）：格式说走（`caps.originalEngine`），
-   *  且投影出来只有一条旋律——引擎只排 `parts[0]`，多声部的曲子仍回落 `PuPainter`。 */
-  private _originalOnEngine(): boolean {
-    if (this.adapter.caps.originalEngine !== "jianpu" || this.layoutMode !== "original") return false;
+  /** 原样档这一份 `ScoreDoc` 走不走简谱引擎布局：格式说走（`caps.originalLayout`），
+   *  且投影出来只有一条旋律——引擎只排 `parts[0]`，多声部的曲子仍回落原样文档布局。 */
+  private _originalOnJianpu(): boolean {
+    if (this.adapter.caps.originalLayout !== "jianpu" || this.layoutMode !== "original") return false;
     const score = this.puScore(false);
     return score !== null && score.parts.length === 1;
   }
 
   /** 经 `ScoreDoc` 排版并铺页（文本谱、123、ABC 共用）：
    *  展开档先投影成简谱引擎输入、与 `.jpwabc` 同一个排版器；原样档 123/ABC 的单声部曲子同样投影后
-   *  交给引擎（与 `.jpwabc` 原样档同一个 `ScorePainter`），文本谱与多声部走 `PuPainter`（印刷原版的观感）。 */
+   *  交给引擎（与 `.jpwabc` 原样档同一套），文本谱与多声部走原样文档布局（印刷原版的观感）。都由同一个 `ScorePainter` 排。 */
   private _layoutScoreDoc(doc: ScoreDoc, what: string): boolean {
     try {
-      if (this.layoutMode === "expanded" || this._originalOnEngine()) {
-        this._puPainter = null;
+      if (this.layoutMode === "expanded" || this._originalOnJianpu()) {
         // 同一份文本只投影一次（puScore 有缓存）；点选与高亮按元素 id 认
         const score = this.puScore();
         if (!score) {
@@ -689,17 +686,14 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         }
         this._layoutScore(score, null);
       } else {
-        this._puPainter ??= new PuPainter();
-        this._puPainter.setStyle(this.styleOf("original", "pu"));
-        this._puPainter.load(doc);
+        this.painter.loadSync({ view: "original", doc, style: this.styleOf("original", "pu") });
       }
     } catch (e) {
       console.error(`${what}排版失败`, e);
       this.setStatus(`${what}排版失败：` + (e instanceof Error ? e.message : String(e)));
       return false;
     }
-    if (this._puPainter) this.renderPuPages();
-    else this.renderPages();
+    this.renderPages();
     this._buildSync(doc);
     return true;
   }
@@ -766,34 +760,21 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   }
 
   noteEl(id: ElementId): SVGGElement | null {
-    return this._puPainter ? this._puPainter.noteGroupEl(id) : this.painter.chordGroupEl(id, 0);
+    return this.painter.entryEl(id, 0);
   }
 
   augDotEls(id: ElementId): SVGGElement[] {
-    const pu = this._puPainter;
-    return pu ? pu.notePartEls(id, "aug-dot") : this.painter.chordPartEls(id, "aug-dot");
+    return this.painter.partEls(id, "aug-dot");
   }
 
-  /** 一个条目对应的谱面 `<g>`：原样档问 `PuPainter`，展开档按元素 id 问排版器。 */
+  /** 一个条目对应的谱面 `<g>`：按元素 id 问排版器（歌词按段取那一个字）。 */
   private _syncGroupEl(entry: SyncEntry): SVGGElement | null {
     if (entry.kind === "mark") {
       const part = this._markPartEl(entry);
       if (part) return part;
     }
-    const p = this._puPainter;
-    if (p) {
-      return entry.kind === "lyric"
-        ? p.syllableGroupEl(entry.id, entry.verse ?? 0)
-        : p.noteGroupEl(entry.id);
-    }
-    if (entry.kind === "lyric") {
-      // 展开档的音符格把各段歌词收在同一个 `<g>` 里：按段号取这一段自己的那个字
-      const verse = entry.verse ?? 0;
-      const ls = this.painter.lyricEls(entry.id, verse);
-      const one = ls.find((l) => l.verse === (entry.verseNo ?? verse + 1)) ?? (ls.length === 1 ? ls[0] : undefined);
-      if (one) return one.el;
-    }
-    return this.painter.chordGroupEl(entry.id, entry.verse ?? 0);
+    if (entry.kind === "lyric") return this.painter.lyricEl(entry.id, entry.verse ?? 0, entry.verseNo);
+    return this.painter.entryEl(entry.id, entry.verse ?? 0);
   }
 
   /** 页眉：从原文认出字段（`EditDialect.headerFields`）并进索引，再按字对上谱面上画出来的页眉项。
@@ -803,7 +784,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (fields.length === 0) return;
     this._sync.addHeader(fields);
     const entries = this._sync.ordered().filter((e) => e.kind === "header");
-    const parts = this._puPainter ? this._puPainter.headerParts() : this.painter.headerParts();
+    const parts = this.painter.headerParts();
     const norm = (t: string): string => t.replace(/\s+/g, "");
     const bind = (e: SyncEntry, el: SVGGElement): void => {
       const list = this._syncHeaderEls.get(e) ?? [];
@@ -851,8 +832,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     el.classList.add("cursor-at");
     el.classList.remove("cursor-off");
     this._syncMarked.push(el);
-    if (entry.kind !== "note" || this._puPainter) return;
-    for (const { el: l } of this.painter.lyricEls(entry.id, 0)) {
+    if (entry.kind !== "note") return;
+    for (const l of this.painter.cellLyricEls(entry.id)) {
       if (l.classList.contains("cursor-at")) continue;
       l.classList.add("cursor-off");
       this._syncMarked.push(l);
@@ -862,13 +843,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   /** 挂在音符上的记号自己的 `<g>`（和弦名、装饰、注记）：按类名在音符格里找，
    *  同类记号按原文顺序对第几个。弧、画不出来的记号（引擎只画延长号与重音）取不到，借宿主音符的 `<g>`。 */
   private _markPartEl(entry: SyncEntry): SVGGElement | null {
-    const pu = this._puPainter;
-    const cls = entry.markKind === "harmony" ? (pu ? "chord" : "chord-group")
-      : entry.markKind === "deco" ? (pu ? "ornament" : "artic")
-      : entry.markKind === "annotation" && pu ? "annotation"
-      : null;
-    if (!cls) return null;
-    const els = pu ? pu.notePartEls(entry.id, cls) : this.painter.chordPartEls(entry.id, cls);
+    const role = entry.markKind === "harmony" || entry.markKind === "deco" || entry.markKind === "annotation" ? entry.markKind : null;
+    if (!role) return null;
+    const els = this.painter.partEls(entry.id, role);
     const same = this._sync.marksOf(entry.id).filter((m) => m.markKind === entry.markKind);
     const nth = same.findIndex((m) => m.from === entry.from);
     return els.length === same.length && nth >= 0 ? els[nth] ?? null : null;
@@ -929,9 +906,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   /** 需要的话翻页并滚动到可视区（复用播放高亮那一套做法）。 */
   private _scrollSyncIntoView(el: Element | undefined, entry: SyncEntry): void {
     if (!el) return;
-    const page = this._puPainter
-      ? this._puPainter.pageOfNote(entry.id)
-      : this.painter.pageOfChord(entry.id);
+    const page = this.painter.pageOf(entry.id);
     if (page !== null && page !== this.pageIndex) this.pageIndex = page;
     el.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
@@ -982,22 +957,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         : `${what}：${diags.length} 处需要留意` +
             `（第 ${diags[0]!.source.line + 1} 行 ${diags[0]!.message}）`,
     );
-  }
-
-  private renderPuPages(): void {
-    const painter = this._puPainter;
-    if (!painter) return;
-    this.playback.stop();
-    this.selectedEl = null;
-    this._renderPagesWith(painter.pageCount, (i) => painter.renderPage(i), {
-      aspectRatio: (i) => {
-        // 文本谱的「原版」是连续长图，宽高比随谱而变，不能用 CSS 里写死的 960/540
-        const { w, h } = painter.pageSize(i);
-        return `${w} / ${h}`;
-      },
-      // 原样档没有几何拾取（PuPainter 不做 pickPage），双向定位靠事件冒泡找 `<g>`
-      onPage: (svg) => svg.addEventListener("click", (ev) => this._onSyncClick(ev)),
-    });
   }
 
   /** 文本谱版面切换（原版 / PPT）。 */
@@ -1087,10 +1046,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     return this.painter.score.title;
   }
 
-  get puPainter(): PuPainter | null {
-    return this.adapter.caps.layout === "scoredoc" ? this._puPainter : null;
-  }
-
   /** 切换编辑的源格式：换高亮、清掉另一路的状态。 */
   private _setDocFormat(format: DocFormatId): void {
     if (this.docFormat === format) return;
@@ -1103,7 +1058,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       // 乐句重排各格式各有写回原文的办法（`formats.ts::relayoutText`），可用性由各自的 reload 定。
       this._disablePhrase();
     } else {
-      this._puPainter = null;
       this._puDialect = null;
       this._scoreDoc = null;
       this._puScoreCache = null;
@@ -1159,7 +1113,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         const { w, h } = this.painter.pageSize(i);
         return `${w} / ${h}`;
       },
-      onPage: (svg, _wrap, i) => svg.addEventListener("click", (e) => this.onPageClick(i, svg, e)),
+      // 原样文档没有几何拾取，双向定位靠事件冒泡找 `<g>`
+      onPage: this.painter.isDocumentLayout
+        ? (svg) => svg.addEventListener("click", (ev) => this._onSyncClick(ev))
+        : (svg, _wrap, i) => svg.addEventListener("click", (e) => this.onPageClick(i, svg, e)),
     });
   }
 
@@ -1268,22 +1225,11 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   /** PlaybackHost：播到某个元素 → 谱面高亮 + 保证可见。
    *  高亮留在 App 而不进控制器：各排版器按 id 找音的办法不同，那属于「谁在画谱面」。 */
   highlightPlaying(id: ElementId | null, pass: number): void {
-    // 文本谱原样档：「原版」谱面直接按元素 id 索引（走引擎的 123/ABC 原样档落到下面那条路）。
-    const painter = this._puPainter;
-    if (painter) {
-      const pg = painter.highlight(id, Math.max(0, pass - 1));
-      if (id !== null && pg !== null) {
-        if (pg !== this.pageIndex) this.pageIndex = pg;
-        painter.noteGroupEl(id)?.scrollIntoView({ block: "nearest", inline: "nearest" });
-      }
-      return;
-    }
-    // 展开档与 `.jpwabc` 同一个排版器，同样按元素 id 画
-    const page = this.painter.highlightChord(id, pass);
+    const page = this.painter.highlight(id, pass);
     if (id !== null && page !== null) {
       if (page !== this.pageIndex) this.pageIndex = page;
       // keep the sounding note visible (no-op when already in view)
-      this.painter.chordGroupEl(id, pass)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      this.painter.entryEl(id, pass)?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
   }
 
@@ -1600,13 +1546,13 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
    * 文本谱的行长尺子。
    *
    * **只有展开档有**：那一档两种格式同走 `ScorePainter` 展开档，量宽（`measureJianpu`）与真正排版的
-   * 是同一套坐标。原样档走的是 `PuPainter`——固定步进的另一套尺子、另一套字号，拿简谱那把尺子
+   * 是同一套坐标。原样档走的是原样文档布局——固定步进的另一套尺子、另一套字号，拿简谱那把尺子
    * 去量会以为「两句并一行还宽绰」，排出来却要硬折（73《我主耶稣是生命源》一行 8 小节）。
    * 没有尺子时 `phrase.ts` 按出厂的小节数目标断，也就是一句一行——印刷原版要的正是这个。
    */
   private _puPhraseMeasure(): FitMeasure | null {
-    // 123/ABC 原样档走引擎时（`_originalOnEngine`）量它自己那张纸、那个字号，与 `.jpwabc` 原样档同口径
-    if (this._originalOnEngine()) return (score) => this._fitOf(score, this.layoutPage.w, this.fontSize);
+    // 123/ABC 原样档走引擎时（`_originalOnJianpu`）量它自己那张纸、那个字号，与 `.jpwabc` 原样档同口径
+    if (this._originalOnJianpu()) return (score) => this._fitOf(score, this.layoutPage.w, this.fontSize);
     if (this.layoutMode !== "expanded") return null;
     // 量的是断行模块自己投影的那份输入，所以给的是函数不是结果。
     return (score) => this._fitOf(score, this.pageW, jianpuSizes(this.styleOf("expanded")).fontSize);

@@ -613,7 +613,7 @@ export class NoteEntry extends Entry {
       dot.x = start + adv * d;
       dot.y = cy - r;
       dot.aug = { num, index: d };
-      dot.classes.add("aug-dot"); // 可视化编辑单独点选附点（`chordPartEls`）
+      dot.classes.add("aug-dot"); // 可视化编辑单独点选附点（`ScorePainter.partEls`）
       ent.group.add(dot);
     }
     num.augDotAdvance = adv * dots;
