@@ -20,7 +20,7 @@
 
 import { SIMPLE_DIVISIONS, type Chord, type Element, type ElementId, type Harmony, type Measure, type Song } from "./doc";
 import { harmonyText, jianpuShape, nominalQuarters } from "./jianpu";
-import { isXmlShaped, tiesToMarks } from "./xmlproject";
+import { hasVoiceOverlay, isXmlShaped, tiesToMarks } from "./xmlproject";
 
 /** 简谱来源的时值单位（四分音符的 divisions） */
 const Q = SIMPLE_DIVISIONS;
@@ -51,8 +51,13 @@ export function projectForJianpu(src: Song): Song {
   const hit = cache.get(src);
   if (hit) return hit;
   const xml = isXmlShaped(src);
-  if (!xml && !isDurationShaped(src)) return src;
+  const overlay = hasVoiceOverlay(src);
+  if (!xml && !isDurationShaped(src) && !overlay) return src;
   const song: Song = structuredClone(src);
+  // ABC `&` 的临时多声部（§7.4）：简谱一个声部行只印一条旋律，同一小节的第二、第三分支印不出来。
+  // **只取主分支**（口径同 MusicXML 那一路的 `jianpuinput.ts::voice <= 1`）——照原文顺序排下去
+  // 会把两条并行旋律串成一条、这一小节凭空多出几拍。五线谱那一路照样是完整的多声部。
+  if (overlay) dropOverlayVoices(song);
   if (xml) creatorsFromCredits(song);
   // ABC 的延音线只标在音上（`C3- C3`），简谱画成弧要按 id 配成 `tied` 记号（`slots.ts` 归弧线）
   else tiesToMarks(song);
@@ -72,6 +77,22 @@ export function projectForJianpu(src: Song): Song {
   }
   cache.set(src, song);
   return song;
+}
+
+/** 只留主声部：删掉 `voice > 1` 的元素，端点落在被删元素上的记号一并删（留着会配错对）。 */
+function dropOverlayVoices(song: Song): void {
+  const dropped = new Set<ElementId>();
+  for (const part of song.parts) {
+    for (const m of part.measures) {
+      m.elements = m.elements.filter((el) => {
+        if (el.voice <= 1) return true;
+        dropped.add(el.id);
+        return false;
+      });
+    }
+  }
+  if (!dropped.size) return;
+  song.marks = song.marks.filter((mk) => !dropped.has(mk.start) && !dropped.has(mk.end));
 }
 
 /** 123 的 `C:` 取自 `identification`。识别出的与不少排版软件导出的 MusicXML 把词曲只写在 `<credit>` 里：

@@ -23,7 +23,7 @@ import type { JpwChordIn, JpwMeasureIn, JpwScoreIn } from "./tojpw";
 import { buildMeasures, type JumpOut, type MeasureOut } from "../pu/phrasesong";
 import { docView } from "../pu/slots";
 import { playSourceOfDoc } from "./playdoc";
-import { isXmlShaped } from "./xmlproject";
+import { hasVoiceOverlay, isXmlShaped, projectForMusicXml } from "./xmlproject";
 import { alignPartsBySystem, maxId } from "./alignparts";
 
 export interface PlaySongOptions {
@@ -39,6 +39,9 @@ export function playSourceOf(doc: ScoreDoc, songIdx = 0, options: PlaySongOption
   const song = doc.songs[songIdx];
   if (!song) return null;
   if (isXmlShaped(song)) return playSourceOfDoc(song);
+  // ABC `&` 的临时多声部：简谱那条路一个声部行只走一条旋律，会把并行的分支当成接着唱的音。
+  // 先投成 MusicXML 形状（元素 id 不变，高亮照样认得）再按 voice 分轨播（`playdoc.ts`）。
+  if (hasVoiceOverlay(song)) return playSourceOfDoc(projectForMusicXml(song));
   if (song.parts.length > 1) {
     const aligned: ScoreDoc = structuredClone(doc);
     const floor = Math.max(...doc.songs.map(maxId));

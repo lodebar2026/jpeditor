@@ -271,6 +271,16 @@ export abstract class AbcFamilyEmitter {
   /** 符杠分组写不写成「连写」。ABC 写（§4.7 空白即分组）；123 不写——符杠按拍自动算，音符一律空格隔开。 */
   protected readonly spaceBeams: boolean = true;
 
+  /** 小节内临时多声部的分隔符（ABC 的 `&`，§7.4）。123 没有这个记号，恒为 null。 */
+  protected readonly overlayText: string | null = null;
+
+  /** 临时声部起点晚于小节起点时，用来占住前面那段时间的不可见休止（ABC 的 `x`）。
+   *  `divisions` 是写出端口径（四分 = `SIMPLE_DIVISIONS`）。 */
+  protected overlayPad(divisions: number): string {
+    void divisions;
+    return "";
+  }
+
   /** 换行/换页怎么写。123 用显式的 `$`/`$$`；ABC 默认是**代码换行即谱面换行**
    *  （§6.1 的 `I:linebreak <EOL>`），所以那一档写真换行。 */
   protected breakText(newPage: boolean): string {
@@ -423,11 +433,25 @@ export abstract class AbcFamilyEmitter {
     // 小节线是独立的条目，丢了就会把两个小节并成一个。
     const mid = (mea.barlines ?? []).filter((b) => b.location === "middle");
     let midIdx = 0;
-    for (const [j, el] of mea.elements.entries()) {
-      if (j < from || j >= to) continue;
+    // 临时多声部（ABC `&`）：按声部分段写，段间插 `&`。原生解析出来的元素本就按原文顺序、
+    // 一个声部连着一个声部，所以这里只在**声部号变了**的地方断开；MusicXML 读进来的交错
+    // 多声部先按声部归并（只在整小节写出时才归并——小节中间换行那条路按下标切片，不能重排）。
+    const order = this.voiceOrder(mea, from, to);
+    let prevVoice: number | undefined;
+    for (const j of order) {
+      const el = mea.elements[j]!;
       if (!this.emits(el, mea)) continue;
       const ch = el.kind === "chord" ? el : null;
       if (ch?.continued) continue; // 同 `lyricLines`
+      const voice = el.voice > 1 ? el.voice : 1;
+      if (this.overlayText && prevVoice !== undefined && voice !== prevVoice) {
+        pieces.push(this.overlayText);
+        prevGroup = undefined;
+        // 这一支不是从小节起点开的（MusicXML 的交错多声部会这样）：用不可见休止占住前面那段
+        const pad = el.onset ? this.overlayPad(el.onset) : "";
+        if (pad) pieces.push(pad);
+      }
+      prevVoice = voice;
       // 倚音单独成块、紧贴后一个音符
       if (ch?.grace) {
         pieces.push(this.graceText(ch));
@@ -474,6 +498,22 @@ export abstract class AbcFamilyEmitter {
     return pieces.join(" ");
   }
 
+
+  /** 小节里元素的写出顺序（下标）。单声部就是原顺序；多声部按**声部首次出现的先后**归并，
+   *  好让 `&` 落在段与段之间。`from`/`to` 切片（小节中间换行）不重排——那时下标要与切片口径一致。 */
+  private voiceOrder(mea: Measure, from: number, to: number): number[] {
+    const all = mea.elements.map((_, j) => j).filter((j) => j >= from && j < to);
+    if (!this.overlayText || from > 0 || to < mea.elements.length) return all;
+    const groups = new Map<number, number[]>();
+    for (const j of all) {
+      const v = mea.elements[j]!.voice > 1 ? mea.elements[j]!.voice : 1;
+      const g = groups.get(v);
+      if (g) g.push(j);
+      else groups.set(v, [j]);
+    }
+    if (groups.size < 2) return all;
+    return [...groups.values()].flat();
+  }
 
   /** 一首歌 → 文本。
    *  @param fallbackNumber 没有曲号时用它补一个——**多曲文件必须给**，

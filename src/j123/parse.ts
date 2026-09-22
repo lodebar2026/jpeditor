@@ -88,6 +88,11 @@ interface PartBuild {
   noteCount: number;
   /** 小节号计数 */
   measureNo: number;
+  /** 本小节里当前写到第几个临时声部（ABC `&`，§7.4）。主分支 1，每个 `&` 切到下一个；
+   *  真正的小节线复位回 1。**必须存在声部级**：一个小节可以跨几个代码行，`&` 的作用域不随行结束 */
+  voice: number;
+  /** 本小节最后一个 `&` 在原文里的位置：分支收尾时发现它是空的，诊断要指到这儿 */
+  overlaySource?: SourceSpan;
   /** 开着的弧/多连音、欠着的和弦记号、开着的房号。**按声部各存一份**：
    *  交错写法里 `V:1` 的弧常跨行，中间隔着 `V:2` 的行，共用一份会配错对 */
   openSlurs: OpenMark[];
@@ -471,7 +476,7 @@ function buildMusicLine(
           id: ctx.ids.next(),
           notes: [],
           duration: ctx.d.duration(t, ctx.len),
-          voice: 1,
+          voice: pb.voice,
           staff: 1,
           source: t.source,
         };
@@ -487,7 +492,7 @@ function buildMusicLine(
         applyTieAndBroken(ch);
         attach(ch);
         cur.sustainHost = ch;
-        pb.noteCount++;
+        if (pb.voice === 1) pb.noteCount++;
         // 三连音按音符计数收尾，并给组内音符打 time-modification
         for (let k = openTuplets.length - 1; k >= 0; k--) {
           const tp = openTuplets[k]!;
@@ -541,14 +546,14 @@ function buildMusicLine(
           notes: [],
           rest: {},
           duration: ctx.d.duration(t, ctx.len),
-          voice: 1,
+          voice: pb.voice,
           staff: 1,
           source: t.source,
         };
         applyTieAndBroken(ch);
         attach(ch);
         cur.sustainHost = ch;
-        pb.noteCount++;
+        if (pb.voice === 1) pb.noteCount++;
         break;
       }
 
@@ -562,14 +567,14 @@ function buildMusicLine(
             { ...t, num: t.num ?? (t.notes?.[0]?.num ?? 1), den: t.den ?? (t.notes?.[0]?.den ?? 1) },
             ctx.len,
           ),
-          voice: 1,
+          voice: pb.voice,
           staff: 1,
           source: t.source,
         };
         applyTieAndBroken(ch);
         attach(ch);
         cur.sustainHost = ch;
-        pb.noteCount++;
+        if (pb.voice === 1) pb.noteCount++;
         break;
       }
 
@@ -595,14 +600,14 @@ function buildMusicLine(
           notes: [],
           rhythm: true,
           duration: ctx.d.duration(t, ctx.len),
-          voice: 1,
+          voice: pb.voice,
           staff: 1,
           source: t.source,
         };
         if ((t.beams ?? 0) > 0) ch.beams = Array.from({ length: t.beams! }, () => "continue" as const);
         attach(ch);
         cur.sustainHost = ch;
-        pb.noteCount++;
+        if (pb.voice === 1) pb.noteCount++;
         break;
       }
 
@@ -619,21 +624,21 @@ function buildMusicLine(
             rest: {},
             printObject: false,
             duration: ctx.d.duration(t, ctx.len),
-            voice: 1,
+            voice: pb.voice,
             staff: 1,
             source: t.source,
           };
           if ((t.beams ?? 0) > 0) ch.beams = Array.from({ length: t.beams! }, () => "continue" as const);
           attach(ch);
           cur.sustainHost = ch;
-          pb.noteCount++;
+          if (pb.voice === 1) pb.noteCount++;
           break;
         }
         const sp: Space = {
           kind: "space",
           id: ctx.ids.next(),
           spacer: "y",
-          voice: 1,
+          voice: pb.voice,
           staff: 1,
           source: t.source,
         };
@@ -681,7 +686,7 @@ function buildMusicLine(
           notes: (t.notes ?? []).map((g) => ctx.d.note(g)),
           duration: { divisions: 0, dots: 0 },
           grace: t.acciaccatura ? { slash: true } : {},
-          voice: 1,
+          voice: pb.voice,
           staff: 1,
           source: t.source,
         };
@@ -803,6 +808,34 @@ function buildMusicLine(
         break;
       }
 
+      case "overlay": {
+        // ABC §7.4：`&` 把时间退回本小节起点，后面是与前一分支**同时发声**的临时声部。
+        // 这里只切声部号（元素仍按原文顺序存在同一个小节里），小节内各声部的实际起点
+        // 由投影按每声部的游标算（`model/xmlproject.ts`），因为那时才折算完多连音与 divisions。
+        if (openSlurs.length) {
+          report(ctx, "overlay-open-slur", "圆滑线跨过了 `&`", t.source);
+          openSlurs.length = 0;
+        }
+        if (openTuplets.length) {
+          report(ctx, "overlay-open-tuplet", "多连音跨过了 `&`", t.source);
+          openTuplets.length = 0;
+        }
+        if (!pb.measure.elements.some((el) => el.voice === pb.voice)) {
+          report(ctx, "empty-overlay", "`&` 前面这个临时声部是空的", t.source);
+        }
+        pb.voice++;
+        pb.overlaySource = t.source;
+        // 分支各自从头计时，所以分支间的状态一律不继承：tie、破碎节奏、增时线宿主、符杠分组
+        pendingTie = false;
+        pendingBroken = 0;
+        cur.sustainHost = null;
+        cur.last = null;
+        cur.justClosedTuplet = false;
+        beamGroup++;
+        sawSpaceSinceLastNote = true;
+        break;
+      }
+
       case "break": {
         // `$` 的语义是「**这一小节之后**换行」。小节线通常先到、当前小节已被推进 `measures`，
         // 所以要赋给刚收尾的那一个；否则每次往返都会把换行往后挪一格。
@@ -843,11 +876,17 @@ function buildMusicLine(
 /** 小节收尾：推进到下一小节。空小节（连续两根小节线）不产生。 */
 function closeMeasure(ctx: Ctx, pb: PartBuild): void {
   if (pb.measure.elements.length === 0 && !pb.measure.barlines?.length) return;
+  // 末尾那个分支是空的（`… & |`）：`&` 写了却没有音，多半是漏了内容
+  if (pb.voice > 1 && pb.overlaySource && !pb.measure.elements.some((el) => el.voice === pb.voice)) {
+    report(ctx, "empty-overlay", "`&` 后面这个临时声部是空的", pb.overlaySource);
+  }
+  pb.overlaySource = undefined;
   pb.part.measures.push(pb.measure);
   pb.measureNo++;
   pb.measure = { number: String(pb.measureNo), elements: [] };
   pb.noteCount = 0;
-  void ctx;
+  // `&` 的临时声部只活到小节线（ABC §7.4），下一小节从主声部重新开始
+  pb.voice = 1;
 }
 
 /** 把 `I:playorder` 的「第几个音符」换成元素 id。 */
@@ -1015,6 +1054,7 @@ export function parseAbcFamily(
     measure: { number: "1", elements: [] },
     noteCount: 0,
     measureNo: 1,
+    voice: 1,
     openSlurs: [],
     openTuplets: [],
     pending: { annotations: [], decos: [], srcs: [] },

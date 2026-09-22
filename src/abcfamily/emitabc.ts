@@ -50,6 +50,8 @@ function withAbcDivisions(src: Song): Song {
         if ((el.kind === "chord" || el.kind === "space") && el.duration) {
           el.duration = { ...el.duration, divisions: Math.round(nominalQuarters(el, divisions) * SIMPLE_DIVISIONS) };
         }
+        // 小节内起点（多声部）同样换口径，否则 `&` 后面补的那个 `x` 时值按原始 divisions 算，差一个倍数
+        if (el.onset) el.onset = Math.round((el.onset / divisions) * SIMPLE_DIVISIONS);
       }
     }
   }
@@ -111,6 +113,14 @@ export class EmitterAbc extends AbcFamilyEmitter {
   /** ABC 的多连音不要冒号（音符是字母，`(3` 无歧义）。 */
   protected override tupletText(actual: number, normal: number): string {
     return normal === 2 ? `(${actual}` : `(${actual}:${normal}:${actual}`;
+  }
+
+  /** 小节内临时多声部分隔（ABC §7.4）。 */
+  protected override readonly overlayText = "&";
+
+  /** 分支不从小节起点开始时，前面用不可见休止 `x` 占住。 */
+  protected override overlayPad(divisions: number): string {
+    return divisions > 0 ? `x${lengthSuffix(divisions)}` : "";
   }
 
   /** 拉丁词必须空格分开，否则读回来粘成一个音节。 */

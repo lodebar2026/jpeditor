@@ -43,21 +43,22 @@ export interface BeatCheckOptions {
 const EPS = 1e-6;
 const beatsOf = (t: { beats: number; beatType: number }): number => t.beats * (4 / t.beatType);
 
-/** 一小节的实际时值（四分音符为 1）。多声部按第一个 voice 算。
+/** 一小节里**各声部**的实际时值（四分音符为 1），按出现先后。
+ *  同一小节有多个声部只有一种来源：ABC `&` 的临时多声部（§7.4），各分支都该占满一小节——
+ *  所以要逐分支算，主分支对了不代表其它分支对。
  *  按 `divisions` 算（`<type>` 不含增时线）：MusicXML 形状的 divisions 已是实际时值，
  *  简谱形状的多连音记名义值（`omr/todoc.ts`、123 解析端同口径），要按比例折回。 */
-function measureQuarters(m: Measure, divisions: number, xml: boolean): number {
-  let q = 0;
-  const voice = m.elements.find((e) => e.kind === "chord" && !e.grace)?.voice ?? 1;
+function measureQuarters(m: Measure, divisions: number, xml: boolean): Map<number, number> {
+  const out = new Map<number, number>();
   for (const el of m.elements) {
-    if (el.voice !== voice) continue;
     if (el.kind === "chord" && el.grace) continue;
     const d = el.duration;
     if (!d) continue;
     const raw = d.divisions / divisions;
-    q += !xml && d.timeMod ? (raw * d.timeMod.normal) / d.timeMod.actual : raw;
+    const q = !xml && d.timeMod ? (raw * d.timeMod.normal) / d.timeMod.actual : raw;
+    out.set(el.voice, (out.get(el.voice) ?? 0) + q);
   }
-  return q;
+  return out;
 }
 
 /** 逐小节查时值，返回对不上的那些。 */
@@ -74,7 +75,8 @@ export function checkMeasureDurations(doc: ScoreDoc, opts: BeatCheckOptions = {}
         // 混合拍：头部并排写的几个拍号（`Song.extraTimes`）对上任意一个都算
         const wants = opts.meters?.length ? opts.meters.map(beatsOf)
           : time ? [time, ...(song.extraTimes ?? [])].map(beatsOf) : [];
-        return { m, wants, got: measureQuarters(m, divisions, xml) };
+        const byVoice = measureQuarters(m, divisions, xml);
+        return { m, wants, byVoice, got: byVoice.values().next().value ?? 0 };
       });
       const n = rows.length;
       const ok = rows.map((r) => r.wants.length === 0 || r.m.elements.length === 0 || !!r.m.implicit
@@ -91,6 +93,17 @@ export function checkMeasureDurations(doc: ScoreDoc, opts: BeatCheckOptions = {}
       for (let i = 0; i + 1 < n; i++) {
         if (!ok[i] && !ok[i + 1] && short(i) && short(i + 1) && fills(i, i + 1)) ok[i] = ok[i + 1] = true;
       }
+      // 临时多声部：各分支与主分支等长才算过（这一小节本身满不满由下面那套规则裁决）
+      rows.forEach((r, measureIndex) => {
+        if (r.byVoice.size < 2) return;
+        for (const [, q] of [...r.byVoice].slice(1)) {
+          if (Math.abs(q - r.got) < EPS) continue;
+          const issue: BeatIssue = { songIndex, partIndex, measureIndex, want: r.got, got: q, ids: r.m.elements.map((e) => e.id) };
+          const src = r.m.elements.find((e) => e.source)?.source;
+          if (src) issue.source = src;
+          out.push(issue);
+        }
+      });
       rows.forEach((r, measureIndex) => {
         if (ok[measureIndex]) return;
         const want = r.wants.reduce((best, w) => (Math.abs(w - r.got) < Math.abs(best - r.got) ? w : best), r.wants[0]!);

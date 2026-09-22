@@ -58,6 +58,14 @@ export function isXmlShaped(song: Song): boolean {
   return song.parts.some((p) => p.measures[0]?.attrs?.divisions !== undefined);
 }
 
+/** 有没有小节内临时多声部（同一小节里两个以上 `voice`）。唯一来源是 ABC 的 `&`（§7.4）。 */
+export function hasVoiceOverlay(song: Song): boolean {
+  return song.parts.some((p) => p.measures.some((m) => {
+    const first = m.elements[0]?.voice;
+    return first !== undefined && m.elements.some((el) => el.voice !== first);
+  }));
+}
+
 export interface ProjectOptions {
   /** 换行改照这些音起行（简谱视图实际排出的各行首音，`App.jianpuLineStarts`）。不给就用模型里的换行（源文的行） */
   lineStarts?: ReadonlySet<ElementId> | null;
@@ -751,15 +759,25 @@ function projectPart(
     const carry = (cont && carries.get(cont)) || new AccidentalCarry();
     carries.set(m, carry);
     const dirs: Direction[] = [];
+    // 小节内各声部的时间游标。一个小节里出现两个以上 voice 只有一种来源：ABC `&` 的临时多声部
+    // （§7.4，`j123/parse.ts`），各分支都从小节起点重新计时；其余来源整条 part 就是一个声部。
+    const cursors = new Map<number, number>();
+    const overlay = new Set(m.elements.map((el) => el.voice || 1)).size > 1;
     let pos = 0;
     for (const el of m.elements) {
-      // 简谱来源一个 part 就是一个声部：`<voice>` 一律写 1（文本谱 `Q2:` 的声部号是 part 的事）
-      el.voice = 1;
+      // 简谱来源一个 part 就是一个声部：`<voice>` 一律写 1（文本谱 `Q2:` 的声部号是 part 的事）。
+      // **临时多声部例外**：解析已经定好的分支号照原样留着，覆盖掉就把两条并行旋律串成一条了。
+      const voice = el.voice > 1 ? el.voice : 1;
+      el.voice = voice;
+      pos = cursors.get(voice) ?? 0;
+      // 实际起点与「前一个元素的终点」这个缺省不一致时必须写出来（`toxml.ts` 据此补 `<backup>`）
+      if (overlay) el.onset = pos;
       if (el.kind === "space") {
         if (el.duration) {
           el.duration = { ...el.duration, divisions: Math.round(el.duration.divisions) * factor };
           pos += el.duration.divisions;
         }
+        cursors.set(voice, pos);
         delete el.beams;
         continue;
       }
@@ -770,6 +788,7 @@ function projectPart(
       if (ch.grace) {
         ch.duration = { ...ch.duration, divisions: 0 };
         delete ch.beams;
+        if (overlay) delete ch.onset; // 倚音不占时值，起点跟着后一个音符
         continue;
       }
       // 时值：48 分 → 放大后的 divisions；type/dots 按含增时线的名义时值重算；连音补比例
@@ -800,7 +819,10 @@ function projectPart(
       ch.lyrics = lyricsOf(ch.lyrics);
       if (!ch.lyrics.length) delete ch.lyrics;
       pos += ch.duration.divisions;
+      cursors.set(voice, pos);
     }
+    // 小节长度取各分支最远的终点，**不是各分支时值之和**
+    pos = Math.max(0, ...cursors.values());
     for (const b of m.barlines ?? []) {
       for (const o of b.ornaments ?? []) {
         const d = directionOf(o);
@@ -838,28 +860,36 @@ function autoBeams(
   const beat = time.beatType >= 8 && time.beats % 3 === 0
     ? (quarter * 4 / time.beatType) * 3
     : Math.max(quarter * 4 / time.beatType, quarter);
-  const items: { el: Element; start: number; dur: number; level: number; solid: boolean }[] = [];
+  const items: { el: Element; start: number; dur: number; level: number; solid: boolean; voice: number }[] = [];
+  // 临时多声部（ABC `&`）：各分支从小节起点各自计时，符杠**不能跨分支连**
+  const cursors = new Map<number, number>();
   let pos = onset;
   for (const el of m.elements) {
     if (!timed(el)) continue;
+    const voice = el.voice > 1 ? el.voice : 1;
+    const start = cursors.get(voice) ?? onset;
     const dur = el.duration?.divisions ?? 0;
     const solid = el.kind === "chord" && !el.rest && el.printObject !== false;
-    items.push({ el, start: pos, dur, level: levels.get(el) ?? 0, solid });
-    pos += dur;
+    items.push({ el, start, dur, level: levels.get(el) ?? 0, solid, voice });
+    cursors.set(voice, start + dur);
+    pos = Math.max(pos, start + dur);
   }
   const full = time.beats * quarter * 4 / time.beatType;
   const shift = first && pos > 0 && pos < full ? full - pos : 0;
 
   const groups: (typeof items)[] = [];
   let curBeat = -1;
+  let curVoice = 0;
   for (const it of items) {
     const b = Math.floor((it.start + shift) / beat + 1e-9);
     if (it.level > 0 && it.dur <= beat) {
-      if (b !== curBeat) groups.push([]);
+      if (b !== curBeat || it.voice !== curVoice) groups.push([]);
       groups[groups.length - 1]!.push(it);
       curBeat = b;
+      curVoice = it.voice;
     } else {
       curBeat = -1;
+      curVoice = 0;
     }
   }
 

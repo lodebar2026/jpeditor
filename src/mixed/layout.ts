@@ -150,6 +150,12 @@ class DocPartLoader {
   guessedStem = new Set<ChordLayout>();
   hasBeamEl = false; // 本声部是否出现过 <beam>（无则自动按拍分组符杠，供 OMR 谱用）
   transposeSteps = 0;
+  /** 当前小节里同一谱表并存多个声部时，各声部的符干方向（`staff:voice` → 朝上）。
+   *  ABC `&` 的临时多声部（§7.4）没有 `<stem>`，只按音高猜会让两条并行旋律的符干混在一起分不出层次：
+   *  主声部（号最小的那个）一律朝上、其余朝下，这是制谱通例。单声部小节仍走按音高的老规则。 */
+  voiceStem = new Map<string, boolean>();
+  /** 方向已按声部定好的和弦（`voiceStem`）：自动分组符杠时不能再按音高统一一次，否则分层又没了 */
+  forcedStem = new Set<ChordLayout>();
   /** 当前小节的 divisions 与简谱叠层的旋律（和弦 → 印的那个音） */
   curDiv = 1;
   melody = new Map<DocChord, DocNote | null>();
@@ -306,6 +312,7 @@ class DocPartLoader {
     this.melody = new Map(melodyChords(m, 1).map((c) => [c, topNote(c) ?? null] as const));
 
     this.arpegNotes.clear();
+    this.loadVoiceStems(m);
 
     if (m.attrs) this.processAttributes(m.attrs, mif.offset);
 
@@ -430,6 +437,13 @@ class DocPartLoader {
       ch.stemUp = note.stem === "up";
       this.stemNotes.add(nt);
       if (note.stemY !== undefined) this.stemYMap.set(nt, note.stemY);
+    } else if (this.voiceStem.size > 0 && k === 0 && !ch.rest && ch.noteType.compareTo(new Fraction(4)) < 0
+               && this.voiceStem.has(`${src.staff}:${src.voice}`)) {
+      // 同一谱表并存两个声部（ABC `&` 的临时多声部）：按声部定方向，不按音高猜。
+      // **不登记进 `guessedStem`**：那会让整组符杠再按音高统一一次方向，分层又没了。
+      ch.stemUp = this.voiceStem.get(`${src.staff}:${src.voice}`)!;
+      this.stemNotes.add(nt);
+      this.forcedStem.add(ch);
     } else if (k === 0 && !ch.rest && ch.noteType.compareTo(new Fraction(4)) < 0 && !src.notes.some((n) => n.stem !== undefined)) {
       // 整个和弦都没有 <stem> 且需符干（非全音符）的谱（如 OMR 生成、未给符干方向）：按首音相对中线
       // 位置定默认方向（中线 line=-4 及以上朝下，其下朝上），并登记以便 calcStemLen 给长度。
@@ -960,6 +974,24 @@ class DocPartLoader {
     }
   }
 
+  /** 本小节各谱表上并存的声部 → 符干方向。同一谱表只有一个声部时不登记（照旧按音高猜）。 */
+  private loadVoiceStems(m: Measure): void {
+    this.voiceStem.clear();
+    const byStaff = new Map<number, Set<number>>();
+    for (const el of m.elements) {
+      if (el.kind === "chord" && el.grace) continue;
+      const staff = el.staff || 1;
+      const set = byStaff.get(staff) ?? new Set<number>();
+      set.add(el.voice || 1);
+      byStaff.set(staff, set);
+    }
+    for (const [staff, voices] of byStaff) {
+      if (voices.size < 2) continue;
+      const sorted = [...voices].sort((a, b) => a - b);
+      for (const v of sorted) this.voiceStem.set(`${staff}:${v}`, v === sorted[0]);
+    }
+  }
+
   /** 无 <beam> 的谱（OMR 生成）：按拍自动把同一声部相邻的短音符（八分及更短）分组成符杠。
    *  仅在整声部无任何 <beam> 时启用；真实制谱谱大多带 <beam>（《恩典大过我罪》TB 部没写，靠逐声部分组不误连）。 */
   private autoBeamPart(): void {
@@ -1002,8 +1034,9 @@ class DocPartLoader {
             }
             g.chords.push(ch);
           }
-          // 组是在 layoutNotes 之后才建的：定完方向把二度错位按新方向重排
-          g.unifyStemDir();
+          // 组是在 layoutNotes 之后才建的：定完方向把二度错位按新方向重排。
+          // 方向已按声部定好的（同一谱表并存两个声部）不再按音高统一——那会把两层的符干又并回一个方向。
+          if (!run.every((ch) => this.forcedStem.has(ch))) g.unifyStemDir();
           for (const ch of run) {
             for (const nt of ch.notes) nt.flipped = false;
             ch.doubleSide = false;

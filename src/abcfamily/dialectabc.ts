@@ -57,6 +57,8 @@ export class LexerAbc extends AbcFamilyLexer {
   protected readonly hyphen = "tie" as const;
   /** ABC 的音符是字母，`(3` 无歧义，冒号可省。 */
   protected readonly tupletNeedsColon = false;
+  /** `&` 是临时多声部分隔（§7.4）。 */
+  protected override readonly voiceOverlay = true;
 
   /** `z` 带时值、`Z` 按小节数（ABC §4.5/§4.6）。 */
   protected scanRest(line: string, i: number): DurationScan | null {

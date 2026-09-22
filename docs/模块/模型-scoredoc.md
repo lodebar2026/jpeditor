@@ -68,6 +68,10 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 - **增时线是可挂载的独立对象**（`Chord.sustains[]`，各有 id），而时值仍记在 `Chord.duration` 上：
   语义上 `5 - -` 是一个三拍音符（与 MusicXML 一致），但**和弦可以挂在增时线上**（语料实测 190 次）。
 - **`Space` 元素**承载 `y`（无时值占位，专供挂和弦）与 `x`（不可见休止）。
+- **`Element.voice` 在文本来源里恒为 1，唯一的例外是 ABC 的 `&`**（小节内临时多声部，§7.4）：
+  分支的元素照原文顺序留在同一个 `Measure` 里、只是 `voice` 不同，小节内的实际起点由投影写进
+  `Chord/Space.onset`（缺省是「前一个元素的终点」，`toxml.ts` 据此补 `<backup>`）。
+  读这个模型的地方要按 `voice` 分轨算时间，别把一小节的时值一路加下去（见 [源格式-abc家族](源格式-abc家族.md)）。
 - **`playOrder` 与 `style` 是 MusicXML 装不下的两样**（`<ending>` 只能整小节），
   只在 `ScoreDoc` 与 `.123` 里活着。
 - 五线谱侧字段（`clef`/`staves`/`transpose`/`pedal`/`octaveShift`/`partGroups`/`defaults`/`technical`）

@@ -86,6 +86,9 @@ export abstract class AbcFamilyLexer {
   /** 多连音是否要求冒号。 */
   protected abstract readonly tupletNeedsColon: boolean;
 
+  /** 音乐体里的 `&` 是不是小节内临时多声部分隔（ABC §7.4 voice overlay）。123 没有这个记号。 */
+  protected readonly voiceOverlay: boolean = false;
+
   /** 方言特有的单字符装饰（ABC 的 `.` `~` `H`–`W`）。不认返回 null。 */
   protected shorthandDecoration(line: string, i: number): { len: number; name: string } | null {
     void line;
@@ -174,6 +177,22 @@ export abstract class AbcFamilyLexer {
           i++;
           push({ kind: "break", text: "$", value: "line" }, start, 1);
         }
+        continue;
+      }
+
+      // 临时多声部分隔 `&`（ABC §7.4）：把音乐时间退回本小节起点，后面是与前一分支并行的声部。
+      // **只认单个 `&`**：`&&`、`(& … &)` 这些 2.2 的跨行扩展还没实现，整体报不支持，
+      // 不能按单个 `&` 误读成合法的一次分支切换。
+      if (ch === "&" && this.voiceOverlay) {
+        const run = /^&+/.exec(line.slice(i))![0];
+        if (run.length > 1) {
+          i += run.length;
+          errors.push({ message: `尚未支持的多声部写法 \`${run}\``, source: span(start, run.length) });
+          push({ kind: "unknown", text: run }, start, run.length);
+          continue;
+        }
+        i++;
+        push({ kind: "overlay", text: "&" }, start, 1);
         continue;
       }
 
