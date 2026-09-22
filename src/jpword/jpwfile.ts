@@ -82,6 +82,8 @@ export class VoiceSection extends Section {
 export class WordsItem {
   text = "";
   alignPos = -1;
+  /** 这个字在原文里的位置（0 基行号、列、全文偏移、长度）：谱面上点一个字要选中它。`/` 占位的空项没有 */
+  source?: { line: number; column: number; offset: number; length: number };
   constructor(s?: string) {
     if (s === undefined) return;
     this.text = "";
@@ -118,10 +120,29 @@ export class WordsSection extends Section {
 
   override parse(): boolean {
     const text = this.lines.join("\n");
+    // 拼接文本的位置 → 原文位置（各行行首在拼接文本里的位置，与 `lineOffsets` 一一对应）
+    const joinedStarts: number[] = [];
+    for (let i = 0, at = 0; i < this.lines.length; at += this.lines[i]!.length + 1, i++) joinedStarts.push(at);
+    const spanAt = (from: number, to: number): WordsItem["source"] => {
+      let i = joinedStarts.length - 1;
+      while (i > 0 && joinedStarts[i]! > from) i--;
+      const lineOffset = this.lineOffsets[i];
+      const line = this.lineNos[i];
+      if (lineOffset === undefined || line === undefined) return undefined;
+      const column = from - joinedStarts[i]!;
+      return { line, column, offset: lineOffset + column, length: to - from };
+    };
+    const item = (s: string, from: number, to: number): WordsItem => {
+      const it = new WordsItem(s);
+      it.source = spanAt(from, to);
+      return it;
+    };
     let pos = 0;
     let lineBegin = true;
     const punc = ".,;'!?。：，；！？“”｡､、";
     const reg = WordsSection.regLrcSpec;
+    /** 原文区间末尾并进了一个「“」的项（收尾处理把「“」挪给下一个字时，区间跟着挪） */
+    const quoteTail = new Set<WordsItem>();
     /** 段首自成一项的「“」（见下方收尾处理） */
     const openQuoteHeads = new Set<WordsItem>();
 
@@ -159,7 +180,7 @@ export class WordsSection extends Section {
         const end = text.indexOf("}", pos + 1);
         if (end < 0) throw new Error("");
         const t = text.substring(pos + 1, end);
-        this.last().data.push(new WordsItem(t));
+        this.last().data.push(item(t, pos, end + 1));
         pos = end + 1;
         continue;
       }
@@ -182,23 +203,29 @@ export class WordsSection extends Section {
           end++;
         }
         const t = text.substring(pos, end);
-        this.last().data.push(new WordsItem(t));
+        this.last().data.push(item(t, pos, end));
         pos = end + 1;
         continue;
       }
       if (punc.includes(ch)) {
         const last = this.last().data;
         if (last.length > 0) {
-          last[last.length - 1].text += ch;
+          const prev = last[last.length - 1]!;
+          prev.text += ch;
+          // 紧跟在字后的标点并进这个字的原文区间
+          if (prev.source && prev.source.offset + prev.source.length === spanAt(pos, pos + 1)?.offset) {
+            prev.source.length++;
+            if (ch === "“") quoteTail.add(prev);
+          }
           pos++;
           continue;
         }
       }
       if (ch.charCodeAt(0) < 0x7f) console.error("unsupported char?");
-      const item = new WordsItem(ch);
-      if (ch === "“" && this.last().data.length === 0) openQuoteHeads.add(item);
-      this.last().data.push(item);
-      pos++;
+      const one = item(ch, pos, pos + ch.length);
+      if (ch === "“" && this.last().data.length === 0) openQuoteHeads.add(one);
+      this.last().data.push(one);
+      pos += ch.length;
     }
 
     for (const s of this.segments) {
@@ -211,6 +238,15 @@ export class WordsSection extends Section {
         if (prev.text.endsWith("“")) {
           prev.text = prev.text.replace(/“$/, "");
           d.text = "“" + d.text;
+          // 原文区间跟着挪：前一个字让出末尾的「“」，这个字从「“」起
+          const ps = prev.source;
+          const ds = d.source;
+          if (ps && ds && quoteTail.has(prev) && ps.offset + ps.length <= ds.offset && ps.line === ds.line) {
+            ps.length--;
+            ds.length += ds.offset - (ps.offset + ps.length);
+            ds.column -= ds.offset - (ps.offset + ps.length);
+            ds.offset = ps.offset + ps.length;
+          }
         }
         prev = d;
       }

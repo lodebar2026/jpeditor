@@ -11,7 +11,7 @@ import type { EditorState } from "@codemirror/state";
 import type { Accidental, ScoreDoc } from "../../../model/doc";
 import { dialectSpec } from "../../../pu/dialect";
 import { relayoutPuBreak } from "../../../pu/relayout";
-import { type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken } from "../dialect";
+import { dotsRange, type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken } from "../dialect";
 
 /** 写出时用的升降号（`pu/dialect.ts` 的表里一个语义可能有几种写法，取规范那个） */
 const ACC_TEXT: Record<"tomato" | "shige", Partial<Record<Accidental, string>>> = {
@@ -51,6 +51,18 @@ export const DIALECT_PU: EditDialect = {
     const acc = t.acc && t.degree !== 0 ? ACC_TEXT[nc.puDialect ?? "shige"][t.acc] ?? "" : "";
     const oct = t.octave > 0 ? spec.octaveUp.repeat(t.octave) : spec.octaveDown.repeat(-t.octave);
     return `${t.pre}${t.degree}${acc}${oct}${"/".repeat(t.halvings)}${".".repeat(t.dots)}${t.post}`;
+  },
+  noteParts(src: string, nc: NoteCtx) {
+    if (!this.parseNote(src, nc)) return null;
+    // 修饰符次序不定：音头 = 数字连同紧跟的升降号、八度点
+    const spec = specOf(nc);
+    const cs = [...src];
+    let end = 1;
+    while (end < cs.length && (cs[end] === spec.octaveUp || cs[end] === spec.octaveDown || spec.accidentals[cs[end]!])) end++;
+    const head = cs.slice(0, end).join("").length;
+    // 倚音 `[…]` 里的 `.` 不算
+    const tail = src.slice(head).split("[")[0]!;
+    return { head: [0, head], dots: dotsRange(tail, head) };
   },
   newNote(degree: number, dur: NoteDuration) {
     return `${degree}${"/".repeat(dur.halvings)}${".".repeat(dur.dots)}`;

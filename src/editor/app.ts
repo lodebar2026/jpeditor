@@ -32,6 +32,7 @@ import { formatOf, type DocFormatId, type FormatAdapter, type FormatHost } from 
 import { SyncIndex, type SyncEntry } from "./sync";
 import { VisualEditController, type VisualHost } from "./visual/controller";
 import { visualCursorExtension } from "./visual/cursor";
+import { hitThroughOverlay } from "./visual/overlay";
 import type { EditDialect } from "./visual/dialect";
 import { describeLosses, planSave } from "../model/capability";
 import { targetSpec, type ConvertTarget } from "../model/convert";
@@ -796,6 +797,11 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     return this._puPainter ? this._puPainter.noteGroupEl(id) : this.painter.chordGroupEl(id, 0);
   }
 
+  augDotEls(id: ElementId): SVGGElement[] {
+    const pu = this._puPainter;
+    return pu ? pu.notePartEls(id, "aug-dot") : this.painter.chordPartEls(id, "aug-dot");
+  }
+
   /** 一个条目对应的谱面 `<g>`：原样档问 `PuPainter`，展开档按元素 id 问排版器。 */
   private _syncGroupEl(entry: SyncEntry): SVGGElement | null {
     if (entry.kind === "mark") {
@@ -808,7 +814,28 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         ? p.syllableGroupEl(entry.id, entry.verse ?? 0)
         : p.noteGroupEl(entry.id);
     }
+    if (entry.kind === "lyric") {
+      // 展开档的音符格把各段歌词收在同一个 `<g>` 里：按段号取这一段自己的那个字
+      const verse = entry.verse ?? 0;
+      const ls = this.painter.lyricEls(entry.id, verse);
+      const one = ls.find((l) => l.verse === (entry.verseNo ?? verse + 1)) ?? (ls.length === 1 ? ls[0] : undefined);
+      if (one) return one.el;
+    }
     return this.painter.chordGroupEl(entry.id, entry.verse ?? 0);
+  }
+
+  /** 点亮一个条目。音符只亮音乐那部分：展开档的音符格里收着各段歌词，整格点亮会把每段的字都染上色，
+   *  所以格里的歌词另标 `cursor-off`（CSS 不给它上光标色）；那段歌词自己也被选中时再摘掉。 */
+  private _syncMark(entry: SyncEntry, el: Element): void {
+    el.classList.add("cursor-at");
+    el.classList.remove("cursor-off");
+    this._syncMarked.push(el);
+    if (entry.kind !== "note" || this._puPainter) return;
+    for (const { el: l } of this.painter.lyricEls(entry.id, 0)) {
+      if (l.classList.contains("cursor-at")) continue;
+      l.classList.add("cursor-off");
+      this._syncMarked.push(l);
+    }
   }
 
   /** 挂在音符上的记号自己的 `<g>`（和弦名、装饰、注记）：按类名在音符格里找，
@@ -830,25 +857,25 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
    *  **走 CSS 类、不重渲染**（沿用编辑器既有判据）。 */
   private _syncCursorToScore(): void {
     if (this._syncing) return;
-    for (const el of this._syncMarked) el.classList.remove("cursor-at");
+    for (const el of this._syncMarked) el.classList.remove("cursor-at", "cursor-off");
     this._syncMarked = [];
     if (this.mode !== "jp") return;
     const sel = this.view.state.selection.main;
+    // 选中的是附点：只点亮附点
+    const dotOf = this.visual.pickedDot();
+    if (dotOf) {
+      for (const el of this.augDotEls(dotOf.id)) {
+        el.classList.add("cursor-at");
+        this._syncMarked.push(el);
+      }
+      if (this._syncMarked.length) return;
+    }
     const entries = this._sync.range(sel.from, sel.to);
     if (entries.length === 0) return;
+    // 选中音符只亮音符，选中歌词只亮那一段的那个字（不连带别的段）
     for (const entry of entries) {
       const el = this._syncElOf.get(entry);
-      if (!el) continue;
-      el.classList.add("cursor-at");
-      this._syncMarked.push(el);
-      // 光标停在音符上时，它的第一段歌词也一起亮（与播放高亮同一套观感）
-      if (entry.kind === "note" && this._puPainter) {
-        const syl = this._puPainter.syllableGroupEl(entry.id, 0);
-        if (syl) {
-          syl.classList.add("cursor-at");
-          this._syncMarked.push(syl);
-        }
-      }
+      if (el) this._syncMark(entry, el);
     }
     this._scrollSyncIntoView(this._syncMarked[0], entries[0]!);
   }
@@ -874,12 +901,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   /** 只点亮这一个条目（谱面点选时用；文本那侧已经跳好了，不必再反推）。 */
   private _syncMarkOnly(entry: SyncEntry): void {
-    for (const el of this._syncMarked) el.classList.remove("cursor-at");
+    for (const el of this._syncMarked) el.classList.remove("cursor-at", "cursor-off");
     this._syncMarked = [];
     const el = this._syncElOf.get(entry);
-    if (!el) return;
-    el.classList.add("cursor-at");
-    this._syncMarked.push(el);
+    if (el) this._syncMark(entry, el);
   }
 
   /** 需要的话翻页并滚动到可视区（复用播放高亮那一套做法）。 */
@@ -1126,7 +1151,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     // 双向定位先走一遍：它按 `<g>` 认（事件冒泡即可），**不依赖几何拾取**——
     // 两个档因此共用同一条路径，也不受 pickPage 拾取不到时的早退影响。
     // 可视化编辑接走了（点换行符、点空白落插入光标、Shift+点扩选）就到此为止。
-    if (this._onSyncClick(ev)) return;
+    if (this._onSyncClick(ev)) {
+      this.deselect(); // 旧的点选高亮也清掉，谱面上只留一处选中
+      return;
+    }
     const ctm = svg.getScreenCTM();
     if (!ctm) return;
     const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
@@ -1156,7 +1184,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
    *  （点在标题、小节线上都算找不到）。 */
   private _onSyncClick(ev: MouseEvent): boolean {
     if (this.mode !== "jp") return false;
-    const entry = this._syncEntryAt(ev.target);
+    const entry = this._syncEntryAt(hitThroughOverlay(ev));
     if (this.visual.handleClick(ev, entry)) return true;
     if (entry) this._syncScoreToCursor(entry);
     return false;

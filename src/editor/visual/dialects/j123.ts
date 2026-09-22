@@ -2,7 +2,7 @@
 // 增时线 `-`、小节线 `|`、换行 `$` / `$$`、圆滑线 `( )` 都是独立 token。
 
 import type { Accidental } from "../../../model/doc";
-import type { EditDialect, NoteDuration, NoteToken } from "../dialect";
+import { dotsRange, type EditDialect, type NoteDuration, type NoteToken } from "../dialect";
 
 const ACC_OF: Record<string, Accidental> = {
   "#": "sharp", b: "flat", n: "natural", "##": "double-sharp", bb: "double-flat",
@@ -35,6 +35,12 @@ export const DIALECT_123: EditDialect = {
     const acc = t.acc && t.degree !== 0 ? ACC_TEXT[t.acc] ?? "" : "";
     const oct = t.octave > 0 ? "'".repeat(t.octave) : ",".repeat(-t.octave);
     return `${t.pre}${acc}${t.degree}${oct}${"_".repeat(t.halvings)}${".".repeat(t.dots)}${t.post}`;
+  },
+  noteParts(src) {
+    const m = NOTE_RE.exec(src);
+    if (!m) return null;
+    const end = (m[1] ?? "").length + 1 + (m[3] ?? "").length;
+    return { head: [0, end], dots: dotsRange(m[4] ?? "", end) };
   },
   newNote(degree: number, dur: NoteDuration) {
     return `${degree}${"_".repeat(dur.halvings)}${".".repeat(dur.dots)}`;

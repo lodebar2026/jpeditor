@@ -109,14 +109,33 @@ function layerOf(svg: SVGSVGElement): SVGGElement {
   return g;
 }
 
-/** 清掉这些页上叠加层里某一类的东西（`kind` 缺省 = 全清）。 */
-export function clearOverlay(svgs: Iterable<SVGSVGElement>, kind?: string): void {
+/** 清掉这些页上叠加层里某一类的东西（`kind` 缺省 = 全清）；`keep` 这一类留着不动。 */
+export function clearOverlay(svgs: Iterable<SVGSVGElement>, kind?: string, keep?: string): void {
   for (const svg of svgs) {
     const g = svg.querySelector<SVGGElement>(`:scope > g.${LAYER_CLASS}`);
     if (!g) continue;
-    if (kind === undefined) g.replaceChildren();
-    else for (const el of [...g.querySelectorAll(`.${kind}`)]) el.remove();
+    if (kind === undefined && keep === undefined) {
+      g.replaceChildren();
+      delete g.dataset.beats;
+    } else {
+      for (const el of [...g.children]) {
+        if (kind !== undefined && !el.classList.contains(kind)) continue;
+        if (keep !== undefined && el.classList.contains(keep)) continue;
+        el.remove();
+      }
+    }
   }
+}
+
+/** 一页上拍数不对的红框整组换新。与上次画的一样就不动——焦点一进谱面就会重画叠加层，
+ *  若把按下鼠标时点中的红框换掉，这一下点击就丢了（`click` 要求按下与抬起落在同一节点上）。 */
+export function setBeatIssues(svg: SVGSVGElement, items: readonly { box: Box; title: string }[]): void {
+  const layer = layerOf(svg);
+  const sig = JSON.stringify(items.map((i) => [i.box.x, i.box.y, i.box.w, i.box.h, i.title].map((v) => (typeof v === "number" ? Math.round(v * 10) : v))));
+  if (layer.dataset.beats === sig) return;
+  layer.dataset.beats = sig;
+  for (const el of [...layer.querySelectorAll(".vis-beat")]) el.remove();
+  for (const i of items) drawBeatIssue(svg, i.box, i.title);
 }
 
 function el<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
@@ -146,7 +165,7 @@ export function drawBlock(svg: SVGSVGElement, box: Box): void {
 }
 
 /** 拍数对不上的小节：淡红底，悬停显示说明。 */
-export function drawBeatIssue(svg: SVGSVGElement, box: Box, title: string): void {
+function drawBeatIssue(svg: SVGSVGElement, box: Box, title: string): void {
   const pad = box.h * 0.2;
   const r = el("rect", {
     class: "vis-beat",
@@ -155,9 +174,16 @@ export function drawBeatIssue(svg: SVGSVGElement, box: Box, title: string): void
   const t = document.createElementNS(SVG_NS, "title");
   t.textContent = title;
   r.appendChild(t);
-  // 垫在最底下，不挡音符
+  // 垫在叠加层最底下，不挡光标与方块；点击由 `hitThroughOverlay` 透过它落到音符上
   const layer = layerOf(svg);
   layer.insertBefore(r, layer.firstChild);
+}
+
+/** 事件点中的谱面元素，透过拍数不对的红框（红框要接 hover 显示说明，点击却该落到框里的音符上）。 */
+export function hitThroughOverlay(ev: MouseEvent): EventTarget | null {
+  const t = ev.target;
+  if (!(t instanceof Element) || !t.closest(".vis-beat")) return t;
+  return document.elementsFromPoint(ev.clientX, ev.clientY).find((e) => !e.closest(`.${LAYER_CLASS}`)) ?? t;
 }
 
 /** 换行 `↵` / 换页 `⤓` 符号，画在 `x` 处、`after`（行末元素）那一带的中线上。返回画出的节点（供挂点击）。 */

@@ -429,6 +429,7 @@ export class NoteEntry extends Entry {
       lit.compress = options.punctCompress;
       lit.text = text;
       lit.color = options.color;
+      lit.verse = l.number;
       lit.update();
       lit.x = it.left - lit.left;
       ent.add(lit);
@@ -612,6 +613,7 @@ export class NoteEntry extends Entry {
       dot.x = start + adv * d;
       dot.y = cy - r;
       dot.aug = { num, index: d };
+      dot.classes.add("aug-dot"); // 可视化编辑单独点选附点（`chordPartEls`）
       ent.group.add(dot);
     }
     num.augDotAdvance = adv * dots;

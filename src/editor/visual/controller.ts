@@ -19,10 +19,12 @@ import { midiOf, NotePreview } from "./preview";
 import type { EditDialect, NoteDuration } from "./dialect";
 import {
   addSustain, deleteEntries, double, type EditCtx, type EditOutcome, groupEnd, halve, insertNote, insertToken,
-  isError, noteCtx, notesIn, setAccidental, setDegree, shiftOctave, toggleDeco, toggleDot, toggleSlur, toggleTie,
+  isError, noteCtx, noteSpans, notesIn, setAccidental, setDegree, shiftOctave, toggleDeco, toggleDot, toggleSlur, toggleTie,
 } from "./ops";
 import { actionOfKey, type VisualAction, type VisualMode } from "./keys";
-import { type Box, clearOverlay, drawBeatIssue, drawBlock, drawBreak, drawCaret, musicBox, rightEdgeInBand, sameRow } from "./overlay";
+import {
+  type Box, boxInPage, clearOverlay, drawBlock, drawBreak, drawCaret, hitThroughOverlay, musicBox, rightEdgeInBand, sameRow, setBeatIssues,
+} from "./overlay";
 
 export interface VisualHost {
   readonly view: EditorView;
@@ -35,6 +37,8 @@ export interface VisualHost {
   entryEl(entry: SyncEntry): SVGGElement | null;
   /** 音符在谱面上的 `<g>` */
   noteEl(id: ElementId): SVGGElement | null;
+  /** 音符的附点在谱面上的 `<g>`（每个点一个；可单独点选） */
+  augDotEls(id: ElementId): SVGGElement[];
   /** 谱面上点中的 `<g>` 对应哪个条目（从事件目标往上找） */
   entryAtTarget(target: EventTarget | null): SyncEntry | null;
   /** 当前格式怎么改原文；null = 这种格式在谱面上只能选中、不能改 */
@@ -177,8 +181,11 @@ export class VisualEditController {
     if (this.beatIssues.length === 0) return;
     this.beatCursor = (this.beatCursor + 1) % this.beatIssues.length;
     const issue = this.beatIssues[this.beatCursor]!;
-    const span = issue.ids.map((id) => this.host.sync.spanOfNote(id)).find((s) => s);
-    if (span) this.select(span.from, span.to);
+    const first = this.host.sync.ordered().find((e) => e.kind === "note" && issue.ids.includes(e.id));
+    if (first) {
+      const span = this.noteSel(first);
+      this.select(span.from, span.to);
+    }
     this.host.setStatus(`第 ${issue.measureIndex + 1} 小节${describeBeatIssue(issue)}`);
   }
 
@@ -220,7 +227,7 @@ export class VisualEditController {
   /** 重画谱面叠加层与模式标签。选区一动、重排之后、焦点进出都要调。 */
   refresh(): void {
     const pages = this.pages;
-    clearOverlay(pages);
+    clearOverlay(pages, undefined, "vis-beat");
     this.breakEls.clear();
     const on = this.host.visualEnabled();
     if (this.modeEl) {
@@ -237,8 +244,8 @@ export class VisualEditController {
       this.beatEl.hidden = n === 0;
       this.beatEl.textContent = `${n} 小节拍数不对`;
     }
+    this.drawBeatIssues(on ? this.beatIssues : []);
     if (!on) return;
-    this.drawBeatIssues();
     const sel = this.host.view.state.selection.main;
     if (this.pickedBreak && (!sel.empty || sel.head !== this.pickedBreak.sel)) this.pickedBreak = null;
     if (this.showFormatMarks) this.drawBreaks(sel.from, sel.to);
@@ -252,8 +259,9 @@ export class VisualEditController {
   }
 
   /** 拍数不对的小节：它的音符按行各圈一个淡红底。 */
-  private drawBeatIssues(): void {
-    for (const issue of this.beatIssues) {
+  private drawBeatIssues(issues: readonly BeatIssue[]): void {
+    const perPage = new Map<SVGSVGElement, { box: Box; title: string }[]>(this.pages.map((p) => [p, []]));
+    for (const issue of issues) {
       const boxes: { svg: SVGSVGElement; box: Box }[] = [];
       for (const id of issue.ids) {
         const el = this.host.noteEl(id);
@@ -264,8 +272,9 @@ export class VisualEditController {
         else boxes.push(hit);
       }
       const title = `第 ${issue.measureIndex + 1} 小节${describeBeatIssue(issue)}`;
-      for (const b of boxes) drawBeatIssue(b.svg, b.box, title);
+      for (const b of boxes) perPage.get(b.svg)?.push({ box: b.box, title });
     }
+    for (const [svg, items] of perPage) setBeatIssues(svg, items);
   }
 
   private drawBreaks(selFrom: number, selTo: number): void {
@@ -310,6 +319,19 @@ export class VisualEditController {
 
   /** 编辑方块：选区罩住的元素，按页、按行各画一个。 */
   private drawEditBlock(from: number, to: number): void {
+    const dotOf = this.pickedDot();
+    if (dotOf) {
+      // 选中的是附点：方块只罩附点
+      let hit: { svg: SVGSVGElement; box: Box } | null = null;
+      for (const el of this.host.augDotEls(dotOf.id)) {
+        const b = boxInPage(el);
+        if (b) hit = hit ? { svg: hit.svg, box: union(hit.box, b.box) } : b;
+      }
+      if (hit) {
+        drawBlock(hit.svg, hit.box);
+        return;
+      }
+    }
     const boxes: { svg: SVGSVGElement; box: Box }[] = [];
     const seen = new Set<Element>();
     for (const e of this.host.sync.range(from, to)) {
@@ -353,6 +375,14 @@ export class VisualEditController {
       this.refresh();
       return true;
     }
+    // 点在附点上（附点很小，四周放宽几像素）：只选中附点
+    if (!ev.shiftKey) {
+      const dot = this.dotAtPoint(ev.clientX, ev.clientY, entry);
+      if (dot) {
+        this.select(dot.from, dot.to);
+        return true;
+      }
+    }
     if (entry) {
       // Shift+点击：从原来的选区扩到这个元素
       if (ev.shiftKey) {
@@ -361,7 +391,13 @@ export class VisualEditController {
         this.select(Math.min(sel.from, span.from), Math.max(sel.to, span.to));
         return true;
       }
-      return false; // 普通点音符：App 的双向定位照旧（选中该音符 = 编辑模式）
+      // 点音符：只选中音头（升降号、唱名、八度点），不带减时线、附点
+      if (entry.kind === "note") {
+        const span = this.noteSel(entry);
+        this.select(span.from, span.to);
+        return true;
+      }
+      return false; // 其余（歌词、记号）：App 的双向定位照旧
     }
     // 点在空白处：找同一行里离得最近的元素，光标落到它前面或后面（插入模式）
     const caret = this.caretAtPoint(ev.clientX, ev.clientY);
@@ -370,6 +406,38 @@ export class VisualEditController {
       return true;
     }
     return false;
+  }
+
+  /** 点击点落在哪个音符的附点上（先看点中的那个音符，再看同一带里别的音符）；返回附点的原文区间。 */
+  private dotAtPoint(cx: number, cy: number, entry: SyncEntry | null): { from: number; to: number } | null {
+    const c = this.editCtx(true);
+    if (!c) return null;
+    const notes = entry?.kind === "note" ? [entry] : [];
+    for (const e of this.navigable()) if (e.kind === "note" && e !== entry) notes.push(e);
+    for (const e of notes) {
+      const els = this.host.augDotEls(e.id);
+      if (els.length === 0) continue;
+      const hit = els.some((el) => {
+        const r = el.getBoundingClientRect();
+        const pad = Math.max(4, r.height);
+        return cx >= r.left - pad && cx <= r.right + pad && cy >= r.top - pad && cy <= r.bottom + pad;
+      });
+      if (!hit) continue;
+      const dots = noteSpans(c, e).dots;
+      if (dots) return dots;
+    }
+    return null;
+  }
+
+  /** 选区恰好是某个音符的附点时，返回那个音符。 */
+  pickedDot(): SyncEntry | null {
+    const sel = this.host.view.state.selection.main;
+    if (sel.empty) return null;
+    const c = this.editCtx(true);
+    const e = c && this.host.sync.at(sel.from);
+    if (!c || !e || e.kind !== "note" || sel.to > e.to) return null;
+    const dots = noteSpans(c, e).dots;
+    return dots && dots.from === sel.from && dots.to === sel.to ? e : null;
   }
 
   /** 换行前那个元素所在代码行的行末（换行符的位置）。 */
@@ -441,7 +509,7 @@ export class VisualEditController {
     ev.preventDefault();
     this.host.scorePane.focus({ preventScroll: true });
     if (!this.host.syncFresh()) this.host.reloadNow();
-    const entry = this.host.entryAtTarget(ev.target);
+    const entry = this.host.entryAtTarget(hitThroughOverlay(ev));
     const sel = this.host.view.state.selection.main;
     let target: MenuTarget = "other";
     const onBreak = ev.target instanceof Element && ev.target.closest(".vis-break");
@@ -450,8 +518,11 @@ export class VisualEditController {
       target = "break";
     } else if (entry) {
       // 点在已选中的范围里就不动选区（右键一段选区整体操作）
-      const inside = entry.from >= sel.from && entry.to <= sel.to && !sel.empty;
-      if (!inside) this.select(entry.from, entry.to);
+      const inside = entry.from < sel.to && entry.to > sel.from && !sel.empty;
+      if (!inside) {
+        const span = this.noteSel(entry);
+        this.select(span.from, span.to);
+      }
       target = entry.kind === "mark" ? "mark" : entry.kind === "break" ? "break" : "note";
     } else if (this.handleClick(ev, null)) {
       target = this.mode === "insert" ? "caret" : "note";
@@ -508,6 +579,13 @@ export class VisualEditController {
     return { from: e.from, to: e.to };
   }
 
+  /** 选中一个条目时的区间：音符只罩音头（不带减时线、附点、括号），其余整个条目。 */
+  private noteSel(e: SyncEntry): { from: number; to: number } {
+    if (e.kind !== "note") return this.spanOfEntry(e);
+    const c = this.editCtx(true);
+    return c ? noteSpans(c, e).head : this.spanOfEntry(e);
+  }
+
   /** 一个元素「连同它的增时线」的结尾：插入光标落在音符后面时，要落到它最后一条增时线后面。 */
   private groupEnd(e: SyncEntry): number {
     if (e.kind !== "note") return e.to;
@@ -520,10 +598,10 @@ export class VisualEditController {
     return end;
   }
 
-  /** 选区罩住的条目（编辑模式）。 */
+  /** 选区碰到的条目（编辑模式；选中音头时整个音符也算选中）。 */
   private selectedEntries(): SyncEntry[] {
     const sel = this.host.view.state.selection.main;
-    return this.navigable().filter((e) => e.from >= sel.from && e.to <= sel.to);
+    return this.navigable().filter((e) => e.from < sel.to && e.to > sel.from);
   }
 
   private toInsert(): boolean {
@@ -540,7 +618,8 @@ export class VisualEditController {
     const before = [...nav].reverse().find((e) => e.to <= head);
     const pick = before ?? nav.find((e) => e.from >= head);
     if (!pick) return false;
-    this.select(pick.from, pick.to);
+    const span = this.noteSel(pick);
+    this.select(span.from, span.to);
     return true;
   }
 
@@ -588,7 +667,8 @@ export class VisualEditController {
       target = [...nav].reverse().find((e) => e.to <= edge);
     }
     if (!target) return false;
-    this.select(target.from, target.to);
+    const span = this.noteSel(target);
+    this.select(span.from, span.to);
     return true;
   }
 
@@ -612,7 +692,10 @@ export class VisualEditController {
     if (sel.empty) {
       const at = dir < 0 ? e.from : this.groupEnd(e);
       this.select(at, at);
-    } else this.select(e.from, e.to);
+    } else {
+      const span = this.noteSel(e);
+      this.select(span.from, span.to);
+    }
     return true;
   }
 
@@ -786,6 +869,8 @@ export class VisualEditController {
     if (!sel.empty && c.dialect.lyricBlockByCodeLine && c.state.doc.sliceString(sel.from, sel.to) === "\n") {
       return this.apply(deleteBreak(c, { kind: "break", from: sel.from, to: sel.to, id: -1, verse: null }));
     }
+    // 选中的是附点：只去掉附点
+    if (this.pickedDot()) return this.apply(toggleDot(c, sel.from, sel.to));
     let targets: SyncEntry[];
     if (sel.empty) {
       const nav = this.navigable();
@@ -832,9 +917,10 @@ export class VisualEditController {
     const m = marks[next]!;
     // 第一次 Tab 之后再轮回到音符本身：多一格「音符」，轮完一圈回来
     if (cur >= 0 && ((dir > 0 && cur === marks.length - 1) || (dir < 0 && cur === 0))) {
-      const note = sync.spanOfNote(owner);
+      const note = sync.ordered().find((e) => e.kind === "note" && e.id === owner);
       if (note) {
-        this.select(note.from, note.to);
+        const span = this.noteSel(note);
+        this.select(span.from, span.to);
         return true;
       }
     }

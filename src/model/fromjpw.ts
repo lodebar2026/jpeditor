@@ -116,7 +116,7 @@ export interface SrcNote {
   tupletBegin: boolean;
   tupletEnd: boolean;
   graces: SrcGrace[];
-  lyrics: { number: number; text: string }[];
+  lyrics: { number: number; text: string; source?: SourceSpan }[];
   source?: SourceSpan;
 }
 
@@ -363,7 +363,7 @@ function assignLyrics(measures: readonly SrcMeasure[], f: JpwFile): void {
     for (const it of seg.data) {
       if (idx >= notes.length) break;
       for (let pass = seg.passFirst; pass <= seg.passLast; pass++) {
-        if (it.text.length > 0) notes[idx]!.lyrics.push({ number: pass, text: it.text });
+        if (it.text.length > 0) notes[idx]!.lyrics.push({ number: pass, text: it.text, ...(it.source ? { source: { ...it.source } } : {}) });
       }
       idx++;
     }
@@ -475,7 +475,7 @@ function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part 
           staff: 1,
         });
       }
-      for (const lr of ent.lyrics) (ch.lyrics ??= []).push({ number: lr.number, text: lr.text } as Lyric);
+      for (const lr of ent.lyrics) (ch.lyrics ??= []).push({ number: lr.number, text: lr.text, ...(lr.source ? { source: lr.source } : {}) } as Lyric);
       mea.elements.push(ch);
 
       // 同一音符上「收上一条、再起下一条」：先收后起

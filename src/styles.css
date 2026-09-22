@@ -479,38 +479,38 @@ button:focus-visible, select:focus-visible {
 .score-page text, .score-page path, .score-page line { cursor: default; }
 
 /* 双向定位 — 代码区光标所在的音符/歌词（见 editor/sync.ts）。
-   与「选中」「正在发声」分三套颜色，同时出现时看得出谁是谁；
+   与「选中」同一种蓝（选中色只有一种），「正在发声」另用橙色；
    一律走 CSS 类、不重渲染。**排在 .playing 之前**：同特异度下后写的赢，
    试听时正在发声的那个要盖过光标色。 */
-.score-page g.cursor-at [fill]:not([fill="none"]) { fill: #12b886; }
-.score-page g.cursor-at [stroke] { stroke: #12b886; }
+.score-page g.cursor-at [fill]:not([fill="none"]):not(.cursor-off *) { fill: #1565ff; }
+.score-page g.cursor-at [stroke]:not(.cursor-off *) { stroke: #1565ff; }
 
 /* 可视化编辑（editor/visual/）：谱面叠加层与代码区的两种光标。
    插入 = 竖线（闪烁），编辑 = 方块；换行符 ↵ / 换页符 ⤓ 可点选。 */
 #score-pane:focus { outline: none; }
-#score-pane:focus-visible { box-shadow: inset 0 0 0 2px rgba(18, 184, 134, 0.35); }
+#score-pane:focus-visible { box-shadow: inset 0 0 0 2px rgba(21, 101, 255, 0.35); }
 .vis-overlay { pointer-events: none; }
-.vis-overlay .vis-caret { stroke: #12b886; animation: vis-blink 1.06s steps(1) infinite; }
-.vis-overlay .vis-block { fill: rgba(18, 184, 134, 0.10); stroke: #12b886; }
+.vis-overlay .vis-caret { stroke: #1565ff; animation: vis-blink 1.06s steps(1) infinite; }
+.vis-overlay .vis-block { fill: rgba(21, 101, 255, 0.10); stroke: #1565ff; }
 .vis-overlay .vis-break { pointer-events: all; cursor: pointer; }
 .vis-overlay .vis-break text { fill: #7c8b9a; font-family: ui-sans-serif, system-ui, sans-serif; }
 .vis-overlay .vis-break .vis-break-hit { fill: transparent; }
-.vis-overlay .vis-break:hover .vis-break-hit { fill: rgba(18, 184, 134, 0.12); }
-.vis-overlay .vis-break-selected .vis-break-hit { fill: rgba(18, 184, 134, 0.22); }
-.vis-overlay .vis-break-selected text { fill: #12b886; }
+.vis-overlay .vis-break:hover .vis-break-hit { fill: rgba(21, 101, 255, 0.12); }
+.vis-overlay .vis-break-selected .vis-break-hit { fill: rgba(21, 101, 255, 0.22); }
+.vis-overlay .vis-break-selected text { fill: #1565ff; }
 #score-pane:not(:focus) .vis-overlay .vis-caret { animation: none; opacity: 0.55; }
 @keyframes vis-blink { 50% { opacity: 0; } }
-.cm-vis-block { outline: 2px solid #12b886; background: rgba(18, 184, 134, 0.18); border-radius: 2px; }
-.cm-vis-caret { display: inline-block; width: 0; height: 1.2em; vertical-align: text-bottom; border-left: 2px solid #12b886; margin-right: -2px; animation: vis-blink 1.06s steps(1) infinite; }
+.cm-vis-block { outline: 2px solid #1565ff; background: rgba(21, 101, 255, 0.18); border-radius: 2px; }
+.cm-vis-caret { display: inline-block; width: 0; height: 1.2em; vertical-align: text-bottom; border-left: 2px solid #1565ff; margin-right: -2px; animation: vis-blink 1.06s steps(1) infinite; }
 .cm-vis-break { color: #7c8b9a; background: rgba(124, 139, 154, 0.12); border-radius: 2px; }
-.visual-mode { font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid #12b886; color: #12b886; }
+.visual-mode { font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid #1565ff; color: #1565ff; }
 .visual-mode[data-mode="insert"] { border-style: dashed; }
 .format-marks-button { min-width: 26px; font-weight: 600; }
 .vis-overlay .vis-beat { fill: rgba(224, 49, 49, 0.12); stroke: rgba(224, 49, 49, 0.55); stroke-dasharray: 3 2; pointer-events: all; }
 .cm-vis-beat { text-decoration: underline wavy rgba(224, 49, 49, 0.8); text-underline-offset: 3px; }
 .beat-count { font-size: 12px; padding: 1px 6px; border-radius: 4px; color: #e03131; border: 1px solid rgba(224, 49, 49, 0.5); cursor: pointer; }
 .beat-check-button { min-width: 26px; }
-.palette-button.active { color: #12b886; }
+.palette-button.active { color: #1565ff; }
 .visual-palette { display: flex; flex-wrap: wrap; gap: 6px 12px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--canvas); }
 .visual-palette[hidden] { display: none; }
 .visual-palette-group { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
@@ -520,12 +520,12 @@ button:focus-visible, select:focus-visible {
 .visual-palette .visual-palette-digit { font-weight: 700; min-width: 26px; }
 .visual-menu { position: fixed; z-index: 1000; min-width: 200px; padding: 4px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel, #1f1f1f); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; gap: 1px; }
 .visual-menu-item { display: flex; justify-content: space-between; gap: 16px; text-align: left; padding: 4px 8px; font-size: 13px; background: transparent; border: 0; border-radius: 4px; color: inherit; }
-.visual-menu-item:hover { background: rgba(18, 184, 134, 0.15); }
+.visual-menu-item:hover { background: rgba(21, 101, 255, 0.15); }
 .visual-menu-item kbd { opacity: 0.6; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
 .visual-menu-digits { display: flex; gap: 2px; padding: 4px; }
 .visual-menu-digits button { flex: 1; font-weight: 700; padding: 3px 0; }
 .beat-check-button.active { color: #e03131; }
-.format-marks-button.active { color: #12b886; }
+.format-marks-button.active { color: #1565ff; }
 
 /* playback cursor — highlight the currently sounding note */
 .score-page g.playing [fill]:not([fill="none"]) { fill: #e8590c; }
@@ -714,8 +714,10 @@ button:focus-visible, select:focus-visible {
 #code-pane .cm-scroller { overflow: auto; }
 #code-pane .cm-gutters { background: #141414; color: #666; border-right: 1px solid var(--border); }
 #code-pane .cm-activeLine, #code-pane .cm-activeLineGutter { background: rgba(255,255,255,.045); }
-#code-pane .cm-selectionBackground, #code-pane .cm-content ::selection { background: rgba(30,215,96,.22) !important; }
-#code-pane .cm-cursor { border-left-color: var(--green); }
+#code-pane .cm-selectionBackground, #code-pane .cm-content ::selection { background: rgba(21, 101, 255, 0.3) !important; }
+/* 代码区用浏览器原生光标（没装 drawSelection），颜色跟谱面上的可视化编辑光标一致 */
+#code-pane .cm-content { caret-color: #1565ff; }
+#code-pane .cm-cursor { border-left-color: #1565ff; }
 
 @media (max-width: 900px) {
   .brand-subtitle, .tool-label { display: none; }

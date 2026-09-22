@@ -116,6 +116,13 @@ export const DIALECT_ABC: EditDialect = {
     const acc = t.acc ? ACC_TEXT[t.acc] ?? "" : "";
     return `${t.pre}${acc}${letterOf(wrOf(t.degree, t.octave, nc.fifths))}${len}${t.post}`;
   },
+  noteParts(src: string) {
+    // 附点在 ABC 里是时值数字（`3/2`），没有单独的符号可选
+    if (REST_RE.test(src)) return { head: [0, 1], dots: null };
+    const m = NOTE_RE.exec(src);
+    if (!m) return null;
+    return { head: [0, (m[1] ?? "").length + 1 + m[3]!.length], dots: null };
+  },
   newNote(degree: number, dur: NoteDuration, nc: NoteCtx) {
     return this.printNote({ acc: null, degree, octave: 0, halvings: dur.halvings, dots: dur.dots, inlineSustains: 0, pre: "", post: "" }, nc);
   },

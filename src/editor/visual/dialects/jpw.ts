@@ -11,7 +11,7 @@
 import { JpwFile, WordsSection } from "../../../jpword/jpwfile";
 import type { Accidental } from "../../../model/doc";
 import { readJpwSource } from "../../../model/fromjpw";
-import type { EditDialect, NoteDuration, NoteToken } from "../dialect";
+import { dotsRange, type EditDialect, type NoteDuration, type NoteToken } from "../dialect";
 
 const ACC_OF: Record<string, Accidental> = { "#b": "natural", "#": "sharp", b: "flat" };
 const ACC_TEXT: Partial<Record<Accidental, string>> = { natural: "#b", sharp: "#", flat: "b" };
@@ -103,6 +103,13 @@ export const DIALECT_JPW: EditDialect = {
     const oct = t.octave > 0 ? "'".repeat(t.octave) : ",".repeat(-t.octave);
     const dur = t.inlineSustains > 0 ? "-".repeat(t.inlineSustains) : "_".repeat(t.halvings) + ".".repeat(t.dots);
     return `${t.pre}${acc}${t.degree}${oct}${dur}${t.post}`;
+  },
+  noteParts(src: string) {
+    const m = NOTE_RE.exec(src);
+    if (!m) return null;
+    const from = (m[1] ?? "").length;
+    const end = from + (m[2] ?? "").length + 1 + (m[4] ?? "").length;
+    return { head: [from, end], dots: dotsRange(m[5] ?? "", end) };
   },
   newNote(degree: number, dur: NoteDuration) {
     return `${degree}${"_".repeat(dur.halvings)}${".".repeat(dur.dots)}`;

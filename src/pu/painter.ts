@@ -1099,7 +1099,9 @@ export class PuPainter implements PagePainter {
 
     // 附点
     for (let i = 0; i < note.dots; i++) {
-      g.add(dot(x + m.dotOffsetX + i * (m.dotRadius * 2 + 2), baseline, m.dotRadius));
+      const d = dot(x + m.dotOffsetX + i * (m.dotRadius * 2 + 2), baseline, m.dotRadius);
+      d.classes.add("aug-dot"); // 可视化编辑单独点选附点（`notePartEls`）
+      g.add(d);
     }
 
     // 和弦：与五线谱共用富文本分段（根音升降号用 SMuFL csym 字形、后缀上标）

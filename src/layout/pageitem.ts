@@ -393,6 +393,8 @@ export class Lyric extends TextFrame {
   _widths = [0, 0, 0];
   /** 标点挤压的档（`LayoutOptions.punctCompress`）。 */
   compress: CompressMode = "halfwidth";
+  /** 段号（`JLyric.number`）。可视化编辑按它认出点中的是哪一段（叠排时各段同在一个音符格里） */
+  verse = 0;
   constructor() {
     super();
     this.selectable = true;

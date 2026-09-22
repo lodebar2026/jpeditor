@@ -6,7 +6,7 @@
 
 import { Point, Rect, colorToCss } from "../common/geom";
 import { Font } from "./font";
-import { Group, PageItem, TextFrame, SmuflText, findByClass } from "./pageitem";
+import { Group, Lyric, PageItem, TextFrame, SmuflText, findByClass } from "./pageitem";
 import { NoteEntry } from "./entry";
 import { Layout } from "./layout";
 import { MusicCommon } from "../score/jppitch";
@@ -96,6 +96,17 @@ export abstract class ScorePainter implements PagePainter {
     return findByClass(hit.item, cls).flatMap((it) => {
       const el = this.nodeMap.get(it);
       return el ? [el] : [];
+    });
+  }
+
+  /** 元素 `id` 第 `pass` 遍那个音符格里各段歌词的 `<g>` 与段号（`Lyric.verse`）。
+   *  展开档的音符格把各段歌词收在同一个 `<g>` 里，点选、高亮要按这个拆开。 */
+  lyricEls(id: ElementId, pass = 0): { el: SVGGElement; verse: number }[] {
+    const hit = this.hitFor(id, pass);
+    if (!hit) return [];
+    return findByClass(hit.item, "lyric").flatMap((it) => {
+      const el = this.nodeMap.get(it);
+      return el ? [{ el, verse: it instanceof Lyric ? it.verse : 0 }] : [];
     });
   }
 

@@ -49,6 +49,8 @@ export interface SyncEntry {
   id: ElementId;
   /** 命中的是第几段歌词（0 基）；不是歌词时为 null */
   verse: number | null;
+  /** 歌词：原文里的段号（`W2`、`w:` 第 2 行为 2）。一行里缺了某段时与 `verse + 1` 不同 */
+  verseNo?: number;
   /** 增时线自己的 id */
   own?: ElementId;
   /** `mark`：挂的是什么（`AttachedSource.kind`，或 slur 的 `"slur"`）与记号名 */
@@ -111,7 +113,7 @@ export class SyncIndex {
                 const id = view.syllableOwner.get(syl);
                 if (id === undefined || view.elementOf.get(id)?.kind !== "note") continue;
                 const to = spanEnd(syl.source);
-                if (to > syl.source.offset) out.push({ kind: "lyric", from: syl.source.offset, to, id, verse });
+                if (to > syl.source.offset) out.push({ kind: "lyric", from: syl.source.offset, to, id, verse, verseNo: line.verseFrom });
               }
             });
           }

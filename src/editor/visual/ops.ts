@@ -27,6 +27,23 @@ function readNote(ctx: EditCtx, e: SyncEntry): NoteToken | null {
   return ctx.dialect.parseNote(ctx.state.doc.sliceString(e.from, e.to), noteCtx(ctx, e.from));
 }
 
+/** 一个音符条目在原文里的音头与附点（绝对偏移）。dialect 读不懂时整个 token 算音头。 */
+export function noteSpans(ctx: EditCtx, e: SyncEntry): { head: Span; dots: Span | null } {
+  return partsAt(ctx, e.from, ctx.state.doc.sliceString(e.from, e.to), noteCtx(ctx, e.from));
+}
+
+type Span = { from: number; to: number };
+
+/** token `src` 从 `start` 起时各部分的绝对位置。 */
+function partsAt(ctx: EditCtx, start: number, src: string, nc: NoteCtx): { head: Span; dots: Span | null } {
+  const p = ctx.dialect.noteParts?.(src, nc);
+  if (!p) return { head: { from: start, to: start + src.length }, dots: null };
+  return {
+    head: { from: start + p.head[0], to: start + p.head[1] },
+    dots: p.dots ? { from: start + p.dots[0], to: start + p.dots[1] } : null,
+  };
+}
+
 /** 一次动作的结果：补丁 + 补丁之后的选区（新文档里的偏移）。 */
 export interface EditResult {
   changes: { from: number; to: number; insert: string }[];
@@ -76,6 +93,7 @@ function rewriteNotes(
   if (notes.length === 0) return { error: "先选中一个音符" };
   const text = ctx.state.doc;
   const changes: EditResult["changes"] = [];
+  let single: string | null = null;
   for (const e of notes) {
     const src = text.sliceString(e.from, e.to);
     const nc = noteCtx(ctx, e.from);
@@ -87,15 +105,18 @@ function rewriteNotes(
     const bad = ctx.dialect.validate?.(r);
     if (bad) return { error: bad };
     const out = ctx.dialect.printNote(r, nc);
+    single = out;
     if (out !== src) changes.push({ from: e.from, to: e.to, insert: out });
   }
   // 只改了额外补丁（加减增时线）时 token 本身没变，交给 `withExtra` 并进去
   changes.sort((a, b) => a.from - b.from);
   const map = mapper(ctx.state, changes);
-  // 单个音符：方块罩住改过的 token；多个：罩住原选区映射过去的范围
+  // 单个音符：方块罩住改过的 token 的音头（不带减时线、附点）；多个：罩住原选区映射过去的范围
   if (notes.length === 1 && to - from <= notes[0]!.to - notes[0]!.from) {
     const e = notes[0]!;
-    return { changes, anchor: map(e.from, -1), head: map(e.to, 1) };
+    const start = map(e.from, -1);
+    const { head } = partsAt(ctx, start, single ?? text.sliceString(e.from, e.to), noteCtx(ctx, e.from));
+    return { changes, anchor: head.from, head: head.to };
   }
   return { changes, anchor: map(from, -1), head: map(to, 1) };
 }
@@ -226,7 +247,8 @@ export function addSustain(ctx: EditCtx, note: SyncEntry): EditOutcome {
   const at = groupEnd(ctx, note);
   const insert = ctx.dialect.sep + "-";
   const map = mapper(ctx.state, [{ from: at, to: at, insert }]);
-  return { changes: [{ from: at, to: at, insert }], anchor: map(note.from, -1), head: map(note.to, 1) };
+  const { head } = noteSpans(ctx, note);
+  return { changes: [{ from: at, to: at, insert }], anchor: map(head.from, -1), head: map(head.to, -1) };
 }
 
 // ───────────────────────── 删除 ─────────────────────────
@@ -412,6 +434,9 @@ export function toggleDeco(ctx: EditCtx, from: number, to: number, kind: DecoKin
   }
   changes.sort((a, b) => a.from - b.from);
   const map = mapper(ctx.state, changes);
-  if (notes.length === 1) return { changes, anchor: map(notes[0]!.from, 1), head: map(notes[0]!.to, -1) };
+  if (notes.length === 1) {
+    const { head } = noteSpans(ctx, notes[0]!);
+    return { changes, anchor: map(head.from, 1), head: map(head.to, -1) };
+  }
   return { changes, anchor: map(from, -1), head: map(to, 1) };
 }

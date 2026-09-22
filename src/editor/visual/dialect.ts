@@ -26,6 +26,20 @@ export interface NoteToken {
   inlineSustains: number;
 }
 
+/** 音符 token 里各部分的位置（相对 token 开头，左闭右开）。
+ *  谱面上点音符只选中 `head`——升降号、唱名、八度点，不带减时线、附点、增时线与括号；
+ *  附点可以单独点选（`dots`，写不出单独符号的格式如 ABC 为 null）。 */
+export interface NoteParts {
+  head: [number, number];
+  dots: [number, number] | null;
+}
+
+/** `s` 里 `.` 从第一个到最后一个的范围（加上 `base` 偏移）；没有 `.` 为 null。 */
+export function dotsRange(s: string, base: number): [number, number] | null {
+  const a = s.indexOf(".");
+  return a < 0 ? null : [base + a, base + s.lastIndexOf(".") + 1];
+}
+
 /** 读写音符 token 要的上下文：ABC 的音名要按调号换算成唱名、时值相对 `L:`。其余格式用不到。 */
 export interface NoteCtx {
   /** 这个位置上的调号（升号个数为正） */
@@ -50,6 +64,8 @@ export interface EditDialect {
   parseNote(src: string, nc: NoteCtx): NoteToken | null;
   /** 写回。与 `parseNote` 对称：`printNote(parseNote(s))` 必须还原 `s`（规范写法下）。 */
   printNote(t: NoteToken, nc: NoteCtx): string;
+  /** token 里音头与附点的位置（`parseNote` 读得懂的 token 才给；缺省整个 token 算音头）。 */
+  noteParts?(src: string, nc: NoteCtx): NoteParts | null;
   /** 新写一个音符。 */
   newNote(degree: number, dur: NoteDuration, nc: NoteCtx): string;
   /** 改完的 token 这种格式写不写得出；写不出返回说明（`.jpwabc` 的 `-` 不能与 `_`、`.` 连写） */
