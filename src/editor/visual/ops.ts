@@ -257,3 +257,72 @@ export function deleteEntries(ctx: EditCtx, entries: SyncEntry[]): EditOutcome {
   const at = map(merged[0]!.from, -1);
   return { changes: final, anchor: at, head: at };
 }
+
+// ───────────────────────── 圆滑线 / 延音线 ─────────────────────────
+
+/** 已有的一条从 `startId` 到 `endId` 的弧（`(` 条目，带 `pair`）。 */
+function slurBetween(ctx: EditCtx, startId: number, endId: number): SyncEntry | null {
+  return ctx.sync.ordered().find((e) => e.kind === "mark" && e.markKind === "slur" && e.id === startId && e.end === endId && !!e.pair && e.from < e.pair.from) ?? null;
+}
+
+/** 在 `first` 与 `last` 两个音符之间加一条弧；已有同样起止的就去掉（两个括号一起删）。 */
+function toggleArc(ctx: EditCtx, first: SyncEntry, last: SyncEntry, keep: { from: number; to: number }): EditOutcome {
+  const d = ctx.dialect;
+  const existing = slurBetween(ctx, first.id, last.id);
+  let changes: EditResult["changes"];
+  if (existing) {
+    changes = [spaceAroundParen(ctx, existing.from, existing.to), spaceAroundParen(ctx, existing.pair!.from, existing.pair!.to)];
+  } else if (d.slurInToken) {
+    // 括号写在音符 token 里（`.jpwabc`）：起点 token 前加 `(`、终点 token 后加 `)`
+    const a = d.parseNote(ctx.state.doc.sliceString(first.from, first.to));
+    const b = first === last ? a : d.parseNote(ctx.state.doc.sliceString(last.from, last.to));
+    if (!a || !b) return { error: "看不懂这个音符的写法" };
+    if (first === last) return { error: "圆滑线至少连两个音" };
+    a.pre = d.slurOpen + a.pre;
+    b.post = b.post + d.slurClose;
+    changes = [
+      { from: first.from, to: first.to, insert: d.printNote(a) },
+      { from: last.from, to: last.to, insert: d.printNote(b) },
+    ];
+  } else {
+    const end = groupEnd(ctx, last);
+    changes = [
+      { from: first.from, to: first.from, insert: d.slurOpen },
+      { from: end, to: end, insert: d.slurClose },
+    ];
+  }
+  changes.sort((x, y) => x.from - y.from);
+  const map = mapper(ctx.state, changes);
+  return { changes, anchor: map(keep.from, 1), head: map(keep.to, -1) };
+}
+
+/** 删掉弧的一个括号：括号与相邻的音符之间没有空白，只在它两侧都是空白时带走一个空格。 */
+function spaceAroundParen(ctx: EditCtx, from: number, to: number): EditResult["changes"][number] {
+  const doc = ctx.state.doc;
+  const ch = (i: number): string => (i >= 0 && i < doc.length ? doc.sliceString(i, i + 1) : "\n");
+  if (ch(from - 1) === " " && ch(to) === " ") return { from: from - 1, to, insert: "" };
+  return { from, to, insert: "" };
+}
+
+/** 圆滑线：选区首尾两个音符之间加上或去掉。 */
+export function toggleSlur(ctx: EditCtx, from: number, to: number): EditOutcome {
+  const notes = notesIn(ctx, from, to);
+  if (notes.length < 2) return { error: "先选中要连起来的几个音（至少两个）" };
+  return toggleArc(ctx, notes[0]!, notes[notes.length - 1]!, { from, to });
+}
+
+/** 延音线：选中的（最后一个）音与后面那个同音高的音之间加上或去掉。 */
+export function toggleTie(ctx: EditCtx, from: number, to: number): EditOutcome {
+  const note = notesIn(ctx, from, to).pop();
+  if (!note) return { error: "先选中一个音符" };
+  const after = groupEnd(ctx, note);
+  const next = ctx.sync.ordered().find((e) => e.kind === "note" && e.from >= after);
+  if (!next) return { error: "后面没有音了" };
+  const a = ctx.dialect.parseNote(ctx.state.doc.sliceString(note.from, note.to));
+  const b = ctx.dialect.parseNote(ctx.state.doc.sliceString(next.from, next.to));
+  if (!a || !b) return { error: "看不懂这个音符的写法" };
+  if (a.degree === 0 || a.degree !== b.degree || a.octave !== b.octave || (a.acc ?? null) !== (b.acc ?? null)) {
+    return { error: "延音线只连同音高的两个音；不同音用圆滑线（s）" };
+  }
+  return toggleArc(ctx, note, next, { from, to });
+}

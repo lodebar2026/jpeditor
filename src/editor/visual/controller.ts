@@ -15,7 +15,7 @@ import { setBreakSpans, setScoreFocus } from "./cursor";
 import type { EditDialect, NoteDuration } from "./dialect";
 import {
   addSustain, deleteEntries, double, type EditCtx, type EditOutcome, groupEnd, halve, insertNote, insertToken,
-  isError, notesIn, setAccidental, setDegree, shiftOctave, toggleDot,
+  isError, notesIn, setAccidental, setDegree, shiftOctave, toggleDot, toggleSlur, toggleTie,
 } from "./ops";
 import { actionOfKey, type VisualAction, type VisualMode } from "./keys";
 import { type Box, clearOverlay, drawBlock, drawBreak, drawCaret, musicBox, rightEdgeInBand, sameRow } from "./overlay";
@@ -280,6 +280,8 @@ export class VisualEditController {
       case "dur.halve": return this.duration(-1);
       case "dur.double": return this.duration(1);
       case "sus.add": return this.sustain();
+      case "slur.toggle": return this.editNotes(toggleSlur);
+      case "tie.toggle": return this.editNotes(toggleTie);
       case "bar.insert": return this.insertAtCursor((c, pos) => insertToken(c, pos, c.dialect.barline));
       case "brk.line": return this.insertAtCursor((c, pos) => insertBreak({ ...c, doc: this.host.syncDoc()! }, pos, false));
       case "brk.page": return this.insertAtCursor((c, pos) => insertBreak({ ...c, doc: this.host.syncDoc()! }, pos, true));
