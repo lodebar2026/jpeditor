@@ -14,10 +14,11 @@ import { type BeatIssue, checkMeasureDurations, describeBeatIssue } from "../../
 import type { BreakMark, SyncEntry, SyncIndex } from "../sync";
 import { deleteBreak, insertBreak } from "./breaks";
 import { setBeatSpans, setBreakSpans, setScoreFocus } from "./cursor";
+import { midiOf, NotePreview } from "./preview";
 import type { EditDialect, NoteDuration } from "./dialect";
 import {
   addSustain, deleteEntries, double, type EditCtx, type EditOutcome, groupEnd, halve, insertNote, insertToken,
-  isError, notesIn, setAccidental, setDegree, shiftOctave, toggleDot, toggleSlur, toggleTie,
+  isError, noteCtx, notesIn, setAccidental, setDegree, shiftOctave, toggleDot, toggleSlur, toggleTie,
 } from "./ops";
 import { actionOfKey, type VisualAction, type VisualMode } from "./keys";
 import { type Box, clearOverlay, drawBeatIssue, drawBlock, drawBreak, drawCaret, musicBox, rightEdgeInBand, sameRow } from "./overlay";
@@ -39,6 +40,8 @@ export interface VisualHost {
   syncDoc(): ScoreDoc | null;
   /** 改完原文马上重排（不等输入防抖） */
   reloadNow(): void;
+  /** 正在试听：按键发声让路 */
+  playbackBusy(): boolean;
   /** 索引是不是按代码区当前的原文建的（代码区刚改过、重排还在防抖里时为 false） */
   syncFresh(): boolean;
   setStatus(text: string): void;
@@ -51,6 +54,10 @@ const NAVIGABLE = new Set<SyncEntry["kind"]>(["note", "sustain", "barline", "bre
 export class VisualEditController {
   /** 谱面上显示换行/换页符号。持久化。 */
   showFormatMarks = true;
+  /** 插入或改音后响一下（按键即发声）。持久化。 */
+  noteSound = true;
+  /** 发声用的音源；回归脚本可换成假的，断言它收到的音高 */
+  preview: { play(midi: number): unknown } = new NotePreview();
   /** 小节时值自检：拍数对不上的小节标红。持久化。 */
   beatCheck = true;
   private beatIssues: BeatIssue[] = [];
@@ -96,8 +103,9 @@ export class VisualEditController {
     this.syncButtons();
   }
 
-  loadSettings(s: { showFormatMarks?: unknown; beatCheck?: unknown }): void {
+  loadSettings(s: { showFormatMarks?: unknown; beatCheck?: unknown; noteSound?: unknown }): void {
     if (typeof s.showFormatMarks === "boolean") this.showFormatMarks = s.showFormatMarks;
+    if (typeof s.noteSound === "boolean") this.noteSound = s.noteSound;
     if (typeof s.beatCheck === "boolean") this.beatCheck = s.beatCheck;
     this.syncButtons();
   }
@@ -113,6 +121,27 @@ export class VisualEditController {
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-pressed", String(on));
     }
+  }
+
+  setNoteSound(on: boolean): void {
+    this.noteSound = on;
+    this.host.saveSettings();
+  }
+
+  /** 响一下光标处的音：编辑模式是选中的第一个音，插入模式是光标前那个。 */
+  private sound(): void {
+    if (!this.noteSound || this.host.playbackBusy()) return;
+    const c = this.editCtx(true);
+    if (!c) return;
+    const sel = c.state.selection.main;
+    const e = sel.empty
+      ? [...this.navigable()].reverse().find((x) => x.kind === "note" && x.to <= sel.head)
+      : notesIn(c, sel.from, sel.to)[0];
+    if (!e) return;
+    const nc = noteCtx(c, e.from);
+    const t = c.dialect.parseNote(c.state.doc.sliceString(e.from, e.to), nc);
+    if (!t || t.degree === 0) return;
+    void this.preview.play(midiOf(t.degree, t.octave, t.acc, nc.fifths));
   }
 
   toggleBeatCheck(): void {
@@ -367,11 +396,11 @@ export class VisualEditController {
   run(a: VisualAction, key = ""): boolean {
     switch (a.id) {
       case "note.digit": return this.digit(Number(key));
-      case "oct.up": return this.editNotes((c, f, t) => shiftOctave(c, f, t, 1));
-      case "oct.down": return this.editNotes((c, f, t) => shiftOctave(c, f, t, -1));
-      case "acc.sharp": return this.editNotes((c, f, t) => setAccidental(c, f, t, "sharp"));
-      case "acc.flat": return this.editNotes((c, f, t) => setAccidental(c, f, t, "flat"));
-      case "acc.natural": return this.editNotes((c, f, t) => setAccidental(c, f, t, "natural"));
+      case "oct.up": return this.editNotes((c, f, t) => shiftOctave(c, f, t, 1), true);
+      case "oct.down": return this.editNotes((c, f, t) => shiftOctave(c, f, t, -1), true);
+      case "acc.sharp": return this.editNotes((c, f, t) => setAccidental(c, f, t, "sharp"), true);
+      case "acc.flat": return this.editNotes((c, f, t) => setAccidental(c, f, t, "flat"), true);
+      case "acc.natural": return this.editNotes((c, f, t) => setAccidental(c, f, t, "natural"), true);
       case "dur.dot": return this.editNotes(toggleDot);
       case "dur.halve": return this.duration(-1);
       case "dur.double": return this.duration(1);
@@ -527,17 +556,17 @@ export class VisualEditController {
   // ---------------- 改谱 ----------------
 
   /** 能改谱时给出动作上下文；不能改（格式没有 dialect、没有模型）时在状态栏说明并返回 null。 */
-  private editCtx(): EditCtx | null {
+  private editCtx(quiet = false): EditCtx | null {
     const dialect = this.host.editDialect();
     if (!dialect || !this.host.syncDoc()) {
-      this.host.setStatus("这种格式暂不支持在谱面上改谱，请在源码区修改");
+      if (!quiet) this.host.setStatus("这种格式暂不支持在谱面上改谱，请在源码区修改");
       return null;
     }
     return { state: this.host.view.state, sync: this.host.sync, dialect, doc: this.host.syncDoc() };
   }
 
   /** 把一次动作的结果落进代码区（进撤销记录），马上重排。出错就在状态栏说明。 */
-  private apply(out: EditOutcome): boolean {
+  private apply(out: EditOutcome, sound = false): boolean {
     if (isError(out)) {
       this.host.setStatus(out.error);
       return true; // 键已经被认下了，只是这回做不了
@@ -566,6 +595,7 @@ export class VisualEditController {
       scrollIntoView: true,
     });
     this.host.reloadNow();
+    if (sound) this.sound();
     return true;
   }
 
@@ -587,11 +617,11 @@ export class VisualEditController {
     return this.apply({ changes: [change], anchor: at, head: at });
   }
 
-  private editNotes(fn: (c: EditCtx, from: number, to: number) => EditOutcome): boolean {
+  private editNotes(fn: (c: EditCtx, from: number, to: number) => EditOutcome, sound = false): boolean {
     const c = this.editCtx();
     if (!c) return true;
     const sel = c.state.selection.main;
-    return this.apply(fn(c, sel.from, sel.to));
+    return this.apply(fn(c, sel.from, sel.to), sound);
   }
 
   /** 插入模式：光标处；编辑模式：选中那段（连同最后一个音符的增时线）之后。 */
@@ -628,8 +658,8 @@ export class VisualEditController {
     const c = this.editCtx();
     if (!c) return true;
     const sel = c.state.selection.main;
-    if (!sel.empty) return this.apply(setDegree(c, sel.from, sel.to, d));
-    return this.apply(insertNote(c, sel.head, d, this.curDur));
+    if (!sel.empty) return this.apply(setDegree(c, sel.from, sel.to, d), true);
+    return this.apply(insertNote(c, sel.head, d, this.curDur), true);
   }
 
   /** `_` / `=`：编辑模式改选中音符，插入模式改「当前时值」。 */

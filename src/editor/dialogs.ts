@@ -274,6 +274,13 @@ export function showOptionsDialog(app: App): void {
     body.append(note("五线谱与混排的纸张与字号随 MusicXML 的版面走，这里只设背景色。"));
   }
 
+  // 可视化编辑：谱面上插入/改音时响一下（只在简谱档、能改谱的格式下摆出来）
+  const noteSound = document.createElement("input");
+  noteSound.type = "checkbox";
+  noteSound.checked = app.visual.noteSound;
+  const showNoteSound = app.mode === "jp" && app.editDialect() !== null;
+  if (showNoteSound) body.append(labeled("改音时发声", noteSound));
+
   // 播放混音：各声部音量（0–100%，播放/导出 MIDI 时按此写入 CC7；改后需重新播放）。
   const volSliders: HTMLInputElement[] = [];
   if (app.mode === "jp" && app.partCount > 1) {
@@ -313,6 +320,7 @@ export function showOptionsDialog(app: App): void {
       color: argb, bgColor: colorValue(bgColor, app.bgColor),
     });
     if (isMixed) void app.setMixedHideBarNumber(hideBarNum.checked);
+    if (showNoteSound && noteSound.checked !== app.visual.noteSound) app.visual.setNoteSound(noteSound.checked);
   }, undefined, isMixed ? undefined : {
     // 清掉当前档（展开 / 原样）的用户层，回到内置主题；另一档与声部音量不动
     label: "恢复本档默认",

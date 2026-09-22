@@ -33,6 +33,11 @@ export class PlaybackController {
 
   constructor(private host: PlaybackHost) {}
 
+  /** 正在试听（或在加载音源）。可视化编辑的按键发声在这时让路。 */
+  get busy(): boolean {
+    return this.player?.state === "playing" || this.player?.state === "loading";
+  }
+
   // ---------------- 持久化 ----------------
   loadSettings(s: { playSpeed?: unknown }): void {
     if (typeof s.playSpeed === "number" && s.playSpeed > 0) {

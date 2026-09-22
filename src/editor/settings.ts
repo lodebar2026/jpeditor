@@ -27,6 +27,8 @@ export interface PersistedSettings {
   showFormatMarks?: unknown;
   /** 小节时值自检开关（同上） */
   beatCheck?: unknown;
+  /** 可视化编辑改音时发声（同上） */
+  noteSound?: unknown;
 }
 
 export function loadPersistedSettings(): PersistedSettings | null {

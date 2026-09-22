@@ -7,7 +7,7 @@
 import type { ChangeSpec, EditorState } from "@codemirror/state";
 import type { ScoreDoc } from "../../model/doc";
 import type { SyncEntry, SyncIndex } from "../sync";
-import type { EditDialect, NoteCtx, NoteDuration, NoteToken } from "./dialect";
+import { type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken } from "./dialect";
 
 export interface EditCtx {
   state: EditorState;
@@ -17,11 +17,9 @@ export interface EditCtx {
   doc: ScoreDoc | null;
 }
 
-const PLAIN_CTX: NoteCtx = { fifths: 0, unitQuarters: 1 };
-
-/** 这个位置上读写音符的上下文。 */
+/** 这个位置上读写音符的上下文（dialect 没给就只按模型取调号：发声要它）。 */
 export function noteCtx(ctx: EditCtx, pos: number): NoteCtx {
-  return ctx.dialect.contextAt?.(ctx.state, ctx.doc, pos) ?? PLAIN_CTX;
+  return ctx.dialect.contextAt?.(ctx.state, ctx.doc, pos) ?? { fifths: keyFifthsAt(ctx.doc, pos), unitQuarters: 1 };
 }
 
 /** 读一个音符条目的 token。 */

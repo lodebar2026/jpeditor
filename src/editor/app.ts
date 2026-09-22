@@ -387,6 +387,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       puProfile: this.puProfile,
       showFormatMarks: this.visual.showFormatMarks,
       beatCheck: this.visual.beatCheck,
+      noteSound: this.visual.noteSound,
     });
   }
 
@@ -771,6 +772,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   syncDoc(): ScoreDoc | null {
     return this._syncDoc;
+  }
+
+  playbackBusy(): boolean {
+    return this.playback.busy;
   }
 
   syncFresh(): boolean {
