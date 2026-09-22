@@ -94,9 +94,16 @@ function writeLayout(
     });
   });
 
-  // 没写朝向的圆滑线按排出来的画在上方（`StaffLayout.arcsAbove`），写明，第三方软件不另猜到下方去压歌词
+  // 没写朝向的圆滑线按排出来的方向写明（`PartLayout.arcsAbove`：有歌词在上方，否则按符干），第三方软件不另猜；
+  // 没对上排版的（只留旋律时删掉的等）仍写上方
+  const slurAbove = new Map<string, boolean>();
+  for (const pl of score.parts) {
+    for (const sl of pl.slurs) if (sl.mark) slurAbove.set(`${sl.mark.start}:${sl.mark.end}:${sl.mark.startNote ?? 0}:${sl.mark.endNote ?? 0}`, sl.above);
+  }
   for (const m of song.marks) {
-    if (m.type === "slur" && !m.placement && !m.orientation) m.placement = "above";
+    if (m.type !== "slur" || m.placement || m.orientation) continue;
+    const above = slurAbove.get(`${m.start}:${m.end}:${m.startNote ?? 0}:${m.endNote ?? 0}`) ?? true;
+    m.placement = above ? "above" : "below";
   }
 
   // 小节宽、音符横向位置与符干方向、歌词与和弦与文字的高度

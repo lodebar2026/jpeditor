@@ -579,8 +579,9 @@ class DocPartLoader {
         sl.endTick = ch.tick();
         sl.startNote = start.notes[start.notes.length - 1];
         sl.endNote = ch.notes[ch.notes.length - 1];
+        sl.mark = mk;
         if (above !== null) sl.above = above;
-        else if (this.score.arcsAbove) sl.above = true;
+        else sl.autoDir = true;
       } else {
         const tm = this.docChordById.get(mk.start)?.duration.timeMod;
         const tup = this.part.newTuplet();

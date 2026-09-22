@@ -12,7 +12,7 @@ import { Font } from "../layout/font";
 import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
 import { MIXED_PUNCT, type CompressMode } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
-import type { Chord as DocChord, Direction as DocDirection, Harmony as DocHarmony, Lyric as DocLyric, Note as DocNote, Song } from "../model/doc";
+import type { Chord as DocChord, Direction as DocDirection, Harmony as DocHarmony, Lyric as DocLyric, Mark as DocMark, Note as DocNote, Song } from "../model/doc";
 import { beamCount } from "../model/jianpu";
 
 const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -1997,7 +1997,12 @@ export class SpanOverNotes extends SpanObj {
   }
 }
 
-export class Slur extends SpanOverNotes {}
+export class Slur extends SpanOverNotes {
+  /** 源谱没写朝向：等符干定好后由 `guessTiedPlacement` 定 */
+  autoDir = false;
+  /** 源标记（导出时把排出来的方向写回去） */
+  mark: DocMark | null = null;
+}
 
 export class Tied extends SpanOverNotes {
   yOffsetType = 0; // 0 middle, 1 up, -1 below
@@ -2077,6 +2082,12 @@ export class PartLayout {
   pedalLines: PedalLine[] = [];
   lrcExtends: LrcExtend[] = [];
 
+  /** 没写朝向的弧画在音符上方让开下面的歌词：`StaffLayout.arcsAbove` 的谱，且本声部有歌词。
+   *  没歌词的照常规制谱：延音线与符干反向，圆滑线所跨符干全朝上时在下方。 */
+  get arcsAbove(): boolean {
+    return this.score.arcsAbove && this.measures.some((md) => md.lyrics.length > 0);
+  }
+
   newMeasure(): PartMeasureLayout {
     const m = new PartMeasureLayout();
     m.part = this;
@@ -2141,6 +2152,23 @@ export class PartLayout {
     }
   }
 
+  /** 圆滑线起止之间（含两端）同声部的实音符干是否全朝上 */
+  private slurStemsAllUp(sl: Slur): boolean {
+    const a = sl.startChord();
+    const b = sl.endChord();
+    const t0 = a.tick();
+    const t1 = b.tick();
+    for (const md of this.measures) {
+      for (const ch of md.chords) {
+        if (ch.rest || ch.notes.length === 0 || ch.voice !== a.voice) continue;
+        const t = ch.tick();
+        if (t.compareTo(t0) < 0 || t.compareTo(t1) > 0) continue;
+        if (!ch.stemUp) return false;
+      }
+    }
+    return a.stemUp && b.stemUp;
+  }
+
   /** Part::guessTiedPlacement（连音线方向推断）。 */
   guessTiedPlacement(): void {
     interface Pt {
@@ -2151,6 +2179,12 @@ export class PartLayout {
       isTie: boolean;
       owner: Tied | null;
       other: Pt | null;
+    }
+    const arcsAbove = this.arcsAbove;
+    for (const sl of this.slurs) {
+      if (!sl.autoDir) continue;
+      if (arcsAbove) sl.above = true;
+      else if (this.score.arcsAbove) sl.above = !this.slurStemsAllUp(sl);
     }
     const ptsBegin = new Map<NoteEntry | null, Pt[]>();
     const ptsEnd = new Map<NoteEntry | null, Pt[]>();
@@ -2241,7 +2275,7 @@ export class PartLayout {
         vec.sort((a, b) => a.note.writtenPitch - b.note.writtenPitch);
         const mid = Math.floor(vec.length / 2);
         // 同一个单音上起的弧（圆滑线带着延音线）：没有上下之分，弧朝上的谱都朝上
-        const oneNote = this.score.arcsAbove && vec.every((pt) => pt.note === vec[0]!.note);
+        const oneNote = arcsAbove && vec.every((pt) => pt.note === vec[0]!.note);
         for (let i = 0; i < vec.length; i++) {
           const pt = vec[i];
           if (pt.hasDir) continue;
@@ -2274,7 +2308,7 @@ export class PartLayout {
       } else {
         let ch = sl.startNote!.chord;
         if (fGe(ch.noteType, new Fraction(4))) ch = sl.endNote!.chord;
-        const up = this.score.arcsAbove || !ch.stemUp;
+        const up = arcsAbove || !ch.stemUp;
         sl.above = up;
         pta.up = up;
         ptb.up = up;
