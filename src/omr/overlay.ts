@@ -406,7 +406,11 @@ function baseImage(bin: Binary): SVGImageElement {
  *  - inplace：二值底图 + 半透明识别叠加（原位）。
  *  - floating/original：仅二值底图（浮窗由 app 悬停时另建）。
  *  三视图均附透明命中层，供点选定位 jpwabc 代码 / 悬停高亮。 */
-export function renderRecognitionSvg(bin: Binary, score: RecognizedScore, view: RecogView = "inplace"): SVGSVGElement {
+export function renderRecognitionSvg(
+  bin: Binary, score: RecognizedScore, view: RecogView = "inplace",
+  /** 小节时值自检报出的小节（`omr/beats.ts`）：各视图都标出，悬停显示说明 */
+  beatMarks: readonly { boxes: readonly Rect[]; text: string }[] = [],
+): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "omr-recognize");
   svg.setAttribute("viewBox", `0 0 ${bin.w} ${bin.h}`);
@@ -417,6 +421,26 @@ export function renderRecognitionSvg(bin: Binary, score: RecognizedScore, view: 
 
   const stats = computeStats(score);
   if (view === "inplace") svg.appendChild(buildOverlayGroup(score, stats));
+  if (beatMarks.length) {
+    const g = document.createElementNS(SVG_NS, "g");
+    g.setAttribute("class", "omr-beat");
+    const pad = stats.noteH * 0.35;
+    for (const m of beatMarks) {
+      for (const b of m.boxes) {
+        const r = document.createElementNS(SVG_NS, "rect");
+        r.setAttribute("x", String(b.x - pad));
+        r.setAttribute("y", String(b.y - pad));
+        r.setAttribute("width", String(b.w + pad * 2));
+        r.setAttribute("height", String(b.h + pad * 2));
+        r.setAttribute("rx", String(pad));
+        const t = document.createElementNS(SVG_NS, "title");
+        t.textContent = m.text;
+        r.appendChild(t);
+        g.appendChild(r);
+      }
+    }
+    svg.appendChild(g);
+  }
   svg.appendChild(buildHitLayer(score, stats));
   return svg;
 }

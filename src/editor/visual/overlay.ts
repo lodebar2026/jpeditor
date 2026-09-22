@@ -145,6 +145,21 @@ export function drawBlock(svg: SVGSVGElement, box: Box): void {
   }));
 }
 
+/** 拍数对不上的小节：淡红底，悬停显示说明。 */
+export function drawBeatIssue(svg: SVGSVGElement, box: Box, title: string): void {
+  const pad = box.h * 0.2;
+  const r = el("rect", {
+    class: "vis-beat",
+    x: box.x - pad, y: box.y - pad, width: box.w + pad * 2, height: box.h + pad * 2, rx: pad,
+  });
+  const t = document.createElementNS(SVG_NS, "title");
+  t.textContent = title;
+  r.appendChild(t);
+  // 垫在最底下，不挡音符
+  const layer = layerOf(svg);
+  layer.insertBefore(r, layer.firstChild);
+}
+
 /** 换行 `↵` / 换页 `⤓` 符号，画在 `x` 处、`after`（行末元素）那一带的中线上。返回画出的节点（供挂点击）。 */
 export function drawBreak(svg: SVGSVGElement, x0: number, after: Box, page: boolean, selected: boolean): SVGGElement {
   const size = Math.max(8, after.h * 0.6);

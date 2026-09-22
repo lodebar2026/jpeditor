@@ -25,6 +25,8 @@ export interface PersistedSettings {
   puProfile?: "print" | "slide";
   /** 谱面上显示换行/换页符号（可视化编辑，交 VisualEditController 自己校验） */
   showFormatMarks?: unknown;
+  /** 小节时值自检开关（同上） */
+  beatCheck?: unknown;
 }
 
 export function loadPersistedSettings(): PersistedSettings | null {

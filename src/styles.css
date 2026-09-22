@@ -385,6 +385,8 @@ button:focus-visible, select:focus-visible {
 .omr-recognize { background: #fff; }
 .omr-recognize > image { opacity: 1; }
 .omr-recognize .omr-overlay { pointer-events: none; opacity: 0.85; }
+/* 小节时值自检（omr/beats.ts）：拍数对不上的小节 */
+.omr-recognize .omr-beat rect { fill: rgba(224, 49, 49, 0.10); stroke: rgba(224, 49, 49, 0.7); stroke-width: 2; stroke-dasharray: 6 4; }
 .omr-popup .omr-overlay { opacity: 1; }
 /* 各类识别结果用不同颜色区分：音符红、小节线蓝、页眉绿、歌词紫、圆滑线橙、连音线青。浮窗复用同配色。 */
 .omr-overlay text { fill: #d4145a; font-weight: 700; font-family: "PingFang SC", "Microsoft YaHei", ui-sans-serif, sans-serif; }
@@ -504,6 +506,11 @@ button:focus-visible, select:focus-visible {
 .visual-mode { font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid #12b886; color: #12b886; }
 .visual-mode[data-mode="insert"] { border-style: dashed; }
 .format-marks-button { min-width: 26px; font-weight: 600; }
+.vis-overlay .vis-beat { fill: rgba(224, 49, 49, 0.12); stroke: rgba(224, 49, 49, 0.55); stroke-dasharray: 3 2; pointer-events: all; }
+.cm-vis-beat { text-decoration: underline wavy rgba(224, 49, 49, 0.8); text-underline-offset: 3px; }
+.beat-count { font-size: 12px; padding: 1px 6px; border-radius: 4px; color: #e03131; border: 1px solid rgba(224, 49, 49, 0.5); cursor: pointer; }
+.beat-check-button { min-width: 26px; }
+.beat-check-button.active { color: #e03131; }
 .format-marks-button.active { color: #12b886; }
 
 /* playback cursor — highlight the currently sounding note */

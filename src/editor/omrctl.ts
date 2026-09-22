@@ -7,6 +7,7 @@
 // 识别产物的关键性质：`RecognizedScore` 与输出格式无关，留在内存里；换格式只重走
 // omr/emit.ts 的 emitter，绝不重跑识别。输出格式的下拉与打开文件后切格式是同一个
 // （`formatswitch.ts`），这里作为它的一种来源（`FormatSource`）。
+import { recognizedBeatIssues, type RecognizedBeatIssue } from "../omr/beats";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
@@ -90,6 +91,8 @@ export class OmrController implements FormatSource {
   format: OmrFormat = DEFAULT_OMR_FORMAT;
   /** 上次由识别产出的文本；与当前文本不同即说明用户手改过。 */
   private emitted: string | null = null;
+  /** 小节时值自检报出的小节（识别完算一次，核对视图标红） */
+  private beatMarks: RecognizedBeatIssue[] = [];
 
   constructor(private host: OmrHost) {}
 
@@ -175,7 +178,9 @@ export class OmrController implements FormatSource {
       const { bin, score } = await recognizeMusicppDetailed(picked.bytes, picked.mime);
       this.emit(score, bin);
       if (this.host.mode !== "recognize") await this.toggle(); // 识别后默认进叠加核对（本仓库「先核对」取向）
-      this.host.setStatus(`识别完成（${((performance.now() - t0) / 1000).toFixed(1)}s）`);
+      const n = this.beatMarks.length;
+      this.host.setStatus(`识别完成（${((performance.now() - t0) / 1000).toFixed(1)}s）`
+        + (n ? `；${n} 个小节拍数与拍号对不上（核对视图已标红，多半是增时线/减时线读错）` : ""));
       return true;
     } catch (e) {
       console.error("OMR failed", e);
@@ -237,6 +242,7 @@ export class OmrController implements FormatSource {
       this.clear();
       this.host.adoptText(out.kind, out.text, null);
     }
+    this.beatMarks = recognizedBeatIssues(rec);
     this.meta = out.meta; // 点选映射按写出文本的源区间生成（`omr/meta.ts`）；.jpwabc / ABC 没有
     this.bin = bin;
     this.score = rec;
@@ -287,7 +293,7 @@ export class OmrController implements FormatSource {
     if (!this.bin || !this.score) return;
     const bin = this.bin;
     const score = this.score;
-    this.host.renderPagesWith(1, () => renderRecognitionSvg(bin, score, this.view), {
+    this.host.renderPagesWith(1, () => renderRecognitionSvg(bin, score, this.view, this.beatMarks), {
       aspectRatio: () => `${bin.w} / ${bin.h}`,
       position: "relative", // 浮窗绝对定位相对此容器
       onPage: (svg, wrap) => this.wireInteraction(svg, wrap),
@@ -434,6 +440,7 @@ export class OmrController implements FormatSource {
   clear(): void {
     this.bin = null;
     this.score = null;
+    this.beatMarks = [];
     this.meta = null;
     this.emitted = null;
     if (this.host.formats.source === this) this.host.formats.use(null);

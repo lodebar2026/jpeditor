@@ -358,7 +358,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (!s) return;
     this.omr.loadSettings(s);
     this.playback.loadSettings(s);
-    this.visual.loadSettings(s.showFormatMarks);
+    this.visual.loadSettings(s);
     if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
     if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
     // 样式用户层（旧版散存的字号/纸/配色字段不读——不做存量迁移）
@@ -386,6 +386,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       jpProfile: this.jpProfile,
       puProfile: this.puProfile,
       showFormatMarks: this.visual.showFormatMarks,
+      beatCheck: this.visual.beatCheck,
     });
   }
 

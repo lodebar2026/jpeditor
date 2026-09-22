@@ -6,7 +6,7 @@
 // 现在直出模型：123 核对文本 = `emit123(本文件产物)`，要 MusicXML 就走唯一写出端 `model/toxml.ts`（经 `xmlproject.ts` 投影）。
 //
 // **无 DOM 依赖**（Node CLI 要 import 它）。
-import { SIMPLE_DIVISIONS as Q, type Barline, type Chord, type Harmony, type Mark, type Measure, type Note, type ScoreDoc, type Song, type Sustain } from "../model/doc";
+import { SIMPLE_DIVISIONS as Q, type Barline, type Chord, type ElementId, type Harmony, type Mark, type Measure, type Note, type ScoreDoc, type Song, type Sustain } from "../model/doc";
 import { IdGen, emptyDoc } from "../model/helpers";
 import { creatorOf } from "../model/metakeys";
 import { duration123 } from "../abcfamily/parsedialect";
@@ -167,7 +167,8 @@ function placeChords(n: JpNum, ch: Chord, fullDivisions: number): void {
   if (later.length) ch.laterHarmonies = later.map((h) => chordSymbol(h.text));
 }
 
-export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
+/** @param numOf 可选：记下每个和弦来自哪个识别符号（小节时值自检要按源图坐标标出问题小节，`omr/beats.ts`） */
+export function recognizedToDoc(score: RecognizedScore, numOf?: Map<ElementId, JpNum>): ScoreDoc {
   const ids = new IdGen();
   // 遵照图片小节线：行末无小节线时（开口收尾），本行末小节与下一行行首小节实为同一跨行小节，合并，
   // 不在换行处凭空补小节线。行末有小节线（如终止线）才各自成节。
@@ -242,6 +243,7 @@ export function recognizedToDoc(score: RecognizedScore): ScoreDoc {
         duration: duration123(n.div, n.dot > 0 ? 1 : 0, sustainCount),
         voice: 1, staff: 1,
       };
+      numOf?.set(ch.id, n);
       if (rest) ch.rest = {};
       else if (n.digit === RHYTHM_DIGIT) ch.rhythm = true;
       else {

@@ -10,16 +10,17 @@ import { redo, undo } from "@codemirror/commands";
 import { type ChangeSpec, ChangeSet } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { ElementId, ScoreDoc } from "../../model/doc";
+import { type BeatIssue, checkMeasureDurations, describeBeatIssue } from "../../model/beatcheck";
 import type { BreakMark, SyncEntry, SyncIndex } from "../sync";
 import { deleteBreak, insertBreak } from "./breaks";
-import { setBreakSpans, setScoreFocus } from "./cursor";
+import { setBeatSpans, setBreakSpans, setScoreFocus } from "./cursor";
 import type { EditDialect, NoteDuration } from "./dialect";
 import {
   addSustain, deleteEntries, double, type EditCtx, type EditOutcome, groupEnd, halve, insertNote, insertToken,
   isError, notesIn, setAccidental, setDegree, shiftOctave, toggleDot, toggleSlur, toggleTie,
 } from "./ops";
 import { actionOfKey, type VisualAction, type VisualMode } from "./keys";
-import { type Box, clearOverlay, drawBlock, drawBreak, drawCaret, musicBox, rightEdgeInBand, sameRow } from "./overlay";
+import { type Box, clearOverlay, drawBeatIssue, drawBlock, drawBreak, drawCaret, musicBox, rightEdgeInBand, sameRow } from "./overlay";
 
 export interface VisualHost {
   readonly view: EditorView;
@@ -50,6 +51,13 @@ const NAVIGABLE = new Set<SyncEntry["kind"]>(["note", "sustain", "barline", "bre
 export class VisualEditController {
   /** 谱面上显示换行/换页符号。持久化。 */
   showFormatMarks = true;
+  /** 小节时值自检：拍数对不上的小节标红。持久化。 */
+  beatCheck = true;
+  private beatIssues: BeatIssue[] = [];
+  private beatBtn: HTMLButtonElement | null = null;
+  private beatEl: HTMLElement | null = null;
+  /** 计数标签点一下跳到下一处：上次跳到第几处 */
+  private beatCursor = -1;
   private modeEl: HTMLElement | null = null;
   private marksBtn: HTMLButtonElement | null = null;
   /** 叠加层里画出来的换行符号 → 它那一处换行 */
@@ -65,7 +73,10 @@ export class VisualEditController {
   // ---------------- 装配 ----------------
 
   /** 谱面可聚焦、接键盘；工具条上的模式标签与格式标记开关。 */
-  attach(modeEl: HTMLElement | null, marksBtn: HTMLButtonElement | null): void {
+  attach(
+    modeEl: HTMLElement | null, marksBtn: HTMLButtonElement | null,
+    beatBtn: HTMLButtonElement | null = null, beatEl: HTMLElement | null = null,
+  ): void {
     const pane = this.host.scorePane;
     pane.tabIndex = 0;
     pane.addEventListener("keydown", (ev) => this.onKeyDown(ev));
@@ -78,11 +89,16 @@ export class VisualEditController {
     this.modeEl = modeEl;
     this.marksBtn = marksBtn;
     marksBtn?.addEventListener("click", () => this.toggleFormatMarks());
+    this.beatBtn = beatBtn;
+    this.beatEl = beatEl;
+    beatBtn?.addEventListener("click", () => this.toggleBeatCheck());
+    beatEl?.addEventListener("click", () => this.nextBeatIssue());
     this.syncButtons();
   }
 
-  loadSettings(v: unknown): void {
-    if (typeof v === "boolean") this.showFormatMarks = v;
+  loadSettings(s: { showFormatMarks?: unknown; beatCheck?: unknown }): void {
+    if (typeof s.showFormatMarks === "boolean") this.showFormatMarks = s.showFormatMarks;
+    if (typeof s.beatCheck === "boolean") this.beatCheck = s.beatCheck;
     this.syncButtons();
   }
 
@@ -92,10 +108,28 @@ export class VisualEditController {
   }
 
   private syncButtons(): void {
-    if (this.marksBtn) {
-      this.marksBtn.classList.toggle("active", this.showFormatMarks);
-      this.marksBtn.setAttribute("aria-pressed", String(this.showFormatMarks));
+    for (const [btn, on] of [[this.marksBtn, this.showFormatMarks], [this.beatBtn, this.beatCheck]] as const) {
+      if (!btn) continue;
+      btn.classList.toggle("active", on);
+      btn.setAttribute("aria-pressed", String(on));
     }
+  }
+
+  toggleBeatCheck(): void {
+    this.beatCheck = !this.beatCheck;
+    this.syncButtons();
+    this.host.saveSettings();
+    this.afterRebuild();
+  }
+
+  /** 计数标签：选中下一处拍数不对的小节的第一个音。 */
+  private nextBeatIssue(): void {
+    if (this.beatIssues.length === 0) return;
+    this.beatCursor = (this.beatCursor + 1) % this.beatIssues.length;
+    const issue = this.beatIssues[this.beatCursor]!;
+    const span = issue.ids.map((id) => this.host.sync.spanOfNote(id)).find((s) => s);
+    if (span) this.select(span.from, span.to);
+    this.host.setStatus(`第 ${issue.measureIndex + 1} 小节${describeBeatIssue(issue)}`);
   }
 
   toggleFormatMarks(): void {
@@ -123,7 +157,13 @@ export class VisualEditController {
   /** 重排之后（索引重建了）：把换行符号的原文位置交给代码区，再重画谱面叠加层。 */
   afterRebuild(): void {
     const spans = this.host.sync.breaks().flatMap((b) => (b.span ? [b.span] : []));
-    this.host.view.dispatch({ effects: setBreakSpans.of(this.showFormatMarks ? spans : []) });
+    const doc = this.host.syncDoc();
+    this.beatIssues = this.beatCheck && doc && this.host.visualEnabled() ? checkMeasureDurations(doc) : [];
+    this.beatCursor = -1;
+    const beatSpans = this.beatIssues.flatMap((i) => (i.source ? [{ from: i.source.offset, to: i.source.offset + i.source.length }] : []));
+    this.host.view.dispatch({
+      effects: [setBreakSpans.of(this.showFormatMarks ? spans : []), setBeatSpans.of(beatSpans)],
+    });
     this.refresh();
   }
 
@@ -138,7 +178,13 @@ export class VisualEditController {
       this.modeEl.textContent = this.mode === "edit" ? "编辑" : `插入 · ${durName(this.curDur)}`;
       this.modeEl.dataset.mode = this.mode;
     }
+    if (this.beatEl) {
+      const n = on ? this.beatIssues.length : 0;
+      this.beatEl.hidden = n === 0;
+      this.beatEl.textContent = `${n} 小节拍数不对`;
+    }
     if (!on) return;
+    this.drawBeatIssues();
     const sel = this.host.view.state.selection.main;
     if (this.pickedBreak && (!sel.empty || sel.head !== this.pickedBreak.sel)) this.pickedBreak = null;
     if (this.showFormatMarks) this.drawBreaks(sel.from, sel.to);
@@ -149,6 +195,23 @@ export class VisualEditController {
   private boxOf(entry: SyncEntry): { svg: SVGSVGElement; box: Box } | null {
     const el = this.host.entryEl(entry);
     return el ? musicBox(el) : null;
+  }
+
+  /** 拍数不对的小节：它的音符按行各圈一个淡红底。 */
+  private drawBeatIssues(): void {
+    for (const issue of this.beatIssues) {
+      const boxes: { svg: SVGSVGElement; box: Box }[] = [];
+      for (const id of issue.ids) {
+        const el = this.host.noteEl(id);
+        const hit = el && musicBox(el);
+        if (!hit) continue;
+        const same = boxes.find((b) => b.svg === hit.svg && sameRow(b.box, hit.box));
+        if (same) same.box = union(same.box, hit.box);
+        else boxes.push(hit);
+      }
+      const title = `第 ${issue.measureIndex + 1} 小节${describeBeatIssue(issue)}`;
+      for (const b of boxes) drawBeatIssue(b.svg, b.box, title);
+    }
   }
 
   private drawBreaks(selFrom: number, selTo: number): void {

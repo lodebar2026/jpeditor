@@ -20,6 +20,8 @@ export { recognizeMusicppDetailed };
 export { setImageDecoder, decodeToBinary } from "../omr/decode";
 export type { ImageDecoder, RgbaImage } from "../omr/decode";
 export { recognizedToDoc } from "../omr/todoc";
+export { recognizedBeatIssues } from "../omr/beats";
+export type { RecognizedBeatIssue } from "../omr/beats";
 export { metaFrom123, metaFromPu } from "../omr/meta";
 export type { RecognizedScore, Binary } from "../omr/types";
 
