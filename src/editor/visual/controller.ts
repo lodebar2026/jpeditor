@@ -71,6 +71,10 @@ export class VisualEditController {
   /** 小节时值自检：拍数对不上的小节标红。持久化。 */
   beatCheck = true;
   private beatIssues: BeatIssue[] = [];
+  /** 原文里的空小节 `| |`（整小节的音删光了）。模型里没有它（解析时空小节不成小节），小节时值自检看不见，另从原文认 */
+  private emptyBars: { from: number; to: number }[] = [];
+  /** 打开时首小节就不满（弱起）的声部 `songIndex:partIndex`；null = 刚打开、还没查过（`documentLoaded`） */
+  private pickups: Set<string> | null = null;
   private beatBtn: HTMLButtonElement | null = null;
   private beatEl: HTMLElement | null = null;
   /** 计数标签点一下跳到下一处：上次跳到第几处 */
@@ -179,17 +183,48 @@ export class VisualEditController {
     this.afterRebuild();
   }
 
-  /** 计数标签：选中下一处拍数不对的小节的第一个音。 */
+  /** 拍数不对的小节与空小节，按原文顺序（计数标签逐个跳）。 */
+  private beatMarks(): ({ at: number; issue: BeatIssue } | { at: number; empty: { from: number; to: number } })[] {
+    const out: ({ at: number; issue: BeatIssue } | { at: number; empty: { from: number; to: number } })[] = [];
+    for (const issue of this.beatIssues) {
+      const first = this.host.sync.ordered().find((e) => e.kind === "note" && issue.ids.includes(e.id));
+      out.push({ at: first?.from ?? issue.source?.offset ?? 0, issue });
+    }
+    for (const empty of this.emptyBars) out.push({ at: empty.from, empty });
+    return out.sort((a, b) => a.at - b.at);
+  }
+
+  /** 计数标签：选中下一处拍数不对的小节的第一个音；空小节把插入光标放进两条小节线中间。 */
   private nextBeatIssue(): void {
-    if (this.beatIssues.length === 0) return;
-    this.beatCursor = (this.beatCursor + 1) % this.beatIssues.length;
-    const issue = this.beatIssues[this.beatCursor]!;
-    const first = this.host.sync.ordered().find((e) => e.kind === "note" && issue.ids.includes(e.id));
+    const marks = this.beatMarks();
+    if (marks.length === 0) return;
+    this.beatCursor = (this.beatCursor + 1) % marks.length;
+    const m = marks[this.beatCursor]!;
+    if ("empty" in m) {
+      this.select(m.empty.from + 1, m.empty.from + 1);
+      this.host.setStatus("这一小节是空的：光标已放进去，可以接着输入音符");
+      return;
+    }
+    const first = this.host.sync.ordered().find((e) => e.kind === "note" && m.issue.ids.includes(e.id));
     if (first) {
       const span = this.noteSel(first);
       this.select(span.from, span.to);
     }
-    this.host.setStatus(`第 ${issue.measureIndex + 1} 小节${describeBeatIssue(issue)}`);
+    this.host.setStatus(`第 ${m.issue.measureIndex + 1} 小节${describeBeatIssue(m.issue)}`);
+  }
+
+  /** 原文里的空小节：同一行里两条小节线之间只有空白，且这一行是曲谱行（行里有音符）。 */
+  private findEmptyBars(): { from: number; to: number }[] {
+    const doc = this.host.view.state.doc;
+    const text = doc.toString();
+    const musicLines = new Set(this.host.sync.ordered().filter((e) => e.kind === "note").map((e) => doc.lineAt(e.from).number));
+    const out: { from: number; to: number }[] = [];
+    for (const m of text.matchAll(/\|(?=([ \t]+)\|)/g)) {
+      const from = m.index!;
+      if (!musicLines.has(doc.lineAt(from).number)) continue;
+      out.push({ from, to: from + 1 + m[1]!.length + 1 });
+    }
+    return out;
   }
 
   toggleFormatMarks(): void {
@@ -214,13 +249,30 @@ export class VisualEditController {
     return this.host.sync.ordered().filter((e) => NAVIGABLE.has(e.kind));
   }
 
+  /** 换了一份文档（打开、导入、识别落地）：弱起重新认。 */
+  documentLoaded(): void {
+    this.pickups = null;
+  }
+
   /** 重排之后（索引重建了）：把换行符号的原文位置交给代码区，再重画谱面叠加层。 */
   afterRebuild(): void {
     const spans = this.host.sync.breaks().flatMap((b) => (b.span ? [b.span] : []));
     const doc = this.host.syncDoc();
-    this.beatIssues = this.beatCheck && doc && this.host.visualEnabled() ? checkMeasureDurations(doc) : [];
+    if (doc && this.pickups === null) {
+      // 打开后第一次查：不放过弱起查一遍，首小节不满的声部才认它是弱起。之后改谱把首小节改短了照样报
+      const strict = checkMeasureDurations(doc, { pickup: () => false });
+      this.pickups = new Set(strict.filter((i) => i.measureIndex === 0 && i.got < i.want).map((i) => `${i.songIndex}:${i.partIndex}`));
+    }
+    const pickups = this.pickups;
+    this.beatIssues = this.beatCheck && doc && this.host.visualEnabled()
+      ? checkMeasureDurations(doc, { pickup: (s, p) => pickups?.has(`${s}:${p}`) ?? true })
+      : [];
+    this.emptyBars = this.beatCheck && doc && this.host.visualEnabled() ? this.findEmptyBars() : [];
     this.beatCursor = -1;
-    const beatSpans = this.beatIssues.flatMap((i) => (i.source ? [{ from: i.source.offset, to: i.source.offset + i.source.length }] : []));
+    const beatSpans = [
+      ...this.beatIssues.flatMap((i) => (i.source ? [{ from: i.source.offset, to: i.source.offset + i.source.length }] : [])),
+      ...this.emptyBars,
+    ].sort((a, b) => a.from - b.from);
     this.host.view.dispatch({
       effects: [setBreakSpans.of(this.showFormatMarks ? spans : []), setBeatSpans.of(beatSpans)],
     });
@@ -243,11 +295,11 @@ export class VisualEditController {
       this.paletteRefresh?.();
     }
     if (this.beatEl) {
-      const n = on ? this.beatIssues.length : 0;
+      const n = on ? this.beatIssues.length + this.emptyBars.length : 0;
       this.beatEl.hidden = n === 0;
       this.beatEl.textContent = `${n} 小节拍数不对`;
     }
-    this.drawBeatIssues(on ? this.beatIssues : []);
+    this.drawBeatIssues(on ? this.beatIssues : [], on ? this.emptyBars : []);
     if (!on) return;
     const sel = this.host.view.state.selection.main;
     if (this.pickedBreak && (!sel.empty || sel.head !== this.pickedBreak.sel)) this.pickedBreak = null;
@@ -261,8 +313,8 @@ export class VisualEditController {
     return el ? musicBox(el) : null;
   }
 
-  /** 拍数不对的小节：它的音符按行各圈一个淡红底。 */
-  private drawBeatIssues(issues: readonly BeatIssue[]): void {
+  /** 拍数不对的小节：它的音符按行各圈一个淡红底；空小节圈前后两个音之间的空当。 */
+  private drawBeatIssues(issues: readonly BeatIssue[], empties: readonly { from: number; to: number }[]): void {
     const perPage = new Map<SVGSVGElement, { box: Box; title: string }[]>(this.pages.map((p) => [p, []]));
     for (const issue of issues) {
       const boxes: { svg: SVGSVGElement; box: Box }[] = [];
@@ -276,6 +328,24 @@ export class VisualEditController {
       }
       const title = `第 ${issue.measureIndex + 1} 小节${describeBeatIssue(issue)}`;
       for (const b of boxes) perPage.get(b.svg)?.push({ box: b.box, title });
+    }
+    // 空小节：谱面上没有它的音符，框住前后两个音之间的空当（前后不在同一行就在前一个音后面留一格）
+    const notes = empties.length ? this.host.sync.ordered().filter((e) => e.kind === "note") : [];
+    for (const empty of empties) {
+      const prev = [...notes].reverse().find((e) => e.to <= empty.from);
+      const next = notes.find((e) => e.from >= empty.to);
+      const pb = prev ? this.boxOf(prev) : null;
+      const nb = next ? this.boxOf(next) : null;
+      const ref = pb ?? nb;
+      if (!ref) continue;
+      const h = ref.box.h;
+      let x0 = pb ? pb.box.x + pb.box.w + h * 0.6 : nb!.box.x - h * 1.8;
+      let x1 = x0 + h * 1.2;
+      if (pb && nb && nb.svg === pb.svg && sameRow(pb.box, nb.box)) {
+        x0 = pb.box.x + pb.box.w + h * 0.4;
+        x1 = Math.max(x0 + h * 0.6, nb.box.x - h * 0.4);
+      }
+      perPage.get(ref.svg)?.push({ box: { x: x0, y: ref.box.y, w: x1 - x0, h }, title: "空小节：这一小节的音都删掉了" });
     }
     for (const [svg, items] of perPage) setBeatIssues(svg, items);
   }

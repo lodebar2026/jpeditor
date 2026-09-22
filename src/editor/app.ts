@@ -1342,6 +1342,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   importBytes(bytes: Uint8Array, name: string): void {
     // 任何新导入都使上一次的识别叠加产物失效（识别结果由 OmrController 在本调用之后重设）。
     this.omr.clear();
+    this.visual.documentLoaded();
     this.formats.use(null);
     this._importBytes(bytes, name);
     // 原文是真身：代码区标题栏的格式下拉可以换成别的格式看、切回来逐字还原（`FileFormatSource`）
@@ -1420,6 +1421,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
    */
   importOmrDoc(doc: ScoreDoc, text: string): void {
     this.omr.clear();
+    this.visual.documentLoaded();
     const losses = planSave(doc, "123");
     this._dropMixedDoc();
     this._setMode("jp"); // 识别之后先核对（omrctl 接着进叠加视图）；五线谱/混排从工具条切
@@ -1795,6 +1797,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
    * 切回 `.musicxml` 原文时照打开 `.musicxml` 那样落地（无代码区）；从 `.musicxml` 转出来的回简谱档看代码区对应的谱面。
    */
   adoptText(format: DocFormatId, text: string, filePath: string | null): void {
+    this.visual.documentLoaded();
     if (format === "musicxml") {
       this._mixedPainter = null;
       this._setDocFormat("musicxml");
@@ -2093,6 +2096,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   /** Load dropped file content (already decoded). */
   loadText(text: string, path: string | null): void {
+    this.visual.documentLoaded();
     this.formats.use(null);
     this.filePath = path;
     this.setText(text);

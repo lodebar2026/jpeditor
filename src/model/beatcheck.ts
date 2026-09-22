@@ -10,7 +10,8 @@
 // - 拍号按小节生效（曲中转拍号）；混合拍（头部并排几个拍号 `Song.extraTimes`，或识别给的 `opts.meters`）对上任意一个就算过。
 // - **合法的例外**只放过这几种，其余报出来的都该是真错：
 //   - 弱起：首小节不满（末小节满不满都行——诗歌谱里弱起而末小节照样写满的很多）；
-//     首尾相加凑满一小节时末小节一并放过；
+//     首尾相加凑满一小节时末小节一并放过。**只在调用方认它是弱起时放过**（`opts.pickup`）：
+//     识别不知道原谱，一律认；编辑器只认打开时首小节就不满的（改谱删掉首小节的音得报出来）；
 //   - 相邻两个都不满的小节相加恰好一小节（小节中间的反复记号把一小节劈成两半，诗歌谱里很常见）；
 //   - MusicXML 标了 `implicit` 的小节；
 //   - 没有拍号（散板）的整首不查。
@@ -35,6 +36,8 @@ export interface BeatIssue {
 export interface BeatCheckOptions {
   /** 混合拍：这些拍号对上任意一个就算过（识别结果的 `RecognizedScore.meters`）。缺省按模型里的拍号 */
   meters?: readonly { beats: number; beatType: number }[];
+  /** 这个声部的首小节不满算不算弱起（放过）。缺省一律算 */
+  pickup?: (songIndex: number, partIndex: number) => boolean;
 }
 
 const EPS = 1e-6;
@@ -79,10 +82,11 @@ export function checkMeasureDurations(doc: ScoreDoc, opts: BeatCheckOptions = {}
       const short = (i: number): boolean => rows[i]!.wants.some((w) => rows[i]!.got < w - EPS);
       const fills = (a: number, b: number): boolean =>
         rows[a]!.wants.some((w) => Math.abs(rows[a]!.got + rows[b]!.got - w) < EPS);
+      const pickup = opts.pickup?.(songIndex, partIndex) ?? true;
       // 弱起：首尾相加一小节（只有一小节时首尾是同一个，不算）
-      if (n >= 2 && !ok[0] && short(0) && short(n - 1) && fills(0, n - 1)) ok[0] = ok[n - 1] = true;
+      if (pickup && n >= 2 && !ok[0] && short(0) && short(n - 1) && fills(0, n - 1)) ok[0] = ok[n - 1] = true;
       // 首小节单独弱起、末小节是满的：诗歌谱里也常见，首小节不满一律放过
-      if (n >= 2 && !ok[0] && short(0)) ok[0] = true;
+      if (pickup && n >= 2 && !ok[0] && short(0)) ok[0] = true;
       // 相邻两个不满的相加一小节（反复记号劈开的小节）
       for (let i = 0; i + 1 < n; i++) {
         if (!ok[i] && !ok[i + 1] && short(i) && short(i + 1) && fills(i, i + 1)) ok[i] = ok[i + 1] = true;
