@@ -29,6 +29,8 @@ export interface PersistedSettings {
   beatCheck?: unknown;
   /** 可视化编辑改音时发声（同上） */
   noteSound?: unknown;
+  /** 可视化编辑的记号面板显示与否（同上） */
+  showPalette?: unknown;
 }
 
 export function loadPersistedSettings(): PersistedSettings | null {

@@ -7,7 +7,7 @@
 import type { ChangeSpec, EditorState } from "@codemirror/state";
 import type { ScoreDoc } from "../../model/doc";
 import type { SyncEntry, SyncIndex } from "../sync";
-import { type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken } from "./dialect";
+import { type DecoKind, type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken } from "./dialect";
 
 export interface EditCtx {
   state: EditorState;
@@ -373,4 +373,44 @@ export function toggleTie(ctx: EditCtx, from: number, to: number): EditOutcome {
     return { changes, anchor: map(from, -1), head: map(to, 1) };
   }
   return toggleArc(ctx, note, next, { from, to });
+}
+
+// ───────────────────────── 装饰 ─────────────────────────
+
+/** `.jpwabc` token 前缀里的记号组 `{YanYin,ZhongYin}`（文法里 `Articulations` 只有一组）加上或去掉一个名字。 */
+function toggleInPre(pre: string, name: string): string {
+  const m = /\{((?:DunYin|BoYin|YanYin|ZhongYin)(?:,(?:DunYin|BoYin|YanYin|ZhongYin))*)\}/.exec(pre);
+  if (!m) return `{${name}}${pre}`;
+  const names = m[1]!.split(",");
+  const next = names.includes(name) ? names.filter((n) => n !== name) : [...names, name];
+  const group = next.length ? `{${next.join(",")}}` : "";
+  return pre.slice(0, m.index) + group + pre.slice(m.index + m[0].length);
+}
+
+/** 选中的音符加上或去掉一个常用装饰（延长号、重音）。 */
+export function toggleDeco(ctx: EditCtx, from: number, to: number, kind: DecoKind): EditOutcome {
+  const deco = ctx.dialect.deco;
+  if (!deco) return { error: "这种格式暂不支持在谱面上加记号" };
+  const name = deco.names[kind];
+  if (deco.place === "inToken") {
+    return rewriteNotes(ctx, from, to, (t) => {
+      t.pre = toggleInPre(t.pre, name);
+      return t;
+    });
+  }
+  const notes = notesIn(ctx, from, to);
+  if (notes.length === 0) return { error: "先选中一个音符" };
+  const changes: EditResult["changes"] = [];
+  for (const e of notes) {
+    const has = ctx.sync.marksOf(e.id).find((m) => m.markKind === "deco" && m.name === name && m.id === e.id);
+    if (has) changes.push({ from: has.from, to: has.to, insert: "" });
+    else {
+      const at = deco.place === "before" ? e.from : e.to;
+      changes.push({ from: at, to: at, insert: deco.text(name) });
+    }
+  }
+  changes.sort((a, b) => a.from - b.from);
+  const map = mapper(ctx.state, changes);
+  if (notes.length === 1) return { changes, anchor: map(notes[0]!.from, 1), head: map(notes[0]!.to, -1) };
+  return { changes, anchor: map(from, -1), head: map(to, 1) };
 }

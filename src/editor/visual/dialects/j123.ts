@@ -49,4 +49,5 @@ export const DIALECT_123: EditDialect = {
   slurInToken: false,
   slurNesting: true,
   lyricsFollowBreaks: true,
+  deco: { names: { fermata: "fermata", accent: "accent" }, text: (n) => `!${n}!`, place: "before" },
 };

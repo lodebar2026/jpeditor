@@ -124,4 +124,5 @@ export const DIALECT_JPW: EditDialect = {
   slurInToken: true,
   slurNesting: true,
   lyricsFollowBreaks: false,
+  deco: { names: { fermata: "YanYin", accent: "ZhongYin" }, text: (n) => n, place: "inToken" },
 };

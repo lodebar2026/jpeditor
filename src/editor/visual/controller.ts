@@ -14,11 +14,12 @@ import { type BeatIssue, checkMeasureDurations, describeBeatIssue } from "../../
 import type { BreakMark, SyncEntry, SyncIndex } from "../sync";
 import { deleteBreak, insertBreak } from "./breaks";
 import { setBeatSpans, setBreakSpans, setScoreFocus } from "./cursor";
+import { buildPalette, type MenuRunner, type MenuTarget, showMenu } from "./menu";
 import { midiOf, NotePreview } from "./preview";
 import type { EditDialect, NoteDuration } from "./dialect";
 import {
   addSustain, deleteEntries, double, type EditCtx, type EditOutcome, groupEnd, halve, insertNote, insertToken,
-  isError, noteCtx, notesIn, setAccidental, setDegree, shiftOctave, toggleDot, toggleSlur, toggleTie,
+  isError, noteCtx, notesIn, setAccidental, setDegree, shiftOctave, toggleDeco, toggleDot, toggleSlur, toggleTie,
 } from "./ops";
 import { actionOfKey, type VisualAction, type VisualMode } from "./keys";
 import { type Box, clearOverlay, drawBeatIssue, drawBlock, drawBreak, drawCaret, musicBox, rightEdgeInBand, sameRow } from "./overlay";
@@ -34,6 +35,8 @@ export interface VisualHost {
   entryEl(entry: SyncEntry): SVGGElement | null;
   /** 音符在谱面上的 `<g>` */
   noteEl(id: ElementId): SVGGElement | null;
+  /** 谱面上点中的 `<g>` 对应哪个条目（从事件目标往上找） */
+  entryAtTarget(target: EventTarget | null): SyncEntry | null;
   /** 当前格式怎么改原文；null = 这种格式在谱面上只能选中、不能改 */
   editDialect(): EditDialect | null;
   /** 建索引用的那份模型（与 `sync` 同一版） */
@@ -65,6 +68,11 @@ export class VisualEditController {
   private beatEl: HTMLElement | null = null;
   /** 计数标签点一下跳到下一处：上次跳到第几处 */
   private beatCursor = -1;
+  /** 记号面板：显示与否持久化 */
+  showPalette = false;
+  private paletteEl: HTMLElement | null = null;
+  private paletteBtn: HTMLButtonElement | null = null;
+  private paletteRefresh: (() => void) | null = null;
   private modeEl: HTMLElement | null = null;
   private marksBtn: HTMLButtonElement | null = null;
   /** 叠加层里画出来的换行符号 → 它那一处换行 */
@@ -80,11 +88,23 @@ export class VisualEditController {
   // ---------------- 装配 ----------------
 
   /** 谱面可聚焦、接键盘；工具条上的模式标签与格式标记开关。 */
-  attach(
-    modeEl: HTMLElement | null, marksBtn: HTMLButtonElement | null,
-    beatBtn: HTMLButtonElement | null = null, beatEl: HTMLElement | null = null,
-  ): void {
+  attach(els: {
+    mode: HTMLElement | null; marksBtn: HTMLButtonElement | null;
+    beatBtn: HTMLButtonElement | null; beatCount: HTMLElement | null;
+    palette: HTMLElement | null; paletteBtn: HTMLButtonElement | null;
+  }): void {
+    const { mode: modeEl, marksBtn, beatBtn, beatCount: beatEl } = els;
     const pane = this.host.scorePane;
+    pane.addEventListener("contextmenu", (ev) => this.onContextMenu(ev));
+    this.paletteEl = els.palette;
+    this.paletteBtn = els.paletteBtn;
+    if (els.palette) this.paletteRefresh = buildPalette(els.palette, this.runner);
+    els.paletteBtn?.addEventListener("click", () => {
+      this.showPalette = !this.showPalette;
+      this.syncButtons();
+      this.host.saveSettings();
+      this.refresh();
+    });
     pane.tabIndex = 0;
     pane.addEventListener("keydown", (ev) => this.onKeyDown(ev));
     pane.addEventListener("focus", () => this.setFocus(true));
@@ -103,7 +123,8 @@ export class VisualEditController {
     this.syncButtons();
   }
 
-  loadSettings(s: { showFormatMarks?: unknown; beatCheck?: unknown; noteSound?: unknown }): void {
+  loadSettings(s: { showFormatMarks?: unknown; beatCheck?: unknown; noteSound?: unknown; showPalette?: unknown }): void {
+    if (typeof s.showPalette === "boolean") this.showPalette = s.showPalette;
     if (typeof s.showFormatMarks === "boolean") this.showFormatMarks = s.showFormatMarks;
     if (typeof s.noteSound === "boolean") this.noteSound = s.noteSound;
     if (typeof s.beatCheck === "boolean") this.beatCheck = s.beatCheck;
@@ -116,7 +137,7 @@ export class VisualEditController {
   }
 
   private syncButtons(): void {
-    for (const [btn, on] of [[this.marksBtn, this.showFormatMarks], [this.beatBtn, this.beatCheck]] as const) {
+    for (const [btn, on] of [[this.marksBtn, this.showFormatMarks], [this.beatBtn, this.beatCheck], [this.paletteBtn, this.showPalette]] as const) {
       if (!btn) continue;
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-pressed", String(on));
@@ -206,6 +227,10 @@ export class VisualEditController {
       this.modeEl.hidden = !on;
       this.modeEl.textContent = this.mode === "edit" ? "编辑" : `插入 · ${durName(this.curDur)}`;
       this.modeEl.dataset.mode = this.mode;
+    }
+    if (this.paletteEl) {
+      this.paletteEl.hidden = !(on && this.showPalette);
+      this.paletteRefresh?.();
     }
     if (this.beatEl) {
       const n = on ? this.beatIssues.length : 0;
@@ -383,13 +408,55 @@ export class VisualEditController {
     if (!this.host.visualEnabled()) return;
     const a = actionOfKey(ev);
     if (!a) return;
-    if (a.modes && !a.modes.includes(this.mode)) return;
-    // 索引落后于原文（刚撤销、刚在代码区打过字）：先重排，免得按旧偏移改错地方
-    if (!this.host.syncFresh()) this.host.reloadNow();
-    if (this.run(a, ev.key)) {
+    if (this.runChecked(a, ev.key)) {
       ev.preventDefault();
       ev.stopPropagation();
     }
+  }
+
+  /** 键盘、面板、菜单共用的入口：模式不对不做；索引落后于原文（刚撤销、刚在代码区打过字）先重排，免得按旧偏移改错地方。 */
+  private runChecked(a: VisualAction, key = ""): boolean {
+    if (a.modes && !a.modes.includes(this.mode)) return false;
+    if (!this.host.syncFresh()) this.host.reloadNow();
+    return this.run(a, key);
+  }
+
+  /** 给面板与菜单用的那一面 */
+  private readonly runner: MenuRunner = this.makeRunner();
+
+  private makeRunner(): MenuRunner {
+    const ctl = this;
+    return {
+      get mode(): VisualMode {
+        return ctl.mode;
+      },
+      run: (a, key) => ctl.runChecked(a, key),
+      refocus: () => ctl.host.scorePane.focus({ preventScroll: true }),
+    };
+  }
+
+  /** 右键：先按点击的规则选中（音符 / 记号 / 换行符 / 空白处落插入光标），再按选中的是什么弹菜单。 */
+  private onContextMenu(ev: MouseEvent): void {
+    if (!this.host.visualEnabled()) return;
+    ev.preventDefault();
+    this.host.scorePane.focus({ preventScroll: true });
+    if (!this.host.syncFresh()) this.host.reloadNow();
+    const entry = this.host.entryAtTarget(ev.target);
+    const sel = this.host.view.state.selection.main;
+    let target: MenuTarget = "other";
+    const onBreak = ev.target instanceof Element && ev.target.closest(".vis-break");
+    if (onBreak) {
+      this.handleClick(ev, null);
+      target = "break";
+    } else if (entry) {
+      // 点在已选中的范围里就不动选区（右键一段选区整体操作）
+      const inside = entry.from >= sel.from && entry.to <= sel.to && !sel.empty;
+      if (!inside) this.select(entry.from, entry.to);
+      target = entry.kind === "mark" ? "mark" : entry.kind === "break" ? "break" : "note";
+    } else if (this.handleClick(ev, null)) {
+      target = this.mode === "insert" ? "caret" : "note";
+    }
+    showMenu(ev.clientX, ev.clientY, target, this.runner);
   }
 
   /** 执行一个动作（键盘、菜单、面板共用）。做了返回 true。`key` 是按下的键（唱名动作要知道是几）。 */
@@ -407,6 +474,8 @@ export class VisualEditController {
       case "sus.add": return this.sustain();
       case "slur.toggle": return this.editNotes(toggleSlur);
       case "tie.toggle": return this.editNotes(toggleTie);
+      case "deco.fermata": return this.editNotes((c, f, t) => toggleDeco(c, f, t, "fermata"));
+      case "deco.accent": return this.editNotes((c, f, t) => toggleDeco(c, f, t, "accent"));
       case "bar.insert": return this.insertAtCursor((c, pos) => insertToken(c, pos, c.dialect.barline));
       case "brk.line": return this.insertBreakAt(false);
       case "brk.page": return this.insertBreakAt(true);

@@ -71,4 +71,5 @@ export const DIALECT_PU: EditDialect = {
   slurInToken: false,
   slurNesting: false,
   lyricsFollowBreaks: false,
+  deco: { names: { fermata: "yc", accent: "zy" }, text: (n) => `&${n}`, place: "after" },
 };

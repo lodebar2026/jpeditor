@@ -388,6 +388,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       showFormatMarks: this.visual.showFormatMarks,
       beatCheck: this.visual.beatCheck,
       noteSound: this.visual.noteSound,
+      showPalette: this.visual.showPalette,
     });
   }
 
@@ -785,6 +786,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   reloadNow(): void {
     clearTimeout(this.debounceTimer);
     this.reload(this.getText());
+  }
+
+  entryAtTarget(target: EventTarget | null): SyncEntry | null {
+    return this._syncEntryAt(target);
   }
 
   noteEl(id: ElementId): SVGGElement | null {

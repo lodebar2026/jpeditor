@@ -36,6 +36,9 @@ export interface NoteCtx {
   puDialect?: "tomato" | "shige";
 }
 
+/** 面板与快捷键给的常用装饰 */
+export type DecoKind = "fermata" | "accent";
+
 /** 新音符的时值（插入模式的「当前时值」）。 */
 export interface NoteDuration {
   halvings: number;
@@ -51,6 +54,10 @@ export interface EditDialect {
   newNote(degree: number, dur: NoteDuration, nc: NoteCtx): string;
   /** 改完的 token 这种格式写不写得出；写不出返回说明（`.jpwabc` 的 `-` 不能与 `_`、`.` 连写） */
   validate?(t: NoteToken): string | null;
+  /** 常用装饰怎么写：`names` 是原文里的记号名（模型 `AttachedSource.name` 也是它），
+   *  `text` 把名字写成原文，`place` 写在音符前（123/ABC 的 `!fermata!3`）、后（文本谱 `3&yc`）
+   *  或音符 token 里的 `{…}`（`.jpwabc` 的 `{YanYin}3`）。 */
+  deco?: { names: Record<DecoKind, string>; text(name: string): string; place: "before" | "after" | "inToken" };
   /** 延音线另有写法（ABC 的 `-` 紧跟前一个音）；缺省 = 与圆滑线同形（括号） */
   tie?: string;
   /** 圆滑线能不能嵌套、交叠。文本谱的 `)` 按队列配对（先开的先闭），加一条与已有的交叠的弧会把配对全打乱 */

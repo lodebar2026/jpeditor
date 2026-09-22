@@ -134,4 +134,5 @@ export const DIALECT_ABC: EditDialect = {
   tie: "-",
   lyricBlockByCodeLine: true,
   lyricsFollowBreaks: true,
+  deco: { names: { fermata: "fermata", accent: "accent" }, text: (n) => `!${n}!`, place: "before" },
 };
