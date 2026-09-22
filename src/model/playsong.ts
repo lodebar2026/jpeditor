@@ -24,6 +24,7 @@ import { buildMeasures, type JumpOut, type MeasureOut } from "../pu/phrasesong";
 import { docView } from "../pu/slots";
 import { playSourceOfDoc } from "./playdoc";
 import { isXmlShaped } from "./xmlproject";
+import { alignPartsBySystem, maxId } from "./alignparts";
 
 export interface PlaySongOptions {
   /** 见 `ToScoreOptions.forExpanded` */
@@ -31,11 +32,18 @@ export interface PlaySongOptions {
 }
 
 /** **试听/MIDI 的统一入口**（各格式共用）：MusicXML 形状走 `playdoc.ts::playSourceOfDoc`（全部声部、voice 与力度），
- *  简谱形状走 `playSourceOfSong`。拼不出（这首没有曲行）返回 null。 */
+ *  简谱形状走 `playSourceOfSong`。拼不出（这首没有曲行）返回 null。
+ *  多声部先按组对齐（`alignparts.ts`：缺席/偏短的声部补无声小节，否则各声部按小节序号叠起来会错位）——
+ *  对齐的是克隆，元素 id 不变，高亮照样认得；补出来的休止是新 id、不当光标锚点。 */
 export function playSourceOf(doc: ScoreDoc, songIdx = 0, options: PlaySongOptions = {}): PlaySource | null {
   const song = doc.songs[songIdx];
   if (!song) return null;
   if (isXmlShaped(song)) return playSourceOfDoc(song);
+  if (song.parts.length > 1) {
+    const aligned: ScoreDoc = structuredClone(doc);
+    const floor = Math.max(...doc.songs.map(maxId));
+    if (alignPartsBySystem(aligned.songs[songIdx]!, floor)) return playSourceOfSong(aligned, songIdx, options);
+  }
   return playSourceOfSong(doc, songIdx, options);
 }
 
