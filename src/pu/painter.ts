@@ -21,7 +21,7 @@ import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmon
 import { jpBarlineItems, jpDot, jpTimeSigItems } from "../layout/jpglyph";
 import type { BarlineSpec } from "../layout/entry";
 import { BarStyle } from "../score/enums";
-import { type HeaderPart, headerPartsOf, renderPageSvg } from "../layout/painter";
+import { type HeaderPart, headerPartsOf, renderPageSvg } from "../layout/render";
 import type { PagePainter } from "../layout/pagepainter";
 import type { Metadata, NoteElement } from "./ast";
 import PU_BOOK from "../style/books/pu-original.jpcss?raw";

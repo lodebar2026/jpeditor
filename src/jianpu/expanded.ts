@@ -9,7 +9,7 @@
 
 import type { MetaData } from "../smufl/smufl";
 import type { JScore } from "../layout/input";
-import { TextFrame, type Group } from "../layout/pageitem";
+import { layoutExpandedPages } from "../layout/jianpupages";
 import { applyJianpuStyle, jianpuFontSize } from "../style/jianpu";
 import type { StyleSheet } from "../style/sheet";
 import { ScorePainter } from "../layout/painter";
@@ -33,52 +33,8 @@ export class ExpandedPainter extends ScorePainter {
 
   /** 排一份引擎输入。`breakDesc` 是 `.jpwabc` 的 `.Layout` 分页描述（文本谱没有）。 */
   load(score: JScore, breakDesc: string | null = null): void {
-    const { pageWidth: w, pageHeight: h } = this;
     this.score = score;
-    this.layout.fromScore(score, breakDesc, w, h);
-    // 页码不含标题页：页脚要在标题页插进来之前加
-    this.addFooters(this.layout.pages);
-    const title = this.titlePage(w, h);
-    title.update();
-    this.layout.pages.unshift(title);
-    for (const p of this.layout.pages) p.update();
+    layoutExpandedPages(this.layout, score, this.pageWidth, this.pageHeight, breakDesc);
     this.buildChordIndex();
-  }
-
-  /**
-   * 每页的页脚：曲名在版心里居中 + 「i/n」页码。页码左缘落在 `左边距 + 0.8 × 纸宽`
-   * （16:9 纸上即 50 + 768 = 818），**放不下时向左收回到版心右缘以内**——4:3 纸配大字号时
-   * 「24/24」会伸出纸外。
-   */
-  private addFooters(pages: readonly Group[]): void {
-    const opt = this.layout.options;
-    const { pageWidth: w, pageHeight: h } = this;
-    const font = opt.lrcFont.scaled(0.8);
-    const title = this.score.title.split("\n")[0] ?? "";
-    const n = pages.length;
-    const text = (s: string): TextFrame => {
-      const tf = new TextFrame();
-      tf.font = font;
-      tf.text = s;
-      tf.color = opt.color;
-      return tf;
-    };
-    pages.forEach((pg, i) => {
-      // 页组已由 fromScore 右移一个左边距（原点在版心左缘），且 `Group.update` 把纵向偏移收进了 pg.y
-      // ——纸上坐标都要减掉这两样才落对位置
-      const y = h - opt.marginBottom * 0.5 - pg.y;
-      if (title) {
-        const tf = text(title);
-        tf.x = (w - opt.marginLeft - opt.marginRight - tf.measureText()) / 2;
-        tf.y = y;
-        tf.update();
-        pg.add(tf);
-      }
-      const no = text(`${i + 1}/${n}`);
-      no.x = Math.min(opt.marginLeft + 0.8 * w, w - opt.marginRight - no.measureText()) - opt.marginLeft;
-      no.y = y;
-      no.update();
-      pg.add(no);
-    });
   }
 }

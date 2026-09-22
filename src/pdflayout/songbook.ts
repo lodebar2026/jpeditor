@@ -22,7 +22,7 @@ import type { Song } from "../model/doc";
 import { MixedOptions, type Sys } from "../mixed/model";
 import { layoutStaff } from "../mixed/layout";
 import { drawSystem } from "../mixed/render";
-import { formatMixedScore } from "../mixed/painter";
+import { formatMixedScore } from "../mixed/staffpages";
 import type { StyleContext, StyleRule } from "../style/cascade";
 import type { StyleRole, StyleSheet } from "../style/sheet";
 import { fontOfRole as roleFont } from "../style/fonts";
