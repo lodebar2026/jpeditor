@@ -1782,6 +1782,42 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // 三角不是八度点，别让 buildJpNums 收走。
   if (staccatoComps.size) c.dots = c.dots.filter((o) => !staccatoComps.has(o));
 
+  // 重音（>）：音符正上方一个**空心的尖朝右的楔形**（1889《愿你们刚强》副歌一连十几个）。
+  // 实测 13×10（字号 29，即 0.45 × 0.34），离数字顶 12px；尺寸同样可能落进「小点」档被收成高八度点。
+  // 靠形状认：逐行墨的右缘在中间那几行最靠右、顶行底行都缩回左半；中间行的左缘也离开左边（中空），
+  // 实心的点、倒三角都过不了后一条。窗口口径同顿音，但点得在记号下面：高八度点可以夹在中间。
+  const accentOf = new Map<DigitCore, boolean>();
+  const accentComps = new Set<Component>();
+  for (const m of staff) {
+    const medH = median(m.rd.map((k) => k.bbox.h)) || numH;
+    for (const k of comps) {
+      const b = k.bbox;
+      if (b.w < numH * 0.25 || b.w > numH * 0.7 || b.h < numH * 0.2 || b.h > numH * 0.6) continue;
+      const ratio = b.w / b.h;
+      if (ratio < 0.9 || ratio > 2.2) continue;
+      if (k.area / (b.w * b.h) > 0.6) continue;
+      const lo: number[] = [], hi: number[] = [];
+      for (let y = b.y; y < rbottom(b); y++) {
+        let l = -1, r = -1;
+        for (let x = b.x; x < rright(b); x++) if (bin.data[y * bin.w + x]) { if (l < 0) l = x - b.x; r = x - b.x; }
+        lo.push(l); hi.push(r);
+      }
+      if (lo.some((v) => v < 0) || lo.length < 5) continue;
+      const n = lo.length, mid = hi.indexOf(Math.max(...hi));
+      if (mid < n * 0.25 || mid > n * 0.75 || hi[mid] < b.w * 0.85) continue;          // 尖不在中间偏右
+      if (hi[0] > b.w * 0.55 || hi[n - 1] > b.w * 0.55) continue;                       // 两头没缩回左半
+      if (lo[0] > b.w * 0.25 || lo[n - 1] > b.w * 0.25 || lo[mid] < b.w * 0.35) continue; // 不是开口朝左的楔
+      const owner = m.rd.find((d) => Math.abs(rcx(d.bbox) - rcx(b)) <= numH * 0.35 &&
+        d.bbox.y - rbottom(b) >= -numH * 0.1 && d.bbox.y - rbottom(b) <= numH &&
+        d.bbox.h >= medH * 0.85 && ocrDigit(d.bbox) !== 0);
+      if (!owner) continue;
+      probe("accent");
+      accentOf.set(owner, true);
+      accentComps.add(k);
+    }
+  }
+  if (accentComps.size) c.dots = c.dots.filter((o) => !accentComps.has(o));
+
 
   const allRows: StaffRow[] = staff.map((m) => {
     const nums = buildJpNums(bin, m.rd, numH, c, ocrDigit, arcCands, m.barlineXs, dotSizes);
@@ -1791,6 +1827,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
       if (fermataOf.get(k) && nums[j]) nums[j].fermata = true;
       const orn = ornamentOf.get(k); if (orn && nums[j]) nums[j].ornament = orn;
       if (staccatoOf.get(k) && nums[j]) nums[j].articulation = "staccato";
+      if (accentOf.get(k) && nums[j]) nums[j].articulation = "accent";
       const g = graceOf.get(k); if (g && nums[j]) nums[j].grace = g;
     });
     return { topY: m.topY, bottomY: m.botY, barlineXs: m.barlineXs, nums,

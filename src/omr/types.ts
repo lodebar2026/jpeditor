@@ -100,7 +100,8 @@ export interface JpNum {
   // 顿音（谱面上是音符正上方一个**实心倒三角** ▼，简谱印刷体的顿音记号）。
   // → `notations.articulations: ["staccato"]`（与 model/xmlproject.ts 的 `dy` 同口径）；
   //   文本谱 `&dy`；.jpwabc 装不下（layout 那边只画重音）。
-  articulation?: "staccato";
+  // 重音（音符正上方的 `>`）→ `["accent"]`，123 `!accent!`、文本谱 `&zy`。
+  articulation?: "staccato" | "accent";
 }
 
 /** 一行（一个 staff 行）识别出的内容。 */
