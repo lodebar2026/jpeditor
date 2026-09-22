@@ -7,6 +7,7 @@
 // 与 omr / playback 两个控制器同一个做法：通过一个**列全了的**宿主接口 `VisualHost` 向 App 要能力。
 
 import { redo, undo } from "@codemirror/commands";
+import { type ChangeSpec, ChangeSet } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { ElementId, ScoreDoc } from "../../model/doc";
 import type { BreakMark, SyncEntry, SyncIndex } from "../sync";
@@ -53,6 +54,9 @@ export class VisualEditController {
   private marksBtn: HTMLButtonElement | null = null;
   /** 叠加层里画出来的换行符号 → 它那一处换行 */
   private breakEls = new Map<Element, BreakMark>();
+  /** 点中的一处**原文里没有符号**的换行（文本谱另起一行 `Q:`）：选区表达不了它，另记一份；
+   *  `sel` 是点中时的光标位置，选区一挪开就作废 */
+  private pickedBreak: { after: ElementId; sel: number } | null = null;
   /** 插入模式的「当前时值」：新插的音符用它 */
   curDur: NoteDuration = { halvings: 0, dots: 0 };
 
@@ -136,6 +140,7 @@ export class VisualEditController {
     }
     if (!on) return;
     const sel = this.host.view.state.selection.main;
+    if (this.pickedBreak && (!sel.empty || sel.head !== this.pickedBreak.sel)) this.pickedBreak = null;
     if (this.showFormatMarks) this.drawBreaks(sel.from, sel.to);
     if (sel.empty) this.drawInsertCaret(sel.head);
     else if (document.activeElement === this.host.scorePane) this.drawEditBlock(sel.from, sel.to);
@@ -152,7 +157,9 @@ export class VisualEditController {
       const el = this.host.noteEl(b.after);
       const hit = el && musicBox(el);
       if (!hit) continue;
-      const selected = !!b.span && b.span.from >= selFrom && b.span.to <= selTo && selTo > selFrom;
+      const selected = b.span
+        ? b.span.from >= selFrom && b.span.to <= selTo && selTo > selFrom
+        : this.pickedBreak?.after === b.after || this.newlineSelected(b, selFrom, selTo);
       const x = rightEdgeInBand(hit.svg, hit.box, cache);
       this.breakEls.set(drawBreak(hit.svg, x, hit.box, b.page, selected), b);
     }
@@ -211,8 +218,22 @@ export class VisualEditController {
     const t = ev.target instanceof Element ? ev.target.closest(".vis-break") : null;
     const brk = t ? this.breakEls.get(t) : undefined;
     if (brk) {
-      if (brk.span) this.select(brk.span.from, brk.span.to);
-      else this.host.setStatus("这处换行在原文里没有符号（文本谱另起一行 Q:），删除要合并两行");
+      if (brk.span) {
+        this.select(brk.span.from, brk.span.to);
+        return true;
+      }
+      const nl = this.newlineOf(brk);
+      if (nl !== null && this.host.editDialect()?.lyricBlockByCodeLine) {
+        // ABC：换行就是代码行末那个换行符，选中它
+        this.select(nl, nl + 1);
+        return true;
+      }
+      // 文本谱：另起一行 `Q:`，原文里没有符号。光标落在行末，另记「点中了这处换行」
+      const at = nl ?? this.host.view.state.selection.main.head;
+      this.select(at, at);
+      this.pickedBreak = { after: brk.after, sel: at };
+      this.host.setStatus("选中了换行（文本谱另起一行 Q:），按 Delete 与下一行合并");
+      this.refresh();
       return true;
     }
     if (entry) {
@@ -232,6 +253,18 @@ export class VisualEditController {
       return true;
     }
     return false;
+  }
+
+  /** 换行前那个元素所在代码行的行末（换行符的位置）。 */
+  private newlineOf(b: BreakMark): number | null {
+    const note = this.host.sync.spanOfNote(b.after);
+    if (!note) return null;
+    return this.host.view.state.doc.lineAt(note.to).to;
+  }
+
+  private newlineSelected(b: BreakMark, from: number, to: number): boolean {
+    if (to !== from + 1) return false;
+    return this.newlineOf(b) === from;
   }
 
   /** 屏幕坐标 → 插入位置：同一行（纵向覆盖点击点）里水平最近的元素，点在它中线左边就落在它前面。 */
@@ -283,8 +316,8 @@ export class VisualEditController {
       case "slur.toggle": return this.editNotes(toggleSlur);
       case "tie.toggle": return this.editNotes(toggleTie);
       case "bar.insert": return this.insertAtCursor((c, pos) => insertToken(c, pos, c.dialect.barline));
-      case "brk.line": return this.insertAtCursor((c, pos) => insertBreak({ ...c, doc: this.host.syncDoc()! }, pos, false));
-      case "brk.page": return this.insertAtCursor((c, pos) => insertBreak({ ...c, doc: this.host.syncDoc()! }, pos, true));
+      case "brk.line": return this.insertBreakAt(false);
+      case "brk.page": return this.insertBreakAt(true);
       case "del.forward": return this.remove(1);
       case "del.back": return this.remove(-1);
       case "mode.insert": return this.toInsert();
@@ -437,7 +470,7 @@ export class VisualEditController {
       this.host.setStatus("这种格式暂不支持在谱面上改谱，请在源码区修改");
       return null;
     }
-    return { state: this.host.view.state, sync: this.host.sync, dialect };
+    return { state: this.host.view.state, sync: this.host.sync, dialect, doc: this.host.syncDoc() };
   }
 
   /** 把一次动作的结果落进代码区（进撤销记录），马上重排。出错就在状态栏说明。 */
@@ -446,14 +479,49 @@ export class VisualEditController {
       this.host.setStatus(out.error);
       return true; // 键已经被认下了，只是这回做不了
     }
+    const { state } = this.host.view;
+    let changes: ChangeSpec = out.changes;
+    let anchor = out.anchor;
+    let head = out.head;
+    const post = this.host.editDialect()?.postEdit;
+    if (post) {
+      // 连带修正（`.jpwabc` 的歌词锚点）与这次改动并成一步，撤销时一起撤
+      const cs = state.changes(out.changes);
+      const newText = cs.apply(state.doc).toString();
+      const fixed = post(state.doc.toString(), newText, (p) => cs.mapPos(p, 1));
+      if (fixed !== newText) {
+        const cs2 = ChangeSet.of([diffRegion(newText, fixed)], newText.length);
+        changes = cs.compose(cs2);
+        anchor = cs2.mapPos(anchor, -1);
+        head = cs2.mapPos(head, 1);
+      }
+    }
     this.host.view.dispatch({
-      changes: out.changes,
-      selection: { anchor: out.anchor, head: out.head },
+      changes,
+      selection: { anchor, head },
       userEvent: "input.visual",
       scrollIntoView: true,
     });
     this.host.reloadNow();
     return true;
+  }
+
+  /** 换行不是符号的格式（文本谱）：整份重切行，补丁只取前后不同的那一段。 */
+  private relayoutBreak(c: EditCtx, afterId: ElementId, add: boolean, page: boolean): boolean {
+    const fn = c.dialect.relayoutBreaks;
+    const doc = this.host.syncDoc();
+    if (!fn || !doc) return true;
+    const text = fn(c.state, doc, afterId, add, page);
+    if (text === null) {
+      this.host.setStatus(add ? "这里没法换行" : "这处换行删不掉");
+      return true;
+    }
+    const old = c.state.doc.toString();
+    if (text === old) return true;
+    const change = diffRegion(old, text);
+    const cs = c.state.changes([change]);
+    const at = cs.mapPos(c.state.selection.main.head, 1);
+    return this.apply({ changes: [change], anchor: at, head: at });
   }
 
   private editNotes(fn: (c: EditCtx, from: number, to: number) => EditOutcome): boolean {
@@ -469,6 +537,22 @@ export class VisualEditController {
     if (sel.empty) return sel.head;
     const last = this.selectedEntries().pop();
     return last ? groupEnd(c, last) : sel.to;
+  }
+
+  /** 换行 / 换页：换行是符号的格式插符号（`breaks.ts`），不是符号的（文本谱）重切行。 */
+  private insertBreakAt(page: boolean): boolean {
+    const c = this.editCtx();
+    if (!c) return true;
+    const pos = this.insertPos(c);
+    if (c.dialect.relayoutBreaks) {
+      const prev = [...this.navigable()].reverse().find((e) => e.to <= pos && (e.kind === "note" || e.kind === "sustain"));
+      if (!prev) {
+        this.host.setStatus("行首不用再换行");
+        return true;
+      }
+      return this.relayoutBreak(c, prev.id, true, page);
+    }
+    return this.apply(insertBreak(c, pos, page));
   }
 
   private insertAtCursor(fn: (c: EditCtx, pos: number) => EditOutcome): boolean {
@@ -530,6 +614,16 @@ export class VisualEditController {
     const c = this.editCtx();
     if (!c) return true;
     const sel = c.state.selection.main;
+    // 点中的文本谱换行（原文里没有符号）：与下一行合并
+    if (this.pickedBreak && sel.empty && sel.head === this.pickedBreak.sel) {
+      const after = this.pickedBreak.after;
+      this.pickedBreak = null;
+      return this.relayoutBreak(c, after, false, false);
+    }
+    // 选中的是代码行末的换行符（ABC 的换行）
+    if (!sel.empty && c.dialect.lyricBlockByCodeLine && c.state.doc.sliceString(sel.from, sel.to) === "\n") {
+      return this.apply(deleteBreak(c, { kind: "break", from: sel.from, to: sel.to, id: -1, verse: null }));
+    }
     let targets: SyncEntry[];
     if (sel.empty) {
       const nav = this.navigable();
@@ -551,7 +645,7 @@ export class VisualEditController {
         this.host.setStatus("换行符请单独选中再删");
         return true;
       }
-      return this.apply(deleteBreak({ ...c, doc: this.host.syncDoc()! }, brk));
+      return this.apply(deleteBreak(c, brk));
     }
     return this.apply(deleteEntries(c, targets));
   }
@@ -586,6 +680,15 @@ export class VisualEditController {
     this.host.setStatus(`选中记号：${markLabel(m)}`);
     return true;
   }
+}
+
+/** 两份原文前后相同的部分去掉，剩下中间不同的那一段（局部补丁，撤销与光标映射都干净）。 */
+function diffRegion(a: string, b: string): { from: number; to: number; insert: string } {
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let q = 0;
+  while (q < a.length - p && q < b.length - p && a[a.length - 1 - q] === b[b.length - 1 - q]) q++;
+  return { from: p, to: a.length - q, insert: b.slice(p, b.length - q) };
 }
 
 function union(a: Box, b: Box): Box {

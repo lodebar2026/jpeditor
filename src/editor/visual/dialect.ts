@@ -26,6 +26,14 @@ export interface NoteToken {
   inlineSustains: number;
 }
 
+/** 读写音符 token 要的上下文：ABC 的音名要按调号换算成唱名、时值相对 `L:`。其余格式用不到。 */
+export interface NoteCtx {
+  /** 这个位置上的调号（升号个数为正） */
+  fifths: number;
+  /** ABC 的默认音长 `L:`，以四分音符为 1 */
+  unitQuarters: number;
+}
+
 /** 新音符的时值（插入模式的「当前时值」）。 */
 export interface NoteDuration {
   halvings: number;
@@ -34,11 +42,27 @@ export interface NoteDuration {
 
 export interface EditDialect {
   /** 读一个音符 token（`SyncIndex` 里 `note` 条目的原文）。读不了（夹着别的东西、不是这几样能描述的）返回 null。 */
-  parseNote(src: string): NoteToken | null;
+  parseNote(src: string, nc: NoteCtx): NoteToken | null;
   /** 写回。与 `parseNote` 对称：`printNote(parseNote(s))` 必须还原 `s`（规范写法下）。 */
-  printNote(t: NoteToken): string;
+  printNote(t: NoteToken, nc: NoteCtx): string;
   /** 新写一个音符。 */
-  newNote(degree: number, dur: NoteDuration): string;
+  newNote(degree: number, dur: NoteDuration, nc: NoteCtx): string;
+  /** 改完的 token 这种格式写不写得出；写不出返回说明（`.jpwabc` 的 `-` 不能与 `_`、`.` 连写） */
+  validate?(t: NoteToken): string | null;
+  /** 延音线另有写法（ABC 的 `-` 紧跟前一个音）；缺省 = 与圆滑线同形（括号） */
+  tie?: string;
+  /** 圆滑线能不能嵌套、交叠。文本谱的 `)` 按队列配对（先开的先闭），加一条与已有的交叠的弧会把配对全打乱 */
+  slurNesting: boolean;
+  /** 歌词行跟着换行走（123、ABC：`w:` 紧跟在一行曲后面），换行一增删歌词行就要拆、并（`breaks.ts`）。
+   *  `.jpwabc` 的歌词按锚点对齐、不跟换行，为 false */
+  lyricsFollowBreaks: boolean;
+  /** 歌词按**代码行**分块（ABC：`w:` 对紧挨在前的那条代码行；代码行末就是换行）；缺省按 `$` 分（123） */
+  lyricBlockByCodeLine?: boolean;
+  /** 这个位置上读写音符要的上下文（缺省 C 调、`L:1/4`） */
+  contextAt?(state: EditorState, doc: ScoreDoc | null, pos: number): NoteCtx;
+  /** 改完原文之后的连带修正（`.jpwabc` 的 `.Words` 锚点按音符数，音符一增删后面各段就错位）。
+   *  `mapPos` 把原文偏移映射到新原文。返回修正后的新原文（不用改时原样返回）。 */
+  postEdit?(oldText: string, newText: string, mapPos: (pos: number) => number): string;
   /** 增时线：`token` = 独立的一个 token（123 的 ` -`）；`inline` = 写进音符 token（`.jpwabc` 的 `5--`） */
   sustain: "token" | "inline";
   /** 独立 token 之间的分隔 */
@@ -55,4 +79,27 @@ export interface EditDialect {
   slurInToken: boolean;
   /** 换行不是符号的格式：给出「在 `afterId` 之后加 / 去掉一处换行」后的整份新原文。 */
   relayoutBreaks?(state: EditorState, doc: ScoreDoc, afterId: number, add: boolean, page: boolean): string | null;
+}
+
+/** 模型里这个原文位置上生效的调号（升号个数）：按元素顺序走，取最后一个不晚于 `pos` 的元素所在处的调号。 */
+export function keyFifthsAt(doc: ScoreDoc | null, pos: number): number {
+  let best = 0;
+  let bestOff = -1;
+  for (const song of doc?.songs ?? []) {
+    for (const part of song.parts) {
+      let cur = song.key?.fifths ?? 0;
+      for (const m of part.measures) {
+        if (m.attrs?.key) cur = m.attrs.key.fifths;
+        for (const el of m.elements) {
+          const off = el.source?.offset;
+          if (off === undefined || off > pos) continue;
+          if (off > bestOff) {
+            bestOff = off;
+            best = cur;
+          }
+        }
+      }
+    }
+  }
+  return best;
 }

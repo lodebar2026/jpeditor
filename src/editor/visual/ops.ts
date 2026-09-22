@@ -5,13 +5,28 @@
 // token 读不懂（`parseNote` 返回 null）就拒绝执行、说明原因，不硬改。
 
 import type { ChangeSpec, EditorState } from "@codemirror/state";
+import type { ScoreDoc } from "../../model/doc";
 import type { SyncEntry, SyncIndex } from "../sync";
-import type { EditDialect, NoteDuration, NoteToken } from "./dialect";
+import type { EditDialect, NoteCtx, NoteDuration, NoteToken } from "./dialect";
 
 export interface EditCtx {
   state: EditorState;
   sync: SyncIndex;
   dialect: EditDialect;
+  /** 建索引用的那份模型（数对位格、查调号、认已有的弧） */
+  doc: ScoreDoc | null;
+}
+
+const PLAIN_CTX: NoteCtx = { fifths: 0, unitQuarters: 1 };
+
+/** 这个位置上读写音符的上下文。 */
+export function noteCtx(ctx: EditCtx, pos: number): NoteCtx {
+  return ctx.dialect.contextAt?.(ctx.state, ctx.doc, pos) ?? PLAIN_CTX;
+}
+
+/** 读一个音符条目的 token。 */
+function readNote(ctx: EditCtx, e: SyncEntry): NoteToken | null {
+  return ctx.dialect.parseNote(ctx.state.doc.sliceString(e.from, e.to), noteCtx(ctx, e.from));
 }
 
 /** 一次动作的结果：补丁 + 补丁之后的选区（新文档里的偏移）。 */
@@ -65,12 +80,15 @@ function rewriteNotes(
   const changes: EditResult["changes"] = [];
   for (const e of notes) {
     const src = text.sliceString(e.from, e.to);
-    const t = ctx.dialect.parseNote(src);
+    const nc = noteCtx(ctx, e.from);
+    const t = ctx.dialect.parseNote(src, nc);
     if (!t) return { error: `看不懂这个音符的写法：${src}` };
     const r = fn({ ...t }, e);
     if (typeof r === "string") return { error: r };
     if (!r) continue;
-    const out = ctx.dialect.printNote(r);
+    const bad = ctx.dialect.validate?.(r);
+    if (bad) return { error: bad };
+    const out = ctx.dialect.printNote(r, nc);
     if (out !== src) changes.push({ from: e.from, to: e.to, insert: out });
   }
   // 只改了额外补丁（加减增时线）时 token 本身没变，交给 `withExtra` 并进去
@@ -87,6 +105,7 @@ function rewriteNotes(
 export function setDegree(ctx: EditCtx, from: number, to: number, degree: number): EditOutcome {
   return rewriteNotes(ctx, from, to, (t) => {
     t.degree = degree;
+    t.acc = null; // 换了唱名，原来的升降号不跟着走
     if (degree === 0) {
       t.acc = null;
       t.octave = 0;
@@ -187,7 +206,7 @@ export function spacedInsert(ctx: EditCtx, pos: number, tok: string): { change: 
 
 /** 插入一个音符（插入模式）。插完光标落在它后面，仍是插入模式。 */
 export function insertNote(ctx: EditCtx, pos: number, degree: number, dur: NoteDuration): EditOutcome {
-  const r = spacedInsert(ctx, pos, ctx.dialect.newNote(degree, dur));
+  const r = spacedInsert(ctx, pos, ctx.dialect.newNote(degree, dur, noteCtx(ctx, pos)));
   return { changes: [r.change], anchor: r.end, head: r.end };
 }
 
@@ -270,20 +289,30 @@ function toggleArc(ctx: EditCtx, first: SyncEntry, last: SyncEntry, keep: { from
   const d = ctx.dialect;
   const existing = slurBetween(ctx, first.id, last.id);
   let changes: EditResult["changes"];
-  if (existing) {
-    changes = [spaceAroundParen(ctx, existing.from, existing.to), spaceAroundParen(ctx, existing.pair!.from, existing.pair!.to)];
-  } else if (d.slurInToken) {
-    // 括号写在音符 token 里（`.jpwabc`）：起点 token 前加 `(`、终点 token 后加 `)`
-    const a = d.parseNote(ctx.state.doc.sliceString(first.from, first.to));
-    const b = first === last ? a : d.parseNote(ctx.state.doc.sliceString(last.from, last.to));
-    if (!a || !b) return { error: "看不懂这个音符的写法" };
+  if (!existing && !d.slurNesting && crossesSlur(ctx, first, last)) {
+    return { error: "这种格式的弧不能嵌套或交叠（括号按先开先闭配对），请先去掉相交的那条" };
+  }
+  if (d.slurInToken) {
+    // 括号写在音符 token 里（`.jpwabc`）：起点 token 前加 `(`、终点 token 后加 `)`；已有同样起止的就各去一个
     if (first === last) return { error: "圆滑线至少连两个音" };
-    a.pre = d.slurOpen + a.pre;
-    b.post = b.post + d.slurClose;
+    const a = readNote(ctx, first);
+    const b = readNote(ctx, last);
+    if (!a || !b) return { error: "看不懂这个音符的写法" };
+    const had = ctx.doc?.songs.some((s) => (s.marks ?? []).some((m) => m.type === "slur" && m.start === first.id && m.end === last.id));
+    if (had) {
+      if (!a.pre.includes(d.slurOpen) || !b.post.includes(d.slurClose)) return { error: "找不到这条弧的括号" };
+      a.pre = a.pre.replace(d.slurOpen, "");
+      b.post = b.post.replace(d.slurClose, "");
+    } else {
+      a.pre = d.slurOpen + a.pre;
+      b.post = b.post + d.slurClose;
+    }
     changes = [
-      { from: first.from, to: first.to, insert: d.printNote(a) },
-      { from: last.from, to: last.to, insert: d.printNote(b) },
+      { from: first.from, to: first.to, insert: d.printNote(a, noteCtx(ctx, first.from)) },
+      { from: last.from, to: last.to, insert: d.printNote(b, noteCtx(ctx, last.from)) },
     ];
+  } else if (existing) {
+    changes = [spaceAroundParen(ctx, existing.from, existing.to), spaceAroundParen(ctx, existing.pair!.from, existing.pair!.to)];
   } else {
     const end = groupEnd(ctx, last);
     changes = [
@@ -294,6 +323,18 @@ function toggleArc(ctx: EditCtx, first: SyncEntry, last: SyncEntry, keep: { from
   changes.sort((x, y) => x.from - y.from);
   const map = mapper(ctx.state, changes);
   return { changes, anchor: map(keep.from, 1), head: map(keep.to, -1) };
+}
+
+/** `first`–`last` 这一段与已有的弧交叠（一端在里、一端在外）。 */
+function crossesSlur(ctx: EditCtx, first: SyncEntry, last: SyncEntry): boolean {
+  const lo = first.from;
+  const hi = last.to;
+  return ctx.sync.ordered().some((e) => {
+    if (e.kind !== "mark" || e.markKind !== "slur" || !e.pair || e.from > e.pair.from) return false;
+    const a = e.from;
+    const b = e.pair.to;
+    return (a < lo && b > lo && b < hi) || (a > lo && a < hi && b > hi) || (a > lo && b < hi) || (a < lo && b > hi);
+  });
 }
 
 /** 删掉弧的一个括号：括号与相邻的音符之间没有空白，只在它两侧都是空白时带走一个空格。 */
@@ -318,11 +359,20 @@ export function toggleTie(ctx: EditCtx, from: number, to: number): EditOutcome {
   const after = groupEnd(ctx, note);
   const next = ctx.sync.ordered().find((e) => e.kind === "note" && e.from >= after);
   if (!next) return { error: "后面没有音了" };
-  const a = ctx.dialect.parseNote(ctx.state.doc.sliceString(note.from, note.to));
-  const b = ctx.dialect.parseNote(ctx.state.doc.sliceString(next.from, next.to));
+  const a = readNote(ctx, note);
+  const b = readNote(ctx, next);
   if (!a || !b) return { error: "看不懂这个音符的写法" };
   if (a.degree === 0 || a.degree !== b.degree || a.octave !== b.octave || (a.acc ?? null) !== (b.acc ?? null)) {
     return { error: "延音线只连同音高的两个音；不同音用圆滑线（s）" };
+  }
+  const tie = ctx.dialect.tie;
+  if (tie) {
+    // 另有写法的延音线（ABC 的 `-`）：紧跟在前一个音后面
+    const at = note.to;
+    const has = ctx.state.doc.sliceString(at, at + tie.length) === tie;
+    const changes = [has ? { from: at, to: at + tie.length, insert: "" } : { from: at, to: at, insert: tie }];
+    const map = mapper(ctx.state, changes);
+    return { changes, anchor: map(from, -1), head: map(to, 1) };
   }
   return toggleArc(ctx, note, next, { from, to });
 }

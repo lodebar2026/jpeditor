@@ -47,4 +47,6 @@ export const DIALECT_123: EditDialect = {
   slurOpen: "(",
   slurClose: ")",
   slurInToken: false,
+  slurNesting: true,
+  lyricsFollowBreaks: true,
 };

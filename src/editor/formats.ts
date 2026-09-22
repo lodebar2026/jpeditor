@@ -28,6 +28,8 @@ import { jpwToScoreDoc } from "../model/fromjpw";
 import { JpwFile } from "../jpword/jpwfile";
 import type { EditDialect } from "./visual/dialect";
 import { DIALECT_123 } from "./visual/dialects/j123";
+import { DIALECT_ABC } from "./visual/dialects/abc";
+import { DIALECT_JPW } from "./visual/dialects/jpw";
 
 /** 可打开的源格式。`musicxml` 没有代码区（`caps.textEditor === false`），只看谱面、转成文本格式再编辑。 */
 export type DocFormatId = "jpwabc" | "pu" | "123" | "abc" | "musicxml";
@@ -139,6 +141,7 @@ const JPWABC: FormatAdapter = {
     if (!f) return text;
     return relayoutJpwabcText(text, jpwToScoreDoc(f));
   },
+  editDialect: DIALECT_JPW,
 };
 
 const PU: FormatAdapter = {
@@ -217,6 +220,7 @@ const ABC: FormatAdapter = {
   reload: (host, text) => host.reloadAbc(text),
   toScoreDoc: parseAbc,
   relayoutText: (text, measure) => emitFrom(text, measure, parseAbc, emitAbc),
+  editDialect: DIALECT_ABC,
 };
 
 /** MusicXML —— 五线谱主格式。**没有代码区**：编辑器文档里存的就是 XML 原文（不显示），

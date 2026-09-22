@@ -7,6 +7,9 @@
 // 所以插入换行 = 把代码行在光标处拆成两行，**每条 `w:` 也按对位格数拆成两半**，前一半挪到前一行曲下面；
 // 删除换行反过来：两行曲并成一行，两边的 `w:` 逐段接起来（前一行曲的词不够长就用 `/` 补足格数）。
 //
+// ABC 同一个道理，只是换行不是符号：`w:` 对的是紧挨在前的那条**代码行**，代码行末就是谱面换行
+// （`EditDialect.lyricBlockByCodeLine`）。插入换行 = 拆代码行，删除 = 把下一条代码行接上来，歌词照样拆并。
+//
 // 对位格按解析器同一份口径数（`abcfamily/lyricslot.ts::isLyricSlot` 数音符，`parseLyricLine` 数词行），
 // 不在这里另立规则。碰上 `+:` 续行这种拆不清的写法就不动手、说明原因。
 
@@ -16,7 +19,7 @@ import { isLyricSlot } from "../../abcfamily/lyricslot";
 import { parseLyricLine } from "../../j123/parse";
 import { ZERO_SPAN } from "../../model/helpers";
 import type { SyncEntry } from "../sync";
-import type { EditCtx, EditOutcome } from "./ops";
+import { type EditCtx, type EditOutcome, spaceAround } from "./ops";
 
 const LYRIC_RE = /^\s*w\s*:/;
 const CONT_RE = /^\s*\+\s*:/;
@@ -47,7 +50,8 @@ function slotCount(body: string, skip: "/" | "*"): number {
 }
 
 /** 这一行曲从哪个偏移开始：往上找最近的 `$` 或 `w:`/`+:` 行（都结束上一行曲）。 */
-function blockStart(state: EditorState, pos: number, breaks: readonly SyncEntry[]): number {
+function blockStart(state: EditorState, pos: number, breaks: readonly SyncEntry[], byCodeLine: boolean): number {
+  if (byCodeLine) return state.doc.lineAt(pos).from;
   let start = 0;
   for (const b of breaks) if (b.to <= pos) start = Math.max(start, b.to);
   for (let n = state.doc.lineAt(pos).number - 1; n >= 1; n--) {
@@ -61,9 +65,9 @@ function blockStart(state: EditorState, pos: number, breaks: readonly SyncEntry[
 }
 
 /** `[from, to)` 里的对位格数（按模型里元素的原文位置数）。 */
-function slotsBetween(doc: ScoreDoc, from: number, to: number): number {
+function slotsBetween(doc: ScoreDoc | null, from: number, to: number): number {
   let n = 0;
-  for (const song of doc.songs) {
+  for (const song of doc?.songs ?? []) {
     for (const part of song.parts) {
       for (const m of part.measures) {
         for (const el of m.elements as Element[]) {
@@ -78,8 +82,9 @@ function slotsBetween(doc: ScoreDoc, from: number, to: number): number {
 }
 
 /** 从第 `n` 行起往下，这一行曲最后一条音乐代码行（遇到行末 `$` 或下一行不是音乐行就停）。 */
-function lastMusicLine(state: EditorState, n: number, breaks: readonly SyncEntry[]): Line {
+function lastMusicLine(state: EditorState, n: number, breaks: readonly SyncEntry[], byCodeLine: boolean): Line {
   let line = state.doc.line(n);
+  if (byCodeLine) return line;
   for (;;) {
     const endsWithBreak = breaks.some((b) => b.from >= line.from && b.to <= line.to && line.text.slice(b.to - line.from).trim() === "");
     if (endsWithBreak || line.number >= state.doc.lines) return line;
@@ -102,9 +107,10 @@ function lyricLinesAfter(state: EditorState, n: number): Line[] | string {
 }
 
 /** 在 `pos`（两个 token 之间）插入换行 / 换页。 */
-export function insertBreak(ctx: EditCtx & { doc: ScoreDoc }, pos: number, page: boolean): EditOutcome {
+export function insertBreak(ctx: EditCtx, pos: number, page: boolean): EditOutcome {
   const tok = page ? ctx.dialect.pageBreak : ctx.dialect.lineBreak;
-  if (tok === null) return { error: "这种格式的换行不是符号" };
+  if (tok === null) return { error: page ? "这种格式没有换页符号" : "这种格式的换行不是符号" };
+  const byLine = !!ctx.dialect.lyricBlockByCodeLine;
   const { state } = ctx;
   const skip = "/";
   const breaks = ctx.sync.ordered().filter((e) => e.kind === "break");
@@ -117,11 +123,12 @@ export function insertBreak(ctx: EditCtx & { doc: ScoreDoc }, pos: number, page:
   const right = state.doc.sliceString(pos, line.to).trimStart();
   if (left === "") return { error: "行首不用再换行" };
 
-  const last = lastMusicLine(state, line.number, breaks);
-  const lyr = lyricLinesAfter(state, last.number);
+  const last = lastMusicLine(state, line.number, breaks, byLine);
+  const lyr = ctx.dialect.lyricsFollowBreaks ? lyricLinesAfter(state, last.number) : [];
   if (typeof lyr === "string") return { error: lyr };
 
-  const head = `${left} ${tok}`;
+  // 换行就是代码行末（ABC）时不写符号
+  const head = tok ? `${left} ${tok}` : left;
   // 没有歌词：就地拆行
   if (lyr.length === 0) {
     const insert = right ? `${head}\n${right}` : head;
@@ -129,7 +136,7 @@ export function insertBreak(ctx: EditCtx & { doc: ScoreDoc }, pos: number, page:
   }
 
   // 有歌词：每条 `w:` 在第 k 格处拆开，前一半挪到前一行曲下面
-  const k = slotsBetween(ctx.doc, blockStart(state, pos, breaks), pos);
+  const k = slotsBetween(ctx.doc, blockStart(state, pos, breaks, byLine), pos);
   const firstHalf: string[] = [];
   const secondHalf: string[] = [];
   for (const w of lyr) {
@@ -158,20 +165,27 @@ export function insertBreak(ctx: EditCtx & { doc: ScoreDoc }, pos: number, page:
 }
 
 /** 删掉一处换行/换页符号（`entry.kind === "break"`，有原文位置）。 */
-export function deleteBreak(ctx: EditCtx & { doc: ScoreDoc }, entry: SyncEntry): EditOutcome {
+export function deleteBreak(ctx: EditCtx, entry: SyncEntry): EditOutcome {
   const { state } = ctx;
+  // 歌词不跟换行走的格式（`.jpwabc`）：只删符号
+  if (!ctx.dialect.lyricsFollowBreaks) {
+    const c = spaceAround(ctx, entry.from, entry.to);
+    return { changes: [c], anchor: c.from, head: c.from };
+  }
   const skip = "/";
+  const byLine = !!ctx.dialect.lyricBlockByCodeLine;
   const breaks = ctx.sync.ordered().filter((e) => e.kind === "break");
+  // ABC：`entry` 是代码行末的换行符本身
   const line = state.doc.lineAt(entry.from);
   const before = state.doc.sliceString(line.from, entry.from).trimEnd();
-  const after = state.doc.sliceString(entry.to, line.to).trim();
+  const after = entry.to <= line.to ? state.doc.sliceString(entry.to, line.to).trim() : "";
   // 前一行曲的格数（`$` 之前）
-  const kA = slotsBetween(ctx.doc, blockStart(state, entry.from, breaks), entry.from);
+  const kA = slotsBetween(ctx.doc, blockStart(state, entry.from, breaks, byLine), entry.from);
   const pad = (n: number): string => Array.from({ length: n }, () => skip).join(" ");
 
   if (after !== "") {
     // 行中间的 `$`：前半截不可能有词（`w:` 只跟在代码行后面），并过去后后半截的词要让出前半截的格
-    const last = lastMusicLine(state, line.number, breaks.filter((b) => b.from !== entry.from));
+    const last = lastMusicLine(state, line.number, breaks.filter((b) => b.from !== entry.from), byLine);
     const lyr = lyricLinesAfter(state, last.number);
     if (typeof lyr === "string") return { error: lyr };
     const changes = [{ from: line.from, to: line.to, insert: `${before} ${after}` }];
@@ -194,7 +208,7 @@ export function deleteBreak(ctx: EditCtx & { doc: ScoreDoc }, entry: SyncEntry):
     // 后面没有音乐了：直接删符号
     return { changes: [{ from: line.from, to: line.to, insert: before }], anchor: line.from + before.length, head: line.from + before.length };
   }
-  const lastB = lastMusicLine(state, nextN, breaks);
+  const lastB = lastMusicLine(state, nextN, breaks, byLine);
   const lyrB = lyricLinesAfter(state, lastB.number);
   if (typeof lyrB === "string") return { error: lyrB };
   const merged: string[] = [];
@@ -205,7 +219,9 @@ export function deleteBreak(ctx: EditCtx & { doc: ScoreDoc }, entry: SyncEntry):
     merged.push(`w: ${[a, b ? pad(lack) : "", b].filter((s) => s !== "").join(" ")}`.trimEnd());
   }
   const codeB = state.doc.sliceString(state.doc.line(nextN).from, lastB.to);
-  const insert = [before, codeB, ...merged].join("\n");
+  // ABC 的换行就是代码行末：两条代码行接成一条；123 去掉 `$` 就够了，代码行照旧分着
+  const code = byLine ? [`${before} ${codeB.trim()}`] : [before, codeB];
+  const insert = [...code, ...merged].join("\n");
   const end = (lyrB.length ? lyrB[lyrB.length - 1]! : lastB).to;
   const caret = line.from + before.length;
   return { changes: [{ from: line.from, to: end, insert }], anchor: caret, head: caret };
