@@ -185,8 +185,11 @@ export function parseLyricLine(
   valueOffset?: number,
   skip: "/" | "*" = "/",
   warn?: (code: string, message: string) => void,
-): { syllables: Lyric[]; label?: string } {
+): { syllables: Lyric[]; label?: string; starts: number[] } {
   const out: Lyric[] = [];
+  /** 各音节（含跳音符、续记号这类空音节）在 body 里的起点，与 `out` 一一对应——
+   *  可视化编辑按对位格数拆 `w:` 行要它（空音节不记 `source`） */
+  const starts: number[] = [];
   let i = 0;
   /** 当前音节在 body 里的起点：给音节记源区间（识别核对的点选定位落到字上） */
   let tokStart = 0;
@@ -201,6 +204,11 @@ export function parseLyricLine(
 
   /** 还没有前字可并的行首标点，攒着挂到下一个音节前面 */
   let prefix = "";
+
+  const push = (l: Lyric): void => {
+    out.push(l);
+    starts.push(tokStart);
+  };
 
   const mk = (text: string): Lyric => {
     const l: Lyric = { number: verse, text };
@@ -219,10 +227,10 @@ export function parseLyricLine(
     if (ch === " " || ch === "\t") { i++; continue; }
     tokStart = i;
     // 跳一个音符（该音符不配字）
-    if (ch === skip) { out.push(mk("")); i++; continue; }
+    if (ch === skip) { push(mk("")); i++; continue; }
     if (ch === "*") {
       warn?.("lyric-old-skip", "歌词跳音符已改用 `/`，`*` 暂按跳音符读");
-      out.push(mk(""));
+      push(mk(""));
       i++;
       continue;
     }
@@ -230,7 +238,7 @@ export function parseLyricLine(
     if (ch === "_") {
       const prev = out[out.length - 1];
       if (prev) prev.extend = true;
-      out.push(mk(""));
+      push(mk(""));
       i++;
       continue;
     }
@@ -247,7 +255,7 @@ export function parseLyricLine(
         l.syllabic = "begin";
         i++;
       }
-      out.push(l);
+      push(l);
       continue;
     }
     // 转义的真连字符 / 斜杠（拉丁词中间的在下面拉丁分支里吃掉，这里是紧跟在 CJK 或 `}` 后的）
@@ -274,7 +282,7 @@ export function parseLyricLine(
       }
       const l = mk(text);
       if (trailing) l.trailingPunctuation = trailing;
-      out.push(l);
+      push(l);
       continue;
     }
     // 左引号：领起**后**一个字，所以先吃住、挂到下一个音节前缀
@@ -287,7 +295,7 @@ export function parseLyricLine(
         while (i < body.length && isTrailingPunct(body[i]!)) { trailing += body[i]!; i++; }
         const l = mk(text);
         if (trailing) l.trailingPunctuation = trailing;
-        out.push(l);
+        push(l);
         continue;
       }
       i++;
@@ -325,10 +333,10 @@ export function parseLyricLine(
       const l = mk(text);
       if (syllabic) l.syllabic = syllabic;
       if (trailing) l.trailingPunctuation = trailing;
-      out.push(l);
+      push(l);
     }
   }
-  const res: { syllables: Lyric[]; label?: string } = { syllables: out };
+  const res: { syllables: Lyric[]; label?: string; starts: number[] } = { syllables: out, starts };
   if (label !== undefined) res.label = label;
   void source;
   return res;

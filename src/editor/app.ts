@@ -32,6 +32,7 @@ import { formatOf, type DocFormatId, type FormatAdapter, type FormatHost } from 
 import { SyncIndex, type SyncEntry } from "./sync";
 import { VisualEditController, type VisualHost } from "./visual/controller";
 import { visualCursorExtension } from "./visual/cursor";
+import type { EditDialect } from "./visual/dialect";
 import { describeLosses, planSave } from "../model/capability";
 import { targetSpec, type ConvertTarget } from "../model/convert";
 import { showConfirmDialog } from "./dialogs";
@@ -101,6 +102,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   private _syncMarked: Element[] = [];
   /** 防回环：两条方向互相触发时，被动的那一侧不要再反推一次 */
   private _syncing = false;
+  /** 建 `_sync` 用的那份模型（可视化编辑按它数对位格） */
+  private _syncDoc: ScoreDoc | null = null;
+  /** 建 `_sync` 时代码区的原文：与当前原文不同就说明索引落后了（重排还在防抖里） */
+  private _syncText = "";
   /** `.jpwabc`：`jpwToScoreDoc` 的结果（试听读它；转不出来为 null） */
   private _jpwDoc: ScoreDoc | null = null;
   /** 试听输入的缓存：同一份模型、同一档只拼一次（`refreshSpeedUi` 每次重排都要取速度） */
@@ -730,6 +735,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   /** 重建索引与「条目 ↔ 谱面 `<g>`」两张反查表。**每次重排后都要建**——页面节点全换了。 */
   private _buildSync(doc: ScoreDoc): void {
     this._sync.build(doc);
+    this._syncDoc = doc;
+    this._syncText = this.getText();
     this._syncEls.clear();
     this._syncElOf.clear();
     this._syncMarked = [];
@@ -755,6 +762,23 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   entryEl(entry: SyncEntry): SVGGElement | null {
     return this._syncElOf.get(entry) ?? this._syncGroupEl(entry);
+  }
+
+  editDialect(): EditDialect | null {
+    return this.adapter.editDialect ?? null;
+  }
+
+  syncDoc(): ScoreDoc | null {
+    return this._syncDoc;
+  }
+
+  syncFresh(): boolean {
+    return this._syncText === this.getText();
+  }
+
+  reloadNow(): void {
+    clearTimeout(this.debounceTimer);
+    this.reload(this.getText());
   }
 
   noteEl(id: ElementId): SVGGElement | null {

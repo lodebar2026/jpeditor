@@ -8,9 +8,15 @@
 
 import { redo, undo } from "@codemirror/commands";
 import type { EditorView } from "@codemirror/view";
-import type { ElementId } from "../../model/doc";
+import type { ElementId, ScoreDoc } from "../../model/doc";
 import type { BreakMark, SyncEntry, SyncIndex } from "../sync";
+import { deleteBreak, insertBreak } from "./breaks";
 import { setBreakSpans, setScoreFocus } from "./cursor";
+import type { EditDialect, NoteDuration } from "./dialect";
+import {
+  addSustain, deleteEntries, double, type EditCtx, type EditOutcome, groupEnd, halve, insertNote, insertToken,
+  isError, notesIn, setAccidental, setDegree, shiftOctave, toggleDot,
+} from "./ops";
 import { actionOfKey, type VisualAction, type VisualMode } from "./keys";
 import { type Box, clearOverlay, drawBlock, drawBreak, drawCaret, musicBox, rightEdgeInBand, sameRow } from "./overlay";
 
@@ -25,6 +31,14 @@ export interface VisualHost {
   entryEl(entry: SyncEntry): SVGGElement | null;
   /** 音符在谱面上的 `<g>` */
   noteEl(id: ElementId): SVGGElement | null;
+  /** 当前格式怎么改原文；null = 这种格式在谱面上只能选中、不能改 */
+  editDialect(): EditDialect | null;
+  /** 建索引用的那份模型（与 `sync` 同一版） */
+  syncDoc(): ScoreDoc | null;
+  /** 改完原文马上重排（不等输入防抖） */
+  reloadNow(): void;
+  /** 索引是不是按代码区当前的原文建的（代码区刚改过、重排还在防抖里时为 false） */
+  syncFresh(): boolean;
   setStatus(text: string): void;
   saveSettings(): void;
 }
@@ -39,6 +53,8 @@ export class VisualEditController {
   private marksBtn: HTMLButtonElement | null = null;
   /** 叠加层里画出来的换行符号 → 它那一处换行 */
   private breakEls = new Map<Element, BreakMark>();
+  /** 插入模式的「当前时值」：新插的音符用它 */
+  curDur: NoteDuration = { halvings: 0, dots: 0 };
 
   constructor(private host: VisualHost) {}
 
@@ -115,7 +131,7 @@ export class VisualEditController {
     const on = this.host.visualEnabled();
     if (this.modeEl) {
       this.modeEl.hidden = !on;
-      this.modeEl.textContent = this.mode === "edit" ? "编辑" : "插入";
+      this.modeEl.textContent = this.mode === "edit" ? "编辑" : `插入 · ${durName(this.curDur)}`;
       this.modeEl.dataset.mode = this.mode;
     }
     if (!on) return;
@@ -243,15 +259,32 @@ export class VisualEditController {
     const a = actionOfKey(ev);
     if (!a) return;
     if (a.modes && !a.modes.includes(this.mode)) return;
-    if (this.run(a)) {
+    // 索引落后于原文（刚撤销、刚在代码区打过字）：先重排，免得按旧偏移改错地方
+    if (!this.host.syncFresh()) this.host.reloadNow();
+    if (this.run(a, ev.key)) {
       ev.preventDefault();
       ev.stopPropagation();
     }
   }
 
-  /** 执行一个动作（键盘、菜单、面板共用）。做了返回 true。 */
-  run(a: VisualAction): boolean {
+  /** 执行一个动作（键盘、菜单、面板共用）。做了返回 true。`key` 是按下的键（唱名动作要知道是几）。 */
+  run(a: VisualAction, key = ""): boolean {
     switch (a.id) {
+      case "note.digit": return this.digit(Number(key));
+      case "oct.up": return this.editNotes((c, f, t) => shiftOctave(c, f, t, 1));
+      case "oct.down": return this.editNotes((c, f, t) => shiftOctave(c, f, t, -1));
+      case "acc.sharp": return this.editNotes((c, f, t) => setAccidental(c, f, t, "sharp"));
+      case "acc.flat": return this.editNotes((c, f, t) => setAccidental(c, f, t, "flat"));
+      case "acc.natural": return this.editNotes((c, f, t) => setAccidental(c, f, t, "natural"));
+      case "dur.dot": return this.editNotes(toggleDot);
+      case "dur.halve": return this.duration(-1);
+      case "dur.double": return this.duration(1);
+      case "sus.add": return this.sustain();
+      case "bar.insert": return this.insertAtCursor((c, pos) => insertToken(c, pos, c.dialect.barline));
+      case "brk.line": return this.insertAtCursor((c, pos) => insertBreak({ ...c, doc: this.host.syncDoc()! }, pos, false));
+      case "brk.page": return this.insertAtCursor((c, pos) => insertBreak({ ...c, doc: this.host.syncDoc()! }, pos, true));
+      case "del.forward": return this.remove(1);
+      case "del.back": return this.remove(-1);
       case "mode.insert": return this.toInsert();
       case "mode.edit": return this.toEdit();
       case "nav.prev": return this.move(-1, false);
@@ -263,8 +296,8 @@ export class VisualEditController {
       case "mark.next": return this.cycleMark(1);
       case "mark.prev": return this.cycleMark(-1);
       case "view.formatMarks": this.toggleFormatMarks(); return true;
-      case "edit.undo": return undo(this.host.view);
-      case "edit.redo": return redo(this.host.view);
+      case "edit.undo": return this.afterHistory(undo(this.host.view));
+      case "edit.redo": return this.afterHistory(redo(this.host.view));
     }
     return false;
   }
@@ -387,6 +420,140 @@ export class VisualEditController {
     return true;
   }
 
+  /** 撤销/重做之后马上重排（谱面与索引跟上）。 */
+  private afterHistory(done: boolean): boolean {
+    if (done) this.host.reloadNow();
+    return done;
+  }
+
+  // ---------------- 改谱 ----------------
+
+  /** 能改谱时给出动作上下文；不能改（格式没有 dialect、没有模型）时在状态栏说明并返回 null。 */
+  private editCtx(): EditCtx | null {
+    const dialect = this.host.editDialect();
+    if (!dialect || !this.host.syncDoc()) {
+      this.host.setStatus("这种格式暂不支持在谱面上改谱，请在源码区修改");
+      return null;
+    }
+    return { state: this.host.view.state, sync: this.host.sync, dialect };
+  }
+
+  /** 把一次动作的结果落进代码区（进撤销记录），马上重排。出错就在状态栏说明。 */
+  private apply(out: EditOutcome): boolean {
+    if (isError(out)) {
+      this.host.setStatus(out.error);
+      return true; // 键已经被认下了，只是这回做不了
+    }
+    this.host.view.dispatch({
+      changes: out.changes,
+      selection: { anchor: out.anchor, head: out.head },
+      userEvent: "input.visual",
+      scrollIntoView: true,
+    });
+    this.host.reloadNow();
+    return true;
+  }
+
+  private editNotes(fn: (c: EditCtx, from: number, to: number) => EditOutcome): boolean {
+    const c = this.editCtx();
+    if (!c) return true;
+    const sel = c.state.selection.main;
+    return this.apply(fn(c, sel.from, sel.to));
+  }
+
+  /** 插入模式：光标处；编辑模式：选中那段（连同最后一个音符的增时线）之后。 */
+  private insertPos(c: EditCtx): number {
+    const sel = c.state.selection.main;
+    if (sel.empty) return sel.head;
+    const last = this.selectedEntries().pop();
+    return last ? groupEnd(c, last) : sel.to;
+  }
+
+  private insertAtCursor(fn: (c: EditCtx, pos: number) => EditOutcome): boolean {
+    const c = this.editCtx();
+    if (!c) return true;
+    return this.apply(fn(c, this.insertPos(c)));
+  }
+
+  private digit(d: number): boolean {
+    const c = this.editCtx();
+    if (!c) return true;
+    const sel = c.state.selection.main;
+    if (!sel.empty) return this.apply(setDegree(c, sel.from, sel.to, d));
+    return this.apply(insertNote(c, sel.head, d, this.curDur));
+  }
+
+  /** `_` / `=`：编辑模式改选中音符，插入模式改「当前时值」。 */
+  private duration(dir: -1 | 1): boolean {
+    const sel = this.host.view.state.selection.main;
+    if (sel.empty) {
+      const h = this.curDur.halvings - dir;
+      if (h < 0 || h > 4) {
+        this.host.setStatus(h < 0 ? "当前时值最长到四分音符（更长的用增时线 -）" : "减时线最多四条");
+        return true;
+      }
+      this.curDur = { ...this.curDur, halvings: h };
+      this.refresh();
+      return true;
+    }
+    return this.editNotes(dir < 0 ? halve : double);
+  }
+
+  /** `-`：编辑模式给选中的（最后一个）音符加增时线；插入模式在光标处插一条。 */
+  private sustain(): boolean {
+    const c = this.editCtx();
+    if (!c) return true;
+    const sel = c.state.selection.main;
+    if (!sel.empty) {
+      const note = notesIn(c, sel.from, sel.to).pop();
+      if (!note) {
+        this.host.setStatus("先选中一个音符");
+        return true;
+      }
+      return this.apply(addSustain(c, note));
+    }
+    if (c.dialect.sustain === "inline") {
+      // 增时线写在音符 token 里的格式：加到光标前那个音符上
+      const prev = [...this.navigable()].reverse().find((e) => e.to <= sel.head && e.kind === "note");
+      if (!prev) return true;
+      const out = addSustain(c, prev);
+      if (!isError(out)) out.anchor = out.head; // 仍是插入模式，光标落在音符后
+      return this.apply(out);
+    }
+    return this.apply(insertToken(c, sel.head, "-"));
+  }
+
+  /** Delete / Backspace。编辑模式删选中的；插入模式删光标后面 / 前面那个元素。 */
+  private remove(dir: -1 | 1): boolean {
+    const c = this.editCtx();
+    if (!c) return true;
+    const sel = c.state.selection.main;
+    let targets: SyncEntry[];
+    if (sel.empty) {
+      const nav = this.navigable();
+      const t = dir > 0 ? nav.find((e) => e.from >= sel.head) : [...nav].reverse().find((e) => e.to <= sel.head);
+      if (!t) return true;
+      // 退格退到增时线：只删这一条增时线（不连带音符）
+      targets = [t];
+    } else {
+      const exact = this.host.sync.ordered().find((e) => e.from === sel.from && e.to === sel.to);
+      targets = exact && (exact.kind === "mark" || exact.kind === "break") ? [exact] : this.selectedEntries();
+    }
+    if (targets.length === 0) {
+      this.host.setStatus("没有选中可删的东西");
+      return true;
+    }
+    const brk = targets.find((e) => e.kind === "break");
+    if (brk) {
+      if (targets.length > 1) {
+        this.host.setStatus("换行符请单独选中再删");
+        return true;
+      }
+      return this.apply(deleteBreak({ ...c, doc: this.host.syncDoc()! }, brk));
+    }
+    return this.apply(deleteEntries(c, targets));
+  }
+
   /** Tab：在选中音符挂的记号之间轮换（选中的已经是记号时从它往下接着轮）。 */
   private cycleMark(dir: -1 | 1): boolean {
     const sel = this.host.view.state.selection.main;
@@ -423,6 +590,11 @@ function union(a: Box, b: Box): Box {
   const x = Math.min(a.x, b.x);
   const y = Math.min(a.y, b.y);
   return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+}
+
+/** 插入模式的当前时值怎么叫（模式标签上显示）。 */
+function durName(d: NoteDuration): string {
+  return ["四分", "八分", "十六分", "三十二分", "六十四分"][d.halvings] ?? `${d.halvings} 条减时线`;
 }
 
 /** 记号条目的中文说法（状态栏、菜单用）。 */

@@ -282,10 +282,33 @@ const VISUAL_TOPICS: Topic[] = [
     ],
   },
   {
+    title: "改音符",
+    body: [
+      "选中音符（编辑模式）后：数字 `1`–`7` 改唱名、`0` 改成休止；`↑` / `↓`（或 `'` / `,`）升降八度；`#` `b` `n` 加升号、降号、还原号（再按一次取消）；`.` 加减附点。选中一段时八度与升降号整段一起改。",
+      "`_` 时值减半（有增时线先去掉一半拍数，否则加一条减时线），`=` 时值加倍（有减时线先去一条，否则加增时线），`-` 在后面加一条增时线。",
+      "目前 123 格式支持在谱面上改谱，其余格式在谱面上只能选中、移动，改谱请在源码区。",
+    ],
+  },
+  {
+    title: "插入与删除",
+    body: [
+      "插入模式下键入数字就在光标处插入一个音符，时值是右上角显示的「当前时值」，`_` / `=` 调它；`-` 插入增时线，`|` 插入小节线。",
+      "`Delete` / `Backspace`：编辑模式删掉选中的东西——删音符连同它的增时线、和弦名、装饰一起删；插入模式删光标后面 / 前面那个元素。",
+    ],
+  },
+  {
+    title: "换行与换页",
+    body: [
+      "`Enter` 在选中元素后面（插入模式：光标处）换行，`Shift+Enter` 换页；落在小节末时小节线留在前一行。",
+      "**歌词跟着拆**：123 的 `$` 结束一行曲，紧跟在代码行后的 `w:` 只挂最后一行曲。所以换行时代码行在光标处拆成两行，每条 `w:` 也按对位格数拆成两半，前一半挪到前一行曲下面；删掉换行符则反过来，两边的词逐段接起来（前一行的词不够长用 `/` 补格）。",
+      "歌词用了 `+:` 续行的行曲暂不能自动拆分，会提示在源码里改。",
+    ],
+  },
+  {
     title: "挂在音符上的记号",
     body: [
       "和弦名、延长号等装饰、段落注记、圆滑线/延音线都可以单独选中：直接在谱面上点它（和弦名、装饰、注记），或先选中音符再按 `Tab` 在它挂的记号之间轮换，轮完一圈回到音符本身。",
-      "选中记号后，源码区同时选中它对应的那段原文（如 `\"G\"`、`!fermata!`、圆滑线的括号）。",
+      "选中记号后，源码区同时选中它对应的那段原文（如 `\"G\"`、`!fermata!`、圆滑线的括号），按 `Delete` 删掉；删圆滑线/延音线时两个括号一起删。",
     ],
   },
   {
@@ -310,20 +333,21 @@ const VISUAL_TOPICS: Topic[] = [
 
 function visualShortcutTable(): HTMLElement {
   const table = el("table", "help-shortcuts");
-  let group = "";
-  for (const a of VISUAL_ACTIONS) {
-    if (a.group !== group) {
-      group = a.group;
+  // 按分组归拢（动作表里同组的不一定挨着），组的先后按首次出现
+  const groups = new Map<string, typeof VISUAL_ACTIONS[number][]>();
+  for (const a of VISUAL_ACTIONS) groups.set(a.group, [...(groups.get(a.group) ?? []), a]);
+  for (const [group, actions] of groups) {
+    const head = el("tr");
+    const th = el("th", undefined, group);
+    th.colSpan = 3;
+    head.append(th);
+    table.append(head);
+    for (const a of actions) {
       const tr = el("tr");
-      const th = el("th", undefined, group);
-      th.colSpan = 3;
-      tr.append(th);
+      const mode = a.modes ? (a.modes[0] === "edit" ? "编辑模式" : "插入模式") : "";
+      tr.append(el("td", undefined, a.label), el("td", undefined, a.keyText), el("td", undefined, [a.help, mode && `（仅${mode}）`].join("")));
       table.append(tr);
     }
-    const tr = el("tr");
-    const mode = a.modes ? (a.modes[0] === "edit" ? "编辑模式" : "插入模式") : "";
-    tr.append(el("td", undefined, a.label), el("td", undefined, a.keyText), el("td", undefined, [a.help, mode && `（${mode}）`].join("")));
-    table.append(tr);
   }
   return table;
 }

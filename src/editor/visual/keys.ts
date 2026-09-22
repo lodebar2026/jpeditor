@@ -17,7 +17,7 @@ export interface KeyBinding {
   mod?: boolean;
 }
 
-export type ActionGroup = "模式" | "移动与选择" | "记号" | "编辑";
+export type ActionGroup = "模式" | "移动与选择" | "音符" | "时值" | "记号" | "换行" | "编辑";
 
 export interface VisualAction {
   id: string;
@@ -49,6 +49,37 @@ export const VISUAL_ACTIONS: readonly VisualAction[] = [
     help: "跳到本行（到上一个换行符为止）的第一个元素" },
   { id: "nav.end", label: "行尾", group: "移动与选择", keys: [{ key: "End" }], keyText: "End",
     help: "跳到本行的最后一个元素" },
+  { id: "note.digit", label: "唱名 / 休止", group: "音符",
+    keys: ["0", "1", "2", "3", "4", "5", "6", "7"].map((key) => ({ key })), keyText: "1–7 · 0",
+    help: "编辑模式改选中音符的唱名（八度、时值不变）；插入模式按当前时值插入一个音符" },
+  { id: "oct.up", label: "升高八度", group: "音符", keys: [{ key: "ArrowUp" }, { key: "'" }], keyText: "↑ / '",
+    modes: ["edit"], help: "加一个高音点（或去掉一个低音点），选了一段就整段一起移" },
+  { id: "oct.down", label: "降低八度", group: "音符", keys: [{ key: "ArrowDown" }, { key: "," }], keyText: "↓ / ,",
+    modes: ["edit"], help: "加一个低音点（或去掉一个高音点）" },
+  { id: "acc.sharp", label: "升号", group: "音符", keys: [{ key: "#" }], keyText: "#",
+    modes: ["edit"], help: "加升号，再按一次取消" },
+  { id: "acc.flat", label: "降号", group: "音符", keys: [{ key: "b" }], keyText: "b",
+    modes: ["edit"], help: "加降号，再按一次取消" },
+  { id: "acc.natural", label: "还原号", group: "音符", keys: [{ key: "n" }], keyText: "n",
+    modes: ["edit"], help: "加还原号，再按一次取消" },
+  { id: "dur.halve", label: "时值减半", group: "时值", keys: [{ key: "_" }], keyText: "_",
+    help: "编辑模式：有增时线先去掉一半，否则加一条减时线；插入模式：改「当前时值」" },
+  { id: "dur.double", label: "时值加倍", group: "时值", keys: [{ key: "=" }], keyText: "=",
+    help: "编辑模式：有减时线先去一条，否则拍数翻倍（加增时线）；插入模式：改「当前时值」" },
+  { id: "dur.dot", label: "附点", group: "时值", keys: [{ key: "." }], keyText: ".",
+    modes: ["edit"], help: "加上或去掉附点" },
+  { id: "sus.add", label: "增时线", group: "时值", keys: [{ key: "-" }], keyText: "-",
+    help: "编辑模式在选中音符后面加一条增时线；插入模式在光标处插入一条" },
+  { id: "bar.insert", label: "小节线", group: "编辑", keys: [{ key: "|" }], keyText: "|",
+    help: "在选中元素后面（插入模式：光标处）插入一根小节线" },
+  { id: "brk.line", label: "换行", group: "换行", keys: [{ key: "Enter" }], keyText: "Enter",
+    help: "在选中元素后面（插入模式：光标处）换行；这一行曲下的歌词跟着按对位格拆成两半" },
+  { id: "brk.page", label: "换页", group: "换行", keys: [{ key: "Enter", shift: true }], keyText: "Shift+Enter",
+    help: "同上，换页" },
+  { id: "del.forward", label: "删除", group: "编辑", keys: [{ key: "Delete" }], keyText: "Delete",
+    help: "编辑模式删掉选中的元素（音符连同它的增时线、和弦名、装饰；换行符删掉后两行并一行，歌词接起来）；插入模式删光标后面那个" },
+  { id: "del.back", label: "退格", group: "编辑", keys: [{ key: "Backspace" }], keyText: "Backspace",
+    help: "编辑模式同 Delete；插入模式删光标前面那个" },
   { id: "mark.next", label: "下一个记号", group: "记号", keys: [{ key: "Tab" }], keyText: "Tab",
     modes: ["edit"], help: "在选中音符挂的记号（和弦名、延长号等装饰、注记、圆滑线）之间轮换选中" },
   { id: "mark.prev", label: "上一个记号", group: "记号", keys: [{ key: "Tab", shift: true }], keyText: "Shift+Tab",

@@ -26,6 +26,8 @@ import { fillDegreesFromPitch } from "../model/jianpu";
 import { relayoutDocBreaks, relayoutJpwabcText, spliceComments } from "../model/relayout";
 import { jpwToScoreDoc } from "../model/fromjpw";
 import { JpwFile } from "../jpword/jpwfile";
+import type { EditDialect } from "./visual/dialect";
+import { DIALECT_123 } from "./visual/dialects/j123";
 
 /** 可打开的源格式。`musicxml` 没有代码区（`caps.textEditor === false`），只看谱面、转成文本格式再编辑。 */
 export type DocFormatId = "jpwabc" | "pu" | "123" | "abc" | "musicxml";
@@ -96,6 +98,9 @@ export interface FormatAdapter {
    * @returns 新原文；没有可重排的曲行时原样返回 `text`
    */
   relayoutText?(text: string, measure: FitMeasure | null): string;
+  /** 可视化编辑怎么改这种格式的原文（`editor/visual/dialect.ts`）。**给了就能在谱面上改谱**；
+   *  不给的格式在谱面上只能选中、移动，不能改。 */
+  editDialect?: EditDialect;
 }
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
@@ -184,6 +189,7 @@ const J123: FormatAdapter = {
   reload: (host, text) => host.reload123(text),
   toScoreDoc: parse123,
   relayoutText: (text, measure) => emitFrom(text, measure, parse123, emit123),
+  editDialect: DIALECT_123,
 };
 
 /** ABC —— 与 123 同源的那一支（123 是 ABC 方言）。**原生解析直出 `ScoreDoc`**，
