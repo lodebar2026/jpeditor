@@ -23,7 +23,7 @@ import type { ScoreDoc } from "../model/doc";
 import { docView, type RowView } from "./slots";
 import { dialectSpec } from "./dialect";
 import { BODY_PREFIX } from "./parse";
-import { puPhraseLines, voiceStream, type FitMeasure, type PuNewLine, type VoiceStream } from "./phrase";
+import { puLinesEdited, puPhraseLines, voiceStream, type FitMeasure, type PuNewLine, type VoiceStream } from "./phrase";
 
 /** 起头的记号：它们属于**后面**那个元素，切行时归下一行。 */
 const OPENERS = new Set(["(", "["]);
@@ -174,6 +174,32 @@ export function relayoutPuText(
   }
   merged.push(...raws.slice(at));
   return merged.join("\n");
+}
+
+/**
+ * 可视化编辑增删一处换行：照现有行结构只在元素 `afterId` 之后加一刀、或去掉它后面那一刀，
+ * 写回的办法与乐句重排相同（原文片段搬运）。只改 `afterId` 所在的那一首。
+ *
+ * @returns 新原文；这一刀加不上 / 去不掉时返回 null
+ */
+export function relayoutPuBreak(
+  text: string, sdoc: ScoreDoc, edit: { afterId: number; add: boolean; page: boolean },
+): string | null {
+  const raws = text.split(/\r?\n/);
+  const doc = docView(sdoc);
+  const skip = dialectSpec(doc.dialect).lyricSkip[0] ?? "@";
+  for (let songIdx = 0; songIdx < doc.songs.length; songIdx++) {
+    const song = doc.songs[songIdx]!;
+    const plan = puLinesEdited(sdoc, songIdx, edit);
+    if (!plan) continue;
+    const region = songRegion(song);
+    if (!region) return null;
+    const streams = new Map(voiceNumbers(song).map((v) => [v, voiceStream(song, v)]));
+    const out = emit(song, plan, streams, raws, skip);
+    if (out.length === 0) return null;
+    return [...raws.slice(0, region.from), ...out, ...raws.slice(region.to + 1)].join("\n");
+  }
+  return null;
 }
 
 /** 一首歌在原文里占的行区间（曲行 / 歌词行 / `W:` 行的最小外包）。 */

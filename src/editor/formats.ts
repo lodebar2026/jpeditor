@@ -30,6 +30,7 @@ import type { EditDialect } from "./visual/dialect";
 import { DIALECT_123 } from "./visual/dialects/j123";
 import { DIALECT_ABC } from "./visual/dialects/abc";
 import { DIALECT_JPW } from "./visual/dialects/jpw";
+import { DIALECT_PU } from "./visual/dialects/pu";
 
 /** 可打开的源格式。`musicxml` 没有代码区（`caps.textEditor === false`），只看谱面、转成文本格式再编辑。 */
 export type DocFormatId = "jpwabc" | "pu" | "123" | "abc" | "musicxml";
@@ -167,6 +168,7 @@ const PU: FormatAdapter = {
   reload: (host, text) => host.reloadPu(text),
   toScoreDoc: (text) => parsePu(text),
   relayoutText: (text, measure) => relayoutPuText(text, parsePu(text), { measure }),
+  editDialect: DIALECT_PU,
 };
 
 /** 123 —— 简谱主格式。原生解析直出 `ScoreDoc`；排版直接吃 `ScoreDoc`。

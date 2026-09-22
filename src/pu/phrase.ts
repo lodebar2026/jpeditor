@@ -193,15 +193,7 @@ export function puPhraseLines(
   const lines: PuNewLine[] = [];
   starts.forEach((from, i) => {
     const to = starts[i + 1] ?? lead.elements.length;
-    const tickFrom = lead.ticks[from] ?? new Fraction(0);
-    const tickTo = to < lead.ticks.length ? lead.ticks[to]! : null;
-    const segs: PuLineSeg[] = [];
-    for (const v of voices) {
-      const st = streams.get(v)!;
-      const a = st === lead ? from : indexAtTick(st, tickFrom);
-      const b = st === lead ? to : tickTo === null ? st.elements.length : indexAtTick(st, tickTo);
-      if (b > a) segs.push({ voice: v, from: a, to: b });
-    }
+    const segs = segsOf(voices, streams, lead, from, to);
     if (segs.length > 0) lines.push({ segs, pageAfter: false });
     if (to < lead.elements.length && sectionAt.has(to)) sectionEnds.add(lines.length);
   });
@@ -213,6 +205,86 @@ export function puPhraseLines(
     l.pageAfter = pageAt.has(i + 1) && i + 1 < lines.length;
   });
   return lines;
+}
+
+/** 主旋律元素流 `[from, to)` 这一行 → 各声部同拍位的那一段。 */
+function segsOf(
+  voices: readonly number[], streams: ReadonlyMap<number, VoiceStream>, lead: VoiceStream, from: number, to: number,
+): PuLineSeg[] {
+  const tickFrom = lead.ticks[from] ?? new Fraction(0);
+  const tickTo = to < lead.ticks.length ? lead.ticks[to]! : null;
+  const segs: PuLineSeg[] = [];
+  for (const v of voices) {
+    const st = streams.get(v)!;
+    const a = st === lead ? from : indexAtTick(st, tickFrom);
+    const b = st === lead ? to : tickTo === null ? st.elements.length : indexAtTick(st, tickTo);
+    if (b > a) segs.push({ voice: v, from: a, to: b });
+  }
+  return segs;
+}
+
+/**
+ * **照原文现有的行结构**，只在元素 `afterId` 之后加一刀（`add`）或去掉它后面那一刀（与下一行合并）。
+ * 可视化编辑增删文本谱换行用：文本谱的换行就是另起一行 `Q:`，没有符号可增删，只能重切行
+ * （写回复用乐句重排那套原文搬运，`relayout.ts::relayoutPuBreak`）。
+ *
+ * @returns 新的行划分；元素不在这首里、或这一刀加不上 / 去不掉时返回 null
+ */
+export function puLinesEdited(
+  sdoc: ScoreDoc, songIdx: number, edit: { afterId: ElementId; add: boolean; page: boolean },
+): PuNewLine[] | null {
+  const view = docView(sdoc);
+  const song = view.songs[songIdx];
+  const el = view.elementOf.get(edit.afterId);
+  if (!song || !el) return null;
+  const voices = voiceNumbers(song);
+  const streams = new Map(voices.map((v) => [v, voiceStream(song, v)] as const));
+  // 刀落在这个元素所在的声部上，其余声部按拍位跟
+  let lead: VoiceStream | undefined;
+  let idx = -1;
+  for (const st of streams.values()) {
+    const i = st.elements.indexOf(el);
+    if (i >= 0) {
+      lead = st;
+      idx = i;
+      break;
+    }
+  }
+  if (!lead) return null;
+  const pageOf = new Map<ScoreLine, number>();
+  song.pages.forEach((pg, p) => pg.groups.forEach((g) => g.voices.forEach((l) => pageOf.set(l, p))));
+  // 现有的行：主旋律元素流里换了源行的地方
+  const cuts = new Set<number>();
+  const pageCuts = new Set<number>();
+  for (let i = 1; i < lead.origin.length; i++) {
+    const a = lead.origin[i - 1]!.lineIdx;
+    const b = lead.origin[i]!.lineIdx;
+    if (a === b) continue;
+    cuts.add(i);
+    if (pageOf.get(lead.lines[a]!) !== pageOf.get(lead.lines[b]!)) pageCuts.add(i);
+  }
+  if (edit.add) {
+    // 在该元素之后换行：跟在它后面的增时线属于同一个音，一并留在这一行
+    let at = idx + 1;
+    while (at < lead.elements.length && lead.elements[at]!.kind === "sustain") at += 1;
+    at = alignCut(lead.elements, at);
+    if (at <= 0 || at >= lead.elements.length) return null;
+    cuts.add(at);
+    if (edit.page) pageCuts.add(at);
+  } else {
+    const at = [...cuts].filter((c) => c > idx).sort((a, b) => a - b)[0];
+    if (at === undefined) return null;
+    cuts.delete(at);
+    pageCuts.delete(at);
+  }
+  const starts = [0, ...[...cuts].sort((a, b) => a - b)];
+  const lines: PuNewLine[] = [];
+  starts.forEach((from, i) => {
+    const to = starts[i + 1] ?? lead.elements.length;
+    const segs = segsOf(voices, streams, lead, from, to);
+    if (segs.length > 0) lines.push({ segs, pageAfter: pageCuts.has(to) });
+  });
+  return lines.length > 0 ? lines : null;
 }
 
 /**

@@ -32,6 +32,8 @@ export interface NoteCtx {
   fifths: number;
   /** ABC 的默认音长 `L:`，以四分音符为 1 */
   unitQuarters: number;
+  /** 文本谱的方言（番茄 / 诗歌本：八度点、升降号写法不同） */
+  puDialect?: "tomato" | "shige";
 }
 
 /** 新音符的时值（插入模式的「当前时值」）。 */
