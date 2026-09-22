@@ -2,7 +2,7 @@
 // showExportDialog），复用 .modal-overlay/.modal-box 样式 + 本文件专属的 .help-* 样式。
 // 功能帮助 = 可展开主题列表（<details>）；记谱法 = 分节说明 + 实时渲染的 SVG 示例。
 import type { App } from "./app";
-import { JinpuPainter } from "../layout/painter";
+import { PaintResources, ScorePainter } from "../layout/painter";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { jpwToScoreDoc } from "../model/fromjpw";
 import { jianpuInputOfJpw } from "../model/jianpuinput";
@@ -63,25 +63,23 @@ jpwabc: string, opts: { width?: number; height?: number; titlePage?: boolean } =
     score.playData.measures.push(pi);
     score.playData.isSimpple = true;
   }
-  const p = new JinpuPainter(fontSize);
-  p.layout.options.smuflMeta = meta;
-  // 示例画在压暗的米白纸上（styles.css 的 --help-paper），墨色也从纯黑收一档，
-  // 免得深色界面上黑白对比过硬。真正的谱面预览仍是纯白纸 + 用户设定的颜色。
-  p.layout.options.color = 0xff1a1a1a;
-  p.score = score;
+  const p = new ScorePainter(PaintResources.fixed(meta));
   const breakDesc = f.getSection(LayoutSection)?.desc ?? null;
   try {
-    if (opts.titlePage) {
-      // resize() prepends a standalone title page at index 0.
-      p.resize(width, height, breakDesc);
-      return p.renderPage(0);
-    }
-    p.pageWidth = width;
-    p.pageHeight = height;
-    p.layout.fromScore(score, breakDesc, width, height);
-    const pg = p.layout.pages[0];
-    if (!pg) return null;
-    pg.update();
+    p.loadSync({
+      view: "original",
+      score,
+      breakDesc,
+      style: null,
+      fontSize,
+      // 示例画在压暗的米白纸上（styles.css 的 --help-paper），墨色也从纯黑收一档，
+      // 免得深色界面上黑白对比过硬。真正的谱面预览仍是纯白纸 + 用户设定的颜色。
+      ink: 0xff1a1a1a,
+      page: { w: width, h: height },
+      // 标题页那一种：第 0 页是独立的标题页；否则只排谱行、取第一页
+      snippet: !opts.titlePage,
+    });
+    if (p.pageCount === 0) return null;
     return p.renderPage(0);
   } catch {
     return null;

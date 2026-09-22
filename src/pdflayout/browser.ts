@@ -12,9 +12,8 @@ import type { LayoutOptions } from "../layout/options";
 import type { DrawItem, DrawPage, DrawText } from "./drawlist";
 import type { BookStyle } from "./bookstyle";
 import type { StyleRole } from "../style/sheet";
-import { JinpuPainter } from "../layout/painter";
+import { jianpuLayoutOf, measureJianpu, PaintResources, ScorePainter, type JianpuConfig } from "../layout/painter";
 import { computeStyle } from "../style/cascade";
-import { applyJianpuStyle, jianpuFontSize } from "../style/jianpu";
 import { THEMES } from "../style/themes";
 import { walkPageItem, type ItemVisitor } from "../layout/walk";
 import type { FitMetric } from "../score/applybreaks";
@@ -246,18 +245,25 @@ export function maxStaffRowCells(pages: DrawPage[]): number {
   return mx;
 }
 
+/** 成书这一路的简谱排版设置：字号取 lyric 那一档、灌进 BookStyle（`book` 预设）。 */
+function bookConfig(style: BookStyle): JianpuConfig {
+  return { style: computeStyle([THEMES.book, [{ set: { book: style } }]], { engine: "book" }) };
+}
+
+/** 成书这一路灌好的排版选项（不排谱；样式快照脚本比对用）。 */
+export function bookLayoutOptions(style: BookStyle, smuflMeta?: MetaData): LayoutOptions {
+  return jianpuLayoutOf(bookConfig(style), { smuflMeta }).options;
+}
+
 /**
- * 成书这一路的排版器构造：字号取 lyric 那一档、灌进 BookStyle、注入 SMuFL 元数据。
+ * 成书这一路排一首：按 BookStyle 排到宽 `style.page.w`、高 `pageH` 的纸上，第 0 页是排版器给单曲加的独立标题页。
  *
- * 三个调用点（`measureChordSpans` / `measureCellsPerLine` / scripts/rebuild.mjs 的 `renderPages`）
- * 原来各抄了一份这三行，改一处就得记得改另外两处。`smuflMeta` 不注入的话，
- * layout 会在延长号/跳转记号上抛 "no smufl bbox"。
+ * 三个调用点（`measureCellsPerLine` / scripts/rebuild.mjs 的 `renderPages` 两次）共用这一个构造。
+ * `smuflMeta` 不给的话，layout 会在延长号/跳转记号上抛 "no smufl bbox"。
  */
-export function makeBookPainter(style: BookStyle, smuflMeta?: MetaData): JinpuPainter {
-  const sheet = computeStyle([THEMES.book, [{ set: { book: style } }]], { engine: "book" });
-  const p = new JinpuPainter(jianpuFontSize(sheet));
-  applyJianpuStyle(p.layout.options, sheet);
-  if (smuflMeta) p.layout.options.smuflMeta = smuflMeta;
+export function layoutBookSong(score: JScore, style: BookStyle, pageH: number, smuflMeta?: MetaData): ScorePainter {
+  const p = new ScorePainter(PaintResources.fixed(smuflMeta));
+  p.loadSync({ view: "original", score, breakDesc: null, ...bookConfig(style), page: { w: style.page.w, h: pageH } });
   return p;
 }
 
@@ -275,10 +281,9 @@ export function makeBookPainter(style: BookStyle, smuflMeta?: MetaData): JinpuPa
  * 补刀/合并反复试的时候不必重排。
  */
 export function measureChordSpans(score: JScore, style: BookStyle, smuflMeta?: MetaData): FitMetric {
-  const p = makeBookPainter(style, smuflMeta);
   // 与 measureCellsPerLine 同理：先清掉原谱的换行，量的是「自然排下来有多宽」。
   clearBreaks(score);
-  const { width, spans } = p.layout.measureNatural(score, style.page.w);
+  const { width, spans } = measureJianpu(score, style.page.w, bookConfig(style), { smuflMeta });
   return { width, spans };
 }
 
@@ -290,13 +295,11 @@ export function measureChordSpans(score: JScore, style: BookStyle, smuflMeta?: M
  * 排版器会在小节中间再折一次，行尾挂着孤零零一个音。
  */
 export function measureCellsPerLine(score: JScore, style: BookStyle, smuflMeta?: MetaData): number {
-  const p = makeBookPainter(style, smuflMeta);
   // **先清掉原谱的换行**：不清的话排版器照 musicxml 的 `<print new-system>` 分行，
   // 量到的是「原书每行几格」而不是「一行放得下几格」——005《荣耀归与天父》原书那几行是
   // 30/26/27/17 格，量出 27，可它其实放得下 30。清掉之后排版器才真的按宽度塞满再折行。
   clearBreaks(score);
-  p.score = score;
-  p.resize(style.page.w, style.page.h, null);
+  const p = layoutBookSong(score, style, style.page.h, smuflMeta);
   const opt = p.layout.options;
   const cw = style.page.w - opt.marginLeft - opt.marginRight;
 

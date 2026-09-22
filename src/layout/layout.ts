@@ -1003,7 +1003,7 @@ export class Line {
    *
    * **一张连续长纸**（`continuousPage`，「原样」档走这条）：不分页、不为了撑满纸张
    * 摊开行距，各行首尾相接、间距恒为 `maxLineDist`。纸有多高由内容说了算
-   * （`JinpuPainter.pageSize` 按这一页的实际高度报），观感与文本谱的「原版」一致。
+   * （`ScorePainter.pageSize` 按这一页的实际高度报），观感与文本谱的「原版」一致。
    *
    * 分页时首页要给标题块让出 `firstPageHeadroom`（「原样」档分页那一路，见 LayoutOptions.bookHead）：
    * 首页能放的行少一些，且各行整体下移。放不满的一页行距摊到 `maxLineDist` 为止，剩下的空白

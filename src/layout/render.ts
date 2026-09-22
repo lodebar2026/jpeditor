@@ -16,7 +16,7 @@ export interface PageSvgOptions {
   visitor?: ItemVisitor<SVGGElement>;
 }
 
-/** 一页的页面树 → 独立 `<svg>`。JinpuPainter / PuPainter / MixedPainter 共用
+/** 一页的页面树 → 独立 `<svg>`。ScorePainter / PuPainter 共用
  *  （三者的页面树是同一套 PageItem，只是排版器与 visitor 不同）。
  *  `root` 为空时给出一个空白页而不是抛错。 */
 export function renderPageSvg(

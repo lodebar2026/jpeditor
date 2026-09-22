@@ -156,8 +156,8 @@ export function showOptionsDialog(app: App): void {
   body.className = "settings-form";
 
   const view = app.viewMode;
-  const isMixed = app.mode === "mixed"; // 五线谱 / 混排：走 MixedPainter
-  /** 展开档：两种格式同一个排版器（ExpandedPainter），摆同一组设置。 */
+  const isMixed = app.mode === "mixed"; // 五线谱 / 混排
+  /** 展开档：两种格式同一条展开档排版，摆同一组设置。 */
   const isPpt = !isMixed && view === "expanded";
   /** 走 `PuPainter` 的**原样档**（文本谱、多声部的 123/ABC）：版面由量好的 metrics 定。
    *  单声部 123/ABC 的原样档走简谱引擎（`App._originalOnEngine`），与 `.jpwabc` 原样档摆同一组设置。 */

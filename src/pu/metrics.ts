@@ -16,7 +16,7 @@ import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
 import type { GraceMetrics, GraceNote } from "../common/gracenote";
 import type { NoteElement } from "./ast";
 
-/** 文本谱排版器只排「原样」档（展开档两种格式都走 `jianpu/expanded.ts::ExpandedPainter`）。 */
+/** 文本谱排版器只排「原样」档（展开档两种格式都走 `layout/painter.ts::ScorePainter`）。 */
 export interface PuMetrics {
   pageWidth: number;
   pageHeight: number;

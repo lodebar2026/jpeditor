@@ -7,7 +7,7 @@
 // 预设里的公式**原样保留**（常量改存比例会出浮点尾差，见 sheet.ts 头注释）。
 import type { LayoutOptions } from "../layout/options";
 import { Font } from "../layout/font";
-import { LYRIC_STACK_RATIO } from "../layout/painter";
+import { LYRIC_STACK_RATIO } from "../layout/options";
 import { applyBookPreset } from "./book";
 import { familyOfRole } from "./fonts";
 import { JIANPU_KEYS, ROLE_FONTS, type KeyDef } from "./keys";
@@ -153,7 +153,7 @@ function applyOriginalPreset(opt: LayoutOptions, longImage: boolean): void {
 // 为什么要有这一档：`editor/pptx.ts` 只是序列化器——它把排版好的页面树 1:1 翻成 OOXML
 // （1 排版单位 = 1pt），本身没有任何排版参数。于是谱面观感一改，导出的 .pptx 跟着改。
 //
-// 与「原样」档的另一处分工在 `editor/app.ts::_rebuildPainter`：
+// 与「原样」档的另一处分工在 `editor/app.ts::_jianpuRequest`（按档取样式）：
 // **展开档逐段展开**（一段歌词一遍谱、一屏一段），原样档 `lyricStack > 0`
 // **按原谱排一遍**、多段歌词叠在同一条谱行下。
 //

@@ -461,7 +461,7 @@ p2 / p665 / p666 空白；p6 是整页内嵌位图。
 
 ```
 musicxml → loadScoreDoc → jianpuInputOfXml + phrasePartOfDoc → computePhraseBreaks → applyPhraseBreaks（按元素 id 写换行）
-        → JinpuPainter（style/book.ts::applyBookPreset 注入样式）→ pageItemsToDrawPage → DrawList
+        → ScorePainter（`pdflayout/browser.ts::layoutBookSong`，成书样式）→ pageItemsToDrawPage → DrawList
         → scripts/pdfwrite.mjs → PDF
 ```
 

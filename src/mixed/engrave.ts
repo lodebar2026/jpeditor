@@ -8,8 +8,8 @@
 // 谱里已经带版面（有 `<defaults>`，或小节宽/音符 default-x）的一字不改：作者给的版面比我们排的更贴切。
 
 import type { HAlign, Position, ScoreDoc, Song } from "../model/doc";
-import { LCR, type MixedOptions, type Sys } from "./model";
-import { MixedPainter } from "./painter";
+import { LCR, type MixedOptions, type StaffLayout, type Sys } from "./model";
+import { ScorePainter } from "../layout/painter";
 
 const r1 = (v: number): number => Math.round(v * 10) / 10;
 const at = (pos: Position | undefined, set: Position): Position => ({ ...(pos ?? {}), ...set });
@@ -18,11 +18,10 @@ const at = (pos: Position | undefined, set: Position): Position => ({ ...(pos ??
 export async function engraveScoreDoc(doc: ScoreDoc, page: MixedOptions["page"]): Promise<boolean> {
   const song = doc.songs[0];
   if (!song || song.defaults) return false;
-  const mp = new MixedPainter();
-  mp.showJianpuLayer = false;
-  mp.page = page;
-  await mp.load(doc);
-  const placed = mp.placed;
+  const mp = new ScorePainter();
+  await mp.load({ view: "staff", doc, page, hideBarNumber: false });
+  const placed = mp.staffPlacement;
+  mp.dispose();
   if (!placed?.score.autoLayout || placed.score.song !== song) return false;
   writeLayout(song, placed.score, placed.systems);
   return true;
@@ -30,7 +29,7 @@ export async function engraveScoreDoc(doc: ScoreDoc, page: MixedOptions["page"])
 
 function writeLayout(
   song: Song,
-  score: NonNullable<MixedPainter["placed"]>["score"],
+  score: StaffLayout,
   systems: readonly { sys: Sys; page: number; top: number }[],
 ): void {
   const d = score.defaults;

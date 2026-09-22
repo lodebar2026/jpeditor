@@ -2,7 +2,7 @@
 import type { App } from "./app";
 import { toMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
-import { ExpandedPainter } from "../jianpu/expanded";
+import { ScorePainter } from "../layout/painter";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { emitJpwabc } from "../model/tojpw";
 import { CONVERT_TARGETS, targetSpec, type ConvertTarget } from "../model/convert";
@@ -130,7 +130,7 @@ export async function exportMidi(app: App): Promise<void> {
 }
 
 export async function exportPptx(app: App): Promise<void> {
-  // 一律按**展开档**出片（两种格式同一个 ExpandedPainter）：屏幕在原样档也导得出 PPT 观感，
+  // 一律按**展开档**出片（两种格式同一条展开档排版）：屏幕在原样档也导得出 PPT 观感，
   // 切到展开档预览则是所见即所得。字号/纸张取展开档那一套设置。
   const bytes = await buildPptx(pptxPainter(app), app.colorsOf("expanded").bg);
   await saveBytes(
@@ -141,14 +141,20 @@ export async function exportPptx(app: App): Promise<void> {
 }
 
 /** 按展开档另排一份。屏幕已在展开档时直接用屏幕那个，省一次排版。
- *  **设置取展开档那一套**（`App.expandedOptions`），不是屏幕上原样档的那套——
+ *  **设置取展开档那一套**（`App.styleOf("expanded")`），不是屏幕上原样档的那套——
  *  否则导出的投影片会带着原样档的字号与颜色。 */
-export function pptxPainter(app: App): ExpandedPainter {
-  if (app.painter instanceof ExpandedPainter) return app.painter;
-  const score = app.adapter.caps.layout === "scoredoc" ? app.puScore(true) : app.painter.score;
+export function pptxPainter(app: App): ScorePainter {
+  const cur = app.painter;
+  if (cur.renderer === "jianpu" && cur.jianpuView === "expanded") return cur;
+  const score = app.adapter.caps.layout === "scoredoc" ? app.puScore(true) : cur.score;
   if (!score) throw new Error("这份文本谱里没有可导出的曲行");
-  const p = new ExpandedPainter(app.expandedOptions());
-  p.load(score, app.adapter.caps.layout === "scoredoc" ? null : app.breakDesc);
+  const p = new ScorePainter(cur.resources);
+  p.loadSync({
+    view: "expanded",
+    score,
+    breakDesc: app.adapter.caps.layout === "scoredoc" ? null : app.breakDesc,
+    style: app.styleOf("expanded"),
+  });
   return p;
 }
 
@@ -220,8 +226,7 @@ export async function exportPuJpwabc(app: App): Promise<void> {
 export async function exportMixedPdf(app: App): Promise<void> {
   const painter = app.mixedPainter;
   if (!painter || app.mode !== "mixed") return;
-  const wPt = painter.pageWidthPt;
-  const hPt = painter.pageHeightPt;
+  const { w: wPt, h: hPt } = painter.pageSize(0);
 
   if (isTauriRuntime()) {
     // Tauri path: serialize SVGs and invoke Rust export_pdf command

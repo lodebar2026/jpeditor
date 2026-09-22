@@ -27,7 +27,7 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
   → JpwFile（TitleSection / VoiceSection / WordsSection / RepeatSection / LayoutSection）
   → ANTLR 树
   → ScoreDoc（fromjpw.ts：先切「源文小节」、歌词按它落点，再落成模型小节）
-  ├→ jianpuInputOfJpw → JinpuPainter（原样）/ ExpandedPainter（展开），和弦带元素 id
+  ├→ jianpuInputOfJpw → ScorePainter（原样 / 展开），和弦带元素 id
   ├→ playSourceOfSong → 试听 / MIDI
   └→ emit123 / emitAbc / scoreDocToMusicXml / emitJpwabc
 ```

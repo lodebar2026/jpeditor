@@ -9,7 +9,11 @@ import { showExportDialog } from "./editor/export";
 import { showHelpDialog } from "./editor/help";
 import { isTauriRuntime } from "./editor/fileio";
 import { maybeAutoCheck } from "./editor/update";
-import { MixedPainter } from "./mixed/painter";
+import { PaintResources, ScorePainter } from "./layout/painter";
+import { MixedOptions } from "./mixed/model";
+import type { ScoreDoc } from "./model/doc";
+import { applyStaffStyle } from "./style/staff";
+import { computeStyleForPaper, THEMES } from "./style/themes";
 
 // Built-in sample (圣哉，圣哉，圣哉) — same content as CodeEditor.kt `scr`.
 const SAMPLE = `// ************** JPW-ABC File Ver 1.0 (for JP-Word v5.50m) **************
@@ -76,10 +80,10 @@ async function boot() {
     paletteBtn: document.getElementById("btn-palette") as HTMLButtonElement | null,
   });
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __mixedModel: unknown; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
+  const win = window as unknown as { __app: App; __mixedPainter: ReturnType<typeof staffProbe>; __mixedModel: unknown; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
     __j123: unknown; __pptx: unknown; __songbook: unknown };
   win.__app = app;
-  win.__mixedPainter = new MixedPainter();
+  win.__mixedPainter = staffProbe(meta);
   // 混排模型（`AccidentalStat` / `GlyphCodes`）暴露，供 scripts/jianpu-semantic-check.mjs 三方比简谱语义。
   win.__mixedModel = Promise.all([import("./mixed/model"), import("./smufl/smufl"), import("./mixed/layout"), import("./mixed/staffpages")])
     .then(([model, smufl, layout, pages]) => ({ ...model, GlyphCodes: smufl.GlyphCodes, MetaData: smufl.MetaData, ...layout, formatMixedScore: pages.formatMixedScore }));
@@ -499,3 +503,33 @@ window.addEventListener("DOMContentLoaded", () => {
     );
   });
 });
+
+/** 无头回归脚本用的混排排版入口（`load / pageCount / renderPage / pageWidthPt / pageHeightPt / score / _options`，
+ *  旧 `MixedPainter` 的那几样），由统一的 `ScorePainter` 实现。脚本迁完即删（docs/实现/PuPainter退役.md P7）。 */
+function staffProbe(meta: MetaData) {
+  const p = new ScorePainter(PaintResources.fixed(meta));
+  const staffStyle = () => computeStyleForPaper([THEMES.staff], { engine: "staff" });
+  return {
+    async load(doc: ScoreDoc): Promise<void> {
+      await p.load({ view: "mixed", doc, page: null, hideBarNumber: false });
+    },
+    get pageCount(): number {
+      return p.pageCount;
+    },
+    renderPage: (i: number): SVGSVGElement => p.renderPage(i),
+    get pageWidthPt(): number {
+      return p.pageSize(0).w;
+    },
+    get pageHeightPt(): number {
+      return p.pageSize(0).h;
+    },
+    get score() {
+      return p.staffPlacement?.score ?? null;
+    },
+    async _options(): Promise<MixedOptions> {
+      const o = new MixedOptions(meta);
+      applyStaffStyle(o, staffStyle());
+      return o;
+    },
+  };
+}

@@ -63,7 +63,7 @@ export interface FormatCaps {
    *  （文本谱、123、ABC）；`jpwabc` = `.jpwabc` 经 `jianpuInputOfJpw` 走简谱引擎（两档）。 */
   layout: "scoredoc" | "jpwabc";
   /** `scoredoc` 这一路**原样档**用哪个排版器：`jianpu` = 投影成简谱引擎输入、与 `.jpwabc` 原样档同一个
-   *  `JinpuPainter`（123、ABC；多声部的曲子仍回落 `PuPainter`，引擎只排一条旋律）；
+   *  `ScorePainter`（123、ABC；多声部的曲子仍回落 `PuPainter`，引擎只排一条旋律）；
    *  `pu` = `PuPainter`（文本谱的印刷原版观感、MusicXML）。`jpwabc` 本来就走引擎。 */
   originalEngine: "jianpu" | "pu";
   /** 有没有「按乐句重排」（要有 `FormatAdapter.relayoutText`）。`.musicxml` 没有代码区，不给。 */
@@ -172,7 +172,7 @@ const PU: FormatAdapter = {
 };
 
 /** 123 —— 简谱主格式。原生解析直出 `ScoreDoc`；排版直接吃 `ScoreDoc`。
- *  档位旋钮跟文本谱同一个（`puProfile`）：两者都走 `PuPainter`/`ExpandedPainter` 这一对。 */
+ *  档位旋钮跟文本谱同一个（`puProfile`）：两者都走 `PuPainter`（原样）/`ScorePainter`（展开）这一对。 */
 const J123: FormatAdapter = {
   id: "123",
   defaultExt: ".123",

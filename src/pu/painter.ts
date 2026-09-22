@@ -288,11 +288,11 @@ const PU_BARLINE_SPEC: Record<string, BarlineSpec | undefined> = {
 
 /**
  * 文本谱的「原样」档排版器（印刷原版的观感）。「展开」档不走这里：文本谱先投影成简谱引擎输入，
- * 与 `.jpwabc` 同走 `jianpu/expanded.ts::ExpandedPainter`。
+ * 与 `.jpwabc` 同走 `layout/painter.ts::ScorePainter` 展开档。
  */
 export class PuPainter implements PagePainter {
   metrics: PuMetrics;
-  /** 与 JinpuPainter 同名，便于 buildPptx 等直接取用 */
+  /** 与 ScorePainter 同名，便于 buildPptx 等直接取用 */
   layout: { pages: Group[] } = { pages: [] };
   pageWidth = 0;
   pageHeight = 0;

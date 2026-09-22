@@ -27,7 +27,8 @@ export type PaintTarget =
   | { kind: "lyric"; songIndex: number; id: ElementId; lyricVerse: number; occurrence?: number };
 
 export interface LayoutHit {
-  readonly target: PaintTarget;
+  /** 命中所在音符格的元素；页眉、小节线等不属于任何元素的为 null。 */
+  readonly target: PaintTarget | null;
   readonly pageIndex: number;
   readonly item: PageItem;
   readonly boundsPt: { x: number; y: number; w: number; h: number };

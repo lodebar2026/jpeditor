@@ -3,6 +3,9 @@ import { MetaData } from "../smufl/smufl";
 import { Rect, Colors } from "../common/geom";
 import type { CompressMode } from "../common/cjkpunct";
 
+/** 「原样」档多段歌词叠排时的段间行距 ÷ 歌词字号。原书量到的是 1.3 上下。 */
+export const LYRIC_STACK_RATIO = 1.35;
+
 // ---------------- options / CJK util ----------------
 
 export class LayoutOptions {
@@ -79,14 +82,14 @@ export class LayoutOptions {
   lyricStack = 0;
   /** **一张连续长纸**：不按纸张高度分页，所有谱行首尾相接排成一页（高度由内容定）。
    *  「原样」档走它——那一档是「原样展示」，与文本谱的「原版」同一种观感；
-   *  展开档仍按 16:9 的纸分页。见 `Line.layoutVertically` 与 `JinpuPainter.resize`。 */
+   *  展开档仍按 16:9 的纸分页。见 `Line.layoutVertically` 与 `jianpupages.ts::layoutOriginalPages`。 */
   continuousPage = false;
   /** 标题与词曲**排在第一页的顶上**（印刷歌本的排法），而不是另起一张标题页。
    *  「原样」档走它——长图那一档由 `continuousPage` 隐含，分页那一档靠这个字段。
-   *  展开档仍是标题页独占第一屏。见 `JinpuPainter.resize`。 */
+   *  展开档仍是标题页独占第一屏。见 `jianpupages.ts::layoutOriginalPages`。 */
   bookHead = false;
   /** 第一页顶部为标题块预留的高度。分页时首页可用高度按它扣减、首页各行整体下移。
-   *  由 `JinpuPainter.resize` 量出 `bookHead` 的实际高度后填，**不是给人配的**。 */
+   *  由 `jianpupages.ts::layoutOriginalPages` 量出 `bookHead` 的实际高度后填，**不是给人配的**。 */
   firstPageHeadroom = 0;
   /** 歌词标点挤压的档（见 common/cjkpunct.ts::CompressMode）。
    *

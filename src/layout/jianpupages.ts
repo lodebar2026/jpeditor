@@ -85,7 +85,7 @@ export function layoutOriginalPages(layout: Layout, score: JScore, w: number, h:
   opt.firstPageHeadroom = head && !opt.continuousPage ? head.height + opt.marginTop : 0;
   layout.fromScore(score, dur, w, h);
   // 没有页脚：原样档是印刷歌本的排法，成书（`pageFurniture: "none"`）的页眉页脚由整本那一层统一加；
-  // 页脚只归展开档（ExpandedPainter）。
+  // 页脚只归展开档（`layoutExpandedPages`）。
   if (opt.continuousPage) pageHeights = stackContinuous(layout, head!);
   else if (head) attachBookHead(layout, head);
   else {
