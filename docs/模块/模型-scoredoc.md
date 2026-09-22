@@ -42,7 +42,7 @@
 | `src/omr/todoc.ts` | ← 简谱识别结果（`RecognizedScore` 直出简谱形状，与 `j123/parse.ts` 同口径；不经 MusicXML） |
 | `src/model/tojpw.ts` | → `.jpwabc`（`emitJpwabc`；写出端只经输入接口读谱，两侧输入由 `playdoc.ts::jpwInputOfDoc` / `playsong.ts::jpwInputOfSong` 拼） |
 | `src/model/phrasedoc.ts` / `src/pu/phrasesong.ts` | 断句输入（MusicXML 形状 / 简谱形状），同一份小节视图也满足演唱顺序的输入 |
-| `src/model/playdoc.ts` / `src/pu/playsong.ts` | **演唱顺序**（`PlayData`）、试听输入（`PlaySource`）与 `.jpwabc` 写出端输入：反复、房号、跳转、多段歌词逐段、`Song.playOrder`；推理本体在 `score/playorder.ts`。回归 `playorder-check --cmp` |
+| `src/model/playdoc.ts` / `src/model/playsong.ts` | **演唱顺序**（`PlayData`）、试听输入（`PlaySource`）与 `.jpwabc` 写出端输入：反复、房号、跳转、多段歌词逐段、`Song.playOrder`；推理本体在 `score/playorder.ts`。回归 `playorder-check --cmp` |
 | `src/model/capability.ts` | **格式能力表**：每种格式装得下什么 + `planSave`（另存为会丢什么） |
 
 Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli`）。

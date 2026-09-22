@@ -1,7 +1,8 @@
-// 简谱形状的 `ScoreDoc`（文本谱 / 123 / ABC / `.jpwabc`）→ 演唱顺序、试听输入、`.jpwabc` 写出端输入。
+// 试听统一入口 `playSourceOf`（各格式共用），以及简谱形状的 `ScoreDoc`（文本谱 / 123 / ABC / `.jpwabc`）
+// → 演唱顺序、试听输入、`.jpwabc` 写出端输入。
 //
-// 与 `model/playdoc.ts`（MusicXML 形状）分工同断句那一对（`phrasesong.ts` / `phrasedoc.ts`），
-// 小节序列与断句共用 `phrasesong.ts::buildMeasures`。**口径同简谱引擎输入 `jianpuinput.ts::jianpuInputOfDoc`**：
+// 与 `playdoc.ts`（MusicXML 形状）分工同断句那一对（`pu/phrasesong.ts` / `phrasedoc.ts`），
+// 小节序列与断句共用 `pu/phrasesong.ts::buildMeasures`，行视图取 `pu/slots.ts::docView`。**口径同简谱引擎输入 `jianpuinput.ts::jianpuInputOfDoc`**：
 //   - 每个有曲行的声部都算一份（歌词段数取各声部最大值），反复与跳转只看第一份；
 //     `forExpanded` 时带歌词的声部排第一、同号歌词顺延（同 `ToScoreOptions.forExpanded`）
 //   - 跳转记号换算同 `applyJumps`；推不出来（抛错）才退回整曲按段数逐遍
@@ -9,22 +10,33 @@
 //   - 文档自带演唱顺序（`Song.playOrder`，`.Repeat` 段）→ 照它排，不推
 //   - `.jpwabc` 没有 `.Repeat` → 不推，整曲按段数逐遍（JP-Word 本来就这么唱）
 
-import type { ElementId, PlayPass, ScoreDoc } from "../model/doc";
+import type { ElementId, PlayPass, ScoreDoc } from "./doc";
 import { Fraction } from "../common/fraction";
 import {
   JumpSpec, PlayData, PlaySpecKind, RepeatSpecItem, TimePosition,
   playOrderByVerses, playOrderFromSpec, playOrderOf,
 } from "../score/playorder";
-import { linesOfVoice, voiceNumbers, type PuSong } from "./ast";
+import { linesOfVoice, voiceNumbers, type PuSong } from "../pu/ast";
 import { Key, MusicCommon } from "../score/jppitch";
 import type { PlaySource } from "../score/timeline";
-import type { JpwChordIn, JpwMeasureIn, JpwScoreIn } from "../model/tojpw";
-import { buildMeasures, type JumpOut, type MeasureOut } from "./phrasesong";
-import { docView } from "./slots";
+import type { JpwChordIn, JpwMeasureIn, JpwScoreIn } from "./tojpw";
+import { buildMeasures, type JumpOut, type MeasureOut } from "../pu/phrasesong";
+import { docView } from "../pu/slots";
+import { playSourceOfDoc } from "./playdoc";
+import { isXmlShaped } from "./xmlproject";
 
 export interface PlaySongOptions {
   /** 见 `ToScoreOptions.forExpanded` */
   forExpanded?: boolean;
+}
+
+/** **试听/MIDI 的统一入口**（各格式共用）：MusicXML 形状走 `playdoc.ts::playSourceOfDoc`（全部声部、voice 与力度），
+ *  简谱形状走 `playSourceOfSong`。拼不出（这首没有曲行）返回 null。 */
+export function playSourceOf(doc: ScoreDoc, songIdx = 0, options: PlaySongOptions = {}): PlaySource | null {
+  const song = doc.songs[songIdx];
+  if (!song) return null;
+  if (isXmlShaped(song)) return playSourceOfDoc(song);
+  return playSourceOfSong(doc, songIdx, options);
 }
 
 /** 演唱顺序（`measures` / `isSimpple` / `hasRepeat` 与跳转表；速度不在这里）。这首没有曲行时返回 null。 */

@@ -8,7 +8,7 @@ export { jianpuInputOfDoc, type JianpuInputOptions } from "../model/jianpuinput"
 export { relayoutPuText } from "./relayout";
 export { puPhraseLines, type PuNewLine } from "./phrase";
 export { phrasePartOfSong } from "./phrasesong";
-export { playDataOfSong, playSourceOfSong } from "./playsong";
+export { playDataOfSong, playSourceOf, playSourceOfSong } from "../model/playsong";
 // 展开档应有几遍（两种格式共用的判据；回归脚本经 window.__pu 取用）
 export { countPasses } from "../jianpu/expand";
 export { docView, type DocView, type SongView, type RowView, type SlotRef } from "./slots";

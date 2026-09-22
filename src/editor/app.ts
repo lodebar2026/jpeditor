@@ -42,9 +42,7 @@ import { MixedPainter } from "../mixed/painter";
 import { PlaybackController, type PlaybackHost } from "./playback";
 import type { PlayPoint } from "./player";
 import type { PlaySource } from "../score/timeline";
-import { playSourceOfSong } from "../pu/playsong";
-import { playSourceOfDoc } from "../model/playdoc";
-import { isXmlShaped } from "../model/xmlproject";
+import { playSourceOf } from "../model/playsong";
 import { OmrController, type OmrHost } from "./omrctl";
 import type { JianpuLayoutMode, JpProfileName } from "../jianpu/profile";
 import {
@@ -1113,9 +1111,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     if (c && c.doc === doc && c.forExpanded === forExpanded) return c.src;
     let src: PlaySource | null = null;
     try {
-      const song = doc.songs[0];
-      if (song && isXmlShaped(song)) src = playSourceOfDoc(song);
-      else src = playSourceOfSong(doc, 0, forExpanded ? { forExpanded } : {});
+      src = playSourceOf(doc, 0, forExpanded ? { forExpanded } : {});
     } catch (e) {
       console.error("试听输入拼不出", e);
     }

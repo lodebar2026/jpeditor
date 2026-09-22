@@ -28,7 +28,7 @@ import type {
 import { playDataOfDoc, tempoOfDoc } from "./playdoc";
 import { docView, type SlotRef } from "../pu/slots";
 import { distinctVerses, jpAlterOf } from "../pu/phrasesong";
-import { playDataOfSong } from "../pu/playsong";
+import { playDataOfSong } from "./playsong";
 import { linesOfVoice, marksAt, nextSyllables, takesLyric, voiceNumbers } from "../pu/ast";
 import type { LyricLine, Mark, NoteElement, PuSong, ScoreLine } from "../pu/ast";
 

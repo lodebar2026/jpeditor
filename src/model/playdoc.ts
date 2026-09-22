@@ -4,7 +4,7 @@
 //   - 只读第一声部；小节、和弦、歌词段号、房号、反复经 `phrasedoc.ts::phrasePartOfDoc` 拼（与断句同一份输入）
 //   - 跳转取 `<direction><sound>`：落点是**游标当时的位置**（最后一个非倚音和弦的终点），
 //     由 `Direction.afterElements` 还原成它前面那个音符的终点
-// 简谱形状（文本谱 / 123 / ABC / `.jpwabc`）在 `pu/playsong.ts`。
+// 简谱形状（文本谱 / 123 / ABC / `.jpwabc`）在 `model/playsong.ts`。
 
 import { Fraction } from "../common/fraction";
 import { JumpSpec, PlayData, PlaySpecKind, TimePosition, playOrderOf } from "../score/playorder";

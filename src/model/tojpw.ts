@@ -11,7 +11,7 @@ import { BarStyle } from "../score/enums";
 import type { ScoreDoc } from "./doc";
 import { jpwInputOfDoc } from "./playdoc";
 import { isXmlShaped } from "./xmlproject";
-import { jpwInputOfSong } from "../pu/playsong";
+import { jpwInputOfSong } from "./playsong";
 
 function escape(s: string): string {
   return s.replace(/\n/g, "\\n");

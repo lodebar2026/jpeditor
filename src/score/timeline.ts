@@ -3,8 +3,8 @@
 // Consumed by both the MIDI export (toMidi) and the in-editor player (ScorePlayer),
 // so the two stay in lockstep. Times are in quarter-note units.
 //
-// 输入形状：只经下面这组接口读谱，由 `pu/playsong.ts::playSourceOfSong`（简谱形状）
-// 与 `model/playdoc.ts::playSourceOfDoc`（MusicXML 形状）从 `ScoreDoc` 拼。
+// 输入形状：只经下面这组接口读谱，由 `model/playsong.ts::playSourceOf` 从 `ScoreDoc` 拼
+//（它按形状分给 `playSourceOfSong`（简谱形状）与 `model/playdoc.ts::playSourceOfDoc`（MusicXML 形状））。
 
 import type { Fraction } from "../common/fraction";
 import type { ElementId } from "../model/doc";
