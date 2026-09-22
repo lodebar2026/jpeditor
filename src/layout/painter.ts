@@ -6,7 +6,7 @@
 
 import { Point, Rect, colorToCss } from "../common/geom";
 import { Font } from "./font";
-import { Group, PageItem, TextFrame, SmuflText } from "./pageitem";
+import { Group, PageItem, TextFrame, SmuflText, findByClass } from "./pageitem";
 import { NoteEntry } from "./entry";
 import { Layout } from "./layout";
 import { MusicCommon } from "../score/jppitch";
@@ -86,6 +86,17 @@ export abstract class ScorePainter implements PagePainter {
   chordGroupEl(id: ElementId, pass = 0): SVGGElement | null {
     const hit = this.hitFor(id, pass);
     return hit ? this.nodeMap.get(hit.item) ?? null : null;
+  }
+
+  /** 元素 `id` 第 `pass` 遍那个音符格里带类 `cls` 的子项的 `<g>`，按页面树顺序
+   *  （可视化编辑选中挂在音符上的记号：和弦名 `chord-group`、装饰 `artic`）。 */
+  chordPartEls(id: ElementId, cls: string, pass = 0): SVGGElement[] {
+    const hit = this.hitFor(id, pass);
+    if (!hit) return [];
+    return findByClass(hit.item, cls).flatMap((it) => {
+      const el = this.nodeMap.get(it);
+      return el ? [el] : [];
+    });
   }
 
   protected multipleLineText(str: string, fnt: Font, w: number, clr: number): PageItem {

@@ -16,7 +16,7 @@ import { puUserOptionsOf } from "../style/pu";
 import type { StyleSheet } from "../style/sheet";
 import { graceGeometry } from "../common/gracenote";
 import { Matrix33, Point, type Rect } from "../common/geom";
-import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFrame } from "../layout/pageitem";
+import { GraphicLine, GraphicPath, Group, PageItem, type PathSeg, Slur, TextFrame, findByClass } from "../layout/pageitem";
 import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmony";
 import { jpBarlineItems, jpDot, jpTimeSigItems } from "../layout/jpglyph";
 import type { BarlineSpec } from "../layout/entry";
@@ -1108,7 +1108,9 @@ export class PuPainter implements PagePainter {
     } else if (note.annotation) {
       const font = new Font(m.fontFamily, m.annotationSize);
       const a = note.annotation;
-      g.add(text(a, x - font.measureText(a) / 2, baseline + m.annotationY, font, INK));
+      const t = text(a, x - font.measureText(a) / 2, baseline + m.annotationY, font, INK);
+      t.classes.add("annotation"); // 可视化编辑认挂载记号用（`notePartEls`）
+      g.add(t);
     }
 
     // 倚音：主音左/右侧的小号数字（默认八分，故带一条减时线）
@@ -1116,7 +1118,9 @@ export class PuPainter implements PagePainter {
     this.paintGrace(g, note.graceAfter, x, baseline, 1);
 
     // `&xx` 记号
+    const before = g.children.length;
     this.paintOrnaments(g, note.ornaments, x, baseline, stackTop(note, this.metrics));
+    for (const it of g.children.slice(before)) it.classes.add("ornament"); // 同上
 
     root.add(g);
     const id = this.doc?.idOf.get(note);
@@ -1458,6 +1462,17 @@ export class PuPainter implements PagePainter {
   noteGroupEl(id: ElementId): SVGGElement | null {
     const hit = this.noteItems.get(id);
     return hit ? (this.nodeMap.get(hit.item) ?? null) : null;
+  }
+
+  /** 某音符格里带类 `cls` 的子项的 SVG 节点，按页面树顺序（可视化编辑选中挂载记号：
+   *  和弦名 `chord`、注记 `annotation`、`&xx` 记号 `ornament`）。 */
+  notePartEls(id: ElementId, cls: string): SVGGElement[] {
+    const hit = this.noteItems.get(id);
+    if (!hit) return [];
+    return findByClass(hit.item, cls).flatMap((it) => {
+      const el = this.nodeMap.get(it);
+      return el ? [el] : [];
+    });
   }
 
   /** 某音符第 verse 段歌词音节的 SVG 节点（编辑器的双向定位用，见 `editor/sync.ts`）。 */

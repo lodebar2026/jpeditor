@@ -30,6 +30,8 @@ import { isTauriRuntime, saveBytes } from "./fileio";
 import { DOC_EXT, acceptAttr, is123File, isPuFile } from "../common/filetypes";
 import { formatOf, type DocFormatId, type FormatAdapter, type FormatHost } from "./formats";
 import { SyncIndex, type SyncEntry } from "./sync";
+import { VisualEditController, type VisualHost } from "./visual/controller";
+import { visualCursorExtension } from "./visual/cursor";
 import { describeLosses, planSave } from "../model/capability";
 import { targetSpec, type ConvertTarget } from "../model/convert";
 import { showConfirmDialog } from "./dialogs";
@@ -54,7 +56,7 @@ export type ViewMode = JianpuLayoutMode | "staff" | "mixed";
 
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 
-export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost, FileSwitchHost {
+export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost, FileSwitchHost, VisualHost {
   /** 简谱排版器：展开档是 ExpandedPainter（两种格式共用），`.jpwabc` 原样档是 JinpuPainter。
    *  文本谱原样档另走 `_puPainter`，那时这个闲着。 */
   painter: ExpandedPainter | JinpuPainter;
@@ -224,6 +226,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   statusEl: HTMLElement | null = null;
   /** 试听播放的那一摊（播放器、速度倍率、分声部音量）——见 editor/playback.ts。 */
   readonly playback: PlaybackController = new PlaybackController(this);
+  /** 可视化编辑（谱面上选中、光标、快捷键），入口 `app.visual.*` */
+  readonly visual: VisualEditController = new VisualEditController(this);
   /** 试听/导出 MIDI 的速度倍率（1 = 谱面标注速度）。持久化。 */
   // Selected note (for "play from here"): its chord + which verse/pass row.
   private _selectedId: ElementId | null = null;
@@ -349,6 +353,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (!s) return;
     this.omr.loadSettings(s);
     this.playback.loadSettings(s);
+    this.visual.loadSettings(s.showFormatMarks);
     if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
     if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
     // 样式用户层（旧版散存的字号/纸/配色字段不读——不做存量迁移）
@@ -375,6 +380,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       omrFormat: this.omr.format,
       jpProfile: this.jpProfile,
       puProfile: this.puProfile,
+      showFormatMarks: this.visual.showFormatMarks,
     });
   }
 
@@ -413,7 +419,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       }
       // 光标/选区一动就同步到谱面。文档改了不在这里同步——索引还是旧偏移，
       // 等 reload 重建完索引再由 _buildSync 刷一次。
-      if (u.selectionSet && !u.docChanged) this._syncCursorToScore();
+      if (u.selectionSet && !u.docChanged) {
+        this._syncCursorToScore();
+        this.visual.refresh();
+      }
     });
     this.view = new EditorView({
       parent,
@@ -425,6 +434,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
           keymap.of([...defaultKeymap, ...historyKeymap]),
           this._highlightCompartment.of(this.adapter.highlighter),
           updateListener,
+          visualCursorExtension,
           this._readOnlyCompartment.of(EditorState.readOnly.of(false)),
           EditorView.lineWrapping,
           EditorView.theme({
@@ -731,17 +741,54 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       if (!this._syncEls.has(el)) this._syncEls.set(el, entry);
     }
     this._syncCursorToScore();
+    this.visual.afterRebuild();
+  }
+
+  // ---- VisualHost（可视化编辑向 App 要的能力，见 `visual/controller.ts`）----
+  get sync(): SyncIndex {
+    return this._sync;
+  }
+
+  visualEnabled(): boolean {
+    return this.mode === "jp" && this.adapter.caps.textEditor && this._sync.size > 0;
+  }
+
+  entryEl(entry: SyncEntry): SVGGElement | null {
+    return this._syncElOf.get(entry) ?? this._syncGroupEl(entry);
+  }
+
+  noteEl(id: ElementId): SVGGElement | null {
+    return this._puPainter ? this._puPainter.noteGroupEl(id) : this.painter.chordGroupEl(id, 0);
   }
 
   /** 一个条目对应的谱面 `<g>`：原样档问 `PuPainter`，展开档按元素 id 问排版器。 */
   private _syncGroupEl(entry: SyncEntry): SVGGElement | null {
+    if (entry.kind === "mark") {
+      const part = this._markPartEl(entry);
+      if (part) return part;
+    }
     const p = this._puPainter;
     if (p) {
-      return entry.verse === null
-        ? p.noteGroupEl(entry.id)
-        : p.syllableGroupEl(entry.id, entry.verse);
+      return entry.kind === "lyric"
+        ? p.syllableGroupEl(entry.id, entry.verse ?? 0)
+        : p.noteGroupEl(entry.id);
     }
     return this.painter.chordGroupEl(entry.id, entry.verse ?? 0);
+  }
+
+  /** 挂在音符上的记号自己的 `<g>`（和弦名、装饰、注记）：按类名在音符格里找，
+   *  同类记号按原文顺序对第几个。弧、画不出来的记号（引擎只画延长号与重音）取不到，借宿主音符的 `<g>`。 */
+  private _markPartEl(entry: SyncEntry): SVGGElement | null {
+    const pu = this._puPainter;
+    const cls = entry.markKind === "harmony" ? (pu ? "chord" : "chord-group")
+      : entry.markKind === "deco" ? (pu ? "ornament" : "artic")
+      : entry.markKind === "annotation" && pu ? "annotation"
+      : null;
+    if (!cls) return null;
+    const els = pu ? pu.notePartEls(entry.id, cls) : this.painter.chordPartEls(entry.id, cls);
+    const same = this._sync.marksOf(entry.id).filter((m) => m.markKind === entry.markKind);
+    const nth = same.findIndex((m) => m.from === entry.from);
+    return els.length === same.length && nth >= 0 ? els[nth] ?? null : null;
   }
 
   /** 文本 → 谱面：光标/选区落在哪些音符上，就给哪些 `<g>` 加 `cursor-at`。
@@ -760,7 +807,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       el.classList.add("cursor-at");
       this._syncMarked.push(el);
       // 光标停在音符上时，它的第一段歌词也一起亮（与播放高亮同一套观感）
-      if (entry.verse === null && this._puPainter) {
+      if (entry.kind === "note" && this._puPainter) {
         const syl = this._puPainter.syllableGroupEl(entry.id, 0);
         if (syl) {
           syl.classList.add("cursor-at");
@@ -773,7 +820,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   /** 谱面 → 文本：把光标放到这个条目对应的原文区间上。 */
   private _syncScoreToCursor(entry: SyncEntry): void {
-    const span = entry.verse === null
+    const span = entry.kind === "note"
       ? this._sync.spanOfNote(entry.id)
       : { from: entry.from, to: entry.to };
     if (!span) return;
@@ -813,7 +860,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   // ---- 下面三个供脚本化测试（`window.__app`，见 scripts/sync-check.mjs）----
   /** 索引里的全部条目，只给可序列化的那几个字段。 */
   syncEntries(): Array<{ from: number; to: number; verse: number | null }> {
-    return this._sync.all().map((e) => ({ from: e.from, to: e.to, verse: e.verse }));
+    // 只给音符与歌词（`sync-check` 按它们验两个方向；增时线、记号借宿主的 `<g>`，不单独验）
+    return this._sync.all()
+      .filter((e) => e.kind === "note" || e.kind === "lyric")
+      .map((e) => ({ from: e.from, to: e.to, verse: e.verse }));
   }
 
   /** 某条目对应的谱面 `<g>`（按 `from` + `verse` 认，跨 evaluate 边界不能靠对象身份）。 */
@@ -1040,7 +1090,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   private onPageClick(pageIndex: number, svg: SVGSVGElement, ev: MouseEvent): void {
     // 双向定位先走一遍：它按 `<g>` 认（事件冒泡即可），**不依赖几何拾取**——
     // 两个档因此共用同一条路径，也不受 pickPage 拾取不到时的早退影响。
-    this._onSyncClick(ev);
+    // 可视化编辑接走了（点换行符、点空白落插入光标、Shift+点扩选）就到此为止。
+    if (this._onSyncClick(ev)) return;
     const ctm = svg.getScreenCTM();
     if (!ctm) return;
     const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
@@ -1068,10 +1119,12 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   /** 谱面被点击 → 代码区光标跳到对应原文。找不到对应条目就什么都不做
    *  （点在标题、小节线上都算找不到）。 */
-  private _onSyncClick(ev: Event): void {
-    if (this.mode !== "jp") return;
+  private _onSyncClick(ev: MouseEvent): boolean {
+    if (this.mode !== "jp") return false;
     const entry = this._syncEntryAt(ev.target);
+    if (this.visual.handleClick(ev, entry)) return true;
     if (entry) this._syncScoreToCursor(entry);
+    return false;
   }
 
   private deselect(): void {

@@ -729,3 +729,18 @@ export function slurStyleOf(opt: LayoutOptions): SlurStyle {
     flatLineWidth: opt.slurFlatWidth,
   };
 }
+
+/** 子树里带类 `cls` 的项，按页面树顺序；命中的项不再往下找。
+ *  可视化编辑按它从音符格里认出挂在音符上的记号（和弦名 `chord-group`、装饰 `artic`…）。 */
+export function findByClass(root: PageItem, cls: string): PageItem[] {
+  const out: PageItem[] = [];
+  const walk = (it: PageItem): void => {
+    if (it !== root && it.classes.has(cls)) {
+      out.push(it);
+      return;
+    }
+    for (const c of it.children) walk(c);
+  };
+  walk(root);
+  return out;
+}

@@ -1,4 +1,4 @@
-// 帮助对话框：双标签页（功能帮助 + 记谱法）。只读，自建 overlay（参照 export.ts 的
+// 帮助对话框：四个标签页（功能帮助、可视化编辑、记谱法、关于）。只读，自建 overlay（参照 export.ts 的
 // showExportDialog），复用 .modal-overlay/.modal-box 样式 + 本文件专属的 .help-* 样式。
 // 功能帮助 = 可展开主题列表（<details>）；记谱法 = 分节说明 + 实时渲染的 SVG 示例。
 import type { App } from "./app";
@@ -10,6 +10,7 @@ import { PlayItem } from "../score/playorder";
 import type { MetaData } from "../smufl/smufl";
 import { isTauriRuntime } from "./fileio";
 import { FEEDBACK_EMAIL, openFeedbackMail } from "./feedback";
+import { VISUAL_ACTIONS } from "./visual/keys";
 import {
   APP_VERSION, HOMEPAGE, checkForUpdate, isAutoCheckEnabled, openExternal,
   promptUpdate, setAutoCheckEnabled,
@@ -250,6 +251,90 @@ function buildFeatureHelp(): HTMLElement {
     const sum = el("summary");
     sum.append(el("span", "help-topic-title", t.title));
     for (const b of t.badges ?? []) sum.append(el("span", "help-badge", BADGE_TEXT[b]));
+    det.append(sum);
+    for (const line of t.body) det.append(para(line));
+    if (t.extra) det.append(t.extra());
+    pane.append(det);
+  }
+  return pane;
+}
+
+// ---- 可视化编辑 -------------------------------------------------------------
+
+/** 可视化编辑的操作说明。快捷键表由 `visual/keys.ts` 的动作表生成，与实际绑定不会脱节；
+ *  各阶段新增的操作同步写进这里。 */
+const VISUAL_TOPICS: Topic[] = [
+  {
+    title: "两种模式、两种光标",
+    body: [
+      "在谱面上直接改谱：**点一下谱面**让它接管键盘，右上角显示当前模式。改动都落回左侧源码，源码仍是唯一的真身。",
+      "**编辑模式**（方块光标）：方块罩住选中的元素，键入的操作只作用于它。在谱面上点一个音符就进入编辑模式。",
+      "**插入模式**（竖线光标）：竖线落在两个元素之间，操作在光标处插入。点两个音符之间的空白处就进入插入模式。",
+      "`Insert` 或 `i` 从编辑模式切到插入模式（竖线落在选中元素后面），`Esc` 切回编辑模式（方块罩住光标前面那个元素）。",
+      "两种光标**在源码区与谱面同时显示**：谱面有焦点时，源码区里选中的音符 token 带方框、插入位置有一条闪烁的竖线；反过来在源码区移动光标，谱面上的光标跟着走。",
+    ],
+  },
+  {
+    title: "选中与移动",
+    body: [
+      "`←` / `→` 在音符、增时线、小节线、换行符之间逐个移动；`Shift+←` / `Shift+→` 扩大选区；`Home` / `End` 跳到谱面上这一行的头尾。",
+      "`Shift` + 点击：从当前选区一直选到点中的音符。",
+    ],
+  },
+  {
+    title: "挂在音符上的记号",
+    body: [
+      "和弦名、延长号等装饰、段落注记、圆滑线/延音线都可以单独选中：直接在谱面上点它（和弦名、装饰、注记），或先选中音符再按 `Tab` 在它挂的记号之间轮换，轮完一圈回到音符本身。",
+      "选中记号后，源码区同时选中它对应的那段原文（如 `\"G\"`、`!fermata!`、圆滑线的括号）。",
+    ],
+  },
+  {
+    title: "格式标记（换行符、换页符）",
+    body: [
+      "排版区右上角的 **¶** 按钮（或 `Ctrl/⌘+Shift+M`）开关格式标记：谱面每行行末显示换行符 `↵`，换页处显示 `⤓`；源码里对应的 `$`、`$$`、`$(…)`、`[fenye]` 也会淡色标出。",
+      "点一下换行符即选中它。文本谱（番茄 / 诗歌本）的换行就是另起一行 `Q:`，原文里没有单独的符号。",
+    ],
+  },
+  {
+    title: "撤销与重做",
+    body: [
+      "谱面上的 `Ctrl/⌘+Z` / `Ctrl/⌘+Shift+Z` 与源码区共用同一份撤销记录，在哪边撤销都一样。",
+    ],
+  },
+  {
+    title: "快捷键一览",
+    body: ["以下快捷键在**谱面有焦点**时生效（先点一下谱面）。`/` 不绑定，留给歌词对位。"],
+    extra: visualShortcutTable,
+  },
+];
+
+function visualShortcutTable(): HTMLElement {
+  const table = el("table", "help-shortcuts");
+  let group = "";
+  for (const a of VISUAL_ACTIONS) {
+    if (a.group !== group) {
+      group = a.group;
+      const tr = el("tr");
+      const th = el("th", undefined, group);
+      th.colSpan = 3;
+      tr.append(th);
+      table.append(tr);
+    }
+    const tr = el("tr");
+    const mode = a.modes ? (a.modes[0] === "edit" ? "编辑模式" : "插入模式") : "";
+    tr.append(el("td", undefined, a.label), el("td", undefined, a.keyText), el("td", undefined, [a.help, mode && `（${mode}）`].join("")));
+    table.append(tr);
+  }
+  return table;
+}
+
+function buildVisualHelp(): HTMLElement {
+  const pane = el("div", "help-pane");
+  pane.append(para("在谱面上直接选中、插入、修改音符与记号，改动实时写回左侧源码。适用于有源码区的格式（123、`.jpwabc`、文本谱、ABC）的简谱「展开」「原样」两档。", "help-intro"));
+  for (const t of VISUAL_TOPICS) {
+    const det = el("details", "help-topic");
+    const sum = el("summary");
+    sum.append(el("span", "help-topic-title", t.title));
     det.append(sum);
     for (const line of t.body) det.append(para(line));
     if (t.extra) det.append(t.extra());
@@ -568,6 +653,7 @@ export function showHelpDialog(app: App): void {
   const notationPane = buildNotationHelp(app);
   const pages: { label: string; pane: HTMLElement; onFirstShow?: () => void }[] = [
     { label: "功能帮助", pane: buildFeatureHelp() },
+    { label: "可视化编辑", pane: buildVisualHelp() },
     {
       label: "记谱法",
       pane: notationPane,

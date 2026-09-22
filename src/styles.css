@@ -483,6 +483,29 @@ button:focus-visible, select:focus-visible {
 .score-page g.cursor-at [fill]:not([fill="none"]) { fill: #12b886; }
 .score-page g.cursor-at [stroke] { stroke: #12b886; }
 
+/* 可视化编辑（editor/visual/）：谱面叠加层与代码区的两种光标。
+   插入 = 竖线（闪烁），编辑 = 方块；换行符 ↵ / 换页符 ⤓ 可点选。 */
+#score-pane:focus { outline: none; }
+#score-pane:focus-visible { box-shadow: inset 0 0 0 2px rgba(18, 184, 134, 0.35); }
+.vis-overlay { pointer-events: none; }
+.vis-overlay .vis-caret { stroke: #12b886; animation: vis-blink 1.06s steps(1) infinite; }
+.vis-overlay .vis-block { fill: rgba(18, 184, 134, 0.10); stroke: #12b886; }
+.vis-overlay .vis-break { pointer-events: all; cursor: pointer; }
+.vis-overlay .vis-break text { fill: #7c8b9a; font-family: ui-sans-serif, system-ui, sans-serif; }
+.vis-overlay .vis-break .vis-break-hit { fill: transparent; }
+.vis-overlay .vis-break:hover .vis-break-hit { fill: rgba(18, 184, 134, 0.12); }
+.vis-overlay .vis-break-selected .vis-break-hit { fill: rgba(18, 184, 134, 0.22); }
+.vis-overlay .vis-break-selected text { fill: #12b886; }
+#score-pane:not(:focus) .vis-overlay .vis-caret { animation: none; opacity: 0.55; }
+@keyframes vis-blink { 50% { opacity: 0; } }
+.cm-vis-block { outline: 2px solid #12b886; background: rgba(18, 184, 134, 0.18); border-radius: 2px; }
+.cm-vis-caret { display: inline-block; width: 0; height: 1.2em; vertical-align: text-bottom; border-left: 2px solid #12b886; margin-right: -2px; animation: vis-blink 1.06s steps(1) infinite; }
+.cm-vis-break { color: #7c8b9a; background: rgba(124, 139, 154, 0.12); border-radius: 2px; }
+.visual-mode { font-size: 12px; padding: 1px 6px; border-radius: 4px; border: 1px solid #12b886; color: #12b886; }
+.visual-mode[data-mode="insert"] { border-style: dashed; }
+.format-marks-button { min-width: 26px; font-weight: 600; }
+.format-marks-button.active { color: #12b886; }
+
 /* playback cursor — highlight the currently sounding note */
 .score-page g.playing [fill]:not([fill="none"]) { fill: #e8590c; }
 .score-page g.playing [stroke] { stroke: #e8590c; }

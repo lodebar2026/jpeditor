@@ -67,6 +67,7 @@ async function boot() {
 
   const app = new App(meta, scorePane);
   app.loadSettings();
+  app.visual.attach(document.getElementById("visual-mode"), document.getElementById("btn-format-marks") as HTMLButtonElement | null);
   app.mountEditor(codePane, SAMPLE);
   const win = window as unknown as { __app: App; __mixedPainter: MixedPainter; __mixedModel: unknown; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
     __j123: unknown; __pptx: unknown; __songbook: unknown };

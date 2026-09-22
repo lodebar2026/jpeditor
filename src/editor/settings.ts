@@ -23,6 +23,8 @@ export interface PersistedSettings {
   /** 当前排版输出（展开 / 原样），两种格式各记一个：简谱 normal|pptx、文本谱 print|slide（slide = 展开）。 */
   jpProfile?: "normal" | "pptx";
   puProfile?: "print" | "slide";
+  /** 谱面上显示换行/换页符号（可视化编辑，交 VisualEditController 自己校验） */
+  showFormatMarks?: unknown;
 }
 
 export function loadPersistedSettings(): PersistedSettings | null {
