@@ -16,7 +16,7 @@
 | 消费者 | 取法 | 引擎内部结构 |
 |---|---|---|
 | 简谱引擎（`layout/`：`.jpwabc` 两档、各格式展开档、成书） | `model/jianpuinput.ts` 投影出只读输入（`layout/input.ts`），按 MusicXML 形状 / 简谱形状 / `.jpwabc` 三个分支 | `Line` / `NoteEntry`（符杠分组、段落词挪位记在引擎里，不写回输入） |
-| 文本谱原样档（`pu/painter.ts`） | 排版行视图 `pu/slots.ts::docView` | `pu/layout.ts` 的定位结构 |
+| 文本谱原样档（`layout/original/compose.ts`） | 排版行视图 `pu/slots.ts::docView` | `layout/original/place.ts` 的定位结构 |
 | 五线谱混排（`mixed/`） | `mixed/layout.ts::layoutStaff` 建版面态 | `StaffLayout` 及各 `*Layout` 节点（`src` 引用模型元素） |
 | 试听 / MIDI | `playdoc.ts::playSourceOfDoc` / `playsong.ts::playSourceOfSong` | `score/timeline.ts` |
 | 断句 | `phrasedoc.ts` / `phrasesong.ts` 拼断句输入（带 `idOf`） | `score/phrase.ts` |

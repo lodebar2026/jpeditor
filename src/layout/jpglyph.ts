@@ -1,6 +1,6 @@
 // 简谱字形的共用绘制原语。
 //
-// 三条简谱路（编辑器/成书重排的 layout.ts、文本谱的 pu/painter.ts、混排的 mixed/render.ts）
+// 三条简谱路（编辑器/成书重排的 layout.ts、原样文档的 layout/original/compose.ts、混排的 mixed/render.ts）
 // 原先各画各的八度点、小节线、拍号——同一样东西三套写法，连**画的是什么**都不一样
 //（八度点：前两者用字体的 `.` 字形，pu 手绘矢量圆；小节线：layout 用 GraphicLine，
 //  pu 用填充 rect）。这里收一份，差异走 style 参数。

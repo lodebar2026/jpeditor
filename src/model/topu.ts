@@ -485,7 +485,7 @@ function writeTail(
 }
 
 /** 本小节第 `from`–`to` 个元素（系统切在小节中间时只写一段）。对位格按写出顺序收进 `slots`。
- *  `startBeat`：小节开头的拍位——上一行开口收尾的小节在这一行接着写时，拍位要接着算（同 `pu/layout.ts` 的 `carryIn`），
+ *  `startBeat`：小节开头的拍位——上一行开口收尾的小节在这一行接着写时，拍位要接着算（同 `layout/original/place.ts` 的 `carryIn`），
  *  否则读回来成了两个小节、续行从 0 重算，补的连断记号就落到别处去了。
  *  @returns 写到的末尾拍位 */
 function writeMeasureBody(

@@ -38,7 +38,7 @@ export const PAPER_SIZES: Record<string, [number, number] | null> = {
 /** 「原样」档能选的纸（含长图）。 */
 export const ORIGINAL_PAPERS = ["A4", "A5", "B5", "Letter", "长图"] as const;
 
-/** 「长图」那一档的纸宽。取文本谱「原版」量到的那一份（`pu/metrics.ts::PRINT.pageWidth`）
+/** 「长图」那一档的纸宽。取文本谱「原版」量到的那一份（`layout/original/metrics.ts::PRINT.pageWidth`）
  *  ——两者本就是同一种观感，长图也就该同宽。 */
 export const LONG_IMAGE_WIDTH = 1000;
 

@@ -1,10 +1,10 @@
-// 文本谱专用排版：AST → 定位结构。
+// 原样文档布局（文本谱与多声部 123/ABC、MusicXML 的原样档）：排版行视图 → 定位结构。原 `layout/original/place.ts`。
 //
 // 与本项目 .jpwabc 的排版引擎分开，因为规则本来就不同：文本谱**不自动断行**——
 // 一行 `Q:` 就是谱面一行（这正是「原版」的意义），行内按固定步进定位、再整体拉伸
 // 到版心宽度；多声部同组上下堆叠并按拍位横向对齐。
 //
-// 只算位置、不碰绘图，绘制在 painter.ts。这样播放高亮只需拿定位结构里的锚点，
+// 只算位置、不碰绘图，构图在 `compose.ts`。这样播放高亮只需拿定位结构里的锚点，
 // 不必反查 SVG。
 
 import type {
@@ -19,11 +19,11 @@ import type {
   ScoreLine,
   SustainElement,
   VoiceGroup,
-} from "./ast";
+} from "../../pu/ast";
 import { contentWidth, puGraceMetrics, puGraceNotes, puSlurRise, type PuMetrics } from "./metrics";
-import { graceAdvance } from "../common/gracenote";
-import { elementQuarters, takesLyric, tupletRatios } from "./ast";
-import { paginate, type SystemBlock } from "../jianpu/vertical";
+import { graceAdvance } from "../../common/gracenote";
+import { elementQuarters, takesLyric, tupletRatios } from "../../pu/ast";
+import { paginate, type SystemBlock } from "../../jianpu/vertical";
 
 /** 一个占位的谱面符号（音符 / 增时线 / 小节线）。 */
 export interface PlacedItem {
@@ -152,7 +152,7 @@ function isBeamed(el: MusicElement): boolean {
  */
 /**
  * 一个音节画出来之后，**墨迹**在锚点左右各伸出多少（音节按**主体**居中于锚点，尾随标点挂在右边——
- * 同 painter.ts::paintSyllables）。由绘制端注入：排版这一层不碰字体。
+ * 同 compose.ts::paintSyllables）。由绘制端注入：排版这一层不碰字体。
  */
 export type LyricMeasure = (syl: LyricSyllable) => { left: number; right: number };
 
@@ -1047,7 +1047,7 @@ export function layoutSong(
     }
   }
   // 连谱号的上下花头各伸出首/末声部 ≈1.5 个墨迹高（粗线探出 0.85，花头字形高 1.18 线距 =
-  // 1.18/4 em × 字号 2.2 墨迹高，见 painter.ts::paintBrace）。末声部底下有歌词时歌词块早把它盖住；
+  // 1.18/4 em × 字号 2.2 墨迹高，见 compose.ts::paintBrace）。末声部底下有歌词时歌词块早把它盖住；
   // 展开档里末声部这一遍没词（同一首歌的 Q2）时，上一组的下花头会压到下一组的上花头。
   // 只在真会相压时把上一块往下撑——不压的一点不动，原样档的行距是对过原书的。
   const braceReach = m.digitInkHeight * (0.85 + (1.18 / 4) * 2.2);
@@ -1059,7 +1059,7 @@ export function layoutSong(
     if (a.bottom < need) a.bottom = need;
   }
   // 首页要让过标题/词曲/调号那一整块——头部行数因谱而异，写死会压到正文
-  // headerBottom 是页首的**墨迹底**（painter.ts::headerBottom）。页首 → 首组**真正的墨迹顶**只空一行
+  // headerBottom 是页首的**墨迹底**（compose.ts::headerBottom）。页首 → 首组**真正的墨迹顶**只空一行
   // （歌词字高，与 system 间距同口径）：墨迹顶取首声部数字/高八度点、和弦等头顶记号、`W:` 文字行里
   // 最高的那个——只按数字顶算，首组头顶有「引子」这类文字行时一行空隙就被吃掉了。
   // 不再拿 bodyTop 兜底（兜底会把「只空一行」重新撑大）；没传页首（0）时才用 bodyTop。

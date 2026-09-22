@@ -235,7 +235,7 @@ export function showOptionsDialog(app: App): void {
   const bgColor = colorInput(app.bgColor);
 
   // ---- 文本谱原样档：纸张 / 长图 / 字号缩放 ----
-  // 文本谱的尺寸是从原书逐项量出来的一整套（pu/metrics.ts），不由一个基础字号派生，
+  // 文本谱的尺寸是从原书逐项量出来的一整套（layout/original/metrics.ts），不由一个基础字号派生，
   // 所以这里给的是**整体缩放**而不是字号——与谱面自带的 `FontSize: all=` 同一语义。
   const puPaper = paperSelect(ORIGINAL_PAPERS, (k) => PAPER_SIZES[k] ?? null, (k) => k === app.puPaper, true);
   // 字号留空/0 = 跟随版式量到的原尺寸；有排好的谱就把当前实际字号填进去当起点

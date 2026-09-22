@@ -13,9 +13,9 @@ export { playDataOfSong, playSourceOf, playSourceOfSong } from "../model/playson
 export { countPasses } from "../jianpu/expand";
 export { docView, type DocView, type SongView, type RowView, type SlotRef } from "./slots";
 export { puToScoreDoc } from "../model/frompu";
-export { layoutDocument, layoutSong, elementBeats } from "./layout";
-export { metricsFor, contentWidth, contentHeight, type PuMetrics } from "./metrics";
-export type { PlacedItem, PlacedPage, PlacedScore, PlacedVoice, PlacedGroup } from "./layout";
+export { layoutDocument, layoutSong, elementBeats } from "../layout/original/place";
+export { metricsFor, contentWidth, contentHeight, type PuMetrics } from "../layout/original/metrics";
+export type { PlacedItem, PlacedPage, PlacedScore, PlacedVoice, PlacedGroup } from "../layout/original/place";
 export type {
   Accidental,
   BarlineElement,

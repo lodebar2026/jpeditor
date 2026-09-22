@@ -3,11 +3,11 @@
 // 文本谱的尺寸是对原版渲染逐项实测的一整套，**不由一个基础字号派生**，所以：
 //   - `roles.note.size`（pt）不直接落值，由 `PuPainter.resolveScale` 换成整体缩放
 //     （分母是这套版式含谱面指令时的数字字号 `digitSize`）；缺省 = 跟随版式；
-//   - 谱面自带的 `FontSize:` / `Margin:` 是**乘法**（百分比），不走深合并，仍由 `pu/metrics.ts::applyDocOptions` 叠。
+//   - 谱面自带的 `FontSize:` / `Margin:` 是**乘法**（百分比），不走深合并，仍由 `layout/original/metrics.ts::applyDocOptions` 叠。
 //
 // 叠放顺序：metricsFor(方言) → applyDocOptions → applyUserOptions(本文件给的那层)。
 // **没有逐字段覆盖层**：原样档照原版实测，`@pu` 块连同 `applyPuOverrides` 已删（零使用者）。
-import type { PuUserOptions } from "../pu/metrics";
+import type { PuUserOptions } from "../layout/original/metrics";
 import type { StyleSheet } from "./sheet";
 import { PAPER_SIZES } from "./themes";
 import { resolveLength } from "./units";

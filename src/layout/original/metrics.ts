@@ -11,10 +11,10 @@
 //   每个附点额外                  → +12.5
 // 行内算完自然宽度后再整体拉伸/压缩到版心宽度（两端对齐）。
 
-import type { Dialect } from "./dialect";
-import { SlurTieBase, type SlurStyle } from "../layout/pageitem";
-import type { GraceMetrics, GraceNote } from "../common/gracenote";
-import type { NoteElement } from "./ast";
+import type { Dialect } from "../../pu/dialect";
+import { SlurTieBase, type SlurStyle } from "../pageitem";
+import type { GraceMetrics, GraceNote } from "../../common/gracenote";
+import type { NoteElement } from "../../pu/ast";
 
 /** 文本谱排版器只排「原样」档（展开档两种格式都走 `layout/painter.ts::ScorePainter`）。 */
 export interface PuMetrics {
@@ -457,7 +457,7 @@ const TEXT_SIZE_KEYS = [
 /** 编辑器面板上能手动改的那几项。谱面自带的 `FontSize:`/`Margin:` 先生效，再叠这一层。 */
 export interface PuUserOptions {
   /** 整体字号缩放（1 = 原尺寸）。纸与边距不跟着缩——版心不变，字大了每行就放得少。
-   *  面板不直接给它：那边给的是**字号 pt**（`digitFontSize`），由 PuPainter 换算过来。 */
+   *  面板不直接给它：那边给的是**字号 pt**（`digitFontSize`），由 `compose.ts::resolveScale` 换算过来。 */
   scale?: number;
   /** 音符数字的字号（pt）。0/缺省 = 跟随版式的 `digitSize`。 */
   digitFontSize?: number;

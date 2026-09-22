@@ -1,6 +1,6 @@
 // 倚音的几何：小号数字 + 八度点 + 减时线 + 连接钩。
 //
-// **两条简谱路共用这一份**（文本谱 `src/pu/painter.ts::paintGrace`、成书/编辑器
+// **两条简谱路共用这一份**（文本谱 `layout/original/compose.ts::paintGrace`、成书/编辑器
 // `src/layout/layout.ts::addGraceNotes`）。两边的绘图原语不一样（一边是 pu 自己的
 // text/dot/rect/stroke，一边是页面树的 TextFrame/GraphicPath），所以这里只算**坐标**，
 // 落笔各自去做。

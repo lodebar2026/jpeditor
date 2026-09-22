@@ -439,7 +439,7 @@ export class NoteEntry extends Entry {
    * **倚音**（`Chord.graceNotes`）：主音符左边的小号数字 + 减时线 + 连接钩。
    *
    * **几何走公共那一份**（`src/common/gracenote.ts`）——文本谱那条路
-   * （`pu/painter.ts::paintGrace`）用的是同一套比例（照原版矢量量的），两边各自落笔。
+   * （`layout/original/compose.ts::paintGrace`）用的是同一套比例（照原版矢量量的），两边各自落笔。
    * 占位走 `Entry.leadSpace`：倚音在拍点**之前**唱，位置也该在主音符之前，
    * 直接往左伸会压住上一个音符。
    */
