@@ -73,10 +73,14 @@ interface OriginalCtx {
   pageHeight: number;
   /** 连续长图裁紧后，整页要平移多少（把墨迹推到左侧留白处） */
   _pageShiftX: number;
-  /** 播放高亮索引：元素 id → 它所在页与 PageItem */
+  /** 播放高亮索引：元素 id → 它所在页与 PageItem。增时线有自己的 id，也收在这里（可视化编辑点选用） */
   noteItems: Map<ElementId, { page: number; item: PageItem }>;
   /** 键为 `${音符 id}:${段序}` */
   syllableItems: Map<string, { page: number; item: PageItem }>;
+  /** 小节线（没有自己的 id，按「相邻音符 + 侧」认）：键为 `${音符 id}:${before|after}` */
+  barlineItems: Map<string, { page: number; item: PageItem }>;
+  /** 圆滑线/延音线（同样没有 id）：键为 `${起点 id}:${终点 id}` */
+  slurItems: Map<string, { page: number; item: PageItem }>;
   /** 谱面墨色；用户指定前景色时与歌词同色——用户指定的是「前景色」，没道理还留着那点深浅差。 */
   ink: number;
   lyricInk: number;
@@ -423,15 +427,31 @@ function paintPage(c: OriginalCtx, page: PlacedPage, pageIndex: number): Group {
       for (const block of barlineBlocks(group.voices)) {
         const first = block[0]!;
         const last = block[block.length - 1]!;
+        // 贯穿多声部的小节线画在这里（`paintVoice` 那边被 skipBarlines 跳过了），索引同样要建，
+        // 否则多声部谱上点不中小节线。**各声部在这一处的小节线共用这一条线**，所以按横坐标
+        // 把同一处的都指到它上面（模型里每个声部各有一条小节线，画出来只有一根）
+        const drawn = new Map<number, Group>();
         for (const it of first.items) {
           if (it.element.kind !== "barline") continue;
-          paintBarline(c,
+          const g = paintBarline(c,
             sys,
             m.marginLeft + m.bodyLeftPad + it.x,
             first.y,
             it,
             last.y - first.y,
           );
+          if (g) drawn.set(it.x, g);
+        }
+        for (const voice of block) {
+          let prevNoteId: ElementId | undefined;
+          for (const it of voice.items) {
+            if (it.element.kind === "barline") {
+              const g = drawn.get(it.x);
+              if (g && prevNoteId !== undefined) c.barlineItems.set(`${prevNoteId}:after`, { page: pageIndex, item: g });
+            } else if (it.element.kind !== "sustain") {
+              prevNoteId = c.doc?.idOf.get(it.element) ?? prevNoteId;
+            }
+          }
         }
       }
     }
@@ -732,13 +752,20 @@ function paintVoice(c: OriginalCtx,
   const baseline = voice.y;
   /** 各段歌词墨迹的最右缘，联合括号据此定位 */
   const lyricRight: number[] = [];
+  /** 前面那个音符的元素 id：小节线没有自己的 id，借它认（口径同 `editor/sync.ts::addPartExtras`）。
+   *  增时线不改它——模型里「小节线前面那个元素」指的是和弦，不是挂在它上面的增时线。 */
+  let prevNoteId: ElementId | undefined;
 
   for (const it of voice.items) {
     const x = left + it.x;
     // `{dsb}` 并排块里，主旋律这一段整体下移（it.dy）
     const base = baseline + (it.dy ?? 0);
     if (it.element.kind === "barline") {
-      if (!skipBarlines || it.dy !== undefined) paintBarline(c, root, x, base, it);
+      if (!skipBarlines || it.dy !== undefined) {
+        const g = paintBarline(c, root, x, base, it);
+        // 行视图只出「右线」（`pu/slots.ts`），所以一律是画在前一个音符之后的那一侧
+        if (g && prevNoteId !== undefined) c.barlineItems.set(`${prevNoteId}:after`, { page: pageIndex, item: g });
+      }
       continue;
     }
     if (it.element.kind === "sustain") {
@@ -752,12 +779,16 @@ function paintVoice(c: OriginalCtx,
       line.strokeColor = c.ink;
       line.strokeWidth = m.sustainWidth;
       root.add(line);
+      // 增时线有自己的 id（`Chord.sustains[]` 各带一个），可视化编辑按它点选这一条
+      const sid = c.doc?.idOf.get(it.element);
+      if (sid !== undefined) c.noteItems.set(sid, { page: pageIndex, item: line });
       // 长音里换的和弦印在增时线上方（`- "hx:C/G"`），画法与音符上方那个一样
       if (it.element.chord) paintChord(c, root, it.element.chord, x, base);
       paintSyllables(c, root, it, x, voice, pageIndex, lyricRight);
       continue;
     }
     paintNote(c, root, it, x, base, pageIndex);
+    prevNoteId = c.doc?.idOf.get(it.element) ?? prevNoteId;
     paintSyllables(c, root, it, x, voice, pageIndex, lyricRight);
   }
 
@@ -777,18 +808,19 @@ function paintVoice(c: OriginalCtx,
   paintJoinBrace(c, root, voice, lyricRight);
 
   // 跨若干符号的记号（弧线 / 多连音 / 跳房子 / 渐强渐弱）
-  for (const mk of voice.marks) paintMark(c, root, mk, left, baseline + (mk.dy ?? 0));
+  for (const mk of voice.marks) paintMark(c, root, mk, left, baseline + (mk.dy ?? 0), pageIndex);
   // 临时伴奏 / 临时多声部：主旋律上方的小字号行
   for (const layer of voice.layers) paintLayer(c, root, layer, left, baseline, pageIndex);
 }
 
 /** 弧线：直接用简谱谱面那套 SlurTieBase（月牙形，中间厚两端尖），两处观感一致。
  *  弧高（含超长跨度改扁平的阈值）由 puSlurStyle 定，与 layout 的纵向预留同源。 */
-function paintArc(c: OriginalCtx, root: Group, x0: number, x1: number, y: number): void {
+function paintArc(c: OriginalCtx, root: Group, x0: number, x1: number, y: number): Slur {
   const arc = new Slur();
   arc.init(new Point(x0, y), new Point(x1, y), puSlurStyle(c.metrics, c.ink));
   arc.update();
   root.add(arc);
+  return arc;
 }
 
 /** 多连音弧线的半段：从端点 (x, y) 弯到中间断口 (xMid, apex)。 */
@@ -800,14 +832,19 @@ function paintTupletHalf(c: OriginalCtx, root: Group, x: number, y: number, xMid
   root.add(p);
 }
 
-function paintMark(c: OriginalCtx, root: Group, mk: PlacedMark, left: number, baseline: number): void {
+function paintMark(c: OriginalCtx, root: Group, mk: PlacedMark, left: number, baseline: number, pageIndex: number): void {
   const m = c.metrics;
   const x0 = left + mk.x0;
   const x1 = Math.max(left + mk.x1, x0 + 6);
   switch (mk.mark.type) {
     case "slur": {
       const y = baseline + (mk.y ?? m.laneSlur - (mk.level - 1) * m.laneSlurStep);
-      paintArc(c, root, x0, x1, y);
+      const arc = paintArc(c, root, x0, x1, y);
+      // 弧没有自己的 id，可视化编辑按「起点:终点」认它（同 `Tie.startId`）。
+      // **不能用 `mk.mark.start/end`**——那是行内下标，元素 id 要从两端实际落在的符号上取
+      const sid = mk.startEl && c.doc?.idOf.get(mk.startEl);
+      const eid = mk.endEl && c.doc?.idOf.get(mk.endEl);
+      if (sid !== undefined && eid !== undefined) c.slurItems.set(`${sid}:${eid}`, { page: pageIndex, item: arc });
       break;
     }
     case "tuplet": {
@@ -1165,17 +1202,21 @@ function paintOrnaments(c: OriginalCtx,
   }
 }
 
-/** `spanHeight` > 0 时，这条小节线从 baseline 一直画到 baseline+spanHeight（贯穿多声部）。 */
+/** `spanHeight` > 0 时，这条小节线从 baseline 一直画到 baseline+spanHeight（贯穿多声部）。
+ *
+ *  **线本身收在一个 `Group` 里**并作为返回值交出去：几条竖线加反复点是好几个图元，散着放
+ *  就是几个互不相干的 `<g>`，可视化编辑罩不出一个框、也点不中整条线。挂在线上的记号与
+ *  临时拍号不进这个组（它们各自是独立对象）。线不画时返回 null。 */
 function paintBarline(c: OriginalCtx,
   root: Group,
   x: number,
   baseline: number,
   it: PlacedItem,
   spanHeight = 0,
-): void {
+): Group | null {
   const m = c.metrics;
   const el = it.element;
-  if (el.kind !== "barline") return;
+  if (el.kind !== "barline") return null;
   if (el.type === "hidden" || el.type === "invisible") {
     // 线本身不画，但挂在它上面的记号与临时拍号仍要画
     if (el.ornaments.length > 0) {
@@ -1187,7 +1228,7 @@ function paintBarline(c: OriginalCtx,
       const font = new Font(m.fontFamily, m.headerSize * 0.85);
       paintMeter(c, root, x, baseline, el.temporaryMeter, font);
     }
-    return;
+    return null;
   }
 
   if (el.ornaments.length > 0) {
@@ -1208,7 +1249,7 @@ function paintBarline(c: OriginalCtx,
   // 那是照原版量的，不是谱面那套 jpStaffTop/Bottom。
   const half = m.barlineHeight * 0.5;
   const spec = PU_BARLINE_SPEC[el.type];
-  if (!spec) return;
+  if (!spec) return null;
   const r = jpBarlineItems(spec, el.type === "end", {
     top: -half,
     bot: half + spanHeight,
@@ -1219,11 +1260,14 @@ function paintBarline(c: OriginalCtx,
   });
   // jpBarlineItems 的 x 从 0 起；文本谱的小节线是**居中于锚点**的
   const ox = x - r.width / 2;
+  const g = new Group();
   for (const item of r.items) {
     item.x += ox;
     item.y += baseline;
-    root.add(item);
+    g.add(item);
   }
+  root.add(g);
+  return g;
 }
 
 /**
@@ -1335,6 +1379,8 @@ export interface OriginalDocumentLayout {
   readonly placed: PlacedScore;
   readonly noteItems: ReadonlyMap<ElementId, { page: number; item: PageItem }>;
   readonly syllableItems: ReadonlyMap<string, { page: number; item: PageItem }>;
+  readonly barlineItems: ReadonlyMap<string, { page: number; item: PageItem }>;
+  readonly slurItems: ReadonlyMap<string, { page: number; item: PageItem }>;
 }
 
 /** 这份文档在**不加手动字号**时的数字字号（pt）——面板拿它当「跟随版式」的默认值。 */
@@ -1360,6 +1406,8 @@ export function layoutOriginalDocument(source: ScoreDoc, cfg: OriginalDocumentCo
     _pageShiftX: 0,
     noteItems: new Map(),
     syllableItems: new Map(),
+    barlineItems: new Map(),
+    slurItems: new Map(),
     ink: cfg.ink ?? DEFAULT_INK,
     lyricInk: cfg.ink ?? DEFAULT_LYRIC_INK,
   };
@@ -1413,6 +1461,8 @@ export function layoutOriginalDocument(source: ScoreDoc, cfg: OriginalDocumentCo
     placed,
     noteItems: c.noteItems,
     syllableItems: c.syllableItems,
+    barlineItems: c.barlineItems,
+    slurItems: c.slurItems,
   };
 }
 

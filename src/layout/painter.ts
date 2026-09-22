@@ -6,8 +6,8 @@
 // 点选 / 高亮部分移植自 mp/layout/draw.kt。
 
 import { Rect } from "../common/geom";
-import { Group, Lyric, PageItem, findByClass } from "./pageitem";
-import { NoteEntry } from "./entry";
+import { Group, Lyric, PageItem, Tie, findByClass } from "./pageitem";
+import { Barline, NoteEntry } from "./entry";
 import { Layout } from "./layout";
 import { emptyScore, type JScore } from "./input";
 import type { ElementId, ScoreDoc } from "../model/doc";
@@ -178,6 +178,10 @@ export class ScorePainter {
   nodeMap = new WeakMap<PageItem, SVGGElement>();
   /** 元素 id → 它的音符格（每遍/每段各一个），试听高亮与起播点用。 */
   private chordItem = new Map<ElementId, { page: number; item: PageItem; verse: number }[]>();
+  /** `${相邻音符 id}:${before|after}` → 那条小节线的图元（小节线没有自己的 id，见 `Barline.ownerEdge`）。 */
+  private barlineItem = new Map<string, { page: number; item: PageItem }>();
+  /** `${起点 id}:${终点 id}` → 那条圆滑线/延音线的图元（弧也没有自己的 id，见 `Tie.startId`）。 */
+  private slurItem = new Map<string, { page: number; item: PageItem }>();
   private highlighted: PageItem[] = [];
   /** 逐页高度。空 = 各页同高（`pageHeight`）；连续长纸那一档按内容逐页给。 */
   private pageHeights: number[] = [];
@@ -396,10 +400,18 @@ export class ScorePainter {
     return this.result?.staffPlacements[0] ?? null;
   }
 
-  /** 逐页走一遍页面树，把每个和弦的元素 id 对到它的音符格上。 */
+  /** 逐页走一遍页面树，把每个和弦的元素 id 对到它的音符格上，顺带认下各条小节线挨着哪个音符。
+   *
+   *  树序就是读谱顺序，所以「挨着的音符」在这一趟里天然认得出，跨小节、跨行、跨页都对得上
+   *  （`editor/sync.ts::addPartExtras` 借 id 的口径也是这个）。 */
   private buildChordIndex(): void {
     this.chordItem.clear();
+    this.barlineItem.clear();
+    this.slurItem.clear();
     this.highlighted = [];
+    let lastNoteId: ElementId | null = null;
+    /** 还等着后面那个音符来认领的小节线（`‖:` 画在小节第一个音符之前） */
+    let pendingBefore: { page: number; item: PageItem }[] = [];
     const walk = (item: PageItem, page: number): void => {
       if (item.data instanceof NoteEntry) {
         const id = item.data.chord?.id;
@@ -407,7 +419,16 @@ export class ScorePainter {
           const list = this.chordItem.get(id) ?? [];
           list.push({ page, item, verse: item.data.verse });
           this.chordItem.set(id, list);
+          lastNoteId = id;
+          for (const b of pendingBefore) this.barlineItem.set(`${id}:before`, b);
+          pendingBefore = [];
         }
+      } else if (item.data instanceof Barline) {
+        if (item.data.ownerEdge === "before") pendingBefore.push({ page, item });
+        else if (lastNoteId !== null) this.barlineItem.set(`${lastNoteId}:after`, { page, item });
+      } else if (item instanceof Tie && item.startId !== null && item.endId !== null) {
+        // 弧本身就是一个 Group（多连音那种没有起止音符，`startId` 为 null，不收）
+        this.slurItem.set(`${item.startId}:${item.endId}`, { page, item });
       }
       for (const c of item.children) walk(c, page);
     };
@@ -461,6 +482,51 @@ export class ScorePainter {
   entryEl(id: ElementId, pass = 0): SVGGElement | null {
     const hit = this.noteHit(id, pass);
     return hit ? this.nodeMap.get(hit.item) ?? null : null;
+  }
+
+  /** 挨着元素 `id` 的那条小节线的 `<g>`（`edge` 是它在音符的哪一侧）；没画出来为 null。
+   *  小节线没有自己的 id，两路都按「相邻音符 + 侧」认（见 `Barline.ownerEdge`）。 */
+  barlineEl(id: ElementId, edge: "before" | "after"): SVGGElement | null {
+    const hit = this.original
+      ? this.original.barlineItems.get(`${id}:${edge}`)
+      : this.barlineItem.get(`${id}:${edge}`);
+    return hit ? this.nodeMap.get(hit.item) ?? null : null;
+  }
+
+  /** 从 `start` 连到 `end` 的那条圆滑线/延音线的 `<g>`；没画出来（跨行时另一端不在本行）为 null。 */
+  slurEl(start: ElementId, end: ElementId): SVGGElement | null {
+    const hit = this.original
+      ? this.original.slurItems.get(`${start}:${end}`)
+      : this.slurItem.get(`${start}:${end}`);
+    return hit ? this.nodeMap.get(hit.item) ?? null : null;
+  }
+
+  /** 宿主音符 `hostId` 的第 `ord` 条增时线（0 起）的 `<g>`；没画出来为 null。
+   *
+   *  两路的认法不同：原样文档按增时线自己的 id（`ownId`，行视图里它就带着）；简谱引擎的输入
+   *  把增时线压成了计数（`JChord.beats`）不带 id，但排版时每条增时线各是一个音符格、按树序
+   *  跟在音符格后面，所以按序号数——第 0 个是音符本身。 */
+  sustainEl(hostId: ElementId, ord: number, ownId?: ElementId, pass = 0): SVGGElement | null {
+    if (this.original) {
+      const hit = ownId === undefined ? undefined : this.original.noteItems.get(ownId);
+      return hit ? this.nodeMap.get(hit.item) ?? null : null;
+    }
+    return this.sustainCellEls(hostId, pass)[ord] ?? null;
+  }
+
+  /** 元素 `id` 的各条增时线格的 `<g>`（简谱引擎：跟在音符格后面的那几个「-」格，按序）。
+   *
+   *  `.jpwabc` 的增时线写在音符 token 里、模型里没有它自己的对象，可视化编辑只能按这几个格
+   *  认出「点中的是第几条」，再去选 token 里那一串 `-`（见 `NoteParts.sustains`）。 */
+  sustainCellEls(id: ElementId, pass = 0): SVGGElement[] {
+    if (this.original) return [];
+    const list = this.chordItem.get(id);
+    if (!list || list.length === 0) return [];
+    const same = list.filter((h) => h.verse === pass);
+    return (same.length > 0 ? same : list).slice(1).flatMap((h) => {
+      const el = this.nodeMap.get(h.item);
+      return el ? [el] : [];
+    });
   }
 
   /** 元素 `id` 第 `verse` 段（行内 0 起）歌词的那个字的 `<g>`；`verseNo` 是源段号（缺省 = verse + 1）。

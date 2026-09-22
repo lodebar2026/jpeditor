@@ -11,7 +11,7 @@
 import { JpwFile, WordsSection } from "../../../jpword/jpwfile";
 import type { Accidental } from "../../../model/doc";
 import { readJpwSource } from "../../../model/fromjpw";
-import { dotsRange, type EditDialect, type NoteDuration, type NoteToken } from "../dialect";
+import { dotsRange, type EditDialect, type NoteDuration, type NoteToken, runRange } from "../dialect";
 import { jpwTitleFields } from "../header";
 
 const ACC_OF: Record<string, Accidental> = { "#b": "natural", "#": "sharp", b: "flat" };
@@ -110,7 +110,8 @@ export const DIALECT_JPW: EditDialect = {
     if (!m) return null;
     const from = (m[1] ?? "").length;
     const end = from + (m[2] ?? "").length + 1 + (m[4] ?? "").length;
-    return { head: [from, end], dots: dotsRange(m[5] ?? "", end) };
+    const tail = m[5] ?? "";
+    return { head: [from, end], dots: dotsRange(tail, end), beams: runRange(tail, "_", end), sustains: runRange(tail, "-", end) };
   },
   newNote(degree: number, dur: NoteDuration) {
     return `${degree}${"_".repeat(dur.halvings)}${".".repeat(dur.dots)}`;

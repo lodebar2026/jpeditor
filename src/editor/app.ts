@@ -716,6 +716,13 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       // 展开档里音符与它的歌词共用一个 `<g>`，先来的音符条目占住它（`all()` 已排好序）
       if (!this._syncEls.has(el)) this._syncEls.set(el, entry);
     }
+    // 兜底第二趟：`.jpwabc` 的增时线写在音符 token 里、没有自己的条目，它那几个「-」格于是谁也不指——
+    // 指到宿主音符上，点中了才有得选（点的是第几条由控制器按格认，见 `VisualHost.inlineSustainEls`）。
+    // **必须等第一趟走完**：123 / 文本谱的增时线有自己的条目、那几个格归它们，先兜底就把它们抢了
+    for (const entry of this._sync.all()) {
+      if (entry.kind !== "note") continue;
+      for (const cell of this.inlineSustainEls(entry.id)) if (!this._syncEls.has(cell)) this._syncEls.set(cell, entry);
+    }
     this._bindHeader();
     this._syncCursorToScore();
     this.visual.afterRebuild();
@@ -767,13 +774,38 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     return this.painter.partEls(id, "aug-dot");
   }
 
-  /** 一个条目对应的谱面 `<g>`：按元素 id 问排版器（歌词按段取那一个字）。 */
+  barlineEl(entry: SyncEntry): SVGGElement | null {
+    return this.painter.barlineEl(entry.id, entry.edge ?? "after");
+  }
+
+  sustainEl(entry: SyncEntry): SVGGElement | null {
+    return this.painter.sustainEl(entry.id, entry.ord ?? 0, entry.own, entry.verse ?? 0);
+  }
+
+  slurEl(entry: SyncEntry): SVGGElement | null {
+    return entry.end === undefined ? null : this.painter.slurEl(entry.id, entry.end);
+  }
+
+  inlineSustainEls(id: ElementId): SVGGElement[] {
+    return this.painter.sustainCellEls(id);
+  }
+
+  /** 一个条目对应的谱面 `<g>`：按元素 id 问排版器（歌词按段取那一个字）。
+   *  小节线与增时线有自己的图元（它们不按自己的 id 定位，见 `ScorePainter.barlineEl` / `sustainEl`）——
+   *  取到了就归它们自己，点击才落得到它们头上；取不到退回宿主音符（旧行为）。 */
   private _syncGroupEl(entry: SyncEntry): SVGGElement | null {
     if (entry.kind === "mark") {
+      // 弧有自己的图元（`(` 与 `)` 两条都指向同一条弧）；其余记号按类名在音符格里认
+      if (entry.markKind === "slur") {
+        const arc = this.slurEl(entry);
+        if (arc) return arc;
+      }
       const part = this._markPartEl(entry);
       if (part) return part;
     }
     if (entry.kind === "lyric") return this.painter.lyricEl(entry.id, entry.verse ?? 0, entry.verseNo);
+    if (entry.kind === "barline") return this.barlineEl(entry) ?? this.painter.entryEl(entry.id, 0);
+    if (entry.kind === "sustain") return this.sustainEl(entry) ?? this.painter.entryEl(entry.id, 0);
     return this.painter.entryEl(entry.id, entry.verse ?? 0);
   }
 
@@ -1115,8 +1147,14 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       },
       // 原样文档没有几何拾取，双向定位靠事件冒泡找 `<g>`
       onPage: this.painter.isDocumentLayout
-        ? (svg) => svg.addEventListener("click", (ev) => this._onSyncClick(ev))
-        : (svg, _wrap, i) => svg.addEventListener("click", (e) => this.onPageClick(i, svg, e)),
+        ? (svg) => {
+          svg.addEventListener("click", (ev) => this._onSyncClick(ev));
+          svg.addEventListener("dblclick", (ev) => this._onSyncDblClick(ev));
+        }
+        : (svg, _wrap, i) => {
+          svg.addEventListener("click", (e) => this.onPageClick(i, svg, e));
+          svg.addEventListener("dblclick", (e) => this._onSyncDblClick(e));
+        },
     });
   }
 
@@ -1163,6 +1201,13 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (this.visual.handleClick(ev, entry)) return true;
     if (entry) this._syncScoreToCursor(entry);
     return false;
+  }
+
+  /** 谱面被双击 → 文字对象进插入模式（单击只选中，见 `VisualEditController.handleDoubleClick`）。
+   *  浏览器先发两次 `click` 再发这一下，所以选中在前、进编辑在后。 */
+  private _onSyncDblClick(ev: MouseEvent): void {
+    if (this.mode !== "jp") return;
+    this.visual.handleDoubleClick(ev, this._syncEntryAt(hitThroughOverlay(ev)));
   }
 
   private deselect(): void {

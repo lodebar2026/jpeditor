@@ -53,6 +53,11 @@ export interface SyncEntry {
   verseNo?: number;
   /** 增时线自己的 id */
   own?: ElementId;
+  /** 增时线是宿主音符的第几条（0 基）：简谱引擎那一路的增时线不带 id，按序号在音符格后面数 */
+  ord?: number;
+  /** `barline`：这条线画在 `id` 那个音符**之前**还是**之后**（对应模型的 `location`）。
+   *  小节线没有自己的 id，两个排版器都按「相邻音符 id + edge」索引它的 `<g>` */
+  edge?: "before" | "after";
   /** `mark`：挂的是什么（`AttachedSource.kind`，或 slur 的 `"slur"`）与记号名 */
   markKind?: AttachedSource["kind"] | "slur";
   name?: string;
@@ -154,22 +159,22 @@ export class SyncIndex {
       for (const bl of m.barlines ?? []) {
         if (bl.location !== "left" || !hasSpan(bl.source)) continue;
         const first = m.elements[0]?.id ?? lastId;
-        if (first !== null) out.push({ kind: "barline", from: bl.source.offset, to: spanEnd(bl.source), id: first, verse: null });
+        if (first !== null) out.push({ kind: "barline", from: bl.source.offset, to: spanEnd(bl.source), id: first, verse: null, edge: "before" });
       }
       for (const el of m.elements) {
         pushAttached(el.attachedSources, el.id, out);
         if (el.kind !== "chord") continue;
-        for (const su of el.sustains ?? []) {
+        (el.sustains ?? []).forEach((su, ord) => {
           if (hasSpan(su.source)) {
-            out.push({ kind: "sustain", from: su.source.offset, to: spanEnd(su.source), id: el.id, own: su.id, verse: null });
+            out.push({ kind: "sustain", from: su.source.offset, to: spanEnd(su.source), id: el.id, own: su.id, ord, verse: null });
           }
           pushAttached(su.attachedSources, el.id, out);
-        }
+        });
         lastId = el.id;
       }
       for (const bl of m.barlines ?? []) {
         if (bl.location === "left" || !hasSpan(bl.source) || lastId === null) continue;
-        out.push({ kind: "barline", from: bl.source.offset, to: spanEnd(bl.source), id: lastId, verse: null });
+        out.push({ kind: "barline", from: bl.source.offset, to: spanEnd(bl.source), id: lastId, verse: null, edge: "after" });
       }
     }
   }

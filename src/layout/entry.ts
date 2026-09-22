@@ -676,6 +676,14 @@ export class Barline extends Entry {
   /** 建这条线时用的 spec（`dropDoubledBarlines` 要拿它判断能不能把两条并成一条）。 */
   readonly spec: BarlineSpec;
 
+  /** 这条线画在挨着的那个音符**之前**（小节开头的 `‖:`）还是**之后**（小节末的线）。
+   *
+   *  小节线在模型里**没有自己的 `ElementId`**（`model/doc.ts` 的 `Barline` 只有样式与 `source`），
+   *  可视化编辑要点中它就得有个键，口径与 `editor/sync.ts::addPartExtras` 一致：借挨着的那个音符的 id。
+   *  借哪一个由 `ScorePainter` 遍历页面树时按前后顺序定（那里才看得到跨小节、跨行的相邻关系），
+   *  这里只记是哪一侧。**排版不读它**。 */
+  ownerEdge: "before" | "after" = "after";
+
   constructor(final: boolean, opt: LayoutOptions, spec: BarlineSpec = {}) {
     super();
     this.spec = spec;

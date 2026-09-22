@@ -12,7 +12,7 @@ import type { Accidental, ScoreDoc } from "../../../model/doc";
 import { dialectSpec } from "../../../pu/dialect";
 import { relayoutPuBreak } from "../../../pu/relayout";
 import { colonFields } from "../header";
-import { dotsRange, type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken } from "../dialect";
+import { dotsRange, type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken , runRange } from "../dialect";
 
 /** 写出时用的升降号（`pu/dialect.ts` 的表里一个语义可能有几种写法，取规范那个） */
 const ACC_TEXT: Record<"tomato" | "shige", Partial<Record<Accidental, string>>> = {
@@ -63,7 +63,8 @@ export const DIALECT_PU: EditDialect = {
     const head = cs.slice(0, end).join("").length;
     // 倚音 `[…]` 里的 `.` 不算
     const tail = src.slice(head).split("[")[0]!;
-    return { head: [0, head], dots: dotsRange(tail, head) };
+    // 文本谱的减时线是 `/`
+    return { head: [0, head], dots: dotsRange(tail, head), beams: runRange(tail, "/", head) };
   },
   newNote(degree: number, dur: NoteDuration) {
     return `${degree}${"/".repeat(dur.halvings)}${".".repeat(dur.dots)}`;

@@ -1068,6 +1068,9 @@ export class Line {
       return;
     }
     const grp = new Tie();
+    // 可视化编辑按「起点和弦:终点和弦」认这条弧（弧自己没有 id，见 `Tie.startId`）
+    grp.startId = a.chord.id;
+    grp.endId = b.chord.id;
     let pl = new Point(ena.cx, ypos);
     let pr = new Point(enb.cx, ypos);
     const dx = ena.number!.font.size / 14;
@@ -1786,6 +1789,7 @@ export class Line {
     // 小节线本来只在小节末补，这里要额外插一条——五线谱怎么标，简谱就怎么标。
     if ((m.repeatForward || m.leftBarline !== null) && skip === 0) {
       const ent = new Barline(false, options, { style: m.leftBarline, repeatForward: m.repeatForward });
+      ent.ownerEdge = "before"; // 画在本小节第一个音符之前（可视化编辑按它借 id，见 Barline.ownerEdge）
       ent.update();
       this.entries.push(ent);
     }

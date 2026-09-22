@@ -18,7 +18,7 @@ import { buildPalette, type MenuRunner, type MenuTarget, showMenu } from "./menu
 import { midiOf, NotePreview } from "./preview";
 import type { EditDialect, NoteDuration } from "./dialect";
 import {
-  addSustain, deleteEntries, double, type EditCtx, type EditOutcome, groupEnd, halve, insertNote, insertToken,
+  addSustain, clearBeams, deleteEntries, double, dropInlineSustain, type EditCtx, type EditOutcome, groupEnd, halve, insertNote, insertToken,
   isError, noteCtx, noteSpans, notesIn, setAccidental, setDegree, shiftOctave, toggleDeco, toggleDot, toggleSlur, toggleTie,
 } from "./ops";
 import { actionOfKey, type VisualAction, type VisualMode } from "./keys";
@@ -42,6 +42,14 @@ export interface VisualHost {
   textEls(entry: SyncEntry): SVGGElement[];
   /** 音符的附点在谱面上的 `<g>`（每个点一个；可单独点选） */
   augDotEls(id: ElementId): SVGGElement[];
+  /** 小节线自己的 `<g>`（它没有 id，按「相邻音符 + 侧」认）；没画出来为 null */
+  barlineEl(entry: SyncEntry): SVGGElement | null;
+  /** 一条增时线自己的 `<g>`；没画出来为 null */
+  sustainEl(entry: SyncEntry): SVGGElement | null;
+  /** 一条圆滑线/延音线的弧本身的 `<g>`；没画出来（跨行时另一端不在本行）为 null */
+  slurEl(entry: SyncEntry): SVGGElement | null;
+  /** 写在音符 token 里的增时线（`.jpwabc` 的 `5---`）画出来的那几个格，按序 */
+  inlineSustainEls(id: ElementId): SVGGElement[];
   /** 谱面上点中的 `<g>` 对应哪个条目（从事件目标往上找） */
   entryAtTarget(target: EventTarget | null): SyncEntry | null;
   /** 当前格式怎么改原文；null = 这种格式在谱面上只能选中、不能改 */
@@ -308,8 +316,22 @@ export class VisualEditController {
     else if (document.activeElement === this.host.scorePane) this.drawEditBlock(sel.from, sel.to);
   }
 
+  /** 一个条目在谱面上的 `<g>`。小节线与增时线有自己的（它们在模型里不按自己的 id 定位，
+   *  见 `VisualHost.barlineEl` / `sustainEl`）；取不到就退回宿主音符那个（旧行为）。 */
+  private elOf(entry: SyncEntry): SVGGElement | null {
+    return this.ownEl(entry) ?? this.host.entryEl(entry);
+  }
+
+  /** 条目**自己**那个图元（没有就 null，不退回宿主音符）：小节线、增时线、弧。 */
+  private ownEl(entry: SyncEntry): SVGGElement | null {
+    if (entry.kind === "barline") return this.host.barlineEl(entry);
+    if (entry.kind === "sustain") return this.host.sustainEl(entry);
+    if (entry.kind === "mark" && entry.markKind === "slur") return this.host.slurEl(entry);
+    return null;
+  }
+
   private boxOf(entry: SyncEntry): { svg: SVGSVGElement; box: Box } | null {
-    const el = this.host.entryEl(entry);
+    const el = this.elOf(entry);
     return el ? musicBox(el) : null;
   }
 
@@ -432,18 +454,52 @@ export class VisualEditController {
         return;
       }
     }
+    // 选中的是 token 里的一条增时线：方块罩它画出来的那一格
+    const inline = this.pickedInlineSustain();
+    if (inline) {
+      const el = this.host.inlineSustainEls(inline.note.id)[inline.index];
+      const hit = el && musicBox(el);
+      if (hit) {
+        drawBlock(hit.svg, hit.box);
+        return;
+      }
+    }
+    // 选中的是减时线：方块罩音头下方那一带（减时线没有自己的图元，按音头的框推）
+    if (this.pickedBeams()) {
+      const e = this.host.sync.at(from);
+      const el = e && e.kind === "note" ? this.host.entryEl(e) : null;
+      const b = el?.firstElementChild ? boxInPage(el.firstElementChild as SVGGraphicsElement) : null;
+      if (b) {
+        drawBlock(b.svg, { x: b.box.x, y: b.box.y + b.box.h, w: b.box.w, h: b.box.h * 0.5 });
+        return;
+      }
+    }
     const boxes: { svg: SVGSVGElement; box: Box }[] = [];
     const seen = new Set<Element>();
+    const add = (hit: { svg: SVGSVGElement; box: Box }): void => {
+      const same = boxes.find((b) => b.svg === hit.svg && sameRow(b.box, hit.box));
+      if (same) same.box = union(same.box, hit.box);
+      else boxes.push(hit);
+    };
     for (const e of this.host.sync.range(from, to)) {
-      if (isText(e) || e.kind === "break") continue;
-      const el = this.host.entryEl(e);
+      if (e.kind === "break") continue;
+      // 文字条目（歌词、页眉）：单击选中的就是它，罩它画出来的那几个 `<g>`
+      //（署名可能多行、调号拍号一组不止一个）
+      if (isText(e)) {
+        for (const el of this.host.textEls(e)) {
+          if (seen.has(el)) continue;
+          seen.add(el);
+          const hit = boxInPage(el);
+          if (hit) add(hit);
+        }
+        continue;
+      }
+      const el = this.elOf(e);
       if (!el || seen.has(el)) continue;
       seen.add(el);
       const hit = musicBox(el);
       if (!hit) continue;
-      const same = boxes.find((b) => b.svg === hit.svg && sameRow(b.box, hit.box));
-      if (same) same.box = union(same.box, hit.box);
-      else boxes.push(hit);
+      add(thin(e) ? { svg: hit.svg, box: plump(hit.box) } : hit);
     }
     for (const b of boxes) drawBlock(b.svg, b.box);
   }
@@ -475,12 +531,19 @@ export class VisualEditController {
       this.refresh();
       return true;
     }
-    // 点在文字上（歌词、页眉）：进插入模式——光标落在原文里点中的那个字前后，焦点交给代码区，接着打字就是改原文。
-    // 只有音符与挂在它上面的东西点了进编辑模式（方块）
+    // 点在音符下方的减时线上：选中 token 里那串减时线。**要赶在文字分支之前**——
+    // 减时线与歌词行挨得极近（歌词第一个字的顶就在音头外框下缘），落在减时线带里的点算减时线
+    if (!ev.shiftKey) {
+      const beams = this.beamAtPoint(ev.clientX, ev.clientY);
+      if (beams) {
+        this.select(beams.from, beams.to);
+        return true;
+      }
+    }
+    // 点在文字上（歌词、页眉）：**单击只选中**这个文字对象（整段罩上方块，焦点留在谱面），
+    // 双击才进插入模式改字（`handleDoubleClick`）——与 Sibelius 一路的手感一致
     if (entry && isText(entry)) {
-      const at = this.textCaretAt(entry, ev.clientX, ev.clientY);
-      this.select(at, at);
-      this.host.view.focus();
+      this.select(entry.from, entry.to);
       return true;
     }
     // 点在附点上（附点很小，四周放宽几像素）：只选中附点
@@ -499,13 +562,30 @@ export class VisualEditController {
         this.select(Math.min(sel.from, span.from), Math.max(sel.to, span.to));
         return true;
       }
+      // 点中的是写在 token 里的增时线（`.jpwabc` 的 `5---`）画出来的那一格：选 token 里对应的那个 `-`
+      const inline = this.inlineSustainAt(entry, ev.target);
+      if (inline) {
+        this.select(inline.from, inline.to);
+        return true;
+      }
       // 点音符：只选中音头（升降号、唱名、八度点），不带减时线、附点
       if (entry.kind === "note") {
         const span = this.noteSel(entry);
         this.select(span.from, span.to);
         return true;
       }
+      // 点小节线、增时线、弧：选中它自己（都有自己的 `<g>`，框罩的就是它本身）
+      if (entry.kind === "barline" || entry.kind === "sustain" || (entry.kind === "mark" && entry.markKind === "slur")) {
+        this.select(entry.from, entry.to);
+        return true;
+      }
       return false; // 其余（歌词、记号）：App 的双向定位照旧
+    }
+    // 点空了：先看是不是差一点点没点中细线（小节线、增时线画出来只有一两像素厚）
+    const near = this.thinAtPoint(ev.clientX, ev.clientY);
+    if (near) {
+      this.select(near.from, near.to);
+      return true;
     }
     // 点在空白处：找同一行里离得最近的元素，光标落到它前面或后面（插入模式）
     const caret = this.caretAtPoint(ev.clientX, ev.clientY);
@@ -514,6 +594,19 @@ export class VisualEditController {
       return true;
     }
     return false;
+  }
+
+  /** 谱面上的双击：文字对象由此进插入模式——光标落在原文里点中的那个字前后，焦点交给代码区，
+   *  接着打字就是改原文（谱面焦点下数字键是插音符，不能留在谱面上）。处理了返回 true。
+   *
+   *  浏览器先发两次 `click` 再发 `dblclick`：第一下已经把这个文字对象选中了，这里再覆盖成插入光标，
+   *  所以不必自己做点击计时。 */
+  handleDoubleClick(ev: MouseEvent, entry: SyncEntry | null): boolean {
+    if (!this.host.visualEnabled() || !entry || !isText(entry)) return false;
+    const at = this.textCaretAt(entry, ev.clientX, ev.clientY);
+    this.select(at, at);
+    this.host.view.focus();
+    return true;
   }
 
   /** 点在文字条目的哪个字前后 → 原文偏移。字对不上（`♭B` 对 `bB`、叠排的拍号）时按点在那一项的左半还是右半落到字段两端。 */
@@ -539,6 +632,25 @@ export class VisualEditController {
     return e.from + Math.max(0, Math.min(src.length, i + shift));
   }
 
+  /** 点击点落在哪条小节线 / 增时线**附近**（它们画出来只有一两像素厚，正中很难点）。
+   *  只在点空了的时候才问它——落在音符上的点击照旧归音符，不抢。 */
+  private thinAtPoint(cx: number, cy: number): SyncEntry | null {
+    const PAD = 5; // 屏幕像素
+    let best: { e: SyncEntry; d: number } | null = null;
+    for (const e of this.host.sync.ordered()) {
+      if (!thin(e)) continue;
+      // 只认它自己的 `<g>`：取不到时 `elOf` 会退回宿主音符，那个框大得会乱抢点击
+      const el = this.ownEl(e);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      const dx = Math.max(0, r.left - cx, cx - r.right);
+      const dy = Math.max(0, r.top - cy, cy - r.bottom);
+      if (dx > PAD || dy > PAD) continue;
+      if (!best || dx + dy < best.d) best = { e, d: dx + dy };
+    }
+    return best?.e ?? null;
+  }
+
   /** 点击点落在哪个音符的附点上（先看点中的那个音符，再看同一带里别的音符）；返回附点的原文区间。 */
   private dotAtPoint(cx: number, cy: number, entry: SyncEntry | null): { from: number; to: number } | null {
     const c = this.editCtx(true);
@@ -558,6 +670,72 @@ export class VisualEditController {
       if (dots) return dots;
     }
     return null;
+  }
+
+  /** 点击点落在哪个音符的减时线上（音头正下方那一条带）。
+   *
+   *  减时线在模型里不是对象（时值的派生量，见 `docs/模块/模型-scoredoc.md`），谱面上也没有独立 `<g>`，
+   *  所以照附点那套按几何认：认出来选中的是 token 里那串减时线符号（`_` / 文本谱的 `/`）。 */
+  private beamAtPoint(cx: number, cy: number): { from: number; to: number } | null {
+    const c = this.editCtx(true);
+    if (!c) return null;
+    for (const e of this.navigable()) {
+      if (e.kind !== "note") continue;
+      const beams = noteSpans(c, e).beams;
+      if (!beams) continue;
+      const el = this.host.entryEl(e);
+      // 量的是**音头那个数字**（`<g>` 里第一个子项，同 `musicBox` 的锚），不是整个音符格——
+      // 格子是连歌词一起算的，下缘会落到歌词底下去
+      const digit = el?.firstElementChild ?? el;
+      if (!digit) continue;
+      const r = digit.getBoundingClientRect();
+      if (r.height <= 0) continue;
+      // 减时线紧贴数字下缘：简谱引擎画在外框下缘**略上方**（字形墨迹之下、外框之内），
+      // 原样文档画在下缘之下。带子按字高取比例罩住这两处，**不能再往下伸**——
+      // 歌词行紧接着就从下缘起头（实测第一个字的顶就在下缘 ±0），伸过去就把歌词的点击抢了
+      if (cx < r.left - 3 || cx > r.right + 3) continue;
+      if (cy < r.bottom - r.height * 0.35 || cy > r.bottom + r.height * 0.4) continue;
+      return beams;
+    }
+    return null;
+  }
+
+  /** 点中的是不是某个音符**写在 token 里**的增时线（`.jpwabc`）画出来的那一格；是就给出那个 `-` 的区间。
+   *
+   *  这种增时线在模型里没有自己的对象（写在音符 token 里），谱面上却各画一格——
+   *  点中第几格就选 token 里第几个 `-`，照附点、减时线那套「选 token 里的一段」。 */
+  private inlineSustainAt(entry: SyncEntry, target: EventTarget | null): { from: number; to: number } | null {
+    if (entry.kind !== "note" || !(target instanceof Element)) return null;
+    const cells = this.host.inlineSustainEls(entry.id);
+    const i = cells.findIndex((el) => el === target || el.contains(target));
+    if (i < 0) return null;
+    const c = this.editCtx(true);
+    const run = c && noteSpans(c, entry).sustains;
+    if (!run || run.from + i >= run.to) return null;
+    return { from: run.from + i, to: run.from + i + 1 };
+  }
+
+  /** 选区恰好是 token 里的一个 `-` 时，返回那个音符与它是第几条。 */
+  private pickedInlineSustain(): { note: SyncEntry; index: number } | null {
+    const sel = this.host.view.state.selection.main;
+    if (sel.empty || sel.to - sel.from !== 1) return null;
+    const c = this.editCtx(true);
+    const e = c && this.host.sync.at(sel.from);
+    if (!c || !e || e.kind !== "note") return null;
+    const run = noteSpans(c, e).sustains;
+    if (!run || sel.from < run.from || sel.from >= run.to) return null;
+    return { note: e, index: sel.from - run.from };
+  }
+
+  /** 选区恰好是某个音符的减时线时，返回那串减时线的区间。 */
+  private pickedBeams(): { from: number; to: number } | null {
+    const sel = this.host.view.state.selection.main;
+    if (sel.empty) return null;
+    const c = this.editCtx(true);
+    const e = c && this.host.sync.at(sel.from);
+    if (!c || !e || e.kind !== "note") return null;
+    const beams = noteSpans(c, e).beams;
+    return beams && beams.from === sel.from && beams.to === sel.to ? beams : null;
   }
 
   /** 选区恰好是某个音符的附点时，返回那个音符。 */
@@ -656,7 +834,10 @@ export class VisualEditController {
         const span = this.noteSel(entry);
         this.select(span.from, span.to);
       }
-      target = entry.kind === "mark" ? "mark" : entry.kind === "break" ? "break" : "note";
+      // 小节线、增时线与换行符一样：菜单上只有删除与撤销/重做
+      target = entry.kind === "mark" ? "mark"
+        : entry.kind === "break" || entry.kind === "barline" || entry.kind === "sustain" ? "break"
+        : "note";
     } else if (this.handleClick(ev, null)) {
       target = this.mode === "insert" ? "caret" : "note";
     }
@@ -1004,6 +1185,10 @@ export class VisualEditController {
     }
     // 选中的是附点：只去掉附点
     if (this.pickedDot()) return this.apply(toggleDot(c, sel.from, sel.to));
+    // 选中的是减时线：只去掉减时线（时值回到四分音符）
+    if (this.pickedBeams()) return this.apply(clearBeams(c, sel.from, sel.to));
+    // 选中的是 token 里的一条增时线：只短一拍（`5---` → `5--`）
+    if (this.pickedInlineSustain()) return this.apply(dropInlineSustain(c, sel.from, sel.to));
     let targets: SyncEntry[];
     if (sel.empty) {
       const nav = this.navigable();
@@ -1013,7 +1198,8 @@ export class VisualEditController {
       targets = [t];
     } else {
       const exact = this.host.sync.ordered().find((e) => e.from === sel.from && e.to === sel.to);
-      targets = exact && (exact.kind === "mark" || exact.kind === "break") ? [exact] : this.selectedEntries();
+      // 选区恰好是某个条目：记号、换行、文字（单击选中的歌词字/页眉字段）整体删掉，其余按选区碰到的音符算
+      targets = exact && (exact.kind === "mark" || exact.kind === "break" || isText(exact)) ? [exact] : this.selectedEntries();
     }
     if (targets.length === 0) {
       this.host.setStatus("没有选中可删的东西");
@@ -1063,9 +1249,30 @@ export class VisualEditController {
   }
 }
 
-/** 文字条目：歌词、页眉字段（点了进插入模式，光标落在字里） */
+/** 文字条目：歌词、页眉字段（单击选中、双击进插入模式） */
 function isText(e: SyncEntry): boolean {
   return e.kind === "lyric" || e.kind === "header";
+}
+
+/** 细线条目：小节线（竖）、增时线（横）。它们有自己的 `<g>`，但某一个方向上薄得没有厚度 */
+function thin(e: SyncEntry): boolean {
+  return e.kind === "barline" || e.kind === "sustain";
+}
+
+/** 细线的框：竖线的几何包围盒宽是 0、横线高是 0，照原样罩什么也看不见。
+ *  按长边的比例撑到看得见（比例式，与纸张、字号、缩放无关）。 */
+function plump(box: Box): Box {
+  const min = Math.max(box.w, box.h) * 0.12;
+  let { x, y, w, h } = box;
+  if (w < min) {
+    x -= (min - w) / 2;
+    w = min;
+  }
+  if (h < min) {
+    y -= (min - h) / 2;
+    h = min;
+  }
+  return { x, y, w, h };
 }
 
 /** 画出来的字 `disp` 与原文的值 `src` 怎么对位：原文下标 = 显示下标 + 返回值；对不上为 null。

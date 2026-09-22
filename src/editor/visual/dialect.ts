@@ -33,12 +33,22 @@ export interface NoteToken {
 export interface NoteParts {
   head: [number, number];
   dots: [number, number] | null;
+  /** 减时线那一串（123 / `.jpwabc` 是 `_`，文本谱是 `/`）。ABC 的时值是数字、没有单独符号可选，为 null */
+  beams?: [number, number] | null;
+  /** **写在 token 里**的增时线那一串（`.jpwabc` 的 `5---`）。123 / 文本谱的增时线是独立符号、
+   *  在索引里另有条目（`SyncEntry.kind === "sustain"`），不走这里，为 null */
+  sustains?: [number, number] | null;
+}
+
+/** `s` 里 `ch` 从第一个到最后一个的范围（加上 `base` 偏移）；一个都没有为 null。 */
+export function runRange(s: string, ch: string, base: number): [number, number] | null {
+  const a = s.indexOf(ch);
+  return a < 0 ? null : [base + a, base + s.lastIndexOf(ch) + 1];
 }
 
 /** `s` 里 `.` 从第一个到最后一个的范围（加上 `base` 偏移）；没有 `.` 为 null。 */
 export function dotsRange(s: string, base: number): [number, number] | null {
-  const a = s.indexOf(".");
-  return a < 0 ? null : [base + a, base + s.lastIndexOf(".") + 1];
+  return runRange(s, ".", base);
 }
 
 /** 读写音符 token 要的上下文：ABC 的音名要按调号换算成唱名、时值相对 `L:`。其余格式用不到。 */

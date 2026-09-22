@@ -714,7 +714,12 @@ export abstract class SlurTieBase extends Group {
     this.height = box.height;
   }
 }
-export class Tie extends SlurTieBase {}
+export class Tie extends SlurTieBase {
+  /** 这条弧连的是哪两个和弦（`ScoreDoc` 元素 id）。可视化编辑按 `起点:终点` 认出弧本身好点选；
+   *  多连音那种没有起止音符的弧不填。**排版不读它**。 */
+  startId: number | null = null;
+  endId: number | null = null;
+}
 export class Slur extends SlurTieBase {}
 
 /** LayoutOptions → SlurStyle。谱面这一路的弧全由它配参数，别在调用点各配各的。 */

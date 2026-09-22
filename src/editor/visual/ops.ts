@@ -27,20 +27,30 @@ function readNote(ctx: EditCtx, e: SyncEntry): NoteToken | null {
   return ctx.dialect.parseNote(ctx.state.doc.sliceString(e.from, e.to), noteCtx(ctx, e.from));
 }
 
-/** 一个音符条目在原文里的音头与附点（绝对偏移）。dialect 读不懂时整个 token 算音头。 */
-export function noteSpans(ctx: EditCtx, e: SyncEntry): { head: Span; dots: Span | null } {
+/** 一个音符条目在原文里的音头、附点与减时线（绝对偏移）。dialect 读不懂时整个 token 算音头。 */
+export function noteSpans(ctx: EditCtx, e: SyncEntry): NoteSpans {
   return partsAt(ctx, e.from, ctx.state.doc.sliceString(e.from, e.to), noteCtx(ctx, e.from));
 }
 
 type Span = { from: number; to: number };
+interface NoteSpans {
+  head: Span;
+  dots: Span | null;
+  /** 减时线那一串；ABC 的时值是数字、没有单独符号可选，为 null */
+  beams: Span | null;
+  /** 写在 token 里的增时线那一串（`.jpwabc` 的 `5---`）；其余格式的增时线是独立符号，为 null */
+  sustains: Span | null;
+}
 
 /** token `src` 从 `start` 起时各部分的绝对位置。 */
-function partsAt(ctx: EditCtx, start: number, src: string, nc: NoteCtx): { head: Span; dots: Span | null } {
+function partsAt(ctx: EditCtx, start: number, src: string, nc: NoteCtx): NoteSpans {
   const p = ctx.dialect.noteParts?.(src, nc);
-  if (!p) return { head: { from: start, to: start + src.length }, dots: null };
+  if (!p) return { head: { from: start, to: start + src.length }, dots: null, beams: null, sustains: null };
   return {
     head: { from: start + p.head[0], to: start + p.head[1] },
     dots: p.dots ? { from: start + p.dots[0], to: start + p.dots[1] } : null,
+    beams: p.beams ? { from: start + p.beams[0], to: start + p.beams[1] } : null,
+    sustains: p.sustains ? { from: start + p.sustains[0], to: start + p.sustains[1] } : null,
   };
 }
 
@@ -144,6 +154,25 @@ export function shiftOctave(ctx: EditCtx, from: number, to: number, delta: numbe
 export function toggleDot(ctx: EditCtx, from: number, to: number): EditOutcome {
   return rewriteNotes(ctx, from, to, (t) => {
     t.dots = t.dots > 0 ? 0 : 1;
+    return t;
+  });
+}
+
+/** 去掉减时线（时值回到四分音符）：选中一条减时线按 Delete 走它，与选中附点按 Delete 只去附点同构。 */
+export function clearBeams(ctx: EditCtx, from: number, to: number): EditOutcome {
+  return rewriteNotes(ctx, from, to, (t) => {
+    if (t.halvings === 0) return null;
+    t.halvings = 0;
+    return t;
+  });
+}
+
+/** 去掉一条**写在 token 里**的增时线（`.jpwabc` 的 `5---` → `5--`）：
+ *  那种增时线不是独立符号、索引里没有它自己的条目，删不了「一条」，只能改 token。 */
+export function dropInlineSustain(ctx: EditCtx, from: number, to: number): EditOutcome {
+  return rewriteNotes(ctx, from, to, (t) => {
+    if (t.inlineSustains <= 0) return null;
+    t.inlineSustains -= 1;
     return t;
   });
 }
