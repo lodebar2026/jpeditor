@@ -160,7 +160,7 @@ export function showOptionsDialog(app: App): void {
   /** 展开档：两种格式同一条展开档排版，摆同一组设置。 */
   const isPpt = !isMixed && view === "expanded";
   /** 原样文档那一路的**原样档**（文本谱、多声部的 123/ABC、MusicXML）：版面由量好的 metrics 定。
-   *  单声部 123/ABC 的原样档走简谱引擎（`App._originalOnEngine`），与 `.jpwabc` 原样档摆同一组设置。 */
+   *  单声部 123/ABC 的原样档走简谱引擎（`App._originalOnJianpu`），与 `.jpwabc` 原样档摆同一组设置。 */
   const isPu = !isMixed && !isPpt && app.painter.isDocumentLayout;
   /** 简谱排版器那条路（展开档，或 `.jpwabc` / 单声部 123、ABC 的原样档）——下面绝大多数项只有它吃。 */
   const isJp = !isMixed && !isPu;

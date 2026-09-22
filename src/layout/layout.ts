@@ -1986,7 +1986,7 @@ export class Layout {
   }
 
   /** 页组右移一个左边距（版心原点）。页脚（曲名 + 页码）归 painter 那一层
-   *  （`jianpu/painter.ts::addFooters`，展开档才有）。 */
+   *  （`layout/jianpupages.ts::addFooters`，展开档才有）。 */
   shiftToMargin(): void {
     for (const pg of this.pages) pg.x += this.options.marginLeft;
   }

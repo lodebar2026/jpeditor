@@ -11,7 +11,6 @@ import { NoteEntry } from "./entry";
 import { Layout } from "./layout";
 import { emptyScore, type JScore } from "./input";
 import type { ElementId, ScoreDoc } from "../model/doc";
-import type { PagePainter } from "./pagepainter";
 import { headerPartsOf, mixedVisitor, renderPageSvg, type HeaderPart } from "./render";
 import { layoutExpandedPages, layoutOriginalPages } from "./jianpupages";
 import { fromPt, pageGeometry, type LayoutHit, type LayoutPage, type LayoutResult, type PaintTarget } from "./result";
@@ -157,7 +156,14 @@ export type VisualPartRole = "aug-dot" | "harmony" | "deco" | "annotation";
 
 const defaultStaffStyle = (): StyleSheet => computeStyleForPaper([THEMES.staff], { engine: "staff" });
 
-export class ScorePainter implements PagePainter {
+/** 五线谱 / 混排的排版选项：按样式表（缺省取内置 `staff` 主题）灌好，纸与小节号由请求再覆写。 */
+export function staffOptionsOf(meta: MetaData, style?: StyleSheet): MixedOptions {
+  const options = new MixedOptions(meta);
+  applyStaffStyle(options, style ?? defaultStaffStyle());
+  return options;
+}
+
+export class ScorePainter {
   /** 最近一次提交的简谱引擎（成书、PPTX、脚本读它的页面树与选项）。五线谱结果提交时保留不动。 */
   layout: Layout = new Layout(28);
   /** 最近一次提交的简谱引擎输入（标题、导出 PPTX 用）。五线谱结果提交时保留不动。 */
@@ -317,8 +323,7 @@ export class ScorePainter implements PagePainter {
 
   /** 五线谱 / 混排这一路：读谱 → 排页，返回提交动作。 */
   private _staffCommit(req: StaffPaintRequest, meta: MetaData): () => void {
-    const options = new MixedOptions(meta);
-    applyStaffStyle(options, req.style ?? defaultStaffStyle());
+    const options = staffOptionsOf(meta, req.style);
     options.hideBarNumber = req.hideBarNumber;
     options.page = req.page;
     const score = layoutStaff(req.doc, options);

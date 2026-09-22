@@ -5,7 +5,7 @@
 // 这个是**格式与语义模型**这一条。
 //
 // **只能汇出不碰 DOM 的模块**——排版件（依赖 common/measure.ts 的那些）一律不许进这条链，
-// 所以这里没有 PuPainter / layout。需要排版的回归走 scripts/harness.mjs 起浏览器那条路。
+// 所以这里没有排版器 / layout。需要排版的回归走 scripts/harness.mjs 起浏览器那条路。
 export * from "../model/doc";
 export * from "../j123/lex";
 export * from "../j123/parse";

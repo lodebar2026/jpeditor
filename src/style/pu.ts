@@ -1,7 +1,7 @@
 // 文本谱原样档那把尺子的适配器：computed `StyleSheet` → `PuMetrics` 的覆盖层。
 //
 // 文本谱的尺寸是对原版渲染逐项实测的一整套，**不由一个基础字号派生**，所以：
-//   - `roles.note.size`（pt）不直接落值，由 `PuPainter.resolveScale` 换成整体缩放
+//   - `roles.note.size`（pt）不直接落值，由 `layout/original/compose.ts::resolveScale` 换成整体缩放
 //     （分母是这套版式含谱面指令时的数字字号 `digitSize`）；缺省 = 跟随版式；
 //   - 谱面自带的 `FontSize:` / `Margin:` 是**乘法**（百分比），不走深合并，仍由 `layout/original/metrics.ts::applyDocOptions` 叠。
 //

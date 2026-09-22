@@ -1,4 +1,4 @@
-// 原样文档布局的构图：定位结构（`place.ts`）→ PageItem 页面树。原 `pu/painter.ts::PuPainter` 的绘制方法
+// 原样文档布局的构图：定位结构（`place.ts`）→ PageItem 页面树。原先 `PuPainter`（已退役）的绘制方法
 // 原样搬来（`docs/实现/PuPainter退役.md` P4/P5），`this` 换成一次排版的上下文 `OriginalCtx`；
 // 加载、DOM、渲染与高亮归唯一的 `layout/painter.ts::ScorePainter`，这里只产出页面与身份索引。
 //
@@ -44,7 +44,7 @@ import {
   type PlacedVoice,
   type LyricMeasure,
 } from "./place";
-import { BRACE_GLYPHS } from "../../pu/brace";
+import { BRACE_GLYPHS } from "./brace";
 import { applyDocOptions, applyUserOptions, metricsFor, noteMarkGap, puGraceMetrics, puGraceNotes, puSlurStyle, withDigitInk, type PuMetrics, type PuUserOptions } from "./metrics";
 import { ACCOMP_BRACKET, ACCIDENTAL_GLYPH, BARLINE_MARKS, BRACKET, DYNAMICS, ORNAMENTS, TERMS } from "../../pu/glyph";
 

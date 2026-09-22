@@ -3,7 +3,6 @@
 export { sniffDialect, dialectSpec, DIALECTS, type Dialect, type DialectSpec } from "./dialect";
 export { parsePu, parsePuAst, parseMusicLine, parseLyricBody, type ParseOptions } from "./parse";
 export { eachNoteInElements, emptyMetadata } from "./ast";
-export { PuPainter } from "./painter";
 export { jianpuInputOfDoc, type JianpuInputOptions } from "../model/jianpuinput";
 export { relayoutPuText } from "./relayout";
 export { puPhraseLines, type PuNewLine } from "./phrase";
