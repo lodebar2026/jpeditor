@@ -9,6 +9,7 @@
 //   词/文字 `C:` `C1:` / `W:`
 // 空行分组：相邻的 Q 行（连同其下的 C 行）成为一个 VoiceGroup，上下堆叠横向对齐。
 
+import { lineStarts } from "../common/lines";
 import {
   emptyMetadata,
   type Accidental,
@@ -1045,12 +1046,11 @@ export function parsePuAst(text: string, options: ParseOptions = {}): PuDoc {
   };
 
   const lines = text.split(/\r?\n/);
-  let offset = 0;
+  const starts = lineStarts(text);
   for (let ln = 0; ln < lines.length; ln += 1) {
     const raw = lines[ln]!;
     ctx.line = ln;
-    ctx.lineOffset = offset;
-    offset += raw.length + 1;
+    ctx.lineOffset = starts[ln]!;
     const trimmed = raw.trim();
 
     if (trimmed.length === 0) {

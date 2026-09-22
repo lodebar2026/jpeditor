@@ -11,6 +11,7 @@
 //   - **`(N:` 的冒号必需**：简谱音符是数字，裸 `(3` 与圆滑线冲突，见规范「`(` 的歧义」。
 //   - 认不出的东西一律**报诊断、继续往下**——半截或写错的文本也要给出大部分结果。
 
+import { lineStarts } from "../common/lines";
 import { jumpOrnamentName } from "../abcfamily/jumpmarks";
 import {
   PU_LYRIC_QUOTES,
@@ -913,6 +914,7 @@ export function parseAbcFamily(
   };
 
   const lines = text.split(/\r?\n/);
+  const starts = lineStarts(text);
   let song: Song | null = null;
   /** 当前声部 */
   let pb: PartBuild | null = null;
@@ -989,13 +991,11 @@ export function parseAbcFamily(
   };
   const ensurePart = (): PartBuild => pb ?? startPart(1);
 
-  let offset = 0;
   /** 上一条字段名：`+:` 续行接着写它（ABC §3.1.18） */
   let lastField: FieldName | undefined;
   for (let ln = 0; ln < lines.length; ln++) {
     const raw = lines[ln]!;
-    const lineOffset = offset;
-    offset += raw.length + 1;
+    const lineOffset = starts[ln]!;
     ctx.lineNo = ln;
     ctx.lineOffset = lineOffset;
     const line = raw.trim();
