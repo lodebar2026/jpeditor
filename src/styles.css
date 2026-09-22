@@ -515,7 +515,7 @@ button:focus-visible, select:focus-visible {
 .visual-palette[hidden] { display: none; }
 .visual-palette-group { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
 .visual-palette-group + .visual-palette-group { padding-left: 12px; border-left: 1px solid var(--border); }
-.visual-palette button { font-size: 12px; padding: 2px 7px; min-width: 24px; }
+.visual-palette button { font-size: 15px; line-height: 1.2; padding: 2px 6px; min-width: 28px; }
 .visual-palette button:disabled { opacity: 0.35; }
 .visual-palette .visual-palette-digit { font-weight: 700; min-width: 26px; }
 .visual-menu { position: fixed; z-index: 1000; min-width: 200px; padding: 4px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel, #1f1f1f); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; gap: 1px; }

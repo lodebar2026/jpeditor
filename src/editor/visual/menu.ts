@@ -38,13 +38,30 @@ function button(label: string, title: string, onPick: () => void, cls = ""): HTM
 
 // ───────────────────────── 记号面板 ─────────────────────────
 
-/** 面板上每个按钮显示什么（缺省用动作名） */
+/** 面板上每个按钮显示什么：尽量用谱面上看得到的那个符号（缺省用动作名）。完整名称与快捷键在按钮的提示里。
+ *  八度点、减时线、附点用组合字符叠在「1」上，与谱面上的样子一致。 */
 const SHORT: Record<string, string> = {
-  "oct.up": "高音点", "oct.down": "低音点", "acc.sharp": "♯", "acc.flat": "♭", "acc.natural": "♮",
-  "dur.halve": "减时线", "dur.double": "加倍", "dur.dot": "附点", "sus.add": "增时线 -",
-  "slur.toggle": "圆滑线", "tie.toggle": "延音线", "deco.fermata": "延长号", "deco.accent": "重音",
-  "bar.insert": "小节线 |", "brk.line": "换行 ↵", "brk.page": "换页 ⤓", "del.forward": "删除", "del.back": "退格",
-  "mode.insert": "插入模式", "mode.edit": "编辑模式", "view.formatMarks": "¶", "edit.undo": "撤销", "edit.redo": "重做",
+  "mode.insert": "\u258F", // ▏ 竖线光标
+  "mode.edit": "\u25AE", // ▮ 方块光标
+  "oct.up": "1\u0307", // 1̇
+  "oct.down": "1\u0323", // 1̣
+  "acc.sharp": "\u266F", "acc.flat": "\u266D", "acc.natural": "\u266E",
+  "dur.halve": "1\u0332", // 1̲ 加减时线
+  "dur.double": "\u00D72", // ×2
+  "dur.dot": "1\u00B7", // 1·
+  "sus.add": "1 \u2013", // 1 –
+  "slur.toggle": "\u2322", // ⌢
+  "tie.toggle": "\u2040", // ⁀
+  "deco.fermata": "\u{1D110}", // 𝄐
+  "deco.accent": ">",
+  "bar.insert": "|",
+  "brk.line": "\u21B5", // ↵
+  "brk.page": "\u2913", // ⤓
+  "del.forward": "\u2326", // ⌦
+  "del.back": "\u232B", // ⌫
+  "view.formatMarks": "\u00B6", // ¶
+  "edit.undo": "\u21B6", // ↶
+  "edit.redo": "\u21B7", // ↷
 };
 
 /** 把面板建进 `root`；返回刷新函数（模式一变，按钮可用与否跟着变）。 */
