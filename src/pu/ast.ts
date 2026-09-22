@@ -103,6 +103,9 @@ export interface NoteElement {
   /** 音符上方的双引号注释；`hx:` 开头的和弦另存 `chord` */
   annotation?: string;
   chord?: string;
+  /** `annotation` / `chord` 在原文里的位置（整个 `"…"` 或不带引号的和弦名）。只给编辑用 */
+  annotationSource?: SourceSpan;
+  chordSource?: SourceSpan;
   code: string;
   source: SourceSpan;
 }
@@ -117,6 +120,9 @@ export interface SustainElement {
   annotation?: string;
   /** 增时线上方的和弦（`- "hx:C/G"`）：长音里逐拍换和弦时，后面几个就印在增时线上。 */
   chord?: string;
+  /** 见 `NoteElement.annotationSource` */
+  annotationSource?: SourceSpan;
+  chordSource?: SourceSpan;
   code: string;
   source: SourceSpan;
 }
@@ -186,7 +192,10 @@ export interface Mark {
   /** 弧线跨行：本行只有收尾 / 只有起头 */
   continuationFromPrevious?: boolean;
   continuationToNext?: boolean;
+  /** 起点符号 `(` 的位置 */
   source: SourceSpan;
+  /** 收尾符号 `)` 的位置（本行收尾的弧才有）。只给编辑用 */
+  closeSource?: SourceSpan;
 }
 
 export interface LyricSyllable {
@@ -244,6 +253,8 @@ export interface VoiceGroup {
 export interface ScorePage {
   index: number;
   groups: VoiceGroup[];
+  /** 本页之前那行 `[fenye]` 的位置。只给编辑用 */
+  breakSource?: SourceSpan;
 }
 
 /** 一首曲子：自带头部与页面。有谱用整行 `-----` 分隔同一文件里的多个唱法。 */

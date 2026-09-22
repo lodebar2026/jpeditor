@@ -130,6 +130,8 @@ export interface SrcBar {
 export interface SrcBreak {
   kind: "break";
   page: boolean;
+  /** `$(…)` 在原文里的位置。只给编辑用（`doc.ts::BreakSource`） */
+  source?: SourceSpan;
 }
 
 export type SrcEntry = SrcNote | SrcBar | SrcBreak;
@@ -308,7 +310,11 @@ function readVoice(sec: VoiceSectionLike, fifths: number, time: { beats: number;
     } else if (linebreakCtx) {
       const ret = linebreakCtx.Return().getText();
       const args = substringBefore(substringAfter(ret, "("), ")").split(",");
-      mea?.entries.push({ kind: "break", page: args.length >= 4 && args[3]!.toLowerCase() === "true" });
+      mea?.entries.push({
+        kind: "break",
+        page: args.length >= 4 && args[3]!.toLowerCase() === "true",
+        source: spanOf(sec, linebreakCtx.start, linebreakCtx.stop),
+      });
     }
   }
 
@@ -400,6 +406,10 @@ function buildPart(src: readonly SrcMeasure[], ids: IdGen, marks: Mark[]): Part 
         // 写在小节中间（后面还有音符）的，另在前一个和弦上记原位（见 `Chord.lineBreakAfter`）
         const last = mea.elements.length > 0 ? mea.elements[mea.elements.length - 1] : undefined;
         pendingInline = last?.kind === "chord" ? { chord: last, kind: ent.page ? "page" : "system" } : null;
+        if (ent.source) {
+          const els = target.elements;
+          (part.breakSources ??= []).push({ page: ent.page, after: els[els.length - 1]?.id ?? null, source: ent.source });
+        }
         continue;
       }
       if (ent.kind === "bar") {

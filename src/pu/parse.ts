@@ -213,12 +213,16 @@ function interpretQuoted(ctx: Ctx, body: string, columnBase: number): QuotedMean
 
 type Attachable = NoteElement | SustainElement | BarlineElement;
 
-function applyQuoted(target: Attachable, q: QuotedMeaning): void {
+function applyQuoted(target: Attachable, q: QuotedMeaning, source: SourceSpan): void {
   if (q.meter !== undefined && target.kind === "barline") target.temporaryMeter = q.meter;
-  if (q.annotation !== undefined) target.annotation = q.annotation;
+  if (q.annotation !== undefined) {
+    target.annotation = q.annotation;
+    if (target.kind !== "barline") target.annotationSource = source;
+  }
   // 和弦既可挂音符，也可挂增时线——长音里第二、三拍换和弦时，谱面就把它印在增时线上方。
   if (q.chord !== undefined && (target.kind === "note" || target.kind === "sustain")) {
     target.chord = q.chord;
+    target.chordSource = source;
   }
   if (target.kind !== "note") return;
   if (q.graceBefore) target.graceBefore.push(...q.graceBefore);
@@ -405,7 +409,9 @@ export function parseMusicLine(
         // 队首闭合，它前面没有别的未闭合弧线，所以层号固定在第一层——
         // 链式 tie 的几条弧因此等高（原版如此）
         open.level = 1;
-        marks.push(makeMark(open, Math.max(0, elements.length - 1), ctx));
+        const mk = makeMark(open, Math.max(0, elements.length - 1), ctx);
+        mk.closeSource = span(ctx, i);
+        marks.push(mk);
       }
       i += 1;
       continue;
@@ -564,7 +570,7 @@ export function parseMusicLine(
       if (target === undefined) {
         report(ctx, "orphan-annotation", `注释 "${quoted.body}" 前面没有可挂载的符号`, i);
       } else {
-        applyQuoted(target, meaning);
+        applyQuoted(target, meaning, span(ctx, i, quoted.next - i));
       }
       i = quoted.next;
       continue;
@@ -605,6 +611,7 @@ export function parseMusicLine(
       const host = lastAttachable(elements);
       if (chord && host?.kind === "note") {
         host.chord = chord[0];
+        host.chordSource = span(ctx, i, chord[0].length);
         i += chord[0].length;
         continue;
       }
@@ -1066,6 +1073,7 @@ export function parsePuAst(text: string, options: ParseOptions = {}): PuDoc {
     }
     if (/^\[fenye\]$/i.test(trimmed)) {
       flushPage();
+      page.breakSource = { line: ln, column: raw.indexOf("["), offset: starts[ln]! + raw.indexOf("["), length: trimmed.length };
       continue;
     }
     // `1=bD 4/4`，也有 `6=c3/2` 这样以别的音为主音的（小调）写法。

@@ -369,6 +369,26 @@ export type InlineItem =
   | { kind: "boundary"; behavior: "join" | "split"; source?: SourceSpan }
   | { kind: "layer"; role: "accompaniment" | "voice"; measures: Measure[]; marks: Mark[]; source?: SourceSpan };
 
+/** 挂在元素上的记号**在原文里的位置**。只给编辑用（可视化编辑选中、删除挂在音符上的记号），
+ *  语义仍在 `harmony` / `notations` / `ornaments` / `sectionWord` 上，排版与写出端都不读它。
+ *  一个记号一条；同名记号写了两次就是两条。 */
+export interface AttachedSource {
+  /** `harmony` 和弦名 · `deco` 装饰/记号（`!fermata!`、`&xx`）· `annotation` 段落词/注记 · `dynamic` 力度 */
+  kind: "harmony" | "deco" | "annotation" | "dynamic";
+  /** 记号名（装饰名、力度名；和弦名与注记为原文） */
+  name: string;
+  source: SourceSpan;
+}
+
+/** 换行/换页符号在原文里的位置（123/ABC 的 `$` `$$`、`.jpwabc` 的 `$(…)`、文本谱的 `[fenye]`）。
+ *  只给编辑用（可视化编辑显示、选中、删除换行符）；换行的语义仍在 `Print` / `lineBreakAfter` / `Part.endBreak`。 */
+export interface BreakSource {
+  page: boolean;
+  /** 符号前面的最后一个元素（谱面上换行符画在它右边）；声部开头就换行时为 null */
+  after: ElementId | null;
+  source: SourceSpan;
+}
+
 // ───────────────────────── 元素 ─────────────────────────
 
 /** 增时线（简谱的 `-`）。
@@ -395,6 +415,8 @@ export interface Sustain {
    *  只是印刷位置的提示：小节级的换行（下一小节的 `Measure.print`）照「这一小节之后」另记了一份，
    *  只认小节级换行的消费者（123/MusicXML 写出、排版行视图）不用管它；简谱排版引擎据此在原位换行。 */
   lineBreakAfter?: "system" | "page";
+  /** 见 `AttachedSource` */
+  attachedSources?: AttachedSource[];
   source?: SourceSpan;
 }
 
@@ -475,6 +497,8 @@ export interface Chord {
   /** [五线谱] 小节内起点（divisions）：MusicXML 靠 `<backup>`/`<forward>` 挪游标，多声部同一小节里各声部从头排。
    *  **缺省 = 前一个元素的终点**（首个元素为 0）；只在与缺省不同时写。`toxml.ts` 按它补回 `<backup>`/`<forward>` */
   onset?: number;
+  /** 见 `AttachedSource` */
+  attachedSources?: AttachedSource[];
   source?: SourceSpan;
 }
 
@@ -520,6 +544,8 @@ export interface Space {
   notations?: Notations;
   /** [五线谱] 见 `Chord.onset`（`y` 不占时值，只标位置） */
   onset?: number;
+  /** 见 `AttachedSource` */
+  attachedSources?: AttachedSource[];
   source?: SourceSpan;
 }
 
@@ -748,6 +774,8 @@ export interface Part {
   measures: Measure[];
   /** 最后一小节**之后**的换行/换页（123 行末的 `$`）。见 `Print` 的口径说明 */
   endBreak?: "system" | "page";
+  /** 见 `BreakSource`，按原文顺序 */
+  breakSources?: BreakSource[];
   /** 见 `Measure.raw` */
   raw?: string[];
 }
@@ -805,6 +833,10 @@ export interface Mark {
   continuesToNext?: boolean;
   continuesFromPrevious?: boolean;
   source?: SourceSpan;
+  /** 起止符号各自在原文里的位置（`(` 与 `)`）。只给编辑用：去掉一条弧要成对删掉两个符号。
+   *  （ABC 的 tie 不是 `Mark`、记在 `Note.tie` 上，它的 `-` 紧跟音符 token，编辑侧就地找） */
+  openSource?: SourceSpan;
+  closeSource?: SourceSpan;
 }
 
 /** 演唱顺序的一遍。← 123 的 `I:playorder`

@@ -20,6 +20,7 @@ import {
   isLyricTrailingPunct as isTrailingPunct,
 } from "../common/cjkpunct";
 import type {
+  AttachedSource,
   Barline,
   Chord,
   Diagnostic,
@@ -91,7 +92,8 @@ interface PartBuild {
    *  交错写法里 `V:1` 的弧常跨行，中间隔着 `V:2` 的行，共用一份会配错对 */
   openSlurs: OpenMark[];
   openTuplets: OpenMark[];
-  pending: { chord?: string; annotations: string[]; decos: string[] };
+  /** `srcs`：欠着的这些记号在原文里的位置（`AttachedSource`，只给编辑用），随记号一起落到元素上 */
+  pending: { chord?: string; annotations: string[]; decos: string[]; srcs: AttachedSource[] };
   openEnding: number[][];
   /** 当前歌词块；`afterLyrics` 表示上一块已经跟过 `w` 行，下一条音乐行开新块 */
   block?: LyricBlock;
@@ -105,6 +107,17 @@ interface PartBuild {
 function noteInlineBreak(pb: PartBuild, kind: BreakKind): void {
   const last = pb.measure.elements[pb.measure.elements.length - 1];
   pb.inlineBreak = last?.kind === "chord" ? { host: last, sustains: last.sustains?.length ?? 0, kind } : null;
+}
+
+/** 声部里到目前为止的最后一个元素（含还没收尾的小节）。 */
+function lastElementId(pb: PartBuild): ElementId | null {
+  const els = pb.measure.elements;
+  if (els.length) return els[els.length - 1]!.id;
+  for (let i = pb.part.measures.length - 1; i >= 0; i--) {
+    const m = pb.part.measures[i]!.elements;
+    if (m.length) return m[m.length - 1]!.id;
+  }
+  return null;
 }
 
 /** 声部里到目前为止的对位格数（含还没收尾的小节）。 */
@@ -334,6 +347,8 @@ interface OpenMark {
   tupletNormal?: number;
   /** 三连音还差几个音符收尾（ABC §4.13：`(3` 作用于随后 3 个音符，不需要显式收尾） */
   remaining?: number;
+  /** `(` 在原文里的位置（见 `Mark.openSource`） */
+  openSource?: SourceSpan;
 }
 
 /** 把一行音乐体的 token 组装进声部。 */
@@ -400,6 +415,12 @@ function buildMusicLine(
         ...(arts.length ? { articulations: arts } : {}),
       };
       pending.decos = [];
+    }
+    if (pending.srcs.length) {
+      // `y` 上不落段落词（上面只给 chord 设 sectionWord），它的位置也不记
+      const srcs = el.kind === "chord" ? pending.srcs : pending.srcs.filter((a) => a.kind !== "annotation");
+      if (srcs.length) el.attachedSources = srcs;
+      pending.srcs = [];
     }
     // 上一个 `$` 后面同一小节里又来了音符：那是**小节中间**换行，在原位记一份（`Chord.lineBreakAfter`；
     // `$` 之后才补上的增时线不算——那时换行落在已有的最后一条增时线后面）
@@ -493,6 +514,9 @@ function buildMusicLine(
         if (pending.chord !== undefined) {
           s.harmony = { root: { step: "C", alter: 0 }, kind: "", text: pending.chord };
           pending.chord = undefined;
+          const hs = pending.srcs.filter((a) => a.kind === "harmony");
+          if (hs.length) s.attachedSources = hs;
+          pending.srcs = pending.srcs.filter((a) => a.kind !== "harmony");
         }
         (host.sustains ??= []).push(s);
         host.duration = ctx.d.reduration(host, ctx.len);
@@ -612,12 +636,16 @@ function buildMusicLine(
 
       case "chord":
         pending.chord = t.value ?? "";
+        // 连写两个和弦名只留后一个（上面覆盖），位置也只留后一个
+        pending.srcs = pending.srcs.filter((a) => a.kind !== "harmony");
+        pending.srcs.push({ kind: "harmony", name: pending.chord, source: t.source });
         break;
 
       case "annotation":
         // `"^文字"` / `"_文字"`（ABC §4.19 的注记，`^` 上方 `_` 下方）——
         // 段落词（`（副歌）` 这类）就走这条，与 emit 对称
         pending.annotations.push((t.value ?? "").replace(/^[\^_<>@]/, ""));
+        pending.srcs.push({ kind: "annotation", name: pending.annotations[pending.annotations.length - 1]!, source: t.source });
         break;
 
       case "deco": {
@@ -634,6 +662,7 @@ function buildMusicLine(
           break;
         }
         pending.decos.push(deco);
+        pending.srcs.push({ kind: "deco", name: deco, source: t.source });
         break;
       }
 
@@ -654,7 +683,7 @@ function buildMusicLine(
 
       case "slurStart":
         // 起点未定：等 `attach` 把「`(` 之后的第一个元素」回填进来
-        openSlurs.push({ type: "slur", start: 0, level: openSlurs.length });
+        openSlurs.push({ type: "slur", start: 0, level: openSlurs.length, openSource: t.source });
         break;
 
       case "slurEnd": {
@@ -696,7 +725,9 @@ function buildMusicLine(
         }
         // `open.start` 由 `attach` 回填；同音起止（`(1)`）时起点就是终点，合法（ABC §4.11）
         if (open.start && cur.last) {
-          marks.push({ type: "slur", start: open.start, end: cur.last.id, level: open.level });
+          const mk: Mark = { type: "slur", start: open.start, end: cur.last.id, level: open.level, closeSource: t.source };
+          if (open.openSource) mk.openSource = open.openSource;
+          marks.push(mk);
         } else {
           report(ctx, "empty-slur", "圆滑线里没有音符", t.source);
         }
@@ -737,6 +768,7 @@ function buildMusicLine(
         const jumps = pending.decos.map((d) => jumpOrnamentName(d)).filter((v): v is string => !!v);
         if (jumps.length) {
           pending.decos = pending.decos.filter((d) => !jumpOrnamentName(d));
+          pending.srcs = pending.srcs.filter((a) => a.kind !== "deco" || !jumpOrnamentName(a.name));
           bl.ornaments = jumps.map((name) => ({ name, level: 0 }));
         }
         // **小节里还没有元素 = 这是左线**（行首的 `|`、或紧跟上一根），不收尾，
@@ -770,6 +802,7 @@ function buildMusicLine(
           ? pb.measure
           : pb.part.measures[pb.part.measures.length - 1] ?? pb.measure;
         ctx.breakAfter.set(target, t.value === "page" ? "page" : "system");
+        (pb.part.breakSources ??= []).push({ page: t.value === "page", after: lastElementId(pb), source: t.source });
         noteInlineBreak(pb, t.value === "page" ? "page" : "system");
         if (pb.block) pb.block.broken = true;
         break;
@@ -976,7 +1009,7 @@ export function parseAbcFamily(
     measureNo: 1,
     openSlurs: [],
     openTuplets: [],
-    pending: { annotations: [], decos: [] },
+    pending: { annotations: [], decos: [], srcs: [] },
     openEnding: [],
     afterLyrics: false,
     inlineBreak: null,

@@ -26,8 +26,10 @@ import type {
   Ornament,
   PuDoc,
   ScoreLine,
+  SustainElement,
 } from "../pu/ast";
 import type {
+  AttachedSource,
   Barline,
   BeamVal,
   Chord,
@@ -102,6 +104,18 @@ function durationFrom(duration: number, dots: number, sustains: number): Chord["
 
 const harmonyOf = (text: string): Chord["harmony"] => ({ root: { step: "C", alter: 0 }, kind: "", text });
 
+/** 挂在符号上的和弦名、注记、`&xx` 记号在原文里的位置（`doc.ts::AttachedSource`，只给编辑用），按原文顺序。 */
+function attachedOf(el: NoteElement | SustainElement): AttachedSource[] | undefined {
+  const out: AttachedSource[] = [];
+  if (el.chord !== undefined && el.chordSource) out.push({ kind: "harmony", name: el.chord, source: el.chordSource });
+  if (el.annotation !== undefined && el.annotationSource) {
+    out.push({ kind: "annotation", name: el.annotation, source: el.annotationSource });
+  }
+  for (const o of el.ornaments) out.push({ kind: "deco", name: o.name, source: o.source });
+  out.sort((a, b) => a.source.offset - b.source.offset);
+  return out.length ? out : undefined;
+}
+
 /** 一个音符（主音或倚音）→ 和弦。倚音不占时值，但减时线层数要留着（排版画它）。 */
 function chordOfNote(n: NoteElement, voice: number, ids: IdGen, grace: Chord["grace"]): Chord {
   const beams = beamsOf(n.duration);
@@ -142,6 +156,8 @@ function chordOfNote(n: NoteElement, voice: number, ids: IdGen, grace: Chord["gr
     const arts = n.ornaments.filter((o) => !/^(yc|fermata)$/i.test(o.name)).map((o) => o.name);
     ch.notations = { ...(fermata ? { fermata: true } : {}), ...(arts.length ? { articulations: arts } : {}) };
   }
+  const att = attachedOf(n);
+  if (att) ch.attachedSources = att;
   // 八度/时值以外的修饰在 `code` 里，不进模型（排版不看它）
   return ch;
 }
@@ -225,6 +241,8 @@ function convertLine(
           if (el.chord !== undefined) ch.harmony = harmonyOf(el.chord);
           if (el.annotation !== undefined) ch.sectionWord = el.annotation;
           if (el.ornaments.length) ch.ornaments = ornamentsOf(el.ornaments);
+          const att = attachedOf(el);
+          if (att) ch.attachedSources = att;
           takePending(ch);
           mea.elements.push(ch);
           idAt.set(i, ch.id);
@@ -239,6 +257,8 @@ function convertLine(
         if (el.annotation !== undefined) su.sectionWord = el.annotation;
         if (el.ornaments.length) su.ornaments = ornamentsOf(el.ornaments);
         if (el.lyricAnchor) su.lyricAnchor = true;
+        const att = attachedOf(el);
+        if (att) su.attachedSources = att;
         takePending(su);
         (host.sustains ??= []).push(su);
         host.duration = durationFrom(4 << (host.beams?.length ?? 0), host.duration.dots, host.sustains.length);
@@ -407,6 +427,7 @@ function convertMarks(
           out.push(head);
         }
         head.end = end;
+        if (m.closeSource) head.closeSource = m.closeSource;
         setTrail(head);
         delete head.continuesToNext;
         (head.continuationLevels ??= []).push(m.level);
@@ -418,6 +439,10 @@ function convertMarks(
       }
     }
     const mk: Mark = { type, start, end };
+    if (type === "slur") {
+      mk.openSource = m.source;
+      if (m.closeSource) mk.closeSource = m.closeSource;
+    }
     if (lead > 0 && !m.continuationFromPrevious) mk.startLead = lead;
     setTrail(mk);
     if (m.level) mk.level = m.level;
@@ -647,7 +672,13 @@ export function puToScoreDoc(pu: PuDoc): ScoreDoc {
           // 行首小节：模型口径「本小节起新系统」（`doc.ts::Print`），附上行这一级的东西
           const first = r.measures[0]!;
           const p: NonNullable<Measure["print"]> = { newSystem: true, system, source: line.source };
-          if (groupIdx === 0 && pageIdx > 0) p.newPage = true;
+          if (groupIdx === 0 && pageIdx > 0) {
+            p.newPage = true;
+            if (page.breakSource) {
+              const prev = pv.part.measures[pv.part.measures.length - 1]?.elements;
+              (pv.part.breakSources ??= []).push({ page: true, after: prev?.[prev.length - 1]?.id ?? null, source: page.breakSource });
+            }
+          }
           if (voiceIdx === 0 && group.texts.length) {
             p.texts = group.texts.map((t) => t.text);
             p.textSources = group.texts.map((t) => t.source);
