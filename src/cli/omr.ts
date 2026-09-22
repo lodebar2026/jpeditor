@@ -7,27 +7,27 @@ import { installNodeDecoder } from "../omr/decode.node";
 import { setOmrRuntime } from "../omr/runtime";
 import { nodeRuntime, threadInfo } from "../omr/runtime.node";
 import { recognizeMusicppDetailed } from "../omr/recognize";
-import { OMR_EMITTERS, DEFAULT_OMR_FORMAT, isOmrFormat, omrEmitter, type OmrFormat } from "../omr/emit";
+import { OMR_EMITTERS, DEFAULT_OMR_FORMAT, isOmrFormat, omrEmitter, type OmrFormat, type EmittedScore } from "../omr/emit";
 import { omrProfile, omrProfileReset } from "../omr/paddleocr";
 
 setOmrRuntime(nodeRuntime);
 installNodeDecoder();
 
 export { OMR_EMITTERS, DEFAULT_OMR_FORMAT, isOmrFormat, omrEmitter, omrProfile, omrProfileReset, threadInfo };
-export type { OmrFormat };
+export type { OmrFormat, EmittedScore };
 export { recognizeMusicppDetailed };
 // 换解码器用（默认 sharp；要接别的解码库从这里换）。
 export { setImageDecoder, decodeToBinary } from "../omr/decode";
 export type { ImageDecoder, RgbaImage } from "../omr/decode";
 export { recognizedToDoc } from "../omr/todoc";
-export { toPuText } from "../omr/topu";
+export { metaFrom123, metaFromPu } from "../omr/meta";
 export type { RecognizedScore, Binary } from "../omr/types";
 
 export interface RecognizeResult {
-  /** 输出原文（123、.jpwabc 或文本谱原文）。 */
+  /** 输出原文（123、.jpwabc、ABC 或文本谱原文）。 */
   text: string;
-  /** `123` = 123 核对文本（模型直出）；`jpwabc` = .jpwabc 原文；`pu` = 文本谱原文。 */
-  kind: "123" | "jpwabc" | "pu";
+  /** 产物按哪种源格式打开：`123` / `jpwabc` / `abc` / `pu`（文本谱）。 */
+  kind: EmittedScore["kind"];
   format: OmrFormat;
   /** 识别中间产物，回归脚本要拿它算指标。 */
   detail: Awaited<ReturnType<typeof recognizeMusicppDetailed>>;

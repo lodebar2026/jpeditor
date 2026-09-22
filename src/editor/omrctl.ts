@@ -5,7 +5,8 @@
 // 列全**：它就是「识别这摊事到底依赖编辑器多少东西」的清单，越短越好，加东西前先想想。
 //
 // 识别产物的关键性质：`RecognizedScore` 与输出格式无关，留在内存里；换格式只重走
-// omr/emit.ts 的 emitter，绝不重跑识别。
+// omr/emit.ts 的 emitter，绝不重跑识别。输出格式的下拉与打开文件后切格式是同一个
+// （`formatswitch.ts`），这里作为它的一种来源（`FormatSource`）。
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
@@ -15,8 +16,8 @@ import {
 } from "../omr";
 import type { Binary, JpwMeta, RecognizedScore } from "../omr";
 import type { ScoreDoc } from "../model/doc";
-import { showConfirmDialog } from "./dialogs";
-import { metaFrom123 } from "./omrmeta";
+import type { DocFormatId } from "./formats";
+import { confirmDiscardEdits, type FormatOption, type FormatSource, type FormatSwitch } from "./formatswitch";
 
 /** 是否 PDF 字节（mime 或 `%PDF-` 魔数）。与 `omr/decode.ts` 里那份同判据。 */
 function isPdfBytes(bytes: Uint8Array, mime?: string): boolean {
@@ -65,16 +66,16 @@ export interface OmrHost {
 
   /** 进入/退出识别模式（改 mode、退混排布局、停播放）。 */
   setRecognizeMode(on: boolean): void;
-  /** 文本谱产物落地前的清场：丢掉混排底本、切 docFormat、清文件路径。 */
-  adoptPuText(text: string): void;
-  /** `.jpwabc` 产物落地：切 docFormat、清文件路径，再设文本。 */
-  adoptJpwabcText(text: string): void;
+  /** 123 以外的产物落地：丢掉混排底本、切 docFormat、设文件路径，再设文本。 */
+  adoptText(format: DocFormatId, text: string, filePath: string | null): void;
+  /** 代码区标题栏的格式下拉（识别结果是它的一种来源） */
+  readonly formats: FormatSwitch;
   /** 上下文相关控件的显隐（工具条）。 */
   setContextControl(el: Element | null, on: boolean): void;
   syncContextGroup(el: Element | null | undefined): void;
 }
 
-export class OmrController {
+export class OmrController implements FormatSource {
   /** 识别模式：二值图 + 带源图坐标的识别结果，供叠加核对。 */
   private bin: Binary | null = null;
   private score: RecognizedScore | null = null;
@@ -87,8 +88,6 @@ export class OmrController {
   private meta: JpwMeta | null = null;
   /** 识别结果的输出格式。产物本身与格式无关，切换只是重出文本，不重跑识别。 */
   format: OmrFormat = DEFAULT_OMR_FORMAT;
-  private formatSelectEl: HTMLSelectElement | null = null;
-  private formatFieldEl: HTMLElement | null = null;
   /** 上次由识别产出的文本；与当前文本不同即说明用户手改过。 */
   private emitted: string | null = null;
 
@@ -122,26 +121,17 @@ export class OmrController {
     el.value = this.view;
   }
 
-  /** 注册识别输出格式下拉（选项由这里填，同 bindSpeedSelect 的写法）。
-   *  它长在**代码区标题栏**里、顶掉那儿的格式标签（`index.html` 的 `#recog-format-field`）：
-   *  切的本来就是代码区里这份文本是什么格式，摆在工具条上离得远、还要多一条标签解释。 */
-  bindFormatSelect(el: HTMLSelectElement): void {
-    this.formatSelectEl = el;
-    this.formatFieldEl = el.closest(".pane-select-field, .toolbar-select-field") ?? el;
-    el.replaceChildren();
-    for (const { id, label } of OMR_EMITTERS) {
-      const opt = document.createElement("option");
-      opt.value = id;
-      opt.textContent = label;
-      el.appendChild(opt);
-    }
-    this.syncFormatSelect();
-    el.addEventListener("change", () => void this.setFormat(el.value as OmrFormat));
-    this.host.setContextControl(this.formatFieldEl, this.score !== null);
+  // ---------------- 输出格式（代码区标题栏的格式下拉） ----------------
+  options(): readonly FormatOption[] {
+    return OMR_EMITTERS.map(({ id, label }) => ({ value: id, label }));
   }
 
-  private syncFormatSelect(): void {
-    if (this.formatSelectEl) this.formatSelectEl.value = this.format;
+  current(): string {
+    return this.format;
+  }
+
+  switchTo(value: string): Promise<boolean> {
+    return isOmrFormat(value) ? this.setFormat(value) : Promise.resolve(false);
   }
 
   /** 切换识别视图（原位叠加/附近浮窗/仅原图）。识别模式下即时重渲。 */
@@ -151,24 +141,17 @@ export class OmrController {
     if (this.host.mode === "recognize") this.renderPages();
   }
 
-  /** 切换识别输出格式：有识别结果就地重出文本（不重跑识别），并持久化选择。 */
-  async setFormat(format: OmrFormat): Promise<void> {
-    if (this.format === format) return;
+  /** 切换识别输出格式：有识别结果就地重出文本（不重跑识别），并持久化选择。
+   *  @returns 是否切了（用户取消手改确认时为 false） */
+  async setFormat(format: OmrFormat): Promise<boolean> {
+    if (this.format === format) return true;
     const rec = this.score;
     const bin = this.bin;
     if (rec && bin && this.emitted !== null && this.host.getText() !== this.emitted) {
-      const ok = await showConfirmDialog(
-        "切换输出格式",
-        "源码已手工修改过。切换格式会用识别结果重新生成文本，这些修改将丢失。要继续吗？",
-      );
-      if (!ok) {
-        this.syncFormatSelect(); // 用户取消：把下拉拨回原值
-        return;
-      }
+      if (!(await confirmDiscardEdits())) return false;
     }
     this.format = format;
     this.host.saveSettings();
-    this.syncFormatSelect();
     if (rec && bin) {
       // 保持当前预览模式（对照 / 简谱），只换文本——切格式不该把用户踢出正在看的视图。
       const wasRecognize = this.host.mode === "recognize";
@@ -176,6 +159,7 @@ export class OmrController {
       if (wasRecognize && this.host.mode !== "recognize") await this.toggle();
       this.host.setStatus(`已切换输出格式：${omrEmitter(format).label}（未重新识别）`);
     }
+    return true;
   }
 
   // ---------------- 识别 ----------------
@@ -246,25 +230,20 @@ export class OmrController {
    */
   private emit(rec: RecognizedScore, bin: Binary): void {
     const out = omrEmitter(this.format).emit(rec);
+    // importOmrDoc 开头会 clear()，故必须先落地、后回填本次产物。
     if (out.kind === "123") {
-      // importOmrDoc 开头会 clear()，故必须先导入、后回填本次产物。
-      this.host.importOmrDoc(out.doc!, out.text);
-      this.meta = metaFrom123(out.text); // 点选映射按 123 文本的源区间生成
-    } else if (out.kind === "jpwabc") {
-      this.clear();
-      this.host.adoptJpwabcText(out.text);
-      this.meta = null; // .jpwabc 没有点选映射
+      this.host.importOmrDoc(out.doc, out.text);
     } else {
       this.clear();
-      this.host.adoptPuText(out.text);
-      this.meta = out.meta;
+      this.host.adoptText(out.kind, out.text, null);
     }
+    this.meta = out.meta; // 点选映射按写出文本的源区间生成（`omr/meta.ts`）；.jpwabc / ABC 没有
     this.bin = bin;
     this.score = rec;
     this.emitted = this.host.getText();
     if (this.btnEl) this.btnEl.textContent = "原图对照";
     this.host.setContextControl(this.btnEl, true);
-    this.host.setContextControl(this.formatFieldEl, true);
+    this.host.formats.use(this);
     this.host.syncViewModes();
   }
 
@@ -457,7 +436,7 @@ export class OmrController {
     this.score = null;
     this.meta = null;
     this.emitted = null;
-    this.host.setContextControl(this.formatFieldEl, false);
+    if (this.host.formats.source === this) this.host.formats.use(null);
     this.hidePopup();
     if (this.btnEl) this.btnEl.textContent = "原图对照";
     this.host.setContextControl(this.btnEl, false);

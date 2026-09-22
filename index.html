@@ -243,10 +243,10 @@
           <div class="pane-heading">
             <span>乐谱源码</span>
             <span id="code-pane-meta" class="pane-meta">JPWABC</span>
-            <!-- 识别产物的输出格式：就在格式标签这个位置换着显示（有识别结果时顶掉标签） -->
-            <label id="recog-format-field" class="pane-select-field" data-context-control hidden>
-              <span class="sr-only">识别输出格式</span>
-              <select id="sel-recog-format" title="识别输出格式（切换不会重新识别）" aria-label="识别输出格式"></select>
+            <!-- 源码格式下拉：就在格式标签这个位置换着显示（识别结果、打开的文件都能切，顶掉标签） -->
+            <label id="doc-format-field" class="pane-select-field" data-context-control hidden>
+              <span class="sr-only">源码格式</span>
+              <select id="sel-doc-format" title="切换源码格式（识别结果不重新识别；打开的文件切回「原文」可还原）" aria-label="源码格式"></select>
               <span class="select-chevron" aria-hidden="true">⌄</span>
             </label>
           </div>

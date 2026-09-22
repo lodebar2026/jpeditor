@@ -30,7 +30,7 @@
 文本格式导出时再经 `engraveScoreDoc` 补版面坐标（`export.ts::sourceMusicXml`）；带版面的原样不动。
 
 简谱识别产物（`App.importOmrDoc`）：识别结果直出 `ScoreDoc`（`omr/todoc.ts`）、`emit123` 成 123 文本进代码区，
-之后就是普通 123 文档，没有 MusicXML 底本；点选映射由 `editor/omrmeta.ts` 重解析 123 取源区间。
+之后就是普通 123 文档，没有 MusicXML 底本；点选映射由 `omr/meta.ts` 重解析 123 取源区间。
 
 ## 反方向：MusicXML → 简谱形状（`model/jianpuproject.ts`）
 

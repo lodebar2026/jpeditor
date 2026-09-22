@@ -5,6 +5,7 @@ import { buildPptx } from "./pptx";
 import { ExpandedPainter } from "../jianpu/expanded";
 import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
 import { emitJpwabc } from "../model/tojpw";
+import { CONVERT_TARGETS, targetSpec, type ConvertTarget } from "../model/convert";
 import { asset } from "../common/asset";
 import { scoreDocToMusicXml } from "../model/toxml";
 import { loadScoreDoc } from "../model/fromxml";
@@ -269,6 +270,11 @@ const isPu = (app: App): boolean => app.adapter.caps.layout === "scoredoc" && !i
 const isJp = (app: App): boolean => !isPu(app) && !isMixed(app);
 /** 另存为源格式：文本格式在五线谱/混排档也有源文可存；`.musicxml` 的混排档走「转成 … 编辑」。 */
 const canSaveAsText = (app: App): boolean => !isMixed(app) || app.docFormat !== "musicxml";
+/** 当前文档就是这种格式（文本谱按方言分）。 */
+const isCurrentFormat = (app: App, id: ConvertTarget): boolean => {
+  const spec = targetSpec(id);
+  return app.docFormat === spec.docFormat && (spec.docFormat !== "pu" || app.puDialect === id);
+};
 
 /** 顺序即对话框里的顺序。 */
 const EXPORT_ITEMS: readonly ExportItem[] = [
@@ -286,34 +292,20 @@ const EXPORT_ITEMS: readonly ExportItem[] = [
   { label: "PPTX", available: isJp, run: exportPptx },
   { label: "MIDI", available: isJp, run: exportMidi },
   { label: "MusicXML", available: isJp, run: exportMusicXml },
-  // `.musicxml` 没有代码区：转成文本格式的**新文档**再编辑（原文件不动）
-  {
-    label: "转成 123 编辑",
+  // `.musicxml` 没有代码区：转成文本格式再编辑（原文件不动；代码区标题栏的格式下拉切得回「MusicXML（原文）」）
+  ...CONVERT_TARGETS.map((t): ExportItem => ({
+    label: `转成 ${t.label} 编辑`,
     available: (app) => app.docFormat === "musicxml",
-    run: (app) => app.convertToTextDoc("123"),
-  },
-  {
-    label: "转成 ABC 编辑",
-    available: (app) => app.docFormat === "musicxml",
-    run: (app) => app.convertToTextDoc("abc"),
-  },
-  {
-    label: "转成 JPWABC 编辑",
-    available: (app) => app.docFormat === "musicxml",
-    run: (app) => app.convertToTextDoc("jpwabc"),
-  },
+    run: (app) => app.convertToTextDoc(t.id),
+  })),
   // 源格式之间的另存为。**保存前会列出目标格式装不下的东西**（`model/capability.ts`），
   // 确认了才写——这条路与上面那些「导出成别的媒介」不同，它换的是源格式本身。
-  {
-    label: "123（简谱源格式）",
-    available: (app) => canSaveAsText(app) && app.docFormat !== "123",
-    run: (app) => app.saveAsFormat("123"),
-  },
-  {
-    label: "ABC（记谱源格式）",
-    available: (app) => canSaveAsText(app) && app.docFormat !== "abc",
-    run: (app) => app.saveAsFormat("abc"),
-  },
+  // 当前就是这种格式的不列（那是「保存」）；`.jpwabc` 走上面简谱/文本谱那几项的专用导出。
+  ...CONVERT_TARGETS.filter((t) => t.id !== "jpwabc").map((t): ExportItem => ({
+    label: `${t.label}（源格式）`,
+    available: (app) => canSaveAsText(app) && !isCurrentFormat(app, t.id),
+    run: (app) => app.saveAsFormat(t.id),
+  })),
 ];
 
 export function showExportDialog(app: App): void {

@@ -23,9 +23,9 @@ import type {
   ScoreDoc,
   Song,
 } from "../model/doc";
-import { isLyricCjk, isLyricOpenQuote, isLyricTrailingPunct } from "../common/cjkpunct";
 import { breakAfter, lyricOfVerse, type BreakKind } from "../model/helpers";
 import { lyricSlots } from "./lyricslot";
+import { isLatinEnd, isLatinStart, isOneCjkWithPunct, ownIds, ownMarks, systemRanges, type SystemRange } from "../model/emitutil";
 import { harmonyText } from "../model/jianpu";
 import { ORNAMENT_TAG } from "../model/xmlproject";
 import { BARLINE_ORNAMENT_NAME } from "./jumpmarks";
@@ -145,28 +145,6 @@ function lyricLines(part: Part, sep: string, skip: string, sys: SystemRange): st
   return bodies.map((b) => `w:${b}`);
 }
 
-const LATIN_CH = /[\p{L}\p{N}']/u;
-/** 拉丁音节（非 CJK 的字母/数字）起头——`parseLyricLine` 的拉丁分支会把它和前面的拉丁词粘在一起 */
-function isLatinStart(text: string): boolean {
-  const c = [...text][0] ?? "";
-  return LATIN_CH.test(c) && !isLyricCjk(c);
-}
-function isLatinEnd(text: string): boolean {
-  const cs = [...text];
-  const c = cs[cs.length - 1] ?? "";
-  return LATIN_CH.test(c) && !isLyricCjk(c);
-}
-
-/** 「至多一个左引号 + 一个 CJK 字 + 若干收尾标点」——`parseLyricLine` 不包 `{}` 也读成**一个**音节的形状。
- *  口径与读入端同一份（`common/cjkpunct.ts`），改一边就要看另一边。 */
-function isOneCjkWithPunct(text: string): boolean {
-  const cs = [...text];
-  let k = 0;
-  if (cs.length > 1 && isLyricOpenQuote(cs[0]!)) k = 1;
-  if (!isLyricCjk(cs[k] ?? "")) return false;
-  return cs.slice(k + 1).every(isLyricTrailingPunct);
-}
-
 /** 字段值里的换行会把后续内容变成裸行（第二轮解析就当成音乐体了）。
  *  MusicXML 的 `<creator>` 常把多行塞进一个字段（Finale 的习惯），所以一律按行拆成多条同名字段。 */
 function pushLines(L: string[], name: string, value: string): void {
@@ -174,56 +152,6 @@ function pushLines(L: string[], name: string, value: string): void {
     const t = line.trim();
     if (t) L.push(`${name}:${t}`);
   }
-}
-
-/** 一个系统：第 `from`–`to` 小节（闭区间）。切在小节中间时，首小节从第 `fromEl` 个元素起、末小节到第 `toEl` 个止（不含）。 */
-interface SystemRange {
-  from: number;
-  to: number;
-  fromEl: number;
-  toEl: number;
-  /** 系统末是**小节中间**的换行（`Chord.lineBreakAfter`）：`$` 写在 `toEl` 那个元素之前 */
-  inline?: BreakKind;
-}
-
-/** 这个元素之后原位换行（和弦或它的增时线带 `lineBreakAfter`）。 */
-function inlineBreakOf(el: Element): BreakKind | null {
-  if (el.kind !== "chord") return null;
-  if (el.lineBreakAfter) return el.lineBreakAfter;
-  for (const su of el.sustains ?? []) if (su.lineBreakAfter) return su.lineBreakAfter;
-  return null;
-}
-
-/**
- * 按声部的换行切出系统。最后一段开到无穷，别的声部小节多出来的也归它。
- * **小节中间换行**照原位切（同 `.jpwabc`，读入端 `j123/parse.ts` 记在 `Chord.lineBreakAfter`）；
- * 同一处换行在下一小节上还有一份小节级的 `print`（「这一小节之后」），那一份就不再切第二次。
- * 原位切只对这个声部（第一声部）有意义，别的声部照小节归系统。
- */
-function systemRanges(part: Part | undefined): SystemRange[] {
-  const out: SystemRange[] = [];
-  if (!part) return out;
-  let from = 0;
-  let fromEl = 0;
-  for (let i = 0; i < part.measures.length; i++) {
-    const els = part.measures[i]!.elements;
-    let inlineHere = false;
-    for (let j = 0; j < els.length - 1; j++) {
-      const kind = inlineBreakOf(els[j]!);
-      if (!kind) continue;
-      out.push({ from, to: i, fromEl, toEl: j + 1, inline: kind });
-      from = i;
-      fromEl = j + 1;
-      inlineHere = true;
-    }
-    if (i < part.measures.length - 1 && !inlineHere && breakAfter(part, i)) {
-      out.push({ from, to: i, fromEl, toEl: Infinity });
-      from = i + 1;
-      fromEl = 0;
-    }
-  }
-  out.push({ from, to: Number.MAX_SAFE_INTEGER, fromEl, toEl: Infinity });
-  return out;
 }
 
 function playOrderText(song: Song): string {
@@ -410,23 +338,12 @@ export abstract class AbcFamilyEmitter {
     let out: string[] = [];
     const texts: string[] = [];
     let ri = 0;
-    // **只收两端都在本声部里的 Mark**：`song.marks` 是全曲共用的，而一条弧的两端
-    // 必须落在同一个声部才画得出来。不校验就会输出**不配对的 `(`**——那不只是往返不幂等，
-    // 是写出了非法的 123（解析回来会报「圆滑线里没有音符」）。
-    const own = new Set<number>();
-    for (const mea of part.measures) {
-      for (const el of mea.elements) {
-        if (!this.emits(el, mea)) continue;
-        own.add(el.id);
-        if (el.kind === "chord") for (const su of el.sustains ?? []) own.add(su.id);
-      }
-    }
+    const own = ownIds(part, (el, mi) => this.emits(el, part.measures[mi]!));
     // Mark 按起止 id 建索引，便于在元素前后插 `(` `)` 与 `(N:`
     const slurStart = new Map<number, number>();
     const slurEnd = new Map<number, number>();
     const tupletStart = new Map<number, { actual: number; normal: number }>();
-    for (const m of song.marks) {
-      if (!own.has(m.start) || !own.has(m.end)) continue;
+    for (const m of ownMarks(song, own)) {
       if (m.type === "slur" || (m.type === "tied" && this.tiesAsSlurs)) {
         slurStart.set(m.start, (slurStart.get(m.start) ?? 0) + 1);
         slurEnd.set(m.end, (slurEnd.get(m.end) ?? 0) + 1);

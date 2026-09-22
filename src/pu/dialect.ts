@@ -40,6 +40,30 @@ export interface DialectSpec {
   joinToken?: string;
   /** 头部字段的写法。**只有 emitter 用**——解析侧两边字段都认，不需要分方言。 */
   header: HeaderStyle;
+  /** 曲行/歌词行的写法。**只有 emitter 用**（`model/topu.ts`）。 */
+  emit: EmitStyle;
+}
+
+/** 写出端在两家之间不同的那几处。加第三种方言时补一份数据，而不是在 emitter 里再写一个 if。 */
+export interface EmitStyle {
+  /** 曲行符号之间的分隔：番茄空格，诗歌本紧排（`3/5/|"p:5/4"6-7/`） */
+  tokenGap: string;
+  /** 头部之后、组与组之间空一行（诗歌本紧排不留） */
+  blankBetweenGroups: boolean;
+  /** 房号收口写在小节线**之后**（诗歌本 `…3|]`）；否则写在之前（番茄 `3 ] |`） */
+  voltaCloseAfterBarline: boolean;
+  /** 房号起头落在行首时先补一条虚拟小节线 `|/` 把左端立住（诗歌本谱本的写法） */
+  voltaLeadBarline: boolean;
+  /** 房号不封口写在哪一头：番茄 `["2"/`、诗歌本 `]/` */
+  voltaOpenEnd: "start" | "end";
+  /** 声部名与歌词行说明的括号：番茄 `"女高"`、诗歌本 `<女高>` */
+  labelWrap: readonly [string, string];
+  /** 不跟词的隐藏休止怎么写（诗歌本 `9`）。没有这种写法的方言只能写成显形休止 `0`——
+   *  写成 `8` 会多吃一个字，后面整行歌词错位 */
+  hiddenRestNoLyric?: string;
+  /** 写不写页眉页脚（`XL/XR/TL/TR/BL/BC/BR`）与版面指令（`FontSize:`/`Margin:`…）。
+   *  番茄没有这些字段，写了会被 `sniffDialect` 判成诗歌本 */
+  pageFields: boolean;
 }
 
 /** 头部字段怎么写。加第三种方言时补一份数据，而不是在 emitter 里再写一个 if。 */
@@ -97,6 +121,15 @@ const TOMATO: DialectSpec = {
     meterField: "P",
     keyStyle: "prefix",
   },
+  emit: {
+    tokenGap: " ",
+    blankBetweenGroups: true,
+    voltaCloseAfterBarline: false,
+    voltaLeadBarline: false,
+    voltaOpenEnd: "start",
+    labelWrap: ['"', '"'],
+    pageFields: false,
+  },
 };
 
 const SHIGE: DialectSpec = {
@@ -139,6 +172,16 @@ const SHIGE: DialectSpec = {
     tempoField: "J",
     keyMeter: "combined", // 诗歌本把调号与拍号写在一行：`1=G4/4`
     keyStyle: "suffix",
+  },
+  emit: {
+    tokenGap: "",
+    blankBetweenGroups: false,
+    voltaCloseAfterBarline: true,
+    voltaLeadBarline: true,
+    voltaOpenEnd: "end",
+    labelWrap: ["<", ">"],
+    hiddenRestNoLyric: "9",
+    pageFields: true,
   },
 };
 

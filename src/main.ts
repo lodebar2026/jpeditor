@@ -205,8 +205,8 @@ async function boot() {
     app.omr.setRecogViewSelect(recogViewSel);
     recogViewSel.addEventListener("change", () => app.omr.setRecogView(recogViewSel.value as import("./omr").RecogView));
   }
-  const recogFormatSel = document.getElementById("sel-recog-format") as HTMLSelectElement | null;
-  if (recogFormatSel) app.omr.bindFormatSelect(recogFormatSel); // 选项与 change 都在 App 里接
+  const docFormatSel = document.getElementById("sel-doc-format") as HTMLSelectElement | null;
+  if (docFormatSel) app.formats.bind(docFormatSel); // 选项由来源（识别结果 / 打开的文件）给，见 editor/formatswitch.ts
   const originalLayoutBtn = document.getElementById("btn-layout-original") as HTMLButtonElement | null;
   const phraseBtn = document.getElementById("btn-phrase") as HTMLButtonElement | null;
   if (originalLayoutBtn && phraseBtn) {

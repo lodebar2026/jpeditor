@@ -19,8 +19,9 @@
 | `src/omr/header.ts` | 页眉标题/曲号/词曲/调号（PP-OCRv4 DBNet 文本检测整片识别；调号认不出时按单字符 + 位置兜底）。曲号 → 123 `X:`、诗歌本 `XL:`/`XR:`、番茄拼回标题前 |
 | `src/omr/paddleocr.ts` | PP-OCR 推理 |
 | `src/omr/overlay.ts` | 识别核对叠加层 |
-| `src/omr/emit.ts` | 输出格式注册表 |
-| `src/omr/todoc.ts` / `topu.ts` | → 简谱形状的 `ScoreDoc`（123 由它 `emit123`）/ → 文本谱原文 |
+| `src/omr/emit.ts` | 输出格式：识别结果 → `todoc.ts` 的模型 → 转换目标表（`model/convert.ts`）写成文本 |
+| `src/omr/todoc.ts` | → 简谱形状的 `ScoreDoc`：123 / JPWABC / ABC / 文本谱都由它写出（文本谱走 `model/topu.ts::emitPu`） |
+| `src/omr/meta.ts` | 点选映射：重解析写出的 123 / 文本谱，按元素序取源区间（`metaFrom123` / `metaFromPu`） |
 | `src/omr/vector.ts` / `inventory.ts` / `glyphdict.ts` | 矢量 PDF 对象层、归类、形状字典 |
 | `src/editor/omrctl.ts` | 编辑器侧控制器（识别 → 出文本 → 叠加核对 → 点选定位） |
 

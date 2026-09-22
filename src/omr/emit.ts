@@ -1,36 +1,32 @@
-// 识别结果的输出格式注册表。
+// 识别结果的输出格式。
 //
-// `RecognizedScore` 是**格式无关**的那一份，识别完留在内存里；换输出格式只重走这里的
-// emitter，**绝不重跑识别**（识别要几十秒，格式转换是毫秒级）。
+// `RecognizedScore` 是**格式无关**的那一份，识别完留在内存里；换输出格式只重走这里，
+// **绝不重跑识别**（识别要几十秒，格式转换是毫秒级）。
 //
-// 为什么要注册表而不是 if：格式清单以前散在 editor/app.ts（类型、下拉选项、
-// `_emitRecognition` 的两个分支各一处），加一种格式要同时改三处、还得记得两处的 meta
-// 编号约定必须一致。现在加一种 = 往 OMR_EMITTERS 里补一项。
+// 各格式一律先转成模型（`recognizedToDoc`），再由转换目标表（`model/convert.ts`）写成文本——
+// 与打开文件后切格式、另存为别的格式是同一张表、同一批写出端。文本谱以前另有一个直接从识别结果写的
+// emitter，已退役（`model/topu.ts` 是唯一一份）：两份写出端的判据迟早分叉。
 //
-// **meta 的序号约定**：所有 emitter 产出的 `JpwMeta`，`noteRanges` / `lyricRanges`
-// 一律按 `flatten(rows[].nums)` 的下标编号。识别模式「原图对照」的点选定位
-// （app.ts::_rangeOfHit）因此不必分格式。
+// **meta 的序号约定**：所有格式的 `JpwMeta`，`noteRanges` / `lyricRanges`
+// 一律按 `flatten(rows[].nums)` 的下标编号，由重解析写出的文本得到（`omr/meta.ts`）。
+// 识别模式「原图对照」的点选定位（omrctl.ts::rangeOfHit）因此不必分格式。
 import type { JpwMeta, RecognizedScore } from "./types";
 import type { ScoreDoc } from "../model/doc";
-import { emit123 } from "../j123/emit";
-import { emitJpwabc } from "../model/tojpw";
+import { CONVERT_TARGETS, type ConvertTarget } from "../model/convert";
 import { recognizedToDoc } from "./todoc";
-import { toPuText } from "./topu";
-import { DIALECTS, type Dialect } from "../pu/dialect";
+import { metaFrom123, metaFromPu } from "./meta";
 
-/** 识别结果的输出格式。文本谱两种方言各算一种。 */
-export type OmrFormat = "123" | "jpwabc" | Dialect;
+/** 识别结果的输出格式：就是转换目标（文本谱两种方言各算一种）。 */
+export type OmrFormat = ConvertTarget;
 
 export interface EmittedScore {
-  /** 产物怎么落到编辑器里：
-   *  - `123`：交 `App.importOmrDoc`（123 核对文本由模型直出，点选定位的 meta 它按 123 文本自己算，故这里 meta 为 null）；
-   *  - `jpwabc`：`.jpwabc` 原文（与 123 同出自 `todoc` 的模型），直接设进编辑器；没有点选映射，meta 为 null；
-   *  - `pu`：文本谱原文，直接设进编辑器，meta 由 emitter 给出。 */
-  kind: "123" | "jpwabc" | "pu";
+  /** 产物在编辑器里按哪种源格式打开（123 另交 `App.importOmrDoc`，报它装不下的东西） */
+  kind: "123" | "abc" | "jpwabc" | "pu";
   text: string;
+  /** 点选映射。`.jpwabc` / ABC 没有（`null`） */
   meta: JpwMeta | null;
-  /** `kind === "123"` 时的模型（`omr/todoc.ts`），`text` 就是它的 `emit123` */
-  doc?: ScoreDoc;
+  /** 识别直出的模型（`omr/todoc.ts`），`text` 就是它写成的文本 */
+  doc: ScoreDoc;
 }
 
 export interface ScoreEmitter {
@@ -41,33 +37,18 @@ export interface ScoreEmitter {
 }
 
 /** 顺序即下拉里的顺序；第一项是默认。 */
-export const OMR_EMITTERS: readonly ScoreEmitter[] = [
-  {
-    id: "123",
-    label: "简谱 123",
-    emit: (rec) => {
-      const doc = recognizedToDoc(rec);
-      return { kind: "123", text: emit123(doc), meta: null, doc };
-    },
+export const OMR_EMITTERS: readonly ScoreEmitter[] = CONVERT_TARGETS.map((t) => ({
+  id: t.id,
+  label: t.label,
+  emit: (rec: RecognizedScore): EmittedScore => {
+    const doc = recognizedToDoc(rec);
+    const text = t.emit(doc);
+    const meta = t.docFormat === "123" ? metaFrom123(text)
+      : t.id === "tomato" || t.id === "shige" ? metaFromPu(text, t.id)
+      : null;
+    return { kind: t.docFormat, text, meta, doc };
   },
-  {
-    id: "jpwabc",
-    label: "简谱 JPWABC",
-    emit: (rec) => {
-      const text = emitJpwabc(recognizedToDoc(rec));
-      if (text === null) throw new Error("识别结果里没有可输出的曲行");
-      return { kind: "jpwabc", text, meta: null };
-    },
-  },
-  ...(Object.values(DIALECTS).map((d) => ({
-    id: d.id,
-    label: d.name,
-    emit: (rec: RecognizedScore): EmittedScore => {
-      const { text, meta } = toPuText(rec, d.id);
-      return { kind: "pu" as const, text, meta };
-    },
-  }))),
-];
+}));
 
 export const DEFAULT_OMR_FORMAT: OmrFormat = OMR_EMITTERS[0]!.id;
 

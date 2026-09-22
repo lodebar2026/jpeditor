@@ -25,18 +25,16 @@ import { jianpuInputOfDoc, jianpuInputOfJpw, jianpuInputOfXml } from "../model/j
 import type { FitMeasure } from "../pu/phrase";
 import { abcToMusicXml } from "../abc/abc2xml";
 import type { JpwMeta, JpwRange } from "../omr/types";
-import { emitJpwabc } from "../model/tojpw";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
 import { isTauriRuntime, saveBytes } from "./fileio";
 import { DOC_EXT, acceptAttr, is123File, isPuFile } from "../common/filetypes";
 import { formatOf, type DocFormatId, type FormatAdapter, type FormatHost } from "./formats";
 import { SyncIndex, type SyncEntry } from "./sync";
-import { describeLosses, planSave, type TargetFormat } from "../model/capability";
+import { describeLosses, planSave } from "../model/capability";
+import { targetSpec, type ConvertTarget } from "../model/convert";
 import { showConfirmDialog } from "./dialogs";
 import { buildMusicXml, sourceMusicXmlBare } from "./export";
 import { scoreDocToMusicXml } from "../model/toxml";
-import { emit123 } from "../j123/emit";
-import { emitAbc } from "../abcfamily/emitabc.entry";
 import { jpwToScoreDoc } from "../model/fromjpw";
 import { MixedPainter } from "../mixed/painter";
 import { PlaybackController, type PlaybackHost } from "./playback";
@@ -44,6 +42,7 @@ import type { PlayPoint } from "./player";
 import type { PlaySource } from "../score/timeline";
 import { playSourceOf } from "../model/playsong";
 import { OmrController, type OmrHost } from "./omrctl";
+import { FileFormatSource, FormatSwitch, type FileSwitchHost, type FormatSwitchHost, type OriginFormat } from "./formatswitch";
 import type { JianpuLayoutMode, JpProfileName } from "../jianpu/profile";
 import {
   loadPersistedSettings, savePersistedSettings, loadLastFile, saveLastFile, clearLastFile,
@@ -55,7 +54,7 @@ export type ViewMode = JianpuLayoutMode | "staff" | "mixed";
 
 /** 文本谱的扩展名。`.txt` 太泛，靠 sniffDialect 兜底，认不出就不动。 */
 
-export class App implements OmrHost, PlaybackHost, FormatHost {
+export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost, FileSwitchHost {
   /** 简谱排版器：展开档是 ExpandedPainter（两种格式共用），`.jpwabc` 原样档是 JinpuPainter。
    *  文本谱原样档另走 `_puPainter`，那时这个闲着。 */
   painter: ExpandedPainter | JinpuPainter;
@@ -116,6 +115,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   private _viewSwitchEl: HTMLElement | null = null;
   /** `.musicxml` 读不出来时五线谱/混排两档置灰；文本格式一律可点（派生失败在点的时候报）。 */
   private _mixedAvailable = false;
+  /** 代码区标题栏的格式下拉：识别结果与打开的文件共用（见 editor/formatswitch.ts）。 */
+  readonly formats: FormatSwitch = new FormatSwitch(this);
   /** 简谱 OMR 的那一摊（识别、叠加核对、点选定位、输出格式）——见 editor/omrctl.ts。 */
   readonly omr: OmrController = new OmrController(this);
   // 乐句排版：缓存导入时的「原始排版」文本以便无损切回；_phraseOn 记当前是否乐句排版。
@@ -948,6 +949,11 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this._puDialect === null ? null : dialectSpec(this._puDialect).shortName;
   }
 
+  /** 当前文本谱的方言（非文本谱为 null）。 */
+  get puDialect(): Dialect | null {
+    return this.docFormat === "pu" ? this._puDialect : null;
+  }
+
   /** FormatHost：谱面排版器认得的标题。 */
   get painterTitle(): string {
     return this.painter.score.title;
@@ -1169,6 +1175,25 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   importBytes(bytes: Uint8Array, name: string): void {
     // 任何新导入都使上一次的识别叠加产物失效（识别结果由 OmrController 在本调用之后重设）。
     this.omr.clear();
+    this.formats.use(null);
+    this._importBytes(bytes, name);
+    // 原文是真身：代码区标题栏的格式下拉可以换成别的格式看、切回来逐字还原（`FileFormatSource`）
+    const origin = this._originFormat();
+    if (origin) {
+      this.formats.use(new FileFormatSource(this, { format: origin, docFormat: this.docFormat, text: this.getText() }));
+    }
+  }
+
+  /** 刚打开的原文是哪种格式（下拉里「原文」那一项）。文本谱按嗅探出的方言算。 */
+  private _originFormat(): OriginFormat | null {
+    switch (this.docFormat) {
+      case "musicxml": return "musicxml";
+      case "pu": return this._puDialect ?? sniffDialect(this.getText()).dialect;
+      default: return this.docFormat;
+    }
+  }
+
+  private _importBytes(bytes: Uint8Array, name: string): void {
     // ABC 记谱：**原文就是源格式**，原生解析直接进编辑器（`reloadAbc`），不再转 MusicXML。
     // 原生解析读不动时由 `reloadAbc` 自己回落 abc2xml，这里不预先转。
     if (/\.abc$/i.test(name)) {
@@ -1312,38 +1337,19 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
   }
 
   /**
-   * 把当前 `.musicxml` **转成文本格式的新文档**再编辑：先列出目标格式装不下的东西，确认后
-   * 换成该格式、清掉文件路径（原 `.musicxml` 不动），代码区出现。
+   * 把当前 `.musicxml` **转成文本格式**再编辑：与代码区标题栏的格式下拉同一条路（`FileFormatSource`）——
+   * 先列出目标格式装不下的东西，确认后换成该格式、清掉文件路径（原 `.musicxml` 不动），代码区出现；
+   * 下拉里「MusicXML（原文）」切得回来。
    */
-  async convertToTextDoc(target: "123" | "abc" | "jpwabc"): Promise<void> {
+  async convertToTextDoc(target: ConvertTarget): Promise<void> {
     if (this.docFormat !== "musicxml") return;
-    const doc = this.currentScoreDoc();
-    if (!doc) {
+    const src = this.formats.source;
+    if (!src) {
       this.setStatus("这份 MusicXML 读不出来，无法转换");
       return;
     }
-    const losses = planSave(doc, target);
-    if (losses.length) {
-      const ok = await showConfirmDialog("转换会丢东西", describeLosses(target, losses));
-      if (!ok) return;
-    }
-    let text: string;
-    try {
-      // 三种目标同吃这份模型；`.jpwabc` 口径同简谱引擎输入的 MusicXML 形状（`jpw-emit-check` 基线）
-      const jpw = target === "jpwabc" ? emitJpwabc(doc) : null;
-      if (target === "jpwabc" && jpw === null) throw new Error("没有可转换的曲行");
-      text = target === "123" ? emit123(doc) : target === "abc" ? emitAbc(doc) : jpw!;
-    } catch (e) {
-      console.error("转换失败", e);
-      this.setStatus("转换失败：" + (e instanceof Error ? e.message : String(e)));
-      return;
-    }
-    this._dropMixedDoc();
-    this._setMode("jp"); // 转格式是为了编辑源文，回简谱档看代码区对应的谱面
-    this._setDocFormat(target);
-    this.filePath = null;
-    this.setText(text);
-    this.setStatus(`已转成 ${target} 新文档（未保存，原 MusicXML 未改动）`);
+    await src.switchTo(target);
+    this.formats.sync();
   }
 
   /** 每次重排/重渲染后同步乐句重排的基准文本与按钮可用性。
@@ -1385,8 +1391,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     el.hidden = !visible;
     if (el instanceof HTMLButtonElement) el.disabled = !visible;
     this._syncContextGroup(el);
-    // 识别输出格式下拉长在代码区标题栏里，露出来就顶掉那儿的格式标签
-    if (el.id === "recog-format-field") this._syncFormatLabel();
   }
 
   private _syncContextGroup(el: HTMLElement | null): void {
@@ -1618,20 +1622,28 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     this._setMode(on ? "recognize" : "jp");
   }
 
-  /** 文本谱产物落地：丢掉混排底本、切 docFormat、清文件路径，再设文本（在五线谱/混排档就留在那档）。 */
-  adoptPuText(text: string): void {
+  /**
+   * 换成某种源格式的文本（`OmrHost` / `FileSwitchHost`）：识别产物落地、代码区格式下拉切格式都走这里。
+   * 丢掉混排底本、切 docFormat、设文件路径，再设文本（在五线谱/混排档就留在那档）。
+   * 切回 `.musicxml` 原文时照打开 `.musicxml` 那样落地（无代码区）；从 `.musicxml` 转出来的回简谱档看代码区对应的谱面。
+   */
+  adoptText(format: DocFormatId, text: string, filePath: string | null): void {
+    if (format === "musicxml") {
+      this._mixedPainter = null;
+      this._setDocFormat("musicxml");
+      this.filePath = filePath;
+      if (!this._setMixedXml(text)) return;
+      this._setMixedAvailable(true);
+      this.setText(text);
+      if (this.mode === "mixed") void this._renderMixedPages();
+      return;
+    }
+    const fromXml = this.docFormat === "musicxml";
     this._dropMixedDoc();
-    this._setDocFormat("pu");
-    this.filePath = null;
-    this.setText(text);
-  }
-
-  /** `.jpwabc` 产物落地：同 `adoptPuText`，格式换成 `.jpwabc`。 */
-  adoptJpwabcText(text: string): void {
-    this._dropMixedDoc();
-    this._disablePhrase();
-    this._setDocFormat("jpwabc");
-    this.filePath = null;
+    if (fromXml) this._setMode("jp");
+    if (format === "jpwabc") this._disablePhrase();
+    this._setDocFormat(format);
+    this.filePath = filePath;
     this.setText(text);
   }
 
@@ -1702,12 +1714,17 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     return this.adapter.label(this);
   }
 
-  /** 同步代码区右上角：有识别产物时那儿是输出格式下拉（`#recog-format-field`），标签让位。 */
+  /** `FormatSwitchHost`：格式下拉显隐变了，格式标签跟着让位。 */
+  syncFormatLabel(): void {
+    this._syncFormatLabel();
+  }
+
+  /** 同步代码区右上角：有可切的格式时那儿是格式下拉（`#doc-format-field`），标签让位。 */
   private _syncFormatLabel(): void {
     const meta = document.getElementById("code-pane-meta");
     if (!meta) return;
     if (meta.textContent !== "只读") meta.textContent = this._formatLabel();
-    const field = document.getElementById("recog-format-field");
+    const field = document.getElementById("doc-format-field");
     meta.hidden = !!field && !field.hidden;
   }
 
@@ -1829,7 +1846,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /** 跨格式另存为：**先算会丢什么，列给用户，确认了再写**（`model/capability.ts`）。
    *  同格式存回不走这条——那是原文进原文出。 */
-  async saveAsFormat(target: TargetFormat): Promise<void> {
+  async saveAsFormat(target: ConvertTarget): Promise<void> {
     const doc = this.scoreDoc();
     if (doc) {
       const losses = planSave(doc, target);
@@ -1843,12 +1860,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
       this.setStatus(`暂不支持另存为 ${target}`);
       return;
     }
-    const adapter = target === "musicxml" ? null : formatOf(target);
-    const bytes = adapter ? adapter.encode(text) : new TextEncoder().encode(text);
-    const ext = adapter ? adapter.defaultExt : ".musicxml";
-    const dest = await saveBytes(bytes, (this.documentTitle() || "未命名") + ext);
+    const adapter = formatOf(targetSpec(target).docFormat);
+    const dest = await saveBytes(adapter.encode(text), (this.documentTitle() || "未命名") + adapter.defaultExt);
     if (!dest) return;
-    this.setStatus(`已另存为 ${ext}`);
+    this.setStatus(`已另存为 ${targetSpec(target).label}（${adapter.defaultExt}）`);
   }
 
   /** 当前文档的 `ScoreDoc`（能力表与丢失清单要用）。拿不到就返回 null。 */
@@ -1863,14 +1878,18 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
     }
   }
 
-  /** 当前文档 → 目标格式的文本。转不了返回 null。 */
-  private convertTo(target: TargetFormat): string | null {
-    if (target === this.docFormat) return this.getText();
+  /** 当前文档 → 目标格式的文本（转换目标表 `model/convert.ts`）。同格式原文照给；转不了返回 null。 */
+  private convertTo(target: ConvertTarget): string | null {
+    const spec = targetSpec(target);
+    if (spec.docFormat === this.docFormat && (spec.docFormat !== "pu" || this.puDialect === target)) return this.getText();
     const doc = this.scoreDoc();
     if (!doc) return null;
-    if (target === "123") return emit123(doc);
-    if (target === "abc") return emitAbc(doc);
-    return null; // jpwabc / pu / musicxml 各有既有的导出路径，见 editor/export.ts
+    try {
+      return spec.emit(doc);
+    } catch (e) {
+      console.error("转换失败", e);
+      return null;
+    }
   }
 
   /** 存盘用的文件名：扩展名由适配器给。 */
@@ -1907,6 +1926,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost {
 
   /** Load dropped file content (already decoded). */
   loadText(text: string, path: string | null): void {
+    this.formats.use(null);
     this.filePath = path;
     this.setText(text);
   }
