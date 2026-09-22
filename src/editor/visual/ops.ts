@@ -185,7 +185,8 @@ function withExtra(ctx: EditCtx, out: EditOutcome, extra: EditResult["changes"])
   const origHead = inv.invertedDesc.mapPos(out.head, 1);
   const changes = [...base, ...extra].sort((a, b) => a.from - b.from);
   const map = mapper(ctx.state, changes);
-  return { changes, anchor: map(origAnchor, -1), head: map(origHead, 1) };
+  // 加在音符后面的增时线不进选区：选区末端贴着原来的 token 尾（assoc -1）
+  return { changes, anchor: map(origAnchor, 1), head: map(origHead, -1) };
 }
 
 // ───────────────────────── 插入 ─────────────────────────
