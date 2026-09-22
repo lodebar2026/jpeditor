@@ -92,6 +92,9 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
   改 `frompu.ts` 后必须跑 `pu-scoredoc-check`。
 - **`source: SourceSpan` 不是可有可无的**：编辑器的双向光标/选择同步（`editor/sync.ts`）
   按它建「源文本偏移 → 元素 id」的索引。新增元素类型时**一定要把 span 填对**。
+- **只给编辑用的原文位置**：`Chord/Sustain/Space.attachedSources`（和弦名、装饰、注记各自的原文）、`Mark.openSource/closeSource`
+  （弧的 `(` 与 `)`）、`Part.breakSources`（`$`、`$(…)`、`[fenye]`）。可视化编辑按它们选中、删除挂在音符上的记号与换行符；
+  排版、写出端、试听都不读，比对类回归（`pu-scoredoc-check`）要忽略它们。
 
 ## 回归
 
