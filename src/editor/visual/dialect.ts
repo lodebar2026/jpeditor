@@ -6,6 +6,7 @@
 import type { Accidental } from "../../model/doc";
 import type { EditorState } from "@codemirror/state";
 import type { ScoreDoc } from "../../model/doc";
+import type { HeaderField } from "./header";
 
 /** 与格式无关的音符 token。只描述可视化编辑要改的那几样，其余原样保留在 `pre` / `post`。 */
 export interface NoteToken {
@@ -102,6 +103,8 @@ export interface EditDialect {
   slurClose: string;
   /** 圆滑线的括号写在音符 token 里面（`.jpwabc`），而不是 token 之间 */
   slurInToken: boolean;
+  /** 页眉字段（标题、署名、调号拍号…）在原文里的位置（`header.ts`）：谱面上点页眉跳到原文、原文光标点亮页眉 */
+  headerFields?(text: string): HeaderField[];
   /** 换行不是符号的格式：给出「在 `afterId` 之后加 / 去掉一处换行」后的整份新原文。 */
   relayoutBreaks?(state: EditorState, doc: ScoreDoc, afterId: number, add: boolean, page: boolean): string | null;
 }

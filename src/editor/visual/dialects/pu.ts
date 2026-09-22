@@ -11,6 +11,7 @@ import type { EditorState } from "@codemirror/state";
 import type { Accidental, ScoreDoc } from "../../../model/doc";
 import { dialectSpec } from "../../../pu/dialect";
 import { relayoutPuBreak } from "../../../pu/relayout";
+import { colonFields } from "../header";
 import { dotsRange, type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken } from "../dialect";
 
 /** 写出时用的升降号（`pu/dialect.ts` 的表里一个语义可能有几种写法，取规范那个） */
@@ -73,6 +74,11 @@ export const DIALECT_PU: EditDialect = {
   relayoutBreaks(state: EditorState, doc: ScoreDoc, afterId: number, add: boolean, page: boolean): string | null {
     return relayoutPuBreak(state.doc.toString(), doc, { afterId, add, page });
   },
+  // `C:` 是歌词、`Q:` 是曲谱，不在这里；有谱把调号拍号写成一行 `1=C4/4`
+  headerFields: (text) => colonFields(text, {
+    T: "text", B: "text", Z: "text", V: "text", J: "text", XL: "text", XR: "text",
+    TL: "text", TR: "text", BL: "text", BC: "text", BR: "text", D: "key", P: "time",
+  }, /^\s*[1-7]\s*=\s*\S/),
   sustain: "token",
   sep: " ",
   barline: "|",

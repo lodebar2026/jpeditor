@@ -21,7 +21,7 @@ import { chordTextSegs, harmonyWidth, layoutHarmonySegs } from "../layout/harmon
 import { jpBarlineItems, jpDot, jpTimeSigItems } from "../layout/jpglyph";
 import type { BarlineSpec } from "../layout/entry";
 import { BarStyle } from "../score/enums";
-import { renderPageSvg } from "../layout/painter";
+import { type HeaderPart, headerPartsOf, renderPageSvg } from "../layout/painter";
 import type { PagePainter } from "../layout/pagepainter";
 import type { Metadata, NoteElement } from "./ast";
 import PU_BOOK from "../style/books/pu-original.jpcss?raw";
@@ -680,6 +680,15 @@ export class PuPainter implements PagePainter {
   }
 
   private paintHeader(root: Group, songIndex: number, systemLeft: number): void {
+    const before = root.children.length;
+    this.paintHeaderItems(root, songIndex, systemLeft);
+    // 可视化编辑认页眉：文字标 `hdr`（按字对回原文的字段），调号、拍号另标 `hdr-keysig` / `hdr-time`（`headerParts`）
+    for (const it of root.children.slice(before)) {
+      if (!it.classes.has("hdr-keysig") && !it.classes.has("hdr-time")) it.classes.add("hdr");
+    }
+  }
+
+  private paintHeaderItems(root: Group, songIndex: number, systemLeft: number): void {
     const m = this.metrics;
     const meta = this.doc?.songs[songIndex]?.metadata ?? this.doc?.songs[0]?.metadata ?? emptyMetadata();
     // 连续长图会按内容收窄页宽，所以居中/右对齐都要用**实际**页宽，不能用 metrics 里的纸张宽
@@ -722,6 +731,7 @@ export class PuPainter implements PagePainter {
       ? meta.mode.replace(/^([A-G])([b#$♭♯])$/, "$2$1").replace(/b/g, "\u266D").replace(/#/g, "\u266F")
       : "";
     let x = systemLeft;
+    const keyFrom = root.children.length;
     if (modeText) {
       // `=` 两侧各让一点（连写「1=F」挤成一团，用户口径），三段分开画
       const eqPad = m.headerSize * 0.2;
@@ -730,6 +740,7 @@ export class PuPainter implements PagePainter {
       root.add(text(tonic, x, keyY, headFont, INK));
       root.add(text("=", eqX, keyY, headFont, INK));
       root.add(text(modeText, modeX, keyY, headFont, INK));
+      for (const it of root.children.slice(keyFrom)) it.classes.add("hdr-keysig");
       // 调号 → 拍号的**墨迹**间距 = 「=」→ 调号的墨迹间距（用户口径）；分数线左端就是拍号墨迹左缘
       const eqInk = headFont.charBound("=");
       const modeInk = headFont.charBound(modeText);
@@ -740,9 +751,11 @@ export class PuPainter implements PagePainter {
     // jpTimeSigItems 把分数线描边中心放在 centerY − ruleWidth/2，这里补回那半个线宽。
     const eq = headFont.charBound("=");
     const meterY = keyY + (eq.top + eq.bottom) / 2 + m.underlineWidth / 2;
+    const meterFrom = root.children.length;
     for (const meter of meta.meters) {
       x += this.paintMeter(root, x, meterY, meter, headFont) + 14;
     }
+    for (const it of root.children.slice(meterFrom)) it.classes.add("hdr-time");
     // `J:` 里的文字部分（「深情地」「高亢、自由地」）排在调号拍号**下一行**，左对齐。
     // 数字部分是速度值，不显示在这里。
     const tempoWords = meta.tempos.filter((t): t is string => typeof t === "string" && t !== "");
@@ -1416,6 +1429,11 @@ export class PuPainter implements PagePainter {
   }
 
   /** 渲染某一页为独立的 <svg>。 */
+  /** 页眉里画出来的东西（标题、署名、调号拍号…）：`<g>`、所画的字、是不是调号拍号。可视化编辑按字对回原文字段。 */
+  headerParts(): HeaderPart[] {
+    return headerPartsOf(this.layout.pages, this.nodeMap);
+  }
+
   renderPage(pageIndex: number): SVGSVGElement {
     return renderPageSvg(this.layout.pages[pageIndex], this.pageWidth, this.pageHeight, this.nodeMap);
   }

@@ -154,6 +154,36 @@ export function drawCaret(svg: SVGSVGElement, x: number, box: Box): void {
   }));
 }
 
+/** `<text>` 里第 `i` 个字之前（`i` = 字数时为末尾）的横坐标，换到页面 SVG 用户坐标；连同这串字的包围盒。 */
+export function textCaretInPage(t: SVGTextElement, i: number): { svg: SVGSVGElement; x: number; box: Box } | null {
+  const hit = boxInPage(t);
+  if (!hit) return null;
+  const n = t.getNumberOfChars();
+  if (n === 0) return { svg: hit.svg, x: hit.box.x, box: hit.box };
+  let p: DOMPoint;
+  try {
+    p = i < n ? t.getStartPositionOfChar(i) : t.getEndPositionOfChar(n - 1);
+  } catch {
+    return null;
+  }
+  const m = hit.svg.getScreenCTM()?.inverse().multiply(t.getScreenCTM() ?? new DOMMatrix());
+  if (!m) return null;
+  return { svg: hit.svg, x: new DOMPoint(p.x, p.y).matrixTransform(m).x, box: hit.box };
+}
+
+/** 屏幕坐标落在 `<text>` 的第几个字之前（按每个字的横向中线分）。 */
+export function charIndexAt(t: SVGTextElement, clientX: number, clientY: number): number {
+  const m = t.getScreenCTM();
+  if (!m) return 0;
+  const p = new DOMPoint(clientX, clientY).matrixTransform(m.inverse());
+  const n = t.getNumberOfChars();
+  for (let i = 0; i < n; i++) {
+    const e = t.getExtentOfChar(i);
+    if (p.x < e.x + e.width / 2) return i;
+  }
+  return n;
+}
+
 /** 编辑方块：罩住选中的元素。 */
 export function drawBlock(svg: SVGSVGElement, box: Box): void {
   const pad = box.h * 0.12;

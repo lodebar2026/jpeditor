@@ -12,6 +12,7 @@ import { JpwFile, WordsSection } from "../../../jpword/jpwfile";
 import type { Accidental } from "../../../model/doc";
 import { readJpwSource } from "../../../model/fromjpw";
 import { dotsRange, type EditDialect, type NoteDuration, type NoteToken } from "../dialect";
+import { jpwTitleFields } from "../header";
 
 const ACC_OF: Record<string, Accidental> = { "#b": "natural", "#": "sharp", b: "flat" };
 const ACC_TEXT: Partial<Record<Accidental, string>> = { natural: "#b", sharp: "#", flat: "b" };
@@ -121,6 +122,7 @@ export const DIALECT_JPW: EditDialect = {
     return null;
   },
   postEdit: retargetWords,
+  headerFields: jpwTitleFields,
   sustain: "inline",
   sep: " ",
   barline: "|",

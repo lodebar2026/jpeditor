@@ -24,6 +24,7 @@
 // | `barline` | 小节线 | 小节线前面那个元素 |
 // | `mark` | 和弦名、装饰、注记（`AttachedSource`），slur 的 `(` 与 `)` 各一条 | 宿主 / 弧的起点 |
 // | `break` | 换行/换页符号 | 符号前面那个元素 |
+// | `header` | 页眉字段的值（标题、署名、调号拍号…） | 不用（-1）；模型里不记位置，按格式从原文认（`EditDialect.headerFields`），谱面按字对上（`App._bindHeader`） |
 //
 // 增时线、小节线、弧现在没有自己的 `<g>`，谱面上借宿主音符的 `<g>` 定位；和弦名、装饰、注记按类名在音符格里认出自己的
 // （`App._markPartEl`）。统一 ScorePainter 落地后改接它的 `locate`。
@@ -37,7 +38,7 @@ import type { AttachedSource, Chord, ElementId, Measure, Part, ScoreDoc, SourceS
 import { breakAfter } from "../model/helpers";
 import { docView } from "../pu/slots";
 
-export type SyncKind = "note" | "lyric" | "sustain" | "barline" | "mark" | "break";
+export type SyncKind = "note" | "lyric" | "sustain" | "barline" | "mark" | "break" | "header";
 
 /** 索引里的一条：原文的一段 ↔ 谱面上的一个东西。 */
 export interface SyncEntry {
@@ -62,6 +63,8 @@ export interface SyncEntry {
   pair?: { from: number; to: number };
   /** `break`：换页 */
   page?: boolean;
+  /** `header`：调号、拍号、两样写在一处（`header.ts::HeaderRole`）；文字字段缺省 */
+  headerRole?: "key" | "time" | "keytime";
 }
 
 /** 一处换行/换页（谱面显示换行符用）。原文里没有符号可指（文本谱另起一行 `Q:`、ABC 的代码行末）时 `span` 为 null。 */
@@ -170,6 +173,15 @@ export class SyncIndex {
         out.push({ kind: "barline", from: bl.source.offset, to: spanEnd(bl.source), id: lastId, verse: null });
       }
     }
+  }
+
+  /** 并进页眉字段（原文里认出来的，见 `EditDialect.headerFields`）。重建索引后调一次。 */
+  addHeader(fields: readonly { from: number; to: number; role: "text" | "key" | "time" | "keytime" }[]): void {
+    const extra: SyncEntry[] = fields
+      .filter((f) => f.to > f.from)
+      .map((f) => ({ kind: "header", from: f.from, to: f.to, id: -1, verse: null, ...(f.role !== "text" ? { headerRole: f.role } : {}) }));
+    if (extra.length === 0) return;
+    this.entries = [...this.entries, ...extra].sort((a, b) => a.from - b.from || a.to - b.to);
   }
 
   /** 落在这个偏移上的那一条。命中不了返回 null（光标在头部字段、注释、空白里都算不中）。 */

@@ -3,6 +3,7 @@
 
 import type { Accidental } from "../../../model/doc";
 import { dotsRange, type EditDialect, type NoteDuration, type NoteToken } from "../dialect";
+import { colonFields } from "../header";
 
 const ACC_OF: Record<string, Accidental> = {
   "#": "sharp", b: "flat", n: "natural", "##": "double-sharp", bb: "double-flat",
@@ -45,6 +46,7 @@ export const DIALECT_123: EditDialect = {
   newNote(degree: number, dur: NoteDuration) {
     return `${degree}${"_".repeat(dur.halvings)}${".".repeat(dur.dots)}`;
   },
+  headerFields: (text) => colonFields(text, { T: "text", C: "text", Q: "text", K: "key", M: "time" }),
   sustain: "token",
   sep: " ",
   barline: "|",

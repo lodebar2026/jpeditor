@@ -23,7 +23,8 @@ import {
 } from "./ops";
 import { actionOfKey, type VisualAction, type VisualMode } from "./keys";
 import {
-  type Box, boxInPage, clearOverlay, drawBlock, drawBreak, drawCaret, hitThroughOverlay, musicBox, rightEdgeInBand, sameRow, setBeatIssues,
+  type Box, boxInPage, charIndexAt, clearOverlay, drawBlock, drawBreak, drawCaret, hitThroughOverlay, musicBox, rightEdgeInBand,
+  sameRow, setBeatIssues, textCaretInPage,
 } from "./overlay";
 
 export interface VisualHost {
@@ -37,6 +38,8 @@ export interface VisualHost {
   entryEl(entry: SyncEntry): SVGGElement | null;
   /** 音符在谱面上的 `<g>` */
   noteEl(id: ElementId): SVGGElement | null;
+  /** 文字条目（歌词、页眉字段）在谱面上的 `<g>`：页眉的多行署名、调号拍号一组不止一个 */
+  textEls(entry: SyncEntry): SVGGElement[];
   /** 音符的附点在谱面上的 `<g>`（每个点一个；可单独点选） */
   augDotEls(id: ElementId): SVGGElement[];
   /** 谱面上点中的 `<g>` 对应哪个条目（从事件目标往上找） */
@@ -293,6 +296,7 @@ export class VisualEditController {
 
   /** 插入光标：画在光标前那个元素的右缘；光标在行首（前后两个元素不同行）时画在后一个的左缘。 */
   private drawInsertCaret(head: number): void {
+    if (this.drawTextCaret(head)) return;
     const inside = this.host.sync.at(head);
     if (inside && inside.from < head) return; // 光标落在 token 中间：那是在改原文，谱面上已高亮该元素
     const nav = this.navigable();
@@ -317,6 +321,32 @@ export class VisualEditController {
     }
   }
 
+  /** 光标落在文字条目（歌词、页眉字段）里或两端：谱面上画在那串字里对应的位置。画了返回 true。 */
+  private drawTextCaret(head: number): boolean {
+    const e = this.host.sync.ordered().find((x) => isText(x) && head >= x.from && head <= x.to);
+    if (!e) return false;
+    const src = this.host.view.state.doc.sliceString(e.from, e.to);
+    const texts = this.host.textEls(e).flatMap((el) => [...el.querySelectorAll("text")]);
+    for (const t of texts) {
+      const disp = t.textContent ?? "";
+      const shift = textShift(disp, src);
+      if (shift === null) continue;
+      const di = head - e.from - shift;
+      if (di < 0 || di > disp.length) continue;
+      const c = textCaretInPage(t, di);
+      if (!c) continue;
+      drawCaret(c.svg, c.x, c.box);
+      return true;
+    }
+    // 字对不上（`♭B` 对 `bB`、叠排的拍号）：画在这一项的右边
+    const els = this.host.textEls(e);
+    const boxes = els.map((el) => boxInPage(el)).filter((b): b is { svg: SVGSVGElement; box: Box } => !!b);
+    if (boxes.length === 0) return false;
+    const box = boxes.slice(1).reduce((a, b) => (b.svg === a.svg ? { svg: a.svg, box: union(a.box, b.box) } : a), boxes[0]!);
+    drawCaret(box.svg, box.box.x + box.box.w + box.box.h * 0.12, box.box);
+    return true;
+  }
+
   /** 编辑方块：选区罩住的元素，按页、按行各画一个。 */
   private drawEditBlock(from: number, to: number): void {
     const dotOf = this.pickedDot();
@@ -335,7 +365,7 @@ export class VisualEditController {
     const boxes: { svg: SVGSVGElement; box: Box }[] = [];
     const seen = new Set<Element>();
     for (const e of this.host.sync.range(from, to)) {
-      if (e.kind === "lyric" || e.kind === "break") continue;
+      if (isText(e) || e.kind === "break") continue;
       const el = this.host.entryEl(e);
       if (!el || seen.has(el)) continue;
       seen.add(el);
@@ -375,6 +405,14 @@ export class VisualEditController {
       this.refresh();
       return true;
     }
+    // 点在文字上（歌词、页眉）：进插入模式——光标落在原文里点中的那个字前后，焦点交给代码区，接着打字就是改原文。
+    // 只有音符与挂在它上面的东西点了进编辑模式（方块）
+    if (entry && isText(entry)) {
+      const at = this.textCaretAt(entry, ev.clientX, ev.clientY);
+      this.select(at, at);
+      this.host.view.focus();
+      return true;
+    }
     // 点在附点上（附点很小，四周放宽几像素）：只选中附点
     if (!ev.shiftKey) {
       const dot = this.dotAtPoint(ev.clientX, ev.clientY, entry);
@@ -406,6 +444,29 @@ export class VisualEditController {
       return true;
     }
     return false;
+  }
+
+  /** 点在文字条目的哪个字前后 → 原文偏移。字对不上（`♭B` 对 `bB`、叠排的拍号）时按点在那一项的左半还是右半落到字段两端。 */
+  private textCaretAt(e: SyncEntry, cx: number, cy: number): number {
+    const src = this.host.view.state.doc.sliceString(e.from, e.to);
+    let best: SVGTextElement | null = null;
+    let bestD = Infinity;
+    for (const el of this.host.textEls(e)) {
+      for (const t of el.querySelectorAll("text")) {
+        const r = t.getBoundingClientRect();
+        const d = Math.max(0, r.left - cx, cx - r.right) + Math.max(0, r.top - cy, cy - r.bottom);
+        if (d < bestD) {
+          bestD = d;
+          best = t;
+        }
+      }
+    }
+    if (!best) return e.to;
+    const disp = best.textContent ?? "";
+    const i = charIndexAt(best, cx, cy);
+    const shift = textShift(disp, src);
+    if (shift === null) return i <= disp.length / 2 ? e.from : e.to;
+    return e.from + Math.max(0, Math.min(src.length, i + shift));
   }
 
   /** 点击点落在哪个音符的附点上（先看点中的那个音符，再看同一带里别的音符）；返回附点的原文区间。 */
@@ -516,6 +577,8 @@ export class VisualEditController {
     if (onBreak) {
       this.handleClick(ev, null);
       target = "break";
+    } else if (entry && isText(entry)) {
+      this.handleClick(ev, entry);
     } else if (entry) {
       // 点在已选中的范围里就不动选区（右键一段选区整体操作）
       const inside = entry.from < sel.to && entry.to > sel.from && !sel.empty;
@@ -928,6 +991,20 @@ export class VisualEditController {
     this.host.setStatus(`选中记号：${markLabel(m)}`);
     return true;
   }
+}
+
+/** 文字条目：歌词、页眉字段（点了进插入模式，光标落在字里） */
+function isText(e: SyncEntry): boolean {
+  return e.kind === "lyric" || e.kind === "header";
+}
+
+/** 画出来的字 `disp` 与原文的值 `src` 怎么对位：原文下标 = 显示下标 + 返回值；对不上为 null。
+ *  署名会补「作词：」（显示包含原文），`.jpwabc` 的 `{三四}` 画出来不带括号（原文包含显示）。 */
+function textShift(disp: string, src: string): number | null {
+  const k = disp.indexOf(src);
+  if (k >= 0) return -k;
+  const k2 = src.indexOf(disp);
+  return k2 >= 0 && disp.length > 0 ? k2 : null;
 }
 
 /** 两份原文前后相同的部分去掉，剩下中间不同的那一段（局部补丁，撤销与光标映射都干净）。 */

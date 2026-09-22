@@ -99,6 +99,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   private _syncEls = new Map<Element, SyncEntry>();
   /** 条目 → 谱面 `<g>`（光标移动时直接取） */
   private _syncElOf = new Map<SyncEntry, SVGGElement>();
+  /** 页眉字段 → 谱面上画它的那几个 `<g>`（多行署名、调号拍号一组都不止一个） */
+  private _syncHeaderEls = new Map<SyncEntry, SVGGElement[]>();
   /** 当前被光标点亮的那些 `<g>` */
   private _syncMarked: Element[] = [];
   /** 防回环：两条方向互相触发时，被动的那一侧不要再反推一次 */
@@ -743,6 +745,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     this._syncText = this.getText();
     this._syncEls.clear();
     this._syncElOf.clear();
+    this._syncHeaderEls.clear();
     this._syncMarked = [];
     for (const entry of this._sync.all()) {
       const el = this._syncGroupEl(entry);
@@ -751,6 +754,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       // 展开档里音符与它的歌词共用一个 `<g>`，先来的音符条目占住它（`all()` 已排好序）
       if (!this._syncEls.has(el)) this._syncEls.set(el, entry);
     }
+    this._bindHeader();
     this._syncCursorToScore();
     this.visual.afterRebuild();
   }
@@ -824,6 +828,55 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     return this.painter.chordGroupEl(entry.id, entry.verse ?? 0);
   }
 
+  /** 页眉：从原文认出字段（`EditDialect.headerFields`）并进索引，再按字对上谱面上画出来的页眉项。
+   *  字对得上的（画出来的字就是原文的值、或包含它——署名会补「作词：」）归它；调号、拍号按角色归。 */
+  private _bindHeader(): void {
+    const fields = this.editDialect()?.headerFields?.(this._syncText) ?? [];
+    if (fields.length === 0) return;
+    this._sync.addHeader(fields);
+    const entries = this._sync.ordered().filter((e) => e.kind === "header");
+    const parts = this._puPainter ? this._puPainter.headerParts() : this.painter.headerParts();
+    const norm = (t: string): string => t.replace(/\s+/g, "");
+    const bind = (e: SyncEntry, el: SVGGElement): void => {
+      const list = this._syncHeaderEls.get(e) ?? [];
+      if (list.length === 0) {
+        this._syncHeaderEls.set(e, list);
+        this._syncElOf.set(e, el);
+      }
+      list.push(el);
+      if (!this._syncEls.has(el)) this._syncEls.set(el, e);
+    };
+    for (const p of parts) {
+      if (p.role !== "text") {
+        // 调号、拍号：字与原文写法不同，按角色对（`1=C4/4` 这种一处写两样的两者都归它）
+        const e = entries.find((x) => x.headerRole === p.role || x.headerRole === "keytime");
+        if (e) bind(e, p.el);
+        continue;
+      }
+      const t = norm(p.text);
+      let best: SyncEntry | null = null;
+      let score = 0;
+      for (const e of entries) {
+        if (e.headerRole) continue;
+        const v = norm(this._syncText.slice(e.from, e.to));
+        if (!v || !t) continue;
+        const sc = t === v ? 3 : t.includes(v) ? 2 : t.length >= 2 && v.includes(t) ? 1 : 0;
+        if (sc > score) {
+          best = e;
+          score = sc;
+        }
+      }
+      if (best) bind(best, p.el);
+    }
+  }
+
+  textEls(entry: SyncEntry): SVGGElement[] {
+    const hdr = this._syncHeaderEls.get(entry);
+    if (hdr) return hdr;
+    const el = this._syncElOf.get(entry);
+    return el ? [el] : [];
+  }
+
   /** 点亮一个条目。音符只亮音乐那部分：展开档的音符格里收着各段歌词，整格点亮会把每段的字都染上色，
    *  所以格里的歌词另标 `cursor-off`（CSS 不给它上光标色）；那段歌词自己也被选中时再摘掉。 */
   private _syncMark(entry: SyncEntry, el: Element): void {
@@ -874,8 +927,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (entries.length === 0) return;
     // 选中音符只亮音符，选中歌词只亮那一段的那个字（不连带别的段）
     for (const entry of entries) {
-      const el = this._syncElOf.get(entry);
-      if (el) this._syncMark(entry, el);
+      for (const el of this._syncHeaderEls.get(entry) ?? [this._syncElOf.get(entry)]) if (el) this._syncMark(entry, el);
     }
     this._scrollSyncIntoView(this._syncMarked[0], entries[0]!);
   }
@@ -903,8 +955,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   private _syncMarkOnly(entry: SyncEntry): void {
     for (const el of this._syncMarked) el.classList.remove("cursor-at", "cursor-off");
     this._syncMarked = [];
-    const el = this._syncElOf.get(entry);
-    if (el) this._syncMark(entry, el);
+    for (const el of this._syncHeaderEls.get(entry) ?? [this._syncElOf.get(entry)]) if (el) this._syncMark(entry, el);
   }
 
   /** 需要的话翻页并滚动到可视区（复用播放高亮那一套做法）。 */

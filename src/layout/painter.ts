@@ -99,6 +99,11 @@ export abstract class ScorePainter implements PagePainter {
     });
   }
 
+  /** 页眉里画出来的东西（标题、署名、调号拍号）：`<g>`、所画的字、是不是调号拍号。可视化编辑按字对回原文字段。 */
+  headerParts(): HeaderPart[] {
+    return headerPartsOf(this.layout.pages, this.nodeMap);
+  }
+
   /** 元素 `id` 第 `pass` 遍那个音符格里各段歌词的 `<g>` 与段号（`Lyric.verse`）。
    *  展开档的音符格把各段歌词收在同一个 `<g>` 里，点选、高亮要按这个拆开。 */
   lyricEls(id: ElementId, pass = 0): { el: SVGGElement; verse: number }[] {
@@ -162,7 +167,7 @@ export abstract class ScorePainter implements PagePainter {
     let ypos = 0.3 * h;
     texts.forEach((text, idx) => {
       const font = fonts[idx];
-      const obj = this.multipleLineText(text, font, w, opt.color);
+      const obj = tagHeader(this.multipleLineText(text, font, w, opt.color));
       obj.y = ypos;
       obj.update();
       pg.add(obj);
@@ -410,14 +415,14 @@ export class JinpuPainter extends ScorePainter {
 
     let ypos = 0;
     for (const t of titles) {
-      const obj = this.multipleLineText(t, fnt.makeWithSize(titleSize), w, opt.color);
+      const obj = tagHeader(this.multipleLineText(t, fnt.makeWithSize(titleSize), w, opt.color));
       obj.y = ypos;
       obj.update();
       pg.add(obj);
       ypos += obj.height;
     }
     for (const t of subtitles) {
-      const obj = this.multipleLineText(t, fnt.makeWithSize(creditSize), w, opt.color);
+      const obj = tagHeader(this.multipleLineText(t, fnt.makeWithSize(creditSize), w, opt.color));
       obj.y = ypos;
       obj.update();
       pg.add(obj);
@@ -436,7 +441,7 @@ export class JinpuPainter extends ScorePainter {
       tf.text = t;
       tf.y = base + i * gap;
       tf.x = right - tf.measureText();
-      pg.add(tf);
+      pg.add(tagHeader(tf));
     });
 
     // 调号拍号：左对齐，基线与最后一行署名齐
@@ -473,6 +478,7 @@ export class JinpuPainter extends ScorePainter {
       tf.text = text;
       tf.x = cur;
       tf.y = y;
+      tf.classes.add("hdr-keysig"); // 可视化编辑认页眉的调号（`headerParts`）
       g.add(tf);
       return tf.measureText();
     };
@@ -503,6 +509,7 @@ export class JinpuPainter extends ScorePainter {
       it.x += cur;
       // 分数线与音名的**墨迹中心**齐平（成书 keyMeterItems 把线放在基线上方 0.34 个墨迹高）
       it.y += baseline - ink * 0.34;
+      it.classes.add("hdr-time");
       g.add(it);
     }
     return g;
@@ -539,6 +546,35 @@ export function renderPageSvg(
     while (holder.firstChild) svg.appendChild(holder.firstChild);
   }
   return svg;
+}
+
+/** 页眉文字标 `hdr`（多行的标题逐行标）。 */
+function tagHeader<T extends PageItem>(obj: T): T {
+  if (obj instanceof TextFrame) obj.classes.add("hdr");
+  else for (const c of obj.children) if (c instanceof TextFrame) c.classes.add("hdr");
+  return obj;
+}
+
+/** 页眉里画出来的一项：文字（标题、署名…）、调号、拍号。 */
+export interface HeaderPart {
+  el: SVGGElement;
+  text: string;
+  role: "text" | "key" | "time";
+}
+
+/** 各页里标了 `hdr`（文字）/ `hdr-keysig`（调号）/ `hdr-time`（拍号）的页眉项（两个排版器共用）。 */
+export function headerPartsOf(pages: readonly PageItem[], nodeMap: WeakMap<PageItem, SVGGElement>): HeaderPart[] {
+  const out: HeaderPart[] = [];
+  const roles = [["hdr", "text"], ["hdr-keysig", "key"], ["hdr-time", "time"]] as const;
+  for (const page of pages) {
+    for (const [cls, role] of roles) {
+      for (const it of findByClass(page, cls)) {
+        const el = nodeMap.get(it);
+        if (el?.isConnected) out.push({ el, text: it instanceof TextFrame ? it.text : "", role });
+      }
+    }
+  }
+  return out;
 }
 
 /**
