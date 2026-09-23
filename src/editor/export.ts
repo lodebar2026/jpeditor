@@ -3,8 +3,7 @@ import type { App } from "./app";
 import { toMidi } from "../score/midi";
 import { buildPptx } from "./pptx";
 import { ScorePainter } from "../layout/painter";
-import { encodeJpwabc, isTauriRuntime, saveBytes } from "./fileio";
-import { emitJpwabc } from "../model/tojpw";
+import { isTauriRuntime, saveBytes } from "./fileio";
 import { CONVERT_TARGETS, targetSpec, type ConvertTarget } from "../model/convert";
 import { asset } from "../common/asset";
 import { scoreDocToMusicXml } from "../model/toxml";
@@ -211,17 +210,6 @@ export async function exportPuMusicXml(app: App): Promise<void> {
   await saveBytes(new TextEncoder().encode(text), `${baseName(app)}.musicxml`, MUSICXML_MIME);
 }
 
-/** 文本谱 → `.jpwabc`。JP-Word 的 .Voice 只有单声部，多声部时只导第一声部。 */
-export async function exportPuJpwabc(app: App): Promise<void> {
-  const doc = app.currentScoreDoc();
-  const text = doc ? emitJpwabc(doc) : null;
-  if (text === null) throw new Error("这份文本谱里没有可导出的曲行");
-  if (app.partCount > 1) {
-    app.setStatus(`.jpwabc 只支持单声部，已导出第一声部（原谱有 ${app.partCount} 个）`);
-  }
-  await saveBytes(encodeJpwabc(text), `${baseName(app)}.jpwabc`, "application/octet-stream");
-}
-
 /** Export staff pages to a directly downloadable PDF. */
 export async function exportMixedPdf(app: App): Promise<void> {
   const painter = app.mixedPainter;
@@ -270,24 +258,18 @@ interface ExportItem {
 }
 
 const isMixed = (app: App): boolean => app.mode === "mixed";
-/** 走 `ScoreDoc` 排版的格式（文本谱、123、ABC）：导出项与简谱那档不同。 */
+/** 走 `ScoreDoc` 排版的格式（文本谱、123、ABC、MusicXML 的简谱档）：导出项与 `.jpwabc` 那档不同。 */
 const isPu = (app: App): boolean => app.adapter.caps.layout === "scoredoc" && !isMixed(app);
 const isJp = (app: App): boolean => !isPu(app) && !isMixed(app);
-/** 另存为源格式：文本格式在五线谱/混排档也有源文可存；`.musicxml` 的混排档走「转成 … 编辑」。 */
-const canSaveAsText = (app: App): boolean => !isMixed(app) || app.docFormat !== "musicxml";
-/** 当前文档就是这种格式（文本谱按方言分）。 */
-const isCurrentFormat = (app: App, id: ConvertTarget): boolean => {
-  const spec = targetSpec(id);
-  return app.docFormat === spec.docFormat && (spec.docFormat !== "pu" || app.puDialect === id);
-};
 
-/** 顺序即对话框里的顺序。 */
+/** 顺序即对话框里的顺序。**导出只出别的媒介**（图片、PPT、音频、给第三方软件的 MusicXML）；
+ *  换源格式（123 / JPWABC / ABC / 文本谱）走「另存为」（`showSaveAsDialog`），
+ *  `.musicxml` 转成简谱编辑在打开时选（`App._importBytes`）。 */
 const EXPORT_ITEMS: readonly ExportItem[] = [
   // 文本谱（非混排预览）：走 pu 自己的排版器与直出路径
   { label: "PPTX", available: isPu, run: exportPptx },
   { label: "MIDI", available: isPu, run: exportMidi },
   { label: "MusicXML", available: isPu, run: exportPuMusicXml },
-  { label: "JPWABC（简谱）", available: isPu, run: exportPuJpwabc },
   // 混排（五线谱预览）
   { label: "PNG", available: isMixed, run: exportCurrentPagePng },
   { label: "PDF", available: isMixed, run: exportMixedPdf },
@@ -297,58 +279,74 @@ const EXPORT_ITEMS: readonly ExportItem[] = [
   { label: "PPTX", available: isJp, run: exportPptx },
   { label: "MIDI", available: isJp, run: exportMidi },
   { label: "MusicXML", available: isJp, run: exportMusicXml },
-  // `.musicxml` 没有代码区：转成文本格式再编辑（原文件不动；代码区标题栏的格式下拉切得回「MusicXML（原文）」）
-  ...CONVERT_TARGETS.map((t): ExportItem => ({
-    label: `转成 ${t.label} 编辑`,
-    available: (app) => app.docFormat === "musicxml",
-    run: (app) => app.convertToTextDoc(t.id),
-  })),
-  // 源格式之间的另存为。**保存前会列出目标格式装不下的东西**（`model/capability.ts`），
-  // 确认了才写——这条路与上面那些「导出成别的媒介」不同，它换的是源格式本身。
-  // 当前就是这种格式的不列（那是「保存」）；`.jpwabc` 走上面简谱/文本谱那几项的专用导出。
-  ...CONVERT_TARGETS.filter((t) => t.id !== "jpwabc").map((t): ExportItem => ({
-    label: `${t.label}（源格式）`,
-    available: (app) => canSaveAsText(app) && !isCurrentFormat(app, t.id),
-    run: (app) => app.saveAsFormat(t.id),
-  })),
 ];
 
-export function showExportDialog(app: App): void {
+/** 当前文档就是这种格式（文本谱按方言分）。 */
+const isCurrentFormat = (app: App, id: ConvertTarget): boolean => {
+  const spec = targetSpec(id);
+  return app.docFormat === spec.docFormat && (spec.docFormat !== "pu" || app.puDialect === id);
+};
+
+/** 另存为的选项：当前格式另存一份，外加换成其它源格式。
+ *  **换格式前会列出目标格式装不下的东西**（`model/capability.ts`），确认了才写。
+ *  - 文本格式：写一份新文件，编辑器里仍是原文档（`App.saveAsFormat`）。
+ *  - `.musicxml`：没有代码区，另存成文本格式就是「转成它再编辑」——转过去（`convertToTextDoc`）再落盘，
+ *    之后编辑的就是新存的那份。 */
+function saveAsItems(app: App): ExportItem[] {
+  const items: ExportItem[] = [{
+    label: `${app.docFormat === "musicxml" ? "MusicXML" : app.adapter.defaultExt.replace(/^\./, "").toUpperCase()}（当前格式）`,
+    available: () => true,
+    run: (a) => a.saveFileAs(),
+  }];
+  for (const t of CONVERT_TARGETS) {
+    if (isCurrentFormat(app, t.id)) continue;
+    items.push({
+      label: t.label,
+      available: () => true,
+      run: async (a) => {
+        if (a.docFormat !== "musicxml") return a.saveAsFormat(t.id);
+        await a.convertToTextDoc(t.id);
+        if (a.docFormat !== "musicxml") await a.saveFileAs(); // 用户在丢失提示里取消了就还是 musicxml
+      },
+    });
+  }
+  return items;
+}
+
+/** 一列按钮的对话框（导出 / 另存为）。点一项就执行，成功后关掉；出错留在框里显示。 */
+function showListDialog(app: App, titleText: string, items: readonly ExportItem[], failText: string): void {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   const box = document.createElement("div");
   box.className = "modal-box";
   const title = document.createElement("div");
   title.className = "modal-title";
-  // 不加「· 五线谱」「· 简谱」之类的后缀：会被读成「导出成五线谱」。PNG/PDF 导出的就是当前谱面视图。
-  title.textContent = "导出";
+  title.textContent = titleText;
   const list = document.createElement("div");
   list.style.cssText = "display:flex;flex-direction:column;gap:8px";
   const error = document.createElement("div");
   error.style.cssText = "display:none;color:var(--error,#f3727f);font-size:12px;line-height:1.4";
 
   const close = () => overlay.remove();
-  const item = (label: string, fn: () => void | Promise<void>) => {
+  for (const it of items) {
+    if (!it.available(app)) continue;
     const btn = document.createElement("button");
-    btn.textContent = label;
+    btn.textContent = it.label;
     btn.style.cssText = "padding:8px 12px;text-align:left;cursor:pointer";
     btn.onclick = async () => {
       btn.disabled = true;
       error.style.display = "none";
       try {
-        await fn();
+        await it.run(app);
         close();
       } catch (e) {
         console.error(e);
-        error.textContent = "导出失败：" + (e instanceof Error ? e.message : String(e));
+        error.textContent = failText + "：" + (e instanceof Error ? e.message : String(e));
         error.style.display = "block";
         btn.disabled = false;
       }
     };
     list.append(btn);
-  };
-  for (const it of EXPORT_ITEMS) {
-    if (it.available(app)) item(it.label, () => it.run(app));
   }
 
   const footer = document.createElement("div");
@@ -364,4 +362,13 @@ export function showExportDialog(app: App): void {
     if (e.target === overlay) close();
   };
   document.body.append(overlay);
+}
+
+export function showExportDialog(app: App): void {
+  // 不加「· 五线谱」「· 简谱」之类的后缀：会被读成「导出成五线谱」。PNG/PDF 导出的就是当前谱面视图。
+  showListDialog(app, "导出", EXPORT_ITEMS, "导出失败");
+}
+
+export function showSaveAsDialog(app: App): void {
+  showListDialog(app, "另存为", saveAsItems(app), "另存失败");
 }

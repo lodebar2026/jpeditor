@@ -5,7 +5,7 @@ import { asset } from "./common/asset";
 import { App, type ViewMode } from "./editor/app";
 import { IMAGE_EXT, IMAGE_ACCEPT, isDocFile, isImageFile } from "./common/filetypes";
 import { showOptionsDialog, showHanConvDialog, showSongInfoDialog } from "./editor/dialogs";
-import { showExportDialog } from "./editor/export";
+import { showExportDialog, showSaveAsDialog } from "./editor/export";
 import { showHelpDialog } from "./editor/help";
 import { isTauriRuntime } from "./editor/fileio";
 import { maybeAutoCheck } from "./editor/update";
@@ -179,6 +179,7 @@ async function boot() {
   const on = (id: string, fn: () => void) =>
     document.getElementById(id)?.addEventListener("click", fn);
   on("btn-save", () => void app.saveFile());
+  on("btn-saveas", () => showSaveAsDialog(app));
   on("btn-prev", () => app.prevPage());
   on("btn-next", () => app.nextPage());
   on("btn-options", () => showOptionsDialog(app));
