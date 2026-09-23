@@ -7,7 +7,7 @@
 //
 // 无 DOM 依赖（Node CLI 与浏览器两侧都要 import）。
 import type { BookStyle } from "../pdflayout/bookstyle";
-import type { TemplateSheet } from "./jpcss";
+import type { TemplateSheet } from "./ss";
 import type { Length } from "./units";
 
 /** 版面角色。成书那一路的判定依据是 PageSpec 的字段位置（见 pdflayout/stats.ts）。 */
@@ -97,7 +97,7 @@ export type DeepPartial<T> = {
 export interface RoleDecl {
   size?: Length;
   color?: number;
-  /** 以下由歌本 `.jpcss` 写（docs/格式/jpcss.md §3）：模板排版（`template.ts`）读，
+  /** 以下由歌本 `.ss` 写（docs/格式/ss.md §3）：模板排版（`template.ts`）读，
    *  尺子那边由 `style/keys.ts::ROLE_FONTS` 对到各自的字体字段（`note` → 简谱数字、`smufl` → 记号…）。
    *  对齐由槽位（`left`/`center`/`inner`…）决定，不在角色上写。 */
   font?: string;
@@ -149,7 +149,7 @@ export interface StyleSheet {
   break?: { overrides?: Record<string, Length | boolean> };
   /** 成书的完整样式（`BookStyle`）。只有 `engine: "book"` 用。 */
   book?: BookStyle;
-  /** 歌本模板：区域、装页、具名字体（`.jpcss` 的 `@template`/`@flow`/`@font-face`）。 */
+  /** 歌本模板：区域、装页、具名字体（`.ss` 的 `@template`/`@flow`/`@font-face`）。 */
   template?: TemplateSheet;
 }
 

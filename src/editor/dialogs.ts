@@ -644,8 +644,8 @@ export function showSongInfoDialog(app: App): void {
   hint.textContent = !editable
     ? "这种格式装不下扩展曲目信息（英文标题、经文、标签等），只能查看；另存为 123 后可编辑。"
     : app.docFormat === "musicxml"
-      ? "改动写进 MusicXML 的 <miscellaneous-field>（整份重写）；歌本模板（.jpcss）按键名引用这些字段。"
-      : "改动写回源码头部的 I:meta 行，可用 Ctrl/⌘+Z 撤销；歌本模板（.jpcss）按键名引用这些字段。";
+      ? "改动写进 MusicXML 的 <miscellaneous-field>（整份重写）；歌本模板（.ss）按键名引用这些字段。"
+      : "改动写回源码头部的 I:meta 行，可用 Ctrl/⌘+Z 撤销；歌本模板（.ss）按键名引用这些字段。";
   body.append(hint);
 
   modal("曲目信息", body, () => {

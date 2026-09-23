@@ -1,7 +1,7 @@
 // 混排歌本（五线谱 + 简谱层）：清单里的一串 MusicXML → 整本的 DrawPage。
 //
 // 移植原排版程序的歌本链路（musicpp util/pao.cpp::genSongBook）：
-//   ScoreMeta::updateTop / updateBottom（:42 / :95）→ 模板区域 song-head / song-foot（`.jpcss`，style/template.ts）
+//   ScoreMeta::updateTop / updateBottom（:42 / :95）→ 模板区域 song-head / song-foot（`.ss`，style/template.ts）
 //   SongBook::addScore（:217）                       → `songFrames`：首帧带标题块、末帧带页脚块
 //   flowLayout（util/layout.cpp:6）+ SongBook::layout → `flow`：帧间距取 max(上帧下间距, 本帧上间距)，放不下或强制就换页
 //   SongBook::drawFrame（:371）                      → `drawPages`：标题块在 margin+ypos，谱行在 margin+ypos+topY+musicYOffset
@@ -28,7 +28,7 @@ import type { StyleRole, StyleSheet } from "../style/sheet";
 import { fontOfRole as roleFont } from "../style/fonts";
 import { applyStaffStyle } from "../style/staff";
 import { computeStyleForPaper, THEMES } from "../style/themes";
-import type { Expr, Region } from "../style/jpcss";
+import type { Expr, Region } from "../style/ss";
 import { evalNum, expandText, layoutRegion, songFields, type Placed, type RegionEnv } from "../style/template";
 import { resolveLength } from "../style/units";
 import { applyManifestSong, type ManifestSong } from "./manifest";
@@ -37,7 +37,7 @@ import type { DrawItem, DrawPage } from "./drawlist";
 
 export interface SongbookInput {
   songs: { xml: string; entry: ManifestSong }[];
-  /** 歌本 `.jpcss` 解析出的规则 */
+  /** 歌本 `.ss` 解析出的规则 */
   rules: StyleRule[];
   /** 覆盖 `@flow song-start`：new-page 每首另起一页（单曲版）；continue 按清单逐曲的 layout.new-page */
   songStart?: "new-page" | "continue";

@@ -182,7 +182,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     return docPageLayer(this.currentScoreDoc()?.songs[0]);
   }
 
-  // ---- 诗集样式表（歌本 `.jpcss`，`editor/booksheet.ts`）：级联里在内置主题之后、曲内层之前 ----
+  // ---- 诗集样式表（歌本 `.ss`，`editor/booksheet.ts`）：级联里在内置主题之后、曲内层之前 ----
   /** 当前生效的诗集样式表（null = 没有）。 */
   bookSheet: BookSheet | null = null;
   private _bookLayer: StyleRule[] = [];
@@ -227,7 +227,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   async chooseBookSheet(): Promise<void> {
     if (isTauriRuntime()) {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      const sel = await open({ multiple: false, filters: [{ name: "诗集样式表", extensions: ["jpcss"] }] });
+      const sel = await open({ multiple: false, filters: [{ name: "诗集样式表", extensions: ["ss"] }] });
       if (typeof sel !== "string") return;
       const dir = this.filePath ? dirOf(this.filePath) : dirOf(sel);
       this.bookSheets = { ...this.bookSheets, [dir]: sel };
@@ -235,7 +235,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       const file = await new Promise<File | null>((resolve) => {
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = ".jpcss";
+        input.accept = ".ss";
         input.onchange = () => resolve(input.files?.[0] ?? null);
         input.click();
       });

@@ -1,32 +1,32 @@
-# `.jpcss` 歌本样式表
+# `.ss` 歌本样式表
 
-> 一本歌本一份 `.jpcss`：**样式**（角色的字体/字号/对齐）+ **模板**（哪个字段排进哪个槽位、按什么格式印）
+> 一本歌本一份 `.ss`：**样式**（角色的字体/字号/对齐）+ **模板**（哪个字段排进哪个槽位、按什么格式印）
 > + **装页**（新页/接排/半页起排、目录）。机制与级联见 [../样式机制.md](../样式机制.md)；
 > 数据项（`SongMeta`）见 [../模块/模型-scoredoc.md](../模块/模型-scoredoc.md)。
 >
-> 状态：解析/写出（`src/style/jpcss.ts`）、模板排版（`src/style/template.ts`）、`hymn500` 与 `kl2020` 两份歌本已落地；
-> `pu-original`、编辑器接入待做，见 [../待办.md](../待办.md) §2.3；语法本身的收敛（认不出的名字要报错等）记在 `docs/jpcss-收敛待办.md`（本地，不入库）。
+> 状态：解析/写出（`src/style/ss.ts`）、模板排版（`src/style/template.ts`）、`hymn500` 与 `kl2020` 两份歌本已落地；
+> `pu-original`、编辑器接入待做，见 [../待办.md](../待办.md) §2.3；语法本身的收敛（认不出的名字要报错等）记在 `docs/ss-收敛待办.md`（本地，不入库）。
 
 ## 0. 为什么模板和样式放一个文件
 
-- 同一套**级联**：内置主题 → 歌本 `.jpcss` → 曲内覆盖 → 用户层（[../样式机制.md](../样式机制.md) §3）。
+- 同一套**级联**：内置主题 → 歌本 `.ss` → 曲内覆盖 → 用户层（[../样式机制.md](../样式机制.md) §3）。
 - 同一套**上下文限定**：`@media (engine: …)`、`@media (paged: …)` 对角色样式和模板一样有效。
 - 同一套**单位**（pt / em / sp）。
 
-曲目清单（有哪些歌、顺序、逐曲 meta 覆盖）是**数据**，不进 `.jpcss`，放书清单 `book.json`（§8），清单用 `style:` 引用 `.jpcss`。
+曲目清单（有哪些歌、顺序、逐曲 meta 覆盖）是**数据**，不进 `.ss`，放书清单 `book.json`（§8），清单用 `style:` 引用 `.ss`。
 
 **样式表不改谱面内容，也不做逐曲规则**：小音符、段号改写、符干、文字换行、逐曲的和弦/文字位置微调、某段歌词换字体，
 都先用脚本改好 MusicXML（KL2020 见 `scripts/kl2020-prep.mjs`，写 `<cue/>`、`<stem>`、`relative-x/relative-y`、
-`<text font-family>` 等标准写法），`.jpcss` 只管全书统一的版式。写了 `@song` 或 `角色[…]` 的样式表解析时直接报错。
+`<text font-family>` 等标准写法），`.ss` 只管全书统一的版式。写了 `@song` 或 `角色[…]` 的样式表解析时直接报错。
 
 内置一份 + 歌本样例三份（歌本样式照特定印刷本逐点量出，**不在本仓库**，本地私有仓库里留着）：
 
 | 文件 | 歌本 | 基准 |
 |---|---|---|
-| `hymn500-measured.jpcss` + `hymn500.jpcss`（不在本仓库） | 诗歌 500 首成书（`engine: book`）：前者是统计生成的实测部分（§10），后者是模板与手调常量，按序叠 | 现有 `rebuild.mjs` 输出逐字节不变 |
-| `kl2020.jpcss`（不在本仓库） | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF |
-| `kl2020-flow.jpcss`（不在本仓库） | 同上的**接排版叠加表**（只含与单曲版的差异，清单 `styleByFlow.continue` 指过来） | 1219 接排版 PDF |
-| `src/style/books/pu-original.jpcss` | 文本谱原样档（`engine: pu`）：目前只有页脚区域，页头仍是 `paintHeader` | 展开档指纹与 page-check 不变 |
+| `hymn500-measured.ss` + `hymn500.ss`（不在本仓库） | 诗歌 500 首成书（`engine: book`）：前者是统计生成的实测部分（§10），后者是模板与手调常量，按序叠 | 现有 `rebuild.mjs` 输出逐字节不变 |
+| `kl2020.ss`（不在本仓库） | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF |
+| `kl2020-flow.ss`（不在本仓库） | 同上的**接排版叠加表**（只含与单曲版的差异，清单 `styleByFlow.continue` 指过来） | 1219 接排版 PDF |
+| `src/style/books/pu-original.ss` | 文本谱原样档（`engine: pu`）：目前只有页脚区域，页头仍是 `paintHeader` | 展开档指纹与 page-check 不变 |
 
 ## 1. 词法
 
@@ -256,7 +256,7 @@ block 用 `line-height`（倍数）那两套已经合并——同一件事分两
 {
   "id": "kl2020",
   "title": "声合为一",
-  "style": "kl2020.jpcss",
+  "style": "kl2020.ss",
   "songs": [
     { "file": "十架大能/十架大能（最终）.fixed.xml",
       "meta": { "title-alt": ["The Power of the Cross"], "layout.new-page": ["true"], "layout.chinese-hyphen": ["true"] } }
@@ -269,22 +269,22 @@ block 用 `line-height`（倍数）那两套已经合并——同一件事分两
 - `file` 指向改谱脚本另存的 `.fixed.xml`（没有改谱的曲目指原文件）。XML 表达不了的排版开关（`layout.chinese-hyphen`、`layout.melody-only`、`layout.new-page`）写在 `meta`。
 - `styleByFlow: { "new-page": "…", "continue": "…" }`：**按装页口径叠加**的样式表，解析后接在 `style` 之后
   （后者覆盖前者）。同一本书两种口径只差几项时写这个，不要复制整份样式表——KL2020 接排版（对照 1219 版）
-  印简谱调号「1=X」、单曲版不印，差异就这一条，落在 `src/style/books/kl2020-flow.jpcss`。
+  印简谱调号「1=X」、单曲版不印，差异就这一条，落在 `src/style/books/kl2020-flow.ss`。
 - 清单由导入脚本从曲目库生成（`gen-manifest-kl2020.mjs`），再由 `kl2020-prep.mjs` 改谱并回写 `file` 与开关；库路径由参数或环境变量给。
 
 ## 9. 示例
 
-直接看三份内置歌本（都能被 `scripts/jpcss-roundtrip.mjs` 解析、写出、再解析）：
+直接看三份内置歌本（都能被 `scripts/ss-roundtrip.mjs` 解析、写出、再解析）：
 
-- `hymn500-measured.jpcss`：统计生成的实测部分（纸、字体、角色、`@jianpu` / `@break` / `@flow`、目录几何）。
-- `hymn500.jpcss`：fixed 区域（基线写实测数）+ `key-meter()` 组件（避让首行和弦）。
-- `src/style/books/kl2020.jpcss`：block 区域（标题块、页脚块按原排版程序与成品实测）、`@font-face` 字体文件、目录区域。
-- `src/style/books/pu-original.jpcss`：文本谱页脚（BL/BC/BR，`dash-empty` 去 `-` 占位）。
+- `hymn500-measured.ss`：统计生成的实测部分（纸、字体、角色、`@jianpu` / `@break` / `@flow`、目录几何）。
+- `hymn500.ss`：fixed 区域（基线写实测数）+ `key-meter()` 组件（避让首行和弦）。
+- `src/style/books/kl2020.ss`：block 区域（标题块、页脚块按原排版程序与成品实测）、`@font-face` 字体文件、目录区域。
+- `src/style/books/pu-original.ss`：文本谱页脚（BL/BC/BR，`dash-empty` 去 `-` 占位）。
 
 ## 10. 成书：样式表就是全部，没有 json
 
-成书的 `BookStyle` 只是内存里的中间对象，由样式表算出（`src/style/bookjpcss.ts::bookStyleOf`）；
-反方向 `printBookJpcss` 给统计脚本用。两个方向读同一张对照表，逐字段往返：
+成书的 `BookStyle` 只是内存里的中间对象，由样式表算出（`src/style/bookss.ts::bookStyleOf`）；
+反方向 `printBookSs` 给统计脚本用。两个方向读同一张对照表，逐字段往返：
 
 | `BookStyle` | 写在 |
 |---|---|
@@ -296,9 +296,9 @@ block 用 `line-height`（倍数）那两套已经合并——同一件事分两
 | `titleBlock` | `@flow`（§6） |
 | `toc` | `@template toc { title-baseline; heading-gap-above; heading-gap-below; entry { leader; line-height; first-baseline; left-edge; right-edge } index { columns; line-height; first-baseline } }` |
 
-- **一本书两份样式表**：`<id>-measured.jpcss` 由 `gen-bookstyle.mjs` 从原书统计生成（不要手改，重跑覆盖；
-  断句等调好的开关的默认值在 `bookstyle.ts::defaultBookStyle`，生成时带进去），`<id>.jpcss` 写模板与手调常量。
-  脚本按这个顺序叠（`node-harness.mjs::loadBookStyle`，`--style=a.jpcss,b.jpcss` 可换），书的 id 取后一份的文件名。
+- **一本书两份样式表**：`<id>-measured.ss` 由 `gen-bookstyle.mjs` 从原书统计生成（不要手改，重跑覆盖；
+  断句等调好的开关的默认值在 `bookstyle.ts::defaultBookStyle`，生成时带进去），`<id>.ss` 写模板与手调常量。
+  脚本按这个顺序叠（`node-harness.mjs::loadBookStyle`，`--style=a.ss,b.ss` 可换），书的 id 取后一份的文件名。
 - **不补默认值**：样式表没写的字段在 `BookStyle` 里就不出现，由消费端原来的 `??` 兜底。
 - 原书量到但排版不读的量（描边宽、到谱行的各段距离…）只进统计报告作比对，不进样式表。
 

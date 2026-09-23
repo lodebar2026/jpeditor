@@ -1,6 +1,6 @@
 // 样式表对外的名字 → 两把尺子的内部字段。
 //
-// `.jpcss` 里只见**逻辑键**（kebab-case，按谱面内容分），`LayoutOptions` / `MixedOptions`
+// `.ss` 里只见**逻辑键**（kebab-case，按谱面内容分），`LayoutOptions` / `MixedOptions`
 // 的字段名（`jpBeamTopY`、`lineWidths.stem`、`musicppJpTimeSig`…）不外露：
 //
 //   `@jianpu` = 简谱内容（各模式通用）：纯简谱落 `LayoutOptions`，混排落 `MixedOptions` 的简谱层字段
@@ -9,7 +9,7 @@
 // 模式差异由 `@media (mode: …)` 限定，不靠「写进哪个块」。字体不在这两张表里——
 // 字体走角色声明（`note { font: hei }`），角色 → 字体字段的对照是 `ROLE_FONTS`。
 //
-// 表里缺一边 = 那个模式不支持这个键，解析期就报错（`jpcss.ts`），不静默忽略。
+// 表里缺一边 = 那个模式不支持这个键，解析期就报错（`ss.ts`），不静默忽略。
 import type { StyleRole } from "./sheet";
 
 /** 值的种类：长度（收 em/sp/裸数）、纯数（比例、层数）、开关、词（枚举值）。 */
@@ -23,7 +23,7 @@ export interface KeyDef {
   mixed?: string;
   /** 成书 `BookStyle` 上的路径（`metrics.systemGapEm`、`layout.verseNumbers`…）；缺 = 成书不读。
    *  字段名以 `Em` 结尾的，样式表里**必须**写 `em` 单位（基准是字号，不是墨迹高），数值原样存进字段（不乘字号，浮点逐位不变）；
-   *  其余长度写裸数（pt）。成书这一路由 `style/bookjpcss.ts` 读，不经 `LayoutOptions` 的覆写。 */
+   *  其余长度写裸数（pt）。成书这一路由 `style/bookss.ts` 读，不经 `LayoutOptions` 的覆写。 */
   book?: string;
   /** 不支持的那一侧的说法，进报错信息。 */
   note?: string;

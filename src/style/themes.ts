@@ -71,7 +71,7 @@ export const THEMES: Record<ThemeId, StyleLayer> = {
     // 文本谱不给字号：那一路的尺寸是实测来的一整套，缺省 = 跟随版式量到的原尺寸
     { when: { engine: "jianpu" }, set: { roles: { note: { size: PPTX_PAGE.fontSize } } } },
   ],
-  // 成书的其余一切在 `book` 块（由歌本样式表算出的 BookStyle，见 style/bookjpcss.ts），由调用方作为第二层叠上
+  // 成书的其余一切在 `book` 块（由歌本样式表算出的 BookStyle，见 style/bookss.ts），由调用方作为第二层叠上
   book: [{ set: { jianpu: { preset: "book" } } }],
   staff: [{ set: { page: { paper: STAFF_PAPER_DEFAULT }, staff: { preset: "musicpp" } } }],
 };

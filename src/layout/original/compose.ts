@@ -22,9 +22,9 @@ import { jpBarlineItems, jpDot, jpTimeSigItems } from "../jpglyph";
 import type { BarlineSpec } from "../entry";
 import { BarStyle } from "../../score/enums";
 import type { Metadata, NoteElement } from "../../pu/ast";
-import PU_BOOK from "../../style/books/pu-original.jpcss?raw";
+import PU_BOOK from "../../style/books/pu-original.ss?raw";
 import { computeStyleForPaper } from "../../style/themes";
-import { parseJpcss, type Region } from "../../style/jpcss";
+import { parseSs, type Region } from "../../style/ss";
 
 import { layoutRegion, songFields } from "../../style/template";
 import { emptyMetadata } from "../../pu/ast";
@@ -460,7 +460,7 @@ function paintPage(c: OriginalCtx, page: PlacedPage, pageIndex: number): Group {
   return root;
 }
 
-/** 页脚区域（`pu-original.jpcss` 的 `song-foot`）。按页宽算右缘，所以 `shiftX` 与 paintHeader 同口径。 */
+/** 页脚区域（`pu-original.ss` 的 `song-foot`）。按页宽算右缘，所以 `shiftX` 与 paintHeader 同口径。 */
 function layoutFooters(c: OriginalCtx, shiftX: number): { page: number; bottom: number; items: TextFrame[] }[] {
   const region = PU_FOOT();
   const placed = c.placed;
@@ -1484,7 +1484,7 @@ export function layoutOriginalDocument(source: ScoreDoc, cfg: OriginalDocumentCo
 let puFoot: Region | null | undefined;
 function PU_FOOT(): Region | null {
   if (puFoot === undefined) {
-    const sheet = computeStyleForPaper([parseJpcss(PU_BOOK).rules], { engine: "pu" });
+    const sheet = computeStyleForPaper([parseSs(PU_BOOK).rules], { engine: "pu" });
     puFoot = (sheet.template?.regions?.["song-foot"] as Region | undefined) ?? null;
   }
   return puFoot;

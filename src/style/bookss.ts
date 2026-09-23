@@ -1,7 +1,7 @@
-// 成书样式 ↔ 歌本 `.jpcss`。**成书没有 json**：`BookStyle` 只是内存里的中间对象，由样式表算出。
+// 成书样式 ↔ 歌本 `.ss`。**成书没有 json**：`BookStyle` 只是内存里的中间对象，由样式表算出。
 //
 //   bookStyleOf(sheet, id)   computed 样式表 → BookStyle（rebuild / relayout / 各检查脚本的入口）
-//   printBookJpcss(style)    BookStyle → 样式表文本（统计脚本 gen-bookstyle.mjs 用它生成歌本的实测部分）
+//   printBookSs(style)    BookStyle → 样式表文本（统计脚本 gen-bookstyle.mjs 用它生成歌本的实测部分）
 //
 // 两个方向读同一张对照表，逐字段往返（`bookStyleOf(parse(print(s)))` 与 `s` 相同）：
 //
@@ -18,7 +18,7 @@
 //
 // 无 DOM 依赖。
 import type { BookStyle, RoleStyle } from "../pdflayout/bookstyle";
-import type { Expr } from "./jpcss";
+import type { Expr } from "./ss";
 import { BREAK_KEYS, JIANPU_KEYS, type KeyDef } from "./keys";
 import { STYLE_ROLES, type AlignMode, type StyleRole, type StyleSheet } from "./sheet";
 
@@ -169,8 +169,8 @@ function num(v: number, where: string): string {
 const str = (v: string): string => JSON.stringify(v);
 
 /** 生成歌本样式表的**实测部分**（纸、字体、角色、间距、断句、起排位置、目录几何）。
- *  模板（标题块、页眉页脚的排法）与手调常量不在这里，写在歌本自己的 `.jpcss`，加载时排在这份之后。 */
-export function printBookJpcss(style: BookStyle): string {
+ *  模板（标题块、页眉页脚的排法）与手调常量不在这里，写在歌本自己的 `.ss`，加载时排在这份之后。 */
+export function printBookSs(style: BookStyle): string {
   const L: string[] = [];
   const { page } = style;
   const m = page.margin;

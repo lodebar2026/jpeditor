@@ -195,7 +195,7 @@ export interface TocRule {
   headingGapBelow?: number;
 }
 
-/** 成书样式的**内存形态**：由歌本 `.jpcss` 算出（`style/bookjpcss.ts::bookStyleOf`），没有文件形态。 */
+/** 成书样式的**内存形态**：由歌本 `.ss` 算出（`style/bookss.ts::bookStyleOf`），没有文件形态。 */
 export interface BookStyle {
   /** 书的标识（取样式表文件名），出书时写进 DrawList。 */
   id: string;

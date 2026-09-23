@@ -1,10 +1,10 @@
 // 成书那一路的模板件：模板排版结果 → DrawList 图元，外加 `key-meter()` 组件（调号 + 叠排拍号 + 避让首行）。
-// 模板本身是一份 `.jpcss` 歌本样式（样例不在本仓库），排版在 `style/template.ts`；这里只是成书特有的实现。
+// 模板本身是一份 `.ss` 歌本样式（样例不在本仓库），排版在 `style/template.ts`；这里只是成书特有的实现。
 //
 // 无 DOM 依赖（`scripts/rebuild.mjs` 在 Node 侧用）。
 import type { StyleRole } from "../style/sheet";
 import type { ComponentFn, Placed } from "../style/template";
-import type { Expr } from "../style/jpcss";
+import type { Expr } from "../style/ss";
 import type { BookStyle } from "./bookstyle";
 import type { DrawItem } from "./drawlist";
 import { keyMeterItems, textItem, type KeyMeterSpec, type Measure } from "./bookparts";

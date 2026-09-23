@@ -1,7 +1,7 @@
 // 样式级联：若干层规则按序叠成一份 computed 样式表（后者覆盖前者）。
 //
 //   内置主题（themes.ts）
-//     → 书样式表（歌本 .jpcss；成书的 BookStyle 由它算出，见 style/bookjpcss.ts）
+//     → 书样式表（歌本 .ss；成书的 BookStyle 由它算出，见 style/bookss.ts）
 //       → 曲内局部覆盖（文本谱 `FontSize:`/`Margin:` 是乘法，留在 pu 适配器里，不走深合并）
 //         → 用户面板（编辑器，localStorage）
 //

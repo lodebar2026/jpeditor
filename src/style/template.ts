@@ -1,4 +1,4 @@
-// 歌本模板的排版：`@template` 区域 → 定好位置的文字（和组件产出的原样图元）。语法见 docs/格式/jpcss.md。
+// 歌本模板的排版：`@template` 区域 → 定好位置的文字（和组件产出的原样图元）。语法见 docs/格式/ss.md。
 //
 // **纯函数**：字段取值、文字测量、组件实现都由调用方经 `RegionEnv` 注入——
 // 成书在 Node 侧（`scripts/rebuild.mjs`，度量走 fontres），混排/文本谱在浏览器侧，两边共用这一份。
@@ -8,7 +8,7 @@
 //
 // 无 DOM 依赖。
 import type { Creator, Song } from "../model/doc";
-import type { Cell, Expr, Region, TextPart } from "./jpcss";
+import type { Cell, Expr, Region, TextPart } from "./ss";
 
 /** 字段的一项值。署名带类型（`label-by-type` 要用）。 */
 export interface FieldValue {

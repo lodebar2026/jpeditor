@@ -266,7 +266,7 @@ export interface Instruction {
   value: string;
 }
 
-/** `I:style book.jpcss` → `{name:"style", value:"book.jpcss"}`。
+/** `I:style book.ss` → `{name:"style", value:"book.ss"}`。
  *  中文 `样式：x` 由调用方先经 `CJK_INSTRUCTION_ALIAS` 归一。 */
 export function parseInstruction(value: string): Instruction {
   const m = /^(\S+)\s*(.*)$/.exec(value.trim());

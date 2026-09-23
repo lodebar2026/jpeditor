@@ -1,7 +1,7 @@
-// `.jpcss` 歌本样式表：文本 ↔ `StyleRule[]`。语法规范见 docs/格式/jpcss.md。
+// `.ss` 歌本样式表：文本 ↔ `StyleRule[]`。语法规范见 docs/格式/ss.md。
 //
 // 手写解析（词法 → 语句），报错带 `行:列`。只做「形状」：长度表达式、字段插值、组件调用都原样存成 AST
-// （`template.ts` 在排版时按上下文求值）。成书的 `BookStyle` 由解析结果另算（`bookjpcss.ts`）。
+// （`template.ts` 在排版时按上下文求值）。成书的 `BookStyle` 由解析结果另算（`bookss.ts`）。
 //
 // 无 DOM 依赖（Node CLI 与浏览器两侧都要 import）。
 import type { StyleContext, StyleRule } from "./cascade";
@@ -79,7 +79,7 @@ type Tok =
   | { t: "p"; v: string; line: number; col: number }
   | { t: "eof"; v: ""; line: number; col: number };
 
-export class JpcssError extends Error {
+export class SsError extends Error {
   constructor(msg: string, readonly line: number, readonly col: number) {
     super(`${line}:${col} ${msg}`);
   }
@@ -111,7 +111,7 @@ function lex(src: string): Tok[] {
     }
     if (c === "/" && src[i + 1] === "*") {
       const end = src.indexOf("*/", i + 2);
-      if (end < 0) throw new JpcssError("注释没有收尾", line, col);
+      if (end < 0) throw new SsError("注释没有收尾", line, col);
       adv(end + 2 - i);
       continue;
     }
@@ -126,12 +126,12 @@ function lex(src: string): Tok[] {
           v += n === "n" ? "\n" : n;
           j += 2;
         } else {
-          if (src[j] === "\n") throw new JpcssError("字符串没有收尾", L, C);
+          if (src[j] === "\n") throw new SsError("字符串没有收尾", L, C);
           v += src[j];
           j++;
         }
       }
-      if (j >= src.length) throw new JpcssError("字符串没有收尾", L, C);
+      if (j >= src.length) throw new SsError("字符串没有收尾", L, C);
       out.push({ t: "str", v, line: L, col: C });
       adv(j + 1 - i);
       continue;
@@ -162,14 +162,14 @@ function lex(src: string): Tok[] {
     }
     if (c === "#") {
       const m = /^#([A-Za-z0-9_\-.]+)/.exec(src.slice(i));
-      if (!m) throw new JpcssError("`#` 后面要跟名字", L, C);
+      if (!m) throw new SsError("`#` 后面要跟名字", L, C);
       out.push({ t: "hash", v: m[1]!, line: L, col: C });
       adv(m[0].length);
       continue;
     }
     if (c === "@") {
       const m = /^@([A-Za-z][A-Za-z0-9-]*)/.exec(src.slice(i));
-      if (!m) throw new JpcssError("`@` 后面要跟规则名", L, C);
+      if (!m) throw new SsError("`@` 后面要跟规则名", L, C);
       out.push({ t: "at", v: m[1]!, line: L, col: C });
       adv(m[0].length);
       continue;
@@ -189,7 +189,7 @@ function lex(src: string): Tok[] {
       adv(1);
       continue;
     }
-    throw new JpcssError(`认不出的字符 ${JSON.stringify(c)}`, L, C);
+    throw new SsError(`认不出的字符 ${JSON.stringify(c)}`, L, C);
   }
   out.push({ t: "eof", v: "", line, col });
   return out;
@@ -230,7 +230,7 @@ class Parser {
     return this.toks[this.i++] ?? this.toks[this.toks.length - 1]!;
   }
   private fail(msg: string, tok = this.peek()): never {
-    throw new JpcssError(msg, tok.line, tok.col);
+    throw new SsError(msg, tok.line, tok.col);
   }
   private isP(v: string, o = 0): boolean {
     const t = this.peek(o);
@@ -618,7 +618,7 @@ function tokLen(t: Tok): number {
 function contentOf(e: Expr, tok: Tok): Content {
   if (e.k === "str") return { kind: "text", parts: parseInterp(e.v, tok) };
   if (e.k === "call") return { kind: "component", name: e.name, args: e.args };
-  throw new JpcssError("槽位的内容要是字符串或组件调用", tok.line, tok.col);
+  throw new SsError("槽位的内容要是字符串或组件调用", tok.line, tok.col);
 }
 
 /** `"前缀{路径 | 过滤器}后缀"` → 段。`{{` / `}}` 是字面花括号。 */
@@ -640,12 +640,12 @@ export function parseInterp(s: string, tok?: { line: number; col: number }): Tex
     }
     if (c === "{") {
       const end = s.indexOf("}", i);
-      if (end < 0) throw new JpcssError(`插值没有收尾：${s}`, tok?.line ?? 0, tok?.col ?? 0);
+      if (end < 0) throw new SsError(`插值没有收尾：${s}`, tok?.line ?? 0, tok?.col ?? 0);
       if (lit) parts.push(lit);
       lit = "";
       const [path, ...fs] = s.slice(i + 1, end).split("|").map((x) => x.trim());
       const filters = fs.filter(Boolean).map((f) => {
-        if (!/^[a-z][a-z0-9-]*$/.test(f)) throw new JpcssError(`认不出的过滤器 ${f}`, tok?.line ?? 0, tok?.col ?? 0);
+        if (!/^[a-z][a-z0-9-]*$/.test(f)) throw new SsError(`认不出的过滤器 ${f}`, tok?.line ?? 0, tok?.col ?? 0);
         return f;
       });
       parts.push({ path: path!, filters });
@@ -721,8 +721,8 @@ function pageDecl(decls: Record<string, Expr>): Record<string, unknown> {
 
 // ───────────────────────── 入口 ─────────────────────────
 
-/** 解析一份 `.jpcss`。 */
-export function parseJpcss(src: string): ParseResult {
+/** 解析一份 `.ss`。 */
+export function parseSs(src: string): ParseResult {
   const p = new Parser(lex(src));
   p.parseSheet();
   return { rules: p.rules };
@@ -862,8 +862,8 @@ function printSet(set: DeepPartial<StyleSheet>, ind: string): string[] {
   return L;
 }
 
-/** 规则 → `.jpcss` 文本。`parseJpcss(printJpcss(r)).rules` 与 `r` 逐字段一致（`jpcss-roundtrip.mjs` 把关）。 */
-export function printJpcss(rules: readonly StyleRule[]): string {
+/** 规则 → `.ss` 文本。`parseSs(printSs(r)).rules` 与 `r` 逐字段一致（`ss-roundtrip.mjs` 把关）。 */
+export function printSs(rules: readonly StyleRule[]): string {
   const L: string[] = [];
   for (const r of rules) {
     const w = { ...(r.when ?? {}) } as Record<string, unknown>;

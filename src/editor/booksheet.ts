@@ -1,17 +1,17 @@
-// 诗集样式表（歌本 `.jpcss`）进编辑器：按谱文件所在目录自动找，也能手动指定。
+// 诗集样式表（歌本 `.ss`）进编辑器：按谱文件所在目录自动找，也能手动指定。
 //
 // 查找顺序（先找到的生效，见 docs/模块/样式与设置.md）：
-//   1. 文件里写明的：123 / ABC 的 `I:style xxx.jpcss`，按谱文件所在目录解析相对路径
+//   1. 文件里写明的：123 / ABC 的 `I:style xxx.ss`，按谱文件所在目录解析相对路径
 //   2. 手动指定过的：设置里给某个目录选过（或选了「不用」），对该目录及子目录生效
 //   3. 自动发现：从谱文件所在目录往上逐级找（本级 + `样式/`、`style/` 子目录），最多 3 级，到家目录为止；
-//      同一级多份时挑与目录同名的 → `book.jpcss` → 文件名排序第一个
+//      同一级多份时挑与目录同名的 → `book.ss` → 文件名排序第一个
 // 浏览器版拿不到目录，只有手动选（存原文）。
 //
 // **编辑器只取样式表里各尺子口径一致的部分**（`editorRules`）：角色的字体（族、字重、`@font-face`）、
 // 页眉四项的字号（pt，三档同一口径）、纸与方向、配色。间距覆写、模板、成书块不用——
 // 四把尺子的单位不同（成书 pt、五线谱 tenths），整份照搬会把混排的简谱数字缩成一点。
 import type { StyleRule } from "../style/cascade";
-import { parseJpcss } from "../style/jpcss";
+import { parseSs } from "../style/ss";
 import { HEADER_ROLES, type HeaderRole } from "../style/header";
 import type { DeepPartial, RoleDecl, StyleSheet } from "../style/sheet";
 import { isTauriRuntime } from "./fileio";
@@ -98,13 +98,13 @@ export async function findBookSheet(docPath: string, ref: string | undefined, ma
       const d = sub ? `${cur}/${sub}` : cur;
       let names: string[] = [];
       try {
-        names = (await fs.readDir(d)).filter((e) => e.isFile && /\.jpcss$/i.test(e.name)).map((e) => e.name).sort();
+        names = (await fs.readDir(d)).filter((e) => e.isFile && /\.ss$/i.test(e.name)).map((e) => e.name).sort();
       } catch {
         continue;
       }
       if (!names.length) continue;
-      const own = baseOf(cur) + ".jpcss";
-      const pick = names.find((n) => n === own) ?? names.find((n) => n.toLowerCase() === "book.jpcss") ?? names[0]!;
+      const own = baseOf(cur) + ".ss";
+      const pick = names.find((n) => n === own) ?? names.find((n) => n.toLowerCase() === "book.ss") ?? names[0]!;
       const hit = await read(`${d}/${pick}`, "auto", names.length - 1);
       if (hit) return hit;
     }
@@ -119,7 +119,7 @@ export async function findBookSheet(docPath: string, ref: string | undefined, ma
 /** 样式表 → 编辑器用的那几条规则（见文件头）。解析错误原样抛出（带 `行:列`）。 */
 export function editorRules(text: string): StyleRule[] {
   const out: StyleRule[] = [];
-  for (const r of parseJpcss(text).rules) {
+  for (const r of parseSs(text).rules) {
     const set: DeepPartial<StyleSheet> = {};
     const roles: Record<string, RoleDecl> = {};
     for (const [role, d] of Object.entries(r.set.roles ?? {})) {
