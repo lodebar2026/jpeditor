@@ -8,6 +8,9 @@ import { AbcFamilyEmitter } from "./emit";
 import { keySpelling, nominalQuarters } from "../model/jianpu";
 import { isXmlShaped } from "../model/xmlproject";
 
+/** ABC §4.13 里不随拍号变的默认比例（`parsedialect.ts::tupletNormalAbc`）。 */
+const ABC_FIXED_TUPLET: Readonly<Record<number, number>> = { 2: 3, 3: 2, 4: 3, 6: 2, 8: 3 };
+
 /** 写出端固定的默认音长：八分音符。 */
 const UNIT = SIMPLE_DIVISIONS / 2;
 
@@ -110,10 +113,14 @@ export class EmitterAbc extends AbcFamilyEmitter {
     return noteCount > 1 ? `[${inner}]` : inner;
   }
 
-  /** ABC 的多连音不要冒号（音符是字母，`(3` 无歧义）。 */
+  /** ABC 的多连音不要冒号（音符是字母，`(3` 无歧义）。比例是 §4.13 表里的固定默认值才写简写；
+   *  `(5`/`(7`/`(9` 的默认值随拍号变，一律写完整形。 */
   protected override tupletText(actual: number, normal: number): string {
-    return normal === 2 ? `(${actual}` : `(${actual}:${normal}:${actual}`;
+    return ABC_FIXED_TUPLET[actual] === normal ? `(${actual}` : `(${actual}:${normal}:${actual}`;
   }
+
+  /** ABC 按个数收尾（§4.13），不写 `)`。 */
+  protected override readonly tupletCloses = false;
 
   /** 小节内临时多声部分隔（ABC §7.4）。 */
   protected override readonly overlayText = "&";
@@ -128,6 +135,7 @@ export class EmitterAbc extends AbcFamilyEmitter {
 
   /** ABC §5.1 的跳音符。 */
   protected override readonly lyricSkip = "*";
+  protected override readonly lyricSlotRule = "abc" as const;
 
   /** ABC 默认「代码换行即谱面换行」（§6.1），所以写真换行而不是 123 的 `$`。
    *  换页 ABC 没有对应记号，退化成换行。 */

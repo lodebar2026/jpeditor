@@ -7,7 +7,8 @@
 //   1. 一个音符长什么样（`scanNote`）——123 是度数 `1-7`，ABC 是音名 `A-G`/`a-g`
 //   2. 休止长什么样（`scanRest`）——123 是 `0`，ABC 是 `z`/`Z`
 //   3. `-` 是什么（`hyphen`）——**123 是增时线、ABC 是 tie，这是两者的硬冲突之一**
-//   4. 多连音要不要冒号（`tupletNeedsColon`）——123 必需（音符是数字，`(3` 有歧义），ABC 可省
+//   4. 多连音要不要冒号（`tupletNeedsColon`）——123 必需（音符是数字，`(3` 有歧义），ABC 可省；
+//      怎么收尾是组装期的事（`ParseDialect.tupletClose`：123 由 `)` 收，ABC 按个数）
 //   5. 认不认不带引号的和弦（`scanBareChord`）——123 认（A–G 在它的音乐体里没被占用），ABC 不认
 //
 // 这里只做词法（切 token、记位置），语义（时值累计、符杠分组号、Mark 配对）归 `parse.ts`。
@@ -32,6 +33,7 @@ const BARLINES: ReadonlyArray<readonly [string, string]> = [
   ["|", "normal"],
   // 落单的 `]`：规范里没有，但野外的 ABC 常用它收尾（`… z2]`）。`[|]`/`|]` 都已在前面匹配掉，
   // 和弦 `[CEG]`、行内字段 `[K:G]` 的 `]` 也早被各自的扫描吃掉了，所以走到这里的一定是收尾线。
+  // **只在 ABC 那一档认**（`strayBracketIsFinal`）：这是给野外文件的容错，123 不背这个包袱。
   ["]", "final"],
 ];
 
@@ -58,8 +60,9 @@ function splitBarlineValue(v: string): [string, number | undefined] {
   return [m[1]!, Number(m[2])];
 }
 
-function matchBarline(line: string, i: number): { text: string; value: string } | null {
+function matchBarline(line: string, i: number, strayBracket: boolean): { text: string; value: string } | null {
   for (const [text, value] of BARLINES) {
+    if (text === "]" && !strayBracket) continue;
     if (line.startsWith(text, i)) return { text, value };
   }
   return null;
@@ -88,6 +91,9 @@ export abstract class AbcFamilyLexer {
 
   /** 音乐体里的 `&` 是不是小节内临时多声部分隔（ABC §7.4 voice overlay）。123 没有这个记号。 */
   protected readonly voiceOverlay: boolean = false;
+
+  /** 落单的 `]` 算不算收尾线（野外 ABC 的容错）。123 不认。 */
+  protected readonly strayBracketIsFinal: boolean = false;
 
   /** 方言特有的单字符装饰（ABC 的 `.` `~` `H`–`W`）。不认返回 null。 */
   protected shorthandDecoration(line: string, i: number): { len: number; name: string } | null {
@@ -229,7 +235,7 @@ export abstract class AbcFamilyLexer {
       // 紧贴小节线的简写房号 `|1` `:|2`（ABC §4.9：「When adjacent to bar lines, these can be
       // shortened to |1 and :|2」）——先出小节线 token，再出房号
       {
-        const bl = matchBarline(line, i);
+        const bl = matchBarline(line, i, this.strayBracketIsFinal);
         if (bl) {
           i += bl.text.length;
           const [style, times] = splitBarlineValue(bl.value);
@@ -260,7 +266,8 @@ export abstract class AbcFamilyLexer {
       if (tup) {
         i += tup.text.length;
         const t: Omit<Token, "source"> = { kind: "tuplet", text: tup.text, value: String(tup.n) };
-        if (tup.p !== undefined && tup.q !== undefined) t.numbers = [tup.n, tup.p, tup.q];
+        // `[n, p, q]`，0 表示没写（取默认）：ABC 的 `(3::2` 只给了 q
+        if (tup.p !== undefined || tup.q !== undefined) t.numbers = [tup.n, tup.p ?? 0, tup.q ?? 0];
         push(t, start, tup.text.length);
         continue;
       }
@@ -461,7 +468,7 @@ export abstract class AbcFamilyLexer {
     return { tokens, errors };
   }
 
-  /** 多连音起头。123 要冒号，ABC 允许 `(3` / `(3:2:3` / `(3:2` 三种写法。 */
+  /** 多连音起头。123 是 `(n:` / `(n:p:`（以冒号收尾，组由 `)` 收）；ABC 允许 `(3` / `(3:2:3` / `(3:2` / `(3::2`。 */
   private matchTuplet(
     line: string,
     i: number,
@@ -469,18 +476,15 @@ export abstract class AbcFamilyLexer {
     if (line[i] !== "(") return null;
     const rest = line.slice(i);
     if (this.tupletNeedsColon) {
-      if (!/^\(\d+:/.test(rest)) return null;
-      // 完整形**必须两个冒号**（`(3:2:3`）。只支持 `(N:` 与 `(N:p:q` 两种，不支持 `(N:p`——
-      // 否则 `(3:1 2 3` 里的 `:1` 会被当成 normal=1 而不是第一个音符。
-      const m = /^\((\d+):(?:(\d+):(\d+))?/.exec(rest)!;
+      // 123：`(n:` 或 `(n:p:`，**起头以冒号收尾**——`(3:2 1` 里的 `2` 是第一个音符而不是 p。
+      // 组的范围由必需的 `)` 定，ABC 的第三个数（作用几个音）用不着
+      const m = /^\((\d+)(?::(\d+))?:/.exec(rest);
+      if (!m) return null;
       const out: { text: string; n: number; p?: number; q?: number } = {
         text: m[0],
         n: Number(m[1]),
       };
-      if (m[2] && m[3]) {
-        out.p = Number(m[2]);
-        out.q = Number(m[3]);
-      }
+      if (m[2]) out.p = Number(m[2]);
       return out;
     }
     const m = /^\((\d+)(?::(\d*)(?::(\d*))?)?/.exec(rest);

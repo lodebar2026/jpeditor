@@ -78,6 +78,79 @@ export function ownMarks(song: Song, own: ReadonlySet<ElementId>): Mark[] {
   return song.marks.filter((m) => own.has(m.start) && own.has(m.end));
 }
 
+/** 弧（`isArc`）与多连音**只许嵌套**的写法（123：两者共用括号、`)` 收最近开的那个，规范 §4「多连音」）
+ *  要的整理结果：
+ *  - `marks`：跨出组的弧截进组内——组外起、组内收的弧起点挪到组首，组内起、组外收的弧终点挪到组尾；
+ *    截完只剩一个音的弧丢掉（`(2)` 在 123 里另有「首尾相接」的读法，写不得）；
+ *  - `crossed`：截了几条（丢失清单 `slurCrossTuplet` 用）；
+ *  - `outerOpen`：组首那个音上起头、却在组外收的弧数——`(` 要写在 `(n:` **之前**；
+ *  - `outerClose`：组外起头、在组尾那个音上收的弧数——`)` 要写在多连音的 `)` **之后**。
+ *  位置按元素先后数，增时线各占一位；收在和弦上的弧与多连音的 `)` 都写在它的增时线之后，所以终点按和弦的最后一条增时线算。 */
+export function nestArcsInTuplets(
+  part: Part,
+  marks: readonly Mark[],
+  isArc: (m: Mark) => boolean,
+): { marks: Mark[]; crossed: number; outerOpen: Map<ElementId, number>; outerClose: Map<ElementId, number> } {
+  const pos = new Map<ElementId, number>();
+  const tail = new Map<ElementId, number>();
+  let n = 0;
+  for (const mea of part.measures) {
+    for (const el of mea.elements) {
+      pos.set(el.id, n++);
+      if (el.kind === "chord") for (const su of el.sustains ?? []) pos.set(su.id, n++);
+      tail.set(el.id, n - 1);
+    }
+  }
+  const endPos = (id: ElementId): number | undefined => tail.get(id) ?? pos.get(id);
+  const tuplets: { m: Mark; s: number; e: number }[] = [];
+  for (const m of marks) {
+    if (m.type !== "tuplet") continue;
+    const s = pos.get(m.start);
+    const e = endPos(m.end);
+    if (s !== undefined && e !== undefined) tuplets.push({ m, s, e });
+  }
+  const outermostFrom = new Map<ElementId, { s: number; e: number }>();
+  const outermostTo = new Map<ElementId, { s: number; e: number }>();
+  for (const t of tuplets) {
+    const f = outermostFrom.get(t.m.start);
+    if (!f || t.e > f.e) outermostFrom.set(t.m.start, t);
+    const l = outermostTo.get(t.m.end);
+    if (!l || t.s < l.s) outermostTo.set(t.m.end, t);
+  }
+  const out: Mark[] = [];
+  const outerOpen = new Map<ElementId, number>();
+  const outerClose = new Map<ElementId, number>();
+  let crossed = 0;
+  for (const m of marks) {
+    let s = isArc(m) ? pos.get(m.start) : undefined;
+    let e = isArc(m) ? endPos(m.end) : undefined;
+    if (s === undefined || e === undefined || !tuplets.length) {
+      out.push(m);
+      continue;
+    }
+    let mm = m;
+    for (const t of tuplets) {
+      if (s < t.s && e >= t.s && e < t.e) {
+        mm = { ...mm, start: t.m.start };
+        s = t.s;
+        crossed++;
+      } else if (s > t.s && s <= t.e && e > t.e) {
+        mm = { ...mm, end: t.m.end };
+        e = t.e;
+        crossed++;
+      }
+    }
+    if (mm !== m && mm.start === mm.end) continue;
+    out.push(mm);
+    // 同一个音上起（收）几个多连音时只和最外层比：写出端把这些多连音的括号连在一起写
+    const first = outermostFrom.get(mm.start);
+    if (first && e > first.e) outerOpen.set(mm.start, (outerOpen.get(mm.start) ?? 0) + 1);
+    const last = outermostTo.get(mm.end);
+    if (last && s < last.s) outerClose.set(mm.end, (outerClose.get(mm.end) ?? 0) + 1);
+  }
+  return { marks: out, crossed, outerOpen, outerClose };
+}
+
 const LATIN_CH = /[\p{L}\p{N}']/u;
 /** 拉丁音节（非 CJK 的字母/数字）起头——歌词读入端的拉丁分支会把它和前面的拉丁词粘在一起 */
 export function isLatinStart(text: string): boolean {

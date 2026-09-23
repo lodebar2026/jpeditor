@@ -7,7 +7,8 @@
 // | 时值 | `_` 减时线、`.` 附点（相对） | `2` `/2` `3/2` 分数（相对 `L:`） |
 // | `-` | 增时线（加一拍） | **tie**（延音线） |
 // | 休止 | `0` | `z`（带时值）/ `Z`（整小节数） |
-// | 多连音 | `(3:` 冒号必需 | `(3` 可省冒号 |
+// | 多连音 | `(3: … )` 冒号与 `)` 都必需 | `(3` 按个数收尾（§4.13） |
+// | 休止跟词 | 可见休止不占对位格，`x` 占 | 休止、`x` 都不占（§5.1） |
 // | 同时发声 | 另起声部 | `[CEG]` 方括号和弦 |
 //
 // 单字符装饰（`.` 断音、`~` 回音、`H`–`W` 那一串）也是 ABC 独有：**大写 H–W 是装饰不是音符**，
@@ -59,6 +60,7 @@ export class LexerAbc extends AbcFamilyLexer {
   protected readonly tupletNeedsColon = false;
   /** `&` 是临时多声部分隔（§7.4）。 */
   protected override readonly voiceOverlay = true;
+  protected override readonly strayBracketIsFinal = true;
 
   /** `z` 带时值、`Z` 按小节数（ABC §4.5/§4.6）。 */
   protected scanRest(line: string, i: number): DurationScan | null {

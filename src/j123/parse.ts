@@ -55,7 +55,7 @@ import {
   type RawPlayPass,
 } from "./fields";
 import type { Token } from "../abcfamily/types";
-import { isLyricSlot, lyricSlots } from "../abcfamily/lyricslot";
+import { isLyricSlot, lyricSlots, type LyricSlotRule } from "../abcfamily/lyricslot";
 import {
   DIALECT_123, DIALECT_ABC, typeAndDots, type DefaultLen, type ParseDialect,
 } from "../abcfamily/parsedialect";
@@ -126,10 +126,10 @@ function lastElementId(pb: PartBuild): ElementId | null {
 }
 
 /** 声部里到目前为止的对位格数（含还没收尾的小节）。 */
-function slotCount(pb: PartBuild): number {
+function slotCount(pb: PartBuild, rule: LyricSlotRule): number {
   let n = 0;
-  for (const m of pb.part.measures) for (const el of m.elements) if (isLyricSlot(el)) n++;
-  for (const el of pb.measure.elements) if (isLyricSlot(el)) n++;
+  for (const m of pb.part.measures) for (const el of m.elements) if (isLyricSlot(el, rule)) n++;
+  for (const el of pb.measure.elements) if (isLyricSlot(el, rule)) n++;
   return n;
 }
 
@@ -144,6 +144,8 @@ interface Ctx {
   len: DefaultLen;
   /** 见过显式 `L:` 没有——没见过时 `M:` 要按 ABC §3.1.7 反推默认音长。 */
   sawL: boolean;
+  /** 当前拍号：ABC 多连音的默认比例要看是不是复拍子（§4.13） */
+  time: { beats: number; beatType: number } | null;
   /** `$` 记在哪一小节**之后**。一首收尾时经 `breaksAfterToStart` 翻成模型口径（`doc.ts::Print`） */
   breakAfter: Map<Measure, BreakKind>;
 }
@@ -200,10 +202,11 @@ export function parseLyricLine(
   let tokStart = 0;
   let label: string | undefined;
 
-  // 印刷段号 `<1.>` / `"1."`
-  const lm = /^\s*(?:<([^>]*)>|"([^"]*)")/.exec(body);
+  // 印刷段号 `<1.>`。**不认 `"1."`**：直引号在歌词里是贴前字的标点（规范 §5.2），
+  // 行首 `"主啊"，我…` 会被误吞成段号
+  const lm = /^\s*<([^>]*)>/.exec(body);
   if (lm) {
-    label = lm[1] ?? lm[2];
+    label = lm[1];
     i = lm[0].length;
   }
 
@@ -358,10 +361,16 @@ interface OpenMark {
   level: number;
   tupletActual?: number;
   tupletNormal?: number;
-  /** 三连音还差几个音符收尾（ABC §4.13：`(3` 作用于随后 3 个音符，不需要显式收尾） */
+  /** 三连音还差几个音符收尾（ABC §4.13：`(3` 作用于随后 3 个音符，不需要显式收尾）。
+   *  123 的多连音由 `)` 收（`ParseDialect.tupletClose`），不用它 */
   remaining?: number;
   /** `(` 在原文里的位置（见 `Mark.openSource`） */
   openSource?: SourceSpan;
+}
+
+/** `(` 在原文里的位置：123 的 `)` 收最近开的那个，弧与多连音两个栈靠它比先后 */
+function openOffset(o: OpenMark): number {
+  return o.openSource?.offset ?? -1;
 }
 
 /** 把一行音乐体的 token 组装进声部。 */
@@ -446,7 +455,7 @@ function buildMusicLine(
     }
     // 123：`$` 同时结束这一批歌词（`ParseDialect.breakEndsLyricBlock`），同一代码行里 `$` 之后的音符另起一批
     if (ctx.d.breakEndsLyricBlock && pb.block?.broken) {
-      const at = slotCount(pb);
+      const at = slotCount(pb, ctx.d.id);
       pb.block.end = at;
       pb.block = { start: at, cursor: new Map(), verses: 0, broken: false };
       pb.afterLyrics = false;
@@ -456,6 +465,16 @@ function buildMusicLine(
     // 回填还没拿到起点的开弧/开连音——它们的起点就是「`(` 之后的第一个元素」
     for (const o of openSlurs) if (!o.start) o.start = el.id;
     for (const o of openTuplets) if (!o.start) o.start = el.id;
+    // 123：组内**所有**占时值的元素（音符、`0`、`x`、`X`）都按比例折算；嵌套的比例相乘
+    if (ctx.d.tupletClose === "paren" && el.kind === "chord" && !el.grace && openTuplets.length) {
+      let actual = 1;
+      let normal = 1;
+      for (const tp of openTuplets) {
+        actual *= tp.tupletActual!;
+        normal *= tp.tupletNormal!;
+      }
+      el.duration.timeMod = { actual, normal };
+    }
   };
 
   for (const t of tokens) {
@@ -493,8 +512,8 @@ function buildMusicLine(
         attach(ch);
         cur.sustainHost = ch;
         if (pb.voice === 1) pb.noteCount++;
-        // 三连音按音符计数收尾，并给组内音符打 time-modification
-        for (let k = openTuplets.length - 1; k >= 0; k--) {
+        // ABC：多连音按音符计数收尾，并给组内音符打 time-modification（123 在 `attach` 里打、由 `)` 收）
+        if (ctx.d.tupletClose === "count") for (let k = openTuplets.length - 1; k >= 0; k--) {
           const tp = openTuplets[k]!;
           tp.remaining = (tp.remaining ?? 0) - 1;
           ch.duration.timeMod = { actual: tp.tupletActual ?? 3, normal: tp.tupletNormal ?? 2 };
@@ -700,10 +719,32 @@ function buildMusicLine(
         break;
 
       case "slurEnd": {
+        // 123：`)` 收**最近开的那个**括号，圆滑线与多连音同一套嵌套（规范 §4「多连音」）。
+        // 谁更近看 `(` 在原文里的位置——两者各有一个栈，但在原文里是交替嵌套的
+        if (ctx.d.tupletClose === "paren") {
+          const tp = openTuplets[openTuplets.length - 1];
+          const sl = openSlurs[openSlurs.length - 1];
+          if (tp && (!sl || openOffset(tp) > openOffset(sl))) {
+            openTuplets.pop();
+            if (tp.start && cur.last) {
+              marks.push({
+                type: "tuplet",
+                start: tp.start,
+                end: cur.last.id,
+                level: 0,
+                tupletActual: tp.tupletActual!,
+                tupletNormal: tp.tupletNormal!,
+              });
+            } else {
+              report(ctx, "empty-tuplet", "多连音里没有音符", t.source);
+            }
+            break;
+          }
+        }
         // **`)` 是二义符号**：收圆滑线 还是 收多连音？判据照 `.jpwabc` 那条
         // （`docs/模块/源格式-jpwabc.md`：「前面的音符还欠着 `(` 就先收弧，欠完了才轮到三连音」）——
         // ABC 的多连音本不需要 `)`，但写谱人习惯带上，照收不误。
-        if (openSlurs.length === 0) {
+        if (openSlurs.length === 0 && ctx.d.tupletClose === "count") {
           if (cur.justClosedTuplet) {
             cur.justClosedTuplet = false;
             break;
@@ -725,13 +766,20 @@ function buildMusicLine(
           }
           break;
         }
+        if (openSlurs.length === 0) {
+          report(ctx, "unmatched-slur", "多余的 `)`", t.source);
+          break;
+        }
         // 一个音符**收一条又起一条**（ABC §4.11 `(c d (e) f g a)` = c→e、e→a 两条）：栈顶那条正是
         // 在本音符上刚起的，`)` 收的是它底下那条更早的；只有一条开着时 `(1)` 才是单音弧。
         // 识别出的 `5 3 3` 上外弧 + 首尾相接的两条内弧就写作 `((5 (3) 3))`（1863）。
+        // 123 里这条特判只在「下面那层也是弧」时走：两条弧之间夹着一个开着的多连音，就按单音弧收
         const top = openSlurs[openSlurs.length - 1];
-        const open = top && top.start && top.start === cur.last?.id && openSlurs.length >= 2
-          ? openSlurs.splice(openSlurs.length - 2, 1)[0]
-          : openSlurs.pop();
+        const below = openSlurs[openSlurs.length - 2];
+        const innerTuplet = openTuplets[openTuplets.length - 1];
+        const chain = top && top.start && top.start === cur.last?.id && below
+          && !(ctx.d.tupletClose === "paren" && innerTuplet && openOffset(innerTuplet) > openOffset(below));
+        const open = chain ? openSlurs.splice(openSlurs.length - 2, 1)[0] : openSlurs.pop();
         if (!open) {
           report(ctx, "unmatched-slur", "多余的 `)`", t.source);
           break;
@@ -754,10 +802,11 @@ function buildMusicLine(
           start: 0,
           level: 0,
           tupletActual: actual,
-          // `(n:p:q` 的 p 是「占几个的时间」；简写 `(n:` 按 ABC 的默认取 2
-          tupletNormal: t.numbers?.[1] ?? 2,
-          // `(n:p:q` 的 q 是「作用于几个音符」，缺省就是 n
-          remaining: t.numbers?.[2] ?? actual,
+          // p 是「占几个的时间」，没写（0）取方言的默认表（`ParseDialect.tupletNormal`）
+          tupletNormal: t.numbers?.[1] || ctx.d.tupletNormal(actual, ctx.time),
+          // ABC `(n:p:q` 的 q 是「作用于几个音符」，缺省就是 n（123 由 `)` 收，不用它）
+          remaining: t.numbers?.[2] || actual,
+          openSource: t.source,
         });
         break;
       }
@@ -803,7 +852,10 @@ function buildMusicLine(
         beamGroup = 0;
         sawSpaceSinceLastNote = true;
         cur.sustainHost = null;
-        // 三连音跨不过小节线，收掉
+        // 多连音跨不过小节线，收掉。123 要求 `)`，走到这里就是漏写了
+        if (ctx.d.tupletClose === "paren") {
+          for (const tp of openTuplets) report(ctx, "unclosed-tuplet", "多连音缺 `)`", tp.openSource ?? t.source);
+        }
         openTuplets.length = 0;
         break;
       }
@@ -862,7 +914,10 @@ function buildMusicLine(
         } else if (name === "M") {
           const r = parseTime(val);
           if (r.error) report(ctx, "bad-time", r.error, t.source);
-          else if (r.time) pb.measure.attrs.time = r.time;
+          else if (r.time) {
+            pb.measure.attrs.time = r.time;
+            ctx.time = r.time;
+          }
         }
         break;
       }
@@ -990,6 +1045,7 @@ export function parseAbcFamily(
     d: dialect,
     len: dialect.defaultLen(4, 4),
     sawL: false,
+    time: null,
     breakAfter: new Map(),
   };
 
@@ -1008,15 +1064,19 @@ export function parseAbcFamily(
   const finishSong = (): void => {
     if (!song) return;
     for (const b of builds.values()) {
+      if (ctx.d.tupletClose === "paren") {
+        for (const tp of b.openTuplets) report(ctx, "unclosed-tuplet", "多连音缺 `)`", tp.openSource!);
+        b.openTuplets.length = 0;
+      }
       closeMeasure(ctx, b);
-      if (b.block && b.block.end === undefined) b.block.end = slotCount(b);
+      if (b.block && b.block.end === undefined) b.block.end = slotCount(b, ctx.d.id);
       if (b.part.measures.length) song.parts.push(b.part);
     }
     const slotsOf = new Map<Part, Element[]>();
     for (const { f, verse, syl, part, block, start } of pendingLyrics) {
       // 歌词挂在它**紧跟的那个声部**上（四声部谱里词常挂在某一个声部下）
       let slots = slotsOf.get(part);
-      if (!slots) slotsOf.set(part, (slots = lyricSlots(part).slots));
+      if (!slots) slotsOf.set(part, (slots = lyricSlots(part, undefined, undefined, undefined, undefined, ctx.d.id).slots));
       const left = attachLyrics(slots, syl, start, block.end ?? slots.length);
       if (left > 0) {
         report(
@@ -1124,7 +1184,7 @@ export function parseAbcFamily(
     const p = ensurePart();
     // 上一块已经跟过歌词（或还没有块）：这一行开新歌词块
     if (!p.block || p.afterLyrics || p.block.broken) {
-      const at = slotCount(p);
+      const at = slotCount(p, ctx.d.id);
       if (p.block) p.block.end = at;
       p.block = { start: at, cursor: new Map(), verses: 0, broken: false };
       p.afterLyrics = false;
@@ -1177,7 +1237,7 @@ function addLyricLine(ctx: Ctx, pb: PartBuild, f: FieldLine, pendingLyrics: Pend
     return;
   }
   // 音乐行之前就写了词：给它一个从当前位置起的空块（多半全部超出、报 overflow）
-  const block: LyricBlock = pb.block ??= { start: slotCount(pb), cursor: new Map(), verses: 0, broken: false };
+  const block: LyricBlock = pb.block ??= { start: slotCount(pb, ctx.d.id), cursor: new Map(), verses: 0, broken: false };
   pb.afterLyrics = true;
   // `w:` 按块内顺序编段号（ABC §5.1：同一行音乐下的几条 `w:` 依次是各段）
   const from = f.cont ? block.lastVerse ?? ++block.verses : ++block.verses;
@@ -1225,6 +1285,7 @@ function applyField(
       const [first, ...rest] = r.times;
       if (first) {
         song.time = first;
+        ctx.time = first;
         if (rest.length) song.extraTimes = rest;
         if (r.note) song.timeNote = r.note;
         // ABC §3.1.7：没写 `L:` 时默认音长由 `M:` 推出来

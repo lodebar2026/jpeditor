@@ -51,6 +51,28 @@ export interface ParseDialect {
   /** **`$` 是不是同时结束一批歌词**。123 是（同 `.jpwabc`：一行曲一批 `w:`，同一代码行里 `$` 之后的音符另起一批，
    *  不与前一行共用）；ABC 不是——§5.1 的 `w:` 对的是它前面那条**代码行**，行内的 `$` 只是谱面换行。 */
   breakEndsLyricBlock: boolean;
+  /** **多连音怎么收尾**。ABC §4.13 按个数（`(3` 作用于随后 3 个音符，`)` 可有可无）；
+   *  123 由必需的 `)` 收，与圆滑线同一套嵌套——组的范围在原文里看得见，组内时值不等也不会数错。 */
+  tupletClose: "paren" | "count";
+  /** `(n:` 没写「占几个」时的默认值。 */
+  tupletNormal(n: number, time: { beats: number; beatType: number } | null): number;
+}
+
+/** 123 的默认比例：二连音、四连音占 3（复拍子里才有），其余占小于 n 的最大 2 的幂（3→2、5→4、6→4、7→4）。
+ *  **不看拍号**，也不照 ABC 那张表（ABC 的 `(6` 是 6 占 2、`(5`/`(7`/`(9` 还随拍号变）。 */
+export function tupletNormal123(n: number): number {
+  if (n === 2 || n === 4) return 3;
+  let p = 1;
+  while (p * 2 < n) p *= 2;
+  return Math.max(p, 1);
+}
+
+/** ABC §4.13 原表：`(2`→3、`(3`→2、`(4`→3、`(6`→2、`(8`→3；`(5`/`(7`/`(9` 复拍子（6/8、9/8、12/8）取 3，否则 2。 */
+export function tupletNormalAbc(n: number, time: { beats: number; beatType: number } | null): number {
+  const fixed: Record<number, number> = { 2: 3, 3: 2, 4: 3, 6: 2, 8: 3 };
+  if (fixed[n] !== undefined) return fixed[n]!;
+  const compound = !!time && time.beats % 3 === 0 && time.beats > 3;
+  return compound ? 3 : 2;
 }
 
 // ───────────────────────── 123 ─────────────────────────
@@ -93,6 +115,8 @@ export const DIALECT_123: ParseDialect = {
   spaceBeams: false,
   lyricSkip: "/",
   breakEndsLyricBlock: true,
+  tupletClose: "paren",
+  tupletNormal: (n) => tupletNormal123(n),
 };
 
 // ───────────────────────── 标准 ABC ─────────────────────────
@@ -192,4 +216,6 @@ export const DIALECT_ABC: ParseDialect = {
   spaceBeams: true,
   lyricSkip: "*",
   breakEndsLyricBlock: false,
+  tupletClose: "count",
+  tupletNormal: tupletNormalAbc,
 };

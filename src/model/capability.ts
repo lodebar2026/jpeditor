@@ -15,7 +15,8 @@
 //
 // **改这张表之前先去改那几处的实测**——这里只是它们的汇总。
 
-import type { ScoreDoc, Song } from "./doc";
+import type { Mark, ScoreDoc, Song } from "./doc";
+import { nestArcsInTuplets } from "./emitutil";
 import { eachChord, verseCount } from "./helpers";
 import { projectForJianpu } from "./jianpuproject";
 import { melodyLane } from "./jianpu";
@@ -46,7 +47,9 @@ export type Feature =
   | "rhythmNote"     // 节奏音符（有声无音高）
   | "invisibleRest"  // 不可见休止
   | "nestedArc"      // 一条弧线完全包住另一条（文本谱的括号先开先闭，写不出）
-  | "oddTuplet";     // 比例不是 n:n−1 的多连音（文本谱里 n 个音一律占 n−1 个基本时值）
+  | "oddTuplet"      // 比例不是 n:n−1 的多连音（文本谱里 n 个音一律占 n−1 个基本时值）
+  | "slurCrossTuplet" // 跨出多连音组的弧（123 的弧与多连音共用括号、只许嵌套）
+  | "lyricOnRest";   // 挂在可见休止上的词（123、ABC 的休止不占对位格）
 
 /** 人看的名字，直接进丢失清单。 */
 export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
@@ -73,6 +76,8 @@ export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
   invisibleRest: "不可见休止",
   nestedArc: "套在另一条弧线里的弧线（外面那条或里面那条会丢一条）",
   oddTuplet: "比例特殊的多连音（按 n 个音占 n−1 拍写不出来）",
+  slurCrossTuplet: "跨出多连音组的弧线（会截到组的边界）",
+  lyricOnRest: "挂在休止符上的歌词",
 };
 
 /** 目标格式。文本谱两种方言各算一种（装得下的不一样：番茄没有页眉页脚与版面指令字段）。 */
@@ -103,11 +108,13 @@ const allBut = (...gone: Feature[]): Set<Feature> => new Set(ALL.filter((f) => !
 export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> = {
   // 123 是按「装得下全部」设计的（`docs/格式/123格式.md`），实测全语料只有 0.17% 表达不了，
   // 那些是转换层的账不是格式的账。
-  // 音符堆 123 刻意不做（规范：和弦走符号，`.jpwabc` 的 `[1 3 5]` 语料 0 例）
-  "123": allBut("harmonyOffset", "noteStack", "nestedArc", "oddTuplet"),
+  // 音符堆 123 刻意不做（规范：和弦走符号，`.jpwabc` 的 `[1 3 5]` 语料 0 例）。
+  // 嵌套弧与任意比例的多连音（`(5:4:`）都写得出；弧与多连音只许嵌套、可见休止不跟词（规范 §4、§5.1）
+  "123": allBut("harmonyOffset", "noteStack", "slurCrossTuplet", "lyricOnRest"),
   // 标准 ABC：样式被规范标为 VOLATILE（§11，「not standardised」），所以 123 才把样式
   // 另走样式表；`I:playorder` 是 123 的扩展，标准 ABC 读不懂（虽然会忽略，等于丢）。
-  abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset", "nestedArc", "oddTuplet"),
+  // 休止不跟词（ABC §5.1「syllables are not aligned on … rests」）
+  abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset", "lyricOnRest"),
   // `.jpwabc` 的语法**刻意不扩**：和弦、力度、多声部都写不进去。
   // 音符堆：写出端只留最高音、删 voice > 1
   jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "noteStack", "style", "layoutDirectives", "multiSong", "grace", "meta", "paper", "nestedArc", "oddTuplet"),
@@ -167,6 +174,7 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
             if (el.rhythm) used.add("rhythmNote");
             if (el.sectionWord) used.add("textLine");
             if (el.printObject === false && el.rest) used.add("invisibleRest");
+            if (el.rest && el.printObject !== false && el.lyrics?.some((l) => l.text !== "")) used.add("lyricOnRest");
             for (const l of el.lyrics ?? []) if (l.verseLabel !== undefined) used.add("verseLabel");
           }
         }
@@ -180,6 +188,10 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
       if ([...eachChord(projectForJianpu(song))].some(({ chord }) => chord.laterHarmonies?.length)) used.add("harmonyOffset");
     }
     // 弧线与多连音能不能写成文本谱的括号：判据与写出端同一份（`topu.ts::planArcs`）
+    for (const part of song.parts) {
+      const isArc = (m: Mark): boolean => m.type === "slur" || m.type === "tied";
+      if (nestArcsInTuplets(part, song.marks ?? [], isArc).crossed) used.add("slurCrossTuplet");
+    }
     const arcs = puArcLosses(song);
     if (arcs.nested) used.add("nestedArc");
     if (arcs.oddTuplet) used.add("oddTuplet");

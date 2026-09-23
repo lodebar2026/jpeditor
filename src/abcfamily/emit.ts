@@ -17,6 +17,7 @@ import type {
   Chord,
   Element,
   Key,
+  Mark,
   Measure,
   Note,
   Part,
@@ -24,11 +25,12 @@ import type {
   Song,
 } from "../model/doc";
 import { breakAfter, lyricOfVerse, type BreakKind } from "../model/helpers";
-import { lyricSlots } from "./lyricslot";
-import { isLatinEnd, isLatinStart, isOneCjkWithPunct, ownIds, ownMarks, systemRanges, type SystemRange } from "../model/emitutil";
+import { lyricSlots, type LyricSlotRule } from "./lyricslot";
+import { isLatinEnd, isLatinStart, isOneCjkWithPunct, nestArcsInTuplets, ownIds, ownMarks, systemRanges, type SystemRange } from "../model/emitutil";
 import { harmonyText } from "../model/jianpu";
 import { ORNAMENT_TAG } from "../model/xmlproject";
 import { BARLINE_ORNAMENT_NAME } from "./jumpmarks";
+import { tupletNormal123 } from "./parsedialect";
 
 /** MusicXML 的 `<ornaments>` 元素名 → 123 记号名：`xmlproject.ts::ORNAMENT_TAG` 反过来（同名的取第一个）。 */
 const ORNAMENT_NAME: Readonly<Record<string, string>> = Object.fromEntries(
@@ -38,7 +40,11 @@ const ORNAMENT_NAME: Readonly<Record<string, string>> = Object.fromEntries(
 export interface MarkIndex {
   slurStart: Map<number, number>;
   slurEnd: Map<number, number>;
-  tupletStart: Map<number, { actual: number; normal: number }>;
+  /** 在这个音上起头的多连音，外层在前（嵌套的几层可以同起）；
+   *  `outerArcs`：同一个音上起头、却在最外层组外收的弧数，它们的 `(` 写在所有 `(n:` 之前 */
+  tupletStart: Map<number, { ratios: { actual: number; normal: number }[]; outerArcs: number }>;
+  /** 123 的多连音收在哪（写 `)`）；`outerArcs`：组外起头、收在这个音上的弧数，它们的 `)` 写在多连音的 `)` 之后 */
+  tupletEnd: Map<number, { count: number; outerArcs: number }>;
 }
 
 /** 小节线上的记号 → `!segno!` 之类的 token（认不出的名字原样写出，别默默丢）。 */
@@ -72,8 +78,8 @@ function barlineText(b: Barline): string {
  *  中间没词的那一段写一条空 `w:` 把段位顶住（丢了会让后面的段整体前移一段）；尾部没词的不写。
  *  段号区间（文本谱 `C1-2:`）与副歌行在这里**逐段各抄一遍**——ABC 没有区间写法。
  *  同段拆几条写的 `+:` 续行只在读入端认，写出端一段一行写完。 */
-function lyricLines(part: Part, sep: string, skip: string, sys: SystemRange): string[] {
-  const { slots } = lyricSlots(part, sys.from, sys.to, sys.fromEl, sys.toEl);
+function lyricLines(part: Part, sep: string, skip: string, sys: SystemRange, rule: LyricSlotRule): string[] {
+  const { slots } = lyricSlots(part, sys.from, sys.to, sys.fromEl, sys.toEl, rule);
   // 本系统一共几段（区间行按上界算）
   let maxVerse = 0;
   for (const el of slots) {
@@ -256,10 +262,13 @@ export abstract class AbcFamilyEmitter {
     return inner;
   }
 
-  /** 多连音起头怎么写。123 的冒号必需（音符是数字，`(3` 有歧义），ABC 可省。 */
+  /** 多连音起头怎么写。123：`(n:`，比例不是默认值时 `(n:p:`（以冒号收尾，见 `lex.ts::matchTuplet`）；ABC 见 `emitabc.ts`。 */
   protected tupletText(actual: number, normal: number): string {
-    return normal === 2 ? `(${actual}:` : `(${actual}:${normal}:${actual}`;
+    return normal === tupletNormal123(actual) ? `(${actual}:` : `(${actual}:${normal}:`;
   }
+
+  /** 多连音要不要写收尾的 `)`。123 必需（与圆滑线同一套嵌套）；ABC 按个数收尾、不写。 */
+  protected readonly tupletCloses: boolean = true;
 
   /** 歌词音节之间的分隔。CJK 逐字成音节、连写即可；拉丁词必须空格分开，
    *  否则读回来会粘成一个音节、把后面所有字顶错一格。 */
@@ -267,6 +276,9 @@ export abstract class AbcFamilyEmitter {
 
   /** 歌词里的跳音符。123 是 `/`，ABC 是 `*`（与读入端 `ParseDialect.lyricSkip` 对称）。 */
   protected readonly lyricSkip: string = "/";
+
+  /** 休止占不占歌词对位格（`lyricslot.ts::LyricSlotRule`，与读入端 `ParseDialect.id` 同口径）。 */
+  protected readonly lyricSlotRule: LyricSlotRule = "123";
 
   /** 符杠分组写不写成「连写」。ABC 写（§4.7 空白即分组）；123 不写——符杠按拍自动算，音符一律空格隔开。 */
   protected readonly spaceBeams: boolean = true;
@@ -352,14 +364,34 @@ export abstract class AbcFamilyEmitter {
     // Mark 按起止 id 建索引，便于在元素前后插 `(` `)` 与 `(N:`
     const slurStart = new Map<number, number>();
     const slurEnd = new Map<number, number>();
-    const tupletStart = new Map<number, { actual: number; normal: number }>();
-    for (const m of ownMarks(song, own)) {
-      if (m.type === "slur" || (m.type === "tied" && this.tiesAsSlurs)) {
+    const tupletStart = new Map<number, { ratios: { actual: number; normal: number }[]; outerArcs: number }>();
+    /** 同起的几层按终点从远到近排（外层先写） */
+    const tupletEndOrder = new Map<number, number>();
+    part.measures.forEach((mea) => mea.elements.forEach((el) => tupletEndOrder.set(el.id, tupletEndOrder.size)));
+    const nested = [...ownMarks(song, own)].filter((m) => m.type === "tuplet")
+      .sort((a, b) => (tupletEndOrder.get(b.end) ?? 0) - (tupletEndOrder.get(a.end) ?? 0));
+    const tupletEnd = new Map<number, { count: number; outerArcs: number }>();
+    const isArc = (m: Mark): boolean => m.type === "slur" || (m.type === "tied" && this.tiesAsSlurs);
+    let marks = ownMarks(song, own);
+    // 123 的多连音与弧共用括号、只许嵌套：跨出组的弧截进组内（`planSave` 另报 `slurCrossTuplet`）
+    const nest = this.tupletCloses ? nestArcsInTuplets(part, marks, isArc) : null;
+    if (nest) marks = nest.marks;
+    for (const m of marks) {
+      if (isArc(m)) {
         slurStart.set(m.start, (slurStart.get(m.start) ?? 0) + 1);
         slurEnd.set(m.end, (slurEnd.get(m.end) ?? 0) + 1);
       } else if (m.type === "tuplet") {
-        tupletStart.set(m.start, { actual: m.tupletActual ?? 3, normal: m.tupletNormal ?? 2 });
+        if (this.tupletCloses) {
+          const te = tupletEnd.get(m.end);
+          if (te) te.count++;
+          else tupletEnd.set(m.end, { count: 1, outerArcs: nest?.outerClose.get(m.end) ?? 0 });
+        }
       }
+    }
+    for (const m of nested) {
+      const ts = tupletStart.get(m.start) ?? { ratios: [], outerArcs: nest?.outerOpen.get(m.start) ?? 0 };
+      ts.ratios.push({ actual: m.tupletActual ?? 3, normal: m.tupletNormal ?? 2 });
+      tupletStart.set(m.start, ts);
     }
 
     // 曲中转调/转拍号写成行内 `[K:]` `[M:]`（解析端 `j123/parse.ts` 的 inlineField 认得）。
@@ -402,13 +434,13 @@ export abstract class AbcFamilyEmitter {
       time = t;
       let el0 = 0;
       for (const cut of cuts) {
-        out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }, el0, cut.at));
+        out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart, tupletEnd }, el0, cut.at));
         out.push(this.breakText(cut.kind === "page"));
         flush();
         ri++;
         el0 = cut.at;
       }
-      out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart }, el0));
+      out.push(this.measureBody(mea, { slurStart, slurEnd, tupletStart, tupletEnd }, el0));
       const right = (mea.barlines ?? []).find((b) => b.location === "right");
       // 右线的记号写在线**之前**（`… 6 !fine! |]`）：唱到这儿才跳，读回来也按这个位置认。
       if (right) out.push(...barlineOrnaments(right));
@@ -472,12 +504,18 @@ export abstract class AbcFamilyEmitter {
       // 从 MusicXML 读进来的波音/颤音挂在 ornaments 上（`inverted-mordent`），写回简谱来源的同名记号（`!sby!`）——
       // 不写就整个丢了：以前识别核对那条路（识别 → MusicXML → 123）里 1677《祷告》的两个波音就是这么没的。
       for (const o of el.notations?.ornaments ?? []) s += `!${ORNAMENT_NAME[o] ?? o}!`;
+      // 同一个音上的开、收按嵌套排：包住多连音组的弧在外层（`((3: 1_ 2_ 3_) 4)`），其余在里层
       const tp = mi.tupletStart.get(el.id);
-      // 简写 `(N:`；normal≠2 时必须写完整形 `(N:p:q`（**两个冒号**，见 lex.ts 的正则注释）
-      if (tp) s += this.tupletText(tp.actual, tp.normal);
-      s += "(".repeat(mi.slurStart.get(el.id) ?? 0);
+      const opens = mi.slurStart.get(el.id) ?? 0;
+      s += "(".repeat(tp?.outerArcs ?? 0);
+      // ABC 按个数收尾、没有嵌套的写法，同起的几层只写最外层（以前就是这样）
+      for (const r of this.tupletCloses ? tp?.ratios ?? [] : (tp?.ratios ?? []).slice(0, 1)) s += this.tupletText(r.actual, r.normal);
+      s += "(".repeat(opens - (tp?.outerArcs ?? 0));
       s += this.elementText(el, mi);
-      s += ")".repeat(mi.slurEnd.get(el.id) ?? 0);
+      const te = mi.tupletEnd.get(el.id);
+      const closes = mi.slurEnd.get(el.id) ?? 0;
+      s += ")".repeat(closes - (te?.outerArcs ?? 0));
+      if (te) s += ")".repeat(te.count + te.outerArcs);
 
       // 中间小节线按 `afterElements` 计数插入
       while (midIdx < mid.length && mid[midIdx]!.afterElements !== undefined
@@ -583,7 +621,7 @@ export abstract class AbcFamilyEmitter {
         L.push(text);
         // 原位切只对第一声部成立，别的声部按整小节取词
         const sys = i === 0 ? ranges[r]! : { ...ranges[r]!, fromEl: 0, toEl: Infinity };
-        for (const line of lyricLines(song.parts[i]!, this.lyricSeparator, this.lyricSkip, sys)) L.push(line);
+        for (const line of lyricLines(song.parts[i]!, this.lyricSeparator, this.lyricSkip, sys, this.lyricSlotRule)) L.push(line);
       }
     }
     return L.join("\n");
