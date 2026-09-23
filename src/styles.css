@@ -784,6 +784,21 @@ button:focus-visible, select:focus-visible {
 }
 .settings-box .modal-title { margin-bottom: 20px; }
 .settings-form { display: flex; flex-direction: column; gap: 12px; }
+.settings-tabs { display: flex; gap: 4px; margin: -8px 0 16px; border-bottom: 1px solid var(--border); }
+.settings-tabs button {
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.settings-tabs button:hover { color: var(--text-secondary); }
+.settings-tabs button.active { color: var(--text); border-bottom-color: var(--green); }
+.settings-pane[hidden] { display: none; }
+/* 各页高度不一，固定一个下限，切页时确定/取消按钮不跳 */
+.settings-pane { min-height: 280px; max-height: min(60vh, 520px); overflow-y: auto; }
 .settings-form .modal-row {
   display: grid;
   grid-template-columns: 104px minmax(0, 1fr);

@@ -329,12 +329,13 @@ function headerGroup(app: App): { rows: HTMLElement[]; apply(): boolean } {
     size.type = "number";
     size.min = "6";
     size.max = "120";
-    size.style.width = "4.5em";
+    size.style.cssText = "flex:0 0 72px;width:72px";
+    fam.style.cssText = "flex:1 1 auto;min-width:0";
     size.placeholder = doc?.size ? String(Math.round(doc.size)) : "默认";
     size.title = "字号（pt），留空 = " + (doc?.size ? "跟随文件" : "出厂");
     if (user?.size) size.value = String(Math.round(user.size * 10) / 10);
     const box = document.createElement("span");
-    box.style.cssText = "display:inline-flex;gap:6px;align-items:center";
+    box.style.cssText = "display:flex;gap:6px;align-items:center";
     box.append(fam, size);
     rows.push(labeled(HEADER_LABEL[role], box));
     const init = JSON.stringify([fam.value, size.value]);
@@ -353,9 +354,57 @@ function headerGroup(app: App): { rows: HTMLElement[]; apply(): boolean } {
 
 const isPaperKey = (k: string | undefined): boolean => k !== undefined && (ORIGINAL_PAPERS as readonly string[]).includes(k);
 
+const SETTINGS_TAB_KEY = "jpeditor-settings-tab";
+
+/** 设置面板的标签页：顶上一排标签，下面各页一个 `settings-form`。空页不显示；记住上次停在哪一页。 */
+function settingsTabs(pages: readonly [string, HTMLElement][]): HTMLElement {
+  const wrap = document.createElement("div");
+  const bar = document.createElement("div");
+  bar.className = "settings-tabs";
+  bar.setAttribute("role", "tablist");
+  wrap.append(bar);
+  const shown = pages.filter(([, el]) => el.childElementCount > 0);
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(SETTINGS_TAB_KEY);
+  } catch {
+    saved = null;
+  }
+  const tabs: HTMLButtonElement[] = [];
+  const select = (i: number) => {
+    shown.forEach(([, el], j) => (el.hidden = j !== i));
+    tabs.forEach((t, j) => {
+      t.classList.toggle("active", j === i);
+      t.setAttribute("aria-selected", String(j === i));
+    });
+    try {
+      localStorage.setItem(SETTINGS_TAB_KEY, shown[i]![0]);
+    } catch {
+      // 存不了就每次从第一页开始
+    }
+  };
+  shown.forEach(([label, el], i) => {
+    const t = document.createElement("button");
+    t.type = "button";
+    t.textContent = label;
+    t.setAttribute("role", "tab");
+    t.onclick = () => select(i);
+    tabs.push(t);
+    bar.append(t);
+    el.className = "settings-form settings-pane";
+    el.setAttribute("role", "tabpanel");
+    wrap.append(el);
+  });
+  const at = shown.findIndex(([label]) => label === saved);
+  if (shown.length) select(at >= 0 ? at : 0);
+  return wrap;
+}
+
 export function showOptionsDialog(app: App): void {
-  const body = document.createElement("div");
-  body.className = "settings-form";
+  // 三个标签页：版面 / 页眉与样式 / 其他（一页摆全太高，小屏上确定按钮都够不着）
+  const pLayout = document.createElement("div");
+  const pHeader = document.createElement("div");
+  const pOther = document.createElement("div");
 
   const view = app.viewMode;
   const isMixed = app.mode === "mixed"; // 五线谱 / 混排
@@ -444,35 +493,35 @@ export function showOptionsDialog(app: App): void {
   const puFont = num(app.puFontSize || Math.round(app.painter.documentDigitFontSize ?? 0), 6, 200);
 
   if (paperUi) {
-    body.append(...paperUi.rows);
+    pLayout.append(...paperUi.rows);
   } else if (isPpt) {
-    body.append(labeled("谱面比例", ratio));
+    pLayout.append(labeled("谱面比例", ratio));
   }
-  if (hasLayoutSection) body.append(linesRow);
+  if (hasLayoutSection) pLayout.append(linesRow);
   if (isJp) {
-    body.append(labeled("基础字号", fs));
+    pLayout.append(labeled("基础字号", fs));
     // 原样档只调基础字号：那一档的标题与词曲字号是按比例派生的（`style/jianpu.ts::jianpuSizes`），
     // 摆出来只会让人以为能单独调。展开档三个都是独立设置，照旧全给。
-    body.append(labeled("前景色", color));
+    pLayout.append(labeled("前景色", color));
   }
   if (isPu) {
-    body.append(labeled("基础字号", puFont), labeled("前景色", color));
+    pLayout.append(labeled("基础字号", puFont), labeled("前景色", color));
   }
-  body.append(labeled("背景色", bgColor));
+  pLayout.append(labeled("背景色", bgColor));
 
   // 混排专属：隐藏小节号。
   const hideBarNum = document.createElement("input");
   hideBarNum.type = "checkbox";
   hideBarNum.checked = app.mixedHideBarNumber;
-  if (isMixed) body.append(labeled("隐藏小节号", hideBarNum));
+  if (isMixed) pLayout.append(labeled("隐藏小节号", hideBarNum));
 
   if (isPu) {
-    body.append(note(
+    pLayout.append(note(
       "改字号会整块等比缩放版式量好的尺寸（纸与页边距不跟着缩），与谱面自带的 FontSize 指令同一语义；"
       + "展开档与 .jpwabc 共用同一套设置。",
     ));
   } else if (isMixed) {
-    body.append(note("谱里写了版面（<page-layout>）的，纸张默认跟随文件；换了纸就按新纸重新铺排，谱里原来的分行坐标不再用。"));
+    pLayout.append(note("谱里写了版面（<page-layout>）的，纸张默认跟随文件；换了纸就按新纸重新铺排，谱里原来的分行坐标不再用。"));
   }
 
   // 可视化编辑：谱面上插入/改音时响一下（只在简谱档、能改谱的格式下摆出来）
@@ -480,7 +529,7 @@ export function showOptionsDialog(app: App): void {
   noteSound.type = "checkbox";
   noteSound.checked = app.visual.noteSound;
   const showNoteSound = app.mode === "jp" && app.editDialect() !== null;
-  if (showNoteSound) body.append(labeled("改音时发声", noteSound));
+  if (showNoteSound) pOther.append(labeled("改音时发声", noteSound));
 
   // 诗集样式表：显示当前生效的那份与来源；选择 / 不用 / 恢复自动查找 /（123、ABC）写进文件
   const bs = app.bookSheet;
@@ -506,11 +555,11 @@ export function showOptionsDialog(app: App): void {
   if (bs && (app.docFormat === "123" || app.docFormat === "abc") && app.filePath) {
     bsBox.append(bsBtn("写入文件", () => { app.writeBookSheetRef(); }));
   }
-  body.append(labeled("诗集样式", bsBox));
+  pHeader.append(labeled("诗集样式", bsBox));
 
   // 页眉四项的字体字号：各档共用（展开档原来单列的标题 / 词曲字号也并在这里）
   const header = headerGroup(app);
-  body.append(...header.rows);
+  pHeader.append(...header.rows);
 
   // 打开单声部 MusicXML 时怎么办（「记住选择」之后从这里改回「每次询问」）
   const xmlImport = document.createElement("select");
@@ -525,7 +574,7 @@ export function showOptionsDialog(app: App): void {
     o.selected = v === app.musicXmlImport;
     xmlImport.append(o);
   }
-  body.append(labeled("打开 MusicXML", xmlImport));
+  pOther.append(labeled("打开 MusicXML", xmlImport));
 
   // 播放混音：各声部音量（0–100%，播放/导出 MIDI 时按此写入 CC7；改后需重新播放）。
   const volSliders: HTMLInputElement[] = [];
@@ -533,7 +582,7 @@ export function showOptionsDialog(app: App): void {
     const hint = document.createElement("div");
     hint.style.cssText = "margin-top:8px;font-weight:600;opacity:0.8";
     hint.textContent = "声部音量（播放/导出 MIDI）";
-    body.append(hint);
+    pOther.append(hint);
     for (let i = 0; i < app.partCount; i++) {
       const sl = document.createElement("input");
       sl.type = "range";
@@ -541,11 +590,17 @@ export function showOptionsDialog(app: App): void {
       sl.max = "100";
       sl.value = String(Math.round(app.playback.getPartVolume(i) * 100));
       volSliders.push(sl);
-      body.append(labeled(`声部 ${i + 1}`, sl));
+      pOther.append(labeled(`声部 ${i + 1}`, sl));
     }
   }
 
   // 「长图」一勾一取消，「每页行数」要跟着出现/消失——现开现关，不必确定后才知道。
+  const body = settingsTabs([
+    ["版面", pLayout],
+    ["页眉与样式", pHeader],
+    ["其他", pOther],
+  ]);
+
   modal("设置", body, () => {
     volSliders.forEach((sl, i) => app.playback.setPartVolume(i, (parseInt(sl.value, 10) || 0) / 100));
     // 没摆出来的项一律不回灌：把它们的初值当用户输入送回去，等于替用户做了没做过的决定。
