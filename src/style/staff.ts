@@ -19,6 +19,8 @@ import { headerFontsOf } from "./header";
 export function applyStaffStyle(o: MixedOptions, sheet: StyleSheet): void {
   applyFonts(o, sheet);
   o.headerFonts = headerFontsOf(sheet);
+  o.staffSizeMm = sheet.staff.size ?? null;
+  o.lyricPt = sheet.staff.lyricSize ?? null;
   const em = o.musicFont.size;
   const ctx = { em, sp: em / 4, pt: NaN };
   applyOverrides(o, sheet.staff.overrides, STAFF_KEYS, "staff", ctx);

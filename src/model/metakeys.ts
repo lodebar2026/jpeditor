@@ -35,6 +35,8 @@ export const META_KEYS: readonly MetaKeyDef[] = [
   { key: "page", label: "纸张（A4 或「宽 高」pt）" },
   { key: "page-orientation", label: "纸张方向（portrait/landscape）" },
   { key: "page-margin", label: "页边距（上 右 下 左，pt）" },
+  { key: "staff-size", label: "五线谱谱表高（mm）" },
+  { key: "lyric-size", label: "五线谱歌词字号（pt）" },
   { key: "layout.melody-only", label: "只留旋律声部", flag: true },
   { key: "layout.chinese-hyphen", label: "歌词连字符用「—」", flag: true },
 ];

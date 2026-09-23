@@ -15,6 +15,7 @@ import { measureJianpu, PaintResources, ScorePainter, type JianpuPaintRequest } 
 import { toPt } from "../layout/result";
 import { computeStyle, sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
 import { docPageLayer, pageMargins, resolvePaper, songPageDecl } from "../style/paper";
+import { songLyricSize, songStaffSize } from "../model/pagemeta";
 import { headerFontsOf, headerLayerOfSong, type HeaderFonts, type HeaderRole } from "../style/header";
 import { dirOf, editorRules, findBookSheet, registerFontFaces, relativePath, type BookSheet, type BookSheetMap } from "./booksheet";
 import { replaceStyleRef } from "../j123/metaedit";
@@ -316,6 +317,33 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     this._userLayers.header = rules;
   }
 
+  /** 五线谱/混排的谱表大小（mm）与歌词字号（pt）：谱里的（「跟随文件」显示用）与用户设的。 */
+  staffSizeState(): { doc: { mm: number | null; lyricPt: number | null }; user: { mm: number | null; lyricPt: number | null } } {
+    const song = this.adapter.toScoreDoc ? this.currentScoreDoc()?.songs[0] : undefined;
+    const u = computeStyle([this._userLayers.staff], { mode: "staff", engine: "staff" }).staff;
+    return {
+      doc: { mm: song ? songStaffSize(song) : null, lyricPt: song ? songLyricSize(song) : null },
+      user: { mm: u.size ?? null, lyricPt: u.lyricSize ?? null },
+    };
+  }
+
+  /** 设谱表大小 / 歌词字号：`null` = 清掉（跟随文件或出厂）。 */
+  private _setStaffSize(v: { mm?: number | null; lyricPt?: number | null }): void {
+    const rules = this._userLayers.staff.map((r) => ({ ...r, set: { ...r.set, staff: { ...(r.set.staff ?? {}) } } }));
+    let rule = rules.find((r) => !r.when);
+    if (!rule) rules.push((rule = { set: { staff: {} } }));
+    const st = rule.set.staff!;
+    if (v.mm !== undefined) {
+      if (v.mm) st.size = v.mm;
+      else delete st.size;
+    }
+    if (v.lyricPt !== undefined) {
+      if (v.lyricPt) st.lyricSize = v.lyricPt;
+      else delete st.lyricSize;
+    }
+    this._userLayers.staff = rules;
+  }
+
   /** 设置面板的纸张那一栏：谱里自带的纸（「跟随文件」显示用）、用户层有没有明确选过纸、算出来实际用的那张。 */
   paperState(engine: PaperEngine): { doc: PageDecl | null; userSet: boolean; page: PageDecl } {
     const song = this.adapter.toScoreDoc ? this.currentScoreDoc()?.songs[0] : undefined;
@@ -486,6 +514,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     puPaper?: string; puFontSize?: number; staffPaper?: string;
     /** 纸张栏（纸 + 方向 + 边距，或跟随文件）。给了就盖过上面三个只换纸名的。 */
     paper?: Partial<Record<PaperEngine, PaperChoice>>;
+    /** 五线谱/混排的谱表大小（mm）与歌词字号（pt）；null = 跟随文件 / 出厂。 */
+    staffSize?: { mm?: number | null; lyricPt?: number | null };
     fontSize?: number; titleSize?: number; creditSize?: number; color?: number; bgColor?: number;
   }): void {
     const mode = this.layoutMode;
@@ -497,6 +527,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (opts.puPaper && isPaper(opts.puPaper)) this._setStyle("original", "pu", { page: { paper: opts.puPaper } });
     if (opts.staffPaper && isPaper(opts.staffPaper)) this._userLayers.staff = upsertRule(this._userLayers.staff, undefined, { page: { paper: opts.staffPaper } });
     for (const [engine, choice] of Object.entries(opts.paper ?? {}) as [PaperEngine, PaperChoice][]) this._setPaper(engine, choice);
+    if (opts.staffSize) this._setStaffSize(opts.staffSize);
     if (opts.puFontSize !== undefined) {
       this._setStyle("original", "pu", { roles: { note: { size: Math.min(200, Math.max(0, opts.puFontSize)) } } });
     }
@@ -1747,15 +1778,22 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     // 谱里写的纸：123/ABC 带得过去（`I:meta page …`）；`.jpwabc`、文本谱没有字段，改记进设置里的纸
     const song = this.currentScoreDoc()?.songs[0];
     const page = song ? songPageDecl(song) : null;
+    const staffMm = song ? songStaffSize(song) : null;
+    const lyricPt = song ? songLyricSize(song) : null;
     const ok = await src.switchTo(target);
     this.formats.sync();
-    if (!ok || !page || !isPaper(page.paper)) return;
+    if (!ok) return;
     const now = targetSpec(target).docFormat;
     const engine: PaperEngine | null = now === "jpwabc" ? "jianpu" : now === "pu" ? "pu" : null;
     if (!engine) return;
-    const choice: PaperChoice = { paper: page.paper!, orientation: page.orientation ?? "portrait", margin: pageMargins(page) ?? null };
-    this._setPaper(engine, choice);
-    this._setPaper("staff", choice);
+    if (page && isPaper(page.paper)) {
+      const choice: PaperChoice = { paper: page.paper!, orientation: page.orientation ?? "portrait", margin: pageMargins(page) ?? null };
+      this._setPaper(engine, choice);
+      this._setPaper("staff", choice);
+    }
+    // 谱表大小与歌词字号也装不下，同样记进五线谱那一档（否则转完五线谱/混排按出厂 7mm，字相对音符小一圈）
+    if (staffMm || lyricPt) this._setStaffSize({ ...(staffMm ? { mm: staffMm } : {}), ...(lyricPt ? { lyricPt } : {}) });
+    if (!page && !staffMm && !lyricPt) return;
     this.saveSettings();
     this.reload(this.getText());
   }

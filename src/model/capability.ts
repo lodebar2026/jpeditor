@@ -20,7 +20,7 @@ import { eachChord, verseCount } from "./helpers";
 import { projectForJianpu } from "./jianpuproject";
 import { melodyLane } from "./jianpu";
 import { puArcLosses } from "./topu";
-import { songPage } from "./pagemeta";
+import { songLyricSize, songPage, songStaffSize } from "./pagemeta";
 
 /** 一项「文档里可能用到、格式可能装不下」的特性。 */
 export type Feature =
@@ -67,7 +67,7 @@ export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
   multiSong: "一个文件里的多首曲子",
   pageText: "页眉页脚",
   meta: "扩展曲目信息（英文标题、经文、标签等）",
-  paper: "谱里写的纸张与页边距（改记进设置里的纸）",
+  paper: "谱里写的纸张、页边距、五线谱谱表大小与歌词字号（改记进设置）",
   verseLabel: "印刷段号",
   rhythmNote: "节奏音符（有声无音高）",
   invisibleRest: "不可见休止",
@@ -139,7 +139,7 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
     for (const r of song.style?.raw ?? []) used.add(LAYOUT_DIRECTIVE.test(r.key) ? "layoutDirectives" : "style");
     if (song.pageText) used.add("pageText");
     if (song.meta && Object.keys(song.meta).length) used.add("meta");
-    if (songPage(song)) used.add("paper");
+    if (songPage(song) || songStaffSize(song) || songLyricSize(song)) used.add("paper");
     if (song.remarks?.length) used.add("textLine");
     if (verseCount(song) > 1) used.add("multiVerse");
     for (const m of song.marks ?? []) {

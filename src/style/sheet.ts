@@ -144,7 +144,8 @@ export interface StyleSheet {
   jianpu: { preset?: JianpuPreset; overrides?: Record<string, Length | boolean> };
   /** **五线谱内容**（`mode: staff / mixed`）：键是 `style/keys.ts::STAFF_KEYS` 的逻辑键，落 `MixedOptions`
    *  （tenths）。长度只收 em / sp——pt 要等 MusicXML 的 `<scaling>`。 */
-  staff: { preset?: "musicpp"; overrides?: Record<string, Length | boolean> };
+  /** `size`：谱表高（mm，五条线的跨度）；`lyricSize`：歌词字号（pt）。编辑器五线谱/混排档的「谱表大小」「歌词字号」。 */
+  staff: { preset?: "musicpp"; overrides?: Record<string, Length | boolean>; size?: number; lyricSize?: number };
   /** **断句**（与谱式无关）：键是 `style/keys.ts::BREAK_KEYS`。现在只有成书读。 */
   break?: { overrides?: Record<string, Length | boolean> };
   /** 成书的完整样式（`BookStyle`）。只有 `engine: "book"` 用。 */

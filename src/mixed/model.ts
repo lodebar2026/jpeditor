@@ -2958,6 +2958,10 @@ export class MixedOptions {
   /** 页眉四项的字体（pt；样式表的 title/subtitle/scripture/credit 角色，`style/header.ts`）。给了的盖过 `<credit>` 自带的，
    *  没给的照 credit 自己的（自动铺排的谱照 `layoutpass.ts::autoLayoutHeader` 的出厂字号）。 */
   headerFonts: HeaderFonts = {};
+  /** 用户在设置里明确给的谱表高（mm）与歌词字号（pt）。给了谱表高就按它换 `scaling`，纸与边距的物理尺寸不变、
+   *  谱里的版面坐标不再用（整份自动铺排）；没给就照谱里的 `<scaling>` / `<lyric-font>`。 */
+  staffSizeMm: number | null = null;
+  lyricPt: number | null = null;
   jpTopDy = 0;
   // ── 简谱层附件相对数字的位置。缺省值即原排版程序的常量
   //    （render.cpp::drawNotesJianPu 875-947、BeamLevelData::drawJianPu:159），单位 tenths；

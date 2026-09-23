@@ -1273,6 +1273,30 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
       score.defaults.wordFont = new Font(family, ptToTenths(sz));
     }
   }
+  // 用户给了谱表大小：换 scaling，纸与边距按 pt 不变（tenths 跟着换算）
+  let resized = false;
+  if (options.staffSizeMm && options.staffSizeMm > 0) {
+    const k = (options.staffSizeMm * 72) / 25.4 / 40;
+    if (Math.abs(k - score.scaling) > 1e-9) {
+      const f = score.scaling / k;
+      const dd = score.defaults;
+      dd.pageWidth *= f;
+      dd.pageHeight *= f;
+      dd.leftMargin *= f;
+      dd.rightMargin *= f;
+      dd.topMargin *= f;
+      dd.bottomMargin *= f;
+      // 字号是 tenths（按旧 scaling 折的），保持 pt 不变
+      dd.lyricFont = dd.lyricFont.makeWithSize(dd.lyricFont.size * f);
+      dd.wordFont = dd.wordFont.makeWithSize(dd.wordFont.size * f);
+      score.scaling = k;
+      resized = true;
+    }
+  }
+  if (options.lyricPt && options.lyricPt > 0) {
+    score.defaults.lyricFont = score.defaults.lyricFont.makeWithSize(options.lyricPt / score.scaling);
+  }
+
   // 谱里没写纸，或用户在设置里明确换了纸：用编辑器设置那张（长图不分页，页高由内容定）
   const page = options.page;
   const overridePage = !!page?.override && !!def?.pageLayout;
@@ -1307,7 +1331,7 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
   score.scripture = [...getMeta(song, "scripture"), ...getMeta(song, "scripture-ref")].filter((t) => t.trim());
 
   // 换了纸，谱里按原纸算好的版面坐标就对不上了：整份按新纸自动铺排
-  score.autoLayout = overridePage || !hasEmbeddedLayout(song);
+  score.autoLayout = overridePage || resized || !hasEmbeddedLayout(song);
 
   const numMeasures = song.parts[0]?.measures.length ?? 0;
   for (let i = 0; i < numMeasures; i++) {

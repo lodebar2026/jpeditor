@@ -513,7 +513,20 @@ export function showOptionsDialog(app: App): void {
   const hideBarNum = document.createElement("input");
   hideBarNum.type = "checkbox";
   hideBarNum.checked = app.mixedHideBarNumber;
-  if (isMixed) pLayout.append(labeled("隐藏小节号", hideBarNum));
+  // 五线谱/混排的「基础字号」：谱表大小（mm）+ 歌词字号（pt），留空 = 跟随文件（没写就是出厂 7mm）
+  const ss = app.staffSizeState();
+  const staffMm = num(0, 3, 15);
+  staffMm.step = "0.1";
+  staffMm.value = ss.user.mm ? String(ss.user.mm) : "";
+  staffMm.placeholder = ss.doc.mm ? `跟随文件（${ss.doc.mm}）` : "出厂 7";
+  const lyricPt = num(0, 5, 40);
+  lyricPt.step = "0.5";
+  lyricPt.value = ss.user.lyricPt ? String(ss.user.lyricPt) : "";
+  lyricPt.placeholder = ss.doc.lyricPt ? `跟随文件（${ss.doc.lyricPt}）` : "出厂 9.9";
+  const staffInit = JSON.stringify([staffMm.value, lyricPt.value]);
+  if (isMixed) {
+    pLayout.append(labeled("谱表大小（mm）", staffMm), labeled("歌词字号（pt）", lyricPt), labeled("隐藏小节号", hideBarNum));
+  }
 
   if (isPu) {
     pLayout.append(note(
@@ -521,7 +534,7 @@ export function showOptionsDialog(app: App): void {
       + "展开档与 .jpwabc 共用同一套设置。",
     ));
   } else if (isMixed) {
-    pLayout.append(note("谱里写了版面（<page-layout>）的，纸张默认跟随文件；换了纸就按新纸重新铺排，谱里原来的分行坐标不再用。"));
+    pLayout.append(note("谱表大小是五条线的总高度，字号随之按比例看起来变小/变大；留空跟随文件。换了纸或谱表大小，就按新版面重新铺排，谱里原来的分行坐标不再用。"));
   }
 
   // 可视化编辑：谱面上插入/改音时响一下（只在简谱档、能改谱的格式下摆出来）
@@ -619,6 +632,9 @@ export function showOptionsDialog(app: App): void {
         return paperEngine && c ? { [paperEngine]: c } : undefined;
       })(),
       puFontSize: isPu ? parseInt(puFont.value, 10) || 0 : undefined,
+      staffSize: isMixed && JSON.stringify([staffMm.value, lyricPt.value]) !== staffInit
+        ? { mm: parseFloat(staffMm.value) || null, lyricPt: parseFloat(lyricPt.value) || null }
+        : undefined,
       color: argb, bgColor: colorValue(bgColor, app.bgColor),
     });
     if (isMixed) void app.setMixedHideBarNumber(hideBarNum.checked);

@@ -8,6 +8,8 @@
 //   page              A4 / A5 / B5 / Letter，或「宽 高」（pt）
 //   page-orientation  portrait / landscape（只对纸名有意义：「宽 高」本身就带方向）
 //   page-margin       上 右 下 左（pt）
+//   staff-size        谱表高（五条线的跨度，mm；MusicXML `<scaling>` 的 40 tenths）
+//   lyric-size        歌词字号（pt；MusicXML `<lyric-font font-size>`）
 //
 // 无 DOM 依赖。
 import type { Defaults, ScoreDoc, Song } from "./doc";
@@ -93,15 +95,42 @@ export function pageMeta(page: PagePt): Record<string, string[]> {
   return out;
 }
 
-/** 转成 123/ABC 之前：带 `<page-layout>` 的曲子把纸写进 meta（已有 `page` 的不动）。返回新文档，不改入参。 */
+/** 谱表高（mm）：MusicXML `<scaling>` 优先（40 tenths 的毫米数），其次 `I:meta staff-size`。 */
+export function songStaffSize(song: Song): number | null {
+  const sc = song.defaults?.scaling;
+  if (sc && sc.millimeters > 0 && sc.tenths > 0) return round2((sc.millimeters * 40) / sc.tenths);
+  const v = Number(getMeta(song, "staff-size")[0]);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+/** 歌词字号（pt）：MusicXML `<lyric-font font-size>` 优先，其次 `I:meta lyric-size`。 */
+export function songLyricSize(song: Song): number | null {
+  const fs = song.defaults?.lyricFont?.size;
+  if (fs && fs > 0) return fs;
+  const v = Number(getMeta(song, "lyric-size")[0]);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+const round2 = (v: number): number => Math.round(v * 100) / 100;
+
+/** 转成 123/ABC 之前：MusicXML 的纸、谱表大小、歌词字号写进 meta（meta 里已有的不动）。返回新文档，不改入参。 */
 export function withPageMeta(doc: ScoreDoc): ScoreDoc {
-  if (!doc.songs.some((s) => pageOfDefaults(s) && !getMeta(s, "page").length)) return doc;
+  const extra = (s: Song): Record<string, string[]> => {
+    const out: Record<string, string[]> = {};
+    const page = pageOfDefaults(s);
+    if (page && !getMeta(s, "page").length) Object.assign(out, pageMeta(page));
+    const sc = s.defaults?.scaling;
+    if (sc && sc.millimeters > 0 && sc.tenths > 0 && !getMeta(s, "staff-size").length) out["staff-size"] = [String(songStaffSize(s))];
+    const ly = s.defaults?.lyricFont?.size;
+    if (ly && !getMeta(s, "lyric-size").length) out["lyric-size"] = [String(ly)];
+    return out;
+  };
+  if (!doc.songs.some((s) => Object.keys(extra(s)).length)) return doc;
   return {
     ...doc,
     songs: doc.songs.map((s) => {
-      const page = pageOfDefaults(s);
-      if (!page || getMeta(s, "page").length) return s;
-      return { ...s, meta: { ...(s.meta ?? {}), ...pageMeta(page) } };
+      const add = extra(s);
+      return Object.keys(add).length ? { ...s, meta: { ...(s.meta ?? {}), ...add } } : s;
     }),
   };
 }
@@ -109,6 +138,15 @@ export function withPageMeta(doc: ScoreDoc): ScoreDoc {
 /** 写 MusicXML 之前：没有 `<page-layout>`、但 meta 里写了纸的，还原成 `<page-layout>`（按缺省 scaling 折 tenths）。
  *  就地改（调用方传的是投影用的副本）。 */
 export function applyPageMetaToDefaults(song: Song): void {
+  // 谱表大小与歌词字号：`<scaling>` / `<lyric-font>` 没写才补
+  const mm = Number(getMeta(song, "staff-size")[0]);
+  if (!song.defaults?.scaling && Number.isFinite(mm) && mm > 0) {
+    song.defaults = { ...(song.defaults ?? {}), scaling: { millimeters: mm, tenths: 40 } };
+  }
+  const ly = Number(getMeta(song, "lyric-size")[0]);
+  if (!song.defaults?.lyricFont?.size && Number.isFinite(ly) && ly > 0) {
+    song.defaults = { ...(song.defaults ?? {}), lyricFont: { ...(song.defaults?.lyricFont ?? {}), size: ly } };
+  }
   if (song.defaults?.pageLayout?.pageWidth) return;
   const page = pageOfMeta(song);
   if (!page) return;
