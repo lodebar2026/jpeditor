@@ -231,8 +231,12 @@ function durationText(beams: number, dots: number): string {
 
 /** 倚音串里的一个音。**减时线少写一条**：倚音的基准时值是八分（`scanGraceNotes` 里 `scanNote(…, 8)`）。 */
 function graceText(ch: Chord, d: DialectSpec): string {
-  return headText(ch, d, false) + "/".repeat(Math.max(0, (ch.beams?.length ?? 1) - 1));
+  // 123 / 识别来的倚音不记 beams，时值在 `type` 上（`{2_}` 十六分 → 两条线 → 写一个 `/`）
+  const lines = ch.beams?.length ?? Math.max(1, GRACE_LINES.indexOf(ch.duration.type ?? "eighth"));
+  return headText(ch, d, false) + "/".repeat(Math.max(0, lines - 1));
 }
+/** 下标 = 减时线条数 */
+const GRACE_LINES = ["quarter", "eighth", "16th", "32nd", "64th"];
 
 // ───────────────────────── 弧线与多连音的写法规划 ─────────────────────────
 

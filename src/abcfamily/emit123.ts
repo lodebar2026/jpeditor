@@ -6,8 +6,8 @@ import { BARE_CHORD_RE } from "./dialect123";
 import { projectForJianpu } from "../model/jianpuproject";
 import { harmonyText, keySpelling, melodyLane, topNote } from "../model/jianpu";
 
-/** 下标 = 减时线条数 */
-const GRACE_TYPES = ["quarter", "eighth", "16th", "32nd", "64th"];
+/** 倚音时值相对八分：下标 = `_` 个数（八分不写，`{2_}` 十六分）。四分倚音写不出，按八分 */
+const GRACE_TYPES = ["eighth", "16th", "32nd", "64th"];
 
 const ACC_TEXT: Readonly<Record<string, string>> = {
   sharp: "#",
@@ -93,9 +93,9 @@ export class Emitter123 extends AbcFamilyEmitter {
     return "_".repeat(beams) + ".".repeat(dots);
   }
 
-  /** 倚音印出来的减时线：`{2__}` 是十六分倚音。四分及没记时值的不写。 */
+  /** 倚音时值相对八分：`{2}` 八分、`{2_}` 十六分（沿用 ABC §4.12 倚音自有单位的口径）。 */
   protected override graceDurationText(ch: Chord): string {
-    return "_".repeat(Math.max(0, GRACE_TYPES.indexOf(ch.duration.type ?? "quarter")));
+    return "_".repeat(Math.max(0, GRACE_TYPES.indexOf(ch.duration.type ?? "eighth")));
   }
 
   /** 增时线（各自可带弧的起止）。**这是 123 独有的**：ABC 的 `-` 是 tie。 */

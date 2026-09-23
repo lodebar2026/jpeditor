@@ -29,6 +29,7 @@ import type {
   Lyric,
   Mark,
   Measure,
+  NoteType,
   Part,
   PlayPass,
   ScoreDoc,
@@ -699,13 +700,11 @@ function buildMusicLine(
       }
 
       case "grace": {
-        // 倚音不占拍（divisions 0），但印出来的减时线要留：`{2__}` 是十六分倚音，记在 `type` 上
-        const timed = t.notes?.find((g) => g.beams);
         const ch: Chord = {
           kind: "chord",
           id: ctx.ids.next(),
           notes: (t.notes ?? []).map((g) => ctx.d.note(g)),
-          duration: timed ? { divisions: 0, dots: 0, type: ctx.d.duration(timed, ctx.len).type! } : { divisions: 0, dots: 0 },
+          duration: { divisions: 0, dots: 0, type: graceType(t.notes?.[0]) },
           grace: t.acciaccatura ? { slash: true } : {},
           voice: pb.voice,
           staff: 1,
@@ -1015,6 +1014,15 @@ export interface ParseOptions {
 }
 
 /** `.123` 文本 → `ScoreDoc`。 */
+/** 倚音不占拍（divisions 0），印出来的时值记在 `type` 上。长度**相对倚音单位（八分）**
+ *  （ABC 2.1 §4.12：花括号里照普通音符写长度，单位另定）：123 每个 `_` 减半（`{2_}` 十六分），
+ *  ABC 按 num/den（`{d/}` 十六分、`{d2}` 四分）；什么都不写就是八分。 */
+function graceType(g: Token | undefined): NoteType {
+  const ratio = (g?.num ?? 1) / (g?.den ?? 1) / 2 ** (g?.beams ?? 0);
+  const k = Math.round(Math.log2(ratio));
+  return (["64th", "32nd", "16th", "eighth", "quarter", "half"] as const)[Math.max(0, Math.min(5, k + 3))]!;
+}
+
 export function parse123(text: string, options: ParseOptions = {}): ScoreDoc {
   return parseAbcFamily(text, DIALECT_123, options);
 }

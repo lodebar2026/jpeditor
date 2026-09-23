@@ -61,6 +61,8 @@ function withAbcDivisions(src: Song): Song {
   return song;
 }
 
+const GRACE_LEN: Readonly<Record<string, string>> = { quarter: "2", eighth: "", "16th": "/", "32nd": "/4", "64th": "/8" };
+
 export class EmitterAbc extends AbcFamilyEmitter {
   protected readonly versionLine = "%abc-2.1";
 
@@ -144,6 +146,11 @@ export class EmitterAbc extends AbcFamilyEmitter {
   }
 
   protected override readonly trailingBreak = false;
+
+  /** 倚音长度相对倚音单位（八分，ABC §4.12 单位由软件定）：`{g/}` 十六分、`{g2}` 四分。 */
+  protected override graceDurationText(ch: Chord): string {
+    return GRACE_LEN[ch.duration.type ?? "eighth"] ?? "";
+  }
 
   /** `{/g}` 短倚音（acciaccatura，ABC §4.12）。 */
   protected override graceSlashText(ch: Chord): string {
