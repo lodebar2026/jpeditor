@@ -16,6 +16,8 @@ import { toPt } from "../layout/result";
 import { computeStyle, sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
 import { docPageLayer, pageMargins, resolvePaper, songPageDecl } from "../style/paper";
 import { headerFontsOf, headerLayerOfSong, type HeaderFonts, type HeaderRole } from "../style/header";
+import { dirOf, editorRules, findBookSheet, registerFontFaces, relativePath, type BookSheet, type BookSheetMap } from "./booksheet";
+import { replaceStyleRef } from "../j123/metaedit";
 import type { PageDecl } from "../style/sheet";
 import { isLongImage, jianpuSizes } from "../style/jianpu";
 import type { DeepPartial, StyleSheet } from "../style/sheet";
@@ -157,7 +159,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     const theme = themeOfMode(mode);
     const page = theme === "print" && !(engine === "jianpu" || engine === "pu" ? this._userSetsPaper(engine) : false) ? this._docLayer() : [];
     return computeStyleForPaper(
-      [THEMES[theme], page, this._docHeaderLayer(theme === "print"), this._userLayers[theme], this._userLayers.header],
+      [THEMES[theme], this._bookLayer, page, this._docHeaderLayer(theme === "print"), this._userLayers[theme], this._userLayers.header],
       { mode, engine },
     );
   }
@@ -167,7 +169,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   staffStyle(): StyleSheet {
     const page = this._userSetsPaper("staff") ? [] : this._docLayer();
     return computeStyleForPaper(
-      [THEMES.staff, page, this._docHeaderLayer(), this._userLayers.staff, this._userLayers.header],
+      [THEMES.staff, this._bookLayer, page, this._docHeaderLayer(), this._userLayers.staff, this._userLayers.header],
       { mode: "staff", engine: "staff" },
     );
   }
@@ -178,6 +180,111 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   private _docLayer(): StyleRule[] {
     if (!this.adapter.toScoreDoc) return [];
     return docPageLayer(this.currentScoreDoc()?.songs[0]);
+  }
+
+  // ---- 诗集样式表（歌本 `.jpcss`，`editor/booksheet.ts`）：级联里在内置主题之后、曲内层之前 ----
+  /** 当前生效的诗集样式表（null = 没有）。 */
+  bookSheet: BookSheet | null = null;
+  private _bookLayer: StyleRule[] = [];
+  /** 手动指定：目录 → 样式表路径（空串 = 这个目录不用）。持久化。 */
+  bookSheets: BookSheetMap = {};
+  /** 浏览器版手动选的样式表（拿不到目录，存原文）。持久化。 */
+  private _browserBookSheet: { name: string; text: string } | null = null;
+
+  /** 按当前文件找诗集样式表并装上（见 `booksheet.ts` 的查找顺序），装完重排。 */
+  async loadBookSheet(): Promise<void> {
+    let found: BookSheet | null = null;
+    if (isTauriRuntime()) {
+      const ref = this.docFormat === "123" || this.docFormat === "abc" ? this.currentScoreDoc()?.songs[0]?.style?.sheetRef : undefined;
+      found = this.filePath ? await findBookSheet(this.filePath, ref, this.bookSheets) : null;
+    } else if (this._browserBookSheet) {
+      found = { path: this._browserBookSheet.name, source: "manual", text: this._browserBookSheet.text, others: 0 };
+    }
+    const before = this.bookSheet?.path ?? null;
+    this._useBookSheet(found);
+    if (!found && !before) return; // 本来就没有，现在也没有：不必重排
+    if (this.bookSheet) await registerFontFaces(this._bookLayer, this.bookSheet.path);
+    if (found && this.bookSheet && found.path !== before) {
+      const where = found.source === "ref" ? "文件指定" : found.source === "manual" ? "手动指定" : "自动";
+      this.setStatus(`诗集样式（${where}）：${found.path.split(/[\\/]/).pop()}` + (found.others ? `（同目录另有 ${found.others} 份，可在设置里改选）` : ""));
+    }
+    this._rerender();
+  }
+
+  private _useBookSheet(found: BookSheet | null): void {
+    this.bookSheet = null;
+    this._bookLayer = [];
+    if (!found) return;
+    try {
+      this._bookLayer = editorRules(found.text);
+      this.bookSheet = found;
+    } catch (e) {
+      this.setStatus(`诗集样式表读不了（${found.path.split(/[\\/]/).pop()}）：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** 设置面板「诗集样式 → 选择…」：记到当前谱所在目录（浏览器版存原文）。 */
+  async chooseBookSheet(): Promise<void> {
+    if (isTauriRuntime()) {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const sel = await open({ multiple: false, filters: [{ name: "诗集样式表", extensions: ["jpcss"] }] });
+      if (typeof sel !== "string") return;
+      const dir = this.filePath ? dirOf(this.filePath) : dirOf(sel);
+      this.bookSheets = { ...this.bookSheets, [dir]: sel };
+    } else {
+      const file = await new Promise<File | null>((resolve) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".jpcss";
+        input.onchange = () => resolve(input.files?.[0] ?? null);
+        input.click();
+      });
+      if (!file) return;
+      this._browserBookSheet = { name: file.name, text: await file.text() };
+    }
+    this.saveSettings();
+    await this.loadBookSheet();
+  }
+
+  /** 「不用样式表」：当前谱所在目录记一个空值（屏蔽自动发现）。 */
+  async disableBookSheet(): Promise<void> {
+    if (isTauriRuntime() && this.filePath) this.bookSheets = { ...this.bookSheets, [dirOf(this.filePath)]: "" };
+    this._browserBookSheet = null;
+    this.saveSettings();
+    await this.loadBookSheet();
+  }
+
+  /** 「恢复自动查找」：清掉当前目录的手动指定。 */
+  async resetBookSheet(): Promise<void> {
+    if (this.filePath) {
+      const dir = dirOf(this.filePath);
+      const next = { ...this.bookSheets };
+      delete next[dir];
+      this.bookSheets = next;
+      this.saveSettings();
+    }
+    await this.loadBookSheet();
+  }
+
+  /** 123 / ABC：把当前样式表写成 `I:style 相对路径`（查找顺序的第 1 条就成立了）。 */
+  writeBookSheetRef(): boolean {
+    if (!this.bookSheet || !this.filePath || (this.docFormat !== "123" && this.docFormat !== "abc")) return false;
+    const next = replaceStyleRef(this.getText(), relativePath(dirOf(this.filePath), this.bookSheet.path));
+    if (next !== this.getText()) this.setText(next);
+    return true;
+  }
+
+  /** 样式变了：简谱重排，五线谱/混排重铺（`.musicxml` 不经 reload）。 */
+  private _rerender(): void {
+    this._applyPageBg();
+    this.reload(this.getText());
+    if (this.mode === "mixed" && this.docFormat === "musicxml") void this._renderMixedPages();
+  }
+
+  /** 用户打开文件之后（打开对话框、拖入）：找诗集样式，单声部 MusicXML 再问要不要转简谱。 */
+  async onDocumentOpened(): Promise<void> {
+    await this.loadBookSheet();
+    await this.promptMusicXmlImport();
   }
 
   /** 曲内层的页眉字体：MusicXML `<credit-words>` 自带的（打开 MusicXML 自动跟随）。 */
@@ -437,6 +544,13 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     this.visual.loadSettings(s);
     if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
     if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
+    if (s.bookSheets && typeof s.bookSheets === "object") {
+      this.bookSheets = Object.fromEntries(
+        Object.entries(s.bookSheets as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string"),
+      );
+    }
+    const bb = s.browserBookSheet as { name?: unknown; text?: unknown } | null | undefined;
+    if (bb && typeof bb.name === "string" && typeof bb.text === "string") this._browserBookSheet = { name: bb.name, text: bb.text };
     if (s.musicXmlImport === "ask" || s.musicXmlImport === "musicxml" || isConvertTarget(s.musicXmlImport)) {
       this.musicXmlImport = s.musicXmlImport;
     }
@@ -463,6 +577,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       mixedHideBarNumber: this.mixedHideBarNumber,
       mixedShowJianpuLayer: this.mixedShowJianpuLayer,
       musicXmlImport: this.musicXmlImport,
+      bookSheets: this.bookSheets,
+      browserBookSheet: this._browserBookSheet,
       playSpeed: this.playback.speed,
       omrFormat: this.omr.format,
       jpProfile: this.jpProfile,
@@ -2077,6 +2193,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       const bytes = await readFile(path);
       this.importBytes(bytes, path);
       this.filePath = path;
+      void this.loadBookSheet();
       return true;
     } catch {
       // 文件已被移动/删除/不可读 — 忘掉它，回退到示例
@@ -2104,7 +2221,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       this.importBytes(bytes, sel);
       this.filePath = sel;
       this.rememberLastFile(sel);
-      void this.promptMusicXmlImport();
+      void this.onDocumentOpened();
       return true;
     }
 
@@ -2127,7 +2244,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         this.importBytes(buf, file.name);
         this.filePath = file.name;
         finish(true);
-        void this.promptMusicXmlImport();
+        void this.onDocumentOpened();
       };
       window.addEventListener("focus", () => setTimeout(() => {
         if (!changeStarted) finish(false);

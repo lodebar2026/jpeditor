@@ -482,6 +482,32 @@ export function showOptionsDialog(app: App): void {
   const showNoteSound = app.mode === "jp" && app.editDialect() !== null;
   if (showNoteSound) body.append(labeled("改音时发声", noteSound));
 
+  // 诗集样式表：显示当前生效的那份与来源；选择 / 不用 / 恢复自动查找 /（123、ABC）写进文件
+  const bs = app.bookSheet;
+  const bsText = document.createElement("span");
+  bsText.style.cssText = "opacity:0.85;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+  bsText.textContent = bs
+    ? `${bs.source === "ref" ? "文件指定" : bs.source === "manual" ? "手动" : "自动"}：${bs.path.split(/[\\/]/).pop()}`
+    : "无";
+  bsText.title = bs?.path ?? "";
+  const bsBtn = (label: string, fn: () => void | Promise<unknown>): HTMLButtonElement => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.onclick = () => {
+      document.querySelector(".modal-overlay")?.remove(); // 换了样式表面板上的值都变了，关掉重开
+      void Promise.resolve(fn()).then(() => showOptionsDialog(app));
+    };
+    return b;
+  };
+  const bsBox = document.createElement("span");
+  bsBox.style.cssText = "display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap";
+  bsBox.append(bsText, bsBtn("选择…", () => app.chooseBookSheet()), bsBtn("不用", () => app.disableBookSheet()), bsBtn("自动查找", () => app.resetBookSheet()));
+  if (bs && (app.docFormat === "123" || app.docFormat === "abc") && app.filePath) {
+    bsBox.append(bsBtn("写入文件", () => { app.writeBookSheetRef(); }));
+  }
+  body.append(labeled("诗集样式", bsBox));
+
   // 页眉四项的字体字号：各档共用（展开档原来单列的标题 / 词曲字号也并在这里）
   const header = headerGroup(app);
   body.append(...header.rows);

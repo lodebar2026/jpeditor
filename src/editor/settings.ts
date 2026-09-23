@@ -18,6 +18,10 @@ export interface PersistedSettings {
   mixedShowJianpuLayer?: boolean;
   /** 打开单声部 MusicXML 时：`ask` / `musicxml` / 转换目标（`model/convert.ts`）。App 自己校验 */
   musicXmlImport?: unknown;
+  /** 诗集样式表的手动指定：目录 → 路径（空串 = 不用）。App 自己校验 */
+  bookSheets?: unknown;
+  /** 浏览器版手动选的诗集样式表原文 `{ name, text }` */
+  browserBookSheet?: unknown;
   /** 交 PlaybackController 自己校验 */
   playSpeed?: unknown;
   /** 交 OmrController 自己校验 */

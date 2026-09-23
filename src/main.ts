@@ -459,7 +459,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
         app.filePath = path;
         app.rememberLastFile(path);
         hooks.onOpened();
-        void app.promptMusicXmlImport();
+        void app.onDocumentOpened();
       }
     });
   } else {
@@ -490,7 +490,7 @@ async function wireDragDrop(app: App, dropTarget: HTMLElement, hooks: DropHooks)
       if (!isDocFile(file.name)) return;
       app.importBytes(buf, file.name);
       hooks.onOpened();
-      void app.promptMusicXmlImport();
+      void app.onDocumentOpened();
     });
   }
 }

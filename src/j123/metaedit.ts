@@ -39,3 +39,33 @@ export function replaceMetaLines(text: string, meta: SongMeta): string {
   head.splice(at, 0, ...fresh);
   return [...head, ...tail].join(eol);
 }
+
+const STYLE = /^\s*I\s*[:：]\s*style\s/i;
+
+/** 第一首头部的 `I:style` 引用换成 `ref`（空串 = 删掉），插在 `K:` 之前。其余行一字不改。 */
+export function replaceStyleRef(text: string, ref: string): string {
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.split(/\r?\n/);
+  let end = lines.length;
+  let seenX = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*(X|曲号)\s*[:：]/.test(lines[i]!)) {
+      if (seenX) {
+        end = i;
+        break;
+      }
+      seenX = true;
+    }
+  }
+  const head = lines.slice(0, end).filter((l) => !STYLE.test(l));
+  const tail = lines.slice(end);
+  if (ref) {
+    let at = head.findIndex((l) => KEY.test(l));
+    if (at < 0) {
+      at = 0;
+      for (let i = 0; i < head.length; i++) if (FIELD.test(head[i]!)) at = i + 1;
+    }
+    head.splice(at, 0, `I:style ${ref}`);
+  }
+  return [...head, ...tail].join(eol);
+}
