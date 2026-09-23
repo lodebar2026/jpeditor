@@ -34,7 +34,7 @@ import { findRasterSlurs } from "./slur";
 import { ContourLedger } from "./ledger";
 import { attachHarmonies, attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
 import { attachSlurs, markSlurNotes, reconnectSlurs, type SlurArc } from "../staffomr/slur";
-import { estimateUnit, findStaffLines, groupStaves, type RasterUnit } from "./staffline";
+import { estimateUnit, findStaffLines, groupStaves, traceLeft, type RasterUnit } from "./staffline";
 import { completeStaffLines } from "./dewarp";
 import { rasterizePage, type RasterPage } from "./rasterpage";
 
@@ -277,6 +277,9 @@ const FLAT_BOWL_TOP = 0.45;
 /** 升降号「并回竖笔」之后与模板的签名距离上限。比通用的 90 松一点：
  *  并回来的盒是块的包围盒 + 竖段的中心线拼出来的，边界不如原块齐整。 */
 const ACCID_TEMPLATE_DIST = 90;
+/** 紧跟谱号的**调号位置**上再放宽到这一档：颂赞与尊贵的调号降号是细网点印的，并回竖笔后
+ *  距离 95。全页一律放宽的话合唱谱干净档多认假降号（小节自检 59.5 → 59.02）。 */
+const KEY_ACCID_TEMPLATE_DIST = 100;
 
 /** 空心头按模板再搜的得分门槛。见「空心头按模板再搜」那一段。 */
 const HOLLOW_MASK_SCORE = 0.38;
@@ -285,6 +288,10 @@ const ARTIC_REACH = 4.5;
 
 /** 调号兜底：相邻两个升降号（或谱号与第一个升降号）之间最多隔几个线距。 */
 const KEY_GAP = 1.5;
+/** 歌词条字高不到本页中位数的这个比例就不是歌词（页脚版权小字）。 */
+const LYRIC_MIN_H = 0.4;
+/** 调号**第一个**记号离谱号右缘的上限（线距）：低音谱号的两点在谱号盒外（齐来称颂 1.77 格）。 */
+const KEY_GAP_FIRST = 2.0;
 
 /** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
 const TIME_TEMPLATE_DIST = 180;
@@ -464,6 +471,17 @@ export async function recognizeRasterPage(
   const rowLines = findStaffLines(raster.bin);
   const { lines, groups } = completeStaffLines(raster.bin, rowLines, groupStaves(rowLines));
   if (!groups.length) return empty(blank, raster, unit, opts.carryTime);
+  // 谱线左端顺着线再往左追（弯页左段落在横带外，见 `traceLeft`）。一行谱五条线的左端
+  // 本该一致，追的时候中间几条常被谱号挡住（齐来称颂第一行追到 153/209/216/193/153），
+  // 取**至少两条吻合的最小左端**统一给五条线——下游一律拿五条线左端的最大值当谱行左缘。
+  for (const g of groups) {
+    const ls = g.lines.map((l) => traceLeft(raster.bin, l.left, l.y0, l.y1)).sort((a, b) => a - b);
+    const agreed = ls.find((v) => ls.filter((u) => Math.abs(u - v) <= 3).length >= 2);
+    // 只在差出两格以上时改：扫描件的左端本来就参差几个像素，照改会把谱号、括号的窗口
+    // 挪动一点点，合唱谱扫描件歌词实测跌 5 个点。
+    const cur = Math.max(...g.lines.map((l) => l.left));
+    if (agreed !== undefined && cur - agreed > unit.space * 2) for (const l of g.lines) l.left = Math.min(l.left, agreed);
+  }
 
   // **只留谱表带**（默认不开，立 GT 底稿时才开）。独唱谱那种谱表上方印和弦字母的底本，
   // 字母「C」是个圈，正落在空心符头那一档里（`HOLLOW_BAND` 上下各让三格，字母就在里面）；
@@ -494,7 +512,7 @@ export async function recognizeRasterPage(
   const strayLines: LineSeg[] = lines
     .filter((l) => !groupedLines.has(l))
     .map((l) => ({ x0: l.left, y0: l.y, x1: l.right, y1: l.y, lw: l.y1 - l.y0 + 1, maxLw: l.y1 - l.y0 + 1 }));
-  const prims = findPrimitives(nl, unit, gridYs, staffLefts);
+  const prims = findPrimitives(nl, unit, gridYs, staffLefts, raster.faint);
 
   // ── 简谱行（混排谱）：**先于一切**认领 ─────────────────────────────────────
   //
@@ -848,6 +866,10 @@ export async function recognizeRasterPage(
   // 并完要把那条竖段**从 `vSegs` 里摘掉**——留着的话 `findStems` 会把它当符干，
   // `findBarlines` 会把它当小节线。
   const usedSegs = new Set<LineSeg>();
+  // 调号位置：同一行谱的谱号右缘往右四格以内
+  const clefSyms = syms.filter((s) => s.code === "gClef" || s.code === "fClef" || s.code === "cClef");
+  const atKeySlot = (b: Rect) =>
+    clefSyms.some((c) => b.y < c.box.y + c.box.h && b.y + b.h > c.box.y && b.x >= c.box.x + c.box.w - 1 && b.x <= c.box.x + c.box.w + unit.space * 4);
   for (const c of blobs) {
     if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
     const b = c.bbox;
@@ -881,7 +903,7 @@ export async function recognizeRasterPage(
         // 竖笔一被抽走就什么都不剩的那一种；升号与还原号各有两道竖笔，
         // 丢不干净，靠这条路补反而是过检（实测放开三种，破碎的还原号
         // 从 17 个涨到 70 个，而 GT 只有 24 个）。
-        const m = matchTemplate(sig, w1, h1, look.templates ?? [], ACCID_TEMPLATE_DIST);
+        const m = matchTemplate(sig, w1, h1, look.templates ?? [], atKeySlot(box) ? KEY_ACCID_TEMPLATE_DIST : ACCID_TEMPLATE_DIST);
         code = m && isAccidental(m.smufl) ? m.smufl : null;
       }
       if (!code) continue;
@@ -1041,7 +1063,8 @@ export async function recognizeRasterPage(
   const keyBin = raster.bin;
   function sharpAsHeads(ss: RasterSym[], edge: number, onStaff: (r: Rect) => boolean): { heads: RasterSym[]; box: Rect } | null {
     const sp = keySp;
-    const hs = ss.filter((s0) => s0.code === "noteheadBlack" && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + sp * 2);
+    // 从左往右找：串是逐个往右认的，先配上右边那个会跳过左边那个（齐来称颂低音谱表第二、三个升号）
+    const hs = ss.filter((s0) => s0.code === "noteheadBlack" && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + sp * 2).sort((a, b) => a.box.x - b.box.x);
     // 候选：上下叠着的一对，或者单独一个（另一道横笔没被认成头）
     const sets: RasterSym[][] = [];
     for (const a of hs)
@@ -1097,31 +1120,44 @@ export async function recognizeRasterPage(
     let edge = clef.box.x + clef.box.w;
     const onStaff = (r: Rect) => r.y < bottom && r.y + r.h > top;
     if (syms.some((s0) => isAccidental(s0.code) && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + unit.space * KEY_GAP)) continue;
-    const pair = sharpAsHeads(syms, edge, onStaff);
-    if (pair) {
-      for (const s0 of pair.heads) syms.splice(syms.indexOf(s0), 1);
-      syms.push({ box: pair.box, code: "accidentalSharp" });
-      ledger.claim(pair.box, "key:accidentalSharp");
-      continue;
-    }
     const cand = blobs
       .filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id) && !merged.has(c.id))
       .filter((c) => onStaff(c.bbox))
       .sort((a, b) => a.bbox.x - b.bbox.x);
-    for (const c of cand) {
-      const b = c.bbox;
-      if (b.x < edge - 1) continue;
-      if (b.x > edge + unit.space * KEY_GAP) break; // 串断了
-      const w = b.w / unit.space;
-      const h = b.h / unit.space;
-      if (w < 0.6 && h < 0.6) continue; // 噪点、谱号的小尾巴：跳过，不算断串
-      if (h < 1.8 || h > 3.4 || w < 0.4 || w > h * 0.5) break;
-      const m = matchTemplate(binSig(nl, b), w, h, (look.templates ?? []).filter((t) => t.smufl === "accidentalSharp" || t.smufl === "accidentalFlat"), TIME_TEMPLATE_DIST);
-      if (!m) break;
-      syms.push({ box: b, code: m.smufl });
-      ledger.claim(b, `key:${m.smufl}`);
-      merged.add(c.id);
-      edge = b.x + b.w;
+    // 串里**逐个**往右认，每一步先看「被当成符头的升号」、再看普通块：齐来称颂的低音谱表
+    // 三个升号，第一个是普通块、后两个各被认成一对黑符头，只认一路就断在第二个上。
+    // 第一个记号离谱号右缘放到两格：低音谱号的两点在谱号盒外，实测 1.77 格。
+    for (let first = true; ; first = false) {
+      const gap = unit.space * (first ? KEY_GAP_FIRST : KEY_GAP);
+      const pair = sharpAsHeads(syms, edge, onStaff);
+      if (pair && pair.box.x <= edge + gap) {
+        for (const s0 of pair.heads) syms.splice(syms.indexOf(s0), 1);
+        syms.push({ box: pair.box, code: "accidentalSharp" });
+        ledger.claim(pair.box, "key:accidentalSharp");
+        edge = pair.box.x + pair.box.w;
+        continue;
+      }
+      let took = false;
+      for (const c of cand) {
+        const b = c.bbox;
+        if (b.x < edge - 1 || merged.has(c.id)) continue;
+        if (b.x > edge + gap) break; // 串断了
+        const w = b.w / unit.space;
+        const h = b.h / unit.space;
+        if (w < 0.6 && h < 0.6) continue; // 噪点、谱号的小尾巴：跳过，不算断串
+        // 宽另卡 1.2 格：齐来称颂的拍号「3」与「4」的上半连成一块（1.37×3.2 格），
+        // 紧挨着最后一个升号，宽高比过得了 0.5 那道闸，被当成第四个升号吃掉，拍号就没了
+        if (h < 1.8 || h > 3.4 || w < 0.4 || w > h * 0.5 || w > 1.2) break;
+        const m = matchTemplate(binSig(nl, b), w, h, (look.templates ?? []).filter((t) => t.smufl === "accidentalSharp" || t.smufl === "accidentalFlat"), TIME_TEMPLATE_DIST);
+        if (!m) break;
+        syms.push({ box: b, code: m.smufl });
+        ledger.claim(b, `key:${m.smufl}`);
+        merged.add(c.id);
+        edge = b.x + b.w;
+        took = true;
+        break;
+      }
+      if (!took) break;
     }
   }
 
@@ -1427,6 +1463,7 @@ export async function recognizeRasterPage(
   findTails(pg);
   findBarlines(pg);
   const ctx = findClefKeyTime(pg);
+  shareKeySignature(ctx);
   makeSystems(pg);
   makeBars(pg);
   // 段的认领：**只记挂上标记的**（谱线/加线/符干/小节线/系统线/符尾）。
@@ -1528,14 +1565,26 @@ export async function recognizeRasterPage(
     }
     /** OCR 认得出字的歌词行（剔「字的笔画被收成符头」要用，见下）。 */
     const readRows: LyricRow[] = [];
+    const latinRows = new Set<LyricRow>();
+    // 本页歌词条字高的中位数（只算命中缓存的条）：页脚小字与歌词字号差着三倍
+    const hitH = (ocr ? lyricStrips : []).filter((st) => ocr!.get(stripKey(st))).map((st) => st.charH).sort((a, b) => a - b);
+    const medH = hitH.length ? hitH[hitH.length >> 1] : 0;
     for (const strip of ocr ? lyricStrips : []) {
       const chars = ocr!.get(stripKey(strip));
       if (!chars) continue; // 缓存没命中：这一条没跑过 OCR，宁可留空不编造
       lyricStats.hit++;
-      if (chars.some((c) => /\p{Script=Han}/u.test(c.ch))) readRows.push(stripRow.get(strip)!);
+      // **页脚小字不是歌词**：赞美三一真神末行下面的版权行（字高 12，歌词 34~41）离低音谱表
+      // 不到两个谱表高，被收成男声的第 1 段
+      if (strip.charH < medH * LYRIC_MIN_H) continue;
+      // **三格以内、认不出一半字的条不收**：谱表紧下方带加线的低音被切成一条（赞美三一真神
+      // 末系统 3 格只认出一个「户」），占掉第 1 段，后面四段整体下移一段
+      if (strip.cells.length <= 3 && foldLyricChars(chars).length < strip.cells.length * 0.5) continue;
       // **拉丁行绕开字格**：字格那一套是按汉字等宽见方切的，英文词宽差着数倍。
       // 逐字造盒、按间距补词间空格，断词断音节交给 `splitSyllables`（见 `lyric.ts`）。
       const latin = isLatinRow(chars);
+      // 拉丁行也算：齐来称颂英文第一行紧贴低音谱表，「we」的 e 被收成空心符头，还配上了加线
+      if (latin || chars.some((c) => /\p{Script=Han}/u.test(c.ch))) readRows.push(stripRow.get(strip)!);
+      if (latin) latinRows.add(stripRow.get(strip)!);
       const cells = latin ? latinCells(strip, chars) : mapCharsToCells(strip, chars);
       // 「字数 == 格数」这个结构指标只对汉字行有意义（拉丁行压根不切格）
       if (!latin && foldLyricChars(chars).length === strip.cells.length) lyricStats.parity++;
@@ -1562,12 +1611,15 @@ export async function recognizeRasterPage(
           const top = Math.min(...r.cells.map((c) => c.y));
           const bot = Math.max(...r.cells.map((c) => c.y + c.h));
           if (cy <= top || cy >= bot) return false;
+          // 拉丁行：字母被收成符头之后就不在字格里了（「we」的 e），落在行的左右端之内就算
+          if (latinRows.has(r)) return cx > Math.min(...r.cells.map((c) => c.x)) && cx < Math.max(...r.cells.map((c) => c.x + c.w));
           return r.cells.some((c) => cx > c.x - pad(r) && cx < c.x + c.w + pad(r) && cy > c.y - pad(r) && cy < c.y + c.h + pad(r));
         });
       };
       for (let i = notes.length - 1; i >= 0; i--) if (inRow(notes[i])) notes.splice(i, 1);
     }
     lyricLines.push(...buildLyricLines(pg, objs));
+    foldBilingualLyrics(pg, lyricLines);
     attachLyrics(notes, lyricLines);
   }
 
@@ -1678,6 +1730,67 @@ export async function recognizeRasterPage(
     debugRest: opts.debug ? blobImage(nl, prims, unit, onGrid) : undefined,
     carryTime: lastTimeSignature(pg, ctx, opts.carryTime),
   };
+}
+
+/**
+ * **中英对照的闭合谱：下一行谱底下的拉丁歌词并到上一行谱，段号接着排。**
+ *
+ * 齐来称颂伟大之神那种排法：中文四段印在女声谱表下（两谱表之间），英文四段印在男声谱表下。
+ * `buildLyricLines` 按「上方最近的谱行」收，两边各编 1~4 段，中文第 1 段与英文第 1 段
+ * 就成了同一段，混成一串。照独唱谱的约定（坚固保障：中文 1~4、英文 5~8，都挂在旋律上）
+ * 把英文挂回上一行谱、段号续在中文后面。
+ *
+ * 只在同一系统里**上一行谱全是汉字段、下一行谱全是拉丁段**时并——合唱谱四个声部
+ * 各印各的中文词，那是各声部自己的第 1 段，不能动。
+ */
+function foldBilingualLyrics(pg: SPage, lines: LyricLine[]): void {
+  const latin = (l: LyricLine) => {
+    const t = l.syllables.map((s) => s.text).join("");
+    const cjk = [...t].filter((c) => /[\u3400-\u9fff]/.test(c)).length;
+    const lat = [...t].filter((c) => /[A-Za-z]/.test(c)).length;
+    return lat > cjk * 3;
+  };
+  for (const sys of pg.systems) {
+    for (let i = 0; i + 1 < sys.staves.length; i++) {
+      const up = lines.filter((l) => l.staff === sys.staves[i]);
+      const lo = lines.filter((l) => l.staff === sys.staves[i + 1]);
+      if (!up.length || !lo.length || up.some(latin) || !lo.every(latin)) continue;
+      const base = Math.max(...up.map((l) => l.verse));
+      for (const l of lo) {
+        l.staff = sys.staves[i];
+        l.verse += base;
+      }
+    }
+  }
+}
+
+/**
+ * **调号不全的谱行照抄同页的**：整首不转调是常态，同页各行调号本该一样。
+ * 取**至少两行认得一模一样**的调号里最长的那个，一个都没认出、或只认出同类（全升/全降）
+ * 前几个的谱行照它补齐。
+ *
+ *   - 颂赞与尊贵第一行的降号贴着高音谱号，去谱线后残留的一行墨把两者连成一块，
+ *     被谱号盒整个吞掉；导出取第一行的调号，整首按 C 大调读、再按调号差移调，字母全错。
+ *   - 齐来称颂的低音谱表三个升号，后两个在调号那一步已被别的路认领（当成符头），
+ *     两行低音谱表只认出一个，G# 全读成 G。
+ */
+function shareKeySignature(ctx: Map<Staff, StaffContext>): void {
+  const all = [...ctx.values()];
+  const sigOf = (c: StaffContext) => c.key.map((k) => k.code).join(",");
+  const count = new Map<string, number>();
+  for (const c of all) if (c.key.length) count.set(sigOf(c), (count.get(sigOf(c)) ?? 0) + 1);
+  let best: StaffContext | null = null;
+  for (const c of all) if (c.key.length && count.get(sigOf(c))! >= 2 && (!best || c.key.length > best.key.length)) best = c;
+  // 最长的那个只出现一次也行——只要别的行（至少两行）认出的都是它的**前几个**：
+  // 敬拜万世之王五行里一行认出两个降号、四行只认出头一个（第二个降号被去谱线切碎）
+  const longest = all.filter((c) => c.key.length).sort((a, b) => b.key.length - a.key.length)[0];
+  const others = all.filter((c) => c.key.length && c !== longest);
+  if (longest && others.length >= 2 && (!best || longest.key.length > best.key.length) && others.every((c) => c.key.every((k, i) => k.code === longest.key[i].code)))
+    best = longest;
+  if (!best) return;
+  const kind = best.key[0].code;
+  if (best.key.some((k) => k.code !== kind)) return;
+  for (const c of all) if (c.key.length < best.key.length && c.key.every((k) => k.code === kind)) c.key = best.key;
 }
 
 /** 两个盒的交叠占 `a` 的比例。 */

@@ -377,6 +377,8 @@ export function hollowHeadsFromHoles(
   const sp = unit.space;
   const ring = Math.max(2, Math.round(sp * RING));
   const out: { box: Rect; code: SmuflName }[] = [];
+  /** 过了尺寸与填充、只差「符干一端」那道闸的：叠置和弦里夹在中间的头（见下）。 */
+  const midStem: { box: Rect; stem: LineSeg }[] = [];
   for (const hole of holes) {
     const hw = hole.w / sp;
     const hh = hole.h / sp;
@@ -398,6 +400,10 @@ export function hollowHeadsFromHoles(
     // 已经认出来的符头不重复收
     if (taken.some((t) => overlaps(t, box, sp * 0.4))) continue;
     const stem = stemOf(box, stems, unit);
+    if (!stem) {
+      const through = stemThrough(box, stems, unit);
+      if (through) midStem.push({ box, stem: through });
+    }
     // 二分符头一定带符干，全音符才不带（宽度那一档与 `judgeHeadBox` 共用 `W_WHOLE`）。
     // 试过把全音符的宽度门槛单独抬到 1.65：时值 90.3% → 90.5%，但音符 69.60% → 69.52%，
     // 不划算。
@@ -405,7 +411,30 @@ export function hollowHeadsFromHoles(
     out.push({ box, code: w >= W_WHOLE && !stem ? "noteheadWhole" : "noteheadHalf" });
     taken.push(box);
   }
+  // **叠置空心和弦**：符干从一端的头穿过另一个头往外伸（齐来称颂 A4/E4 二分和弦，
+  // 干从 E4 起、穿过 A4 再往上两格），夹在中段的那个头过不了「符头在符干一端」。
+  // 同一根干上 2.2 格内已有收下的空心头，它就是和弦的一员。
+  for (const m of midStem) {
+    if (taken.some((t) => overlaps(t, m.box, sp * 0.4))) continue;
+    const cy = m.box.y + m.box.h / 2;
+    const mate = out.some((o) => stemThrough(o.box, [m.stem], unit) && Math.abs(o.box.y + o.box.h / 2 - cy) <= sp * 2.2);
+    if (!mate) continue;
+    out.push({ box: m.box, code: "noteheadHalf" });
+    taken.push(m.box);
+  }
   return out;
+}
+
+/** 贴着盒左右缘、纵向穿过盒的竖段（不管盒在段的哪一截）。 */
+function stemThrough(b: Rect, stems: LineSeg[], unit: RasterUnit): LineSeg | null {
+  const tol = Math.max(unit.lineThick * 2, unit.space * 0.25);
+  for (const s of stems) {
+    const x = (s.x0 + s.x1) / 2;
+    if (Math.abs(x - b.x) > tol && Math.abs(x - (b.x + b.w)) > tol) continue;
+    if (Math.max(s.y0, s.y1) < b.y + b.h / 2 || Math.min(s.y0, s.y1) > b.y + b.h / 2) continue;
+    return s;
+  }
+  return null;
 }
 
 function overlaps(a: Rect, b: Rect, tol: number): boolean {

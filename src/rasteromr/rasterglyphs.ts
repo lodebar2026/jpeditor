@@ -250,38 +250,61 @@ export function bootstrapClefs(
     }
     if (!cand.length) continue;
     // 取最高的那个当种子，再把 x 上与它重叠的并进来
-    let seed = cand[0];
-    for (const i of cand) if (blobs[i].h > blobs[seed].h) seed = i;
-    let box = { ...blobs[seed] };
-    const used = [seed];
-    for (let again = true; again; ) {
-      again = false;
-      for (const i of cand) {
-        if (used.includes(i)) continue;
-        const b = blobs[i];
-        if (b.x > box.x + box.w || b.x + b.w < box.x) continue; // x 不重叠：那是调号，不是谱号的碎块
-        // 与种子块 x 不重叠、靠别的碎块搭桥进来的，上下还要贴着（半格内）：花括号下端的弯钩
-        // 在谱表底线下 0.65 格处，借低音谱号左边那截碎块搭上了（《赞美一神》），并进来盒子
-        // 拉高到 5.4 格，被判成高音谱号。不能一律要求贴着——扫描件的谱号断得碎，
-        // 与种子重叠的碎块之间常隔着半格以上（一律要求时扫描件音符 67.7% → 51.7%）。
-        const sd = blobs[seed];
-        const onSeed = b.x <= sd.x + sd.w && b.x + b.w >= sd.x;
-        const gap = b.y > box.y ? b.y - (box.y + box.h) : box.y - (b.y + b.h);
-        if (!onSeed && gap > space * 0.5) continue;
-        const x0 = Math.min(box.x, b.x);
-        const y0 = Math.min(box.y, b.y);
-        box = { x: x0, y: y0, w: Math.max(box.x + box.w, b.x + b.w) - x0, h: Math.max(box.y + box.h, b.y + b.h) - y0 };
-        used.push(i);
-        again = true;
+    const grow = (seed: number) => {
+      let box = { ...blobs[seed] };
+      const used = [seed];
+      for (let again = true; again; ) {
+        again = false;
+        for (const i of cand) {
+          if (used.includes(i)) continue;
+          const b = blobs[i];
+          if (b.x > box.x + box.w || b.x + b.w < box.x) continue; // x 不重叠：那是调号，不是谱号的碎块
+          // 与种子块 x 不重叠、靠别的碎块搭桥进来的，上下还要贴着（半格内）：花括号下端的弯钩
+          // 在谱表底线下 0.65 格处，借低音谱号左边那截碎块搭上了（《赞美一神》），并进来盒子
+          // 拉高到 5.4 格，被判成高音谱号。不能一律要求贴着——扫描件的谱号断得碎，
+          // 与种子重叠的碎块之间常隔着半格以上（一律要求时扫描件音符 67.7% → 51.7%）。
+          const sd = blobs[seed];
+          const onSeed = b.x <= sd.x + sd.w && b.x + b.w >= sd.x;
+          const gap = b.y > box.y ? b.y - (box.y + box.h) : box.y - (b.y + b.h);
+          if (!onSeed && gap > space * 0.5) continue;
+          // 搭桥进来的也不许探到谱表底线半格以下：谱号的碎块不往下长，那是方括号下端的弯钩
+          // （赞美三一真神第一行低音谱号借一个墨点把它并进来，盒高 5.1 格，被判成高音谱号）
+          if (!onSeed && b.y + b.h > bottom + space * 0.5) continue;
+          const x0 = Math.min(box.x, b.x);
+          const y0 = Math.min(box.y, b.y);
+          box = { x: x0, y: y0, w: Math.max(box.x + box.w, b.x + b.w) - x0, h: Math.max(box.y + box.h, b.y + b.h) - y0 };
+          used.push(i);
+          again = true;
+        }
       }
+      return box;
+    };
+    const tallest = (pool: number[]) => pool.reduce((a, i) => (blobs[i].h > blobs[a].h ? i : a), pool[0]);
+    const fits = (b: { w: number; h: number }) => b.h >= space * 1.8 && b.w >= space * 0.8;
+    let seed = tallest(cand);
+    let box = grow(seed);
+    // **种子是细竖条、并完过不了尺寸闸**：系统线/方括号的竖笔比谱号高，被取作种子，
+    // 这一行就没了谱号（齐来称颂第一行，谱号左缘贴着系统线）。换最高的宽块重来一次。
+    // 细种子要比谱表还高、又压在谱行左缘上（就是系统线本身）才换：扫描件里别的竖笔
+    // 当了种子时换掉，谱号是补出来了，调号窗口跟着挪，同页几行反倒少认一批音
+    // （破碎扫描件三处，音符 −0.11、歌词 −0.24）。
+    if (!fits(box) && blobs[seed].w < space * 0.5 && blobs[seed].h >= space * 4.5 && blobs[seed].x <= st.left + space * 0.3) {
+      const wide = cand.filter((i) => blobs[i].w >= space * 0.5);
+      if (wide.length) (seed = tallest(wide)), (box = grow(seed));
     }
-    if (box.h < space * 1.8 || box.w < space * 0.8) continue;
+    if (!fits(box)) continue;
     let code: SmuflName | null = null;
     if (verify) {
       const hit = matchTemplate(verify.sigOf(box), box.w / space, box.h / space, verify.tpl.filter((t) => t.smufl === "gClef" || t.smufl === "fClef"));
       if (hit) code = hit.smufl;
     }
-    out.push({ index: seed, box, code: code ?? (box.h >= space * 3.8 ? "gClef" : "fClef") });
+    code ??= box.h >= space * 3.8 ? "gClef" : "fClef";
+    // **高音谱号必然探出谱表**（上下各一格多）。齐来称颂那本的低音谱号高 3.9 格，
+    // 模板与高度都判成高音谱号，可它整个落在谱表里——SATB 的男声谱表全按高音谱号读，
+    // 音高整行错一个六度。只管高度卡在门槛边上的（真高音谱号 4.7~7.5 格）：
+    // 扫描件断掉半截的高音谱号也可能不探出谱表，不设上限的话照样被改判（破碎扫描件一处）。
+    if (code === "gClef" && box.h < space * 4.2 && Math.max(top - box.y, box.y + box.h - bottom) < space * 0.8) code = "fClef";
+    out.push({ index: seed, box, code });
   }
   return out;
 }

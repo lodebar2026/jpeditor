@@ -63,6 +63,65 @@ export function halftoneRatio(bin: Binary, rows?: (y: number) => boolean): numbe
 }
 
 /**
+ * 墨里的**针孔**占比：八邻域里至少六个是墨的白点，与墨点数之比（只量谱表带内）。
+ *
+ * 网纹填充（齐来称颂伟大之神那本：符头、谱号内部是斜交叉的细网纹）量不出孤立点
+ * ——网纹里每个墨点斜对角都挨着墨，`halftoneRatio` 只有 0.069；可符头里满是
+ * 被墨围住的白点，照直送识别，填充率那一档全不过（实测 151 个音只认出 17 个）。
+ */
+export function pinholeRatio(bin: Binary, rows?: (y: number) => boolean): number {
+  const { w, h, data } = bin;
+  let ink = 0;
+  let holes = 0;
+  for (let y = 1; y < h - 1; y++) {
+    if (rows && !rows(y)) continue;
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (data[i]) {
+        ink++;
+        continue;
+      }
+      const n =
+        data[i - w - 1] + data[i - w] + data[i - w + 1] + data[i - 1] + data[i + 1] + data[i + w - 1] + data[i + w] + data[i + w + 1];
+      if (n >= 6) holes++;
+    }
+  }
+  return ink ? holes / ink : 0;
+}
+
+/**
+ * **补针孔**（就地改 `bin`）：八邻域里至少六个是墨的白点补成墨，补两遍。
+ *
+ * 网纹填充的页面不能走 `descreen`：那边的密度窗口按线距取（线距 17.5px 时 11px 见方），
+ * 汉字笔画、升号糊成一团，空心符头也被填实（实测齐来称颂 151 个音认出 154 个、
+ * 对上的只有 14.6%）。网纹的空隙只有一两个像素，逐点补就够，别的笔画分毫不动。
+ */
+export function fillPinholes(bin: Binary): void {
+  const { w, h, data } = bin;
+  for (let pass = 0; pass < 2; pass++) {
+    const add: number[] = [];
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        if (data[i]) continue;
+        const n =
+          data[i - w - 1] + data[i - w] + data[i - w + 1] + data[i - 1] + data[i + 1] + data[i + w - 1] + data[i + w] + data[i + w + 1];
+        if (n >= 6) add.push(i);
+      }
+    }
+    if (!add.length) break;
+    for (const i of add) data[i] = 1;
+  }
+}
+
+/**
+ * **判网纹填充的门槛**。谱表带内实测，要补的三份：齐来称颂 0.066、赞美三一真神 0.035、
+ * 颂赞与尊贵 0.017（后两份网纹淡，取 0.04 时整页认不出东西）；不该补的：合唱谱全书全页
+ * 最大 0.0076，其余图片语料 0.001 以下（坚固保障 0.0096 走的是去网那一档）。取 0.012。
+ */
+export const PINHOLE_RATIO = 0.012;
+
+/**
  * **判半调网点的门槛**。谱表带内实测：心领那本（抖动印刷）0.359；
  * 合唱谱那批（干净位图 + 真扫描件）全书全页最大 0.157（你要等候 p3），
  * 其余多在 0.1 以下。两档之间是空的，取 0.25——离两边都有余量，

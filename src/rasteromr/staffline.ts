@@ -126,6 +126,48 @@ export function findStaffLines(bin: Binary): StaffLineRun[] {
   return out;
 }
 
+/** 往左追谱线时，一列找不到墨最多容忍几列。 */
+const TRACE_GAP = 3;
+
+/**
+ * **顺着谱线往左追**：横带定出来的左端，再沿线往左走，每列允许上下各漂一个像素。
+ *
+ * 去倾斜是整页一个斜率，弯的扫描页（齐来称颂伟大之神）左段谱线比主带低三个像素，
+ * 落在横带外，左端就被量到谱号右边（实测 204，真谱线从 155 起）；
+ * 谱行左端一偏，谱号落不进候选窗口，后面的升号被当成谱号，整页调号全错。
+ * 只接**连着的**墨（断口不过 `TRACE_GAP` 列），乐器名之类隔开的东西接不进来；
+ * **在识别阶段、谱线定稿之后才追**（`recognizeRasterPage`）：取图层量网点率也要找谱线，
+ * 那时网点还没去，追线会一路追进网点里（实测坚固保障网点率 0.359 → 0，去网没做）。
+ * 碰上竖笔（系统线、谱号的竖笔）那一列墨超出线厚，窗口不跟着动。
+ */
+export function traceLeft(bin: Binary, left: number, y0: number, y1: number): number {
+  const { w, h, data } = bin;
+  // 补线合成的谱线（`completeStaffLines`）上下沿是小数
+  let lo = Math.floor(y0);
+  let hi = Math.ceil(y1);
+  const thick = hi - lo + 1;
+  let gap = 0;
+  let best = left;
+  for (let x = left - 1; x >= 0; x--) {
+    let a = -1;
+    let b = -1;
+    for (let y = Math.max(0, lo - 1); y <= Math.min(h - 1, hi + 1); y++)
+      if (data[y * w + x]) {
+        if (a < 0) a = y;
+        b = y;
+      }
+    if (a < 0) {
+      if (++gap > TRACE_GAP) break;
+      continue;
+    }
+    gap = 0;
+    best = x;
+    // 窗口只跟着线厚那么宽的墨走；整窗都是墨的是竖笔，不挪
+    if (b - a + 1 <= thick + 1) (lo = a), (hi = b);
+  }
+  return best;
+}
+
 /** 同一行谱五条线的左缘允许差多少（线距的倍数）。 */
 const LEFT_SPREAD = 3;
 

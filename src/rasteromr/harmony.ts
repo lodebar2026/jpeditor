@@ -32,6 +32,8 @@ const BAND_TOP = 3.2;
 const BAND_BOTTOM = 1.0;
 /** 混排谱：简谱行上沿往上这么多格（《是谁》和弦字母下沿离简谱带上沿 0.2 格、字高 1.3 格）。 */
 const JP_BAND = 3.0;
+/** 有简谱行时带底比简谱行上沿再往下放几格（见 `findHarmonyStrips`）。 */
+const JP_BELOW = 0.6;
 
 /** 簇间的空白：相邻两段墨拉开这么多个线距才算是两个和弦。
  *  实测三条带的间隙**两极分化**（簇内 ≤0.67 格、簇间 ≥1.07 格），0.75 格落在空当里。
@@ -168,7 +170,9 @@ export function findHarmonyStrips(
     // 两小节的 C、G 离顶线只有 0.25 格），穿过原带底，被「伸上来的东西」那一步整个抹掉。
     // 下探之后「伸上来」改成**连着谱表的**（从顶线那几行起灌），浮着的字母留下；
     // 整块都在原带底以下的（贴着谱表的符头、加线）另外丢掉。
-    const y1 = jp ? yB : Math.max(yB, Math.round(st.box.top - sp * LOW_CLEAR));
+    // 有简谱行时同样往下放一点（`JP_BELOW`）：简谱行的上沿按行里最高的墨定，和弦字母的下半截
+    // 常压在它里面（颂赞与尊贵字母 215~245、简谱行上沿 239），截掉底的「F」「B♭」OCR 认不出
+    const y1 = jp ? Math.min(bin.h, Math.round(yB + sp * JP_BELOW)) : Math.max(yB, Math.round(st.box.top - sp * LOW_CLEAR));
     const x0 = Math.max(0, Math.round(st.box.left));
     const x1 = Math.min(bin.w, Math.round(st.box.right));
     if (y1 - y0 < 4 || x1 - x0 < 8) continue;
@@ -210,7 +214,7 @@ export function findHarmonyStrips(
         for (let x = x0 + a; x <= x0 + b; x++) if (y >= y0 ? at(x, y) : bin.data[y * bin.w + x]) return true;
         return false;
       };
-      if (!jp) {
+      {
         // **只留最上面一段**：和弦记号只有一行，同簇里下面隔开的是延长记号
         //（《赞美一神》延长记号上方的 G 与记号并成一条，OCR 读成「5」）
         const cut = Math.max(2, Math.round(sp * RUN_GAP));
@@ -224,7 +228,7 @@ export function findHarmonyStrips(
         }
         while (yb > ya && !rowInk(yb)) yb--;
         // **碰到带顶的往上长**：延长记号上方的和弦字母印得高，顶上被带顶切掉
-        if (ya === y0) while (ya > 0 && ya > y0 - sp * GROW_UP && rowInk(ya - 1)) ya--;
+        if (!jp && ya === y0) while (ya > 0 && ya > y0 - sp * GROW_UP && rowInk(ya - 1)) ya--;
       }
       const box = { x: x0 + a, y: ya, w: b - a + 1, h: yb - ya + 1 };
       const data = new Uint8Array(box.w * box.h);

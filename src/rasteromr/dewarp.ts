@@ -132,10 +132,22 @@ export function completeStaffLines(bin: Binary, lines: StaffLineRun[], groups: S
     const cy = median(band.map((h) => h.cy));
     // 已经被行投影找出来的谱行盖住了就跳过——干净位图那一档**全部**落在这里，
     // 所以这条补线一个像素都不会动它（实测各档分毫不差）。
-    if (groups.some((g) => cy > g.lines[0].y - space && cy < g.lines[4].y + space)) continue;
     const thick = Math.max(1, median(band.map((h) => h.thick)));
     const left = Math.min(...band.map((h) => h.x));
     const right = Math.max(...band.map((h) => h.x));
+    const covered = groups.find((g) => cy > g.lines[0].y - space && cy < g.lines[4].y + space);
+    if (covered) {
+      // **盖住了、但只盖住半截**：细线扫描件（敬拜万世之王，320dpi、谱线 1px）行投影
+      // 凑得出组，线却断成虚线，右端停在页面一半（实测 1004 / 1292，真谱线到 2470），
+      // 下游按这个跨度切小节、认符头，后半行整个丢掉。逐列游程看得见整行，照它延长。
+      // 只在差出页宽一成以上时动——干净位图的两个跨度只差几列，一个像素都不碰。
+      const ext = bin.w * EXTEND_MIN;
+      const gl = Math.min(...covered.lines.map((l) => l.left));
+      const gr = Math.max(...covered.lines.map((l) => l.right));
+      if (right - gr > ext || gl - left > ext)
+        for (const l of covered.lines) (l.left = Math.min(l.left, left)), (l.right = Math.max(l.right, right));
+      continue;
+    }
     const five: StaffLineRun[] = [];
     for (let k = 0; k < 5; k++) {
       const y = median(band.map((h) => h.ys[k]));
@@ -181,6 +193,9 @@ export function completeStaffLines(bin: Binary, lines: StaffLineRun[], groups: S
   outGroups.sort((a, b) => a.lines[0].y - b.lines[0].y);
   return { lines: out.sort((a, b) => a.y - b.y), groups: outGroups };
 }
+
+/** 已有谱行的跨度比逐列游程短出页宽的这个比例，才照游程延长。 */
+const EXTEND_MIN = 0.1;
 
 /** 外推出来的第五条线，那一带要有几成的列见到墨才认（符杠压着的地方本来就断）。 */
 const LINE_INK = 0.5;

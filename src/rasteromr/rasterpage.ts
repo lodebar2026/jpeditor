@@ -22,8 +22,8 @@
 // 过半就是翻了，整幅取反。
 import type { Binary } from "../omr/types";
 import { applyTrackWarp, completeStaffLines, trackCurves } from "./dewarp";
-import { descreen, halftoneRatio, HALFTONE_BAND, HALFTONE_RATIO } from "./descreen";
-import { findStaffLines, groupStaves } from "./staffline";
+import { descreen, fillPinholes, halftoneRatio, pinholeRatio, HALFTONE_BAND, HALFTONE_RATIO, PINHOLE_RATIO } from "./descreen";
+import { estimateUnit, findStaffLines, groupStaves } from "./staffline";
 
 /** 一页取到的位图，连同它在页面坐标里的位置（识别坐标 ↔ 页面坐标要用）。 */
 export interface RasterPage {
@@ -39,6 +39,8 @@ export interface RasterPage {
   kind: "mask" | "gray1" | "rgb";
   /** 量出来的网点率（`halftoneRatio`）。超过 `HALFTONE_RATIO` 的这一页做过去网。 */
   halftone: number;
+  /** 细线扫描件：按松阈值补过竖笔（见 `rasterizePage` 里 `mergeVertical` 那段）。 */
+  faint: boolean;
   /** 位图像素 → PDF 页面点的缩放（页宽 / 位图宽）。 */
   scale: number;
   /** 页面尺寸（PDF 点）。 */
@@ -80,6 +82,18 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   const kind: RasterPage["kind"] = best.data.length === packed ? (best.kind === 1 ? "gray1" : "mask") : "rgb";
   const bin = decodeImage(best, w, h);
   if (!bin) return null;
+  // **细线扫描件补竖向断口**：高分辨率彩色扫描（320dpi 的敬拜万世之王）小节线、符干只有
+  // 一两像素、灰度 150~210，`SAUVOLA_K` 那一档阈值约 144，切成虚线——小节线认不出，
+  // 简谱行靠「与谱表小节线同 x」也定不了位。放松阈值整页重来试过：谱线跟着变粗，
+  // 去谱线去不干净，谱号、调号碎成一地（音符 91% → 73%）；补几像素的断口也不够（断口十几像素）。
+  // 所以按松阈值再二值一遍，**只取其中纵向长游程**（小节线、符干）并回原图。
+  // 只看彩色档：其余底本线宽/线距实测都在 0.067 以上（见 `FAINT_RATIO`）。
+  let faint = false;
+  if (kind === "rgb") {
+    const u = estimateUnit(prepared(bin));
+    const soft = u && u.lineThick / u.space < FAINT_RATIO ? decodeImage(best, w, h, SAUVOLA_K_FAINT) : null;
+    if (soft && u) mergeVertical(bin, soft, Math.round(u.space * VERT_RUN)), (faint = true);
+  }
 
   // **极性自检**：ImageMask 里置位的是墨，`kind: 1`（GRAYSCALE_1BPP）里置位的是白，
   // 而 `/Decode` 还能把两者都翻过来——翻没翻只有量了才知道。
@@ -100,6 +114,8 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
     groups.some((g) => y > g.lines[0].y - g.space * HALFTONE_BAND && y < g.lines[4].y + g.space * HALFTONE_BAND);
   const halftone = space > 0 ? halftoneRatio(bin, inBand) : 0;
   if (halftone > HALFTONE_RATIO) descreen(bin, space);
+  // 网纹填充（符头、谱号里是细交叉网纹）不走去网，只补针孔（`fillPinholes`）
+  else if (space > 0 && pinholeRatio(bin, inBand) > PINHOLE_RATIO) fillPinholes(bin);
 
   // **先按逐列的黑白游程把弯的谱线推平**（`dewarp.ts`），再让 `deskew` 收拾残余的整页倾斜。
   //
@@ -111,7 +127,7 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   deskew(bin);
 
   const vp = page.getViewport({ scale: 1 });
-  return { bin, kind, halftone, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
+  return { bin, kind, halftone, faint, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
 }
 
 /** 行投影找出来的谱行数不到逐列游程看见的这个比例，才判这一页「弯得行投影已经废了」。 */
@@ -163,8 +179,9 @@ export function dewarpPage(bin: Binary): boolean {
   return false;
 }
 
-/** 去倾斜时试的最大斜率（dy/dx）。1900 px 宽的页面上相当于两端差 ±19 px。 */
-const MAX_SLOPE = 0.01;
+/** 去倾斜时试的最大斜率（dy/dx）。1900 px 宽的页面上相当于两端差 ±28 px。
+ *  从 0.01 放宽：敬拜万世之王那张 320dpi 扫描整页斜 0.0115，卡在量程外就一行谱也找不齐。 */
+const MAX_SLOPE = 0.015;
 /** 斜率的步长。1900 px 宽上相当于两端差 1 px——比谱线本身还细，够用了。 */
 const SLOPE_STEP = 0.0005;
 /** 候选斜率的档数（`±STEPS × SLOPE_STEP`）。 */
@@ -199,7 +216,7 @@ const MIN_SLOPE = 0.0004;
  * 列再抽稀一半（谱线横跨整页，抽稀不影响峰形），实测一页几十毫秒。
  *
  * **按列整像素错切**，不做旋转也不插值：位图是 1-bit 的，插值只会把谱线糊宽；
- * 而错切与旋转在这个角度上（正切值 0.01 以内）差别不到一个像素。
+ * 而错切与旋转在这个角度上（正切值 0.015 以内）纵向差别不到一个像素。
  */
 export function deskew(bin: Binary): number {
   const { w, h, data } = bin;
@@ -280,7 +297,7 @@ export function deskew(bin: Binary): number {
  * 而长度是三者唯一都给得出、且互不相同的量。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function decodeImage(obj: any, w: number, h: number): Binary | null {
+function decodeImage(obj: any, w: number, h: number, k = SAUVOLA_K): Binary | null {
   const src: Uint8Array | Uint8ClampedArray = obj.data;
   const data = new Uint8Array(w * h);
   const packed = Math.ceil(w / 8) * h;
@@ -301,7 +318,7 @@ function decodeImage(obj: any, w: number, h: number): Binary | null {
     // Rec.601 luma（与 `src/omr/preprocess.ts::toGray` 同一口径）
     gray[i] = step === 1 ? src[p] : (src[p] * 0.299 + src[p + 1] * 0.587 + src[p + 2] * 0.114) | 0;
   }
-  sauvola(gray, w, h, data);
+  sauvola(gray, w, h, data, k);
   return { w, h, data };
 }
 
@@ -310,6 +327,35 @@ function decodeImage(obj: any, w: number, h: number): Binary | null {
 const SAUVOLA_WIN = 1 / 40;
 const SAUVOLA_K = 0.5;
 const SAUVOLA_R = 128;
+/** 细线扫描件的松阈值：页白 250 时阈值约 208（`SAUVOLA_K` 那档约 144）。 */
+const SAUVOLA_K_FAINT = 0.2;
+/** 从松阈值图里取回的竖笔，纵向游程至少几格（小节线 4 格、符干 3 格；谱线与字的竖笔短得多）。 */
+const VERT_RUN = 1.5;
+/** 线宽/线距低于这个数算细线扫描件。实测敬拜万世之王 0.053，其余彩色底本 0.067（坚固保障）以上。 */
+const FAINT_RATIO = 0.06;
+
+/** 把 `soft` 里纵向游程不短于 `minRun` 的像素并进 `bin`。 */
+function mergeVertical(bin: Binary, soft: Binary, minRun: number): void {
+  const { w, h } = bin;
+  for (let x = 0; x < w; x++)
+    for (let y = 0; y < h; ) {
+      if (!soft.data[y * w + x]) {
+        y++;
+        continue;
+      }
+      let e = y;
+      while (e + 1 < h && soft.data[(e + 1) * w + x]) e++;
+      if (e - y + 1 >= minRun) for (let k = y; k <= e; k++) bin.data[k * w + x] = 1;
+      y = e + 1;
+    }
+}
+
+/** 量单位用的副本：去倾斜之后再量（斜着的一像素线在行投影里碎成两行）。 */
+function prepared(bin: Binary): Binary {
+  const b = { ...bin, data: new Uint8Array(bin.data) };
+  deskew(b);
+  return b;
+}
 
 /**
  * **Sauvola 局部阈值**（`T = m · (1 + k · (s/R − 1))`），用积分图 O(n) 算。
@@ -321,7 +367,7 @@ const SAUVOLA_R = 128;
  * 只走 RGB / 灰度那一档——**位图路的干净底本是 1-bit 的 `mask` / `gray1`**，
  * 那两档本来就没有灰度可分（`rasterizePage` 上面那两个分支直接取位）。
  */
-function sauvola(gray: Uint8Array, w: number, h: number, out: Uint8Array): void {
+function sauvola(gray: Uint8Array, w: number, h: number, out: Uint8Array, k = SAUVOLA_K): void {
   const r = Math.max(8, Math.round(w * SAUVOLA_WIN));
   // 积分图（多一行一列的零边，省去边界判断）
   const S1 = new Float64Array((w + 1) * (h + 1));
@@ -348,7 +394,7 @@ function sauvola(gray: Uint8Array, w: number, h: number, out: Uint8Array): void 
       const n = (x1 - x0) * (y1 - y0);
       const m = box(S1, x0, y0, x1, y1) / n;
       const v = Math.max(0, box(S2, x0, y0, x1, y1) / n - m * m);
-      const t = m * (1 + SAUVOLA_K * (Math.sqrt(v) / SAUVOLA_R - 1));
+      const t = m * (1 + k * (Math.sqrt(v) / SAUVOLA_R - 1));
       out[y * w + x] = gray[y * w + x] <= t ? 1 : 0; // 暗 = 墨
     }
   }

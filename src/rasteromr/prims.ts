@@ -37,8 +37,10 @@ export interface LineSeg {
 const BEAM_PAD = 2;
 /** 抹笔画时按平均厚的几倍封顶（见 `blobImage`）。 */
 const PAD_LW = 2;
-/** 左端系统线的窗口：谱行左缘往外几格、往里几格；连着要占缝里的几成行。见 `groupByLeftInk`。 */
-const LEFTINK_OUT = 2.0;
+/** 左端系统线的窗口：谱行左缘往外几格、往里几格；连着要占缝里的几成行。见 `groupByLeftInk`。
+ *  往外从 2 格放到 3.5 格：谱行左缘取五条线左端的最大值，谱线在谱号处断开时会被量到
+ *  谱号右边（齐来称颂第一行 204，系统线在 155，差 2.8 格），SATB 上下两行就拆成两个系统。 */
+const LEFTINK_OUT = 3.5;
 const LEFTINK_IN = 0.5;
 const LEFTINK_FRAC = 0.9;
 /**
@@ -326,6 +328,8 @@ export function findPrimitives(
    *  于是整页的系统线一条都抽不出来，十行谱碎成十个系统
    *  （实测破碎 p5 起就是这样，`buildScore` 随之把一个声部拆成好几条）。 */
   staffLefts: number[] = [],
+  /** 细线扫描件（`RasterPage.faint`）：竖笔的「细」放宽，见「竖笔画」那段。 */
+  faint = false,
 ): RasterPrims {
   const { w, h } = bin;
   const onGrid = ledgerGrid(staffLineYs, unit);
@@ -366,12 +370,17 @@ export function findPrimitives(
 
   // ── 竖笔画 ──
   const vMask0 = new Uint8Array(w * h);
-  for (let i = 0; i < vMask0.length; i++) if (hr[i] && hr[i] <= thin) vMask0[i] = 1;
+  // 细线扫描件（敬拜万世之王 线宽/线距 1px/18.8px）的「细」按线宽定只有 3px，
+  // 简谱行的粗小节线（5px）进不了竖段，简谱行也就定不了位。这一档的竖笔放到 0.3 格。
+  // 只认 `faint`，不按线宽/线距比判：干净位图你要等候也是 1px/18.75px，照放宽的话
+  // 符头、符尾的竖边混进竖段，合唱谱干净档小节自检 59.5 → 58.4（该曲 35.6 → 31.3）。
+  const thinV = faint ? Math.max(thin, unit.space * 0.3) : thin;
+  for (let i = 0; i < vMask0.length; i++) if (hr[i] && hr[i] <= thinV) vMask0[i] = 1;
   const vMask = close1d(vMask0, w, h, Math.round(unit.lineThick * 2), false);
   const vSegs: LineSeg[] = [];
   for (const c of comps(vMask, w, h, Math.max(3, unit.lineThick * 2))) {
     if (c.bbox.h < unit.space * VSEG_MIN_H) continue;
-    if (c.bbox.w > thin * 2) continue;
+    if (c.bbox.w > thinV * 2) continue;
     const seg = centerLine(vMask, w, c, false);
     // 谱行左缘那条（系统线）免检，其余要判孤立性——谱号的中央竖笔、升号的竖笔不是原语
     if (!atStaffLeft((seg.x0 + seg.x1) / 2) && !isolated(bin, seg, true)) continue;
