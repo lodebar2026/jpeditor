@@ -458,7 +458,7 @@ export class NoteEntry extends Entry {
     const notes: GraceNote[] = ch.graceNotes.map((g) => ({
       digit: g.number,
       octave: g.jpOctave,
-      duration: 8,
+      duration: g.duration ?? 8,
       ...(GRACE_ALTER[g.jpAlter] ? { alter: GRACE_ALTER[g.jpAlter]! } : {}),
     }));
     const probe = graceGeometry(notes, gm, 0, 0, -1, options.numberFont.size, 0);

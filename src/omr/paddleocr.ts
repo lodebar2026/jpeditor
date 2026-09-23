@@ -436,10 +436,21 @@ export function paddleOcrBackend(): OcrBackend {
       if (!rects.length) return [];
       await ensureSession();
       const src = surfaceFromBinary(bin);
-      const texts = await recognizeDigitCells(rects.map((r) => cellOf(src, bin, r)));
-      return texts.map((text) => {
+      const cells = rects.map((r) => cellOf(src, bin, r));
+      const texts = await recognizeDigitCells(cells);
+      // 粗体字印得重、图又小时，3/5/6 的开口被墨糊成闭环，整格读成 `8` / `B`（1940《宣告得胜年》
+      // 下半页字高 14px，6 全读成 B、3 全读成 8）。这两个字在简谱数字格里不会是真值：改取 0–7
+      // 各类在所有时间步上的最高分，实测该页 18 格全对（6/3 排第一，真休止 0 仍排第一）。
+      const closed = new Map<number, number>();
+      for (let i = 0; i < texts.length; i++) {
+        if (!/^[8B]$/.test(texts[i])) continue;
+        closed.set(i, (await rankDigitCandidates(cells[i]))[0] ?? 0);
+      }
+      return texts.map((text, i) => {
         const m = text.match(/[0-7]/);
         if (m) return Number(m[0]);
+        const c = closed.get(i);
+        if (c !== undefined) return c;
         // 节奏音符 X：rec 读得很干净（1717《不怕劳累 不怕饥寒》6 处全读成 "X"），只认整格就是这一个字，
         // 不认混在别的字里的 x。以前落到 0，又被「0 却对到歌词」那条复原成了 3。
         return opts?.rhythm && /^[XxＸｘ×]$/.test(text) ? RHYTHM_DIGIT : 0;

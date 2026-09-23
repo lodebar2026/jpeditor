@@ -6,6 +6,9 @@ import { BARE_CHORD_RE } from "./dialect123";
 import { projectForJianpu } from "../model/jianpuproject";
 import { harmonyText, keySpelling, melodyLane, topNote } from "../model/jianpu";
 
+/** 下标 = 减时线条数 */
+const GRACE_TYPES = ["quarter", "eighth", "16th", "32nd", "64th"];
+
 const ACC_TEXT: Readonly<Record<string, string>> = {
   sharp: "#",
   flat: "b",
@@ -88,6 +91,11 @@ export class Emitter123 extends AbcFamilyEmitter {
     const beams = el.kind === "chord" ? el.beams?.length ?? 0 : el.beams?.length ?? 0;
     const dots = el.kind === "chord" ? el.duration.dots : el.duration?.dots ?? 0;
     return "_".repeat(beams) + ".".repeat(dots);
+  }
+
+  /** 倚音印出来的减时线：`{2__}` 是十六分倚音。四分及没记时值的不写。 */
+  protected override graceDurationText(ch: Chord): string {
+    return "_".repeat(Math.max(0, GRACE_TYPES.indexOf(ch.duration.type ?? "quarter")));
   }
 
   /** 增时线（各自可带弧的起止）。**这是 123 独有的**：ABC 的 `-` 是 tie。 */

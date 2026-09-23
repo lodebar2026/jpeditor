@@ -301,9 +301,14 @@ function untangleBridged(comps: Component[], bin: Binary, numH: number): Compone
   const out: Component[] = [];
   for (const k of comps) {
     const b = k.bbox;
-    if (b.h < numH * 1.8 || b.w < numH * 0.9 || k.area >= b.w * b.h * 0.25) { out.push(k); continue; }
+    if (b.h < numH * 1.6 || b.w < numH * 0.9 || k.area >= b.w * b.h * 0.25) { out.push(k); continue; }
     const bars = fullHeightBars(bin, b, numH);
     if (!bars.length) { out.push(k); continue; }
+    // 1.6–1.8 字号的矮块只认「弧脚收在行末小节线顶上」这一形：竖线贴着块的左/右边缘。1940《宣告得胜年》
+    // 第 9 行那块只带着一小截弧（27×25、字号 14，1.79 字号），整块落进数字通道读成 `0`、行末小节线没了，
+    // 还把全行数字带顶高、别的数字补高后读错。不卡边缘的话，1775、11 等四首别处的块被拆，各掉一两行；
+    // 两侧各一根的是房号括线那种框（主祢真伟大 69×37），也不拆。
+    if (b.h < numH * 1.8 && (bars.length !== 1 || (bars[0].cx - b.x > 2 && rright(b) - bars[0].cx > 2))) { out.push(k); continue; }
     const halo = Math.ceil(numH * 0.25);
     const inBar = (absX: number) => bars.some((bar) => Math.abs(absX - bar.cx) <= halo);
     // 只取**本连通块自身**的像素：bbox 矩形里常混入相邻的独立块（如邻音的增时线），直接按矩形
@@ -1152,6 +1157,21 @@ function midbandInk(bin: Binary, b: Rect): number {
   return t ? n / t : 0;
 }
 
+/** 中带（0.42–0.58 块高）过半的行在左右墨迹之间夹着空白 = 有内孔。粗体小图的 0 内孔只剩 2px，
+ *  按 midbandInk 的固定中框量墨会过 0.65（1940《宣告得胜年》末行 `0 0`，12×14），被当成糊死的 3
+ *  复原成别的数；糊死的 3 中带左边是敞口、不夹空白，分得开。 */
+function midbandHole(bin: Binary, b: Rect): boolean {
+  const y0 = Math.round(b.y + b.h * 0.42), y1 = Math.max(y0 + 1, Math.round(b.y + b.h * 0.58));
+  let rows = 0, holes = 0;
+  for (let y = Math.max(0, y0); y < Math.min(bin.h, y1); y++) {
+    rows++;
+    let lo = -1, hi = -1, ink = 0;
+    for (let x = b.x; x < Math.min(bin.w, b.x + b.w); x++) if (bin.data[y * bin.w + x]) { if (lo < 0) lo = x; hi = x; ink++; }
+    if (lo >= 0 && ink < hi - lo + 1) holes++;
+  }
+  return rows > 0 && holes * 2 > rows;
+}
+
 /** 断成几截的横线接回一条。扫描件里一道减时线常被二值化断开一两个像素，断出来的碎段既够不着
  *  classify 里横线的宽度门（w ≥ 0.6 字号），也把长的那截截短——227《施比受更为有福》第 1 行
  *  `3·4` 底下那道共用减时线实测断成 81px + 12px + 18px 三截（缝各 1px），长的那截止步于 "4" 的
@@ -1989,7 +2009,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     for (const r of useRows) for (const n of r.nums) {
       if (n.digit !== 0) continue;
       const alignedToLyric = n.lyrics?.some((s) => s && s.trim());
-      const notHollowRing = midbandInk(bin, n.bbox) >= 0.65;
+      const notHollowRing = midbandInk(bin, n.bbox) >= 0.65 && !midbandHole(bin, n.bbox);
       if (alignedToLyric || notHollowRing) bad.push(n);
     }
     if (bad.length) {

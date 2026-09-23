@@ -699,11 +699,13 @@ function buildMusicLine(
       }
 
       case "grace": {
+        // 倚音不占拍（divisions 0），但印出来的减时线要留：`{2__}` 是十六分倚音，记在 `type` 上
+        const timed = t.notes?.find((g) => g.beams);
         const ch: Chord = {
           kind: "chord",
           id: ctx.ids.next(),
           notes: (t.notes ?? []).map((g) => ctx.d.note(g)),
-          duration: { divisions: 0, dots: 0 },
+          duration: timed ? { divisions: 0, dots: 0, type: ctx.d.duration(timed, ctx.len).type! } : { divisions: 0, dots: 0 },
           grace: t.acciaccatura ? { slash: true } : {},
           voice: pb.voice,
           staff: 1,

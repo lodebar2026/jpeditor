@@ -57,6 +57,8 @@ export interface JGrace {
   number: string;
   jpOctave: number;
   jpAlter: string;
+  /** 印出来的时值，MusicXML 口径（8 = 八分、16 = 十六分，决定减时线条数）；缺省按八分画 */
+  duration?: number;
 }
 
 export interface JChord {

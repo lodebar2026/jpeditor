@@ -351,7 +351,14 @@ export abstract class AbcFamilyEmitter {
 
   /** 倚音 `{6,}` / `{ab}` */
   protected graceText(ch: Chord): string {
-    return `{${this.graceSlashText(ch)}${ch.notes.map((n) => this.noteText(n)).join("")}}`;
+    const dur = this.graceDurationText(ch);
+    return `{${this.graceSlashText(ch)}${ch.notes.map((n) => this.noteText(n) + dur).join("")}}`;
+  }
+
+  /** 倚音里每个音后面的时值（123 的 `{2__}`）。ABC 的倚音一律按默认写，不带。 */
+  protected graceDurationText(ch: Chord): string {
+    void ch;
+    return "";
   }
 
   /** 一个声部的音乐体，按 `ranges` 切成几行。按小节拼，符杠分组内连写。

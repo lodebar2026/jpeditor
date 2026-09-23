@@ -90,6 +90,8 @@ function chordOrnaments(ch: Chord): Ornament[] {
   return out;
 }
 
+const GRACE_DURATION: Readonly<Record<string, number>> = { eighth: 8, "16th": 16, "32nd": 32 };
+
 /** 一个和弦 → 文本谱音符（主音或倚音）。 */
 function noteOf(ch: Chord, graceBefore: NoteElement[]): NoteElement {
   const deg = ch.notes[0]?.degree;
@@ -103,8 +105,8 @@ function noteOf(ch: Chord, graceBefore: NoteElement[]): NoteElement {
     // 倚音不占对位格；123 来源的倚音没有这一位
     lyricAnchor: ch.lyricAnchor ?? (ch.grace ? false : !ch.rest),
     octave: deg?.octaveShift ?? ch.rest?.octaveShift ?? 0,
-    // 123 的倚音不记减时线，按八分画
-    duration: beams === undefined && ch.grace ? 8 : 4 << (beams ?? 0),
+    // 123 的倚音不记 beams，减时线记在符号时值上（`{2__}` 是十六分）；没写的按八分画
+    duration: beams === undefined && ch.grace ? GRACE_DURATION[ch.duration.type ?? ""] ?? 8 : 4 << (beams ?? 0),
     dots: ch.duration.dots,
     ornaments: chordOrnaments(ch),
     graceBefore,

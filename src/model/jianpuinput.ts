@@ -674,7 +674,8 @@ function rowsPart(
   const measures: JMeasure[] = [];
   let measure: JMeasure | null = null;
   const tupletNotes: JNote[] = [];
-  let slurOpen: JChord | null = null;
+  /** 开着的弧的起点，后开先收（嵌套弧）；跨行的弧靠它连到下一行的收尾处 */
+  const slurOpen: JChord[] = [];
   let newMeasureNeeded = true;
   let lastChord: JChord | null = null;
   let pendingRepeatForward = false;
@@ -794,15 +795,18 @@ function rowsPart(
 
       // **先收后起**：同一个音既收前一条弧又起下一条（123 的 `(3_ | (3:(3_) 3_)`、ABC 的连续 tie）时，
       // 先起的话 `slurOpen` 被这个音顶掉，前一条弧就收到自己身上、整条丢了（secret base 跨小节那条）。
-      const slur = marksEdgeAt(line.marks, index, "slur");
-      if (slur.ends) {
+      // 同一个音可以同时收几条弧（外弧与内弧同终点：1921《天上的阿爸盼望你回家》`(3. (4__ (3__) 2-))`），
+      // 以前只记一个开着的起点，内弧一起就把外弧的起点顶掉，外弧整条不画。
+      const slurHits = marksAt(line.marks, index, "slur");
+      const slurEnds = slurHits.filter((m) => m.end === index && !m.continuationToNext).length;
+      for (let k = 0; k < slurEnds; k++) {
         ch.slurEnds++;
-        if (slurOpen) slurOpen.slurEndChord = ch;
-        slurOpen = null;
+        const from = slurOpen.pop();
+        if (from) from.slurEndChord = ch;
       }
-      if (slur.starts) {
+      if (slurHits.some((m) => m.start === index && !m.continuationFromPrevious)) {
         ch.slurStart = true;
-        slurOpen = ch;
+        slurOpen.push(ch);
       }
       for (const orn of el.ornaments) if (orn.name === "yc" || orn.name === "ycy") ch.fermata = true;
       if (decorate) decorateChord(ch, el);
@@ -834,7 +838,7 @@ function decorateChord(ch: JChord, el: NoteElement): void {
     else if (DYNAMICS[orn.name]) ch.directions.push({ text: DYNAMICS[orn.name]!, music: true, italic: false });
     else if (TERMS[orn.name]) ch.directions.push({ text: TERMS[orn.name]!, music: false, italic: true });
   }
-  ch.graceNotes = el.graceBefore.map((g) => ({ number: String(g.pitch), jpOctave: g.octave, jpAlter: jpAlterOf(g) }));
+  ch.graceNotes = el.graceBefore.map((g) => ({ number: String(g.pitch), jpOctave: g.octave, jpAlter: jpAlterOf(g), duration: g.duration }));
 }
 
 /** 按时值排出各条目的拍位与小节起点。`scaleInner`：多连音起止之间的音也乘 2/3（`.jpwabc` 旧口径只乘首尾两个）。 */
@@ -876,6 +880,8 @@ function attachLyrics(lyrics: readonly LyricLine[], cursors: number[], ch: JChor
 //   - 连音起止之间的音也乘 2/3（只乘首尾两个的话中间的音拍位偏后，符杠分组跟着错）
 
 const DEGREE_ALTER: Readonly<Record<string, string>> = { sharp: "#", flat: "b", natural: "n" };
+/** 倚音的符号时值 → `JGrace.duration`（减时线条数由它定；四分及未记的按八分画一条） */
+const GRACE_DURATION: Readonly<Record<string, number>> = { eighth: 8, "16th": 16, "32nd": 32 };
 
 /** `.jpwabc` 的 `ScoreDoc` → 引擎输入。没有声部时返回 null。 */
 export function jianpuInputOfJpw(doc: ScoreDoc): JScore | null {
@@ -923,7 +929,9 @@ export function jianpuInputOfJpw(doc: ScoreDoc): JScore | null {
       const n0 = el.notes[0];
       if (el.grace) {
         const d = n0?.degree;
-        graces.push({ number: String(d?.number ?? 1), jpOctave: d?.octaveShift ?? 0, jpAlter: DEGREE_ALTER[d?.accidental ?? ""] ?? " " });
+        const dur = GRACE_DURATION[el.duration.type ?? ""];
+        graces.push({ number: String(d?.number ?? 1), jpOctave: d?.octaveShift ?? 0, jpAlter: DEGREE_ALTER[d?.accidental ?? ""] ?? " ",
+          ...(dur ? { duration: dur } : {}) });
         continue;
       }
       const ch = newChord(m, el.id);

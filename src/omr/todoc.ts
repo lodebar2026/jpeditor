@@ -127,6 +127,9 @@ function pairArcs(notes: JpNum[], fifths: number): ArcPairs {
 }
 
 /** 跳转记号 → 小节线上的记号原名（`xmlproject.ts::directionOf` 认的那几个，导出 MusicXML 时落成 `<direction>`+`<sound>`）。 */
+/** 倚音底下的减时线条数 → 符号时值 */
+const GRACE_TYPE: Readonly<Record<number, Chord["duration"]["type"]>> = { 1: "eighth", 2: "16th", 3: "32nd" };
+
 const JUMP_ORNAMENT: Record<string, string> = {
   "D.C.": "dc",
   "D.S.": "ds",
@@ -230,7 +233,7 @@ export function recognizedToDoc(score: RecognizedScore, numOf?: Map<ElementId, J
         m.elements.push({
           kind: "chord", id: ids.next(),
           notes: [{ degree: { number: g.digit, octaveShift: g.octave } }],
-          duration: { divisions: 0, dots: 0 },
+          duration: { divisions: 0, dots: 0, ...(GRACE_TYPE[g.div] ? { type: GRACE_TYPE[g.div] } : {}) },
           grace: { slash: true }, voice: 1, staff: 1,
         });
       }
