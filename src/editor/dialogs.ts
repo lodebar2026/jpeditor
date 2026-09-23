@@ -216,6 +216,8 @@ export function showOptionsDialog(app: App): void {
     false,
   );
   const jpPaper = paperSelect(ORIGINAL_PAPERS, (k) => PAPER_SIZES[k], (k) => k === app.jpPaper, true);
+  // 五线谱/混排自己一张纸（出厂 A4），不借原样档那张长图
+  const staffPaper = paperSelect(ORIGINAL_PAPERS, (k) => PAPER_SIZES[k], (k) => k === app.staffPaper, true);
 
   // ---- 每页行数（写进文档 .Layout 段，只有 jpwabc 有这个段）----
   const lines = document.createElement("input");
@@ -263,7 +265,7 @@ export function showOptionsDialog(app: App): void {
   const hideBarNum = document.createElement("input");
   hideBarNum.type = "checkbox";
   hideBarNum.checked = app.mixedHideBarNumber;
-  if (isMixed) body.append(labeled("隐藏小节号", hideBarNum));
+  if (isMixed) body.append(labeled("纸张", staffPaper), labeled("隐藏小节号", hideBarNum));
 
   if (isPu) {
     body.append(note(
@@ -271,7 +273,7 @@ export function showOptionsDialog(app: App): void {
       + "展开档与 .jpwabc 共用同一套设置。",
     ));
   } else if (isMixed) {
-    body.append(note("五线谱与混排的纸张与字号随 MusicXML 的版面走，这里只设背景色。"));
+    body.append(note("MusicXML 里写了版面（<page-layout>）的，纸张按谱里的走；字号随谱走。"));
   }
 
   // 可视化编辑：谱面上插入/改音时响一下（只在简谱档、能改谱的格式下摆出来）
@@ -317,6 +319,7 @@ export function showOptionsDialog(app: App): void {
       jpPaper: isJianpu ? jpPaper.value : undefined,
       puPaper: isPu ? puPaper.value : undefined,
       puFontSize: isPu ? parseInt(puFont.value, 10) || 0 : undefined,
+      staffPaper: isMixed ? staffPaper.value : undefined,
       color: argb, bgColor: colorValue(bgColor, app.bgColor),
     });
     if (isMixed) void app.setMixedHideBarNumber(hideBarNum.checked);

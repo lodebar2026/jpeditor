@@ -16,7 +16,7 @@ import { toPt } from "../layout/result";
 import { sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
 import { isLongImage, jianpuSizes } from "../style/jianpu";
 import type { DeepPartial, StyleSheet } from "../style/sheet";
-import { LONG_IMAGE_WIDTH, PAGE_RATIOS, PAPER_SIZES, THEMES, computeStyleForPaper, isPaper, themeOfMode } from "../style/themes";
+import { LONG_IMAGE_WIDTH, PAGE_RATIOS, PAPER_SIZES, STAFF_LONG_IMAGE_WIDTH, STAFF_PAPER_DEFAULT, THEMES, computeStyleForPaper, isPaper, themeOfMode } from "../style/themes";
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/pageitem";
 import { colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
@@ -140,12 +140,18 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   /** 用户层：每个主题一层规则，**两档各记一套**（用户口径：「区分 展开/原样的字号设置」）。
    *  展开档（主题 projection）的字号、比例、配色两种格式共用，规则不带限定；
    *  原样档（主题 print）的纸与字号 `.jpwabc` 与文本谱各记各的（`engine` 限定），配色共用。 */
-  private _userLayers: Record<"projection" | "print", StyleRule[]> = { projection: [], print: [] };
+  private _userLayers: Record<"projection" | "print" | "staff", StyleRule[]> = { projection: [], print: [], staff: [] };
 
   /** 某一档、某把尺子看到的 computed 样式表（内置主题 + 用户层）。 */
   styleOf(mode: JianpuLayoutMode, engine: StyleEngine = "jianpu"): StyleSheet {
     const theme = themeOfMode(mode);
     return computeStyleForPaper([THEMES[theme], this._userLayers[theme]], { mode, engine });
+  }
+
+  /** 五线谱/混排看到的 computed 样式表（主题 staff + 它自己那层用户规则）。
+   *  **纸不借简谱原样档的**：那边出厂是长图，五线谱排成长图就是一张 1000pt 宽的扁图。 */
+  staffStyle(): StyleSheet {
+    return computeStyleForPaper([THEMES.staff, this._userLayers.staff], { mode: "staff", engine: "staff" });
   }
 
   /** 往某一档的用户层写一条规则（限定相同的就地合并）。 */
@@ -275,7 +281,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
    *  纸与字号按档、按格式分开记；配色按档记；投影片比例只归展开档。 */
   applyRenderSettings(opts: {
     pageW?: number; pageH?: number; jpPaper?: string;
-    puPaper?: string; puFontSize?: number;
+    puPaper?: string; puFontSize?: number; staffPaper?: string;
     fontSize?: number; titleSize?: number; creditSize?: number; color?: number; bgColor?: number;
   }): void {
     const mode = this.layoutMode;
@@ -285,6 +291,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     // 原样档的纸要在重排之前定好——排版时按长图灌 continuousPage
     if (opts.jpPaper && isPaper(opts.jpPaper)) this._setStyle("original", "jianpu", { page: { paper: opts.jpPaper } });
     if (opts.puPaper && isPaper(opts.puPaper)) this._setStyle("original", "pu", { page: { paper: opts.puPaper } });
+    if (opts.staffPaper && isPaper(opts.staffPaper)) this._userLayers.staff = upsertRule(this._userLayers.staff, undefined, { page: { paper: opts.staffPaper } });
     if (opts.puFontSize !== undefined) {
       this._setStyle("original", "pu", { roles: { note: { size: Math.min(200, Math.max(0, opts.puFontSize)) } } });
     }
@@ -334,7 +341,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
     // 样式用户层（旧版散存的字号/纸/配色字段不读——不做存量迁移）
     const layers = (s.styleLayers ?? {}) as Record<string, unknown>;
-    this._userLayers = { projection: sanitizeLayer(layers.projection), print: sanitizeLayer(layers.print) };
+    this._userLayers = { projection: sanitizeLayer(layers.projection), print: sanitizeLayer(layers.print), staff: sanitizeLayer(layers.staff) };
     if (s.zoom) this.zoom = s.zoom;
     if (s.jpProfile === "normal" || s.jpProfile === "pptx") this.jpProfile = s.jpProfile;
     if (s.puProfile === "print" || s.puProfile === "slide") this.puProfile = s.puProfile;
@@ -498,10 +505,15 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     return this._jpwDoc;
   }
 
-  /** 五线谱/混排档在谱里没写纸时用的纸：设置里原样档那张（文本谱取它自己那一档），长图 `heightPt = null`。 */
+  /** 五线谱/混排档的纸（键取自 `PAPER_SIZES`），出厂 A4。 */
+  get staffPaper(): string {
+    return this.staffStyle().page.paper ?? STAFF_PAPER_DEFAULT;
+  }
+
+  /** 五线谱/混排档在谱里没写纸时用的纸：设置里五线谱那张；长图按 A4 宽、`heightPt = null`。 */
   get staffPage(): { widthPt: number; heightPt: number | null } {
-    const paper = PAPER_SIZES[this.docFormat === "pu" ? this.puPaper : this.jpPaper];
-    return paper ? { widthPt: paper[0], heightPt: paper[1] } : { widthPt: LONG_IMAGE_WIDTH, heightPt: null };
+    const paper = PAPER_SIZES[this.staffPaper];
+    return paper ? { widthPt: paper[0], heightPt: paper[1] } : { widthPt: STAFF_LONG_IMAGE_WIDTH, heightPt: null };
   }
 
   /** 派生五线谱要看的设置：简谱的档、纸、字号变了，断点跟着变，得重新派生。 */

@@ -45,6 +45,13 @@ export const LONG_IMAGE_WIDTH = 1000;
 /** 出厂纸。原样档与文本谱「原版」档一贯的观感都是长图。 */
 export const PAPER_DEFAULT = "长图";
 
+/** 五线谱/混排的出厂纸。五线谱一贯按实际纸张排（MusicXML 的 `<page-layout>` 也都是纸），
+ *  不跟简谱原样档的「长图」——长图宽 1000pt、页高随内容，短曲子排出来是一张扁图，像横版。 */
+export const STAFF_PAPER_DEFAULT = "A4";
+
+/** 五线谱/混排选了「长图」时的纸宽：按 A4 宽排，只是不分页（1000pt 宽的谱表比 A4 宽出近一倍）。 */
+export const STAFF_LONG_IMAGE_WIDTH = 595;
+
 /** 这个纸张名在不在表里。 */
 export const isPaper = (k: unknown): k is string =>
   typeof k === "string" && Object.prototype.hasOwnProperty.call(PAPER_SIZES, k);
@@ -71,7 +78,7 @@ export const THEMES: Record<ThemeId, StyleLayer> = {
   ],
   // 成书的其余一切在 `book` 块（由歌本样式表算出的 BookStyle，见 style/bookjpcss.ts），由调用方作为第二层叠上
   book: [{ set: { jianpu: { preset: "book" } } }],
-  staff: [{ set: { staff: { preset: "musicpp" } } }],
+  staff: [{ set: { page: { paper: STAFF_PAPER_DEFAULT }, staff: { preset: "musicpp" } } }],
 };
 
 /** 编辑器排版模式 → 主题。 */
