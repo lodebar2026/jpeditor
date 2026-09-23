@@ -183,3 +183,6 @@ export function emptyDoc(sourceFormat: ScoreDoc["sourceFormat"]): ScoreDoc {
 export function primarySong(doc: ScoreDoc): Song | null {
   return doc.songs[0] ?? null;
 }
+
+/** 派生五线谱时 `<note>` 上的源 id 前缀（`toxml.ts::ToXmlOptions.sourceIds` 写、`fromxml.ts` 认）。 */
+export const SOURCE_ID_PREFIX = "jp";

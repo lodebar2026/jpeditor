@@ -3,6 +3,28 @@
 import { Matrix33, Point } from "../common/geom";
 import { GraphicLine, Group, TextFrame } from "../layout/pageitem";
 import { Font } from "../layout/font";
+import type { ElementId } from "../model/doc";
+
+/** 一个和弦画出来的那一组（五线谱层的符头、符干、符尾；简谱叠层的那一柱）的类名。
+ *  `data` 是 `StaffChordData`：编辑器按元素 id 找到它，放播放线、认点选。 */
+export const STAFF_CHORD = "staff-chord";
+export interface StaffChordData {
+  readonly chordId: ElementId;
+}
+/** 一行系统的组的类名。`data` 是 `StaffSystemData`：谱表带（混排连同简谱层）的上下沿，系统坐标（tenths）。 */
+export const STAFF_SYSTEM = "staff-system";
+export interface StaffSystemData {
+  readonly top: number;
+  readonly bottom: number;
+}
+
+/** 和弦 `id` 的组（见 `STAFF_CHORD`）。 */
+export function chordGroup(id: ElementId): Group {
+  const g = new Group();
+  g.classes.add(STAFF_CHORD);
+  g.data = { chordId: id } satisfies StaffChordData;
+  return g;
+}
 
 export function addLine(g: Group, x1: number, y1: number, x2: number, y2: number, lw: number): void {
   const l = new GraphicLine();

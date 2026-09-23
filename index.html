@@ -208,6 +208,9 @@
             <span class="playback-icon" aria-hidden="true">▶</span>
             <span class="playback-label">播放</span>
           </button>
+          <button id="btn-stop" class="icon-button playback-stop" title="停止试听（回到曲首）" aria-label="停止" disabled>■</button>
+          <input id="play-progress" class="play-progress" type="range" min="0" max="1" step="any" value="0" aria-label="播放进度" disabled>
+          <button id="play-time" class="play-time" aria-label="播放时间">0:00 / 0:00</button>
           <label class="select-wrap">
             <select id="sel-speed" aria-label="播放速度"></select>
             <span class="select-chevron" aria-hidden="true">⌄</span>

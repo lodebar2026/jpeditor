@@ -17,6 +17,7 @@
 
 import type {
   Barline,
+  ElementId,
   Chord,
   Clef,
   Credit,
@@ -46,7 +47,7 @@ import type {
   Time,
   Transpose,
 } from "./doc";
-import { IdGen, emptyDoc, emptySong } from "./helpers";
+import { IdGen, SOURCE_ID_PREFIX, emptyDoc, emptySong } from "./helpers";
 import { assignDegrees } from "./jianpu";
 import { addMeta } from "./metakeys";
 import { child, childText, children } from "../score/xmldom";
@@ -787,6 +788,8 @@ function readMeasure(
           voice: num(c, "voice") ?? 1,
           staff: num(c, "staff") ?? 1,
         };
+        const srcId = sourceIdOf(c.getAttribute("id"));
+        if (srcId !== null) ch.srcId = srcId;
         if (!pitchEl && notePos) ch.pos = notePos;
         // 节奏音符（有声无音高）：写出端 toxml.ts 写成 `<unpitched>`
         if (!pitchEl && child(c, "unpitched")) ch.rhythm = true;
@@ -964,3 +967,9 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
 }
 
 export type { DocElement };
+
+/** `<note id="jp12">` → 12（`toxml.ts::ToXmlOptions.sourceIds` 写的源 id）；别的 id 为 null。 */
+function sourceIdOf(attr: string | null): ElementId | null {
+  const m = attr ? new RegExp(`^${SOURCE_ID_PREFIX}(\\d+)$`).exec(attr) : null;
+  return m ? Number(m[1]) : null;
+}

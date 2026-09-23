@@ -12,6 +12,7 @@ import type { JScore } from "../layout/input";
 import { clearBreaks } from "../layout/input";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
 import { measureJianpu, PaintResources, ScorePainter, type JianpuPaintRequest } from "../layout/painter";
+import { NoteEntry } from "../layout/entry";
 import { toPt } from "../layout/result";
 import { computeStyle, sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
 import { docPageLayer, pageMargins, resolvePaper, songPageDecl } from "../style/paper";
@@ -502,6 +503,11 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   // Selected note (for "play from here"): its chord + which verse/pass row.
   private _selectedId: ElementId | null = null;
   private _selectedVerse = 0;
+  /** 派生五线谱（`mixedDoc`）的和弦 id ↔ 源模型的和弦 id（`_indexMixedSrcIds`）。`.musicxml` 为空。 */
+  private _mixedToSrc = new Map<ElementId, ElementId>();
+  private _srcToMixed = new Map<ElementId, ElementId[]>();
+  /** 五线谱 / 混排上选中的和弦组（五线谱层与简谱叠层各一个）。 */
+  private _staffSelected: SVGGElement[] = [];
 
 
   constructor(meta: MetaData, scorePane: HTMLElement) {
@@ -818,13 +824,33 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     const key = this._mixedDeriveKey();
     if (this.mixedDoc && this._mixedDerivedText === key) return true;
     try {
-      this.mixedDoc = formatOf("musicxml").toScoreDoc!(sourceMusicXmlBare(this));
+      this.mixedDoc = formatOf("musicxml").toScoreDoc!(sourceMusicXmlBare(this, { sourceIds: true }));
       this._mixedDerivedText = key;
+      this._indexMixedSrcIds(this.mixedDoc);
       return true;
     } catch (e) {
       console.error("转五线谱失败", e);
       this.setStatus("转五线谱失败：" + (e instanceof Error ? e.message : String(e)));
       return false;
+    }
+  }
+
+  /** 派生五线谱模型里各和弦的源 id（`Chord.srcId`）两向对照：五线谱点音符 → 代码区，代码区光标 → 五线谱。 */
+  private _indexMixedSrcIds(doc: ScoreDoc): void {
+    this._mixedToSrc.clear();
+    this._srcToMixed.clear();
+    for (const song of doc.songs) {
+      for (const part of song.parts) {
+        for (const m of part.measures) {
+          for (const el of m.elements) {
+            if (el.kind !== "chord" || el.srcId === undefined) continue;
+            this._mixedToSrc.set(el.id, el.srcId);
+            const list = this._srcToMixed.get(el.srcId);
+            if (list) list.push(el.id);
+            else this._srcToMixed.set(el.srcId, [el.id]);
+          }
+        }
+      }
     }
   }
 
@@ -1189,6 +1215,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (this._syncing) return;
     for (const el of this._syncMarked) el.classList.remove("cursor-at", "cursor-off");
     this._syncMarked = [];
+    if (this.mode === "mixed") {
+      this._syncCursorToStaff();
+      return;
+    }
     if (this.mode !== "jp") return;
     const sel = this.view.state.selection.main;
     // 选中的是附点：只点亮附点
@@ -1460,6 +1490,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   // ---------------- picking / selection ----------------
   private onPageClick(pageIndex: number, svg: SVGSVGElement, ev: MouseEvent): void {
+    // 播放 / 暂停中点音符 = 跳到那儿接着播，不进可视化编辑的选中（否则点击被它接走、时间不动）
+    if (this.playback.active && this._seekByPick(pageIndex, svg, ev)) return;
     // 双向定位先走一遍：它按 `<g>` 认（事件冒泡即可），**不依赖几何拾取**——
     // 两个档因此共用同一条路径，也不受 pickPage 拾取不到时的早退影响。
     // 可视化编辑接走了（点换行符、点空白落插入光标、Shift+点扩选）就到此为止。
@@ -1489,8 +1521,22 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       const ne = d as { chord: import("../layout/input").JChord; verse: number };
       this._selectedId = ne.chord.id;
       this._selectedVerse = ne.verse;
+      if (ne.chord.id !== null) this.playback.seekTo({ id: ne.chord.id, pass: ne.verse }); // 播放中就跳过去
     }
     this.setStatus(describePick(picked));
+  }
+
+  /** 简谱引擎这一路：几何拾取到音符格就按它的遍次跳过去。没点中音符返回 false（照常走点选）。 */
+  private _seekByPick(pageIndex: number, svg: SVGSVGElement, ev: MouseEvent): boolean {
+    const ctm = svg.getScreenCTM();
+    const geom = this.painter.result?.pages[pageIndex]?.geometry;
+    if (!ctm || !geom) return false;
+    const pt = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
+    const picked = this.painter.pickPage(pageIndex, toPt(geom, pt.x, pt.y))?.item ?? null;
+    const d = picked ? this.painter.entryGroupOf(picked).data : null;
+    if (!(d instanceof NoteEntry) || !d.chord || d.chord.id === null) return false;
+    this.playback.seekTo({ id: d.chord.id, pass: d.verse });
+    return true;
   }
 
   /** 谱面被点击 → 代码区光标跳到对应原文。找不到对应条目就什么都不做
@@ -1498,9 +1544,68 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   private _onSyncClick(ev: MouseEvent): boolean {
     if (this.mode !== "jp") return false;
     const entry = this._syncEntryAt(hitThroughOverlay(ev));
+    const onNote = entry !== null && (entry.kind === "note" || entry.kind === "lyric" || entry.kind === "sustain");
+    // 原样文档没有几何拾取：播放 / 暂停中点音符按同步条目跳过去，不进可视化编辑的选中
+    if (onNote && this.painter.isDocumentLayout && this.playback.active) {
+      this.playback.seekTo({ id: entry.id, pass: entry.verse !== null ? entry.verse + 1 : 1 });
+      return true;
+    }
     if (this.visual.handleClick(ev, entry)) return true;
     if (entry) this._syncScoreToCursor(entry);
+    // 原样文档没有几何拾取（`onPageClick` 不走），起播点按命中的同步条目记：点歌词按段（第 n 段 = 第 n 遍）
+    if (entry && this.painter.isDocumentLayout && (entry.kind === "note" || entry.kind === "lyric" || entry.kind === "sustain")) {
+      this._selectedId = entry.id;
+      this._selectedVerse = entry.verse !== null ? entry.verse + 1 : 1;
+      this.playback.seekTo({ id: entry.id, pass: this._selectedVerse });
+    }
     return false;
+  }
+
+  /** 五线谱 / 混排被点击：点中和弦就选中它（两层一起描蓝）、记为起播点，播放中直接跳过去。 */
+  private _onStaffClick(ev: MouseEvent): void {
+    const id = this.painter.staffChordAt(ev.target as Element | null);
+    this.deselectStaff();
+    this.deselect();
+    if (id === null) return;
+    const els = this.painter.staffChordEls(id);
+    for (const el of els) el.classList.add("selected");
+    this._staffSelected = els;
+    this._selectedId = id;
+    this._selectedVerse = 1;
+    this.playback.seekTo({ id, pass: 1 });
+    // 文本格式：代码区光标跳到这个音的原文
+    const span = this._sync.spanOfNote(this._mixedToSrc.get(id) ?? -1);
+    if (span && this.adapter.caps.textEditor) {
+      this._syncing = true;
+      try {
+        this.view.dispatch({ selection: { anchor: span.from, head: span.to }, scrollIntoView: true });
+      } finally {
+        this._syncing = false;
+      }
+    }
+  }
+
+  /** 代码区光标 → 五线谱：光标/选区落在哪些音上，就把五线谱上对应的和弦组描蓝（`cursor-at`，同简谱档）。 */
+  private _syncCursorToStaff(): void {
+    if (!this.adapter.caps.textEditor || this._srcToMixed.size === 0) return;
+    const sel = this.view.state.selection.main;
+    const ids = new Set<ElementId>();
+    for (const e of this._sync.range(sel.from, sel.to)) {
+      if (e.kind === "header" || e.kind === "break") continue;
+      for (const mid of this._srcToMixed.get(e.id) ?? []) ids.add(mid);
+    }
+    for (const id of ids) {
+      for (const el of this.painter.staffChordEls(id)) {
+        el.classList.add("cursor-at");
+        this._syncMarked.push(el);
+      }
+    }
+    this._syncMarked[0]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  private deselectStaff(): void {
+    for (const el of this._staffSelected) el.classList.remove("selected");
+    this._staffSelected = [];
   }
 
   /** 谱面被双击 → 文字对象进插入模式（单击只选中，见 `VisualEditController.handleDoubleClick`）。
@@ -1536,19 +1641,26 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     this.pageEls[np]?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   // ---------------- playback（控制器在 editor/playback.ts，这里只留与谱面相关的部分） ----------------
-  /** PlaybackHost：混排/识别核对下不试听。 */
+  /** PlaybackHost：识别核对下不试听。 */
   get canPlay(): boolean {
-    return this.mode === "jp";
+    return this.mode === "jp" || this.mode === "mixed";
+  }
+
+  /** PlaybackHost：五线谱 / 混排放竖直播放线，跟各声部起音；简谱逐音着色，跟旋律。 */
+  get cursorAllParts(): boolean {
+    return this.mode === "mixed";
   }
 
   /** PlaybackHost：当前该播的谱，由 ScoreDoc 拼。
    *  MusicXML 形状（`.musicxml`、ABC 回落）带全部声部、voice 与力度；简谱形状（文本谱/123/ABC/`.jpwabc`）
    *  口径同 `jianpuInputOfDoc`，展开档那一份带歌词的声部当主旋律。 */
   playable(): PlaySource | null {
-    const jpw = this.adapter.caps.layout === "jpwabc";
-    const doc = jpw ? this._jpwDoc : this.currentScoreDoc();
+    // 五线谱 / 混排播画出来的那份（`mixedDoc`），元素 id 与五线谱上的和弦组对得上
+    const staff = this.mode === "mixed";
+    const jpw = !staff && this.adapter.caps.layout === "jpwabc";
+    const doc = staff ? this.mixedDoc : jpw ? this._jpwDoc : this.currentScoreDoc();
     if (!doc) return null;
-    const forExpanded = !jpw && this.layoutMode === "expanded";
+    const forExpanded = !staff && !jpw && this.layoutMode === "expanded";
     const c = this._playCache;
     if (c && c.doc === doc && c.forExpanded === forExpanded) return c.src;
     let src: PlaySource | null = null;
@@ -2040,6 +2152,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   private _dropMixedDoc(): void {
     this.mixedDoc = null;
     this._mixedDerivedText = null;
+    this._mixedToSrc.clear();
+    this._srcToMixed.clear();
     this._setMixedAvailable(false);
   }
 
@@ -2129,6 +2243,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (this.mode === next) return;
     if (this.mode === "recognize") this.omr.leaveLayout();
     if (this.mode === "mixed") this._setMixedLayout(false);
+    // 两边的元素 id 各编各的（五线谱那份是读回来的 `mixedDoc`），选中的音不能带过去当起播点
+    this.deselectStaff();
+    this.deselect();
     this.mode = next;
     if (next === "mixed") this._setMixedLayout(true);
     // 识别模式沿用「简谱」这个预览档（工具条上它不是独立一档）。
@@ -2225,6 +2342,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     // 排的时候又来了新请求（快速切档、改设置）：这份作废，由新的那份铺页
     if (outcome === "superseded" || this.mode !== "mixed") return;
     const painter = this.painter;
+    this.playback.stop(); // 重排作废了和弦组与播放线；进度条总长跟着新谱
+    this.selectedEl = null;
     this._renderPagesWith(painter.pageCount, (i) => painter.renderPage(i), {
       // Portrait paper sized from the MusicXML page dimensions.
       // **纸宽不在这里给**：简谱/五线谱/混排共用 `--score-page-max`（styles.css）。
@@ -2236,9 +2355,11 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       onPage: (svg) => {
         svg.style.width = "100%";
         svg.style.display = "block";
+        svg.addEventListener("click", (ev) => this._onStaffClick(ev));
       },
       resetPageIndex: true,
     });
+    this._syncCursorToScore(); // 代码区光标所在的音在新画的五线谱上描出来
   }
 
   /** 等在途的异步排版（五线谱 / 混排）落定。简谱这一路是同步的，调用返回时已铺好。无头校验脚本用。 */

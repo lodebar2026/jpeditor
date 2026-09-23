@@ -107,6 +107,8 @@ export interface Anchor {
 export interface Timeline {
   notes: TimedNote[];
   anchors: Anchor[]; // melody (part 0) sounding chords, ascending by t0 — for cursor
+  /** 所有声部、所有 voice 的起音和弦（按 t0 升序，同刻按声部序）。五线谱的竖直播放线跟它走：女高音休止、别的声部在唱也照走 */
+  allAnchors: Anchor[];
   duration: number; // total length in quarter notes
 }
 
@@ -162,6 +164,7 @@ function chordEnd(src: PlaySource, mid: number, limit: number): number {
 export function buildTimeline(src: PlaySource): Timeline {
   const notes: TimedNote[] = [];
   const anchors: Anchor[] = [];
+  const allAnchors: Anchor[] = [];
   let pos = 0; // running timeline position in quarter notes
   /** 各声部各音高最近一个音（延音线收尾时找它延长） */
   const lastByPitch = new Map<string, TimedNote>();
@@ -181,6 +184,7 @@ export function buildTimeline(src: PlaySource): Timeline {
           const t0 = pos + (cp - startOffset);
           const t1 = t0 + (ent.duration?.toFloat() ?? 0);
           if (pi === 0 && !ent.rest && ent.cursor !== false) anchors.push({ t0, chord: ent, pass: range.pass });
+          if (!ent.rest) allAnchors.push({ t0, chord: ent, pass: range.pass });
           if (ent.rest) continue;
           const velocity = ent.velocity ?? DEFAULT_VELOCITY;
           for (const nt of ent.notes) {
@@ -202,5 +206,6 @@ export function buildTimeline(src: PlaySource): Timeline {
   }
 
   anchors.sort((a, b) => a.t0 - b.t0);
-  return { notes, anchors, duration: pos };
+  allAnchors.sort((a, b) => a.t0 - b.t0); // 稳定排序：同刻的仍按声部序
+  return { notes, anchors, allAnchors, duration: pos };
 }

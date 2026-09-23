@@ -229,6 +229,10 @@ async function boot() {
     app.playback.setPlaybackBtn(playBtn);
     playBtn.addEventListener("click", () => void app.playback.toggle());
   }
+  const stopBtn = document.getElementById("btn-stop") as HTMLButtonElement | null;
+  if (stopBtn) app.playback.setStopBtn(stopBtn);
+  const progress = document.getElementById("play-progress") as HTMLInputElement | null;
+  if (progress) app.playback.bindProgress(progress, document.getElementById("play-time"));
   const speedSel = document.getElementById("sel-speed") as HTMLSelectElement | null;
   if (speedSel) app.playback.bindSpeedSelect(speedSel);
   const openScore = async () => { if (await app.openFile()) revealWorkspace(); };

@@ -22,6 +22,7 @@ import { computeStyleForPaper, THEMES } from "../style/themes";
 import { MixedOptions, type StaffLayout, type Sys } from "../mixed/model";
 import { layoutStaff } from "../mixed/layout";
 import { layoutStaffPages, PAGE_HEIGHT_FALLBACK } from "../mixed/staffpages";
+import { STAFF_CHORD, STAFF_SYSTEM, type StaffChordData, type StaffSystemData } from "../mixed/prims";
 import { layoutOriginalDocument, type OriginalDocumentLayout } from "./original/compose";
 import type { PlacedPage } from "./original/place";
 import type { PuMetrics } from "./original/metrics";
@@ -183,6 +184,12 @@ export class ScorePainter {
   /** `${起点 id}:${终点 id}` → 那条圆滑线/延音线的图元（弧也没有自己的 id，见 `Tie.startId`）。 */
   private slurItem = new Map<string, { page: number; item: PageItem }>();
   private highlighted: PageItem[] = [];
+  /** 五线谱 / 混排：元素 id → 画它的和弦组（五线谱层在前、简谱叠层在后）与所在系统组。见 `mixed/prims.ts::STAFF_CHORD`。 */
+  private staffChords = new Map<ElementId, { page: number; item: PageItem; system: PageItem | null }[]>();
+  /** 五线谱 / 混排的竖直播放线（当前在哪页的 svg 里就挂在哪页）。 */
+  private playhead: SVGRectElement | null = null;
+  /** 五线谱 / 混排：渲染出来的和弦组 `<g>` → 元素 id（点选按事件冒泡认）。 */
+  private staffElId = new WeakMap<Element, ElementId>();
   /** 逐页高度。空 = 各页同高（`pageHeight`）；连续长纸那一档按内容逐页给。 */
   private pageHeights: number[] = [];
   private staff: StaffState | null = null;
@@ -350,7 +357,63 @@ export class ScorePainter {
       this.nodeMap = new WeakMap();
       this.chordItem.clear();
       this.highlighted = [];
+      this.playhead = null;
+      this.buildStaffIndex(pages);
     };
+  }
+
+  /** 五线谱各页页面树里的和弦组，按元素 id 收起来，连同它所在的系统组。 */
+  private buildStaffIndex(pages: readonly Group[]): void {
+    this.staffChords.clear();
+    const walk = (item: PageItem, page: number, system: PageItem | null): void => {
+      if (item.classes.has(STAFF_SYSTEM)) system = item;
+      if (item.classes.has(STAFF_CHORD)) {
+        const id = (item.data as StaffChordData).chordId;
+        const list = this.staffChords.get(id) ?? [];
+        list.push({ page, item, system });
+        this.staffChords.set(id, list);
+        return;
+      }
+      for (const c of item.children) walk(c, page, system);
+    };
+    pages.forEach((pg, i) => walk(pg, i, null));
+  }
+
+  /** 五线谱 / 混排：把竖直播放线挪到和弦 `hit` 那一刻，纵贯它那一行的谱表带（混排连同简谱层）。null = 撤掉。
+   *  横向取和弦组在 svg 里的包围盒（符头、符干），纵向取系统组记的谱表带上下沿。 */
+  private movePlayhead(hit: { item: PageItem; system: PageItem | null } | null): void {
+    const el = hit ? this.nodeMap.get(hit.item) : undefined;
+    const sysEl = hit?.system ? this.nodeMap.get(hit.system) : undefined;
+    const svg = el?.ownerSVGElement;
+    const svgCtm = svg?.getScreenCTM();
+    const elCtm = el?.getScreenCTM();
+    const sysCtm = sysEl?.getScreenCTM();
+    if (!hit || !el || !svg || !svgCtm || !elCtm || !sysCtm || !hit.system) {
+      this.playhead?.remove();
+      return;
+    }
+    const inv = svgCtm.inverse();
+    const me = inv.multiply(elCtm);
+    const ms = inv.multiply(sysCtm);
+    const bb = el.getBBox();
+    const band = hit.system.data as StaffSystemData;
+    const pad = 4;
+    const x0 = me.a * bb.x + me.e - pad;
+    const x1 = me.a * (bb.x + bb.width) + me.e + pad;
+    const y0 = ms.d * band.top + ms.f - pad * 2;
+    const y1 = ms.d * band.bottom + ms.f + pad * 2;
+    let rect = this.playhead;
+    if (!rect) {
+      rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rect.setAttribute("class", "playhead");
+      rect.setAttribute("rx", "3");
+      this.playhead = rect;
+    }
+    rect.setAttribute("x", x0.toFixed(1));
+    rect.setAttribute("y", y0.toFixed(1));
+    rect.setAttribute("width", Math.max(8, x1 - x0).toFixed(1));
+    rect.setAttribute("height", Math.max(8, y1 - y0).toFixed(1));
+    if (rect.ownerSVGElement !== svg) svg.appendChild(rect);
   }
 
   /** 当前结果的曲名（导出文件名取首行）。 */
@@ -444,6 +507,7 @@ export class ScorePainter {
 
   /** 元素 `id` 的音符格：简谱引擎按第 `pass` 遍（找不到那一遍取第一个），原样文档一个元素只画一次。 */
   private noteHit(id: ElementId, pass = 0): { page: number; item: PageItem } | null {
+    if (this.staff) return this.staffChords.get(id)?.[0] ?? null;
     if (this.original) return this.original.noteItems.get(id) ?? null;
     return this.hitFor(id, pass);
   }
@@ -460,6 +524,12 @@ export class ScorePainter {
   highlight(id: ElementId | null, pass = 0): number | null {
     for (const item of this.highlighted) this.nodeMap.get(item)?.classList.remove("playing");
     this.highlighted = [];
+    if (this.staff) {
+      // 五线谱 / 混排不给符头着色，放一条纵贯整行谱表的播放线（同 Sibelius / MuseScore / Dorico）
+      const hit = id === null ? null : this.staffChords.get(id)?.[0] ?? null;
+      this.movePlayhead(hit);
+      return hit ? hit.page : null;
+    }
     if (id === null) return null;
     const hit = this.noteHit(id, pass);
     if (!hit) return null;
@@ -471,6 +541,24 @@ export class ScorePainter {
       this.highlighted.push(item);
     }
     return hit.page;
+  }
+
+  /** 五线谱 / 混排：点中的元素（事件目标）落在哪个和弦组里 → 元素 id；不在和弦上为 null。 */
+  staffChordAt(target: Element | null): ElementId | null {
+    if (!this.staff) return null;
+    for (let el = target; el && !(el instanceof SVGSVGElement); el = el.parentElement) {
+      const id = this.staffElId.get(el);
+      if (id !== undefined) return id;
+    }
+    return null;
+  }
+
+  /** 五线谱 / 混排：元素 `id` 画出来的各个和弦组（五线谱层、简谱叠层各一个）。 */
+  staffChordEls(id: ElementId): SVGGElement[] {
+    return (this.staffChords.get(id) ?? []).flatMap((h) => {
+      const el = this.nodeMap.get(h.item);
+      return el ? [el] : [];
+    });
   }
 
   /** 元素 `id` 第一次出现在第几页（光标同步翻页用）；没画出来为 null。 */
@@ -589,7 +677,14 @@ export class ScorePainter {
       const page = this.result?.pages[pageIndex];
       if (!page) throw new Error(`ScorePainter: 没有第 ${pageIndex + 1} 页`);
       const { w, h } = page.geometry.viewBox;
-      return renderPageSvg(page.root, w, h, { cls: "score-page mixed-page", visitor: mixedVisitor });
+      const svg = renderPageSvg(page.root, w, h, { cls: "score-page mixed-page", visitor: mixedVisitor(this.nodeMap) });
+      for (const [id, hits] of this.staffChords) {
+        for (const h of hits) {
+          const el = h.page === pageIndex ? this.nodeMap.get(h.item) : undefined;
+          if (el) this.staffElId.set(el, id);
+        }
+      }
+      return svg;
     }
     const page = this.result?.pages[pageIndex];
     if (!page) throw new Error(`ScorePainter: 没有第 ${pageIndex + 1} 页`);

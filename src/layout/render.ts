@@ -130,56 +130,61 @@ export function svgVisitor(nodeMap?: WeakMap<PageItem, SVGGElement>): ItemVisito
 //   - 那边无条件递归子级；这边只递归 Group（叶子的子级会被丢掉）。
 // 真正共用的是 renderPageSvg（外壳）与 walkPageItem（骨架）。
 
-export const mixedVisitor: ItemVisitor<SVGGElement> = {
-  descend: (item, parent) => {
-    // 只有 Group 产生新的 <g>；叶子直接落在父级的 <g> 里，自带 transform
-    if (!(item instanceof Group)) return parent;
-    const g = document.createElementNS(SVG_NS, "g") as SVGGElement;
-    if (!item.matrix.isIdentity) g.setAttribute("transform", item.matrix.toSvg());
-    parent.appendChild(g);
-    return g;
-  },
-  descendChildren: (item) => item instanceof Group,
-  line: (item, g) => {
-    const el = document.createElementNS(SVG_NS, "line") as SVGLineElement;
-    el.setAttribute("x1", String(item.p0.x));
-    el.setAttribute("y1", String(item.p0.y));
-    el.setAttribute("x2", String(item.p1.x));
-    el.setAttribute("y2", String(item.p1.y));
-    el.setAttribute("stroke", "black");
-    el.setAttribute("stroke-width", String(item.strokeWidth));
-    el.setAttribute("stroke-linecap", "butt");
-    if (!item.matrix.isIdentity) el.setAttribute("transform", item.matrix.toSvg());
-    g.appendChild(el);
-  },
-  text: (item, g) => {
-    const el = document.createElementNS(SVG_NS, "text") as SVGTextElement;
-    el.setAttribute("x", "0");
-    el.setAttribute("y", "0");
-    el.setAttribute("font-family", item.font.family);
-    el.setAttribute("font-size", String(item.font.size));
-    if (item.font.bold) el.setAttribute("font-weight", "bold");
-    if (item.font.italic) el.setAttribute("font-style", "italic");
-    el.setAttribute("fill", "black");
-    // 逐字笔位（标点挤压后的坐标，排版期量的那一串）——同 layout/painter.ts 的那一处。
-    if (item.charXs && item.charXs.length > 1)
-      el.setAttribute("x", item.charXs.map((v) => v.toFixed(2)).join(" "));
-    el.textContent = item.text;
-    el.setAttribute("transform", item.matrix.toSvg()); // matrix contains x,y translation
-    g.appendChild(el);
-  },
-  path: (item, g) => {
-    const el = document.createElementNS(SVG_NS, "path") as SVGPathElement;
-    el.setAttribute("d", item.d);
-    if (item.fill) el.setAttribute("fill", colorToCss(item.fillColor));
-    else el.setAttribute("fill", "none");
-    if (item.stroke) {
-      el.setAttribute("stroke", colorToCss(item.strokeColor));
+/** `nodeMap` 给了就记下每个 Group 造出的 `<g>`（编辑器按和弦组放播放线、认点选，见 `mixed/prims.ts::STAFF_CHORD`）。 */
+export function mixedVisitor(nodeMap?: WeakMap<PageItem, SVGGElement>): ItemVisitor<SVGGElement> {
+  return {
+    descend: (item, parent) => {
+      // 只有 Group 产生新的 <g>；叶子直接落在父级的 <g> 里，自带 transform
+      if (!(item instanceof Group)) return parent;
+      const g = document.createElementNS(SVG_NS, "g") as SVGGElement;
+      if (!item.matrix.isIdentity) g.setAttribute("transform", item.matrix.toSvg());
+      if (item.classes.size > 0) g.setAttribute("class", [...item.classes].join(" ")); // staff-chord / staff-system
+      parent.appendChild(g);
+      nodeMap?.set(item, g);
+      return g;
+    },
+    descendChildren: (item) => item instanceof Group,
+    line: (item, g) => {
+      const el = document.createElementNS(SVG_NS, "line") as SVGLineElement;
+      el.setAttribute("x1", String(item.p0.x));
+      el.setAttribute("y1", String(item.p0.y));
+      el.setAttribute("x2", String(item.p1.x));
+      el.setAttribute("y2", String(item.p1.y));
+      el.setAttribute("stroke", "black");
       el.setAttribute("stroke-width", String(item.strokeWidth));
-    } else {
-      el.setAttribute("stroke", "none");
-    }
-    if (!item.matrix.isIdentity) el.setAttribute("transform", item.matrix.toSvg());
-    g.appendChild(el);
-  },
-};
+      el.setAttribute("stroke-linecap", "butt");
+      if (!item.matrix.isIdentity) el.setAttribute("transform", item.matrix.toSvg());
+      g.appendChild(el);
+    },
+    text: (item, g) => {
+      const el = document.createElementNS(SVG_NS, "text") as SVGTextElement;
+      el.setAttribute("x", "0");
+      el.setAttribute("y", "0");
+      el.setAttribute("font-family", item.font.family);
+      el.setAttribute("font-size", String(item.font.size));
+      if (item.font.bold) el.setAttribute("font-weight", "bold");
+      if (item.font.italic) el.setAttribute("font-style", "italic");
+      el.setAttribute("fill", "black");
+      // 逐字笔位（标点挤压后的坐标，排版期量的那一串）——同 layout/painter.ts 的那一处。
+      if (item.charXs && item.charXs.length > 1)
+        el.setAttribute("x", item.charXs.map((v) => v.toFixed(2)).join(" "));
+      el.textContent = item.text;
+      el.setAttribute("transform", item.matrix.toSvg()); // matrix contains x,y translation
+      g.appendChild(el);
+    },
+    path: (item, g) => {
+      const el = document.createElementNS(SVG_NS, "path") as SVGPathElement;
+      el.setAttribute("d", item.d);
+      if (item.fill) el.setAttribute("fill", colorToCss(item.fillColor));
+      else el.setAttribute("fill", "none");
+      if (item.stroke) {
+        el.setAttribute("stroke", colorToCss(item.strokeColor));
+        el.setAttribute("stroke-width", String(item.strokeWidth));
+      } else {
+        el.setAttribute("stroke", "none");
+      }
+      if (!item.matrix.isIdentity) el.setAttribute("transform", item.matrix.toSvg());
+      g.appendChild(el);
+    },
+  };
+}

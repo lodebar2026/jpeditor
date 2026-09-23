@@ -150,6 +150,29 @@ button:focus-visible, select:focus-visible {
   border-radius: 50%;
   animation: spin 750ms linear infinite;
 }
+#toolbar .playback-stop { font-size: 11px; }
+/* 进度条：已播那段用主题绿（`--progress` 由 playback.ts 写） */
+.play-progress {
+  --progress: 0%;
+  width: 120px;
+  height: 4px;
+  margin: 0 6px;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--green) var(--progress), rgba(255, 255, 255, 0.18) var(--progress));
+  cursor: pointer;
+}
+.play-progress:disabled { opacity: 0.4; cursor: default; }
+.play-progress::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+}
+.play-progress::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: var(--text); }
+#toolbar .play-time { padding: 0 4px; font-variant-numeric: tabular-nums; min-width: 78px; }
 #toolbar .sep { width: 1px; height: 22px; flex: 0 0 auto; background: var(--border); margin: 0 2px; }
 .toolbar-spacer { flex: 1 1 auto; min-width: 12px; }
 .mobile-view-switch { display: none; }
@@ -527,6 +550,9 @@ button:focus-visible, select:focus-visible {
 .beat-check-button.active { color: #e03131; }
 .format-marks-button.active { color: #1565ff; }
 
+/* 五线谱 / 混排的竖直播放线（painter.ts::movePlayhead）：纵贯整行谱表，点击穿过它落到音符上 */
+.mixed-page rect.playhead { fill: rgba(232, 89, 12, 0.16); stroke: rgba(232, 89, 12, 0.7); stroke-width: 1.5; pointer-events: none; }
+.mixed-page g.staff-chord { cursor: pointer; }
 /* playback cursor — highlight the currently sounding note */
 .score-page g.playing [fill]:not([fill="none"]) { fill: #e8590c; }
 .score-page g.playing [stroke] { stroke: #e8590c; }
@@ -735,6 +761,7 @@ button:focus-visible, select:focus-visible {
   .home-label { display: none; }
   .header-divider { display: none; }
   #toolbar { padding-inline: 8px; }
+  .play-progress { width: 72px; margin: 0 3px; }
   .mobile-view-switch { display: flex; padding: 2px; border-radius: 7px; background: #0d0d0d; }
   #toolbar .mobile-view-switch button { height: 26px; }
   #toolbar .mobile-view-switch button.active { background: var(--panel-hover); color: var(--text); }

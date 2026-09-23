@@ -448,6 +448,9 @@ export interface RestInfo {
 export interface Chord {
   kind: "chord";
   id: ElementId;
+  /** 派生来的模型里，这个和弦在**源模型**里的 id：文本格式写成 MusicXML 再读回（五线谱 / 混排档的 `mixedDoc`）时由
+   *  `<note id="jp…">` 带回来（`toxml.ts::ToXmlOptions.sourceIds`），五线谱与代码区靠它互相定位。其余来源没有 */
+  srcId?: ElementId;
   /** 同时发声的音。休止时为空数组 */
   notes: Note[];
   /** 非空即休止 */

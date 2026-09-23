@@ -22,7 +22,7 @@ import {
   SysStaff,
   smuflWidth,
 } from "./model";
-import { addLine, addSmufl, addSmuflScaled, translated } from "./prims";
+import { addLine, addSmufl, addSmuflScaled, chordGroup, translated } from "./prims";
 
 const BLACK = 0xff000000;
 
@@ -60,7 +60,7 @@ export function drawJianpuOverlay(grp: Group, sys: Sys, st: SysStaff, m: Measure
 
   for (const ch of md.chords) {
     for (const n of ch.notes) {
-      const col = new Group();
+      const col = chordGroup(ch.src.id); // 带元素 id：播放线、点选按它认（`prims.ts::STAFF_CHORD`）
       const alt = accidentalOf(ch, n, ps.subIndex);
       if (alt !== null) drawAccidental(eng, col, n, alt);
       drawColumn(eng, col, md, ch, n, ps.subIndex);

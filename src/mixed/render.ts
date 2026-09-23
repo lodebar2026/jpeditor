@@ -44,7 +44,7 @@ import {
 } from "./model";
 import { Font } from "../layout/font";
 import { layoutHarmonySegs } from "../layout/harmony";
-import { addLine, addSmufl, addSmuflScaled, translated } from "./prims";
+import { addLine, addSmufl, addSmuflScaled, chordGroup, STAFF_SYSTEM, translated, type StaffSystemData } from "./prims";
 import { drawJianpuOverlay } from "./jianpuoverlay";
 
 function addFilledQuad(
@@ -78,9 +78,18 @@ export function drawNotesNormal(
   const meta = eng.meta;
 
   // ---- noteheads, rests, stems, flags ----
+  // 每个和弦收进一个带元素 id 的组（`chordGroup`），编辑器放播放线、认点选用；有东西画才建
   for (const ch of md.chords) {
     const code = ch.sym();
     if (!code) continue;
+    let cg: Group | null = null;
+    const chordGrp = (): Group => {
+      if (!cg) {
+        cg = chordGroup(ch.src.id);
+        container.add(cg);
+      }
+      return cg;
+    };
 
     for (const n of ch.notes) {
       if (n.staff !== subStaff) continue;
@@ -108,9 +117,9 @@ export function drawNotesNormal(
       if (code === GlyphCodes.restWhole) y -= 10;
 
       if (scale !== 1) {
-        addSmuflScaled(container, code, x, y, fs, scale, scale);
+        addSmuflScaled(chordGrp(), code, x, y, fs, scale, scale);
       } else {
-        addSmufl(container, code, x, y, fs);
+        addSmufl(chordGrp(), code, x, y, fs);
       }
     }
 
@@ -131,14 +140,14 @@ export function drawNotesNormal(
       if (flagCode) {
         const scale = ch.cue ? eng.cueSize : 1;
         if (scale !== 1) {
-          addSmuflScaled(container, flagCode, sx, ty, fs, scale, scale);
+          addSmuflScaled(chordGrp(), flagCode, sx, ty, fs, scale, scale);
         } else {
-          addSmufl(container, flagCode, sx, ty, fs);
+          addSmufl(chordGrp(), flagCode, sx, ty, fs);
         }
       }
     }
 
-    addLine(container, sx, sy, sx, ty, eng.lineWidths.stem);
+    addLine(chordGrp(), sx, sy, sx, ty, eng.lineWidths.stem);
   }
 
   // ---- notations (fermata 等) —— render.cpp:328 drawChord 非简谱分支 ----
@@ -1300,12 +1309,20 @@ export function drawSystem(container: Group, sys: Sys): Group {
   container.add(res);
 
   let ypos = 0;
+  let top: number | null = null;
   for (const st of sys.staves) {
     if (!st.staffVisible) continue;
     ypos += st.distance;
+    // 谱表带上沿：混排第一子谱表连同上方的简谱层（与 `drawJianpuOverlay` 的 jpOffY 同式）
+    const mixedTop = st.partStaff.getNotation(new Fraction(0)) === Notation.Mixed && st.partStaff.subIndex === 0
+      ? ypos + st.minY - eng.mixStaffDist - eng.mixStaffHeight
+      : ypos;
+    top ??= mixedTop;
     drawSysStaff(res, sys, st, ypos);
     ypos += st.height();
   }
+  res.classes.add(STAFF_SYSTEM);
+  res.data = { top: top ?? 0, bottom: ypos } satisfies StaffSystemData;
 
   drawBarline(eng, res, sys);
   drawPartGroups(res, sys);

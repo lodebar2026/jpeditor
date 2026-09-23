@@ -36,6 +36,7 @@ import type {
 } from "./doc";
 import { harmonyXml as chordTextXml } from "../score/harmonyxml";
 import { projectForMusicXml, type ProjectOptions } from "./xmlproject";
+import { SOURCE_ID_PREFIX } from "./helpers";
 
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -276,9 +277,12 @@ function notationsXml(o: Out, d: number, n: Chord["notations"], starts: Mark[], 
 }
 
 /** 一个 `Chord` → 一条或多条 `<note>`（和弦音从第二个起带 `<chord/>`）。 */
-function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[]): void {
+function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[], sourceIds = false): void {
+  let k = 0;
   const writeOne = (note: Note | null, isChordNote: boolean, withNotations: boolean): void => {
-    const attrs = posAttrs(note?.pos ?? ch.pos) + (ch.printObject === false ? ' print-object="no"' : "");
+    // 源 id（`ToXmlOptions.sourceIds`）：XML 的 id 要唯一，和弦音从第二个起加序号
+    const idAttr = sourceIds ? ` id="${SOURCE_ID_PREFIX}${ch.id}${k++ > 0 ? `-${k - 1}` : ""}"` : "";
+    const attrs = idAttr + posAttrs(note?.pos ?? ch.pos) + (ch.printObject === false ? ' print-object="no"' : "");
     o.push(d, `<note${attrs}>`);
     if (ch.grace) o.push(d + 1, ch.grace.slash ? '<grace slash="yes"/>' : "<grace/>");
     if (ch.cue) o.push(d + 1, "<cue/>");
@@ -522,6 +526,7 @@ function measureXml(
   m: Measure,
   marksByStart: Map<number, Mark[]>,
   marksByEnd: Map<number, Mark[]>,
+  sourceIds = false,
 ): void {
   const mAttrs = (m.implicit ? ' implicit="yes"' : "") + (m.width !== undefined ? ` width="${m.width}"` : "");
   o.push(d, `<measure number="${escAttr(m.number)}"${mAttrs}>`);
@@ -571,7 +576,7 @@ function measureXml(
       // 长音中途换和弦（挂在增时线上）：`<harmony>` 排在所辖音符之前，拍位靠 offset
       for (const su of el.sustains ?? []) if (su.harmony) writeHarmony(su.harmony, onset);
       moveTo(onset);
-      chordXml(o, d + 1, el, marksByStart.get(el.id) ?? [], marksByEnd.get(el.id) ?? []);
+      chordXml(o, d + 1, el, marksByStart.get(el.id) ?? [], marksByEnd.get(el.id) ?? [], sourceIds);
       if (!el.grace) cursor += Math.max(0, Math.round(el.duration.divisions));
       end = cursor;
     } else if (el.spacer === "x" && el.duration) {
@@ -601,7 +606,7 @@ function measureXml(
   o.push(d, "</measure>");
 }
 
-function partXml(o: Out, d: number, part: Part, song: Song): void {
+function partXml(o: Out, d: number, part: Part, song: Song, sourceIds = false): void {
   const byStart = new Map<number, Mark[]>();
   const byEnd = new Map<number, Mark[]>();
   const add = (map: Map<number, Mark[]>, id: number, m: Mark): void => {
@@ -616,13 +621,16 @@ function partXml(o: Out, d: number, part: Part, song: Song): void {
     add(byEnd, m.end, m);
   }
   o.push(d, `<part id="${escAttr(part.id)}">`);
-  for (const m of part.measures) measureXml(o, d + 1, m, byStart, byEnd);
+  for (const m of part.measures) measureXml(o, d + 1, m, byStart, byEnd, sourceIds);
   o.push(d, "</part>");
 }
 
 export interface ToXmlOptions extends ProjectOptions {
   /** 取第几首（多曲文件、文本谱 `-----` 分曲）。默认第一首 */
   song?: number;
+  /** 每个 `<note>` 带 `id="jp<源元素 id>"`：文本格式派生五线谱（`export.ts::sourceMusicXmlBare`）读回后，
+   *  `fromxml` 把它记成 `Chord.srcId`，五线谱上点的音才对得回代码区。**只给这条内部路径用**，导出文件不带。 */
+  sourceIds?: boolean;
 }
 
 /** `ScoreDoc` → MusicXML 文本（含 XML 声明与 DOCTYPE）。**MusicXML 的唯一写出端**：
@@ -692,7 +700,7 @@ export function scoreDocToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): s
   for (const g of groups) o.push(2, `<part-group type="stop" number="${escAttr(g.number)}"/>`);
   o.push(1, "</part-list>");
 
-  for (const p of song.parts) partXml(o, 1, p, song);
+  for (const p of song.parts) partXml(o, 1, p, song, options.sourceIds);
   o.push(0, "</score-partwise>");
   return o.toString() + "\n";
 }
