@@ -4,10 +4,7 @@ import { resolvePaper, pageMargins, CUSTOM_PAPER } from "../style/paper";
 import { HEADER_LABEL, HEADER_ROLES } from "../style/header";
 import type { PageDecl } from "../style/sheet";
 import { ORIGINAL_PAPERS, PAGE_RATIOS, PAPER_SIZES } from "../style/themes";
-import { META_KEYS, metaKeyDef, splitMetaValue } from "../model/metakeys";
 import { CONVERT_TARGETS } from "../model/convert";
-import { replaceMetaLines } from "../j123/metaedit";
-import type { SongMeta } from "../model/doc";
 
 /** `extra`：页脚左侧再放一个按钮（点了执行并关闭，不算取消）。 */
 function modal(
@@ -647,105 +644,5 @@ export function showOptionsDialog(app: App): void {
     // 清掉当前档（展开 / 原样）的用户层，回到内置主题；另一档与声部音量不动
     label: "恢复本档默认",
     onClick: () => app.resetRenderSettings(),
-  });
-}
-
-const CREATOR_LABEL: Record<string, string> = {
-  lyricist: "作词", composer: "作曲", arranger: "编曲", translator: "译词", transcriber: "制谱", "words-and-music": "词曲", poet: "作词",
-};
-
-/**
- * 曲目信息：标题 / 词曲 / 版权（只看），扩展 meta（`Song.meta`，键见 `model/metakeys.ts`）可改。
- * **只有 123 写得回原文**（`I:meta 键 值`，见 `j123/metaedit.ts`）；其余格式装不下（能力表 `meta`），
- * 只看不改，提示另存为 123。
- */
-export function showSongInfoDialog(app: App): void {
-  const doc = app.docFormat === "musicxml" ? app.mixedDoc : app.currentScoreDoc();
-  const song = doc?.songs[0];
-  if (!song) {
-    app.setStatus("当前文档读不出曲目信息");
-    return;
-  }
-  // 123 / ABC 写回头部的 `I:meta` 行（同一个解析器认）；MusicXML 改模型整份重写（`<miscellaneous-field>`）；
-  // `.jpwabc` 与文本谱没有字段可落，只看
-  const editable = app.docFormat === "123" || app.docFormat === "abc" || app.docFormat === "musicxml";
-  const body = document.createElement("div");
-  body.className = "settings-form";
-  const info = (label: string, value: string): void => {
-    if (!value) return;
-    const v = document.createElement("span");
-    v.textContent = value;
-    v.style.cssText = "white-space:pre-wrap;max-width:360px";
-    body.append(labeled(label, v));
-  };
-  info("标题", [song.work.title ?? "", ...song.work.subtitles].filter(Boolean).join("\n"));
-  info("词曲", (song.identification?.creators ?? []).map((c) => `${CREATOR_LABEL[c.type] ?? c.type}｜${c.text}`).join("\n"));
-  info("版权", song.identification?.rights ?? "");
-
-  const meta = song.meta ?? {};
-  const inputs = new Map<string, HTMLTextAreaElement | HTMLInputElement>();
-  for (const def of META_KEYS) {
-    let el: HTMLTextAreaElement | HTMLInputElement;
-    if (def.flag) {
-      el = document.createElement("input");
-      el.type = "checkbox";
-      el.checked = (meta[def.key]?.[0] ?? "") === "true";
-    } else {
-      el = document.createElement("textarea");
-      el.rows = def.split ? 1 : Math.max(1, (meta[def.key] ?? []).length);
-      el.value = (meta[def.key] ?? []).join(def.split ? "；" : "\n");
-      el.style.cssText = "min-width:320px;font:inherit";
-    }
-    el.disabled = !editable;
-    inputs.set(def.key, el);
-    body.append(labeled(def.label, el));
-  }
-  // 不在注册表里的键：一行一项「键: 值」
-  const others = document.createElement("textarea");
-  others.rows = 2;
-  others.style.cssText = "min-width:320px;font:inherit";
-  others.value = Object.entries(meta)
-    .filter(([k]) => !metaKeyDef(k))
-    .flatMap(([k, vs]) => vs.map((v) => `${k}: ${v}`))
-    .join("\n");
-  others.disabled = !editable;
-  body.append(labeled("其他", others));
-  const hint = document.createElement("div");
-  hint.style.cssText = "margin-top:8px;opacity:0.75;font-size:12px;line-height:1.6";
-  hint.textContent = !editable
-    ? "这种格式装不下扩展曲目信息（英文标题、经文、标签等），只能查看；另存为 123 后可编辑。"
-    : app.docFormat === "musicxml"
-      ? "改动写进 MusicXML 的 <miscellaneous-field>（整份重写）；歌本模板（.ss）按键名引用这些字段。"
-      : "改动写回源码头部的 I:meta 行，可用 Ctrl/⌘+Z 撤销；歌本模板（.ss）按键名引用这些字段。";
-  body.append(hint);
-
-  modal("曲目信息", body, () => {
-    if (!editable) return;
-    const out: SongMeta = {};
-    for (const [key, el] of inputs) {
-      const def = metaKeyDef(key)!;
-      if (el instanceof HTMLInputElement) {
-        if (el.checked) out[key] = ["true"];
-        continue;
-      }
-      const text = el.value.trim();
-      if (!text) continue;
-      out[key] = def.split ? splitMetaValue(key, text) : text.split(/\r?\n/).map((t) => t.trim()).filter(Boolean);
-    }
-    for (const line of others.value.split(/\r?\n/)) {
-      const m = /^\s*([a-z0-9][a-z0-9.-]*)\s*[:：]\s*(.+)$/.exec(line);
-      if (m) (out[m[1]!] ??= []).push(m[2]!.trim());
-    }
-    if (app.docFormat === "musicxml") {
-      app.editScoreDoc((d) => {
-        const s = d.songs[0];
-        if (s) s.meta = Object.keys(out).length ? out : undefined;
-      });
-    } else {
-      const text = app.getText();
-      const next = replaceMetaLines(text, out);
-      if (next !== text) app.setText(next);
-    }
-    app.setStatus("曲目信息已写回");
   });
 }

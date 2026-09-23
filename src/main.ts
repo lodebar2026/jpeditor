@@ -4,7 +4,7 @@ import { ensureFontsReady } from "./common/measure";
 import { asset } from "./common/asset";
 import { App, type ViewMode } from "./editor/app";
 import { IMAGE_EXT, IMAGE_ACCEPT, isDocFile, isImageFile } from "./common/filetypes";
-import { showOptionsDialog, showHanConvDialog, showSongInfoDialog } from "./editor/dialogs";
+import { showOptionsDialog, showHanConvDialog } from "./editor/dialogs";
 import { showExportDialog, showSaveAsDialog } from "./editor/export";
 import { showHelpDialog } from "./editor/help";
 import { isTauriRuntime } from "./editor/fileio";
@@ -183,7 +183,6 @@ async function boot() {
   on("btn-prev", () => app.prevPage());
   on("btn-next", () => app.nextPage());
   on("btn-options", () => showOptionsDialog(app));
-  on("btn-songinfo", () => showSongInfoDialog(app));
   const hanziBtn = document.getElementById("btn-hanzi") as HTMLButtonElement | null;
   if (hanziBtn) {
     app.setHanziButton(hanziBtn);
