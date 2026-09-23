@@ -545,73 +545,9 @@ export async function recognizeHeader(
 
   // 归类：以 作/词/曲/编/译 开头紧跟冒号(作词：/词曲：…) → credits；其余最大字号中文行作标题。
   // 著作者前缀须**行首**紧贴冒号——否则长句经文副标题("…正如他作更美之约…来8：6")也会因含"作"+"："被误判。
-  /** 把 `1=<残字><音名>` 里的残字按形状改写成 `b`/`#`。改了返回 true。
-   *  定位靠 det/CTC 给的逐字位：残字的 cx 附近那个连通块就是升降号本体（页眉里 `=` 的两横、
-   *  音名字母各是独立的块，取**离它最近**的那个即可）。找不到块或形状判不出就原样不动。 */
-  function repairKeyAccidental(ls: HLine[]): boolean {
-    let fixed = false;
-    for (const l of ls) {
-      if (!l.chars?.length) continue;
-      const m = l.text.match(/1\s*[=＝]\s*([^A-Ga-g0-9\s])\s*([A-G])(?![a-z])/);
-      if (!m) continue;
-      const idx = l.text.indexOf(m[1], l.text.indexOf(m[0]));
-      const ch = l.chars[idx];
-      if (!ch) continue;
-      // 页眉里的块：落在本行框内（上下各放半个字高，上标本就骑得高）、且不比整行还宽。
-      let best: Component | null = null, bd = Infinity;
-      for (const k of comps) {
-        const b = k.bbox;
-        if (b.y > l.bbox.y + l.bbox.h || b.y + b.h < l.bbox.y - l.bbox.h * 0.5) continue;
-        if (b.w > l.bbox.h || b.h > l.bbox.h) continue;      // 音名/数字那种整字大小的块不算
-        const d = Math.abs(b.x + b.w / 2 - ch.cx);
-        if (d < bd) { bd = d; best = k; }
-      }
-      if (!best || bd > l.bbox.h) continue;
-      const kind = accidentalOf(bin, best.bbox);
-      if (kind !== "flat" && kind !== "sharp") continue;
-      l.text = l.text.slice(0, idx) + (kind === "flat" ? "b" : "#") + l.text.slice(idx + m[1].length);
-      fixed = true;
-    }
-    return fixed;
-  }
-
-  /** 调号的音名整个读丢了时，回源图上**单独重读**。1697《温州的水 温州的山》印的是 `1=♭B`，♭ 与 B
-   *  都是上标小字，det 把「1 = ♭B 4/4 ♩=95」切成一行，行高照大号的「1」算，两个小字缩下去只剩
-   *  一个 `b`（`1=b4J=95`），parseMeta 与 repairKeyAccidental 都无从下手，整曲落回 C。
-   *  做法：`=` 的两道横右边**紧挨着**的几块墨（碰到比字宽还大的空当就停，后面是拍号/速度）。
-   *  其中位置明显偏高、形状判得出 ♭/♯ 的是升降号（accidentalOf），其余是音名——单独裁出来送 rec，
-   *  这回行高就是音名自己的高度。读不出 A–G 就原样放弃。返回五度圈数与所在行。 */
-  async function rereadKeyName(ls: HLine[]): Promise<{ fifths: number; line: HLine } | undefined> {
-    const line = ls.find((l) => /[1１]\s*[=＝]/.test(l.text));
-    if (!line || !ocr.recognizeTexts) return undefined;
-    const lb = line.bbox;
-    const band = comps
-      .filter((k) => rcyOf(k.bbox) >= lb.y && rcyOf(k.bbox) <= lb.y + lb.h && k.bbox.x >= lb.x && k.bbox.x + k.bbox.w <= lb.x + lb.w)
-      .sort((a, b) => a.bbox.x - b.bbox.x);
-    // `=`：两道扁横，上下叠着、左右对齐
-    const bars = band.filter((k) => k.bbox.w >= k.bbox.h * 2.5 && k.bbox.h <= lb.h * 0.15);
-    const eq = bars.find((a) => bars.some((b) => b !== a && overlapRatioX(a.bbox, b.bbox) >= 0.6 &&
-      Math.abs(rcyOf(a.bbox) - rcyOf(b.bbox)) <= lb.h * 0.3));
-    if (!eq) return undefined;
-    const eqRight = Math.max(...bars.filter((b) => overlapRatioX(eq.bbox, b.bbox) >= 0.6).map((b) => b.bbox.x + b.bbox.w));
-    const group: Component[] = [];
-    for (const k of band) {
-      if (k.bbox.x < eqRight || bars.includes(k)) continue;
-      const last = group[group.length - 1];
-      if (last) {
-        const gh = Math.max(...group.map((g) => g.bbox.h));
-        if (k.bbox.x - (last.bbox.x + last.bbox.w) > Math.max(4, gh * 0.6)) break;
-      } else if (k.bbox.x - eqRight > lb.h) break;                       // 离 `=` 太远：不是音名
-      group.push(k);
-      if (group.length > 3) return undefined;
-    }
-    const k = await readKeyGroup(group);
-    return k ? { fifths: k.fifths, line } : undefined;
-  }
-
-  /** 读一组紧挨着的调号块（音名 + 可选升降号，1~3 块）：位置明显偏高、形状判得出 ♭/♯ 的是升降号
+  /** 读一组紧挨着的调号块（音名 + 可选升降号，1~3 块）：位置明显偏高、竖长、形状判得出 ♭/♯ 的是升降号
    *  （accidentalOf），其余拼成一条单独送 rec——行高就是音名自己的高度。rec 连着升降号一起读出来
-   *  （`bB`、`Eb`）也收。读不出 A–G 就放弃。 */
+   *  （`bB`、`Eb`）也收；组里连 `1=` 一起读出来（1940 小字 `1=c`）也收，此时音名可小写。读不出 A–G 就放弃。 */
   async function readKeyGroup(group: Component[]): Promise<{ fifths: number; bbox: Rect } | undefined> {
     if (!group.length || !ocr.recognizeTexts) return undefined;
     // 升降号：上标印得高——底边比其余块的底边高出两成字高以上，且形状判得出 ♭/♯
@@ -621,23 +557,32 @@ export async function recognizeHeader(
     for (const g of group) {
       const lh = Math.max(...group.filter((o) => o !== g).map((o) => o.bbox.h), 0);
       if (!lh || lowest - (g.bbox.y + g.bbox.h) < lh * 0.2) continue;
+      // ♭/♯ 都是竖长的：小字号下 `=` 两横连成一块（1940：6×3），accidentalOf 会判成 ♯
+      if (g.bbox.h < g.bbox.w) continue;
       const kind = accidentalOf(bin, g.bbox);
       if (kind !== "flat" && kind !== "sharp") continue;
       acc = kind === "flat" ? "b" : "#";
       letters = group.filter((o) => o !== g);
       break;
     }
-    const [text] = await recognizeTexts([buildStrip(surfaceFromBinary(bin), [unionRects(letters.map((g) => g.bbox))])]);
-    const m = /^\s*([b#♭♯]?)\s*([A-G])\s*([b#♭♯]?)\s*$/.exec(text ?? "");
-    if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.log("[header/keyGroup]", JSON.stringify(text), acc, group.map((g) => `${g.bbox.x},${g.bbox.y} ${g.bbox.w}x${g.bbox.h}`).join(" | "));
-    if (!m) return undefined;
-    const a = acc || m[1] || m[3];
-    const f = NAT_FIFTHS[m[2]] + (a === "b" || a === "♭" ? -7 : a === "#" || a === "♯" ? 7 : 0);
+    const read = async (ks: Component[]) => {
+      const [text] = await recognizeTexts([buildStrip(surfaceFromBinary(bin), [unionRects(ks.map((g) => g.bbox))])]);
+      if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.log("[header/keyGroup]", JSON.stringify(text), acc, ks.map((g) => `${g.bbox.x},${g.bbox.y} ${g.bbox.w}x${g.bbox.h}`).join(" | "));
+      return /^\s*([1１]\s*[=＝]\s*)?([b#♭♯]?)\s*([A-Ga-g])\s*([b#♭♯]?)\s*$/.exec(text ?? "");
+    };
+    let m = await read(letters);
+    // 摘错了：组里带着 `1` 时小写音名比它矮一截、底边也略高，会被当成上标升降号（1940 `1=c` 的 c）。
+    // 摘掉后读不出音名，就整组不摘再读一遍。
+    if (!m && acc) { acc = ""; m = await read(group); }
+    // 小写音名只在带着 `1=` 读出来时收：单独一个 `b` 多半是降号本身
+    if (!m || (!m[1] && m[3] !== m[3].toUpperCase())) return undefined;
+    const a = acc || m[2] || m[4];
+    const f = NAT_FIFTHS[m[3].toUpperCase()] + (a === "b" || a === "♭" ? -7 : a === "#" || a === "♯" ? 7 : 0);
     return f >= -7 && f <= 7 ? { fifths: f, bbox: unionRects(group.map((g) => g.bbox)) } : undefined;
   }
 
-  /** 调号的**单字符兜底**：det 连 `1=` 那一行都没检出来时（耶稣普治 `1 = D`：页宽 2000px 缩到 960，
-   *  小字宽字距只剩一个读空的碎框），不再指望文本行，直接在页眉的连通块里按位置关系找。
+  /** 调号的**单字符主路**：不看 det 文本行，直接在页眉的连通块里按位置关系找。起初是兜底——
+   *  det 连 `1=` 那一行都会漏（耶稣普治 `1 = D`：页宽 2000px 缩到 960，小字宽字距只剩一个读空的碎框）。
    *  版式（testdata + 旷野人声/迦南诗选抽检）：调号总在第一谱行之上、**标题中线左侧**，
    *  从左到右「`1` `=`」「上标升降号 + 音名」「拍号」「♩=速度」。两个锚点：
    *  - **`=`**：两道上下对齐的扁横，左边紧挨一个读得出 1 的块——`二`/`三` 的横笔、`♩=95` 的 `=` 都靠这一条挡掉；
@@ -912,7 +857,7 @@ export async function recognizeHeader(
         }
       }
     }
-    let meta = parseMeta(ls);
+    const meta = parseMeta(ls);
     // 副标题：标题**正下方**、字号不大于标题、与标题居中对齐的那一行。
     //  - 居中对齐这一条是关键：页眉里印在两侧的东西（左边的 `1=C 4/4`、右上角每页都有的
     //    出版方「迦南诗歌」）与标题中心差得远，靠它一并挡掉。
@@ -948,25 +893,17 @@ export async function recognizeHeader(
         out.regions.push({ text: out.subtitle, bbox: cand.bbox, chars: charsForText(out.subtitle, cand.chars) });
       }
     }
-    // 调号里的升降号读成了残字：`1=♭B` 的 ♭ 印成上标、只有一个数字的三分之一大，PP-OCR 常读成
-    // 引号一类的东西（227《施比受更为有福》读成 `1=″B`），`parseMeta` 的 `[b#♭♯]` 一条都对不上，
-    // 整个调号就落回默认的 C。此时**回头看形状**：那个字的位置上有一块墨，交给 accidentalOf
-    // 判 ♯/♭，把残字改写成 `b`/`#` 再解析一遍。只在 parseMeta 什么都没认出来时兜底，
-    // 认出来的（`1=bB`、`1=G`）一概不动。
-    if (meta.fifths === undefined && repairKeyAccidental(ls)) { probe("key.repairAccidental"); meta = parseMeta(ls); }
-    if (meta.fifths === undefined) {
-      const k = await rereadKeyName(ls);
-      if (k) { probe("key.reread"); meta.fifths = k.fifths; meta.fifthsLine = k.line; }
-    }
-    // 探针：强制走单字符兜底、只打日志不采纳（核对判据用）
+    // 调号**按单字符 + 位置为主**（keyByGlyphs：`1=` 或拍号当锚点，字符集封闭、语义全在几何）；
+    // 认不出才用 det 文本行（parseMeta）——「D 大调」这类不写 `1=`、也不挨着拍号的写法（8085）只有文本路认得。
+    // testdata 52 首两路都认出的逐首一致。
+    const textFifths = meta.fifths;
+    const g = await keyByGlyphs(titleLine);
+    const glyphKeyBox = g?.bbox;
+    if (g) { probe("key.glyphs"); meta.fifths = g.fifths; }
+    else if (meta.fifths !== undefined) probe("key.text");
+    // 探针：两路并排打日志（核对判据用，dev/scripts/key-layout.mjs）
     if ((globalThis as { __keyGlyphProbe?: boolean }).__keyGlyphProbe) {
-      const g = await keyByGlyphs(titleLine);
-      console.log("[keyProbe]", JSON.stringify({ text: meta.fifths, glyph: g?.fifths ?? null, bbox: g?.bbox ?? null, numH }));
-    }
-    let glyphKeyBox: Rect | undefined;
-    if (meta.fifths === undefined) {
-      const g = await keyByGlyphs(titleLine);
-      if (g) { probe("key.glyphs"); meta.fifths = g.fifths; glyphKeyBox = g.bbox; }
+      console.log("[keyProbe]", JSON.stringify({ text: textFifths ?? null, glyph: g?.fifths ?? null, bbox: g?.bbox ?? null, numH }));
     }
     out.fifths = meta.fifths;
     out.tempo = meta.tempo;
@@ -974,7 +911,7 @@ export async function recognizeHeader(
     out.beatType = meta.beatType;
     out.meters = meta.meters;
     out.meterNote = meta.meterNote;
-    const keyBox = meta.fifthsLine?.bbox ?? glyphKeyBox;
+    const keyBox = glyphKeyBox ?? meta.fifthsLine?.bbox;
     if (meta.fifths !== undefined && keyBox) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: keyBox });
     if (meta.tempo !== undefined && meta.tempoLine) out.regions.push({ text: `♩=${meta.tempo}`, bbox: meta.tempoLine.bbox });
     // 署名只印一个名字、不带「词/曲」的：迦南诗选每页右上角都印着「迦南诗歌」，与调号同一排、

@@ -16,7 +16,7 @@
 | `src/omr/lyrics.ts`（962 行） | 歌词识别与逐音节↔音符对齐 |
 | `src/omr/stanzas.ts` | 谱后单独排版的附段歌词（诗行）：按第 1 段的音位骨架逐字对位 |
 | `src/omr/repeats.ts` / `segno.ts` | 反复线与一/二房 / segno 𝄋 字形（→ 小节线上的 `hs` 记号） |
-| `src/omr/header.ts` | 页眉标题/曲号/词曲/调号（PP-OCRv4 DBNet 文本检测整片识别；调号认不出时按单字符 + 位置兜底）。曲号 → 123 `X:`、诗歌本 `XL:`/`XR:`、番茄拼回标题前 |
+| `src/omr/header.ts` | 页眉标题/曲号/词曲/调号（PP-OCRv4 DBNet 文本检测整片识别；调号按单字符 + 位置为主、det 文本行兜底）。曲号 → 123 `X:`、诗歌本 `XL:`/`XR:`、番茄拼回标题前 |
 | `src/omr/paddleocr.ts` | PP-OCR 推理 |
 | `src/omr/overlay.ts` | 识别核对叠加层（含小节时值自检报出的小节，虚线红框，悬停显示差几拍） |
 | `src/omr/beats.ts` | 小节时值自检：识别结果 → `todoc.ts` 的模型 → `model/beatcheck.ts`（与编辑器同一份判据），问题小节对回源图坐标；CLI 导出给 `beat-check.mjs` |
