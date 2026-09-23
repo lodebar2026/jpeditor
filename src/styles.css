@@ -778,7 +778,7 @@ button:focus-visible, select:focus-visible {
 }
 .modal-title { color: var(--text); font-size: 16px; }
 .settings-box {
-  width: min(380px, calc(100vw - 32px));
+  width: min(520px, calc(100vw - 32px));
   min-width: 0;
   padding: 20px;
 }
@@ -801,11 +801,11 @@ button:focus-visible, select:focus-visible {
 .settings-pane { min-height: 280px; max-height: min(60vh, 520px); overflow-y: auto; }
 .settings-form .modal-row {
   display: grid;
-  grid-template-columns: 104px minmax(0, 1fr);
+  grid-template-columns: 136px minmax(0, 1fr);
   gap: 16px;
   margin: 0;
 }
-.settings-form .modal-row > span { line-height: 1.4; }
+.settings-form .modal-row > span { line-height: 1.4; white-space: nowrap; }
 .settings-form .modal-row input,
 .settings-form .modal-row select {
   width: 100%;

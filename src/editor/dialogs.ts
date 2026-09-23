@@ -251,12 +251,12 @@ function paperGroup(app: App, engine: PaperEngine): { rows: HTMLElement[]; read(
     el.max = "100";
     el.placeholder = label;
     el.title = `${label}边距（mm），留空 = 自动`;
-    el.style.width = "4.2em";
+    el.style.cssText = "flex:1 1 0;min-width:0";
     if (mgNow) el.value = String(Math.round(mgNow[i]! / PT_PER_MM));
     return el;
   });
   const mgBox = document.createElement("span");
-  mgBox.style.cssText = "display:inline-flex;gap:4px";
+  mgBox.style.cssText = "display:flex;gap:6px";
   mgBox.append(...margins);
 
   // 跟随文件 / 长图时方向与边距没有意义（长图的边距仍由排版器自己定）
