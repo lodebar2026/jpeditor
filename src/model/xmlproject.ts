@@ -28,6 +28,7 @@ import { typeOfDuration } from "../score/xmlutil";
 import { DYNAMICS, TERMS } from "../pu/glyph";
 import { alignPartsBySystem } from "./alignparts";
 import { applyPageMetaToDefaults } from "./pagemeta";
+import { decoKey } from "./deconames";
 
 
 /** 记号原名 → `<articulations>` 元素名（`&xx` 与 123 的 `!xx!` 同名）。 */
@@ -977,10 +978,13 @@ function projectOrnaments(ch: Chord, dirs: Direction[], pos: number): void {
   const artic: string[] = [];
   const orn: string[] = [...(ch.notations?.ornaments ?? [])];
   for (const { name } of names) {
-    if (FERMATA.test(name)) { n.fermata = true; continue; }
-    const a = ARTICULATION[name] ?? (XML_ARTICULATIONS.has(name) ? name : undefined);
+    // 本来就是 MusicXML 元素名的原样留（`staccatissimo` 不能归成普通顿音）；其余按别名表归一成短名再查
+    // （123 的 `!uppermordent!` `!顿音!` 这类，`deconames.ts`）
+    const key = XML_ARTICULATIONS.has(name) || XML_ORNAMENTS.has(name) ? name : decoKey(name) ?? name;
+    if (FERMATA.test(key)) { n.fermata = true; continue; }
+    const a = ARTICULATION[key] ?? (XML_ARTICULATIONS.has(key) ? key : undefined);
     if (a) { if (!artic.includes(a)) artic.push(a); continue; }
-    const o = ORNAMENT_TAG[name] ?? (XML_ORNAMENTS.has(name) ? name : undefined);
+    const o = ORNAMENT_TAG[key] ?? (XML_ORNAMENTS.has(key) ? key : undefined);
     if (o) { if (!orn.includes(o)) orn.push(o); continue; }
     const d = directionOf({ name, level: 0 });
     if (d) push(dirs, pos, d);

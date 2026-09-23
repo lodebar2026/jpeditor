@@ -34,6 +34,7 @@
 | `src/model/fromxml.ts` | ← MusicXML（**直通**，读不懂的挂 `Measure.raw` 原样留着） |
 | `src/model/toxml.ts` | → MusicXML（**唯一写出端**，全量序列化） |
 | `src/model/xmlproject.ts` | 简谱来源 → MusicXML 形状的投影（音高、divisions、记号原名、跨行小节…），`toxml.ts` 先过它 |
+| `src/model/deconames.ts` | 音符记号的别名表（`decoKey`）：拼音短名 / ABC 名 / MusicXML 名 / 中文名 → 文本谱短名。模型里原名照存，简谱排版、文本谱写出、MusicXML 投影用前先归一 |
 | `src/model/jianpuproject.ts` | 反方向：MusicXML 形状 → 简谱形状（增时线、减时线、和弦原文、长音中途的和弦），`slots.ts` 与 123 写出端先过它。原生 ABC 时值只在 `divisions` 里、不带减时线/增时线，也经它投（音上的延音线配成 `tied`） |
 | `src/model/frompu.ts` | ← 文本谱语法树（**无损**：文本谱的全部排版信息都进来，`pu-scoredoc-check` 全语料逐字段还原零差异） |
 | `src/pu/slots.ts` | → **排版行视图**（`docView`）：线性化规则只写一次，原样档排版器 / 展开档投影 / 双向定位共用；行里每个符号带 `ElementId` |

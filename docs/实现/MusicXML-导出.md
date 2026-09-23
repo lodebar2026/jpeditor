@@ -76,7 +76,8 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
   延音线由 `Note.tie` 按「下一个音、同唱名同八度」配成 `tied` 对，配不上的两头都去掉。
   渐强渐弱的起止各落一个 `<wedge>` direction——**跨行的要合成一条**，旧写出端只写起点不写收尾（68 份 wedge 起止不等）。
 - **记号原名**（`&dy`/`!dy!`）映射成 `<articulations>`/`<ornaments>`；力度、术语、伴奏括弧、Fine/D.C./D.S.、coda/segno
-  变成带 offset 的 `<direction>`。本来就是 MusicXML 元素名的原样留下。
+  变成带 offset 的 `<direction>`。本来就是 MusicXML 元素名的原样留下（`staccatissimo` 不归成顿音）；
+  其余先过 `deconames.ts::decoKey` 归一——123 的 `!uppermordent!` `!顿音!` 这类别名以前落不到任何元素上、整个丢了。
 - **增时线上的和弦**：`<harmony>` 排在所辖音符之前，拍位写进 `Harmony.offset`。
 - **符杠**：文本谱/123 的 `beams` 是减时线层数的占位（全是 continue），一个 begin 都没有的声部按拍自动分组（见下「符杠」）。
 - **歌词**：段号区间（文本谱 `C1-2:`）展开成逐段的 `<lyric>`；副歌行（`refrain`）写 `number="chorus"`，与导入端互逆。

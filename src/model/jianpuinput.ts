@@ -32,6 +32,7 @@ import { distinctVerses, jpAlterOf } from "../pu/phrasesong";
 import { playDataOfSong } from "./playsong";
 import { linesOfVoice, marksAt, nextSyllables, takesLyric, voiceNumbers } from "../pu/ast";
 import type { LyricLine, Mark, NoteElement, PuSong, ScoreLine } from "../pu/ast";
+import { decoKey } from "./deconames";
 
 // ───────────────────────── 构造 ─────────────────────────
 
@@ -395,7 +396,7 @@ function xmlNote(
   if (mk?.tupletEnd) nt.tupletEnd = true;
   if (chord) {
     if (k === 0 && el.notations?.fermata) chord.fermata = true;
-    if (k === 0) for (const a of el.notations?.articulations ?? []) if (a === "accent") chord.articulations.push("accent");
+    if (k === 0) for (const a of el.notations?.articulations ?? []) if (decoKey(a) === "zy") chord.articulations.push("accent");
     if (mk?.slurStart) chord.slurStart = true;
     if (mk && mk.slurStops > chord.slurEnds) chord.slurEnds = mk.slurStops;
   }

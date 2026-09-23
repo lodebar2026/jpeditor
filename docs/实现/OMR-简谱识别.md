@@ -504,7 +504,8 @@ lt .81 rt .38 lb .63 rb .68，原先 0.45 的门把它判成了 ♯）。♮ 早
 与真八度点靠**形状**分：三角逐行墨宽从满宽单调收到一个尖（顶行 ≥0.8 块宽、底行 ≤0.4 块宽、中途
 不许变宽，容 1px 毛刺），圆点上下一样宽；再加填充率兜一道（三角 ≈0.5、圆点 ≈0.8，取 0.4~0.75）。
 **离数字比八度点远得多**（实测 0.7 字号，八度点是紧贴），故 owner 的搜索窗放到 1 个字号。
-→ `notations.articulations: ["staccato"]`（与 `model/xmlproject.ts` 的 `dy` 同口径）、文本谱 `&dy`；
+→ `notations.articulations: ["staccato"]`（123 写 `!staccato!`，与 `!dy!` 同义，经 `model/deconames.ts` 归一；
+**简谱视图以前按字面查字形表、这个名字不画**，识别核对时顿音、重音看不见）、文本谱 `&dy`；
 .jpwabc 与简谱引擎输入装不下（`layout.ts` 那边只画重音）。**文本谱的 `dy` 字形改成 `articStaccatissimoAbove`
 （▼）**：简谱里数字正上方的圆点已经是高八度点，再用 `articStaccatoAbove` 画顿音两者分不开。
 37 张实拍图里只有这一首命中，没有误检。

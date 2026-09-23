@@ -37,6 +37,7 @@ import { projectForJianpu } from "./jianpuproject";
 import { fillDegreesFromPitch, harmonyText, keySpelling, melodyLane, topNote } from "./jianpu";
 import { ownIds, ownMarks, systemRanges, type SystemRange } from "./emitutil";
 import { relayoutDocBreaks } from "./relayout";
+import { decoKey } from "./deconames";
 
 // ───────────────────────── 头部 ─────────────────────────
 
@@ -151,36 +152,6 @@ function headerLines(song: Song, d: DialectSpec, opts: EmitPuOptions): string[] 
 
 // ───────────────────────── 音符与记号 ─────────────────────────
 
-/** 模型里的记号名 → 文本谱的 `&xx`。原名（`SourceOrnament`，文本谱读进来的）原样写；
- *  别的来源只有 `notations` 那一侧的语义名，照 `xmlproject.ts` 的投影表反查。 */
-const COMMAND_OF: Readonly<Record<string, string>> = {
-  fermata: "yc",
-  invertedfermata: "yc",
-  tenuto: "bc",
-  accent: "zy",
-  // ABC 的装饰名（`!>!`、`!emphasis!`、`!uppermordent!`…，`j123/parse.ts` 原样存进 articulations）
-  ">": "zy",
-  emphasis: "zy",
-  breath: "hx",
-  uppermordent: "sby",
-  pralltriller: "sby",
-  lowermordent: "xby",
-  "strong-accent": "zy",
-  staccato: "dy",
-  staccatissimo: "dy",
-  "breath-mark": "hx",
-  scoop: "shy",
-  falloff: "xhy",
-  "inverted-mordent": "sby",
-  mordent: "xby",
-  "trill-mark": "tr",
-  trill: "tr",
-  segno: "hs",
-  coda: "ty",
-  fine: "fine",
-  "D.C.": "dc",
-  "D.S.": "ds",
-};
 /** 文本谱认的记号名（`parse.ts` 的 NOTE_COMMANDS / BARLINE_COMMANDS）。不在表里的不写：写了读回也只是 unknown-command。 */
 const PU_COMMANDS = new Set([
   "zkh", "ykh", ...Object.keys(DYNAMICS), ...Object.keys(TERMS),
@@ -205,8 +176,9 @@ function ornamentsOf(el: { ornaments?: SourceOrnament[]; notations?: Chord["nota
   };
   const n = el.notations;
   if (n?.fermata) add("yc");
-  for (const a of n?.articulations ?? []) add(PU_COMMANDS.has(a) ? a : COMMAND_OF[a]);
-  for (const o of n?.ornaments ?? []) add(PU_COMMANDS.has(o) ? o : COMMAND_OF[o]);
+  // 别的来源只有 `notations` 那一侧的名字（123 的几种记法、MusicXML 元素名），按 `deconames.ts` 归一成 `&xx`
+  for (const a of n?.articulations ?? []) add(PU_COMMANDS.has(a) ? a : decoKey(a));
+  for (const o of n?.ornaments ?? []) add(PU_COMMANDS.has(o) ? o : decoKey(o));
   return out;
 }
 
@@ -216,8 +188,8 @@ function directionCommands(mea: Measure): Map<number, SourceOrnament[]> {
   for (const dir of mea.directions ?? []) {
     let name: string | undefined;
     if (dir.type === "dynamics" && dir.text && dir.text in DYNAMICS) name = dir.text;
-    else if (dir.type === "words" && dir.text) name = TERM_OF[dir.text.trim()] ?? COMMAND_OF[dir.text.trim()];
-    else if (dir.type === "segno" || dir.type === "coda") name = COMMAND_OF[dir.type];
+    else if (dir.type === "words" && dir.text) name = TERM_OF[dir.text.trim()] ?? decoKey(dir.text.trim());
+    else if (dir.type === "segno" || dir.type === "coda") name = decoKey(dir.type);
     if (!name) continue;
     const at = Math.min(dir.afterElements ?? 0, Math.max(0, mea.elements.length - 1));
     const list = out.get(at) ?? [];

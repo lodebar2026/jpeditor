@@ -38,6 +38,7 @@ import type {
 import { getMeta } from "../model/metakeys";
 import type { Dialect } from "./dialect";
 import { projectForJianpu } from "../model/jianpuproject";
+import { decoKey } from "../model/deconames";
 import type {
   Barline,
   Chord,
@@ -74,12 +75,18 @@ function puBarlineType(b: Barline): BarlineType {
 const puOrnaments = (os: readonly SourceOrnament[] | undefined): Ornament[] =>
   (os ?? []).map((o) => ({ name: o.name, level: o.level, source: ZERO }));
 
-/** 和弦上的记号：有原名就照原名（文本谱来源），否则由语义投影推（123 来源）。 */
+/** 和弦上的记号：有原名就照原名（文本谱来源），否则由语义投影推（123 / MusicXML 来源）。
+ *  123 的记号几种记法都认（`!staccato!` `!dy!` `!顿音!`），按 `deconames.ts` 归一成字形表的短名；认不出的原样留着。 */
 function chordOrnaments(ch: Chord): Ornament[] {
   if (ch.ornaments) return puOrnaments(ch.ornaments);
   const out: Ornament[] = [];
-  if (ch.notations?.fermata) out.push({ name: "yc", level: 0, source: ZERO });
-  for (const a of ch.notations?.articulations ?? []) out.push({ name: a, level: 0, source: ZERO });
+  const add = (name: string): void => {
+    if (!out.some((o) => o.name === name)) out.push({ name, level: 0, source: ZERO });
+  };
+  if (ch.notations?.fermata) add("yc");
+  for (const a of ch.notations?.articulations ?? []) add(decoKey(a) ?? a);
+  // MusicXML / 识别来源的波音、颤音挂在 ornaments 上（`inverted-mordent`），以前简谱里不画
+  for (const o of ch.notations?.ornaments ?? []) { const k = decoKey(o); if (k) add(k); }
   return out;
 }
 
