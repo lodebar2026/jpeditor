@@ -120,6 +120,9 @@ export interface Credit {
   x?: number;
   y?: number;
   fontSize?: number;
+  /** `<credit-words font-family / font-weight>`（首个元素的）。编辑器「跟随文件」的页眉字体读这里（`style/header.ts`） */
+  fontFamily?: string;
+  fontWeight?: string;
   /** `<credit-words justify>`。与 `halign` 分开存：混排只认 `justify`（语料 5 份只写了 `halign`） */
   justify?: HAlign;
   halign?: HAlign;

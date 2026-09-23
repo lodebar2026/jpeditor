@@ -14,9 +14,11 @@ import { fontOfRole, familyOfRole } from "./fonts";
 import { JIANPU_KEYS, ROLE_FONTS, STAFF_KEYS, type KeyDef } from "./keys";
 import type { StyleSheet } from "./sheet";
 import { resolveLength } from "./units";
+import { headerFontsOf } from "./header";
 
 export function applyStaffStyle(o: MixedOptions, sheet: StyleSheet): void {
   applyFonts(o, sheet);
+  o.headerFonts = headerFontsOf(sheet);
   const em = o.musicFont.size;
   const ctx = { em, sp: em / 4, pt: NaN };
   applyOverrides(o, sheet.staff.overrides, STAFF_KEYS, "staff", ctx);

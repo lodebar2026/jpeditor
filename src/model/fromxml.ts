@@ -252,6 +252,10 @@ function readCredits(root: Element): Credit[] {
     if (x) cr.x = Number(x);
     if (y) cr.y = Number(y);
     if (fs) cr.fontSize = Number(fs);
+    const ff = first.getAttribute("font-family");
+    if (ff) cr.fontFamily = ff;
+    const fw = first.getAttribute("font-weight");
+    if (fw) cr.fontWeight = fw;
     const just = readAlign(first, "justify");
     if (just) cr.justify = just;
     const ha = readAlign(first, "halign");

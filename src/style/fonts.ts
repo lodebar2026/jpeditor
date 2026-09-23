@@ -11,7 +11,7 @@
 //
 // 无 DOM 依赖。
 import { Font } from "../layout/font";
-import type { StyleRole, StyleSheet } from "./sheet";
+import type { StyleRole, StyleSheet, TemplateRole } from "./sheet";
 
 /** `@font-face` 名 → 页面里已注册的 CSS 族（Node 侧读字体文件、`FontFace` 注册后给进来）。 */
 export type FamilyMap = Record<string, string>;
@@ -19,7 +19,7 @@ export type FamilyMap = Record<string, string>;
 /** 角色给的族与字重；角色没写字体就返回 undefined（调用方保留自己的默认）。 */
 export function familyOfRole(
   sheet: StyleSheet,
-  role: StyleRole,
+  role: StyleRole | TemplateRole,
   families: FamilyMap = {},
 ): { family: string; bold: boolean } | undefined {
   const decl = sheet.roles[role];
@@ -34,7 +34,7 @@ export function familyOfRole(
 /** 角色 → `Font`：族与字重按角色，字号用 `size`（不给就沿用 `base` 的）。 */
 export function fontOfRole(
   sheet: StyleSheet,
-  role: StyleRole,
+  role: StyleRole | TemplateRole,
   base: Font,
   opts: { size?: number; families?: FamilyMap } = {},
 ): Font {

@@ -1,3 +1,4 @@
+import type { HeaderFonts } from "../style/header";
 import { Font } from "./font";
 import { MetaData } from "../smufl/smufl";
 import { Rect, Colors } from "../common/geom";
@@ -137,6 +138,10 @@ export class LayoutOptions {
   staffDist = 0;
   marginTop!: number;
   marginBottom!: number;
+  /** 页眉四项（标题/副标题/经文/词曲作者）的字体字号（pt），样式表给了的才有（`style/header.ts`）。
+   *  标题与词曲的字号仍以 `titleSize` / `creditSize` 为准（适配器已把角色字号落进去），这里只多给族、粗体，
+   *  以及副标题与经文的字号（缺省同 `creditSize`）。 */
+  headerFonts: HeaderFonts = {};
   marginLeft = 50;
   /** 右边距。默认与 marginLeft 相同（原来左右共用一个值）；成书排版要对开页镜像时分开给。 */
   marginRight = 50;

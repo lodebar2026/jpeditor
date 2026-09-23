@@ -14,6 +14,7 @@ import { JIANPU_KEYS, ROLE_FONTS, type KeyDef } from "./keys";
 import type { StyleRole, StyleSheet } from "./sheet";
 import { isPagedSheet, PPTX_PAGE } from "./themes";
 import { pageMargins } from "./paper";
+import { headerFontsOf } from "./header";
 import { resolveLength } from "./units";
 
 /** 原样档标题/词曲字号 ÷ 基础字号。取出厂那三个数的比（48/28、36/28）——
@@ -62,6 +63,7 @@ export function applyJianpuStyle(opt: LayoutOptions, sheet: StyleSheet): void {
       opt.titleSize = s.titleSize;
       opt.creditSize = s.creditSize;
     }
+    opt.headerFonts = headerFontsOf(sheet);
     if (preset === "original") {
       applyOriginalPreset(opt, isLongImage(sheet));
       // 面板或谱里给了边距就用给的；没给仍是字号派生的那套（`LayoutOptions.applyFontSize`）

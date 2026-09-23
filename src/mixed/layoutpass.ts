@@ -438,25 +438,29 @@ function autoLayoutHeader(score: StaffLayout): void {
   const cx = d.pageWidth / 2;
   // credit 字号是 pt（画时除 scaling），纵向累积在 tenths 里，得换算
   const tenths = (pt: number) => pt / score.scaling;
+  // 页眉字号：设置面板「页眉」一组给了就用（`style/header.ts`），没给按出厂 20 / 11
+  const hf = score.options.headerFonts;
+  const titleFs = hf.title?.size ?? AUTO_TITLE_FS;
+  const creditFs = hf.credit?.size ?? AUTO_CREDIT_FS;
   const creds: ScoreCredit[] = [];
   let yTop = d.topMargin + 8; // 自上边距向下累积基线（top-down）
   if (score.title) {
-    yTop += tenths(AUTO_TITLE_FS);
+    yTop += tenths(titleFs);
     creds.push({
       page: 0, text: score.title, type: "title",
-      x: cx, y: d.pageHeight - yTop, justify: LCR.Center, fontSize: AUTO_TITLE_FS,
+      x: cx, y: d.pageHeight - yTop, justify: LCR.Center, fontSize: titleFs,
     });
-    yTop += tenths(AUTO_TITLE_FS) * 0.4;
+    yTop += tenths(titleFs) * 0.4;
   }
-  // 原有 credit（作词/作曲…）按顺序堆到标题下方，居中小字。
-  for (const c of score.credits) {
-    if (!c.text) continue;
-    yTop += tenths(AUTO_CREDIT_FS) * 1.3;
-    creds.push({
-      page: 0, text: c.text, type: c.type,
-      x: cx, y: d.pageHeight - yTop, justify: LCR.Center, fontSize: AUTO_CREDIT_FS,
-    });
-  }
+  // 标题下依次：副标题 → 题下经文 → 其余 credit（作词/作曲…），各自按原顺序，居中小字
+  const push = (text: string, type: string | null, fs: number): void => {
+    yTop += tenths(fs) * 1.3;
+    creds.push({ page: 0, text, type, x: cx, y: d.pageHeight - yTop, justify: LCR.Center, fontSize: fs });
+  };
+  const rest = score.credits.filter((c) => c.text);
+  for (const c of rest) if (c.type === "subtitle") push(c.text, c.type, hf.subtitle?.size ?? creditFs);
+  for (const t of score.scripture) push(t, "scripture", hf.scripture?.size ?? creditFs);
+  for (const c of rest) if (c.type !== "subtitle") push(c.text, c.type, creditFs);
   score.credits = creds;
 }
 

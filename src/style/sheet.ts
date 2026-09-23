@@ -58,7 +58,8 @@ export const STYLE_ROLES: StyleRole[] = [
 
 /** 只有歌本模板（`template.ts`）用的角色。不进 `StyleRole`：成书的 `BookStyle.roles` 是按 `StyleRole`
  *  穷举的，加进去就得给成书也配一份。解析期与 `STYLE_ROLES` 一起当合法角色名。 */
-export const TEMPLATE_ROLES = ["titleAlt", "scripture", "scriptureRef", "rights", "relatedScriptures", "tags"] as const;
+export const TEMPLATE_ROLES = ["titleAlt", "subtitle", "scripture", "scriptureRef", "rights", "relatedScriptures", "tags"] as const;
+export type TemplateRole = (typeof TEMPLATE_ROLES)[number];
 
 /** 一个具名字体。间接一层（角色引用字体名）是为了让同一 face 只嵌一次子集。 */
 export interface FontRef {
@@ -135,7 +136,8 @@ export interface PageDecl {
 export type JianpuPreset = "default" | "original" | "pptx" | "book";
 
 export interface StyleSheet {
-  roles: Partial<Record<StyleRole, RoleDecl>>;
+  /** 尺子与成书的角色，外加模板角色（页眉的副标题 `subtitle`、经文 `scripture` 也在这里，编辑器三档都读）。 */
+  roles: Partial<Record<StyleRole | TemplateRole, RoleDecl>>;
   page: PageDecl;
   /** **简谱内容**（各模式通用）：`overrides` 的键是 `style/keys.ts::JIANPU_KEYS` 的逻辑键，
    *  纯简谱那几档落 `LayoutOptions`、混排落 `MixedOptions` 的简谱层字段，在 preset 之后叠上。 */

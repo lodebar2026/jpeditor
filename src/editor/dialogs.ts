@@ -1,6 +1,7 @@
 // Minimal modal dialogs (replacing options.fxml / SimpleLayout.fxml).
 import type { App, PaperChoice, PaperEngine } from "./app";
 import { resolvePaper, pageMargins, CUSTOM_PAPER } from "../style/paper";
+import { HEADER_LABEL, HEADER_ROLES } from "../style/header";
 import type { PageDecl } from "../style/sheet";
 import { ORIGINAL_PAPERS, PAGE_RATIOS, PAPER_SIZES } from "../style/themes";
 import { META_KEYS, metaKeyDef, splitMetaValue } from "../model/metakeys";
@@ -285,6 +286,71 @@ function paperGroup(app: App, engine: PaperEngine): { rows: HTMLElement[]; read(
   };
 }
 
+/** 页眉字体下拉里的几支常用字。值是 CSS 字体栈（Mac / Windows 各给一支，缺了由浏览器回退）。 */
+const HEADER_FAMILIES: readonly [string, string][] = [
+  ["黑体", "PingFang SC, Microsoft YaHei, sans-serif"],
+  ["宋体", "Songti SC, SimSun, serif"],
+  ["楷体", "Kaiti SC, STKaiti, KaiTi, serif"],
+  ["仿宋", "STFangsong, FangSong, serif"],
+  ["魏碑", "Weibei SC, STXinwei, serif"],
+  ["圆体", "Yuanti SC, YouYuan, sans-serif"],
+  ["Times", "Times New Roman, Times, serif"],
+];
+
+/** 页眉一组：标题 / 副标题 / 经文 / 词曲作者，各一个字体下拉 + 字号（pt，留空 = 跟随文件或出厂）。各档共用一份。 */
+function headerGroup(app: App): { rows: HTMLElement[]; apply(): boolean } {
+  const st = app.headerState();
+  const rows: HTMLElement[] = [];
+  const reads: (() => boolean)[] = [];
+  for (const role of HEADER_ROLES) {
+    const doc = st.doc[role];
+    const user = st.user[role];
+    const fam = document.createElement("select");
+    const def = document.createElement("option");
+    def.value = "";
+    def.textContent = doc?.family ? `跟随文件（${doc.family.split(",")[0]}）` : "默认";
+    fam.append(def);
+    const known = new Set<string>();
+    for (const [label, stack] of HEADER_FAMILIES) {
+      const o = document.createElement("option");
+      o.value = stack;
+      o.textContent = label;
+      fam.append(o);
+      known.add(stack);
+    }
+    if (user?.family && !known.has(user.family)) {
+      const o = document.createElement("option");
+      o.value = user.family;
+      o.textContent = user.family.split(",")[0]!;
+      fam.append(o);
+    }
+    fam.value = user?.family ?? "";
+    const size = document.createElement("input");
+    size.type = "number";
+    size.min = "6";
+    size.max = "120";
+    size.style.width = "4.5em";
+    size.placeholder = doc?.size ? String(Math.round(doc.size)) : "默认";
+    size.title = "字号（pt），留空 = " + (doc?.size ? "跟随文件" : "出厂");
+    if (user?.size) size.value = String(Math.round(user.size * 10) / 10);
+    const box = document.createElement("span");
+    box.style.cssText = "display:inline-flex;gap:6px;align-items:center";
+    box.append(fam, size);
+    rows.push(labeled(HEADER_LABEL[role], box));
+    const init = JSON.stringify([fam.value, size.value]);
+    reads.push(() => {
+      if (JSON.stringify([fam.value, size.value]) === init) return false;
+      const n = parseFloat(size.value);
+      app.setHeaderFont(role, { family: fam.value || null, size: Number.isFinite(n) && n > 0 ? n : null });
+      return true;
+    });
+  }
+  const title = document.createElement("div");
+  title.style.cssText = "margin-top:8px;font-weight:600;opacity:0.8";
+  title.textContent = "页眉（各模式共用）";
+  return { rows: [title, ...rows], apply: () => reads.map((r) => r()).some(Boolean) };
+}
+
 const isPaperKey = (k: string | undefined): boolean => k !== undefined && (ORIGINAL_PAPERS as readonly string[]).includes(k);
 
 export function showOptionsDialog(app: App): void {
@@ -367,8 +433,6 @@ export function showOptionsDialog(app: App): void {
 
   // ---- 字号 ----
   const fs = num(app.fontSize, 12, 72);
-  const titleSz = num(app.titleSize, 12, 120);
-  const creditSz = num(app.creditSize, 12, 120);
 
   const color = colorInput(app.color);
   const bgColor = colorInput(app.bgColor);
@@ -389,7 +453,6 @@ export function showOptionsDialog(app: App): void {
     body.append(labeled("基础字号", fs));
     // 原样档只调基础字号：那一档的标题与词曲字号是按比例派生的（`style/jianpu.ts::jianpuSizes`），
     // 摆出来只会让人以为能单独调。展开档三个都是独立设置，照旧全给。
-    if (!isJianpu) body.append(labeled("标题字号", titleSz), labeled("词曲信息字号", creditSz));
     body.append(labeled("前景色", color));
   }
   if (isPu) {
@@ -418,6 +481,10 @@ export function showOptionsDialog(app: App): void {
   noteSound.checked = app.visual.noteSound;
   const showNoteSound = app.mode === "jp" && app.editDialect() !== null;
   if (showNoteSound) body.append(labeled("改音时发声", noteSound));
+
+  // 页眉四项的字体字号：各档共用（展开档原来单列的标题 / 词曲字号也并在这里）
+  const header = headerGroup(app);
+  body.append(...header.rows);
 
   // 打开单声部 MusicXML 时怎么办（「记住选择」之后从这里改回「每次询问」）
   const xmlImport = document.createElement("select");
@@ -458,15 +525,14 @@ export function showOptionsDialog(app: App): void {
     // 没摆出来的项一律不回灌：把它们的初值当用户输入送回去，等于替用户做了没做过的决定。
     const [w, h] = isPpt ? PAGE_RATIOS[ratio.value] ?? [app.pageW, app.pageH] : [undefined, undefined];
     const fontSize = isJp ? parseInt(fs.value, 10) || app.fontSize : undefined;
-    const titleSize = isPpt ? parseInt(titleSz.value, 10) || app.titleSize : undefined;
-    const creditSize = isPpt ? parseInt(creditSz.value, 10) || app.creditSize : undefined;
+    header.apply(); // 先落用户层，下面 applyRenderSettings 统一存盘并重排
     const argb = isJp || isPu ? colorValue(color, app.color) : undefined;
     if (hasLayoutSection) {
       const linesVal = lines.value.trim();
       if (linesVal !== app.getLinesPerPage()) app.setLinesPerPage(linesVal);
     }
     app.applyRenderSettings({
-      pageW: w, pageH: h, fontSize, titleSize, creditSize,
+      pageW: w, pageH: h, fontSize,
       paper: (() => {
         const c = paperUi?.read();
         return paperEngine && c ? { [paperEngine]: c } : undefined;
@@ -503,7 +569,9 @@ export function showSongInfoDialog(app: App): void {
     app.setStatus("当前文档读不出曲目信息");
     return;
   }
-  const editable = app.docFormat === "123";
+  // 123 / ABC 写回头部的 `I:meta` 行（同一个解析器认）；MusicXML 改模型整份重写（`<miscellaneous-field>`）；
+  // `.jpwabc` 与文本谱没有字段可落，只看
+  const editable = app.docFormat === "123" || app.docFormat === "abc" || app.docFormat === "musicxml";
   const body = document.createElement("div");
   body.className = "settings-form";
   const info = (label: string, value: string): void => {
@@ -547,9 +615,11 @@ export function showSongInfoDialog(app: App): void {
   body.append(labeled("其他", others));
   const hint = document.createElement("div");
   hint.style.cssText = "margin-top:8px;opacity:0.75;font-size:12px;line-height:1.6";
-  hint.textContent = editable
-    ? "改动写回源码头部的 I:meta 行，可用 Ctrl/⌘+Z 撤销；歌本模板（.jpcss）按键名引用这些字段。"
-    : "这种格式装不下扩展曲目信息（英文标题、经文、标签等），只能查看；另存为 123 后可编辑。";
+  hint.textContent = !editable
+    ? "这种格式装不下扩展曲目信息（英文标题、经文、标签等），只能查看；另存为 123 后可编辑。"
+    : app.docFormat === "musicxml"
+      ? "改动写进 MusicXML 的 <miscellaneous-field>（整份重写）；歌本模板（.jpcss）按键名引用这些字段。"
+      : "改动写回源码头部的 I:meta 行，可用 Ctrl/⌘+Z 撤销；歌本模板（.jpcss）按键名引用这些字段。";
   body.append(hint);
 
   modal("曲目信息", body, () => {
@@ -569,9 +639,16 @@ export function showSongInfoDialog(app: App): void {
       const m = /^\s*([a-z0-9][a-z0-9.-]*)\s*[:：]\s*(.+)$/.exec(line);
       if (m) (out[m[1]!] ??= []).push(m[2]!.trim());
     }
-    const text = app.getText();
-    const next = replaceMetaLines(text, out);
-    if (next !== text) app.setText(next);
+    if (app.docFormat === "musicxml") {
+      app.editScoreDoc((d) => {
+        const s = d.songs[0];
+        if (s) s.meta = Object.keys(out).length ? out : undefined;
+      });
+    } else {
+      const text = app.getText();
+      const next = replaceMetaLines(text, out);
+      if (next !== text) app.setText(next);
+    }
     app.setStatus("曲目信息已写回");
   });
 }

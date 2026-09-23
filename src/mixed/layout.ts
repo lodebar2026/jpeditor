@@ -22,6 +22,7 @@
 // - `<tuplet bracket>`：DOM 读法读的是 **stop** 上的属性（musicpp 原样），语料 51 处都写在 start 上，所以从来不认；这里照样不认
 // - 一个 `<credit>` 多个 `<credit-words>`：DOM 读法只取第一个
 
+import { getMeta } from "../model/metakeys";
 import { Fraction } from "../common/fraction";
 import { Font } from "../layout/font";
 import { GlyphCodes } from "../smufl/smufl";
@@ -1298,8 +1299,12 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
       y: c.y ?? 0,
       justify: c.justify === "right" ? LCR.Right : c.justify === "center" ? LCR.Center : LCR.Left,
       fontSize: c.fontSize || 0,
+      ...(c.fontFamily ? { family: c.fontFamily } : {}),
+      ...(c.fontWeight === "bold" ? { bold: true } : {}),
     });
   }
+  // 题下经文（123/ABC `I:meta scripture`、MusicXML `<miscellaneous-field name="scripture">`）：自动铺排时排在标题下
+  score.scripture = [...getMeta(song, "scripture"), ...getMeta(song, "scripture-ref")].filter((t) => t.trim());
 
   // 换了纸，谱里按原纸算好的版面坐标就对不上了：整份按新纸自动铺排
   score.autoLayout = overridePage || !hasEmbeddedLayout(song);

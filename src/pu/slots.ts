@@ -35,6 +35,7 @@ import type {
   SustainElement,
   VoiceGroup,
 } from "./ast";
+import { getMeta } from "../model/metakeys";
 import type { Dialect } from "./dialect";
 import { projectForJianpu } from "../model/jianpuproject";
 import type {
@@ -500,6 +501,8 @@ function toMetadata(song: Song): Metadata {
   };
   if (song.work.title !== undefined) meta.titles.push(song.work.title);
   meta.titles.push(...song.work.subtitles);
+  const scripture = [...getMeta(song, "scripture"), ...getMeta(song, "scripture-ref")].filter((t) => t.trim());
+  if (scripture.length) meta.scripture = scripture;
   if (song.work.version !== undefined) meta.version = song.work.version;
   for (const c of song.identification?.creators ?? []) meta.authors.push(c.text);
   if (song.key) {

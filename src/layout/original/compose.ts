@@ -520,14 +520,31 @@ function headerWidth(c: OriginalCtx, meta: Metadata | undefined): number {
 }
 
 /** 标题（含副标题）最后一行的**墨迹**底。落位同 paintHeader 画标题那段。 */
-function titleInkBottom(c: OriginalCtx, meta: Metadata): number {
+/** 标题、副标题、题下经文各行：字、基线、字体。画（`paintHeaderItems`）与避让（`titleInkBottom`）共用这一份落位。
+ *  经文接在最后一行标题下面，行距同副标题（没有标题就从标题那一行起）。 */
+function titleLines(c: OriginalCtx, meta: Metadata): { text: string; y: number; font: Font }[] {
   const m = c.metrics;
-  let bottom = 0;
+  const out: { text: string; y: number; font: Font }[] = [];
   meta.titles.forEach((title, i) => {
-    const font = new Font(m.fontFamily, i === 0 ? m.titleSize : m.subtitleSize, i === 0);
+    const font = i === 0
+      ? new Font(m.titleFamily ?? m.fontFamily, m.titleSize, true)
+      : new Font(m.subtitleFamily ?? m.fontFamily, m.subtitleSize, false);
     const y = m.titleY + (i === 0 ? 0 : m.titleSize * 0.2 + i * (m.subtitleSize * 1.35));
-    bottom = Math.max(bottom, y + font.charBound(title).bottom);
+    out.push({ text: title, y, font });
   });
+  const size = m.scriptureSize ?? m.subtitleSize;
+  const scrFont = new Font(m.scriptureFamily ?? m.fontFamily, size, false);
+  let y = out.length ? out[out.length - 1]!.y + (out.length === 1 ? m.titleSize * 0.2 : 0) : m.titleY - size * 1.35;
+  for (const t of meta.scripture ?? []) {
+    y += size * 1.35;
+    out.push({ text: t, y, font: scrFont });
+  }
+  return out;
+}
+
+function titleInkBottom(c: OriginalCtx, meta: Metadata): number {
+  let bottom = 0;
+  for (const l of titleLines(c, meta)) bottom = Math.max(bottom, l.y + l.font.charBound(l.text).bottom);
   return bottom;
 }
 
@@ -601,16 +618,13 @@ function paintHeaderItems(c: OriginalCtx, root: Group, songIndex: number, system
   // 连续长图会按内容收窄页宽，所以居中/右对齐都要用**实际**页宽，不能用 metrics 里的纸张宽
   const centre = c.pageWidth / 2 - c._pageShiftX;
 
-  meta.titles.forEach((title, i) => {
-    const size = i === 0 ? m.titleSize : m.subtitleSize;
-    const font = new Font(m.fontFamily, size, i === 0);
-    const w = font.measureText(title);
-    const y = m.titleY + (i === 0 ? 0 : m.titleSize * 0.2 + i * (m.subtitleSize * 1.35));
-    root.add(text(title, centre - w / 2, y, font, c.ink));
-  });
+  for (const l of titleLines(c, meta)) {
+    const w = l.font.measureText(l.text);
+    root.add(text(l.text, centre - w / 2, l.y, l.font, c.ink));
+  }
 
   const right = c.pageWidth - m.continuousSideMargin - c._pageShiftX;
-  const authorFont = new Font(m.fontFamily, m.authorSize);
+  const authorFont = new Font(m.authorFamily ?? m.fontFamily, m.authorSize);
   // `Z:` 词曲作者靠右；`TL:`/`TR:` 是与标题同高的左右文字块（多行，允许空行占位）
   meta.authors.forEach((a, i) => {
     const w = authorFont.measureText(a);

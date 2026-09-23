@@ -15,6 +15,7 @@ import { measureJianpu, PaintResources, ScorePainter, type JianpuPaintRequest } 
 import { toPt } from "../layout/result";
 import { computeStyle, sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
 import { docPageLayer, pageMargins, resolvePaper, songPageDecl } from "../style/paper";
+import { headerFontsOf, headerLayerOfSong, type HeaderFonts, type HeaderRole } from "../style/header";
 import type { PageDecl } from "../style/sheet";
 import { isLongImage, jianpuSizes } from "../style/jianpu";
 import type { DeepPartial, StyleSheet } from "../style/sheet";
@@ -147,21 +148,28 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   /** 用户层：每个主题一层规则，**两档各记一套**（用户口径：「区分 展开/原样的字号设置」）。
    *  展开档（主题 projection）的字号、比例、配色两种格式共用，规则不带限定；
    *  原样档（主题 print）的纸与字号 `.jpwabc` 与文本谱各记各的（`engine` 限定），配色共用。 */
-  private _userLayers: Record<"projection" | "print" | "staff", StyleRule[]> = { projection: [], print: [], staff: [] };
+  private _userLayers: Record<"projection" | "print" | "staff" | "header", StyleRule[]> = { projection: [], print: [], staff: [], header: [] };
+  // `header`：页眉四项（标题/副标题/经文/词曲作者）的字体字号，**各档共用一份**，叠在各档用户层之上（`style/header.ts`）
 
   /** 某一档、某把尺子看到的 computed 样式表（内置主题 → 曲内层 → 用户层）。
    *  曲内层（谱里自带的纸，`style/paper.ts`）只垫在原样档下面：展开档是投影片，不认纸。 */
   styleOf(mode: JianpuLayoutMode, engine: StyleEngine = "jianpu"): StyleSheet {
     const theme = themeOfMode(mode);
-    const doc = theme === "print" && !(engine === "jianpu" || engine === "pu" ? this._userSetsPaper(engine) : false) ? this._docLayer() : [];
-    return computeStyleForPaper([THEMES[theme], doc, this._userLayers[theme]], { mode, engine });
+    const page = theme === "print" && !(engine === "jianpu" || engine === "pu" ? this._userSetsPaper(engine) : false) ? this._docLayer() : [];
+    return computeStyleForPaper(
+      [THEMES[theme], page, this._docHeaderLayer(theme === "print"), this._userLayers[theme], this._userLayers.header],
+      { mode, engine },
+    );
   }
 
   /** 五线谱/混排看到的 computed 样式表（主题 staff → 曲内层 → 它自己那层用户规则）。
    *  **纸不借简谱原样档的**：那边出厂是长图，五线谱排成长图就是一张 1000pt 宽的扁图。 */
   staffStyle(): StyleSheet {
-    const doc = this._userSetsPaper("staff") ? [] : this._docLayer();
-    return computeStyleForPaper([THEMES.staff, doc, this._userLayers.staff], { mode: "staff", engine: "staff" });
+    const page = this._userSetsPaper("staff") ? [] : this._docLayer();
+    return computeStyleForPaper(
+      [THEMES.staff, page, this._docHeaderLayer(), this._userLayers.staff, this._userLayers.header],
+      { mode: "staff", engine: "staff" },
+    );
   }
 
   /** 曲内层：当前文档自带的纸（MusicXML `<page-layout>`、123/ABC `I:meta page …`）。`.jpwabc` 与文本谱没有。
@@ -170,6 +178,35 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   private _docLayer(): StyleRule[] {
     if (!this.adapter.toScoreDoc) return [];
     return docPageLayer(this.currentScoreDoc()?.songs[0]);
+  }
+
+  /** 曲内层的页眉字体：MusicXML `<credit-words>` 自带的（打开 MusicXML 自动跟随）。 */
+  private _docHeaderLayer(sizes = true): StyleRule[] {
+    if (this.docFormat !== "musicxml") return [];
+    return headerLayerOfSong(this.currentScoreDoc()?.songs[0], { sizes });
+  }
+
+  /** 页眉四项现在的字体：谱里自带的（「跟随文件」显示用）、用户设的、算出来实际用的（当前档）。 */
+  headerState(): { doc: HeaderFonts; user: HeaderFonts } {
+    const doc = this._docHeaderLayer();
+    return {
+      doc: headerFontsOf(computeStyle([doc], {})),
+      user: headerFontsOf(computeStyle([this._userLayers.header], {})),
+    };
+  }
+
+  /** 设页眉一项：`null` 的字段清掉（回到跟随文件 / 出厂）。 */
+  setHeaderFont(role: HeaderRole, f: { family: string | null; size: number | null }): void {
+    const rules = this._userLayers.header.map((r) => ({ ...r, set: { ...r.set, roles: { ...(r.set.roles ?? {}) } } }));
+    let rule = rules.find((r) => !r.when);
+    if (!rule) rules.push((rule = { set: { roles: {} } }));
+    const decl = { ...(rule.set.roles?.[role] ?? {}) };
+    if (f.family) decl.family = f.family;
+    else delete decl.family;
+    if (f.size) decl.size = f.size;
+    else delete decl.size;
+    rule.set.roles![role] = decl;
+    this._userLayers.header = rules;
   }
 
   /** 设置面板的纸张那一栏：谱里自带的纸（「跟随文件」显示用）、用户层有没有明确选过纸、算出来实际用的那张。 */
@@ -405,7 +442,12 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     }
     // 样式用户层（旧版散存的字号/纸/配色字段不读——不做存量迁移）
     const layers = (s.styleLayers ?? {}) as Record<string, unknown>;
-    this._userLayers = { projection: sanitizeLayer(layers.projection), print: sanitizeLayer(layers.print), staff: sanitizeLayer(layers.staff) };
+    this._userLayers = {
+      projection: sanitizeLayer(layers.projection),
+      print: sanitizeLayer(layers.print),
+      staff: sanitizeLayer(layers.staff),
+      header: sanitizeLayer(layers.header),
+    };
     if (s.zoom) this.zoom = s.zoom;
     if (s.jpProfile === "normal" || s.jpProfile === "pptx") this.jpProfile = s.jpProfile;
     if (s.puProfile === "print" || s.puProfile === "slide") this.puProfile = s.puProfile;
@@ -1992,6 +2034,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     const outcome = await this.painter.load({
       view: this.mixedShowJianpuLayer ? "mixed" : "staff",
       doc,
+      style: this.staffStyle(),
       page: this.staffPage,
       hideBarNumber: this.mixedHideBarNumber,
     });

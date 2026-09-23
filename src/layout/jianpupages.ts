@@ -11,32 +11,48 @@ import type { Layout } from "./layout";
 import { MusicCommon } from "../score/jppitch";
 import type { JScore } from "./input";
 import { jpTimeSigItems } from "./jpglyph";
+import type { HeaderRole } from "../style/header";
+
+/** 页眉某一项的字：设置里给了族/粗体就用（`LayoutOptions.headerFonts`），否则沿用歌词字体（出厂观感）。 */
+function headerFont(opt: Layout["options"], role: HeaderRole, size: number): Font {
+  const hf = opt.headerFonts[role];
+  if (!hf?.family && !hf?.bold) return opt.lrcFont.makeWithSize(size);
+  return new Font(hf.family ?? opt.lrcFont.family, size, hf.bold ?? false);
+}
+
+/** 副标题、经文的字号：给了就用，缺省同词曲。 */
+function headerSize(opt: Layout["options"], role: "subtitle" | "scripture", creditSize: number): number {
+  return opt.headerFonts[role]?.size ?? creditSize;
+}
+
+/** `JCredit.type` → 页眉角色。 */
+function creditRole(type: string | null): HeaderRole {
+  return type === "title" || type === "subtitle" || type === "scripture" ? type : "credit";
+}
 
 /** `h > 0` 时标题块整页居中（老行为，标题页用）；`h = 0` 时从纸顶排起（连续长纸用）。 */
 export function titlePage(layout: Layout, score: JScore, w: number, h: number): Group {
   const opt = layout.options;
-  const fnt = opt.lrcFont;
   const pg = new Group();
   let titleCount = 0;
   const texts: string[] = [];
   const fonts: Font[] = [];
-  for (const it of score.credit) {
-    const isTitle = it.type === "title";
-    const sz = isTitle ? opt.titleSize : opt.creditSize;
-    if (isTitle) {
-      titleCount++;
-      texts.unshift(it.text);
-      fonts.unshift(fnt.makeWithSize(sz));
-    } else {
-      texts.push(it.text);
-      fonts.push(fnt.makeWithSize(sz));
-    }
+  // 次序：标题 → 副标题 → 经文 → 词曲（同一类按原顺序），与原样档的 `bookHead` 一致
+  const ORDER: Record<HeaderRole, number> = { title: 0, subtitle: 1, scripture: 2, credit: 3 };
+  const items = score.credit
+    .map((it, i) => ({ it, i, role: creditRole(it.type) }))
+    .sort((a, b) => ORDER[a.role] - ORDER[b.role] || a.i - b.i);
+  for (const { it, role } of items) {
+    const sz = role === "title" ? opt.titleSize : role === "credit" ? opt.creditSize : headerSize(opt, role, opt.creditSize);
+    if (role === "title") titleCount++;
+    texts.push(it.text);
+    fonts.push(headerFont(opt, role, sz));
   }
   if (titleCount === 0) {
     if (score.title.trim().length > 0) {
       titleCount = 1;
       texts.unshift(score.title);
-      fonts.unshift(fnt.makeWithSize(opt.titleSize));
+      fonts.unshift(headerFont(opt, "title", opt.titleSize));
     }
   }
   if (titleCount !== 1) console.error("title count error!");
@@ -155,7 +171,7 @@ function creditLines(score: JScore): string[] {
   };
   const out: string[] = [];
   for (const c of score.credit) {
-    if (c.type === "title" || c.type === "subtitle") continue; // 副标题跟标题一起居中，见 bookHead
+    if (c.type === "title" || c.type === "subtitle" || c.type === "scripture") continue; // 副标题、经文跟标题一起居中，见 bookHead
     for (const raw of c.text.split(/\r?\n/)) {
       const t = raw.trim();
       if (!t) continue;
@@ -182,7 +198,6 @@ function creditLines(score: JScore): string[] {
 function bookHead(layout: Layout, score: JScore, w: number): Group {
   const opt = layout.options;
   const pg = new Group();
-  const fnt = opt.lrcFont;
   const left = opt.marginLeft;
   const right = w - opt.marginRight;
 
@@ -191,43 +206,49 @@ function bookHead(layout: Layout, score: JScore, w: number): Group {
   for (const it of score.credit) if (it.type === "title") titles.push(it.text);
   if (titles.length === 0 && score.title.trim().length > 0) titles.push(score.title);
 
-  // 副标题（123/ABC 的第二条 `T:`）：标题底下居中，字号同署名
+  // 副标题（123/ABC 的第二条 `T:`）：标题底下居中，字号同署名；题下经文再往下，居中
   const subtitles = score.credit.filter((c) => c.type === "subtitle").map((c) => c.text);
+  const scripture = score.credit.filter((c) => c.type === "scripture").map((c) => c.text);
   const credits = creditLines(score);
+  const subtitleSize0 = headerSize(opt, "subtitle", opt.creditSize);
+  const scriptureSize0 = headerSize(opt, "scripture", opt.creditSize);
   // **窄纸要缩排**：标题与署名的字号是照长图那张 1000 宽的纸定的，换到 A4/A5 就装不下
   //（署名是右对齐的，量出来比版心还长时 x 直接成负数，整块探到纸外去——
   // 基督更美在 A4 上曾左溢 294pt、整块比纸还宽 244pt）。按最宽的那一行整块等比缩，
   // **够宽时 k = 1、一点不动**，所以长图那一档的观感分毫不变。
-  const headScale = (size: number, lines: readonly string[]): number => {
-    const f = fnt.makeWithSize(size);
+  const headScale = (role: HeaderRole, size: number, lines: readonly string[]): number => {
+    const f = headerFont(opt, role, size);
     let need = 0;
     for (const t of lines) for (const one of t.split("\n")) need = Math.max(need, f.measureText(one));
     return need > 0 ? need : 0;
   };
   const avail = Math.max(1, right - left);
-  const need = Math.max(headScale(opt.titleSize, titles), headScale(opt.creditSize, [...subtitles, ...credits]));
+  const need = Math.max(
+    headScale("title", opt.titleSize, titles),
+    headScale("subtitle", subtitleSize0, subtitles),
+    headScale("scripture", scriptureSize0, scripture),
+    headScale("credit", opt.creditSize, credits),
+  );
   const k = need > avail ? avail / need : 1;
   const titleSize = opt.titleSize * k;
   const creditSize = opt.creditSize * k;
 
   let ypos = 0;
-  for (const t of titles) {
-    const obj = tagHeader(multipleLineText(t, fnt.makeWithSize(titleSize), w, opt.color));
-    obj.y = ypos;
-    obj.update();
-    pg.add(obj);
-    ypos += obj.height;
-  }
-  for (const t of subtitles) {
-    const obj = tagHeader(multipleLineText(t, fnt.makeWithSize(creditSize), w, opt.color));
-    obj.y = ypos;
-    obj.update();
-    pg.add(obj);
-    ypos += obj.height;
-  }
+  const centred = (lines: readonly string[], font: Font): void => {
+    for (const t of lines) {
+      const obj = tagHeader(multipleLineText(t, font, w, opt.color));
+      obj.y = ypos;
+      obj.update();
+      pg.add(obj);
+      ypos += obj.height;
+    }
+  };
+  centred(titles, headerFont(opt, "title", titleSize));
+  centred(subtitles, headerFont(opt, "subtitle", subtitleSize0 * k));
+  centred(scripture, headerFont(opt, "scripture", scriptureSize0 * k));
 
   // 词曲署名：右对齐，一行一条
-  const cf = fnt.makeWithSize(creditSize);
+  const cf = headerFont(opt, "credit", creditSize);
   const cfm = cf.metrics;
   const gap = creditSize * 1.19;
   const base = ypos - cfm.ascent;

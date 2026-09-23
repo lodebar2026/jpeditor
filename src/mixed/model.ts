@@ -14,6 +14,7 @@ import { MIXED_PUNCT, type CompressMode } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 import type { Chord as DocChord, Direction as DocDirection, Harmony as DocHarmony, Lyric as DocLyric, Mark as DocMark, Note as DocNote, Song } from "../model/doc";
 import { beamCount } from "../model/jianpu";
+import type { HeaderFonts } from "../style/header";
 
 const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 
@@ -2954,6 +2955,9 @@ export class MixedOptions {
    *  除非 `override`（用户在设置里明确换了纸/方向/边距）：那时连谱里的版面坐标一起不用，按新纸自动铺排。
    *  `marginsPt`：`[上, 右, 下, 左]`，不给 = 谱里的或 `MixedDefaults` 的。 */
   page: { widthPt: number; heightPt: number | null; marginsPt?: readonly number[]; override?: boolean } | null = null;
+  /** 页眉四项的字体（pt；样式表的 title/subtitle/scripture/credit 角色，`style/header.ts`）。给了的盖过 `<credit>` 自带的，
+   *  没给的照 credit 自己的（自动铺排的谱照 `layoutpass.ts::autoLayoutHeader` 的出厂字号）。 */
+  headerFonts: HeaderFonts = {};
   jpTopDy = 0;
   // ── 简谱层附件相对数字的位置。缺省值即原排版程序的常量
   //    （render.cpp::drawNotesJianPu 875-947、BeamLevelData::drawJianPu:159），单位 tenths；
@@ -3022,11 +3026,16 @@ export interface ScoreCredit {
   y: number;
   justify: LCR;
   fontSize: number;
+  /** `<credit-words font-family / font-weight>`；没写就是歌词字体 */
+  family?: string;
+  bold?: boolean;
 }
 
 export class StaffLayout {
   /** `ScoreDoc` 里对应的曲子 */
   readonly song: Song;
+  /** 题下经文（及出处），自动铺排的页眉排在标题下（`layoutpass.ts::autoLayoutHeader`） */
+  scripture: string[] = [];
   /** 版面单位换算：pt / tenths（`<scaling>` 算出，页面尺寸与字号都按它换到 tenths）。
    *  没写 `<scaling>` 取 MusicXML 惯用的 7mm/40tenths——从前初值是 1，缺 `<defaults>` 的谱（文本格式派生、识别出的）
    *  一切按 pt 给的字号（和弦、标题、音乐文字）都只剩一半。 */

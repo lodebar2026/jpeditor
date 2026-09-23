@@ -8,6 +8,7 @@
 // 分歧都写成分支里明写的一条，不悄悄统一——统一观感只动绘制层，不在输入这一层抹平。
 // 每个和弦带元素 id：点选、试听高亮、断句量宽都按它认。
 
+import { getMeta } from "./metakeys";
 import { Fraction } from "../common/fraction";
 import { BARLINE_MARKS, DYNAMICS, TERMS } from "../pu/glyph";
 import { GlyphCodes } from "../smufl/smufl";
@@ -146,6 +147,12 @@ export function jianpuInputOfXml(song: Song): JScore {
     credit.push({ type: c.type ?? null, text: cw, page: (c.page || 1) - 1 });
   }
   for (const it of credit) if (it.type === null && it.text === title) it.type = "title";
+  // 题下经文：MusicXML 里是 `<miscellaneous-field name="scripture">`（或已经是一条 credit，那就不再加）
+  if (!credit.some((c) => c.type === "scripture")) {
+    for (const t of [...getMeta(song, "scripture"), ...getMeta(song, "scripture-ref")]) {
+      if (t.trim()) credit.push({ type: "scripture", text: t.trim(), page: 0 });
+    }
+  }
 
   const src = song.parts[0];
   if (!src) throw new Error("no part");
@@ -594,6 +601,7 @@ function songInput(song: PuSong, idOf: (el: NoteElement) => ElementId | null, fo
     if (text) credit.push({ text, type, page: 0 });
   };
   meta.titles.forEach((t, i) => pushCredit(t, i === 0 ? "title" : "subtitle"));
+  for (const t of meta.scripture ?? []) pushCredit(t, "scripture");
   for (const a of meta.authors) pushCredit(a, "composer");
   for (const t of meta.topRight) pushCredit(t, "composer");
   for (const t of meta.topLeft) pushCredit(t, "lyricist");

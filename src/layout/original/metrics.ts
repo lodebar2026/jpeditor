@@ -11,6 +11,7 @@
 //   每个附点额外                  → +12.5
 // 行内算完自然宽度后再整体拉伸/压缩到版心宽度（两端对齐）。
 
+import type { HeaderFonts } from "../../style/header";
 import type { Dialect } from "../../pu/dialect";
 import { SlurTieBase, type SlurStyle } from "../pageitem";
 import type { GraceMetrics, GraceNote } from "../../common/gracenote";
@@ -153,6 +154,13 @@ export interface PuMetrics {
   layerY: number;
 
   fontFamily: string;
+  /** 页眉各项的字体族（设置面板「页眉」一组，`style/header.ts`）；不给 = `fontFamily`。标题出厂是粗体。 */
+  titleFamily?: string;
+  subtitleFamily?: string;
+  authorFamily?: string;
+  scriptureFamily?: string;
+  /** 题下经文字号；不给 = `subtitleSize`。 */
+  scriptureSize?: number;
   /** 音符数字用的字体族与字重。数字比歌词粗，两支要分开配 */
   digitFamily: string;
   digitBold: boolean;
@@ -468,6 +476,8 @@ export interface PuUserOptions {
   continuous?: boolean;
   /** 页边距 `[上, 右, 下, 左]`（pt）。盖过谱面自带的 `Margin:`（面板那层在最上面）。 */
   margins?: [number, number, number, number];
+  /** 页眉四项的字体（pt）。字号盖过整体缩放后的值——那是用户直接给的 pt。 */
+  header?: HeaderFonts;
 }
 
 /** 把面板上的手动设置叠到量好的 metrics 上。 */
@@ -486,6 +496,15 @@ export function applyUserOptions(base: PuMetrics, o: PuUserOptions | null): PuMe
   }
   if (o.continuous !== undefined) m.continuous = o.continuous;
   if (o.margins) [m.marginTop, m.marginRight, m.marginBottom, m.marginLeft] = o.margins;
+  const h = o.header ?? {};
+  if (h.title?.family) m.titleFamily = h.title.family;
+  if (h.subtitle?.family) m.subtitleFamily = h.subtitle.family;
+  if (h.credit?.family) m.authorFamily = h.credit.family;
+  if (h.scripture?.family) m.scriptureFamily = h.scripture.family;
+  if (h.title?.size) m.titleSize = h.title.size;
+  if (h.subtitle?.size) m.subtitleSize = h.subtitle.size;
+  if (h.credit?.size) m.authorSize = h.credit.size;
+  if (h.scripture?.size) m.scriptureSize = h.scripture.size;
   return m;
 }
 

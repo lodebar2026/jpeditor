@@ -10,6 +10,7 @@
 import type { PuUserOptions } from "../layout/original/metrics";
 import type { StyleSheet } from "./sheet";
 import { pageMargins, resolvePaper } from "./paper";
+import { headerFontsOf } from "./header";
 import { resolveLength } from "./units";
 
 /** 面板那一层：字号（pt）+ 纸 / 长图 + 边距。 */
@@ -18,8 +19,9 @@ export function puUserOptionsOf(sheet: StyleSheet): PuUserOptions {
   const pt = size === undefined ? null : resolveLength(size, { em: NaN, sp: NaN });
   const digitFontSize = pt !== null && Number.isFinite(pt) && pt > 0 ? pt : undefined;
   const margins = pageMargins(sheet.page);
+  const header = headerFontsOf(sheet);
   const paper = resolvePaper(sheet.page);
-  if (paper === undefined) return { digitFontSize, margins }; // 没选纸：纸与长图都跟档位自带的
-  if (paper === null) return { digitFontSize, margins, continuous: true }; // 长图：纸交给内容定
-  return { digitFontSize, margins, pageWidth: paper.w, pageHeight: paper.h, continuous: false };
+  if (paper === undefined) return { digitFontSize, margins, header }; // 没选纸：纸与长图都跟档位自带的
+  if (paper === null) return { digitFontSize, margins, header, continuous: true }; // 长图：纸交给内容定
+  return { digitFontSize, margins, header, pageWidth: paper.w, pageHeight: paper.h, continuous: false };
 }

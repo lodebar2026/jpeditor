@@ -161,7 +161,9 @@ function writeCredit(o: Out, d: number, c: Credit): void {
   if (c.y !== undefined) attrs.push(`default-y="${c.y}"`);
   if (c.justify) attrs.push(`justify="${c.justify}"`);
   if (c.halign) attrs.push(`halign="${c.halign}"`);
+  if (c.fontFamily !== undefined) attrs.push(`font-family="${escAttr(c.fontFamily)}"`);
   if (c.fontSize !== undefined) attrs.push(`font-size="${c.fontSize}"`);
+  if (c.fontWeight !== undefined) attrs.push(`font-weight="${escAttr(c.fontWeight)}"`);
   const a = attrs.length ? " " + attrs.join(" ") : "";
   for (const line of c.words ?? c.text.split("\n")) {
     o.push(d + 1, `<credit-words${a}>${esc(line)}</credit-words>`);
