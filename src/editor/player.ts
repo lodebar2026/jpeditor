@@ -45,6 +45,9 @@ interface Session {
 const FEED_AHEAD = 2;
 /** 起播前留的一点余量（秒），免得第一个音被 AudioContext 的调度延迟吃掉头。 */
 const LEAD = 0.15;
+/** 原生音源从目标时刻往前提这么多秒起播：AVMIDIPlayer 定位到恰好有 note-on 的那一刻，那个音会被跳过
+ *  （点音符跳转听起来从下一个音开始）。光标由 `segStart` 夹住，仍停在目标音上。 */
+const NATIVE_PREROLL = 0.05;
 
 /** 一份谱按给定播放参数的时间线（秒）：锚点与总长。控制器在没开播时也要用它（进度条总长、点音符换算秒数）。 */
 export function timelineSeconds(src: PlaySource, opts?: PlayOptions): { tl: Timeline; spq: number } {
@@ -255,13 +258,14 @@ export class ScorePlayer {
         s.midi ??= Array.from(toMidi(s.src, s.opts)); // per-part CC7 volume baked in
         const { invoke } = await import("@tauri-apps/api/core");
         if (gen !== this.gen) return;
-        await invoke("midi_play_cmd", { bytes: s.midi, startSeconds: t });
+        const from = Math.max(0, t - NATIVE_PREROLL);
+        await invoke("midi_play_cmd", { bytes: s.midi, startSeconds: from });
         if (gen !== this.gen) {
           this.nativeStop();
           return;
         }
         this.nativeOk = true;
-        this.startPerf = performance.now() / 1000 - t;
+        this.startPerf = performance.now() / 1000 - from;
       } catch (e) {
         console.warn("native MIDI playback failed, falling back to sampler", e);
         this.nativeOk = false;
