@@ -160,7 +160,35 @@ function splitRows(band: Component[], sp: number): Component[][] {
     prev = c.cy;
   }
   if (cur.length) rows.push(cur);
-  return rows.filter((r) => r.length >= MIN_CELLS);
+  return rows.flatMap(splitTall).filter((r) => r.length >= MIN_CELLS);
+}
+
+/**
+ * **两行并成了一行**的，按纵向覆盖量的谷切开。
+ *
+ * 按中心差断行，两段词之间只要有一串块的中心一个挨一个（标点落在行底、下一行的偏旁
+ * 落在行顶、扫描噪点），就连成一片——《善牧恩慈歌》第一行谱下六段词只隔 0.6 格，
+ * 1、2 段与 5、6 段各并成一条送 OCR，两段只认出半段。
+ * 只动**太高**的行（高过块高中位数的 1.7 倍），在中间那四成里找覆盖最少的 y，
+ * 那里几乎没墨（不到峰值的一成五）才切，递归到切不动为止。
+ */
+function splitTall(row: Component[]): Component[][] {
+  if (row.length < MIN_CELLS * 2) return [row];
+  const top = Math.min(...row.map((c) => c.bbox.y));
+  const bot = Math.max(...row.map((c) => c.bbox.y + c.bbox.h));
+  const H = bot - top;
+  if (H <= median(row.map((c) => c.bbox.h)) * 1.7) return [row];
+  const cov = new Float64Array(H);
+  for (const c of row) for (let y = c.bbox.y; y < c.bbox.y + c.bbox.h; y++) cov[y - top] += c.bbox.w;
+  const peak = Math.max(...cov);
+  let at = -1;
+  for (let y = Math.round(H * 0.3); y < Math.round(H * 0.7); y++) if (at < 0 || cov[y] < cov[at]) at = y;
+  if (at < 0 || cov[at] > peak * 0.15) return [row];
+  const cut = top + at;
+  const up = row.filter((c) => c.cy < cut);
+  const dn = row.filter((c) => c.cy >= cut);
+  if (up.length < MIN_CELLS || dn.length < MIN_CELLS) return [row];
+  return [...splitTall(up), ...splitTall(dn)];
 }
 
 // ── 歌词条：送 OCR 的单位 ──────────────────────────────────────────────────

@@ -147,7 +147,15 @@ function emitVoices(inBar: StaffNote[], ticks: (d: number) => number, staffNo: n
     // 未必还是从左到右（贪心分层是跨着挑的）。
     if (timed) vn.sort((a, b) => (a.group!.offset - b.group!.offset) || (b.diatonic - a.diatonic));
     let cur = 0;
-    for (const n of vn) {
+    let prev: StaffNote | null = null;
+    for (const n0 of vn) {
+      // **`<chord/>` 按写出的次序定**，不按 `chordExtra`：那个标记是按和弦数组的下标给的
+      //（下标 0 的不带），上面按音高重排之后，带标记的常常排到了第一个——
+      // `<chord/>` 的意思是「与前一个音同时」，于是和弦的顶音被挂到了**前一拍**上
+      //（实测《善牧恩慈歌》每个 SATB 和弦的女高都前移一拍）。
+      const extra = timed ? !n0.grace && !!prev && !prev.grace && prev.group === n0.group : !!n0.chordExtra;
+      const n = extra === !!n0.chordExtra ? n0 : { ...n0, chordExtra: extra || undefined };
+      prev = n0;
       if (timed && !n.chordExtra && !n.grace) {
         const off = at(n.group!.offset);
         if (off > cur) {

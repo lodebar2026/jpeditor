@@ -10,19 +10,21 @@
 //   - 文本层：矢量路读文字对象；位图路要 OCR（尚未接，故歌词/力度/速度暂缺）。
 import type { Binary } from "../omr/types";
 import type { Box } from "../staffomr/model";
-import type { Rect } from "../omr/types";
+import type { Component, Rect } from "../omr/types";
 import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars, makeSystems, unknownObjs } from "../staffomr/page";
-import { isAccidental, isClef, timeSigDigit } from "../staffomr/glyphs";
-import { buildNotes, checkBars, findClefKeyTime, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
+import { isAccidental, isClef, timeSigDigit, type SmuflName } from "../staffomr/glyphs";
+import { buildNotes, checkBars, findClefKeyTime, keyFifths, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
 import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findTuplets } from "../staffomr/notations";
 import type { SPage, Staff, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, groupByLeftInk, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
 import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
-import { findLyricRows, foldLyricChars, isLatinRow, latinCells, mapCharsToCells, stripKey, stripOf, type LyricStrip, type OcrChar } from "./lyric";
+import { cutJianpuStrip, eraseInBand, findJianpuBands, jianpuKey, type JianpuStrip } from "./jianpuband";
+import { fuseJianpu, type FuseStats, type JianpuRow } from "./jianpufuse";
+import { findLyricRows, foldLyricChars, isLatinRow, latinCells, mapCharsToCells, stripKey, stripOf, type LyricRow, type LyricStrip, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
-import { buildHeadMasks, headFromStemBlock, splitHeadCluster } from "./headmask";
+import { buildHeadMasks, buildHollowMask, headFromStemBlock, splitHeadCluster } from "./headmask";
 import { headProb, trainHeadClassifier } from "./headclass";
 import { findStaffLabels, labelKey, normalizeLabel, type LabelStrip } from "./stafflabel";
 import { findHarmonyStrips, harmonyKey, harmonyTokens, type HarmonyStrip, type HarmonyToken } from "./harmony";
@@ -81,6 +83,10 @@ export interface RasterPageResult {
    * 与歌词条、标签条同一套架构：这里只切条，认字靠离线缓存。见 `harmony.ts`。
    */
   harmonyStrips: HarmonyStrip[];
+  /** 谱表正上方的简谱行（混排谱；`gen-rasterjianpu.mjs` 拿它离线认简谱）。见 `jianpuband.ts`。 */
+  jianpuStrips: JianpuStrip[];
+  /** 简谱互证改了几处（没有简谱行或缓存没命中为 null）。 */
+  jianpuFix?: FuseStats | null;
   /** 切出来的和弦记号（缓存里查得到才有）。已挂到音符的 `chord` 上。 */
   harmonies: HarmonyToken[];
   /** 谱行下标 → 规范化的声部名（`S1`/`A`/`P`…）。缓存里查得到才有。 */
@@ -121,6 +127,7 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   lyricStrips: [],
   labelStrips: [],
   harmonyStrips: [],
+  jianpuStrips: [],
   harmonies: [],
   staffLabels: new Map(),
   lyricStats: { rows: 0, hit: 0, parity: 0 },
@@ -262,6 +269,12 @@ const FLAT_BOWL_TOP = 0.45;
 /** 升降号「并回竖笔」之后与模板的签名距离上限。比通用的 90 松一点：
  *  并回来的盒是块的包围盒 + 竖段的中心线拼出来的，边界不如原块齐整。 */
 const ACCID_TEMPLATE_DIST = 90;
+
+/** 空心头按模板再搜的得分门槛。见「空心头按模板再搜」那一段。 */
+const HOLLOW_MASK_SCORE = 0.38;
+
+/** 调号兜底：相邻两个升降号（或谱号与第一个升降号）之间最多隔几个线距。 */
+const KEY_GAP = 1.5;
 
 /** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
 const TIME_TEMPLATE_DIST = 180;
@@ -416,6 +429,8 @@ export async function recognizeRasterPage(
     /** 和弦条的 OCR 缓存（`scripts/gen-rasterharmony.mjs` 的产物）。见 `harmony.ts`。
      *  值的类型与歌词缓存共用（`OcrChar`）——两边都是「整条送 rec，回来字符带条内 x」。 */
     harmonyOcr?: Map<string, OcrChar[]>;
+    /** 简谱行的离线识别缓存（`scripts/gen-rasterjianpu.mjs` 的产物）。混排谱拿它给五线谱纠错，见 `jianpufuse.ts`。 */
+    jianpuOcr?: Map<string, JianpuRow[]>;
     /** 排查用：把连通块与「谁被认领了」带出来（`debugBlobs` 字段）。识别判据一条不改。 */
     debug?: boolean;
     /**
@@ -470,6 +485,27 @@ export async function recognizeRasterPage(
     .filter((l) => !groupedLines.has(l))
     .map((l) => ({ x0: l.left, y0: l.y, x1: l.right, y1: l.y, lw: l.y1 - l.y0 + 1, maxLw: l.y1 - l.y0 + 1 }));
   const prims = findPrimitives(nl, unit, gridYs, staffLefts);
+
+  // ── 简谱行（混排谱）：**先于一切**认领 ─────────────────────────────────────
+  //
+  // 谱表正上方那行简谱的数字、增时线、高低音点，不挡就被收成全休止和加线上的符头
+  //（见 `jianpuband.ts`）。整块落在带里的墨从两张图上抹掉，带里的原语一并摘掉；
+  // 抹之前把条切下来，留给离线认简谱。定位判据是「短竖线与谱表小节线同 x」，
+  // 独唱谱、合唱谱对不上，这一段对它们空转。
+  const jianpuBands = findJianpuBands(
+    prims.vSegs,
+    groups.map((g) => ({ left: Math.max(...g.lines.map((l) => l.left)), right: Math.min(...g.lines.map((l) => l.right)), top: g.lines[0].y, bottom: g.lines[4].y })),
+    unit,
+  );
+  const jianpuStrips = jianpuBands.map((b) => cutJianpuStrip(raster.bin, b));
+  if (jianpuBands.length) {
+    for (const b of jianpuBands) eraseInBand([raster.bin, nl], b.box);
+    const inJp = (x: number, y: number) => jianpuBands.some((b) => x >= b.box.x && x <= b.box.x + b.box.w && y >= b.box.y && y <= b.box.y + b.box.h);
+    const outside = (v: { x0: number; y0: number; x1: number; y1: number }) => !(inJp(v.x0, v.y0) && inJp(v.x1, v.y1));
+    prims.vSegs = prims.vSegs.filter(outside);
+    prims.hSegs = prims.hSegs.filter(outside);
+    prims.beams = prims.beams.filter(outside);
+  }
   const blobs = findBlobs(nl, prims, unit, ledgerGrid(gridYs, unit));
 
   // ── 和弦带：**先于符头认领** ──────────────────────────────────────────────
@@ -490,6 +526,8 @@ export async function recognizeRasterPage(
         top: g.lines[0].y,
       },
       index: i,
+      // 有简谱行的谱表，和弦字母印在简谱行上方
+      ceiling: jianpuBands.find((b) => b.staff === i)?.box.y,
     })),
     unit,
   );
@@ -573,6 +611,18 @@ export async function recognizeRasterPage(
   // 判据是**形状 + 位置**：矩形（填充 ≥0.85）、扁（宽高比 ≥1.8，符头是 1.3 的椭圆）、
   // 高不过 0.8 格，再过一道 `nearRestLine`（全休止吊在二线下、半休止坐在三线上）。
   // 全/半由 `notedata.ts` 按几何再分。
+  // **一头贴着竖笔的是符杠，不是休止**：两个八分音符的短符杠斜着穿过谱线，
+  // 去谱线后夹在两线之间的那一截正是个扁实心矩形——整小节休止这一路与字典那一路
+  // 都会收它（《是谁》每行一两处，认成全休止/二分休止，那一小节随之作废）。
+  // 斜着切的，那一截只挨得着一头的符干；休止两头都不挨符干（后面紧跟的音符，符干离它至少一格）。
+  const besideStem = (b: Rect) => {
+    const stemAt = (x: number) =>
+      prims.vSegs.some((v) => {
+        const vx = (v.x0 + v.x1) / 2;
+        return Math.abs(vx - x) <= unit.space * 0.4 && Math.min(v.y0, v.y1) <= b.y + b.h + unit.space * 0.5 && Math.max(v.y0, v.y1) >= b.y - unit.space * 0.5;
+      });
+    return stemAt(b.x) || stemAt(b.x + b.w);
+  };
   const restIds = new Set<number>();
   const restSyms: RasterSym[] = [];
   for (const c of blobs) {
@@ -591,8 +641,9 @@ export async function recognizeRasterPage(
     if (w < hRest * REST_RATIO) continue;
     if (c.area / Math.max(1, b.w * b.h) < REST_FILL) continue;
     if (!nearRestLine(b, lines, unit)) continue;
+    if (besideStem(b)) continue;
     restIds.add(c.id);
-    restSyms.push({ box: b, code: "restHBar" });
+    restSyms.push({ box: b, code: restKind(b, lines, unit) });
   }
 
   const heads = findRasterHeads(nl, blobs.filter((c) => !restIds.has(c.id) && !harmonyIds.has(c.id)), prims.vSegs, unit, onGrid, inBand, matchHollow);
@@ -676,7 +727,7 @@ export async function recognizeRasterPage(
     // 位图上这种碎块一大把（符杠断头、粗横笔的一截），实测宁静一首认出 43 个
     // 全部被采纳，而谱面上根本没那么多。它有一条硬位置：
     // 半休止**坐在中线上**、全休止**吊在上面一线下**——不贴着这两条线的不是它。
-    if ((code === "restHalf" || code === "restWhole") && !nearRestLine(c.bbox, lines, unit)) continue;
+    if (isBarRest(code) && (!nearRestLine(c.bbox, lines, unit) || besideStem(c.bbox))) continue;
     syms.push({ box: c.bbox, code });
     ledger.claim(c.bbox, `dict:${code}`);
   }
@@ -700,10 +751,15 @@ export async function recognizeRasterPage(
   // 自举那一路先把 x 上重叠的碎块并回一个盒，再拿模板签名比——那才是完整的谱号。
   for (const h of bootstrapClefs(boxes, bootStaves, unit.space, look.templates ? { tpl: look.templates, sigOf: (b) => binSig(nl, b) } : undefined)) {
     const b = h.box ?? blobs[h.index].bbox;
-    // 落在这个盒里的字典结果作废（那是被切开的半截）
+    // 落在这个盒里的字典结果作废（那是被切开的半截）。**按中心判**，不要求整个在盒里：
+    // 低音谱号的圆头被当成全音符符头时，盒比谱号盒高出几个像素（《善牧恩慈歌》第二行
+    // 出了个 G3 全音符；坚固保障高音谱号底下的圆球也被认成过两个黑符头），整盒判就漏了。
+    // 谱号盒里不会有真音符。
     for (let i = syms.length - 1; i >= 0; i--) {
       const s0 = syms[i].box;
-      if (s0.x >= b.x - 1 && s0.x + s0.w <= b.x + b.w + 1 && s0.y >= b.y - 1 && s0.y + s0.h <= b.y + b.h + 1) syms.splice(i, 1);
+      const cx0 = s0.x + s0.w / 2;
+      const cy0 = s0.y + s0.h / 2;
+      if (cx0 >= b.x - 1 && cx0 <= b.x + b.w + 1 && cy0 >= b.y - 1 && cy0 <= b.y + b.h + 1) syms.splice(i, 1);
     }
     syms.push({ box: b, code: h.code });
     ledger.claim(b, `clef:${h.code}`);
@@ -741,6 +797,7 @@ export async function recognizeRasterPage(
     // 两截都不成符头、字典里也没有二分符头的类（见 `judgeHeadBox`）。
     const code = look.lookup(binSig(nl, box), box.w / unit.space, box.h / unit.space) ?? judgeHeadBox(nl, box, unit, prims.vSegs, inBand);
     if (!code) continue;
+    if (isBarRest(code) && besideStem(box)) continue;
     for (const id of group) merged.add(id);
     syms.push({ box, code });
     ledger.claim(box, `merge:${code}`);
@@ -918,7 +975,11 @@ export async function recognizeRasterPage(
           const m = matchTemplate(binSig(nl, b), b.w / unit.space, b.h / unit.space, tpl, TIME_TEMPLATE_DIST);
           return m && timeSigDigit(m.smufl) >= 0 ? { box: b, code: m.smufl } : null;
         });
-        if (two[0] && two[1]) hits.push(two[0], two[1]);
+        // **分子至少是 2**：1/x 的拍号谱面上不出现，出现只说明两个数字都是硬凑上的
+        // ——旧字体（《善牧恩慈歌》那种铅字本）的「4」只有 1.1 格宽，过不了 `timeSig4`
+        // 模板的宽度闸，却以 141/166 的距离过了放宽到 180 的 `timeSig1`，整首读成 1/1。
+        // 拒掉之后下游按缺省拍号办，比错成 1/1 强得多（1/1 让每个四分音符都「满小节」）。
+        if (two[0] && two[1] && timeSigDigit(two[0].code) >= 2) hits.push(two[0], two[1]);
       }
       if (!hits.length) continue;
       // 拍号**盖过字典**（与谱号同一条）：落在它盒里的字典结果作废，那是被切开的碎块
@@ -930,6 +991,46 @@ export async function recognizeRasterPage(
       for (const hit of hits) ledger.claim(hit.box, `time:${hit.code}`);
       for (const id of col.ids) merged.add(id);
       break; // 一行谱只有一个拍号
+    }
+  }
+
+  // ── 调号：紧跟谱号的升降号，**位置兜底** ─────────────────────────────────
+  //
+  // 字典与模板都认不出的调号升降号，按「谱号右边第一串又窄又高的块」补认。
+  // 病例是铅字本的细长升号（《善牧恩慈歌》0.82×2.36 格，Maestro 模板 0.95×2.73）：
+  // 到 `accidentalSharp` 的签名距离 130，通用的 90 那道闸过不去，调号整个丢了，
+  // 全曲的 F 都成了还原（调号错一个，测评按「移调」整首平移，音符档掉到两成）。
+  // 松到拍号那一档是因为位置先验够硬：紧贴谱号、一串挨着、骑在谱表上。
+  // 形状另卡**窄**（宽不过高的 0.5）：拍号数字 0.67 以上，挡得住。
+  // 只吃谁都没认领的块，字典/模板已经认出调号的谱行一块也不动。
+  for (const g of groups) {
+    const left = Math.max(...g.lines.map((l) => l.left));
+    const top = g.lines[0].y;
+    const bottom = g.lines[4].y;
+    const clef = syms.find((s0) => isClef(s0.code) && s0.box.x < left + unit.space * 4 && s0.box.y < bottom && s0.box.y + s0.box.h > top);
+    if (!clef) continue;
+    // 已经有升降号紧跟谱号了：字典那一路认出了调号，不插手
+    let edge = clef.box.x + clef.box.w;
+    const onStaff = (r: Rect) => r.y < bottom && r.y + r.h > top;
+    if (syms.some((s0) => isAccidental(s0.code) && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + unit.space * KEY_GAP)) continue;
+    const cand = blobs
+      .filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id) && !merged.has(c.id))
+      .filter((c) => onStaff(c.bbox))
+      .sort((a, b) => a.bbox.x - b.bbox.x);
+    for (const c of cand) {
+      const b = c.bbox;
+      if (b.x < edge - 1) continue;
+      if (b.x > edge + unit.space * KEY_GAP) break; // 串断了
+      const w = b.w / unit.space;
+      const h = b.h / unit.space;
+      if (w < 0.6 && h < 0.6) continue; // 噪点、谱号的小尾巴：跳过，不算断串
+      if (h < 1.8 || h > 3.4 || w < 0.4 || w > h * 0.5) break;
+      const m = matchTemplate(binSig(nl, b), w, h, (look.templates ?? []).filter((t) => t.smufl === "accidentalSharp" || t.smufl === "accidentalFlat"), TIME_TEMPLATE_DIST);
+      if (!m) break;
+      syms.push({ box: b, code: m.smufl });
+      ledger.claim(b, `key:${m.smufl}`);
+      merged.add(c.id);
+      edge = b.x + b.w;
     }
   }
 
@@ -1044,6 +1145,93 @@ export async function recognizeRasterPage(
       }
     }
     syms.push(...clfHeads);
+  }
+
+  // ── 空心头按模板再搜 ─────────────────────────────────────────────────────
+  //
+  // 低分辨率的全音符（《善牧恩慈歌》线距 11px）两路都认不出：叠成「8」字的三度
+  // 两个头并成一块，内腔被谱线切成四片、又是斜缝，过不了内腔那一路的「横宽」闸；
+  // 贴着谱线的那个被去谱线切成左右两半。可同一页上别处的空心头是认出来了的——
+  // 拿它们平均出模板（`buildHollowMask`），在**有内腔的无主块**里做匹配追踪。
+  // 先把 x 上重叠、上下贴着的无主块并起来（被切成两半的头要并回一个）。
+  {
+    const hollowMask = buildHollowMask(raster.bin, syms, unit);
+    if (hollowMask) {
+      const free = blobs.filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id) && !merged.has(c.id) && inBand(c.bbox.y + c.bbox.h / 2));
+      const used = new Set<number>();
+      for (const a of free) {
+        if (used.has(a.id)) continue;
+        let box = { ...a.bbox };
+        let area = a.area;
+        const group = [a.id];
+        for (let again = true; again; ) {
+          again = false;
+          for (const b of free) {
+            if (group.includes(b.id) || used.has(b.id)) continue;
+            const r = b.bbox;
+            const ov = Math.min(box.x + box.w, r.x + r.w) - Math.max(box.x, r.x);
+            const gap = r.y > box.y ? r.y - (box.y + box.h) : box.y - (r.y + r.h);
+            if (ov < Math.min(box.w, r.w) * 0.3 && !(gap < 0 && Math.abs(r.x - (box.x + box.w)) <= unit.lineThick * 2 + 1)) continue;
+            if (gap > unit.lineThick * 2 + 1) continue;
+            const x0 = Math.min(box.x, r.x);
+            const y0 = Math.min(box.y, r.y);
+            box = { x: x0, y: y0, w: Math.max(box.x + box.w, r.x + r.w) - x0, h: Math.max(box.y + box.h, r.y + r.h) - y0 };
+            area += b.area;
+            group.push(b.id);
+            again = true;
+          }
+        }
+        const w = box.w / unit.space;
+        const h = box.h / unit.space;
+        if (w < 0.8 || w > 1.9 || h < 0.6 || h > 3.2) continue;
+        // 块里要有内腔（空心头的先验）
+        if (!holes.some((o) => o.x >= box.x && o.x + o.w <= box.x + box.w && o.y >= box.y - 1 && o.y + o.h <= box.y + box.h + 1)) continue;
+        if (syms.some((s0) => overlapFrac(box, s0.box) > 0.3)) continue;
+        const parts = splitHeadCluster(raster.bin, box, area, [hollowMask], unit, pitchGrid, onLineY, true, undefined, 1, HOLLOW_MASK_SCORE);
+        if (!parts.length) continue;
+        for (const id of group) used.add(id), merged.add(id);
+        for (const pb of parts) {
+          const stemmed = prims.vSegs.some((v) => {
+            const vx = (v.x0 + v.x1) / 2;
+            return (Math.abs(vx - pb.x) <= unit.space * 0.2 || Math.abs(vx - (pb.x + pb.w)) <= unit.space * 0.2) && Math.min(v.y0, v.y1) <= pb.y + pb.h && Math.max(v.y0, v.y1) >= pb.y;
+          });
+          const code: SmuflName = stemmed ? "noteheadHalf" : "noteheadWhole";
+          syms.push({ box: pb, code });
+          ledger.claim(pb, `hollowmask:${code}`);
+        }
+      }
+    }
+  }
+
+  // ── 终止线/段落线：纵贯谱表的**实心条**补成竖段 ────────────────────────────
+  //
+  // 「细 + 粗」双线里那根粗线有 0.6 格宽，过不了竖段的宽度闸；紧贴着它的细线
+  // 又过不了孤立性判据——两根都成了没人认领的块，小节线那一步看不见它们。
+  // 《善牧恩慈歌》延长记号后、「阿们」之前那道双线就这样丢了，后面一小节并进了前一小节。
+  // 判据：上下两端贴着五线的顶线与底线（各 0.4 格内）、宽不过一格、填充八成以上。
+  for (const c of blobs) {
+    if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
+    const b = c.bbox;
+    if (b.w > unit.space || c.area < b.w * b.h * 0.8) continue;
+    const g = groups.find((g0) => Math.abs(b.y - g0.lines[0].y) <= unit.space * 0.4 && Math.abs(b.y + b.h - g0.lines[4].y) <= unit.space * 0.4);
+    if (!g) continue;
+    if (syms.some((s0) => overlapFrac(b, s0.box) > 0.3)) continue;
+    const x = b.x + b.w / 2;
+    prims.vSegs.push({ x0: x, y0: b.y, x1: x, y1: b.y + b.h, lw: b.w, maxLw: b.w });
+    merged.add(c.id);
+    ledger.claim(b, "bar:thick");
+  }
+
+  // ── 附点：**位置 + 形状自举**，字典兜不住 ─────────────────────────────────
+  //
+  // 附点在位图路原先只靠字典认（`augmentationDot`），字典是在线距 15~19px 的合唱谱上建的：
+  // 《是谁》线距 50px，附点直径 18px，还被横段那一步连着符头的边抽成了一截横线；
+  // 《善牧恩慈歌》线距 11px，附点只有 3px。两首的附点二分、附点四分一个都没认出来。
+  // 附点的位置是死的：符头右边一格之内、同一个间（线上的音写在上方那个间）。
+  // 在去谱线图上找那个窗口里**孤立、近圆的小墨团**，找到就补一个附点，时值交给 `attachDots`。
+  for (const d of findDots(nl, syms, unit)) {
+    syms.push({ box: d, code: "augmentationDot" });
+    ledger.claim(d, "dot:augmentationDot");
   }
 
   // **切加线要用最终认出来的全部符头**：除了 `findRasterHeads`，还有按内腔找的、
@@ -1176,8 +1364,16 @@ export async function recognizeRasterPage(
   // 与认不认得出那个字是两回事。账本按字格记一笔，无主表里才不会把整页歌词
   // 当成「从没看见的墨」（缓存没命中时曾经就是这样，覆盖率一下子低二十个点）。
   {
+    // **认领了却没落成音符的「符头」也还给歌词**：歌词字的笔画（点、口字框）常被收成符头，
+    // 归不上谱表又被扔掉，可认领还在，那一格字就从歌词行里缺了
+    //（《善牧恩慈歌》第 4 段行首的「主」整字没了）。只看最终的音符在不在块里，不看 OCR，
+    // 条子才与离线生成缓存时切得一模一样。
+    const noteCenters = notes.map((n) => ({ x: (n.sym.box.left + n.sym.box.right) / 2, y: (n.sym.box.top + n.sym.box.bottom) / 2 }));
+    const orphanHead = (c: Component) =>
+      claimed.has(c.id) && !restIds.has(c.id) && !harmonyIds.has(c.id) &&
+      !noteCenters.some((p) => p.x >= c.bbox.x - 1 && p.x <= c.bbox.x + c.bbox.w + 1 && p.y >= c.bbox.y - 1 && p.y <= c.bbox.y + c.bbox.h + 1);
     const rows = findLyricRows(
-      blobs.filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id)),
+      blobs.filter((c) => (!claimed.has(c.id) || orphanHead(c)) && !dictClaimed.has(c.id)),
       pg.staves.map((st) => ({ top: st.box.top, bottom: st.box.bottom, left: st.box.left, right: st.box.right })),
       unit,
     );
@@ -1185,14 +1381,21 @@ export async function recognizeRasterPage(
     const objs = [];
     const ocr = opts.lyricOcr;
     lyricStats.rows = rows.length;
+    const stripRow = new Map<LyricStrip, LyricRow>();
     for (const row of rows) {
       const strip = stripOf(nl, row);
-      if (strip) lyricStrips.push(strip);
+      if (strip) {
+        lyricStrips.push(strip);
+        stripRow.set(strip, row);
+      }
     }
+    /** OCR 认得出字的歌词行（剔「字的笔画被收成符头」要用，见下）。 */
+    const readRows: LyricRow[] = [];
     for (const strip of ocr ? lyricStrips : []) {
       const chars = ocr!.get(stripKey(strip));
       if (!chars) continue; // 缓存没命中：这一条没跑过 OCR，宁可留空不编造
       lyricStats.hit++;
+      if (chars.some((c) => /\p{Script=Han}/u.test(c.ch))) readRows.push(stripRow.get(strip)!);
       // **拉丁行绕开字格**：字格那一套是按汉字等宽见方切的，英文词宽差着数倍。
       // 逐字造盒、按间距补词间空格，断词断音节交给 `splitSyllables`（见 `lyric.ts`）。
       const latin = isLatinRow(chars);
@@ -1205,9 +1408,83 @@ export async function recognizeRasterPage(
       objs.push(o);
     }
     pg.objs.push(...objs);
+    // **歌词行里的「符头」是字的笔画**：歌词离谱表近的底本（《是谁》第一段歌词只在谱表下
+    // 1.8 格），字里的横笔被当成加线、口字框被当成符头，认成谱表下五六条加线的 G3/C3
+    // ——一行两三个，整首十来个假音。只剔**认得出汉字**的那几行、**中心**落在行内的；
+    // 真的低音符头中心离谱表不过一两格，碰不到歌词行（行上沿在谱表下 1.8 格）。
+    if (readRows.length) {
+      const inRow = (n: StaffNote) => {
+        const cx = (n.sym.box.left + n.sym.box.right) / 2;
+        const cy = (n.sym.box.top + n.sym.box.bottom) / 2;
+        if (cy < n.staff.box.bottom + unit.space) return false;
+        // 中心要落在（贴着）某个字格上：字被拆散时，剩下的笔画就在旁边成了字格；
+        // 真的低音符头旁边没有字格压着（合唱谱谱表间距窄，歌词行离低音符头常只有一格，
+        // 只看「落在行里」实测会误删真音）
+        const pad = (r: LyricRow) => r.charH * 0.25;
+        return readRows.some((r) => {
+          const top = Math.min(...r.cells.map((c) => c.y));
+          const bot = Math.max(...r.cells.map((c) => c.y + c.h));
+          if (cy <= top || cy >= bot) return false;
+          return r.cells.some((c) => cx > c.x - pad(r) && cx < c.x + c.w + pad(r) && cy > c.y - pad(r) && cy < c.y + c.h + pad(r));
+        });
+      };
+      for (let i = notes.length - 1; i >= 0; i--) if (inRow(notes[i])) notes.splice(i, 1);
+    }
     lyricLines.push(...buildLyricLines(pg, objs));
     attachLyrics(notes, lyricLines);
   }
+
+  // ── 拍号兜底：整页一个拍号都没认出、前页也没传下来 ─────────────────────────
+  //
+  // 拍号数字认不出来是常事（铅字本的「4」比模板窄一截，见上面拍号那一段的「分子至少是 2」），
+  // 缺了它写出来的 MusicXML 就没有 `<time>`。按**第一声部每小节的时值和**取众数推一个 n/4，
+  // 造成两个拍号数字放进首行的 ctx——写出端、跨页传递（`lastTimeSignature`）照常走。
+  // 只推 2~9 拍的整拍（拍号字形只有一位数），至少要三个小节撑着。
+  if (!opts.carryTime && pg.staves.every((st) => !(ctx.get(st)?.time.length))) {
+    const sums: number[] = [];
+    for (const st of pg.staves)
+      for (const bar of st.bars) {
+        const q = notes
+          .filter((n) => n.staff === st && n.voice === 1 && !n.chordExtra && !n.grace && n.x >= bar.left && n.x < bar.right)
+          .reduce((a, n) => a + n.duration * 4, 0);
+        if (q > 0) sums.push(Math.round(q * 4) / 4);
+      }
+    const count = new Map<number, number>();
+    for (const q of sums) count.set(q, (count.get(q) ?? 0) + 1);
+    const ranked = [...count].filter(([q0]) => Number.isInteger(q0) && q0 >= 2 && q0 <= 9).sort((a, b) => b[1] - a[1]);
+    // 4/4 是下游本来就缺省的拍号：证据不反对（4 拍的小节不少于最多那档的八成）就写它；
+    // 别的拍数要明显压过第二名才采信——多声部谱认错的音会把小节和撑得五花八门
+    //（《善牧恩慈歌》低音谱表那几行，4 拍与 5 拍各六个小节）
+    const n4 = count.get(4) ?? 0;
+    let q = 0;
+    if (ranked.length && n4 >= 3 && n4 >= ranked[0][1] * 0.8) q = 4;
+    else if (ranked.length && ranked[0][1] >= 3 && ranked[0][1] >= (ranked[1]?.[1] ?? 0) * 1.5) q = ranked[0][0];
+    const first = pg.staves[0];
+    const c0 = first && ctx.get(first);
+    if (c0 && q) {
+      const x = (c0.key.length ? Math.max(...c0.key.map((s0) => s0.box.right)) : (c0.clef?.box.right ?? first.box.left)) + unit.space * 0.5;
+      const mid = (first.box.top + first.box.bottom) / 2;
+      const w = unit.space;
+      const up = makeSymObj(pg.objs.length, { box: { x, y: Math.round(first.box.top), w, h: Math.round(mid - first.box.top) }, code: `timeSig${q}` as SmuflName }, first.box.bottom - first.box.top);
+      const dn = makeSymObj(pg.objs.length + 1, { box: { x, y: Math.round(mid), w, h: Math.round(first.box.bottom - mid) }, code: "timeSig4" }, first.box.bottom - first.box.top);
+      c0.time.push(up.sym, dn.sym);
+    }
+  }
+
+  // ── 混排谱：简谱行给五线谱纠错 ──────────────────────────────────────────
+  //
+  // 放在歌词挂完之后：纠的是音高与时值，删的是简谱对不上的多余音——
+  // 挂歌词那一步要看到**所有**候选音才挂得准，先删了反而让字挂错位。
+  const jianpuFix = opts.jianpuOcr && jianpuStrips.length
+    ? fuseJianpu(
+      notes,
+      jianpuStrips,
+      (strip) => pg.staves.find((st) => Math.abs(st.box.top - groups[strip.staff].lines[0].y) < unit.space),
+      (strip) => opts.jianpuOcr!.get(jianpuKey(strip)),
+      (st) => keyFifths(ctx.get(st)?.key ?? []),
+      unit,
+    )
+    : null;
 
   // ── 松叶 ────────────────────────────────────────────────────────────────
   //
@@ -1248,6 +1525,8 @@ export async function recognizeRasterPage(
     ledger,
     lyricStrips,
     harmonyStrips,
+    jianpuStrips,
+    jianpuFix,
     harmonies,
     labelStrips,
     staffLabels,
@@ -1312,6 +1591,100 @@ function midOfStaff(box: { y: number; h: number }, lines: { y: number }[], unit:
   const ys = [...lines].map((l) => l.y).sort((a, b) => a - b);
   for (let i = 0; i + 4 < ys.length; i += 5) if (Math.abs(cy - ys[i + 2]) <= unit.space * 0.9) return true;
   return false;
+}
+
+/**
+ * 符头右边的附点（见识别主流程「附点」那一段）。窗口：符头右缘往右 0.05~1.3 格、
+ * 符头中心往上 0.85 格到往下 0.35 格。墨团要整个落在窗口里（孤立），
+ * 大小 0.15~0.6 格、宽高比 0.6~1.7、填充过半；已经有符号压着的不算；
+ * 同一列上下一格处还有一个这样的点，那是反复记号的两点，不算。
+ */
+function findDots(bin: Binary, syms: RasterSym[], unit: RasterUnit): Rect[] {
+  const sp = unit.space;
+  const out: Rect[] = [];
+  const heads = syms.filter((s0) => /^notehead/.test(s0.code));
+  const blobsIn = (x0: number, y0: number, x1: number, y1: number): Rect[] => {
+    x0 = Math.max(0, Math.round(x0));
+    y0 = Math.max(0, Math.round(y0));
+    x1 = Math.min(bin.w, Math.round(x1));
+    y1 = Math.min(bin.h, Math.round(y1));
+    const W = x1 - x0;
+    if (W <= 0 || y1 <= y0) return [];
+    const seen = new Uint8Array(W * (y1 - y0));
+    const found: Rect[] = [];
+    const stack: number[] = [];
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        if (seen[(y - y0) * W + (x - x0)] || !bin.data[y * bin.w + x]) continue;
+        let minX = x, maxX = x, minY = y, maxY = y, area = 0, edge = false;
+        seen[(y - y0) * W + (x - x0)] = 1;
+        stack.push(x, y);
+        while (stack.length) {
+          const py = stack.pop()!;
+          const px = stack.pop()!;
+          area++;
+          if (px < minX) minX = px;
+          if (px > maxX) maxX = px;
+          if (py < minY) minY = py;
+          if (py > maxY) maxY = py;
+          for (let dy = -1; dy <= 1; dy++)
+            for (let dx = -1; dx <= 1; dx++) {
+              const nx = px + dx;
+              const ny = py + dy;
+              if (nx < 0 || ny < 0 || nx >= bin.w || ny >= bin.h || !bin.data[ny * bin.w + nx]) continue;
+              if (nx < x0 || ny < y0 || nx >= x1 || ny >= y1) {
+                edge = true;
+                continue;
+              }
+              const j = (ny - y0) * W + (nx - x0);
+              if (seen[j]) continue;
+              seen[j] = 1;
+              stack.push(nx, ny);
+            }
+        }
+        if (edge) continue;
+        const w = maxX - minX + 1;
+        const h = maxY - minY + 1;
+        if (w < Math.max(2, sp * 0.15) || h < Math.max(2, sp * 0.15) || w > sp * 0.6 || h > sp * 0.6) continue;
+        if (w / h < 0.6 || w / h > 1.7 || area < w * h * 0.5) continue;
+        found.push({ x: minX, y: minY, w, h });
+      }
+    return found;
+  };
+  for (const hd of heads) {
+    const b = hd.box;
+    const cy = b.y + b.h / 2;
+    for (const d of blobsIn(b.x + b.w + sp * 0.05, cy - sp * 0.85, b.x + b.w + sp * 1.3, cy + sp * 0.35)) {
+      if (out.some((o) => overlapFrac(o, d) > 0)) continue;
+      if (syms.some((s0) => overlapFrac(d, s0.box) > 0.3)) continue;
+      // 反复记号的两点：同一列上下一格处还有一个点
+      const dcx = d.x + d.w / 2;
+      const dcy = d.y + d.h / 2;
+      const twins = blobsIn(dcx - sp * 0.5, dcy - sp * 1.5, dcx + sp * 0.5, dcy + sp * 1.5).filter((o) => Math.abs(o.y + o.h / 2 - dcy) > sp * 0.6);
+      if (twins.length) continue;
+      out.push(d);
+    }
+  }
+  return out;
+}
+
+/** 扁矩形的休止（全休止、二分休止、整小节休止）：形状都是一个贴着谱线的小实心矩形。 */
+const isBarRest = (code: string) => code === "restHalf" || code === "restWhole" || code === "restHBar";
+
+/**
+ * 扁矩形休止分全、半：**全休止吊在第二线下，二分休止坐在中线上**。
+ * 两者形状一样，只差位置（中心差半格），按中心在第二线与中线的哪一半判。
+ * 全休止仍记 `restHBar`（整小节休止，时值随拍号），二分休止记 `restHalf`
+ * ——原先一律记成整小节休止，《是谁》首小节「二分休止 + 四分休止 + 两个八分」因此多出三拍。
+ */
+function restKind(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): SmuflName {
+  const cy = box.y + box.h / 2;
+  const ys = [...lines].map((l) => l.y).sort((a, b) => a - b);
+  for (let i = 0; i + 4 < ys.length; i += 5) {
+    if (cy < ys[i] - unit.space || cy > ys[i + 4] + unit.space) continue;
+    return cy > (ys[i + 1] + ys[i + 2]) / 2 ? "restHalf" : "restHBar";
+  }
+  return "restHBar";
 }
 
 function nearRestLine(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {

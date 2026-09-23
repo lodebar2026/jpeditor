@@ -612,17 +612,13 @@ export function attachHarmonies(pg: SPage, notes: NoteLike[], harmonies: PObj[],
       staff = st;
     }
     if (!staff) continue;
-    // 行内挂给 x 最近、且不在它左边太多的那个音符
-    let best: NoteLike | null = null;
-    let bestD = Infinity;
-    for (const n of notes) {
-      if (n.staff !== staff) continue;
-      const d = Math.abs(n.x - g.box.left);
-      if (d < bestD) {
-        bestD = d;
-        best = n;
-      }
-    }
-    if (best && bestD < sp * 6) best.chord ??= text;
+    // 行内挂给 x 最近的那个音符；**它已经挂了和弦就顺延到最近的空闲音**。
+    // 原来是 `??=`，后到的那个直接丢：长音上换和弦（《是谁》`G B B7` 三个挤在一个
+    // 附点二分音符上）、行首和弦与第一个音之间夹着别的记号时，一丢就是一个。
+    const cands = notes
+      .filter((n) => n.staff === staff && Math.abs(n.x - g.box.left) < sp * 6)
+      .sort((a, b) => Math.abs(a.x - g.box.left) - Math.abs(b.x - g.box.left));
+    const best = cands.find((n) => !n.chord);
+    if (best) best.chord = text;
   }
 }

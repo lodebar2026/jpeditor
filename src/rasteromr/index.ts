@@ -18,6 +18,8 @@ export * from "./notehead";
 export * from "./lyric";
 export * from "./stafflabel";
 export * from "./harmony";
+export * from "./jianpuband";
+export * from "./jianpufuse";
 export * from "./contour";
 export * from "./ledger";
 export * from "./wedge";

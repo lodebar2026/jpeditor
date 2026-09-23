@@ -30,6 +30,8 @@ import { CHORD_TOKEN_RE } from "../staffomr/textanalyze";
  *  再往上是上一个系统的歌词。 */
 const BAND_TOP = 3.2;
 const BAND_BOTTOM = 1.0;
+/** 混排谱：简谱行上沿往上这么多格（《是谁》和弦字母下沿离简谱带上沿 0.2 格、字高 1.3 格）。 */
+const JP_BAND = 3.0;
 
 /** 簇间的空白：相邻两段墨拉开这么多个线距才算是两个和弦。
  *  实测三条带的间隙**两极分化**（簇内 ≤0.67 格、簇间 ≥1.07 格），0.75 格落在空当里。
@@ -40,6 +42,58 @@ const CLUSTER_GAP = 0.75;
  *  挡掉带里的孤立噪点与谱线的碎渣。 */
 const MIN_W = 0.25;
 const MIN_INK = 8;
+
+/** 带底往下再看多深（线距的倍数），用来认「从下面伸上来的东西」。见 `withoutRisers`。 */
+const RISER_DEPTH = 0.3;
+
+/**
+ * 带里的墨，**抹掉从带底穿出去的连通块**（`[y0,y1)` 行、`[x0,x1)` 列，逐像素 0/1）。
+ *
+ * 和弦字母是浮在带里的：《坚固保障》全部 42 个的下沿离顶线 1.73~1.93 格，没有一个碰到带底。
+ * 碰到带底、而且在带底下面接着有墨的，是从谱表那边**伸上来**的东西——谱号的顶、
+ * 往上的符干、加线上的全音符。它们一进带就成了一簇，OCR 读成 `A`/`D`：
+ * 《善牧恩慈歌》（没有和弦的四部合唱谱）因此认出四个和弦，还顺手把调号升号认领走了。
+ * 整簇丢不得——真和弦也会和伸上来的符干挤在一簇里（坚固保障 `E/G♯ Am` 那一条就是），
+ * 所以按连通块抹：只抹伸上来的那一块，同簇的字母照留。没沾上的条内容一字不变，缓存照旧命中。
+ */
+function withoutRisers(bin: Binary, x0: number, x1: number, y0: number, y1: number, depth: number): Uint8Array {
+  const W = x1 - x0;
+  const yEnd = Math.min(bin.h, y1 + depth);
+  const H = yEnd - y0;
+  const seen = new Uint8Array(W * H);
+  const out = new Uint8Array(W * (y1 - y0));
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++) out[(y - y0) * W + (x - x0)] = bin.data[y * bin.w + x];
+  // 种子只取**带底往下 `depth` 深的那一行**，从那里八连通往上灌，灌到的都是「伸上来的」。
+  // 不从带底紧下面取：真和弦的笔画也会探出带底一两个像素（坚固保障 `E/G♯` 的升号比字母低，
+  // 下端正好越过带底 1px），那不算伸上来。
+  const stack: number[] = [];
+  for (let y = yEnd - 1; y < yEnd; y++)
+    for (let x = x0; x < x1; x++) {
+      const i = (y - y0) * W + (x - x0);
+      if (bin.data[y * bin.w + x] && !seen[i]) {
+        seen[i] = 1;
+        stack.push(i);
+      }
+    }
+  while (stack.length) {
+    const i = stack.pop()!;
+    const yy = Math.floor(i / W);
+    const xx = i % W;
+    if (yy < y1 - y0) out[i] = 0;
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const ny = yy + dy;
+        const nx = xx + dx;
+        if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
+        const j = ny * W + nx;
+        if (seen[j] || !bin.data[(ny + y0) * bin.w + nx + x0]) continue;
+        seen[j] = 1;
+        stack.push(j);
+      }
+  }
+  return out;
+}
 
 /** 一条和弦条：**一簇墨**的裸像素 + 它在页面上的盒。 */
 export interface HarmonyStrip {
@@ -60,21 +114,25 @@ export interface HarmonyStrip {
  */
 export function findHarmonyStrips(
   bin: Binary,
-  staves: { box: { left: number; right: number; top: number }; index: number }[],
+  /** `ceiling`：谱表上方另有一行东西（简谱行，见 `jianpuband.ts`）时它的上沿，
+   *  和弦带就改贴在它上面 `JP_BAND` 格那一段。 */
+  staves: { box: { left: number; right: number; top: number }; index: number; ceiling?: number }[],
   unit: RasterUnit,
 ): HarmonyStrip[] {
   const sp = unit.space;
   const out: HarmonyStrip[] = [];
   for (const st of staves) {
-    const y0 = Math.max(0, Math.round(st.box.top - sp * BAND_TOP));
-    const y1 = Math.max(0, Math.round(st.box.top - sp * BAND_BOTTOM));
+    const y0 = Math.max(0, Math.round(st.ceiling != null ? st.ceiling - sp * JP_BAND : st.box.top - sp * BAND_TOP));
+    const y1 = Math.max(0, Math.round(st.ceiling != null ? st.ceiling : st.box.top - sp * BAND_BOTTOM));
     const x0 = Math.max(0, Math.round(st.box.left));
     const x1 = Math.min(bin.w, Math.round(st.box.right));
     if (y1 - y0 < 4 || x1 - x0 < 8) continue;
+    const band = withoutRisers(bin, x0, x1, y0, y1, Math.ceil(sp * RISER_DEPTH));
+    const at = (x: number, y: number) => band[(y - y0) * (x1 - x0) + (x - x0)];
     // 列投影 → 游程 → 按空白并成簇
     const col = new Int32Array(x1 - x0);
     for (let y = y0; y < y1; y++)
-      for (let x = x0; x < x1; x++) if (bin.data[y * bin.w + x]) col[x - x0]++;
+      for (let x = x0; x < x1; x++) if (at(x, y)) col[x - x0]++;
     const gap = Math.max(2, Math.round(sp * CLUSTER_GAP));
     const runs: [number, number][] = [];
     let s = -1;
@@ -96,7 +154,7 @@ export function findHarmonyStrips(
       let ink = 0;
       for (let y = y0; y < y1; y++)
         for (let x = x0 + a; x <= x0 + b; x++)
-          if (bin.data[y * bin.w + x]) {
+          if (at(x, y)) {
             ink++;
             if (y < ya) ya = y;
             if (y > yb) yb = y;
@@ -105,7 +163,7 @@ export function findHarmonyStrips(
       const box = { x: x0 + a, y: ya, w: b - a + 1, h: yb - ya + 1 };
       const data = new Uint8Array(box.w * box.h);
       for (let y = 0; y < box.h; y++)
-        for (let x = 0; x < box.w; x++) data[y * box.w + x] = bin.data[(box.y + y) * bin.w + box.x + x];
+        for (let x = 0; x < box.w; x++) data[y * box.w + x] = at(box.x + x, box.y + y);
       out.push({ w: box.w, h: box.h, data, box, staff: st.index });
     }
   }

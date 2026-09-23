@@ -73,6 +73,38 @@ export function buildHeadMasks(bin: Binary, heads: { box: Rect; code: SmuflName 
   return out;
 }
 
+/**
+ * **空心符头**的模板：拿本页已经认出来的二分、全音符符头平均。
+ *
+ * 实心那一套（`buildHeadMasks`）每类要二十个样本，空心头一页往往只有十来个，
+ * 所以不分「骑线 / 在间」、样本门槛放到 `minSamples`。用途很窄：只在
+ * 「块里有内腔、却没认出空心头」的无主块里搜（见 `recognize.ts`「空心头按模板再搜」），
+ * 先验够硬，模板糙一点也够用。
+ */
+export function buildHollowMask(bin: Binary, heads: { box: Rect; code: SmuflName }[], unit: RasterUnit, minSamples = 3): HeadMask | null {
+  const hollow = heads.filter((h) => h.code === "noteheadHalf" || h.code === "noteheadWhole");
+  if (hollow.length < minSamples) return null;
+  const sp = unit.space;
+  const w = Math.max(3, Math.round(sp * WIN_W));
+  const h = Math.max(3, Math.round(sp * WIN_H));
+  const sum = new Float32Array(w * h);
+  for (const hd of hollow) {
+    const x0 = Math.round(hd.box.x + hd.box.w / 2 - w / 2);
+    const y0 = Math.round(hd.box.y + hd.box.h / 2 - h / 2);
+    for (let y = 0; y < h; y++) {
+      const sy = y0 + y;
+      if (sy < 0 || sy >= bin.h) continue;
+      for (let x = 0; x < w; x++) {
+        const sx = x0 + x;
+        if (sx >= 0 && sx < bin.w) sum[y * w + x] += bin.data[sy * bin.w + sx];
+      }
+    }
+  }
+  const p = new Float32Array(w * h);
+  for (let i = 0; i < p.length; i++) p[i] = sum[i] / hollow.length;
+  return { w, h, p, n: hollow.length, onLine: false };
+}
+
 /** 比对得分：**该有墨的地方有多少墨**减去**不该有墨的地方漏出多少**。
  *  `headclass.ts` 拿它当判别器的头一维特征。 */
 export function scoreAt(bin: Binary, m: HeadMask, cx: number, cy: number): number {
@@ -182,6 +214,10 @@ export function splitHeadCluster(
    * 事后再筛也筛不出它们；而扫描件上被啃过、被粘住的真符头，得分恰恰就低。
    */
   verify?: (box: Rect, cy: number) => boolean,
+  /** 拆出几个头才算数。拆和弦要两个（一个的交回单头那条路）；空心头按模板再搜时一个也算。 */
+  minHeads = 2,
+  /** 认一个头的得分门槛（缺省 `SCORE_MIN`；空心模板那一路另给，见调用处）。 */
+  minScore = SCORE_MIN,
 ): Rect[] {
   const sp = unit.space;
   const w = box.w / sp;
@@ -229,7 +265,7 @@ export function splitHeadCluster(
         if (picked.some((p) => Math.abs(p.x - x) < sp * SEP_X && Math.abs(p.y - y) < sp * SEP_Y)) continue;
         const m = masks.find((k) => k.onLine === onLine(y)) ?? masks[0];
         const sc = scoreAt(work, m, x - ox, y - oy);
-        if (sc < (verify ? VERIFY_SCORE_MIN : SCORE_MIN)) continue;
+        if (sc < (verify ? VERIFY_SCORE_MIN : minScore)) continue;
         if (!best || sc > best.s) best = { x, y, s: sc };
       }
     }
@@ -259,7 +295,7 @@ export function splitHeadCluster(
         if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1) work.data[y * wx + x] = 0;
   }
   // 只拆得出一个头的，交回原来那条路（尺寸闸自己会判）
-  if (picked.length < 2) return [];
+  if (picked.length < minHeads) return [];
   const hw = Math.round(sp * 1.25);
   const hh = Math.round(sp * 0.95);
   return picked.map((p) => ({ x: Math.round(p.x - hw / 2), y: Math.round(p.y - hh / 2), w: hw, h: hh }));
