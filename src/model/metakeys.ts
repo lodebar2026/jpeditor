@@ -19,9 +19,9 @@ export interface MetaKeyDef {
 
 export const META_KEYS: readonly MetaKeyDef[] = [
   { key: "title-alt", label: "英文标题", role: "titleAlt" },
-  { key: "epigraph", label: "题下经文", role: "epigraph" },
-  { key: "epigraph-ref", label: "题下经文出处", role: "epigraphRef" },
-  { key: "scripture-refs", label: "经文参考", role: "scriptureRefs" },
+  { key: "scripture", label: "题下经文", role: "scripture" },
+  { key: "scripture-ref", label: "题下经文出处", role: "scriptureRef" },
+  { key: "related-scriptures", label: "经文参考", role: "relatedScriptures" },
   { key: "tags", label: "标签", role: "tags", split: /[;；]/ },
   { key: "category", label: "分类", role: "header" },
   { key: "tune", label: "曲调名", role: "note" },

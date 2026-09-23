@@ -58,7 +58,7 @@ export const STYLE_ROLES: StyleRole[] = [
 
 /** 只有歌本模板（`template.ts`）用的角色。不进 `StyleRole`：成书的 `BookStyle.roles` 是按 `StyleRole`
  *  穷举的，加进去就得给成书也配一份。解析期与 `STYLE_ROLES` 一起当合法角色名。 */
-export const TEMPLATE_ROLES = ["titleAlt", "epigraph", "epigraphRef", "rights", "scriptureRefs", "tags"] as const;
+export const TEMPLATE_ROLES = ["titleAlt", "scripture", "scriptureRef", "rights", "relatedScriptures", "tags"] as const;
 
 /** 一个具名字体。间接一层（角色引用字体名）是为了让同一 face 只嵌一次子集。 */
 export interface FontRef {

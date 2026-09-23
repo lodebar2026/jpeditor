@@ -115,8 +115,8 @@ credit, rights { font: hei-light; size: 8pt; features: hwid; }
 成书另有两项：`align-mode`（逐字定位的口径：`pen` `ink-center` `left` `center` `right` `outer`，见 `sheet.ts::AlignMode`）
 与 `baseline-adjust`（基线修正，× 字号）。成书的角色 `size` 也是**字号**（裸数 pt）；原书量到的墨迹高由生成脚本按样本字的墨迹占比换算后才写进来，样式值里不出现墨迹高。
 
-角色表见 `src/style/sheet.ts::STYLE_ROLES`（20 个）与 `TEMPLATE_ROLES`（模板专用：`titleAlt` `epigraph` `epigraphRef`
-`rights` `scriptureRefs` `tags`）；认不出的角色名报 `行:列`。
+角色表见 `src/style/sheet.ts::STYLE_ROLES`（20 个）与 `TEMPLATE_ROLES`（模板专用：`titleAlt` `scripture` `scriptureRef`
+`rights` `relatedScriptures` `tags`）；认不出的角色名报 `行:列`。
 
 **排版器自带的那几支字也由角色换**（对照表 `src/style/keys.ts::ROLE_FONTS`）。`font` / `family` / `weight` 在各模式都生效；
 字号在纯简谱下仍走 `note { size }` 那一路（由它派生间距），混排里 `note { size }` 改简谱层字号、谱表上缩小的那支随谱高派生：
