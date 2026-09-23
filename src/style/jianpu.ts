@@ -13,6 +13,7 @@ import { familyOfRole } from "./fonts";
 import { JIANPU_KEYS, ROLE_FONTS, type KeyDef } from "./keys";
 import type { StyleRole, StyleSheet } from "./sheet";
 import { isPagedSheet, PPTX_PAGE } from "./themes";
+import { pageMargins } from "./paper";
 import { resolveLength } from "./units";
 
 /** 原样档标题/词曲字号 ÷ 基础字号。取出厂那三个数的比（48/28、36/28）——
@@ -63,6 +64,9 @@ export function applyJianpuStyle(opt: LayoutOptions, sheet: StyleSheet): void {
     }
     if (preset === "original") {
       applyOriginalPreset(opt, isLongImage(sheet));
+      // 面板或谱里给了边距就用给的；没给仍是字号派生的那套（`LayoutOptions.applyFontSize`）
+      const mg = pageMargins(sheet.page);
+      if (mg) [opt.marginTop, opt.marginRight, opt.marginBottom, opt.marginLeft] = mg;
       // 和弦（123/ABC 原样档走引擎后才有）：`chord` 角色给了字号就用，没给按音符字号的 0.6（引擎缺省那一档）。
       // `.jpwabc` 的投影不带和弦，这一项对它不起作用。
       opt.chordSize = rolePt(sheet, "chord") ?? opt.numberSize * 0.6;

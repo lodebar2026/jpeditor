@@ -31,6 +31,10 @@ export const META_KEYS: readonly MetaKeyDef[] = [
   { key: "note-bc", label: "页脚注释（中）", role: "note" },
   { key: "note-br", label: "页脚注释（右）", role: "note" },
   { key: "layout.new-page", label: "另起一页", flag: true },
+  // 纸张（`style/paper.ts::songPageDecl`）：MusicXML 的 `<page-layout>` 转成 123/ABC 时落在这里，否则纸就丢了
+  { key: "page", label: "纸张（A4 或「宽 高」pt）" },
+  { key: "page-orientation", label: "纸张方向（portrait/landscape）" },
+  { key: "page-margin", label: "页边距（上 右 下 左，pt）" },
   { key: "layout.melody-only", label: "只留旋律声部", flag: true },
   { key: "layout.chinese-hyphen", label: "歌词连字符用「—」", flag: true },
 ];

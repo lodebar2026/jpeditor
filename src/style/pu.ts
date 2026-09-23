@@ -9,17 +9,17 @@
 // **没有逐字段覆盖层**：原样档照原版实测，`@pu` 块连同 `applyPuOverrides` 已删（零使用者）。
 import type { PuUserOptions } from "../layout/original/metrics";
 import type { StyleSheet } from "./sheet";
-import { PAPER_SIZES } from "./themes";
+import { pageMargins, resolvePaper } from "./paper";
 import { resolveLength } from "./units";
 
-/** 面板那一层：字号（pt）+ 纸 / 长图。 */
+/** 面板那一层：字号（pt）+ 纸 / 长图 + 边距。 */
 export function puUserOptionsOf(sheet: StyleSheet): PuUserOptions {
   const size = sheet.roles.note?.size;
   const pt = size === undefined ? null : resolveLength(size, { em: NaN, sp: NaN });
   const digitFontSize = pt !== null && Number.isFinite(pt) && pt > 0 ? pt : undefined;
-  const paperName = sheet.page.paper;
-  const paper = paperName === undefined ? undefined : PAPER_SIZES[paperName];
-  if (paper === undefined) return { digitFontSize }; // 没选纸：纸与长图都跟档位自带的
-  if (paper === null) return { digitFontSize, continuous: true }; // 长图：纸交给内容定
-  return { digitFontSize, pageWidth: paper[0], pageHeight: paper[1], continuous: false };
+  const margins = pageMargins(sheet.page);
+  const paper = resolvePaper(sheet.page);
+  if (paper === undefined) return { digitFontSize, margins }; // 没选纸：纸与长图都跟档位自带的
+  if (paper === null) return { digitFontSize, margins, continuous: true }; // 长图：纸交给内容定
+  return { digitFontSize, margins, pageWidth: paper.w, pageHeight: paper.h, continuous: false };
 }

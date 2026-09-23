@@ -11,6 +11,7 @@ import { emitAbc } from "../abcfamily/emitabc.entry";
 import { emitJpwabc } from "./tojpw";
 import { emitPu } from "./topu";
 import { DIALECTS } from "../pu/dialect";
+import { withPageMeta } from "./pagemeta";
 
 /** 可写出的文本格式。文本谱两种方言各算一种。 */
 export type ConvertTarget = "123" | "abc" | "jpwabc" | "tomato" | "shige";
@@ -26,7 +27,8 @@ export interface TargetSpec {
 
 /** 顺序即下拉里的顺序；第一项是识别的默认输出格式。 */
 export const CONVERT_TARGETS: readonly TargetSpec[] = [
-  { id: "123", label: "简谱 123", docFormat: "123", emit: emit123 },
+  // 123 / ABC 把 MusicXML 的纸写成 `I:meta page …`（`pagemeta.ts`），转过去再打开纸不丢
+  { id: "123", label: "简谱 123", docFormat: "123", emit: (doc) => emit123(withPageMeta(doc)) },
   {
     id: "jpwabc",
     label: "简谱 JPWABC",
@@ -37,7 +39,7 @@ export const CONVERT_TARGETS: readonly TargetSpec[] = [
       return text;
     },
   },
-  { id: "abc", label: "ABC", docFormat: "abc", emit: emitAbc },
+  { id: "abc", label: "ABC", docFormat: "abc", emit: (doc) => emitAbc(withPageMeta(doc)) },
   { id: "tomato", label: DIALECTS.tomato.name, docFormat: "pu", emit: (doc) => emitPu(doc, "tomato") },
   { id: "shige", label: DIALECTS.shige.name, docFormat: "pu", emit: (doc) => emitPu(doc, "shige") },
 ];

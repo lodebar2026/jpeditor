@@ -1,5 +1,7 @@
 // Minimal modal dialogs (replacing options.fxml / SimpleLayout.fxml).
-import type { App } from "./app";
+import type { App, PaperChoice, PaperEngine } from "./app";
+import { resolvePaper, pageMargins, CUSTOM_PAPER } from "../style/paper";
+import type { PageDecl } from "../style/sheet";
 import { ORIGINAL_PAPERS, PAGE_RATIOS, PAPER_SIZES } from "../style/themes";
 import { META_KEYS, metaKeyDef, splitMetaValue } from "../model/metakeys";
 import { CONVERT_TARGETS } from "../model/convert";
@@ -202,6 +204,89 @@ function colorValue(el: HTMLInputElement, fallback: number): number {
  *  （文本谱有自己的整套 metrics、混排有自己的一套色），纸张两档各记各的，
  *  「每页行数」只对分页的那一档有意义。摆出无效项等于骗人——改了没反应。
  *  背景色是唯一四档通吃的（它铺的是纸，不是谱，见 App._applyPageBg）。 */
+const PT_PER_MM = 72 / 25.4;
+
+/** 纸张一句话：「A4 竖」（边距在下面那一行显示）。 */
+function describePage(p: PageDecl): string {
+  const size = resolvePaper(p);
+  if (size === null) return "长图";
+  const name = p.paper === CUSTOM_PAPER && size ? `${Math.round(size.w)}×${Math.round(size.h)}pt` : p.paper ?? "";
+  return `${name} ${size && size.w > size.h ? "横" : "竖"}`;
+}
+
+/** 纸张栏：纸（谱里写了纸时多一项「跟随文件」）+ 方向 + 四边距（mm，留空 = 自动）。
+ *  `read()` 返回 null 表示没动过——没动过就不写用户层，免得把「跟随文件」悄悄钉成一张具体的纸。 */
+function paperGroup(app: App, engine: PaperEngine): { rows: HTMLElement[]; read(): PaperChoice | null } {
+  const st = app.paperState(engine);
+  const following = !st.userSet && st.doc !== null;
+  const paper = document.createElement("select");
+  if (st.doc) {
+    const o = document.createElement("option");
+    o.value = "follow";
+    o.textContent = `跟随文件（${describePage(st.doc)}）`;
+    paper.append(o);
+  }
+  for (const k of ORIGINAL_PAPERS) {
+    const wh = PAPER_SIZES[k];
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = wh ? `${k}（${wh[0]}×${wh[1]}pt）` : k;
+    paper.append(o);
+  }
+  paper.value = following ? "follow" : isPaperKey(st.page.paper) ? st.page.paper! : "A4";
+
+  const orient = document.createElement("select");
+  for (const [v, t] of [["portrait", "竖"], ["landscape", "横"]] as const) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = t;
+    orient.append(o);
+  }
+  const size = resolvePaper(st.page);
+  orient.value = size && size.w > size.h ? "landscape" : "portrait";
+
+  const mgNow = pageMargins(st.page);
+  const margins = ["上", "右", "下", "左"].map((label, i) => {
+    const el = document.createElement("input");
+    el.type = "number";
+    el.min = "0";
+    el.max = "100";
+    el.placeholder = label;
+    el.title = `${label}边距（mm），留空 = 自动`;
+    el.style.width = "4.2em";
+    if (mgNow) el.value = String(Math.round(mgNow[i]! / PT_PER_MM));
+    return el;
+  });
+  const mgBox = document.createElement("span");
+  mgBox.style.cssText = "display:inline-flex;gap:4px";
+  mgBox.append(...margins);
+
+  // 跟随文件 / 长图时方向与边距没有意义（长图的边距仍由排版器自己定）
+  const sync = () => {
+    const fixed = paper.value === "follow" || paper.value === "长图";
+    orient.disabled = fixed;
+    for (const m of margins) m.disabled = paper.value === "follow";
+  };
+  paper.onchange = sync;
+  sync();
+
+  const initial = JSON.stringify([paper.value, orient.value, margins.map((m) => m.value)]);
+  return {
+    rows: [labeled("纸张", paper), labeled("方向", orient), labeled("边距（mm）", mgBox)],
+    read() {
+      if (JSON.stringify([paper.value, orient.value, margins.map((m) => m.value)]) === initial) return null;
+      if (paper.value === "follow") return "follow";
+      const vals = margins.map((m) => m.value.trim());
+      const margin = vals.every((v) => v !== "" && Number.isFinite(Number(v)) && Number(v) >= 0)
+        ? vals.map((v) => Math.round(Number(v) * PT_PER_MM * 10) / 10)
+        : null;
+      return { paper: paper.value, orientation: orient.value as "portrait" | "landscape", margin };
+    },
+  };
+}
+
+const isPaperKey = (k: string | undefined): boolean => k !== undefined && (ORIGINAL_PAPERS as readonly string[]).includes(k);
+
 export function showOptionsDialog(app: App): void {
   const body = document.createElement("div");
   body.className = "settings-form";
@@ -266,9 +351,10 @@ export function showOptionsDialog(app: App): void {
     (k) => PAGE_RATIOS[k][0] === app.pageW && PAGE_RATIOS[k][1] === app.pageH,
     false,
   );
-  const jpPaper = paperSelect(ORIGINAL_PAPERS, (k) => PAPER_SIZES[k], (k) => k === app.jpPaper, true);
+  // 纸张栏（纸 + 方向 + 边距）：简谱原样、文本谱原样、五线谱/混排三档各记各的；
   // 五线谱/混排自己一张纸（出厂 A4），不借原样档那张长图
-  const staffPaper = paperSelect(ORIGINAL_PAPERS, (k) => PAPER_SIZES[k], (k) => k === app.staffPaper, true);
+  const paperEngine: PaperEngine | null = isMixed ? "staff" : isPu ? "pu" : isJianpu ? "jianpu" : null;
+  const paperUi = paperEngine ? paperGroup(app, paperEngine) : null;
 
   // ---- 每页行数（写进文档 .Layout 段，只有 jpwabc 有这个段）----
   const lines = document.createElement("input");
@@ -290,12 +376,11 @@ export function showOptionsDialog(app: App): void {
   // ---- 文本谱原样档：纸张 / 长图 / 字号缩放 ----
   // 文本谱的尺寸是从原书逐项量出来的一整套（layout/original/metrics.ts），不由一个基础字号派生，
   // 所以这里给的是**整体缩放**而不是字号——与谱面自带的 `FontSize: all=` 同一语义。
-  const puPaper = paperSelect(ORIGINAL_PAPERS, (k) => PAPER_SIZES[k] ?? null, (k) => k === app.puPaper, true);
   // 字号留空/0 = 跟随版式量到的原尺寸；有排好的谱就把当前实际字号填进去当起点
   const puFont = num(app.puFontSize || Math.round(app.painter.documentDigitFontSize ?? 0), 6, 200);
 
-  if (isJianpu) {
-    body.append(labeled("纸张", jpPaper));
+  if (paperUi) {
+    body.append(...paperUi.rows);
   } else if (isPpt) {
     body.append(labeled("谱面比例", ratio));
   }
@@ -308,7 +393,7 @@ export function showOptionsDialog(app: App): void {
     body.append(labeled("前景色", color));
   }
   if (isPu) {
-    body.append(labeled("纸张", puPaper), labeled("基础字号", puFont), labeled("前景色", color));
+    body.append(labeled("基础字号", puFont), labeled("前景色", color));
   }
   body.append(labeled("背景色", bgColor));
 
@@ -316,7 +401,7 @@ export function showOptionsDialog(app: App): void {
   const hideBarNum = document.createElement("input");
   hideBarNum.type = "checkbox";
   hideBarNum.checked = app.mixedHideBarNumber;
-  if (isMixed) body.append(labeled("纸张", staffPaper), labeled("隐藏小节号", hideBarNum));
+  if (isMixed) body.append(labeled("隐藏小节号", hideBarNum));
 
   if (isPu) {
     body.append(note(
@@ -324,7 +409,7 @@ export function showOptionsDialog(app: App): void {
       + "展开档与 .jpwabc 共用同一套设置。",
     ));
   } else if (isMixed) {
-    body.append(note("MusicXML 里写了版面（<page-layout>）的，纸张按谱里的走；字号随谱走。"));
+    body.append(note("谱里写了版面（<page-layout>）的，纸张默认跟随文件；换了纸就按新纸重新铺排，谱里原来的分行坐标不再用。"));
   }
 
   // 可视化编辑：谱面上插入/改音时响一下（只在简谱档、能改谱的格式下摆出来）
@@ -382,10 +467,11 @@ export function showOptionsDialog(app: App): void {
     }
     app.applyRenderSettings({
       pageW: w, pageH: h, fontSize, titleSize, creditSize,
-      jpPaper: isJianpu ? jpPaper.value : undefined,
-      puPaper: isPu ? puPaper.value : undefined,
+      paper: (() => {
+        const c = paperUi?.read();
+        return paperEngine && c ? { [paperEngine]: c } : undefined;
+      })(),
       puFontSize: isPu ? parseInt(puFont.value, 10) || 0 : undefined,
-      staffPaper: isMixed ? staffPaper.value : undefined,
       color: argb, bgColor: colorValue(bgColor, app.bgColor),
     });
     if (isMixed) void app.setMixedHideBarNumber(hideBarNum.checked);

@@ -1,0 +1,129 @@
+// 谱里自带的纸：MusicXML 的 `<page-layout>`（tenths）与 123/ABC 的 `I:meta page …`（pt）互转。
+//
+// 以前 MusicXML 转成 123 就把纸丢了，再打开时五线谱/混排只能用设置里那张（见 docs/模块/编辑器.md）。
+// 现在转换时把纸写成 meta（`withPageMeta`），123/ABC 写 MusicXML 时再还原成 `<page-layout>`（`xmlproject.ts`）。
+// 编辑器里「跟随文件」读的也是这里（`style/paper.ts::songPageDecl`）。
+//
+// meta 键（`metakeys.ts` 注册）：
+//   page              A4 / A5 / B5 / Letter，或「宽 高」（pt）
+//   page-orientation  portrait / landscape（只对纸名有意义：「宽 高」本身就带方向）
+//   page-margin       上 右 下 左（pt）
+//
+// 无 DOM 依赖。
+import type { Defaults, ScoreDoc, Song } from "./doc";
+import { getMeta } from "./metakeys";
+
+/** 标准纸（pt，竖放）。编辑器纸张表（`style/themes.ts::PAPER_SIZES`）在它之上再加一档「长图」。 */
+export const STANDARD_PAPERS: Readonly<Record<string, readonly [number, number]>> = {
+  A4: [595, 842],
+  A5: [420, 595],
+  B5: [499, 709],
+  Letter: [612, 792],
+};
+
+/** 实际的纸（pt，已按方向转好）与边距 `[上, 右, 下, 左]`。 */
+export interface PagePt {
+  w: number;
+  h: number;
+  margins?: [number, number, number, number];
+}
+
+/** MusicXML 缺 `<scaling>` 时的换算（与五线谱引擎 `mixed/model.ts::DEFAULT_SCALING` 同值：7mm / 40 tenths）。 */
+const DEFAULT_SCALING = { millimeters: 7, tenths: 40 } as const;
+
+const ptPerTenth = (sc: Defaults["scaling"]): number => {
+  const s = sc && sc.millimeters > 0 && sc.tenths > 0 ? sc : DEFAULT_SCALING;
+  return (s.millimeters * 72) / 25.4 / s.tenths;
+};
+
+const round1 = (v: number): number => Math.round(v * 10) / 10;
+
+/** `<page-layout>` → pt。边距取非偶数页那组。 */
+export function pageOfDefaults(song: Song): PagePt | null {
+  const pl = song.defaults?.pageLayout;
+  if (!pl?.pageWidth || !pl.pageHeight) return null;
+  const k = ptPerTenth(song.defaults?.scaling);
+  const out: PagePt = { w: round1(pl.pageWidth * k), h: round1(pl.pageHeight * k) };
+  const mg = pl.margins?.find((m) => m.oddEven !== "even");
+  if (mg) out.margins = [round1(mg.top * k), round1(mg.right * k), round1(mg.bottom * k), round1(mg.left * k)];
+  return out;
+}
+
+/** `I:meta page …` → pt。认不出的写法返回 null。 */
+export function pageOfMeta(song: Song): PagePt | null {
+  const v = getMeta(song, "page")[0]?.trim();
+  if (!v) return null;
+  let w: number, h: number;
+  const nums = v.split(/\s+/).map(Number);
+  const std = Object.entries(STANDARD_PAPERS).find(([k]) => k.toLowerCase() === v.toLowerCase())?.[1];
+  if (std) {
+    [w, h] = std;
+    if (getMeta(song, "page-orientation")[0]?.trim() === "landscape") [w, h] = [h, w];
+  } else if (nums.length === 2 && nums.every((n) => Number.isFinite(n) && n > 0)) {
+    [w, h] = nums as [number, number];
+  } else {
+    return null;
+  }
+  const out: PagePt = { w, h };
+  const mg = getMeta(song, "page-margin")[0]?.trim().split(/\s+/).map(Number);
+  if (mg?.length === 4 && mg.every((n) => Number.isFinite(n) && n >= 0)) out.margins = mg as PagePt["margins"];
+  return out;
+}
+
+/** 谱里自带的纸：MusicXML 的优先，其次 meta。 */
+export function songPage(song: Song): PagePt | null {
+  return pageOfDefaults(song) ?? pageOfMeta(song);
+}
+
+/** 标准纸名（±2pt，横竖都认）。 */
+export function standardPaperOf(w: number, h: number): { name: string; landscape: boolean } | null {
+  const [a, b] = w > h ? [h, w] : [w, h];
+  for (const [name, [pw, ph]] of Object.entries(STANDARD_PAPERS)) {
+    if (Math.abs(pw - a) <= 2 && Math.abs(ph - b) <= 2) return { name, landscape: w > h };
+  }
+  return null;
+}
+
+/** 纸 → meta 键值。 */
+export function pageMeta(page: PagePt): Record<string, string[]> {
+  const std = standardPaperOf(page.w, page.h);
+  const out: Record<string, string[]> = { page: [std ? std.name : `${page.w} ${page.h}`] };
+  if (std?.landscape) out["page-orientation"] = ["landscape"];
+  if (page.margins) out["page-margin"] = [page.margins.join(" ")];
+  return out;
+}
+
+/** 转成 123/ABC 之前：带 `<page-layout>` 的曲子把纸写进 meta（已有 `page` 的不动）。返回新文档，不改入参。 */
+export function withPageMeta(doc: ScoreDoc): ScoreDoc {
+  if (!doc.songs.some((s) => pageOfDefaults(s) && !getMeta(s, "page").length)) return doc;
+  return {
+    ...doc,
+    songs: doc.songs.map((s) => {
+      const page = pageOfDefaults(s);
+      if (!page || getMeta(s, "page").length) return s;
+      return { ...s, meta: { ...(s.meta ?? {}), ...pageMeta(page) } };
+    }),
+  };
+}
+
+/** 写 MusicXML 之前：没有 `<page-layout>`、但 meta 里写了纸的，还原成 `<page-layout>`（按缺省 scaling 折 tenths）。
+ *  就地改（调用方传的是投影用的副本）。 */
+export function applyPageMetaToDefaults(song: Song): void {
+  if (song.defaults?.pageLayout?.pageWidth) return;
+  const page = pageOfMeta(song);
+  if (!page) return;
+  const scaling = song.defaults?.scaling ?? { ...DEFAULT_SCALING };
+  const k = ptPerTenth(scaling);
+  const t = (pt: number) => round1(pt / k);
+  song.defaults = {
+    ...(song.defaults ?? {}),
+    scaling,
+    pageLayout: {
+      pageWidth: t(page.w),
+      pageHeight: t(page.h),
+      ...(page.margins
+        ? { margins: [{ top: t(page.margins[0]), right: t(page.margins[1]), bottom: t(page.margins[2]), left: t(page.margins[3]), oddEven: "both" as const }] }
+        : {}),
+    },
+  };
+}

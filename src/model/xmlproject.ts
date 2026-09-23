@@ -27,6 +27,7 @@ import { MusicCommon } from "../score/jppitch";
 import { typeOfDuration } from "../score/xmlutil";
 import { DYNAMICS, TERMS } from "../pu/glyph";
 import { alignPartsBySystem } from "./alignparts";
+import { applyPageMetaToDefaults } from "./pagemeta";
 
 
 /** 记号原名 → `<articulations>` 元素名（`&xx` 与 123 的 `!xx!` 同名）。 */
@@ -74,6 +75,8 @@ export interface ProjectOptions {
 export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Song {
   if (isXmlShaped(src)) return src;
   const song: Song = structuredClone(src);
+  // 123/ABC 里 `I:meta page …` 写的纸还原成 `<page-layout>`
+  applyPageMetaToDefaults(song);
   // 多声部按组对齐：一组不一定含全部声部，缺席/偏短的补无声小节，各 part 小节才对得上（issue 11）
   alignPartsBySystem(song);
   // 源文的小节中间换行在下一小节上还另记了一份小节级的；照简谱视图重断的没有

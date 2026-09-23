@@ -1272,13 +1272,21 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
       score.defaults.wordFont = new Font(family, ptToTenths(sz));
     }
   }
-  // 谱里没写纸：用编辑器设置那张（长图不分页，页高由内容定）
+  // 谱里没写纸，或用户在设置里明确换了纸：用编辑器设置那张（长图不分页，页高由内容定）
   const page = options.page;
-  if (page && !def?.pageLayout) {
+  const overridePage = !!page?.override && !!def?.pageLayout;
+  if (page && (!def?.pageLayout || overridePage)) {
     score.defaults.pageWidth = page.widthPt / score.scaling;
     // 长图先按 √2 比例给个名义页高（标题 credit 的 y 从页底量，得有个有限值），装页后由 painter 换成内容高
     score.defaults.pageHeight = (page.heightPt ?? page.widthPt * Math.SQRT2) / score.scaling;
     score.longImage = page.heightPt === null;
+    if (page.marginsPt?.length === 4) {
+      const [t, r, b, l] = page.marginsPt.map((v) => v / score.scaling);
+      score.defaults.topMargin = t!;
+      score.defaults.rightMargin = r!;
+      score.defaults.bottomMargin = b!;
+      score.defaults.leftMargin = l!;
+    }
   }
 
   for (const c of song.credits ?? []) {
@@ -1293,7 +1301,8 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
     });
   }
 
-  score.autoLayout = !hasEmbeddedLayout(song);
+  // 换了纸，谱里按原纸算好的版面坐标就对不上了：整份按新纸自动铺排
+  score.autoLayout = overridePage || !hasEmbeddedLayout(song);
 
   const numMeasures = song.parts[0]?.measures.length ?? 0;
   for (let i = 0; i < numMeasures; i++) {

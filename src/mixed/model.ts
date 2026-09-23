@@ -2950,8 +2950,10 @@ export class MixedOptions {
   textLineHeightBySize = false;
   harmonySize = 9;
   /** 谱里没写 `<page-layout>` 时用的纸（pt，编辑器设置里那张）；`heightPt` 为 null 是长图（不分页）。
-   *  不给就用 `MixedDefaults`（A4）。写了 `<page-layout>` 的谱（歌本、第三方）照用自己的。 */
-  page: { widthPt: number; heightPt: number | null } | null = null;
+   *  不给就用 `MixedDefaults`（A4）。写了 `<page-layout>` 的谱（歌本、第三方）照用自己的，
+   *  除非 `override`（用户在设置里明确换了纸/方向/边距）：那时连谱里的版面坐标一起不用，按新纸自动铺排。
+   *  `marginsPt`：`[上, 右, 下, 左]`，不给 = 谱里的或 `MixedDefaults` 的。 */
+  page: { widthPt: number; heightPt: number | null; marginsPt?: readonly number[]; override?: boolean } | null = null;
   jpTopDy = 0;
   // ── 简谱层附件相对数字的位置。缺省值即原排版程序的常量
   //    （render.cpp::drawNotesJianPu 875-947、BeamLevelData::drawJianPu:159），单位 tenths；

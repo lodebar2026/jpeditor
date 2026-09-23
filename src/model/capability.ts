@@ -20,6 +20,7 @@ import { eachChord, verseCount } from "./helpers";
 import { projectForJianpu } from "./jianpuproject";
 import { melodyLane } from "./jianpu";
 import { puArcLosses } from "./topu";
+import { songPage } from "./pagemeta";
 
 /** 一项「文档里可能用到、格式可能装不下」的特性。 */
 export type Feature =
@@ -40,6 +41,7 @@ export type Feature =
   | "multiSong"      // 一个文件多首
   | "pageText"       // 页眉页脚
   | "meta"           // 扩展 meta（英文标题、经文、标签…，`Song.meta`）
+  | "paper"          // 谱里自带的纸（MusicXML `<page-layout>`、123/ABC `I:meta page`）
   | "verseLabel"     // 印刷段号 `<1.>`
   | "rhythmNote"     // 节奏音符（有声无音高）
   | "invisibleRest"  // 不可见休止
@@ -65,6 +67,7 @@ export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
   multiSong: "一个文件里的多首曲子",
   pageText: "页眉页脚",
   meta: "扩展曲目信息（英文标题、经文、标签等）",
+  paper: "谱里写的纸张与页边距（改记进设置里的纸）",
   verseLabel: "印刷段号",
   rhythmNote: "节奏音符（有声无音高）",
   invisibleRest: "不可见休止",
@@ -89,7 +92,7 @@ export const TARGET_LABEL: Readonly<Record<TargetFormat, string>> = {
  *  样式表引用、演唱顺序、扩展 meta 没有字段可落（文本谱只有按位置的 XL/XR/TL/TR/BL/BC/BR，不往里猜）；
  *  没有曲中转调的写法；音符堆只写简谱印的那个音；弧线与多连音共用一个先开先闭的括号队列。 */
 const PU_GONE: Feature[] = [
-  "style", "playOrder", "harmonyOffset", "meta", "keyChange", "noteStack", "nestedArc", "oddTuplet",
+  "style", "playOrder", "harmonyOffset", "meta", "paper", "keyChange", "noteStack", "nestedArc", "oddTuplet",
 ];
 
 const ALL: Feature[] = Object.keys(FEATURE_NAMES) as Feature[];
@@ -107,7 +110,7 @@ export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> =
   abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset", "nestedArc", "oddTuplet"),
   // `.jpwabc` 的语法**刻意不扩**：和弦、力度、多声部都写不进去。
   // 音符堆：写出端只留最高音、删 voice > 1
-  jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "noteStack", "style", "layoutDirectives", "multiSong", "grace", "meta", "nestedArc", "oddTuplet"),
+  jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "noteStack", "style", "layoutDirectives", "multiSong", "grace", "meta", "paper", "nestedArc", "oddTuplet"),
   // 文本谱：展开档谱面不画和弦/力度/多声部，但文本谱**原文**装得下和弦、力度（`&f`、`<`…`!`）——
   // 这里算的是「另存为之后还在不在」，所以按解析器的能力写。
   // 番茄另外没有页眉页脚与版面指令字段（写了会被嗅探成诗歌本，见 `pu/dialect.ts::EmitStyle.pageFields`）
@@ -136,6 +139,7 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
     for (const r of song.style?.raw ?? []) used.add(LAYOUT_DIRECTIVE.test(r.key) ? "layoutDirectives" : "style");
     if (song.pageText) used.add("pageText");
     if (song.meta && Object.keys(song.meta).length) used.add("meta");
+    if (songPage(song)) used.add("paper");
     if (song.remarks?.length) used.add("textLine");
     if (verseCount(song) > 1) used.add("multiVerse");
     for (const m of song.marks ?? []) {

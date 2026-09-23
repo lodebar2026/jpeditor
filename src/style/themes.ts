@@ -13,6 +13,7 @@
 // 无 DOM 依赖。
 import { computeStyle, type StyleContext, type StyleLayer } from "./cascade";
 import type { StyleSheet } from "./sheet";
+import { STANDARD_PAPERS } from "../model/pagemeta";
 
 /** 老版展开档的「出厂默认」（投影片 960×540，字号 28/48/36）。 */
 export const PPTX_PAGE = { w: 960, h: 540, fontSize: 28, titleSize: 48, creditSize: 36 } as const;
@@ -27,13 +28,7 @@ export const PAGE_RATIOS: Record<string, [number, number]> = {
 /** 原样档能选的纸：**实际纸张尺寸**（pt，1pt = 1/72 in），外加一档「长图」。
  *  长图不是纸——它是一张连续长纸，宽度取 `LONG_IMAGE_WIDTH`、高度由内容说了算。
  *  **这里没有 16:9 / 4:3**：那是投影片的比例，只归展开档。 */
-export const PAPER_SIZES: Record<string, [number, number] | null> = {
-  A4: [595, 842],
-  A5: [420, 595],
-  B5: [499, 709],
-  Letter: [612, 792],
-  长图: null,
-};
+export const PAPER_SIZES: Record<string, readonly [number, number] | null> = { ...STANDARD_PAPERS, 长图: null };
 
 /** 「原样」档能选的纸（含长图）。 */
 export const ORIGINAL_PAPERS = ["A4", "A5", "B5", "Letter", "长图"] as const;

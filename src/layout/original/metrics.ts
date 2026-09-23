@@ -466,6 +466,8 @@ export interface PuUserOptions {
   pageHeight?: number;
   /** 长图（一张连续长纸）还是按纸分页。覆盖档位自带的 `continuous`。 */
   continuous?: boolean;
+  /** 页边距 `[上, 右, 下, 左]`（pt）。盖过谱面自带的 `Margin:`（面板那层在最上面）。 */
+  margins?: [number, number, number, number];
 }
 
 /** 把面板上的手动设置叠到量好的 metrics 上。 */
@@ -483,6 +485,7 @@ export function applyUserOptions(base: PuMetrics, o: PuUserOptions | null): PuMe
     m.pageHeight = o.pageHeight;
   }
   if (o.continuous !== undefined) m.continuous = o.continuous;
+  if (o.margins) [m.marginTop, m.marginRight, m.marginBottom, m.marginLeft] = o.margins;
   return m;
 }
 
