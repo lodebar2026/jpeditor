@@ -2,6 +2,7 @@
 import type { App } from "./app";
 import { ORIGINAL_PAPERS, PAGE_RATIOS, PAPER_SIZES } from "../style/themes";
 import { META_KEYS, metaKeyDef, splitMetaValue } from "../model/metakeys";
+import { CONVERT_TARGETS } from "../model/convert";
 import { replaceMetaLines } from "../j123/metaedit";
 import type { SongMeta } from "../model/doc";
 
@@ -85,6 +86,56 @@ export function showConfirmDialog(title: string, message: string): Promise<boole
     body.className = "modal-row";
     body.textContent = message;
     modal(title, body, () => resolve(true), () => resolve(false));
+  });
+}
+
+/** 单选框：列一组选项，确定返回选中的值；取消（含 Esc / 点遮罩）返回 `null`。
+ *  `remember` 给了就在下面加一个「记住选择」勾选框，结果里带回它的勾选状态。 */
+export function showChoiceDialog<T extends string>(
+  title: string,
+  message: string,
+  options: readonly { value: T; label: string }[],
+  opts: { defaultValue: T; remember?: string },
+): Promise<{ value: T; remember: boolean } | null> {
+  return new Promise((resolve) => {
+    const body = document.createElement("div");
+    body.style.cssText = "display:flex;flex-direction:column;gap:6px";
+    if (message) {
+      const msg = document.createElement("div");
+      msg.className = "modal-row";
+      msg.textContent = message;
+      body.append(msg);
+    }
+    const name = `choice-${Math.random().toString(36).slice(2)}`;
+    const radios: HTMLInputElement[] = [];
+    for (const o of options) {
+      const row = document.createElement("label");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;cursor:pointer";
+      const r = document.createElement("input");
+      r.type = "radio";
+      r.name = name;
+      r.value = o.value;
+      r.checked = o.value === opts.defaultValue;
+      radios.push(r);
+      const span = document.createElement("span");
+      span.textContent = o.label;
+      row.append(r, span);
+      body.append(row);
+    }
+    const remember = document.createElement("input");
+    remember.type = "checkbox";
+    if (opts.remember) {
+      const row = document.createElement("label");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;margin-top:6px;opacity:0.85;cursor:pointer";
+      const span = document.createElement("span");
+      span.textContent = opts.remember;
+      row.append(remember, span);
+      body.append(row);
+    }
+    modal(title, body, () => {
+      const picked = radios.find((r) => r.checked)?.value as T | undefined;
+      resolve({ value: picked ?? opts.defaultValue, remember: remember.checked });
+    }, () => resolve(null));
   });
 }
 
@@ -283,6 +334,21 @@ export function showOptionsDialog(app: App): void {
   const showNoteSound = app.mode === "jp" && app.editDialect() !== null;
   if (showNoteSound) body.append(labeled("改音时发声", noteSound));
 
+  // 打开单声部 MusicXML 时怎么办（「记住选择」之后从这里改回「每次询问」）
+  const xmlImport = document.createElement("select");
+  for (const [v, label] of [
+    ["ask", "每次询问"],
+    ["musicxml", "保持 MusicXML"],
+    ...CONVERT_TARGETS.map((t) => [t.id, `转成 ${t.label}`] as const),
+  ] as const) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = label;
+    o.selected = v === app.musicXmlImport;
+    xmlImport.append(o);
+  }
+  body.append(labeled("打开 MusicXML", xmlImport));
+
   // 播放混音：各声部音量（0–100%，播放/导出 MIDI 时按此写入 CC7；改后需重新播放）。
   const volSliders: HTMLInputElement[] = [];
   if (app.mode === "jp" && app.partCount > 1) {
@@ -323,6 +389,10 @@ export function showOptionsDialog(app: App): void {
       color: argb, bgColor: colorValue(bgColor, app.bgColor),
     });
     if (isMixed) void app.setMixedHideBarNumber(hideBarNum.checked);
+    if (xmlImport.value !== app.musicXmlImport) {
+      app.musicXmlImport = xmlImport.value as typeof app.musicXmlImport;
+      app.saveSettings();
+    }
     if (showNoteSound && noteSound.checked !== app.visual.noteSound) app.visual.setNoteSound(noteSound.checked);
   }, undefined, isMixed ? undefined : {
     // 清掉当前档（展开 / 原样）的用户层，回到内置主题；另一档与声部音量不动

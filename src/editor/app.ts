@@ -34,8 +34,8 @@ import { visualCursorExtension } from "./visual/cursor";
 import { hitThroughOverlay } from "./visual/overlay";
 import type { EditDialect } from "./visual/dialect";
 import { describeLosses, planSave } from "../model/capability";
-import { targetSpec, type ConvertTarget } from "../model/convert";
-import { showConfirmDialog } from "./dialogs";
+import { CONVERT_TARGETS, isConvertTarget, targetSpec, type ConvertTarget } from "../model/convert";
+import { showChoiceDialog, showConfirmDialog } from "./dialogs";
 import { buildMusicXml, sourceMusicXmlBare } from "./export";
 import { scoreDocToMusicXml } from "../model/toxml";
 import { jpwToScoreDoc } from "../model/fromjpw";
@@ -228,6 +228,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     return typeof v === "number" ? v : 0;
   }
   mixedHideBarNumber = false; // 混排：隐藏小节号
+  /** 用户打开单声部 MusicXML 时怎么办：`ask` 每次问；`musicxml` 保持原文进五线谱；其余是转成哪种源格式编辑。 */
+  musicXmlImport: "ask" | "musicxml" | ConvertTarget = "ask";
   mixedShowJianpuLayer = true;
   zoom = 1; // 谱面显示缩放（应用到 #score-pane 的 --score-zoom）
   /** SMuFL 字体元数据。help.ts 渲染记谱法示例时也要用同一份。 */
@@ -339,6 +341,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     this.visual.loadSettings(s);
     if (s.mixedHideBarNumber !== undefined) this.mixedHideBarNumber = s.mixedHideBarNumber;
     if (s.mixedShowJianpuLayer !== undefined) this.mixedShowJianpuLayer = s.mixedShowJianpuLayer;
+    if (s.musicXmlImport === "ask" || s.musicXmlImport === "musicxml" || isConvertTarget(s.musicXmlImport)) {
+      this.musicXmlImport = s.musicXmlImport;
+    }
     // 样式用户层（旧版散存的字号/纸/配色字段不读——不做存量迁移）
     const layers = (s.styleLayers ?? {}) as Record<string, unknown>;
     this._userLayers = { projection: sanitizeLayer(layers.projection), print: sanitizeLayer(layers.print), staff: sanitizeLayer(layers.staff) };
@@ -356,6 +361,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       zoom: this.zoom,
       mixedHideBarNumber: this.mixedHideBarNumber,
       mixedShowJianpuLayer: this.mixedShowJianpuLayer,
+      musicXmlImport: this.musicXmlImport,
       playSpeed: this.playback.speed,
       omrFormat: this.omr.format,
       jpProfile: this.jpProfile,
@@ -1322,6 +1328,37 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     }
   }
 
+  /** 用户**亲手打开**单声部 MusicXML 之后调（打开对话框、拖入；重开上次文件与回归脚本不走这里）：
+   *  问要保持 MusicXML 看五线谱，还是转成哪种简谱源格式来编辑。多声部不问（简谱装不下，照旧进混排）。
+   *  转过去是一份新文档（`convertToTextDoc`：先列装不下的，文件路径清空，原 `.musicxml` 不动）。 */
+  async promptMusicXmlImport(): Promise<void> {
+    if (this.docFormat !== "musicxml" || this.mode === "mixed") return;
+    let choice = this.musicXmlImport;
+    if (choice === "ask") {
+      const res = await showChoiceDialog(
+        "导入 MusicXML",
+        "这是单声部歌谱，可以转成简谱来编辑（原 MusicXML 文件不动）。",
+        [
+          ...CONVERT_TARGETS.map((t) => ({ value: t.id as "musicxml" | ConvertTarget, label: `转成 ${t.label} 编辑` })),
+          { value: "musicxml" as const, label: "保持 MusicXML（看五线谱）" },
+        ],
+        { defaultValue: "123", remember: "记住选择，以后不再询问（可在设置里改回）" },
+      );
+      // 取消 = 保持 MusicXML：文件已经打开了，不必中断
+      choice = res?.value ?? "musicxml";
+      if (res?.remember) {
+        this.musicXmlImport = res.value;
+        this.saveSettings();
+      }
+    }
+    if (choice !== "musicxml") {
+      await this.convertToTextDoc(choice);
+      if (this.docFormat !== "musicxml") return;
+      // 丢失提示里取消了：留在 MusicXML
+    }
+    await this.setViewMode("staff");
+  }
+
   /** 刚打开的原文是哪种格式（下拉里「原文」那一项）。文本谱按嗅探出的方言算。 */
   private _originFormat(): OriginFormat | null {
     switch (this.docFormat) {
@@ -1947,6 +1984,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       this.importBytes(bytes, sel);
       this.filePath = sel;
       this.rememberLastFile(sel);
+      void this.promptMusicXmlImport();
       return true;
     }
 
@@ -1969,6 +2007,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         this.importBytes(buf, file.name);
         this.filePath = file.name;
         finish(true);
+        void this.promptMusicXmlImport();
       };
       window.addEventListener("focus", () => setTimeout(() => {
         if (!changeStarted) finish(false);
