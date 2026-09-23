@@ -10,6 +10,8 @@
 //   page-margin       上 右 下 左（pt）
 //   staff-size        谱表高（五条线的跨度，mm；MusicXML `<scaling>` 的 40 tenths）
 //   lyric-size        歌词字号（pt；MusicXML `<lyric-font font-size>`）
+//   font-title / font-subtitle / font-scripture / font-credit
+//                     页眉四项的字体：「字号 [bold] 字体族」，字号 pt，`-` = 不定字号（MusicXML `<credit-words>` 的字体）
 //
 // 无 DOM 依赖。
 import type { Defaults, ScoreDoc, Song } from "./doc";
@@ -113,7 +115,7 @@ export function songLyricSize(song: Song): number | null {
 
 const round2 = (v: number): number => Math.round(v * 100) / 100;
 
-/** 转成 123/ABC 之前：MusicXML 的纸、谱表大小、歌词字号写进 meta（meta 里已有的不动）。返回新文档，不改入参。 */
+/** 转成 123/ABC 之前：MusicXML 的纸、谱表大小、歌词字号、页眉字体写进 meta（meta 里已有的不动）。返回新文档，不改入参。 */
 export function withPageMeta(doc: ScoreDoc): ScoreDoc {
   const extra = (s: Song): Record<string, string[]> => {
     const out: Record<string, string[]> = {};
@@ -123,6 +125,7 @@ export function withPageMeta(doc: ScoreDoc): ScoreDoc {
     if (sc && sc.millimeters > 0 && sc.tenths > 0 && !getMeta(s, "staff-size").length) out["staff-size"] = [String(songStaffSize(s))];
     const ly = s.defaults?.lyricFont?.size;
     if (ly && !getMeta(s, "lyric-size").length) out["lyric-size"] = [String(ly)];
+    Object.assign(out, headerFontMeta(s));
     return out;
   };
   if (!doc.songs.some((s) => Object.keys(extra(s)).length)) return doc;
@@ -164,4 +167,83 @@ export function applyPageMetaToDefaults(song: Song): void {
         : {}),
     },
   };
+}
+
+// ───────────────────────── 页眉字体 ─────────────────────────
+
+export type HeaderRole = "title" | "subtitle" | "scripture" | "credit";
+export const HEADER_ROLES: readonly HeaderRole[] = ["title", "subtitle", "scripture", "credit"];
+
+/** 页眉一项的字体：族（CSS font-family）、字号（pt）、粗体。 */
+export interface HeaderFontSpec {
+  family?: string;
+  size?: number;
+  bold?: boolean;
+}
+
+/** MusicXML 的 `<credit>` 按类型归到页眉角色（`credit-type`；没写类型的按版面：页首最大号且不靠右的是标题，靠右的是词曲）。
+ *  五线谱排版器画 credit 时也用它（`mixed/staffpages.ts`）。 */
+export function headerRoleOfCredit(type: string | undefined, justify: string | undefined, biggest: boolean): HeaderRole | null {
+  switch (type?.trim()) {
+    case "title": return "title";
+    case "subtitle": return "subtitle";
+    case "scripture": return "scripture";
+    case "composer": case "lyricist": case "arranger": case "poet": case "words": case "translator": return "credit";
+    case undefined: case "": break;
+    default: return null;
+  }
+  if (biggest && justify !== "right") return "title";
+  if (justify === "right") return "credit";
+  return null;
+}
+
+/** `<credit-words>` 的字体（同一角色取第一条；没写族退到 `<defaults><word-font>`）。 */
+export function headerFontsOfCredits(song: Song): Partial<Record<HeaderRole, HeaderFontSpec>> {
+  const credits = song.credits ?? [];
+  const maxSize = Math.max(0, ...credits.map((c) => c.fontSize ?? 0));
+  const out: Partial<Record<HeaderRole, HeaderFontSpec>> = {};
+  for (const c of credits) {
+    const role = headerRoleOfCredit(c.type, c.justify, maxSize > 0 && c.fontSize === maxSize);
+    if (!role || out[role]) continue;
+    const f: HeaderFontSpec = {};
+    const family = c.fontFamily ?? song.defaults?.wordFont?.family;
+    if (family) f.family = family;
+    if (c.fontSize) f.size = c.fontSize;
+    if (c.fontWeight === "bold") f.bold = true;
+    if (Object.keys(f).length) out[role] = f;
+  }
+  return out;
+}
+
+/** `I:meta font-<角色> 字号 [bold] 字体族`。 */
+export function headerFontsOfMeta(song: Song): Partial<Record<HeaderRole, HeaderFontSpec>> {
+  const out: Partial<Record<HeaderRole, HeaderFontSpec>> = {};
+  for (const role of HEADER_ROLES) {
+    const v = getMeta(song, `font-${role}`)[0]?.trim();
+    if (!v) continue;
+    const m = /^(\S+)\s*(bold\s+)?(.*)$/i.exec(v);
+    if (!m) continue;
+    const f: HeaderFontSpec = {};
+    const size = Number(m[1]);
+    if (Number.isFinite(size) && size > 0) f.size = size;
+    if (m[2]) f.bold = true;
+    if (m[3]?.trim()) f.family = m[3].trim();
+    if (Object.keys(f).length) out[role] = f;
+  }
+  return out;
+}
+
+/** 谱里写的页眉字体：MusicXML 的 credit 优先，其次 meta。 */
+export function songHeaderFonts(song: Song): Partial<Record<HeaderRole, HeaderFontSpec>> {
+  return song.credits?.length ? headerFontsOfCredits(song) : headerFontsOfMeta(song);
+}
+
+function headerFontMeta(song: Song): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (!song.credits?.length) return out;
+  for (const [role, f] of Object.entries(headerFontsOfCredits(song)) as [HeaderRole, HeaderFontSpec][]) {
+    if (getMeta(song, `font-${role}`).length) continue;
+    out[`font-${role}`] = [[f.size ? String(f.size) : "-", f.bold ? "bold" : "", f.family ?? ""].filter(Boolean).join(" ")];
+  }
+  return out;
 }

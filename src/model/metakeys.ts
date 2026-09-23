@@ -37,6 +37,10 @@ export const META_KEYS: readonly MetaKeyDef[] = [
   { key: "page-margin", label: "页边距（上 右 下 左，pt）" },
   { key: "staff-size", label: "五线谱谱表高（mm）" },
   { key: "lyric-size", label: "五线谱歌词字号（pt）" },
+  { key: "font-title", label: "标题字体（字号 [bold] 字体族）" },
+  { key: "font-subtitle", label: "副标题字体" },
+  { key: "font-scripture", label: "经文字体" },
+  { key: "font-credit", label: "词曲作者字体" },
   { key: "layout.melody-only", label: "只留旋律声部", flag: true },
   { key: "layout.chinese-hyphen", label: "歌词连字符用「—」", flag: true },
 ];

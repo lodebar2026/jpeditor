@@ -15,7 +15,7 @@ import { measureJianpu, PaintResources, ScorePainter, type JianpuPaintRequest } 
 import { toPt } from "../layout/result";
 import { computeStyle, sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
 import { docPageLayer, pageMargins, resolvePaper, songPageDecl } from "../style/paper";
-import { songLyricSize, songStaffSize } from "../model/pagemeta";
+import { songHeaderFonts, songLyricSize, songStaffSize } from "../model/pagemeta";
 import { headerFontsOf, headerLayerOfSong, type HeaderFonts, type HeaderRole } from "../style/header";
 import { dirOf, editorRules, findBookSheet, registerFontFaces, relativePath, type BookSheet, type BookSheetMap } from "./booksheet";
 import { replaceStyleRef } from "../j123/metaedit";
@@ -288,19 +288,41 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     await this.promptMusicXmlImport();
   }
 
-  /** 曲内层的页眉字体：MusicXML `<credit-words>` 自带的（打开 MusicXML 自动跟随）。 */
+  /** 曲内层的页眉字体：MusicXML `<credit-words>` 自带的、123/ABC 的 `I:meta font-*`（打开自动跟随）。 */
   private _docHeaderLayer(sizes = true): StyleRule[] {
-    if (this.docFormat !== "musicxml") return [];
+    if (!this.adapter.toScoreDoc) return [];
     return headerLayerOfSong(this.currentScoreDoc()?.songs[0], { sizes });
   }
 
   /** 页眉四项现在的字体：谱里自带的（「跟随文件」显示用）、用户设的、算出来实际用的（当前档）。 */
   headerState(): { doc: HeaderFonts; user: HeaderFonts } {
-    const doc = this._docHeaderLayer();
+    // 按当前档看：转换带来的字号只记在原样与五线谱两档（见 `_carryHeaderFonts`），展开档看不到
+    const mode = this.mode === "mixed" ? "staff" : this.layoutMode;
+    const doc = this._docHeaderLayer(mode !== "expanded");
     return {
       doc: headerFontsOf(computeStyle([doc], {})),
-      user: headerFontsOf(computeStyle([this._userLayers.header], {})),
+      user: headerFontsOf(computeStyle([this._userLayers.header], { mode })),
     };
+  }
+
+  /** 转成 `.jpwabc` / 文本谱（没有页眉字体字段）时把谱里的页眉字体记进设置：族各档共用；
+   *  字号只记原样与五线谱两档——印刷纸上的字号搬到展开档的投影片上太小（与「跟随文件」同一口径）。 */
+  private _carryHeaderFonts(fonts: Partial<Record<HeaderRole, { family?: string; size?: number; bold?: boolean }>>): void {
+    const roles = Object.entries(fonts) as [HeaderRole, { family?: string; size?: number; bold?: boolean }][];
+    if (!roles.length) return;
+    let layer: StyleRule[] = this._userLayers.header;
+    const fam: Record<string, { family?: string; weight?: string }> = {};
+    const size: Record<string, { size: number }> = {};
+    for (const [role, f] of roles) {
+      if (f.family || f.bold) fam[role] = { ...(f.family ? { family: f.family } : {}), ...(f.bold ? { weight: "bold" } : {}) };
+      if (f.size) size[role] = { size: f.size };
+    }
+    if (Object.keys(fam).length) layer = upsertRule(layer, undefined, { roles: fam });
+    if (Object.keys(size).length) {
+      layer = upsertRule(layer, { mode: "original" }, { roles: size });
+      layer = upsertRule(layer, { mode: "staff" }, { roles: size });
+    }
+    this._userLayers.header = layer;
   }
 
   /** 设页眉一项：`null` 的字段清掉（回到跟随文件 / 出厂）。 */
@@ -314,6 +336,12 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (f.size) decl.size = f.size;
     else delete decl.size;
     rule.set.roles![role] = decl;
+    // 面板改的是各档共用那条；转换时按档记的字号（`_carryHeaderFonts`）一并清掉，免得它在原样/五线谱档盖过面板
+    for (const r of rules) {
+      if (r === rule || !r.set.roles?.[role]) continue;
+      const { size: _s, ...rest } = r.set.roles[role]!;
+      r.set.roles[role] = rest;
+    }
     this._userLayers.header = rules;
   }
 
@@ -1780,6 +1808,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     const page = song ? songPageDecl(song) : null;
     const staffMm = song ? songStaffSize(song) : null;
     const lyricPt = song ? songLyricSize(song) : null;
+    const headerFonts = song ? songHeaderFonts(song) : {};
     const ok = await src.switchTo(target);
     this.formats.sync();
     if (!ok) return;
@@ -1793,7 +1822,8 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     }
     // 谱表大小与歌词字号也装不下，同样记进五线谱那一档（否则转完五线谱/混排按出厂 7mm，字相对音符小一圈）
     if (staffMm || lyricPt) this._setStaffSize({ ...(staffMm ? { mm: staffMm } : {}), ...(lyricPt ? { lyricPt } : {}) });
-    if (!page && !staffMm && !lyricPt) return;
+    this._carryHeaderFonts(headerFonts);
+    if (!page && !staffMm && !lyricPt && !Object.keys(headerFonts).length) return;
     this.saveSettings();
     this.reload(this.getText());
   }
