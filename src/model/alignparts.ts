@@ -28,7 +28,12 @@ export function alignPartsBySystem(song: Song, idFloor = maxId(song)): boolean {
   let nextId = idFloor + 1;
   const tuplets = song.marks.filter((mk) => mk.type === "tuplet");
   const newMarks: Mark[] = [];
-  const silentCopy = (src: readonly Measure[], system: number | null): Measure[] => {
+  /** 各 part 自己的 voice/staff：补位照抄参照 part 的会串声部（P1 补出 voice 2 的小节，旋律档只取 voice ≤ 1，成了空小节） */
+  const homes = song.parts.map((p) => {
+    for (const m of p.measures) for (const el of m.elements) if (el.kind === "chord") return { voice: el.voice, staff: el.staff };
+    return undefined;
+  });
+  const silentCopy = (src: readonly Measure[], system: number | null, home: Home | undefined): Measure[] => {
     const idMap = new Map<ElementId, ElementId>();
     const fresh = (old: ElementId): ElementId => {
       const id = nextId++;
@@ -36,7 +41,7 @@ export function alignPartsBySystem(song: Song, idFloor = maxId(song)): boolean {
       return id;
     };
     const out = src.map((m, i) => {
-      const mea: Measure = { number: "", elements: m.elements.flatMap((el) => silentElement(el, fresh)) };
+      const mea: Measure = { number: "", elements: m.elements.flatMap((el) => silentElement(el, fresh, home)) };
       if (m.attrs) mea.attrs = structuredClone(m.attrs);
       const bars = (m.barlines ?? []).map(silentBarline);
       if (bars.length) mea.barlines = bars;
@@ -63,13 +68,13 @@ export function alignPartsBySystem(song: Song, idFloor = maxId(song)): boolean {
       const own = s.get(sys);
       const out = rebuilt[pi]!;
       if (!own) {
-        out.push(...silentCopy(ref, sys));
+        out.push(...silentCopy(ref, sys, homes[pi]));
         changed = true;
         return;
       }
       out.push(...own);
       if (own.length < ref.length) {
-        out.push(...silentCopy(ref.slice(own.length), null));
+        out.push(...silentCopy(ref.slice(own.length), null, homes[pi]));
         changed = true;
       }
     });
@@ -99,7 +104,9 @@ function segmentsOf(part: { measures: Measure[] }): Map<number, Measure[]> | nul
   return out.size ? out : null;
 }
 
-function silentElement(el: Element, fresh: (old: ElementId) => ElementId): Element[] {
+interface Home { voice: Chord["voice"]; staff: Chord["staff"] }
+
+function silentElement(el: Element, fresh: (old: ElementId) => ElementId, home: Home | undefined): Element[] {
   if (el.kind === "space") {
     const sp: Space = { ...structuredClone(el), id: fresh(el.id) };
     return [sp];
@@ -111,8 +118,8 @@ function silentElement(el: Element, fresh: (old: ElementId) => ElementId): Eleme
     notes: [],
     rest: {},
     duration: { ...el.duration },
-    voice: el.voice,
-    staff: el.staff,
+    voice: home ? home.voice : el.voice,
+    staff: home ? home.staff : el.staff,
   };
   if (el.beams) ch.beams = [...el.beams];
   if (el.sustains?.length) ch.sustains = el.sustains.map((su) => ({ id: fresh(su.id) }));
