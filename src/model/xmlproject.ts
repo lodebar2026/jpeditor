@@ -71,6 +71,9 @@ export function hasVoiceOverlay(song: Song): boolean {
 export interface ProjectOptions {
   /** 换行改照这些音起行（简谱视图实际排出的各行首音，`App.jianpuLineStarts`）。不给就用模型里的换行（源文的行） */
   lineStarts?: ReadonlySet<ElementId> | null;
+  /** `lineStarts` 落在小节中间的也原位断（拆小节、中间隐藏线）：它们是乐句断点（`App.staffPhraseLineStarts`），
+   *  不是简谱版面宽度的产物。不给就只留源文写明的，其余顺延到下一小节。 */
+  midLineStarts?: boolean;
 }
 
 export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Song {
@@ -81,7 +84,7 @@ export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Son
   // 多声部按组对齐：一组不一定含全部声部，缺席/偏短的补无声小节，各 part 小节才对得上（issue 11）
   alignPartsBySystem(song);
   // 源文的小节中间换行在下一小节上还另记了一份小节级的；照简谱视图重断的没有
-  const relined = !!options.lineStarts?.size && applyLineStarts(song, options.lineStarts);
+  const relined = !!options.lineStarts?.size && applyLineStarts(song, options.lineStarts, options.midLineStarts ?? false);
   const fifths = fifthsOf(song);
   const hosts = sustainHosts(song);
   const tuplets = tupletRatios(song);
@@ -130,11 +133,11 @@ export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Son
 
 /** 换行改成「简谱视图里起行的那些音」：行首音是小节首音就在该小节起行（`print.newSystem`）。
  *  落在小节中间的：源文本来就在那里换行（`Chord.lineBreakAfter`，弱起谱的乐句尾常这样）就留着它，由 `splitInlineBreaks` 拆小节；
- *  简谱一行排不下、自己在小节中间折的，只是简谱版面宽度的产物，顺延到下一小节。多声部各声部的切点对不齐，也顺延。`newPage` 不动。行首音都在第一声部，其余声部按小节序号跟它走。
+ *  简谱一行排不下、自己在小节中间折的，只是简谱版面宽度的产物，顺延到下一小节；`mid`（乐句断点）时也原位断。多声部各声部的切点对不齐，也顺延。`newPage` 不动。行首音都在第一声部，其余声部按小节序号跟它走。
  *  一个也对不上（id 过期）就不改。 */
-function applyLineStarts(song: Song, starts: ReadonlySet<ElementId>): boolean {
+function applyLineStarts(song: Song, starts: ReadonlySet<ElementId>, mid: boolean): boolean {
   const breaks = new Set<number>();
-  const inline: Chord[] = [];
+  const inline: { ch: Chord; kind: "system" | "page"; mi: number }[] = [];
   for (const part of song.parts) {
     let pending = false;
     let hit = false;
@@ -154,7 +157,8 @@ function applyLineStarts(song: Song, starts: ReadonlySet<ElementId>): boolean {
           return;
         }
         const prev = els[j - 1]!;
-        if (inlineBreakOf(prev) && song.parts.length === 1) inline.push(prev as Chord);
+        const kind = inlineBreakOf(prev) ?? (mid ? "system" : undefined);
+        if (kind && prev.kind === "chord" && song.parts.length === 1) inline.push({ ch: prev, kind, mi: i });
         else pending = true;
       });
     });
@@ -175,7 +179,25 @@ function applyLineStarts(song: Song, starts: ReadonlySet<ElementId>): boolean {
       else if (m.print && Object.keys(m.print).length === 0) delete m.print;
     });
   }
-  for (const ch of inline) ch.lineBreakAfter = "system";
+  const paged = new Set<number>();
+  for (let k = inline.length - 1; k >= 0; k--) {
+    const { ch, mi } = inline[k]!;
+    let kind = inline[k]!.kind;
+    // 换页记在下一小节上、下一小节自己又不起行：这一页其实从本小节中间这一刀起（`.jpwabc` 小节中间的换页
+    // 在下一小节上另记了一份小节级的；乐句重排的 `$$` 只落在小节后）。留着它，拆出的半小节就孤零零一行
+    const nextPage = song.parts[0]?.measures[mi + 1]?.print?.newPage === true && !breaks.has(mi + 1);
+    if (!paged.has(mi) && (kind === "page" || nextPage)) kind = "page";
+    else if (kind === "page") kind = "system";
+    ch.lineBreakAfter = kind;
+    if (kind !== "page") continue;
+    paged.add(mi);
+    for (const part of song.parts) {
+      const pr = part.measures[mi + 1]?.print;
+      if (!pr) continue;
+      delete pr.newPage;
+      if (Object.keys(pr).length === 0) delete part.measures[mi + 1]!.print;
+    }
+  }
   return true;
 }
 

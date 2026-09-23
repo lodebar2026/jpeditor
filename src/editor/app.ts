@@ -8,10 +8,10 @@ import { parsePu, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
 import { eachChord } from "../model/helpers";
 import type { ElementId, ScoreDoc } from "../model/doc";
-import type { JScore } from "../layout/input";
+import type { JChord, JScore } from "../layout/input";
 import { clearBreaks } from "../layout/input";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
-import { measureJianpu, PaintResources, ScorePainter, type JianpuPaintRequest } from "../layout/painter";
+import { measureJianpu, PaintResources, ScorePainter, staffOptionsOf, type JianpuPaintRequest } from "../layout/painter";
 import { NoteEntry } from "../layout/entry";
 import { toPt } from "../layout/result";
 import { computeStyle, sanitizeLayer, upsertRule, type StyleEngine, type StyleRule } from "../style/cascade";
@@ -28,7 +28,9 @@ import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../lay
 import { colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
 import { jianpuInputOfDoc, jianpuInputOfJpw, jianpuInputOfXml } from "../model/jianpuinput";
-import type { FitMeasure } from "../pu/phrase";
+import { phraseCuts, type FitMeasure } from "../pu/phrase";
+import { layoutStaff } from "../mixed/layout";
+import { staffChordSpans } from "../mixed/layoutpass";
 import { abcToMusicXml } from "../abc/abc2xml";
 import type { JpwMeta, JpwRange } from "../omr/types";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
@@ -788,6 +790,45 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     }
   }
 
+  /** 「按乐句重排」开着没有。开着时五线谱另按乐句断（`staffPhraseLineStarts`），不跟简谱视图的行。 */
+  get phraseOn(): boolean {
+    return this._phraseOn;
+  }
+
+  /**
+   * 乐句档的五线谱行首：同一套断句（`pu/phrase.ts::phraseCuts`），**尺子换成五线谱引擎**——
+   * 不带换行投一份、按当前五线谱纸与样式排一遍，量各和弦的自然跨度（`mixed/layoutpass.ts::staffChordSpans`）。
+   * 小节中间的断点也要（`midLineStarts`：拆小节、中间隐藏线）；分页交给五线谱自己，`PhraseCut.page` 不用。
+   * `doc` 须与投影的那份同一个（`sourceMusicXmlBare` 里那份），元素 id 才对得上。量不出来返回 null，调用方退回简谱行首。
+   */
+  staffPhraseLineStarts(doc: ScoreDoc): ReadonlySet<ElementId> | null {
+    try {
+      const bare = formatOf("musicxml").toScoreDoc!(scoreDocToMusicXml(doc, { sourceIds: true }));
+      const options = staffOptionsOf(this.meta, this.staffStyle());
+      options.page = this.staffPage;
+      const { width, byId } = staffChordSpans(layoutStaff(bare, options));
+      if (byId.size === 0) return null;
+      const measure: FitMeasure = (score) => {
+        const spans = new Map<JChord, { x0: number; x1: number }>();
+        for (const part of score.parts) {
+          for (const m of part.measures) {
+            for (const e of m.entries) {
+              const sp = e.kind === "chord" && e.id !== null ? byId.get(e.id) : undefined;
+              if (sp) spans.set(e as JChord, sp);
+            }
+          }
+        }
+        return { width, spans };
+      };
+      const cuts = phraseCuts(doc, 0, { measure });
+      if (!cuts) return null;
+      return new Set(cuts.flatMap((c) => (c.id === null ? [] : [c.id])));
+    } catch (e) {
+      console.warn("五线谱按乐句断句失败，按简谱行首", e);
+      return null;
+    }
+  }
+
   /** `.jpwabc` 当前源文的模型（与简谱排版器、导出同一份，元素 id 对得上）。 */
   get jpwDoc(): ScoreDoc | null {
     return this._jpwDoc;
@@ -813,7 +854,9 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   /** 派生五线谱要看的设置：简谱的档、纸、字号变了，断点跟着变，得重新派生。 */
   private _mixedDeriveKey(): string {
     const pg = this.layoutPage;
-    return [this.getText(), this.layoutMode, this.jpPaper, this.puPaper, this.fontSize, pg.w, pg.h].join("\u0000");
+    // 乐句档五线谱自己量宽断句，五线谱的纸与样式也进键
+    const staff = this._phraseOn ? ["phrase", this.staffPaper, JSON.stringify(this.staffStyle())] : [];
+    return [this.getText(), this.layoutMode, this.jpPaper, this.puPaper, this.fontSize, pg.w, pg.h, ...staff].join("\u0000");
   }
 
   /** 五线谱/混排档的模型备好了没有。`.musicxml` 就是打开时读的那份；文本格式把**当前源文**经

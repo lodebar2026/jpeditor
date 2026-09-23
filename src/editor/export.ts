@@ -9,6 +9,7 @@ import { asset } from "../common/asset";
 import { scoreDocToMusicXml } from "../model/toxml";
 import { loadScoreDoc } from "../model/fromxml";
 import { jpwToScoreDoc } from "../model/fromjpw";
+import type { ScoreDoc } from "../model/doc";
 import { JpwFile } from "../jpword/jpwfile";
 import { engraveScoreDoc } from "../mixed/engrave";
 import { colorToCss } from "../common/geom";
@@ -192,18 +193,21 @@ export async function sourceMusicXml(app: App): Promise<string> {
 /** 同上，但**不带版面坐标**。文本格式进五线谱/混排走这一份（`App._ensureMixedDoc` 写出后再读回成 `mixedDoc`）：
  *  排版器见了坐标就照用，不带坐标才自己铺排（`layoutpass.ts`，五线谱识别的产物也走这条）。 */
 export function sourceMusicXmlBare(app: App, opts: { sourceIds?: boolean } = {}): string {
-  // 换行照简谱视图实际排出的行（五线谱自动铺排拿它当优选断点）；`.jpwabc` 用排版器那份模型，元素 id 才对得上
-  const lineStarts = app.jianpuLineStarts();
-  // `sourceIds`：`<note>` 带源元素 id，读回的五线谱模型靠它对回代码区（只给 `App._ensureMixedDoc`，导出不带）
-  const sourceIds = opts.sourceIds;
+  // `.jpwabc` 用排版器那份模型，元素 id 才对得上
+  let doc: ScoreDoc | null;
   if (app.docFormat === "jpwabc") {
     const f = JpwFile.fromString(app.getText());
     if (!f) throw new Error("这份 .jpwabc 读不出来");
-    return scoreDocToMusicXml(app.jpwDoc ?? jpwToScoreDoc(f), { lineStarts, sourceIds });
+    doc = app.jpwDoc ?? jpwToScoreDoc(f);
+  } else {
+    doc = app.currentScoreDoc();
+    if (!doc) throw new Error("这份谱里没有可导出的曲行");
   }
-  const doc = app.currentScoreDoc();
-  if (!doc) throw new Error("这份谱里没有可导出的曲行");
-  return scoreDocToMusicXml(doc, { lineStarts, sourceIds });
+  // 换行：乐句档按五线谱自己量宽断句（小节中间的也原位断）；否则照简谱视图实际排出的行。都是自动铺排的优选断点
+  const phrase = app.phraseOn ? app.staffPhraseLineStarts(doc) : null;
+  const lineStarts = phrase ?? app.jianpuLineStarts();
+  // `sourceIds`：`<note>` 带源元素 id，读回的五线谱模型靠它对回代码区（只给 `App._ensureMixedDoc`，导出不带）
+  return scoreDocToMusicXml(doc, { lineStarts, midLineStarts: phrase !== null, sourceIds: opts.sourceIds });
 }
 
 /** 文本谱/123/ABC → MusicXML。`.musicxml` 那一档文档里就是 XML（原文或 `editScoreDoc` 整份重写过的），原样给出。 */

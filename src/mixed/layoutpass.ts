@@ -205,18 +205,16 @@ const LAST_LINE_MIN_FILL = 0.5;
 function autoLayoutWidths(score: StaffLayout, input: LayoutInput): Set<number> {
   const n = score.measures.length;
   const w: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const slots = autoMeasureSlots(score, i);
-    const span = slots.length ? slots[slots.length - 1].nat + slots[slots.length - 1].slot : AUTO_MIN_SLOT;
-    w[i] = score.measures[i].width = AUTO_LEFT_DATA + span + AUTO_END_PAD;
-  }
+  for (let i = 0; i < n; i++) w[i] = score.measures[i].width = autoNaturalWidth(score, i);
   const preferred = new Set<number>();
   const hard = new Set<number>();
+  /** 小节中间换行拆出的后半（`implicit` 且起新行）：拆它就是为了在这儿断，不断就在行中间留一道隐藏线缝 */
+  const forced = new Set<number>();
   for (const pt of input) {
     pt.forEach((mea, i) => {
       for (const pr of mea.prints) {
         if (pr.newPage) hard.add(i);
-        else if (pr.newSystem) preferred.add(i);
+        else if (pr.newSystem) (score.measures[i]?.implicit ? forced : preferred).add(i);
       }
     });
   }
@@ -238,12 +236,12 @@ function autoLayoutWidths(score: StaffLayout, input: LayoutInput): Set<number> {
       const fill = width / avail;
       const slack = j === n ? Math.max(0, LAST_LINE_MIN_FILL - fill) * 3 : 1 - Math.min(fill, 1);
       let cost = best[i] + slack ** 2 * (j < n && fill < 0.5 ? UNDERFULL : 1) + merged * BREAK_MERGE;
-      if (i > 0 && !preferred.has(i) && !hard.has(i)) cost += BREAK_OFF_PREFERRED;
+      if (i > 0 && !preferred.has(i) && !hard.has(i) && !forced.has(i)) cost += BREAK_OFF_PREFERRED;
       if (cost < best[j]) {
         best[j] = cost;
         from[j] = i;
       }
-      if (hard.has(i)) break; // 不能跨过换页
+      if (hard.has(i) || forced.has(i)) break; // 不能跨过换页、拆开的半小节
       if (preferred.has(i)) merged++;
     }
   }
@@ -251,6 +249,39 @@ function autoLayoutWidths(score: StaffLayout, input: LayoutInput): Set<number> {
   for (let j = n; j > 0; j = from[j]) breaks.add(from[j]);
   breaks.add(0);
   return breaks;
+}
+
+/** 小节的自然宽（折行与断句量宽同一把尺子）。 */
+function autoNaturalWidth(score: StaffLayout, mi: number): number {
+  const slots = autoMeasureSlots(score, mi);
+  const span = slots.length ? slots[slots.length - 1].nat + slots[slots.length - 1].slot : AUTO_MIN_SLOT;
+  return AUTO_LEFT_DATA + span + AUTO_END_PAD;
+}
+
+/**
+ * **五线谱的断句尺子**（`score/phrase.ts::FitMetric` 的原料）：各和弦在整首连排时的自然横向区间，
+ * 与 `autoLayoutWidths` 折行同一套小节自然宽，键是源元素 id（`Chord.srcId`，文本格式派生时 `sourceIds` 写的）。
+ * `width` 是一行放得下的跨度：版心减行首谱号调号拍号（`autoLead`），再减首音前、末音后那点小节内留白。
+ * 要在自动铺排（`finishMixedScore`）之后调——小节 `offset` 那时才定。
+ */
+export function staffChordSpans(score: StaffLayout): { width: number; byId: Map<number, { x0: number; x1: number }> } {
+  const byId = new Map<number, { x0: number; x1: number }>();
+  let x = 0;
+  score.measures.forEach((_, mi) => {
+    const at = new Map(autoMeasureSlots(score, mi).map((s) => [s.offset.toString(), s] as const));
+    const md = score.parts[0]?.measures[mi];
+    for (const ch of md?.chords ?? []) {
+      const id = ch.src.srcId;
+      const s = at.get(ch.offset.toString());
+      if (ch.grace || id === undefined || !s || byId.has(id)) continue;
+      const x0 = x + AUTO_LEFT_DATA + s.nat;
+      byId.set(id, { x0, x1: x0 + s.slot });
+    }
+    x += autoNaturalWidth(score, mi);
+  });
+  const d = score.defaults;
+  const width = d.pageWidth - d.leftMargin - d.rightMargin - autoLead(score, 0) - AUTO_LEFT_DATA - AUTO_END_PAD;
+  return { width, byId };
 }
 
 /** 行首小节谱号、调号（拍号变了连拍号）占的宽，与 `layoutAttr` 同一套量法，再加首音前的净空（`autoPlaceNotes`）。
