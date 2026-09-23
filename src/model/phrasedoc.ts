@@ -18,7 +18,11 @@ import { midiPitch, topNote } from "./jianpu";
 
 interface LyricOut { text: string; number: number; refrain: boolean }
 /** `pitch`：MIDI 音高（试听用；休止与无音高为 0） */
-interface NoteOut { number: string; jpOctave: number; pitch: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
+interface NoteOut {
+  number: string; jpOctave: number; pitch: number; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[];
+  /** 试听：延音线收尾不再起音（`TimelineNote.tieStop`），与完整档同口径 */
+  tieStop?: boolean;
+}
 interface ChordOut {
   notes: NoteOut[];
   rest: boolean;
@@ -209,6 +213,7 @@ function chordOf(
     tieEnd: top?.tie?.stop ?? false,
     lyrics,
   };
+  if (note.tieEnd) note.tieStop = true;
   return {
     notes: [note],
     rest,

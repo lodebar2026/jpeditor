@@ -31,6 +31,8 @@ export interface PlayOptions {
 export interface TimelineNote {
   /** MIDI 音高 */
   readonly pitch: number;
+  /** 延音线收尾：前一个同音高的音若首尾相接，就延长它、不再起音 */
+  readonly tieStop?: boolean;
 }
 
 export interface TimelineChord {
@@ -161,6 +163,8 @@ export function buildTimeline(src: PlaySource): Timeline {
   const notes: TimedNote[] = [];
   const anchors: Anchor[] = [];
   let pos = 0; // running timeline position in quarter notes
+  /** 各声部各音高最近一个音（延音线收尾时找它延长） */
+  const lastByPitch = new Map<string, TimedNote>();
 
   for (const range of playRanges(src)) {
     for (let mid = range.mid; mid < range.end; mid++) {
@@ -180,7 +184,16 @@ export function buildTimeline(src: PlaySource): Timeline {
           if (ent.rest) continue;
           const velocity = ent.velocity ?? DEFAULT_VELOCITY;
           for (const nt of ent.notes) {
-            notes.push({ t0, t1, pitch: nt.pitch, part: pi, velocity, chord: ent });
+            const key = `${pi}:${nt.pitch}`;
+            const prev = nt.tieStop ? lastByPitch.get(key) : undefined;
+            // 只接首尾相接的那个：反复跳转、中间隔了休止都照常起音
+            if (prev && Math.abs(prev.t1 - t0) < 1e-6) {
+              prev.t1 = t1;
+              continue;
+            }
+            const tn: TimedNote = { t0, t1, pitch: nt.pitch, part: pi, velocity, chord: ent };
+            notes.push(tn);
+            lastByPitch.set(key, tn);
           }
         }
       }

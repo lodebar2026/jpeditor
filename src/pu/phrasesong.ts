@@ -17,7 +17,11 @@ import { docView } from "./slots";
 
 interface LyricOut { text: string; number: number; refrain: boolean }
 /** `pitch`：MIDI 音高，只在 `buildMeasures` 给了调号状态时算（试听用，经 `applyJpPitch`） */
-interface NoteOut { number: string; jpOctave: number; pitch: number; jpAlter: string; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[] }
+interface NoteOut {
+  number: string; jpOctave: number; pitch: number; jpAlter: string; tieStart: boolean; tieEnd: boolean; lyrics: LyricOut[];
+  /** 试听用：括住相邻两个同音的弧当延音线，后一个不再起音（`TimelineNote.tieStop`） */
+  tieStop?: boolean;
+}
 interface ChordOut {
   notes: NoteOut[];
   rest: boolean;
@@ -155,6 +159,9 @@ export function buildMeasures(
   let measure: MeasureOut | null = null;
   let newMeasureNeeded = true;
   let lastChord: ChordOut | null = null;
+  /** `lastChord` 上起头的弧（同行的按下标认，跨行的看 `continuationToNext`） */
+  let lastSlurOpens: readonly Mark[] = [];
+  let lastChordAt: { line: ScoreLine; index: number } | null = null;
   let pendingRepeatForward = false;
   let pendingEnding: Mark | null = null;
   const tupletNotes: ChordOut[] = [];
@@ -275,11 +282,23 @@ export function buildMeasures(
       const slur = edgeAt(line.marks, index, "slur");
       if (slur.starts) ch.slurStart = true;
       if (slur.ends) ch.slurEnds++;
+      // 相邻两个同音被一条弧括住 = 延音线（简谱里两者同形）：试听只延长、不再起音
+      if (pitch && !ch.rest && lastChord && !lastChord.rest && lastChord.notes[0]!.pitch === ch.notes[0]!.pitch) {
+        const prevAt = lastChordAt;
+        const tied = marksAt(line.marks, index, "slur").some((m) => {
+          if (m.end !== index || m.continuationToNext) return false;
+          if (m.continuationFromPrevious) return prevAt?.line !== line && lastSlurOpens.some((o) => o.continuationToNext);
+          return prevAt?.line === line && m.start === prevAt.index;
+        });
+        if (tied) ch.notes[0]!.tieStop = true;
+      }
       ch.duration = chordDuration(ch);
       mea.entries.push(ch);
       mea.seq.push(ch);
       onChord(ch, el);
       lastChord = ch;
+      lastChordAt = { line, index };
+      lastSlurOpens = line.marks.filter((m) => m.type === "slur" && m.start === index && !m.continuationFromPrevious);
       if (takesLyric(el)) attach(ch);
     });
     // 行末换行（末行不加），同 `jianpuinput.ts::breakAtMeasureEnd`

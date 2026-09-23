@@ -650,6 +650,18 @@ export function tiesToMarks(song: Song): void {
 const sameDegree = (a: Chord["notes"][number], b: Chord["notes"][number]): boolean =>
   !!a.degree && !!b.degree && a.degree.number === b.degree.number && a.degree.octaveShift === b.degree.octaveShift;
 
+/** 简谱括住相邻两个同音的弧就是延音线（两者同形，文本谱/123 都只写括号）：补上两端的 `Note.tie`，
+ *  五线谱画成延音线、导出的 `<tie>` 让别的软件也连着发声。后一个没写记号算沿用（`(#4 4)`），写了不同的不算 */
+function tieSlur(a: Chord, b: Chord): boolean {
+  const x = a.notes[0];
+  const y = b.notes[0];
+  if (a.rest || b.rest || a.grace || b.grace || !x || !y || !sameDegree(x, y)) return false;
+  if (y.degree!.accidental && y.degree!.accidental !== x.degree!.accidental) return false;
+  (x.tie ??= {}).start = true;
+  (y.tie ??= {}).stop = true;
+  return true;
+}
+
 /** 记号端点归到写得出来的音符上；没收口、倒置、端点不在谱面元素上的丢掉；弧线补 number。 */
 function normalizeMarks(song: Song, hosts: Map<ElementId, ElementId>): void {
   const written = new Set<ElementId>();
@@ -663,6 +675,10 @@ function normalizeMarks(song: Song, hosts: Map<ElementId, ElementId>): void {
       }
     }
   }
+  const chordAt = new Map<ElementId, { el: Chord; part: number }>();
+  for (const [pi, p] of song.parts.entries()) {
+    for (const m of p.measures) for (const el of m.elements) if (el.kind === "chord") chordAt.set(el.id, { el, part: pi });
+  }
   const marks: Mark[] = [];
   for (const mk of song.marks) {
     if (mk.type === "wedge") {
@@ -674,6 +690,11 @@ function normalizeMarks(song: Song, hosts: Map<ElementId, ElementId>): void {
     const end = hosts.get(mk.end) ?? mk.end;
     if (!written.has(start) || !written.has(end)) continue;
     if ((mk.type === "slur" || mk.type === "tuplet") && order.get(start)! >= order.get(end)!) continue;
+    const [a, b] = [chordAt.get(start)!, chordAt.get(end)!];
+    if (mk.type === "slur" && a.part === b.part && order.get(end)! === order.get(start)! + 1 && tieSlur(a.el, b.el)) {
+      marks.push({ type: "tied", start, end });
+      continue;
+    }
     marks.push({ ...mk, start, end });
   }
   // 多连音不能交叠（MusicXML 的 `<tuplet>` 没有 number 就按顺序配对），后来的那条丢掉

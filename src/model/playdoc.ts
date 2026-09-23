@@ -146,7 +146,7 @@ function timelinePartOf(part: Part, lead: boolean): TimelinePart {
 }
 
 function chordEntry(el: Chord, onset: number, div: number, velocity: number, cursor: boolean): ChordEntry {
-  const notes = el.rest ? [] : el.notes.filter((n) => n.pitch).map((n) => ({ pitch: midiPitch(n.pitch!) }));
+  const notes = el.rest ? [] : el.notes.filter((n) => n.pitch).map((n) => (n.tie?.stop ? { pitch: midiPitch(n.pitch!), tieStop: true } : { pitch: midiPitch(n.pitch!) }));
   return {
     notes,
     rest: notes.length === 0,
