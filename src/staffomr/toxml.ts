@@ -146,6 +146,15 @@ function emitVoices(inBar: StaffNote[], ticks: (d: number) => number, staffNo: n
     // 按 offset 出时要按 offset 排：`splitVoice` 之后同一声部的和弦在数组里
     // 未必还是从左到右（贪心分层是跨着挑的）。
     if (timed) vn.sort((a, b) => (a.group!.offset - b.group!.offset) || (b.diatonic - a.diatonic));
+    // 不按拍位写时按数组次序，但**同一和弦要挨着、主音打头**：和弦的音在数组里
+    // 未必主音在前（《赞美一神》A4/F#4 的 A4 排在前面、带着 `<chord/>`，挂到了前一拍）。
+    const grouped = !timed && vn.every((n) => n.group);
+    if (grouped) {
+      const first = new Map<unknown, number>();
+      vn.forEach((n, i) => first.has(n.group) || first.set(n.group, i));
+      const idx = new Map(vn.map((n, i) => [n, i]));
+      vn.sort((a, b) => first.get(a.group)! - first.get(b.group)! || +!!a.chordExtra - +!!b.chordExtra || idx.get(a)! - idx.get(b)!);
+    }
     let cur = 0;
     let prev: StaffNote | null = null;
     for (const n0 of vn) {
@@ -153,7 +162,7 @@ function emitVoices(inBar: StaffNote[], ticks: (d: number) => number, staffNo: n
       //（下标 0 的不带），上面按音高重排之后，带标记的常常排到了第一个——
       // `<chord/>` 的意思是「与前一个音同时」，于是和弦的顶音被挂到了**前一拍**上
       //（实测《善牧恩慈歌》每个 SATB 和弦的女高都前移一拍）。
-      const extra = timed ? !n0.grace && !!prev && !prev.grace && prev.group === n0.group : !!n0.chordExtra;
+      const extra = timed || grouped ? !n0.grace && !!prev && !prev.grace && prev.group === n0.group : !!n0.chordExtra;
       const n = extra === !!n0.chordExtra ? n0 : { ...n0, chordExtra: extra || undefined };
       prev = n0;
       if (timed && !n.chordExtra && !n.grace) {

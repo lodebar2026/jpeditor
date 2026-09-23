@@ -1354,7 +1354,21 @@ export function checkBars(
       }
       let full = checkFull(chords, expect, sp, false);
       if (!full) full = checkFull(chords, expect, sp, true);
+      // **短小节按同系统上面那行的长度再凑一次**：与弱起配套的末小节只有三拍，
+      // 两个声部挤在一行、节奏各走各的（《赞美一神》男高「四分 + 两个八分」、
+      // 男低「两个八分 + 四分」），拿拍号的四拍去凑，两趟都凑不满、也拆不开声部，
+      // 八个音排成一串。上面那行（女高女低共干、单声部）的和正好是这一小节的真长度。
+      const sib = pg.systems.find((sy) => sy.staves.includes(stf))?.staves.filter((s0) => s0 !== stf) ?? [];
+      // 那个长度还得像个小节：至少半小节、整拍（上面那行认漏了音时和只剩一两个八分）
+      const beat = 1 / cur.beatType;
+      const short = out.find(
+        (o) => sib.includes(o.staff) && o.index === i && o.sum >= expect * 0.5 && o.sum < expect - 1e-6 && Math.abs(o.sum / beat - Math.round(o.sum / beat)) < 1e-6,
+      )?.sum;
+      // 只救**真挤着两个声部**的：本小节时值和超过那个长度三成以上。单声部的短小节不用拆，
+      // 拿它去凑只会把原来按次序写的小节改成按拍位写（宁静一首十来处，音符反掉）
+      const overfull = (len: number) => inBar.filter((n) => !n.chordExtra && !n.grace).reduce((a, n) => a + n.duration, 0) > len * 1.3;
       if (full) splitVoice(chords, expect);
+      else if (short !== undefined && overfull(short) && (checkFull(chords, short, sp, false) || checkFull(chords, short, sp, true))) splitVoice(chords, short);
       else assignVoicesInBar(inBar, expect);
       const heads = inBar.filter((n) => !n.chordExtra && !n.grace);
       const sum = heads

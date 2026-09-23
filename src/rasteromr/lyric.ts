@@ -36,7 +36,7 @@ export interface LyricStaff {
 
 /** 歌词字号相对线距的上下限。汉字歌词实测在一个到两个线距之间。 */
 const CHAR_MIN = 0.7;
-const CHAR_MAX = 2.4;
+const CHAR_MAX = 2.8; // 《赞美一神》的宋体「美」整字 2.6 格
 
 /** 断行的空白：相邻两个块的纵向中心差过这么多（相对线距）才算换了一行。
  *  扫过 0.45 / 0.6 / 0.75 / 0.9 / 1.1 / 1.4：歌词 71.14 / 71.19 / 71.34 / 71.34 /
@@ -81,13 +81,25 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
       if (b.y < st.bottom + sp * 0.3 || rbottom(b) > limit) return false;
       if (rright(b) < st.left - sp || b.x > st.right + sp) return false;
       const h = b.h / sp;
-      return h >= CHAR_MIN * 0.4 && h <= CHAR_MAX; // 偏旁可以很矮，整字的高度另在下面卡
+      // 偏旁可以很矮，整字的高度另在下面卡；扁而宽的横笔（「一」「上」的底横）也收
+      return (h >= CHAR_MIN * 0.4 || b.w / sp >= CHAR_MIN) && h <= CHAR_MAX;
     });
-    if (band.length < MIN_CELLS) continue;
-    for (const row of splitRows(band, sp)) {
+    // 扁块**不参与切行与量字号**：它们的中心会把上下两行连成一行（简谱行与歌词行之间的
+    // 减时线、符杠碎段），块高又会把字号拉到偏旁以下。切完行再按 y 落进哪一行就并进哪一行。
+    const isFlat = (c: Component) => c.bbox.h / sp < CHAR_MIN * 0.4;
+    const flat = band.filter(isFlat);
+    const solid = band.filter((c) => !isFlat(c));
+    if (solid.length < MIN_CELLS) continue;
+    for (const row of splitRows(solid, sp)) {
       // 这一行的字号：块高的中位数（偏旁比整字矮，所以只是个初值，下面还要按字格改）
       const charH = Math.max(median(row.map((c) => c.bbox.h)), sp * CHAR_MIN);
-      const cells = mergeToChars(row, charH).filter((r) => r.h >= sp * CHAR_MIN * 0.5);
+      const top = Math.min(...row.map((c) => c.bbox.y));
+      const bot = Math.max(...row.map((c) => rbottom(c.bbox)));
+      const x0 = Math.min(...row.map((c) => c.bbox.x)) - sp * 2;
+      const x1 = Math.max(...row.map((c) => rright(c.bbox))) + sp * 2;
+      const strokes = flat.filter((c) => c.cy > top && c.cy < bot && c.bbox.x >= x0 && rright(c.bbox) <= x1);
+      // 扁而宽的也留：「一」只有一道横
+      const cells = mergeToChars([...row, ...strokes], charH).filter((r) => r.h >= sp * CHAR_MIN * 0.5 || r.w >= sp * CHAR_MIN * 1.5);
       if (cells.length < MIN_CELLS) continue;
       raw.push({ staffIndex: i, verse: 0, cells, charH, blocks: row });
     }
@@ -116,9 +128,12 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
   for (const r of raw) {
     const near = r.cells.filter((c) => c.w >= charW * 0.7 && c.w <= charW * 1.3);
     const charH = Math.max(median(near.map((c) => c.h)), sp * CHAR_MIN);
-    // **字格按全页字宽重切**（见 `squareCells`）：汉字等宽，粘连的两字要切开、
-    // 尾随的标点要并回前一字。第一遍那个 `mergeToChars` 只是为了量出字宽。
-    out.push({ ...r, charH });
+    // **字格按全页字宽重并**（见 `squareCells`）：汉字等宽，左右结构的字偏旁隔得开时
+    // 第一遍那个 `mergeToChars`（按偏旁高的 0.28 当缝）并不回来。
+    // 字宽取全页字宽、本行块高的 85 分位、本行字高三者最大：前两个都被碎偏旁拉低（《赞美一神》全页 25px、字 52px）
+    const hs = r.blocks.map((c) => c.bbox.h).sort((a, b) => a - b);
+    const rowW = hs[Math.min(hs.length - 1, Math.floor(hs.length * 0.85))];
+    out.push({ ...r, charH, cells: squareCells(r.cells, Math.max(charW, rowW, charH)) });
   }
   // 同一个谱行下面的几行按 y 编 verse 号
   const byStaff = new Map<number, LyricRow[]>();
@@ -130,6 +145,33 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
   for (const a of byStaff.values()) {
     a.sort((x, y) => Math.min(...x.cells.map((c) => c.y)) - Math.min(...y.cells.map((c) => c.y)));
     a.forEach((r, k) => (r.verse = k));
+  }
+  return out;
+}
+
+/**
+ * **半字并回整字**：相邻两格合起来不超过 1.4 个字宽、中间的缝不过 0.35 个字宽，
+ * 就是同一个字的左右两半。
+ *
+ * 《赞美一神》的宋体「赞」「神」「福」「源」「颂」偏旁之间隔着 0.3 个字宽，
+ * 第一遍按偏旁高的 0.28 当缝，一行十九个字切成三十一格；字数与格数对不上，
+ * OCR 的字只能按 CTC 估的位置摊到格上，「美」落到了「赞」的右半格里，整行往左错两个音。
+ * 真的相邻两字合起来总有两个字宽开外（《赞美一神》最挤的「心赞美」两字也有 2.2 个），过不了 1.4 那道。
+ */
+function squareCells(cells: Rect[], charW: number): Rect[] {
+  const out: Rect[] = [];
+  for (const c of cells) {
+    const last = out[out.length - 1];
+    // 尾随的标点（逗号、句号）不论宽窄都并进前一字——OCR 那一侧也是把它并进前一字的（`foldLyricChars`）
+    const punct = c.w < charW * 0.4 && c.h < charW * 0.4 && c.y > (last?.y ?? 0) + (last?.h ?? 0) * 0.4;
+    if (last && c.x - rright(last) <= charW * 0.35 && (punct || rright(c) - last.x <= charW * 1.4)) {
+      const x = Math.min(last.x, c.x);
+      const y = Math.min(last.y, c.y);
+      last.w = Math.max(rright(last), rright(c)) - x;
+      last.h = Math.max(rbottom(last), rbottom(c)) - y;
+      last.x = x;
+      last.y = y;
+    } else out.push({ ...c });
   }
   return out;
 }

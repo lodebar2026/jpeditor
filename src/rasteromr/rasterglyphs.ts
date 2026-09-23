@@ -260,6 +260,14 @@ export function bootstrapClefs(
         if (used.includes(i)) continue;
         const b = blobs[i];
         if (b.x > box.x + box.w || b.x + b.w < box.x) continue; // x 不重叠：那是调号，不是谱号的碎块
+        // 与种子块 x 不重叠、靠别的碎块搭桥进来的，上下还要贴着（半格内）：花括号下端的弯钩
+        // 在谱表底线下 0.65 格处，借低音谱号左边那截碎块搭上了（《赞美一神》），并进来盒子
+        // 拉高到 5.4 格，被判成高音谱号。不能一律要求贴着——扫描件的谱号断得碎，
+        // 与种子重叠的碎块之间常隔着半格以上（一律要求时扫描件音符 67.7% → 51.7%）。
+        const sd = blobs[seed];
+        const onSeed = b.x <= sd.x + sd.w && b.x + b.w >= sd.x;
+        const gap = b.y > box.y ? b.y - (box.y + box.h) : box.y - (b.y + b.h);
+        if (!onSeed && gap > space * 0.5) continue;
         const x0 = Math.min(box.x, b.x);
         const y0 = Math.min(box.y, b.y);
         box = { x: x0, y: y0, w: Math.max(box.x + box.w, b.x + b.w) - x0, h: Math.max(box.y + box.h, b.y + b.h) - y0 };

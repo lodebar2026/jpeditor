@@ -43,6 +43,44 @@ const CLUSTER_GAP = 0.75;
 const MIN_W = 0.25;
 const MIN_INK = 8;
 
+/** 带底下探到顶线上方多少格（非简谱行的谱表）。见 `findHarmonyStrips`。 */
+const LOW_CLEAR = 0.15;
+/** 簇内上下两段隔开这么多格就只留上面那段。 */
+const RUN_GAP = 0.15;
+/** 碰到带顶的簇最多往上长几格。 */
+const GROW_UP = 1.5;
+
+/** 整块落在 `yB` 行以下的连通块抹掉（八连通，就地改）。 */
+function dropBelow(band: Uint8Array, W: number, H: number, yB: number): void {
+  const seen = new Uint8Array(W * H);
+  const comp: number[] = [];
+  for (let i0 = 0; i0 < W * H; i0++) {
+    if (!band[i0] || seen[i0]) continue;
+    comp.length = 0;
+    let minY = H;
+    const stack = [i0];
+    seen[i0] = 1;
+    while (stack.length) {
+      const i = stack.pop()!;
+      comp.push(i);
+      const y = Math.floor(i / W);
+      const x = i % W;
+      if (y < minY) minY = y;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          const ny = y + dy;
+          const nx = x + dx;
+          if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
+          const j = ny * W + nx;
+          if (!band[j] || seen[j]) continue;
+          seen[j] = 1;
+          stack.push(j);
+        }
+    }
+    if (minY >= yB) for (const i of comp) band[i] = 0;
+  }
+}
+
 /** 带底往下再看多深（线距的倍数），用来认「从下面伸上来的东西」。见 `withoutRisers`。 */
 const RISER_DEPTH = 0.3;
 
@@ -56,7 +94,7 @@ const RISER_DEPTH = 0.3;
  * 整簇丢不得——真和弦也会和伸上来的符干挤在一簇里（坚固保障 `E/G♯ Am` 那一条就是），
  * 所以按连通块抹：只抹伸上来的那一块，同簇的字母照留。没沾上的条内容一字不变，缓存照旧命中。
  */
-function withoutRisers(bin: Binary, x0: number, x1: number, y0: number, y1: number, depth: number): Uint8Array {
+function withoutRisers(bin: Binary, x0: number, x1: number, y0: number, y1: number, depth: number, seedFrom = -1): Uint8Array {
   const W = x1 - x0;
   const yEnd = Math.min(bin.h, y1 + depth);
   const H = yEnd - y0;
@@ -68,7 +106,7 @@ function withoutRisers(bin: Binary, x0: number, x1: number, y0: number, y1: numb
   // 不从带底紧下面取：真和弦的笔画也会探出带底一两个像素（坚固保障 `E/G♯` 的升号比字母低，
   // 下端正好越过带底 1px），那不算伸上来。
   const stack: number[] = [];
-  for (let y = yEnd - 1; y < yEnd; y++)
+  for (let y = seedFrom >= 0 ? seedFrom : yEnd - 1; y < yEnd; y++)
     for (let x = x0; x < x1; x++) {
       const i = (y - y0) * W + (x - x0);
       if (bin.data[y * bin.w + x] && !seen[i]) {
@@ -122,12 +160,20 @@ export function findHarmonyStrips(
   const sp = unit.space;
   const out: HarmonyStrip[] = [];
   for (const st of staves) {
-    const y0 = Math.max(0, Math.round(st.ceiling != null ? st.ceiling - sp * JP_BAND : st.box.top - sp * BAND_TOP));
-    const y1 = Math.max(0, Math.round(st.ceiling != null ? st.ceiling : st.box.top - sp * BAND_BOTTOM));
+    const jp = st.ceiling != null;
+    const y0 = Math.max(0, Math.round(jp ? st.ceiling! - sp * JP_BAND : st.box.top - sp * BAND_TOP));
+    /** 原来的带底：簇要有墨落在它上面才算。 */
+    const yB = Math.max(0, Math.round(jp ? st.ceiling! : st.box.top - sp * BAND_BOTTOM));
+    // **带底下探到顶线上方**（`LOW_CLEAR`）：全音符小节上方的和弦字母印得低（《赞美一神》「阿们」
+    // 两小节的 C、G 离顶线只有 0.25 格），穿过原带底，被「伸上来的东西」那一步整个抹掉。
+    // 下探之后「伸上来」改成**连着谱表的**（从顶线那几行起灌），浮着的字母留下；
+    // 整块都在原带底以下的（贴着谱表的符头、加线）另外丢掉。
+    const y1 = jp ? yB : Math.max(yB, Math.round(st.box.top - sp * LOW_CLEAR));
     const x0 = Math.max(0, Math.round(st.box.left));
     const x1 = Math.min(bin.w, Math.round(st.box.right));
     if (y1 - y0 < 4 || x1 - x0 < 8) continue;
-    const band = withoutRisers(bin, x0, x1, y0, y1, Math.ceil(sp * RISER_DEPTH));
+    const band = withoutRisers(bin, x0, x1, y0, y1, Math.ceil(sp * RISER_DEPTH), jp ? -1 : y1);
+    if (!jp) dropBelow(band, x1 - x0, y1 - y0, yB - y0);
     const at = (x: number, y: number) => band[(y - y0) * (x1 - x0) + (x - x0)];
     // 列投影 → 游程 → 按空白并成簇
     const col = new Int32Array(x1 - x0);
@@ -160,10 +206,33 @@ export function findHarmonyStrips(
             if (y > yb) yb = y;
           }
       if (ink < MIN_INK || yb < ya) continue;
+      const rowInk = (y: number) => {
+        for (let x = x0 + a; x <= x0 + b; x++) if (y >= y0 ? at(x, y) : bin.data[y * bin.w + x]) return true;
+        return false;
+      };
+      if (!jp) {
+        // **只留最上面一段**：和弦记号只有一行，同簇里下面隔开的是延长记号
+        //（《赞美一神》延长记号上方的 G 与记号并成一条，OCR 读成「5」）
+        const cut = Math.max(2, Math.round(sp * RUN_GAP));
+        let blank = 0;
+        for (let y = ya; y <= yb; y++) {
+          if (rowInk(y)) blank = 0;
+          else if (++blank >= cut) {
+            yb = y - blank;
+            break;
+          }
+        }
+        while (yb > ya && !rowInk(yb)) yb--;
+        // **碰到带顶的往上长**：延长记号上方的和弦字母印得高，顶上被带顶切掉
+        if (ya === y0) while (ya > 0 && ya > y0 - sp * GROW_UP && rowInk(ya - 1)) ya--;
+      }
       const box = { x: x0 + a, y: ya, w: b - a + 1, h: yb - ya + 1 };
       const data = new Uint8Array(box.w * box.h);
       for (let y = 0; y < box.h; y++)
-        for (let x = 0; x < box.w; x++) data[y * box.w + x] = at(box.x + x, box.y + y);
+        for (let x = 0; x < box.w; x++) {
+          const py = box.y + y;
+          data[y * box.w + x] = py >= y0 ? at(box.x + x, py) : bin.data[py * bin.w + box.x + x];
+        }
       out.push({ w: box.w, h: box.h, data, box, staff: st.index });
     }
   }

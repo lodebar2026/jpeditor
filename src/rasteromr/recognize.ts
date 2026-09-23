@@ -15,7 +15,7 @@ import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars
 import { isAccidental, isClef, timeSigDigit, type SmuflName } from "../staffomr/glyphs";
 import { buildNotes, checkBars, findClefKeyTime, keyFifths, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
 import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findTuplets } from "../staffomr/notations";
-import type { SPage, Staff, Tag } from "../staffomr/model";
+import type { SPage, Staff, Sym, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, groupByLeftInk, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
 import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles } from "./notehead";
@@ -158,12 +158,20 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
   // 给它安一个会把二分读成八分。
   const heads = pg.symbols.filter((s) => s.hasTag("Note") && s.code === "noteheadBlack");
   for (const st of pg.segsWithTag("Stem")) {
-    const nt = heads.find(
+    const on = heads.filter(
       (s) => (Math.abs(s.box.left - st.cx) < sp / 3 || Math.abs(s.box.right - st.cx) < sp / 3) && s.box.top < st.bottom && st.top < s.box.bottom,
     );
-    if (!nt) continue;
-    const hy = (nt.box.top + nt.box.bottom) / 2;
-    const far = Math.abs(st.top - hy) > Math.abs(st.bottom - hy) ? st.top : st.bottom;
+    if (!on.length) continue;
+    // **远端按符干上所有的头定**：和弦的符干串着好几个头，只拿其中一个量，
+    // 挂在中间的那个会把另一头的符头当成「远端」（《赞美一神》D4/D3 共干，
+    // 拿 D3 量出远端在 D4 那头，D4 符头连着加线把窗口填满，整批读成八分）。
+    const ys = on.map((s) => (s.box.top + s.box.bottom) / 2);
+    const dTop = Math.min(...ys.map((y) => Math.abs(st.top - y)));
+    const dBot = Math.min(...ys.map((y) => Math.abs(st.bottom - y)));
+    // 两端都贴着符头：这是两个头之间被切出来的一截符干（加线、谱线把符干切断），没有自由端
+    if (Math.max(dTop, dBot) < sp * 0.75) continue;
+    const far = dTop > dBot ? st.top : st.bottom;
+    const hy = far === st.top ? Math.min(...ys) : Math.max(...ys);
     // 符杠横在这个窗口里的，不看（理由见上）
     // 符杠斜着搭在符干中段的也算（不只远端那一小截）
     if (beams.some((b) => b.x0 - sp * 0.5 <= st.cx && st.cx <= b.x1 + sp * 0.5 && st.top - sp * 0.5 < (b.y0 + b.y1) / 2 && (b.y0 + b.y1) / 2 < st.bottom + sp * 0.5)) continue;
@@ -272,6 +280,8 @@ const ACCID_TEMPLATE_DIST = 90;
 
 /** 空心头按模板再搜的得分门槛。见「空心头按模板再搜」那一段。 */
 const HOLLOW_MASK_SCORE = 0.38;
+/** 演奏记号离谱表最远几格（线距）：带加线的低音再往下一格，四格半够了。 */
+const ARTIC_REACH = 4.5;
 
 /** 调号兜底：相邻两个升降号（或谱号与第一个升降号）之间最多隔几个线距。 */
 const KEY_GAP = 1.5;
@@ -517,9 +527,18 @@ export async function recognizeRasterPage(
   //
   // 现在按**检测框**认领：缓存里有这条带的 OCR 结果才认领，没有就什么也不做
   // ——合唱谱那批没有和弦带缓存，这一段对它是空转，基线不动。
+  // **只看系统的首行**：闭合谱、合唱谱下面几行谱表的上方不印和弦，那里是上一行的歌词与
+  // 带加线的高音符头（《赞美一神》低音谱表上方的男高 D4 被读成「D」）。
+  // 判据是谱表左端的系统线从上一行连下来。
+  const joinedAbove = (i: number) =>
+    i > 0 &&
+    prims.vSegs.some((v) => {
+      const left = Math.max(...groups[i].lines.map((l) => l.left));
+      return Math.abs((v.x0 + v.x1) / 2 - left) <= unit.space && Math.min(v.y0, v.y1) <= groups[i - 1].lines[4].y + unit.space * 0.5 && Math.max(v.y0, v.y1) >= groups[i].lines[0].y + unit.space * 0.5;
+    });
   const harmonyStrips = findHarmonyStrips(
     raster.bin,
-    groups.map((g, i) => ({
+    groups.flatMap((g, i) => joinedAbove(i) ? [] : [{
       box: {
         left: Math.max(...g.lines.map((l) => l.left)),
         right: Math.min(...g.lines.map((l) => l.right)),
@@ -528,7 +547,7 @@ export async function recognizeRasterPage(
       index: i,
       // 有简谱行的谱表，和弦字母印在简谱行上方
       ceiling: jianpuBands.find((b) => b.staff === i)?.box.y,
-    })),
+    }]),
     unit,
   );
   const harmonies: HarmonyToken[] = [];
@@ -538,7 +557,11 @@ export async function recognizeRasterPage(
     for (const strip of harmonyStrips) {
       const chars = opts.harmonyOcr?.get(harmonyKey(strip));
       if (!chars?.length) continue; // 缓存没命中：这条没跑过 OCR，宁可不认领
-      harmonies.push(...harmonyTokens(strip, chars));
+      // 切不出和弦记号的条也不认领：闭合谱低音谱表的顶上那条带里是带加线的高音符头
+      //（《赞美一神》男高 D4/E4），OCR 读出几个字符、文法一个也不收，整条认领就把符头吃了
+      const toks = harmonyTokens(strip, chars);
+      if (!toks.length) continue;
+      harmonies.push(...toks);
       // **认领按条的盒，不按切出来的记号**：记号的 x 是 CTC 估的，误差常有半个字；
       // 条的盒是列投影裁紧的，正是要挡掉的那一簇墨。
       harmonyMasks.push(strip.box);
@@ -722,6 +745,9 @@ export async function recognizeRasterPage(
     if (claimed.has(c.id)) continue;
     const code = look.lookup(binSig(nl, c.bbox), c.bbox.w / unit.space, c.bbox.h / unit.space);
     if (!code) continue;
+    // **演奏记号贴着音符**：离所有谱表都四格半开外的「保持音」「断奏」是歌词字的横笔、点
+    //（《赞美一神》「上」「军」底下那一横，吃掉之后那个字就从歌词行里缺了）
+    if (code.startsWith("artic") && !groups.some((g) => c.bbox.y + c.bbox.h > g.lines[0].y - unit.space * ARTIC_REACH && c.bbox.y < g.lines[4].y + unit.space * ARTIC_REACH)) continue; // 不记账：留给歌词
     dictClaimed.add(c.id);
     // **半/全休止要按位置验一道**：它的字形是个 1.27×0.51 格的小实心矩形，
     // 位图上这种碎块一大把（符杠断头、粗横笔的一截），实测宁静一首认出 43 个
@@ -1003,6 +1029,64 @@ export async function recognizeRasterPage(
   // 松到拍号那一档是因为位置先验够硬：紧贴谱号、一串挨着、骑在谱表上。
   // 形状另卡**窄**（宽不过高的 0.5）：拍号数字 0.67 以上，挡得住。
   // 只吃谁都没认领的块，字典/模板已经认出调号的谱行一块也不动。
+  //
+  // 另一种丢法是**升号被符头那一路先吃了**：粗体升号的两道横笔又粗又斜，
+  // 去掉竖笔后就是两个上下叠着的「黑符头」（《赞美一神》低音谱表两行都是：
+  // 升号骑在 F3 线上，出了一对 F#3/A3 和弦）。认回来的判据：
+  //   - 谱号右缘 2 格内（低音谱号的两点不在谱号盒里，要多让半格）、x 差不到 0.3 格、上下隔 0.7~1.3 格的两个黑符头；
+  //   - 原图上盒里有**两根**竖笔（相隔 0.4 格以上）贯穿上下两头，且没有哪一列伸出一格以上
+  //     ——三度和弦的符干往一头伸 2.5 格以上；升号的竖笔只探出半格（右竖笔下端还短，不能要求两头都伸）；
+  //   - 只被认成**一个**头的（第二行低音谱表）：竖笔上下都要探出 0.3 格以上、最长 1.6 格。
+  const keySp = unit.space;
+  const keyBin = raster.bin;
+  function sharpAsHeads(ss: RasterSym[], edge: number, onStaff: (r: Rect) => boolean): { heads: RasterSym[]; box: Rect } | null {
+    const sp = keySp;
+    const hs = ss.filter((s0) => s0.code === "noteheadBlack" && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + sp * 2);
+    // 候选：上下叠着的一对，或者单独一个（另一道横笔没被认成头）
+    const sets: RasterSym[][] = [];
+    for (const a of hs)
+      for (const b of hs) {
+        const dy = (b.box.y - a.box.y) / sp;
+        if (dy >= 0.7 && dy <= 1.3 && Math.abs(a.box.x - b.box.x) <= sp * 0.3) sets.push([a, b]);
+      }
+    for (const a of hs) sets.push([a]);
+    const bin = keyBin;
+    const at = (x: number, y: number) => y >= 0 && y < bin.h && !!bin.data[y * bin.w + x];
+    for (const set of sets) {
+      const x0 = Math.min(...set.map((s0) => s0.box.x));
+      const x1 = Math.max(...set.map((s0) => s0.box.x + s0.box.w));
+      const u0 = set[0].box.y;
+      const u1 = set[set.length - 1].box.y + set[set.length - 1].box.h - 1;
+      const cols: number[] = [];
+      let y0 = u0;
+      let y1 = u1;
+      let over = 0;
+      let up = 0;
+      let down = 0;
+      for (let x = x0; x < x1; x++) {
+        let ok = true;
+        // 竖笔一两像素的抖动算连着
+        for (let y = u0; y <= u1 && ok; y++) ok = at(x, y) || at(x - 1, y) || at(x + 1, y);
+        if (!ok) continue;
+        cols.push(x);
+        let t = u0;
+        let d = u1;
+        while (at(x, t - 1)) t--;
+        while (at(x, d + 1)) d++;
+        over = Math.max(over, u0 - t, d - u1);
+        up = Math.max(up, u0 - t);
+        down = Math.max(down, d - u1);
+        y0 = Math.min(y0, t);
+        y1 = Math.max(y1, d);
+      }
+      if (!cols.length || cols[cols.length - 1] - cols[0] < sp * 0.4) continue;
+      // 一对：竖笔探出不过一格。单个：另一道横笔还挂在竖笔上，下探可到一格半，
+      // 但**上下都要探出去**——带干的音只往一头伸，而且一伸就是两格半以上
+      if (set.length === 2 ? over > sp : over > sp * 1.6 || up < sp * 0.3 || down < sp * 0.3) continue;
+      return { heads: set, box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 + 1 } };
+    }
+    return null;
+  }
   for (const g of groups) {
     const left = Math.max(...g.lines.map((l) => l.left));
     const top = g.lines[0].y;
@@ -1013,6 +1097,13 @@ export async function recognizeRasterPage(
     let edge = clef.box.x + clef.box.w;
     const onStaff = (r: Rect) => r.y < bottom && r.y + r.h > top;
     if (syms.some((s0) => isAccidental(s0.code) && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + unit.space * KEY_GAP)) continue;
+    const pair = sharpAsHeads(syms, edge, onStaff);
+    if (pair) {
+      for (const s0 of pair.heads) syms.splice(syms.indexOf(s0), 1);
+      syms.push({ box: pair.box, code: "accidentalSharp" });
+      ledger.claim(pair.box, "key:accidentalSharp");
+      continue;
+    }
     const cand = blobs
       .filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id) && !merged.has(c.id))
       .filter((c) => onStaff(c.bbox))
@@ -1109,6 +1200,18 @@ export async function recognizeRasterPage(
       const w = b.w / unit.space;
       const h = b.h / unit.space;
       if (w < CLF_W[0] || w > CLF_W[1] || h < CLF_H[0] || h > CLF_H[1]) continue;
+      // 符杠的断头不是符头：块的中心压在某条符杠的中线上（半个杠厚以内）
+      //（《是谁》朝下八分音符的符杠末端 1.06×0.48 格，判别器给过了，出了个 B3）
+      const cxb = b.x + b.w / 2;
+      const cyb = b.y + b.h / 2;
+      if (
+        prims.beams.some((q) => {
+          if (cxb < Math.min(q.x0, q.x1) || cxb > Math.max(q.x0, q.x1)) return false;
+          const t = q.x1 === q.x0 ? 0 : (cxb - q.x0) / (q.x1 - q.x0);
+          return Math.abs(cyb - (q.y0 + (q.y1 - q.y0) * t)) <= Math.max(q.lw, unit.space * 0.25);
+        })
+      )
+        continue;
       const gy = pitchGrid(b.y + b.h / 2);
       if (gy === null) continue;
       if (headProb(clf, raster.bin, masks, unit, b, gy, onLineY(gy)) < CLF_P) continue;
@@ -1183,7 +1286,7 @@ export async function recognizeRasterPage(
         }
         const w = box.w / unit.space;
         const h = box.h / unit.space;
-        if (w < 0.8 || w > 1.9 || h < 0.6 || h > 3.2) continue;
+        if (w < 0.8 || w > 2.2 || h < 0.6 || h > 3.2) continue; // 粗体全音符宽到 1.96 格（《赞美一神》）
         // 块里要有内腔（空心头的先验）
         if (!holes.some((o) => o.x >= box.x && o.x + o.w <= box.x + box.w && o.y >= box.y - 1 && o.y + o.h <= box.y + box.h + 1)) continue;
         if (syms.some((s0) => overlapFrac(box, s0.box) > 0.3)) continue;
@@ -1220,6 +1323,30 @@ export async function recognizeRasterPage(
     prims.vSegs.push({ x0: x, y0: b.y, x1: x, y1: b.y + b.h, lw: b.w, maxLw: b.w });
     merged.add(c.id);
     ledger.claim(b, "bar:thick");
+  }
+
+  // **谱号左边没有音符**、谱号右边紧挨着的「符头」可能是调号：花括号、方括号的弯钩落在谱表上下，圆滚滚的像个全音符
+  // （《赞美一神》第二行低音谱表顶上那一个，出了个 G3 全音符）。
+  for (const g of groups) {
+    const top = g.lines[0].y - unit.space * 2;
+    const bottom = g.lines[4].y + unit.space * 2;
+    const clef = syms.find((s0) => isClef(s0.code) && s0.box.y < g.lines[4].y && s0.box.y + s0.box.h > g.lines[0].y);
+    if (!clef) continue;
+    // 调号兜底之后才摘出来的「符头」（符头连符干那一路把升号的竖笔当成符干）再验一次
+    const onStaff = (r: Rect) => r.y < g.lines[4].y && r.y + r.h > g.lines[0].y;
+    const edge = clef.box.x + clef.box.w;
+    if (!syms.some((s0) => isAccidental(s0.code) && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + unit.space * KEY_GAP)) {
+      const pair = sharpAsHeads(syms, edge, onStaff);
+      if (pair) {
+        for (const s0 of pair.heads) syms.splice(syms.indexOf(s0), 1);
+        syms.push({ box: pair.box, code: "accidentalSharp" });
+        ledger.claim(pair.box, "key:accidentalSharp");
+      }
+    }
+    for (let i = syms.length - 1; i >= 0; i--) {
+      const b = syms[i].box;
+      if (/notehead/i.test(syms[i].code) && b.x + b.w / 2 < clef.box.x && b.y + b.h / 2 >= top && b.y + b.h / 2 <= bottom) syms.splice(i, 1);
+    }
   }
 
   // ── 附点：**位置 + 形状自举**，字典兜不住 ─────────────────────────────────
@@ -1311,6 +1438,7 @@ export async function recognizeRasterPage(
   const beams = toBeamShapes(prims.beams);
   const stems: StemInfo[] = [];
   const notes = buildNotes(pg, ctx, beams, stems);
+  splitUnisons(notes, stems);
   findTuplets(pg, beams, stems, notes);
 
   // ── 演奏法与力度 ─────────────────────────────────────────────────────────
@@ -1372,8 +1500,17 @@ export async function recognizeRasterPage(
     const orphanHead = (c: Component) =>
       claimed.has(c.id) && !restIds.has(c.id) && !harmonyIds.has(c.id) &&
       !noteCenters.some((p) => p.x >= c.bbox.x - 1 && p.x <= c.bbox.x + c.bbox.w + 1 && p.y >= c.bbox.y - 1 && p.y <= c.bbox.y + c.bbox.h + 1);
+    // **没人要的横段、竖段也是歌词的笔画**：「一」整字、「下」「生」的横笔、「上」的竖笔
+    // 被原语那一步当成线段抽走，不成块，字格里就缺了那个字（《赞美一神》两行各缺一两个）。
+    // 挂上了标记的（谱线、加线、符干、小节线、符杠……）不算。
+    const segBlobs: Component[] = pg.segs
+      .filter((sg) => !sg.hasAnyTag())
+      .map((sg, k) => {
+        const b = { x: Math.round(sg.box.left), y: Math.round(sg.box.top), w: Math.max(1, Math.round(sg.box.right - sg.box.left)), h: Math.max(1, Math.round(sg.box.bottom - sg.box.top)) };
+        return { id: -1 - k, bbox: b, area: b.w * b.h, cx: b.x + b.w / 2, cy: b.y + b.h / 2 };
+      });
     const rows = findLyricRows(
-      blobs.filter((c) => (!claimed.has(c.id) || orphanHead(c)) && !dictClaimed.has(c.id)),
+      [...blobs.filter((c) => (!claimed.has(c.id) || orphanHead(c)) && !dictClaimed.has(c.id)), ...segBlobs],
       pg.staves.map((st) => ({ top: st.box.top, bottom: st.box.bottom, left: st.box.left, right: st.box.right })),
       unit,
     );
@@ -1544,6 +1681,33 @@ export async function recognizeRasterPage(
 }
 
 /** 两个盒的交叠占 `a` 的比例。 */
+/**
+ * **同音两声部**：一个符头右边一根朝上的干、左边一根朝下的干——闭合谱里
+ * 女高女低（男高男低）唱同一个音时就这么记，一个头算两个音。
+ * 认成一个音的话，多声部 GT 每个同音处都少一个（《赞美一神》十处）。
+ * 克隆出来的那个挂朝下的干，不带歌词与和弦（那两样挂接在后面，挂给原来那个）。
+ */
+function splitUnisons(notes: StaffNote[], stems: StemInfo[]): void {
+  // 朝上的干在头的**右缘**、朝下的在**左缘**。和弦共用一根干时，干常被中间的头
+  // 切成两段，下面那段对上面那个头来说也「朝下」，但它还在右缘，不算。
+  const up = new Set<Sym>();
+  const down = new Set<Sym>();
+  for (const st of stems) {
+    const cx = (st.seg.box.left + st.seg.box.right) / 2;
+    for (const s of st.notes) {
+      const w = s.box.right - s.box.left;
+      if (st.up && cx > s.box.left + w * 0.6) up.add(s);
+      if (!st.up && cx < s.box.left + w * 0.4) down.add(s);
+    }
+  }
+  for (let i = notes.length - 1; i >= 0; i--) {
+    const n = notes[i];
+    if (n.rest || !up.has(n.sym) || !down.has(n.sym)) continue;
+    n.stemUp = true;
+    notes.splice(i + 1, 0, { ...n, stemUp: false, chordExtra: true, lyrics: undefined, chord: undefined });
+  }
+}
+
 function overlapFrac(a: Rect, b: Rect): number {
   const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
   const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
