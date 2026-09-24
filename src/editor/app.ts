@@ -8,6 +8,7 @@ import { parsePu, sniffDialect, dialectSpec, type Dialect } from "../pu";
 import { parse123, parseAbc } from "../j123/parse";
 import { eachChord } from "../model/helpers";
 import type { ElementId, ScoreDoc } from "../model/doc";
+import { applyBreaks } from "../model/breaks";
 import type { JChord, JScore } from "../layout/input";
 import { clearBreaks } from "../layout/input";
 import { JpwFile, LayoutSection } from "../jpword/jpwfile";
@@ -2536,12 +2537,21 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     }
   }
 
-  /** 当前文档 → 目标格式的文本（转换目标表 `model/convert.ts`）。同格式原文照给；转不了返回 null。 */
+  /** 当前文档 → 目标格式的文本（转换目标表 `model/convert.ts`）。同格式原文照给；转不了返回 null。
+   *  换行照简谱视图实际排出的行（`jianpuLineStarts`，与导出 MusicXML 同一口径：小节中间的只留源文写明的），
+   *  写在一份克隆上（`breaks.ts::applyBreaks`）；走原样文档布局、量不出来的照源文的行。 */
   private convertTo(target: ConvertTarget): string | null {
     const spec = targetSpec(target);
     if (spec.docFormat === this.docFormat && (spec.docFormat !== "pu" || this.puDialect === target)) return this.getText();
-    const doc = this.scoreDoc();
+    // `.jpwabc` 用排版器那份模型，行首音的 id 才对得上（同 `export.ts::sourceMusicXmlBare`）
+    let doc = (this.docFormat === "jpwabc" ? this.jpwDoc : null) ?? this.scoreDoc();
     if (!doc) return null;
+    const starts = this.jianpuLineStarts();
+    if (starts?.size) {
+      doc = structuredClone(doc);
+      const ls = [...starts].map((id) => ({ id }));
+      for (const song of doc.songs) applyBreaks(song, ls, { mid: "source", pages: "keep" });
+    }
     try {
       return spec.emit(doc);
     } catch (e) {

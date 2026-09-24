@@ -29,6 +29,7 @@ import { DYNAMICS, TERMS } from "../pu/glyph";
 import { alignPartsBySystem } from "./alignparts";
 import { applyPageMetaToDefaults } from "./pagemeta";
 import { decoKey } from "./deconames";
+import { applyBreaks } from "./breaks";
 
 
 /** 记号原名 → `<articulations>` 元素名（`&xx` 与 123 的 `!xx!` 同名）。 */
@@ -83,8 +84,7 @@ export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Son
   applyPageMetaToDefaults(song);
   // 多声部按组对齐：一组不一定含全部声部，缺席/偏短的补无声小节，各 part 小节才对得上（issue 11）
   alignPartsBySystem(song);
-  // 源文的小节中间换行在下一小节上还另记了一份小节级的；照简谱视图重断的没有
-  const relined = !!options.lineStarts?.size && applyLineStarts(song, options.lineStarts, options.midLineStarts ?? false);
+  if (options.lineStarts?.size) applyLineStarts(song, options.lineStarts, options.midLineStarts ?? false);
   const fifths = fifthsOf(song);
   const hosts = sustainHosts(song);
   const tuplets = tupletRatios(song);
@@ -99,7 +99,7 @@ export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Son
   for (const [pi, part] of song.parts.entries()) {
     xno = { n: 0 };
     if (pi === 0) applyVoltas(part, voltasOfPlayOrder(song));
-    splitInlineBreaks(part, tupletInner, !relined, xno);
+    splitInlineBreaks(part, tupletInner, xno);
     joinOpenMeasures(part, xno);
     mergeEmptyMeasures(part);
     moveForwardRepeats(part);
@@ -131,74 +131,12 @@ export function projectForMusicXml(src: Song, options: ProjectOptions = {}): Son
 
 // ───────────────────────── 头部 ─────────────────────────
 
-/** 换行改成「简谱视图里起行的那些音」：行首音是小节首音就在该小节起行（`print.newSystem`）。
+/** 换行改成「简谱视图里起行的那些音」（`breaks.ts::applyBreaks`）：行首音是小节首音就在该小节起行（`print.newSystem`）。
  *  落在小节中间的：源文本来就在那里换行（`Chord.lineBreakAfter`，弱起谱的乐句尾常这样）就留着它，由 `splitInlineBreaks` 拆小节；
- *  简谱一行排不下、自己在小节中间折的，只是简谱版面宽度的产物，顺延到下一小节；`mid`（乐句断点）时也原位断。多声部各声部的切点对不齐，也顺延。`newPage` 不动。行首音都在第一声部，其余声部按小节序号跟它走。
- *  一个也对不上（id 过期）就不改。 */
+ *  简谱一行排不下、自己在小节中间折的，只是简谱版面宽度的产物，顺延到下一小节；`mid`（乐句断点）时也原位断。
+ *  多声部各声部的切点对不齐，也顺延。`newPage` 不动。一个也对不上（id 过期）就不改。 */
 function applyLineStarts(song: Song, starts: ReadonlySet<ElementId>, mid: boolean): boolean {
-  const breaks = new Set<number>();
-  const inline: { ch: Chord; kind: "system" | "page"; mi: number }[] = [];
-  for (const part of song.parts) {
-    let pending = false;
-    let hit = false;
-    part.measures.forEach((m, i) => {
-      if (i > 0 && pending) breaks.add(i);
-      pending = false;
-      const els = m.elements;
-      const head = els.findIndex((e) => e.kind === "chord");
-      els.forEach((el, k) => {
-        if (el.kind !== "chord" || !starts.has(el.id)) return;
-        hit = true;
-        // 行首前面紧挨着的倚音跟着它走
-        let j = k;
-        while (j > 0 && els[j - 1]!.kind === "chord" && (els[j - 1] as Chord).grace) j--;
-        if (k === head || j === 0) {
-          if (i > 0) breaks.add(i);
-          return;
-        }
-        const prev = els[j - 1]!;
-        const kind = inlineBreakOf(prev) ?? (mid ? "system" : undefined);
-        if (kind && prev.kind === "chord" && song.parts.length === 1) inline.push({ ch: prev, kind, mi: i });
-        else pending = true;
-      });
-    });
-    if (hit) break;
-    breaks.clear();
-    inline.length = 0;
-  }
-  if (breaks.size === 0 && inline.length === 0) return false;
-  for (const part of song.parts) {
-    part.measures.forEach((m, i) => {
-      for (const el of m.elements) {
-        if (el.kind !== "chord") continue;
-        delete el.lineBreakAfter;
-        for (const su of el.sustains ?? []) delete su.lineBreakAfter;
-      }
-      if (m.print) delete m.print.newSystem;
-      if (breaks.has(i)) m.print = { ...(m.print ?? {}), newSystem: true };
-      else if (m.print && Object.keys(m.print).length === 0) delete m.print;
-    });
-  }
-  const paged = new Set<number>();
-  for (let k = inline.length - 1; k >= 0; k--) {
-    const { ch, mi } = inline[k]!;
-    let kind = inline[k]!.kind;
-    // 换页记在下一小节上、下一小节自己又不起行：这一页其实从本小节中间这一刀起（`.jpwabc` 小节中间的换页
-    // 在下一小节上另记了一份小节级的；乐句重排的 `$$` 只落在小节后）。留着它，拆出的半小节就孤零零一行
-    const nextPage = song.parts[0]?.measures[mi + 1]?.print?.newPage === true && !breaks.has(mi + 1);
-    if (!paged.has(mi) && (kind === "page" || nextPage)) kind = "page";
-    else if (kind === "page") kind = "system";
-    ch.lineBreakAfter = kind;
-    if (kind !== "page") continue;
-    paged.add(mi);
-    for (const part of song.parts) {
-      const pr = part.measures[mi + 1]?.print;
-      if (!pr) continue;
-      delete pr.newPage;
-      if (Object.keys(pr).length === 0) delete part.measures[mi + 1]!.print;
-    }
-  }
-  return true;
+  return applyBreaks(song, [...starts].map((id) => ({ id })), { mid: mid ? "inline" : "source", pages: "keep" });
 }
 
 function fifthsOf(song: Song): number {
@@ -371,13 +309,12 @@ function inlineBreakOf(el: Element): "system" | "page" | undefined {
  * **小节中间换行**（`Chord.lineBreakAfter`）拆成两个小节：前半的右线是隐藏线（`bar-style none`），
  * 后半 `implicit="yes"`（不计小节号，编号写 `X1`…）并起新行——MusicXML 只能在小节线处换行，
  * 这样五线谱与简谱在同一个音上换行，小节时值两半合起来仍是整小节。
- * 增时线上的换行按宿主和弦之后算（不在音符中间切）；切点落在连音中间的不拆，顺延到下一小节。
- * `swallow`：源文的小节中间换行在下一小节上还另记了一份小节级的（见 `Chord.lineBreakAfter`），拆过就删掉它。
+ * 增时线上的换行按宿主和弦之后算（不在音符中间切）；切点落在连音中间的不拆，顺延到下一小节
+ * （模型里小节中间的换行在下一小节上另记了一份小节级的，见 `Chord.lineBreakAfter`——顺延就是留着它；拆过的删掉它）。
  */
-function splitInlineBreaks(part: Part, tupletInner: ReadonlySet<ElementId>, swallow: boolean, xno: { n: number }): void {
+function splitInlineBreaks(part: Part, tupletInner: ReadonlySet<ElementId>, xno: { n: number }): void {
   const out: Measure[] = [];
   let dropPrint = false;
-  let deferred: "system" | "page" | undefined;
   for (const m of part.measures) {
     if (dropPrint && m.print) {
       delete m.print.newSystem;
@@ -385,10 +322,6 @@ function splitInlineBreaks(part: Part, tupletInner: ReadonlySet<ElementId>, swal
       if (Object.keys(m.print).length === 0) delete m.print;
     }
     dropPrint = false;
-    if (deferred) {
-      m.print = { ...(m.print ?? {}), ...(deferred === "page" ? { newPage: true } : { newSystem: true }) };
-      deferred = undefined;
-    }
     const cuts: { at: number; kind: "system" | "page" }[] = [];
     m.elements.forEach((el, k) => {
       const kind = inlineBreakOf(el);
@@ -397,17 +330,14 @@ function splitInlineBreaks(part: Part, tupletInner: ReadonlySet<ElementId>, swal
       for (const su of el.sustains ?? []) delete su.lineBreakAfter;
       const rest = m.elements.slice(k + 1);
       if (rest.length === 0 || rest.every((e) => !timed(e) && e.kind === "space")) return; // 在小节末：就是小节级换行
-      if (tupletInner.has(el.id)) {
-        if (!swallow) deferred = kind;
-        return;
-      }
+      if (tupletInner.has(el.id)) return;
       cuts.push({ at: k + 1, kind });
     });
     if (cuts.length === 0) {
       out.push(m);
       continue;
     }
-    dropPrint = swallow;
+    dropPrint = true;
     const pieces = splitMeasure(m, cuts, xno);
     out.push(...pieces);
   }

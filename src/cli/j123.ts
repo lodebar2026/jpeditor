@@ -28,4 +28,5 @@ export { parsePu, parsePuAst, sniffDialect } from "../pu";
 export { JpwFile, RepeatSection } from "../jpword/jpwfile";
 // 按乐句重排（写回原文那一步；断句本身在 score/phrase.ts）
 export { relayoutDocBreaks, relayoutJpwabcText, spliceComments } from "../model/relayout";
+export { applyBreaks, breaksOf } from "../model/breaks";
 export { phraseCuts, puPhraseLines } from "../pu/phrase";

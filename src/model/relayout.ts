@@ -17,76 +17,11 @@
 // 原位保留；123 的 `$` 只落在小节之后（规范 §9，代码行中间的 `$` 读回时歌词块会跟着断，对位错位），
 // 所以挪到**下一根小节线**——那半个小节留在上一行行尾，下一句从小节线起头。
 
-import type { Chord, ElementId, Measure, ScoreDoc, Song, Sustain } from "./doc";
+import type { ScoreDoc } from "./doc";
+import { applyBreaks, type LineStart } from "./breaks";
 import { phraseCuts, type FitMeasure, type PhraseCut } from "../pu/phrase";
 import { readJpwSource } from "./fromjpw";
 import { JpwFile, LayoutSection, VoiceSection, WordsSection } from "../jpword/jpwfile";
-
-/** 模型里一个元素的位置。`sustain` 是它在宿主和弦 `sustains` 里的下标（元素自己时为 null）。 */
-interface Spot {
-  part: number;
-  measure: number;
-  index: number;
-  sustain: number | null;
-}
-
-/** 整首的「元素 id → 位置」。倚音也在里面（落点算小节起头时要把它们跳过）。 */
-function spotsOf(song: Song): Map<ElementId, Spot> {
-  const out = new Map<ElementId, Spot>();
-  song.parts.forEach((part, pi) => {
-    part.measures.forEach((mea, mi) => {
-      mea.elements.forEach((el, ei) => {
-        out.set(el.id, { part: pi, measure: mi, index: ei, sustain: null });
-        if (el.kind !== "chord") return;
-        (el.sustains ?? []).forEach((su, si) => {
-          out.set(su.id, { part: pi, measure: mi, index: ei, sustain: si });
-        });
-      });
-    });
-  });
-  return out;
-}
-
-/** 第 `ei` 个元素之前只剩倚音（或什么都没有）= 这个落点就是小节起头。 */
-function atMeasureStart(mea: Measure, ei: number): boolean {
-  for (let i = 0; i < ei; i++) {
-    const el = mea.elements[i]!;
-    if (!(el.kind === "chord" && el.grace)) return false;
-  }
-  return true;
-}
-
-/** 清掉整首现有的换行（重排是重新断，不是在原有行结构上加断点）。 */
-function clearBreaks(song: Song): void {
-  for (const part of song.parts) {
-    for (const mea of part.measures) {
-      if (mea.print) {
-        delete mea.print.newSystem;
-        delete mea.print.newPage;
-      }
-      for (const el of mea.elements) {
-        if (el.kind !== "chord") continue; // `Space`（`y`/`x`）没有换行位
-        delete el.lineBreakAfter;
-        for (const su of el.sustains ?? []) delete su.lineBreakAfter;
-      }
-      for (const b of mea.barlines ?? []) delete b.lineBreakAfter;
-    }
-  }
-}
-
-/** 落点**之前**那一个挂得住换行的东西：上一个和弦的最后一根增时线，没有增时线就是和弦自己。 */
-function beforeSpot(mea: Measure, spot: Spot): Chord | Sustain | null {
-  // 落点在某根增时线上：换行落在它前一根上（第一根则落在宿主音符之后）
-  if (spot.sustain !== null) {
-    const host = mea.elements[spot.index];
-    if (host?.kind !== "chord") return null;
-    return spot.sustain > 0 ? (host.sustains?.[spot.sustain - 1] ?? host) : host;
-  }
-  const prev = mea.elements[spot.index - 1];
-  if (prev?.kind !== "chord") return null; // `y`/`x` 上挂换行没有意义（`Space` 也没有这一位）
-  const sustains = prev.sustains ?? [];
-  return sustains[sustains.length - 1] ?? prev;
-}
 
 export interface DocRelayoutOptions {
   /** 行长尺子（见 `pu/phrase.ts::FitMeasure`）；不给就按出厂的小节数目标断。 */
@@ -105,34 +40,9 @@ export function relayoutDocBreaks(sdoc: ScoreDoc, opt: DocRelayoutOptions): bool
   sdoc.songs.forEach((song, si) => {
     const cuts = phraseCuts(sdoc, si, { measure: opt.measure ?? null });
     if (!cuts || cuts.length === 0) return;
-    const where = spotsOf(song);
-    clearBreaks(song);
-    for (const cut of cuts) {
-      if (cut.id === null) continue;
-      const spot = where.get(cut.id);
-      if (!spot) continue;
-      const mea = song.parts[spot.part]?.measures[spot.measure];
-      if (!mea) continue;
-      const start = spot.sustain === null && atMeasureStart(mea, spot.index);
-      if (!start && opt.midBreaks === "inline") {
-        const host = beforeSpot(mea, spot);
-        if (host) {
-          host.lineBreakAfter = cut.page ? "page" : "system";
-          changed = true;
-        }
-        continue;
-      }
-      // 小节级换行：口径是「本小节起新系统」，多声部各行要在同一小节上断
-      const mi = start ? spot.measure : spot.measure + 1;
-      if (mi <= 0) continue;
-      for (const part of song.parts) {
-        const target = part.measures[mi];
-        if (!target) continue;
-        target.print = { ...target.print, newSystem: true };
-        if (cut.page) target.print.newPage = true;
-      }
-      changed = true;
-    }
+    const starts: LineStart[] = [];
+    for (const cut of cuts) if (cut.id !== null) starts.push({ id: cut.id, page: cut.page });
+    if (applyBreaks(song, starts, { mid: opt.midBreaks, pages: "write" })) changed = true;
   });
   return changed;
 }

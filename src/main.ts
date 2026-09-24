@@ -117,12 +117,13 @@ async function boot() {
     import("./abcfamily/emitabc.entry"), import("./abc/abc2xml"),
     import("./model/fromxml"), import("./model/toxml"), import("./model/capability"),
     import("./model/jianpuproject"), import("./model/jianpu"), import("./model/tojpw"), import("./model/xmlproject"),
+    import("./model/breaks"),
   ]).then((
     [parse, emit, fromjpw, frompu, helpers, jianpuinput, pu, emitabc, abc2xml,
-     fromxml, toxml, capability, jianpuproject, jianpu, tojpw, xmlproject],
+     fromxml, toxml, capability, jianpuproject, jianpu, tojpw, xmlproject, breaks],
   ) => ({
     ...parse, ...emit, ...fromjpw, ...frompu, ...helpers, ...jianpuinput, pu,
-    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw, ...xmlproject,
+    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw, ...xmlproject, ...breaks,
   }));
   // `.jpwabc` ↔ MusicXML 的读入与导出版面（`engraveScoreDoc`：五线谱引擎排出导出版面，交给写出端）暴露，供 scripts/xml-roundtrip.mjs 回归
   // （写出端只有 `model/toxml.ts`，在 `__j123` 里）。

@@ -406,9 +406,12 @@ export abstract class AbcFamilyEmitter {
     let key = song.key ? this.keyValue(song.key) : "";
     const timeOf = (t: { beats: number; beatType: number } | undefined): string => (t ? `${t.beats}/${t.beatType}` : "");
     let time = timeOf(song.time);
-    /** 收一行：换行标记若是（或带着）真换行，join 出来的两侧空格要收掉；末尾的换行也收掉，否则歌词行前多一个空行 */
+    /** 收一行：换行标记若是（或带着）真换行，join 出来的两侧空格要收掉；末尾的换行也收掉，否则歌词行前多一个空行。
+     *  代码行以「字母（+ 数字）+ 冒号」起头（小节中间换行后 `C :|`、`C4 :|`、123 的 `x :|`）会被读成字段行
+     *  （`fields.ts::ASCII_PREFIX` 容忍 `V1:` 式编号与冒号前的空格），前面垫一个空格 */
     const flush = (): void => {
-      texts.push(out.filter((x) => x !== "").join(" ").replace(/ ?\n ?/g, "\n").replace(/\n+$/, ""));
+      texts.push(out.filter((x) => x !== "").join(" ").replace(/ ?\n ?/g, "\n").replace(/\n+$/, "")
+        .replace(/^(?=[A-Za-z]\d*(?:-\d+)?\s*[:：])/gm, " "));
       out = [];
     };
     for (let i = 0; i < part.measures.length; i++) {

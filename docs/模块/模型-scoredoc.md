@@ -30,6 +30,7 @@
 |---|---|
 | `src/model/doc.ts` | 类型定义（883 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
 | `src/model/helpers.ts` | 遍历/查询/构造 |
+| `src/model/breaks.ts` | 断行读写对：`breaksOf`（模型 → 行首元素）/ `applyBreaks`（行首元素 → 模型，替换原有断行） |
 | `src/model/jianpu.ts` | **简谱语义层**：音高↔度数、相对调号临时记号延续（`AccidentalCarry`，两个方向共用）、`attrsAt`、减时线/增时线/附点（`jianpuShape`）、和弦原文、旋律取音、延音线/跨元素记号按 id 找对端 |
 | `src/model/fromxml.ts` | ← MusicXML（**直通**：语义进模型，每个模型对象绑到原节点） |
 | `src/model/xmlsurface.ts` | **MusicXML 表层**：模型外的旁表（WeakMap，对象 → 原节点）+ 查询函数（`xmlPos`、`measureWidth`、`noteStem`、`xmlAlign`、`xmlFont`、`staffDetailsOf`、`printLayout`、`defaultsFonts`），五线谱引擎从这里读；导出版面的 `EngravedLayout` 也定义在这 |
@@ -93,7 +94,11 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 - **换行口径是 MusicXML 的**：`Print.newSystem/newPage` 表示「本小节**起**新系统」。源码的 `$` 写在小节之后，
   解析器先按「之后」收集、收尾经 `helpers.ts::breaksAfterToStart` 翻过来；写出端用 `breakAfter` 反向。
   最后一小节之后的换行记 `Part.endBreak`。**小节中间的换行**（`.jpwabc` 弱起谱）另记在前一个和弦的 `Chord.lineBreakAfter` 上，
-  只是印刷位置提示：小节级那份照记，只认小节级换行的消费者不用管它。
+  只是印刷位置提示：小节级那份照记，只认小节级换行的消费者不用管它（同一小节再有「小节末换行」就与它并成一处，
+  只剩半个小节的一行写不出来）。**读写对在 `model/breaks.ts`**：`breaksOf` 读出行首元素，`applyBreaks` 把一组行首
+  写回（替换原有断行；小节中间的按 `inline` / `snap` / `source` 三种口径落，多声部一律顺延，多声部文本谱不重断）。
+  乐句重排（`relayout.ts`）、导出 MusicXML 照简谱视图重断（`xmlproject.ts`）、跨格式另存为（`App.convertTo`）都经它。
+  回归 `break-roundtrip-check`：写回 → 六种写出端 → 读回，断点集合不变（ABC 没有换页记号，只比断行位置，能力表记 `pageBreak`）。
 - **文本谱专有字段**（`doc.ts` 里注释写明「文本谱」的那些：`SourceOrnament`、`InlineItem`、`Print.system/texts/lyricLines`、
   `Chord.continued`、`Mark.startLead/endTrail/leadInPreviousLine/continuationLevels`、`Ending.startOffset/endOffset/pair`…）
   **是排版信息，不是给导出用的**：没有它们谱面就少画或画错（例如弧线端点落在小节线上时简谱引擎认为没收口，弧会接到下一行）。

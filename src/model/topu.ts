@@ -934,7 +934,8 @@ export function emitPuSong(src: Song, dialect: Dialect, opts: EmitPuOptions = {}
       const last = Math.min(sys.to, part.measures.length - 1);
       if (sys.from > last) return;
       const first = part.measures[sys.from];
-      if (pi === 0 && ri > 0 && first?.print?.newPage && sys.fromEl === 0) group.push("[fenye]");
+      // 换页：小节级的看本行首小节，小节中间的看上一行末那刀（`SystemRange.inline`）
+      if (pi === 0 && ri > 0 && (sys.fromEl === 0 ? first?.print?.newPage : ranges[ri - 1]!.inline === "page")) group.push("[fenye]");
       // 系统上方的说明文字行（`W:`）挂在该系统第一个声部的首小节
       if (pi === 0 && sys.fromEl === 0) for (const t of first?.print?.texts ?? []) pushField(group, "W", t);
       const line = new Line();

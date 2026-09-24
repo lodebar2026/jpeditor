@@ -1213,6 +1213,9 @@ export function parseAbcFamily(
       if (target && !ctx.breakAfter.has(target)) {
         ctx.breakAfter.set(target, "system");
         noteInlineBreak(p, "system");
+      } else if (target === p.measure && p.inlineBreak?.host !== p.measure.elements[p.measure.elements.length - 1]) {
+        // 同一小节里第二个代码行末：又是一刀小节中间换行（行尾写了 `$` 的，那一刀已经记在同一个音上）
+        noteInlineBreak(p, "system");
       }
       if (p.block) p.block.broken = true;
     }

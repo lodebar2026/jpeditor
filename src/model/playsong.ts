@@ -25,6 +25,7 @@ import { docView } from "../pu/slots";
 import { playSourceOfDoc } from "./playdoc";
 import { hasVoiceOverlay, isXmlShaped, projectForMusicXml } from "./xmlproject";
 import { alignPartsBySystem, maxId } from "./alignparts";
+import { breaksOf } from "./breaks";
 
 export interface PlaySongOptions {
   /** 见 `ToScoreOptions.forExpanded` */
@@ -239,10 +240,21 @@ export function jpwInputOfSong(doc: ScoreDoc, songIdx = 0): JpwScoreIn | null {
   for (const t of meta.topLeft) push(t, "lyricist");
 
   const key = { fifths: built.key.fifths, name: built.key.name };
+  // 换页：换行之后紧跟的那个音是换页的行首（`breaks.ts::breaksOf`，小节级与小节中间的都在里面）
+  const pageStarts = new Set(breaksOf(doc.songs[songIdx]!).filter((b) => b.page).map((b) => b.id));
+  const seq = built.parts[0]!.flatMap((m) => m.seq);
+  const pageAfter = new Set<number>(); // `seq` 里第几项是换页
+  seq.forEach((it, i) => {
+    if (it !== "break") return;
+    const next = seq.slice(i + 1).find((x) => typeof x !== "string");
+    if (typeof next === "object" && next.id !== undefined && pageStarts.has(next.id)) pageAfter.add(i);
+  });
+  let at = 0;
   const measures: JpwMeasureIn[] = built.parts[0]!.map((m) => {
     let chords = 0;
     const entries = m.seq.map((it): object => {
-      if (it === "break") return { newPage: false, pass: null };
+      if (it === "break") return { newPage: pageAfter.has(at++), pass: null };
+      at++;
       if (it === "barline") return { style: null, repeat: null, position: new Fraction(chords > 0 ? 1 : 0) };
       chords++;
       const n = it.notes[0]!;

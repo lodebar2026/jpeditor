@@ -12,11 +12,12 @@
 // | `docs/待办.md` §2.2「无法表达」的全语料实测 | 文字行 `W:` / 圆滑线 / 多段歌词 / 印刷段号 / 多声部 / 分曲 / 倚音 / 房号 |
 // | `docs/模块/模型-scoredoc.md` | `playOrder` 与 `style` 是 **MusicXML 装不下的两样**（`<ending>` 只能整小节） |
 // | `docs/模块/源格式-abc家族.md` | ABC 那一档的 clef/修饰、`Q:` 参照音符长度 |
+// | `break-roundtrip-check`（断点写回 → 各写出端 → 读回） | 换页（ABC 装不下）；换行含小节中间的，六种都装得下，不列 |
 //
 // **改这张表之前先去改那几处的实测**——这里只是它们的汇总。
 
 import type { Mark, ScoreDoc, Song } from "./doc";
-import { nestArcsInTuplets } from "./emitutil";
+import { inlineBreakOf, nestArcsInTuplets } from "./emitutil";
 import { eachChord, verseCount } from "./helpers";
 import { projectForJianpu } from "./jianpuproject";
 import { melodyLane } from "./jianpu";
@@ -49,7 +50,8 @@ export type Feature =
   | "nestedArc"      // 一条弧线完全包住另一条（文本谱的括号先开先闭，写不出）
   | "oddTuplet"      // 比例不是 n:n−1 的多连音（文本谱里 n 个音一律占 n−1 个基本时值）
   | "slurCrossTuplet" // 跨出多连音组的弧（123 的弧与多连音共用括号、只许嵌套）
-  | "lyricOnRest";   // 挂在可见休止上的词（123、ABC 的休止不占对位格）
+  | "lyricOnRest"    // 挂在可见休止上的词（123、ABC 的休止不占对位格）
+  | "pageBreak";     // 谱里写的换页（小节级或小节中间的）
 
 /** 人看的名字，直接进丢失清单。 */
 export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
@@ -78,6 +80,7 @@ export const FEATURE_NAMES: Readonly<Record<Feature, string>> = {
   oddTuplet: "比例特殊的多连音（按 n 个音占 n−1 拍写不出来）",
   slurCrossTuplet: "跨出多连音组的弧线（会截到组的边界）",
   lyricOnRest: "挂在休止符上的歌词",
+  pageBreak: "换页（会改成换行）",
 };
 
 /** 目标格式。文本谱两种方言各算一种（装得下的不一样：番茄没有页眉页脚与版面指令字段）。 */
@@ -113,8 +116,9 @@ export const FORMAT_CAPS: Readonly<Record<TargetFormat, ReadonlySet<Feature>>> =
   "123": allBut("harmonyOffset", "noteStack", "slurCrossTuplet", "lyricOnRest"),
   // 标准 ABC：样式被规范标为 VOLATILE（§11，「not standardised」），所以 123 才把样式
   // 另走样式表；`I:playorder` 是 123 的扩展，标准 ABC 读不懂（虽然会忽略，等于丢）。
-  // 休止不跟词（ABC §5.1「syllables are not aligned on … rests」）
-  abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset", "lyricOnRest"),
+  // 休止不跟词（ABC §5.1「syllables are not aligned on … rests」）；
+  // 换页没有记号，写出端退化成换行（`emitabc.ts::breakText`；换行本身含小节中间的都装得下，`break-roundtrip-check` 实测）
+  abc: allBut("style", "playOrder", "rhythmNote", "verseLabel", "harmonyOffset", "lyricOnRest", "pageBreak"),
   // `.jpwabc` 的语法**刻意不扩**：和弦、力度、多声部都写不进去。
   // 音符堆：写出端只留最高音、删 voice > 1
   jpwabc: allBut("harmony", "harmonyOffset", "slur", "dynamics", "multiVoice", "noteStack", "style", "layoutDirectives", "multiSong", "grace", "meta", "paper", "nestedArc", "oddTuplet"),
@@ -156,6 +160,8 @@ export function featuresUsed(doc: ScoreDoc): Set<Feature> {
     for (const part of song.parts) {
       part.measures.forEach((mea, mi) => {
         if (mi > 0 && mea.attrs?.key && song.key && keyDiffers(mea.attrs.key, song.key)) used.add("keyChange");
+        if (mi > 0 && mea.print?.newPage) used.add("pageBreak");
+        if (mea.elements.some((el) => inlineBreakOf(el) === "page")) used.add("pageBreak");
       });
       for (const mea of part.measures) {
         const lane = melodyLane(mea);
