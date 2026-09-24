@@ -229,6 +229,9 @@ export interface BootHint {
  * 高音谱号 vs 低音谱号：**先按模板签名比**（`tpl` 给了就比），比不出来再按高度分
  * ——高音谱号从谱表下方一路探到上方，实测 4.7~7.5 个线距；低音谱号只占上面两格半。
  */
+/** 括线弯钩要比谱号种子左缘再往左伸出多少格才剔（《来敬拜荣耀王》钩只伸出 0.4 格）。 */
+const HOOK_LEFT = 0.25;
+
 export function bootstrapClefs(
   blobs: { x: number; y: number; w: number; h: number }[],
   staves: BootStaff[],
@@ -274,7 +277,7 @@ export function bootstrapClefs(
           // （万古磐石歌末行放大后，钩子从底线往左下甩出 1.3 格，盒高拉到 5.3 格判成高音谱号）。
           // 谱号自己探出谱表的那截（高音谱号的尾巴）在谱号正下方，不往左伸。
           // 只管底下：谱表上方左边的小碎块也有（破碎扫描件三处），一并剔掉反而少认一批音（−0.2）。
-          if (b.y >= bottom - space * 0.25 && b.y + b.h > bottom + space * 0.8 && b.x < sd.x - space * 0.5) continue;
+          if (b.y >= bottom - space * 0.25 && b.y + b.h > bottom + space * 0.8 && b.x < sd.x - space * HOOK_LEFT) continue;
           // 调号第一个升降号**擦着谱号右缘**：粗体铅字本排得紧，F# 左缘伸进高音谱号上端的弯钩下面，
           // x 上重叠一两个像素就并进来，盒子宽到 3.6 格、调号少一个（《主使我喜乐》四个升号只认出两个）。
           // 谱号自己的碎块与盒子重叠大半；升降号只擦边、又落在种子右半边。

@@ -771,6 +771,13 @@ export function findBarlines(pg: SPage): boolean {
   for (const l of vlines) {
     if (l.hasAnyTag()) continue;
     if (l.len < minLen) continue;
+    // **位置也要对**：要么压在某行谱上（重叠够半个谱表高），要么夹在两行谱之间、两端贴着上下两行
+    // （钢琴谱中间那截）。位图上别的竖笔（升号的竖笔连着符干）落在谱表下方歌词带里、
+    // 与别处小节线同 x，也够长，就被收成小节线（《来敬拜荣耀王》第 9 小节高音谱表因此多切一刀，后面整行错一个小节）。
+    const onStaff = pg.staves.some((st) => Math.min(l.bottom, st.box.bottom) - Math.max(l.top, st.box.top) >= minLen);
+    const gapTol = (pg.normalStaffSpace || pg.space) * 0.5;
+    const between = pg.staves.some((a) => Math.abs(l.top - a.box.bottom) <= gapTol && pg.staves.some((b) => b !== a && Math.abs(l.bottom - b.box.top) <= gapTol));
+    if (!onStaff && !between) continue;
     for (const x of barX) {
       if (Math.abs(l.cx - x) < Math.max(l.lw, 1)) {
         l.addTag("BarLine");

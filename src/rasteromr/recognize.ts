@@ -345,6 +345,10 @@ const KEY_GAP = 1.5;
 const LYRIC_MIN_H = 0.4;
 /** 调号**第一个**记号离谱号右缘的上限（线距）：低音谱号的两点在谱号盒外（齐来称颂 1.77 格）。 */
 const KEY_GAP_FIRST = 2.0;
+/** 调号串里后一个记号的左缘可以伸进前一个右缘多少格。 */
+const KEY_OVERLAP = 0.5;
+/** 上下贴着的两个头（`isStackedPair`）拆分时每个头的得分门槛。 */
+const PAIR_SCORE_MIN = 0.4;
 
 /** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
 const TIME_TEMPLATE_DIST = 180;
@@ -842,7 +846,14 @@ export async function recognizeRasterPage(
   if (masks.length) {
     for (const c of blobs) {
       if (claimed.has(c.id)) continue;
-      const parts = splitHeadCluster(noBeam, c.bbox, c.area, masksNB.length ? masksNB : masks, unit, pitchGrid, onLineY);
+      let parts = splitHeadCluster(noBeam, c.bbox, c.area, masksNB.length ? masksNB : masks, unit, pitchGrid, onLineY);
+      // **上下贴着的两个头**（三度和弦，一个头宽、两个头高、很实）：模板要头的上下是白的，
+      // 贴着就各扣一截，两个都卡在门槛下（《来敬拜荣耀王》低音谱表的 E3/G♯3 得 0.45 / 0.42，门槛 0.46）。
+      // 只对这种形状放到 0.40，而且要正好拆出两个、上下隔开 0.8 格以上。
+      if (!parts.length && isStackedPair(c.bbox, c.area, unit)) {
+        const p2 = splitHeadCluster(noBeam, c.bbox, c.area, masksNB.length ? masksNB : masks, unit, pitchGrid, onLineY, false, undefined, 2, PAIR_SCORE_MIN);
+        if (p2.length === 2 && Math.abs(p2[0].y - p2[1].y) >= unit.space * 0.8) parts = p2;
+      }
       if (!parts.length) continue;
       claimed.add(c.id);
       for (const b of parts) split.push({ box: b, code: "noteheadBlack" });
@@ -1293,12 +1304,18 @@ export async function recognizeRasterPage(
     // 第三个的竖笔没抹、与肚子断成两块，竖笔被字典认成 wiggleTrill——以前见字典有就不插手，
     // 整首少一个降号，A 全成了还原。
     let fromDict = false;
+    // 相接的容差放到**半格**：错开排的窄升号，后一个的左缘常在前一个右缘左边（《来敬拜荣耀王》
+    // 三个升号，C# 左缘在 F# 右缘左边 5px，接不上，A 大调读成 D 大调，整曲音级错一个五度）。
+    // 只在**前面已有调号记号**时放宽：从谱号右缘起算也放宽的话，会把谱号自己的碎块收进来（《主使我喜乐》−2.3）
+    const overlapTol = unit.space * KEY_OVERLAP;
+    const taken = new Set<RasterSym>();
     for (;;) {
       const nx = syms
-        .filter((s0) => isAccidental(s0.code) && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + unit.space * KEY_GAP)
+        .filter((s0) => !taken.has(s0) && isAccidental(s0.code) && onStaff(s0.box) && s0.box.x >= edge - (taken.size ? overlapTol : 1) && s0.box.x < edge + unit.space * KEY_GAP)
         .sort((a, b) => a.box.x - b.box.x)[0];
       if (!nx) break;
-      edge = nx.box.x + nx.box.w;
+      taken.add(nx);
+      edge = Math.max(edge, nx.box.x + nx.box.w);
       fromDict = true;
     }
     // 字典认成**调号区不该有的东西**（演奏记号之类）的块也算候选：那多半是升降号断出来的半截。
@@ -1339,7 +1356,9 @@ export async function recognizeRasterPage(
       const asKey = (b: Rect) => {
         const w = b.w / unit.space;
         const h = b.h / unit.space;
-        if (h < 1.8 || h > 3.4 || w < 0.4 || w > h * 0.5 || w > 1.2) return null;
+        // 下限 1.6：小号升号（2 格上下）去线后被削到 1.76 格（《来敬拜荣耀王》的 C#）；
+        // 宽高比放到 0.6：同一本的 F# 1.02×1.97 格（0.52）
+        if (h < 1.6 || h > 3.4 || w < 0.4 || w > h * 0.6 || w > 1.2) return null;
         // 串里后面的记号不会比前一个矮一截：拍号 C 的上半弧（2.2 格）紧挨着最后一个升号（3.0 格），
         // 模板距离 156 过得了拍号那道宽闸，被当成第五个升号（《主使我喜乐》四个升号认成五个）
         if (prevKey && b.h < prevKey.box.h * 0.8) return null;
@@ -1352,12 +1371,19 @@ export async function recognizeRasterPage(
           const d = sigDistance(sig, prevKey.sig);
           if (d <= KEY_SELF_DIST) return { smufl: prevKey.code, dist: d };
         }
+        // 还认不出、又**比模板小一号**的：数竖笔。小号升号（2 格，模板 2.7 格）过不了模板的尺寸闸，
+        // 可去线之前的图上两根竖笔都在（《来敬拜荣耀王》A 大调三个升号）。只认升号：两根通高的竖笔，
+        // 降号、拍号数字、带干的符头都凑不出两根。
+        if (h < 2.5) {
+          const pad = Math.round(unit.space * 0.3);
+          if (tallStrokes(raster.bin, { x: b.x - pad, y: b.y, w: b.w + pad * 2, h: b.h }) === 2) return { smufl: "accidentalSharp" as SmuflName, dist: KEY_SELF_DIST };
+        }
         return null;
       };
       for (let i = 0; i < cand.length; i++) {
         const c = cand[i];
         const b = c.bbox;
-        if (b.x < edge - 1 || merged.has(c.id)) continue;
+        if (b.x < edge - (fromDict || prevKey ? overlapTol : 1) || merged.has(c.id)) continue;
         if (b.x > edge + gap) break; // 串断了
         if (b.w / unit.space < 0.6 && b.h / unit.space < 0.6) continue; // 噪点、谱号的小尾巴：跳过，不算断串
         let box = b;
@@ -1381,12 +1407,41 @@ export async function recognizeRasterPage(
         syms.push({ box, code: m.smufl });
         ledger.claim(box, `key:${m.smufl}`);
         prevKey = { box, code: m.smufl, sig: binSig(nl, box) };
-        edge = box.x + box.w;
+        edge = Math.max(edge, box.x + box.w);
         took = true;
         break;
       }
       if (!took) break;
     }
+  }
+
+  // ── 调号记号**按竖笔数**再定一次升降 ─────────────────────────────────────
+  //
+  // 升号的两道横笔很细，常常正好压在谱线上，去线时一起抹掉，只剩两根竖笔
+  //（《来敬拜荣耀王》A 大调三个升号全被模板认成降号，整曲音高错一片）。
+  // **通高的竖笔**数得清：升号两根（右边那根高一点）、降号一根（右下是个肚子）。只拿它把降号改回升号。
+  // 只改谱号右边调号区里的记号，谱中的临时记号不碰。
+  for (const g of groups) {
+    const top = g.lines[0].y;
+    const bottom = g.lines[4].y;
+    const clef = syms.find((s0) => isClef(s0.code) && s0.box.y < bottom && s0.box.y + s0.box.h > top && s0.box.x < Math.max(...g.lines.map((l) => l.left)) + unit.space * 4);
+    if (!clef) continue;
+    const right = clef.box.x + clef.box.w + unit.space * 6;
+    const inKey = (s0: RasterSym) => !(s0.box.x < clef.box.x + clef.box.w - 1 || s0.box.x > right || s0.box.y > bottom || s0.box.y + s0.box.h < top);
+    for (const s0 of syms) {
+      if (s0.code !== "accidentalFlat" && s0.code !== "accidentalSharp") continue;
+      if (!inKey(s0)) continue;
+      // 数竖笔要在**去线之前**的图上、左右各放宽 0.3 格：细的那根竖笔常被当成竖段抽走，去线图上只剩一根
+      const pad = Math.round(unit.space * 0.3);
+      const n = tallStrokes(raster.bin, { x: s0.box.x - pad, y: s0.box.y, w: s0.box.w + pad * 2, h: s0.box.h });
+      // 只往升号改：扫描件放大后升号的竖笔断断续续，数不满两根（《善牧恩慈歌》G 大调因此读成 F 大调，音符 91 → 26%）
+      if (n === 2 && s0.code === "accidentalFlat") s0.code = "accidentalSharp";
+    }
+    // 夹在一串升号里的**还原号**是升号：去线后升号的横笔没了、两根竖笔上下错开，字典认成还原号
+    //（《来敬拜荣耀王》的 C#）。调号里的还原号只在转调取消时出现，不会与升号混排在同一串。
+    const ks = syms.filter((s0) => isAccidental(s0.code) && inKey(s0));
+    if (ks.some((s0) => s0.code === "accidentalSharp") && !ks.some((s0) => s0.code === "accidentalFlat"))
+      for (const s0 of ks) if (s0.code === "accidentalNatural") s0.code = "accidentalSharp";
   }
 
   // ── 谱中的升号被当成两个黑符头 ───────────────────────────────────────────
@@ -2486,4 +2541,29 @@ function nearRestLine(box: { y: number; h: number }, lines: { y: number }[], uni
     for (const k of [1, 2]) if (Math.abs(cy - ys[i + k]) <= unit.space * 0.6) return true;
   }
   return false;
+}
+
+/** 块里**通高的竖笔**有几根：连续墨长过块高 55% 的列，按相邻成组数组数（隔一列以上算两根）。 */
+function tallStrokes(bin: Binary, box: Rect): number {
+  let groups = 0;
+  let prev = -2;
+  for (let x = Math.max(0, Math.floor(box.x)); x < Math.min(bin.w, Math.ceil(box.x + box.w)); x++) {
+    let run = 0;
+    let best = 0;
+    for (let y = Math.max(0, Math.floor(box.y)); y < Math.min(bin.h, Math.ceil(box.y + box.h)); y++) {
+      if (bin.data[y * bin.w + x]) best = Math.max(best, ++run);
+      else run = 0;
+    }
+    if (best < box.h * 0.55) continue;
+    if (x - prev > 1) groups++;
+    prev = x;
+  }
+  return groups;
+}
+
+/** 两个头上下贴着的块：宽 0.9~1.7 格（一个头）、高 1.7~2.4 格（两个头）、填充率 ≥ 0.7。 */
+function isStackedPair(box: Rect, area: number, unit: { space: number }): boolean {
+  const w = box.w / unit.space;
+  const h = box.h / unit.space;
+  return w >= 0.9 && w <= 1.7 && h >= 1.7 && h <= 2.4 && area / Math.max(1, box.w * box.h) >= 0.7;
 }

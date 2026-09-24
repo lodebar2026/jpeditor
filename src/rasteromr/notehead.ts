@@ -370,6 +370,8 @@ const RING = 0.22;
  *  干净档 84.91 / **84.94** / 84.71%——0.35 扫描档只多 0.01 而干净档掉 0.23，维持 0.30。 */
 /** 内腔的宽高比下限：符头是**横椭圆**，字里的框、噪声的空隙多半接近方的。 */
 const HOLE_RATIO = 1.2;
+/** 贴着真符干时内腔宽高比的下限。 */
+const HOLE_RATIO_ROUND = 0.95;
 /** 二分符头一定带符干（全音符才不带，靠宽度分）。放开这一条实测音符 69.57% → 67.81%。 */
 const HOLE_NEED_STEM = true;
 const FILL_RING = [0.3, 0.75] as const;
@@ -435,8 +437,13 @@ export function hollowHeadsFromHoles(
     const hw = hole.w / sp;
     const hh = hole.h / sp;
     if (hw < HOLE_W[0] || hw > HOLE_W[1] || hh < HOLE_H[0] || hh > HOLE_H[1]) continue;
-    if (hole.w / hole.h < HOLE_RATIO) continue; // 内腔是**横椭圆**：字里的框、噪声的空隙多半接近方的
+    // 内腔是**横椭圆**：字里的框、噪声的空隙多半接近方的。
+    // 接近圆的（0.95~1.2）只在贴着一根真符干时收——粗体铅字本的二分头内腔是斜的、近乎圆
+    //（《来敬拜荣耀王》C♯5、B4 两个二分头，内腔 12×11px、1.09）。
+    const round = hole.w / hole.h < HOLE_RATIO;
+    if (round && hole.w / hole.h < HOLE_RATIO_ROUND) continue;
     const box: Rect = { x: hole.x - ring, y: hole.y - ring, w: hole.w + ring * 2, h: hole.h + ring * 2 };
+    if (round && !stemOf(box, stems, unit) && !stemThrough(box, stems, unit)) continue;
     const w = box.w / sp;
     const h = box.h / sp;
     if (w < W_HOLLOW_MIN || w > W_MAX || h < H_MIN || h > H_MAX) continue;
@@ -489,10 +496,12 @@ export function hollowHeadsFromHoles(
     const top = Math.min(m.stem.y0, m.stem.y1);
     const bottom = Math.max(m.stem.y0, m.stem.y1);
     const x = (m.stem.x0 + m.stem.x1) / 2;
-    const mate = out.some((o) => {
-      if (Math.abs(x - o.box.x) > tol && Math.abs(x - (o.box.x + o.box.w)) > tol) return false;
-      if (bottom < o.box.y || top > o.box.y + o.box.h) return false;
-      return Math.abs(o.box.y + o.box.h / 2 - cy) <= sp * MATE_GAP;
+    // 同干的伙伴也可以是**别的路已认出的头**（`taken`）：粗体本 C♯5/E4 二分和弦，E4 是单头那一路收的
+    const mate = [...out.map((o) => o.box), ...taken].some((o) => {
+      if (o === m.box) return false;
+      if (Math.abs(x - o.x) > tol && Math.abs(x - (o.x + o.w)) > tol) return false;
+      if (bottom < o.y || top > o.y + o.h) return false;
+      return Math.abs(o.y + o.h / 2 - cy) <= sp * MATE_GAP;
     });
     if (!mate) continue;
     out.push({ box: m.box, code: "noteheadHalf" });
