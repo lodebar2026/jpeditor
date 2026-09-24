@@ -150,7 +150,7 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 - 源文带来的换行先清掉，一律按排出来的。
 - 读回来走「带版面」那条路（`hasEmbeddedLayout`），排出来与导出前一致。以前那套 DOM 注入（A4 常量表 1233×1596、
   没有分行凭据时每行 4 小节、音符按小节宽均分）的坐标是粗略值：次行起不给谱号调号留位，读回来行首音压在谱号下，已删。
-- 底本自带 `<defaults>`（abc2xml 会输出）或小节宽/`default-x` 时**一字不改**：作者已给的版面比排出来的更贴切。
+- 底本自带 `<defaults>` 或小节宽/`default-x` 时**一字不改**：作者已给的版面比排出来的更贴切。
 - 本写出端投影出来的一律署 `<encoding><software>jpeditor</software>`：混排引擎据此认 `<harmony><offset>`（长音中间换和弦；
   musicpp 只认 MuseScore 写的）。
 

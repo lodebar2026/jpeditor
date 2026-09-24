@@ -57,9 +57,9 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
   - **识别核对视图**：识别后自动进入「识别 / 排版」可切换模式，把识别结果按源图坐标叠加在二值图上
     比对——支持原位叠加 / 附近浮窗 / 仅原图三种视图；点选识别对象即选中对应 123 代码，
     悬停高亮并弹出整行 / 页眉浮窗，便于逐音校对
-- **ABC 记谱导入**：拖入或「打开」`.abc` 文件即自动转 MusicXML 再排版为简谱，复用 MusicXML 导入
-  路径，天然支持多声部、连奏、重复 / volta、和弦、装饰音、broken-rhythm、调号变更、`C:` 字段作词
-  作曲等。转换忠实移植自 Willem Vree 的 `abc2xml`，输出与原脚本逐字节一致
+- **ABC 记谱**：拖入或「打开」`.abc` 文件即原生解析、排为简谱，可直接编辑保存原文，
+  代码与谱面双向定位到音符；支持多声部、连奏、重复 / volta、和弦、装饰音、broken-rhythm、
+  调号变更等
 - **文本谱（番茄简谱 / 诗歌本动态谱）**：两套纯文本简谱记谱语言作为**第一等源格式**——
   打开或拖入即编原文（自动嗅探方言、语法高亮、诊断提示），按各自的排版规则渲染
   「原版」连续长图与「展开」16:9 分页两种版面，支持四声部并排、和弦、力度、倚音、跳房子等；
@@ -95,8 +95,6 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
 
 本项目站在这些工作之上，一并致谢：
 
-- [abc2xml](https://wim.vree.org/svgParse/abc2xml.html)（Willem Vree）—— ABC → MusicXML 转换，
-  本项目的 ABC 导入是对它的忠实移植
 - [open-fanqie](https://github.com/Linho1219/open-fanqie)（MIT）—— 番茄简谱脚本的第三方开源
   解析/渲染实现；番茄简谱脚本规范文档见 <https://fqdoc.linho.cc/>
 - [Bravura / SMuFL](https://github.com/steinbergmedia/bravura)（Steinberg，SIL OFL）——

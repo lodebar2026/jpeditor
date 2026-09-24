@@ -77,7 +77,7 @@ async function boot() {
     paletteBtn: document.getElementById("btn-palette") as HTMLButtonElement | null,
   });
   app.mountEditor(codePane, SAMPLE);
-  const win = window as unknown as { __app: App; __paint: ReturnType<typeof paintProbe>; __mixedModel: unknown; __omr: unknown; __abc2musicxml: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
+  const win = window as unknown as { __app: App; __paint: ReturnType<typeof paintProbe>; __mixedModel: unknown; __omr: unknown; __xmlout: unknown; __pu: unknown; __book: unknown;
     __j123: unknown; __pptx: unknown; __songbook: unknown };
   win.__app = app;
   // 统一排版器暴露（`new __paint.ScorePainter(__paint.resources)` + 请求），供混排 / 原样文档的无头回归脚本用。
@@ -87,8 +87,6 @@ async function boot() {
     .then(([model, smufl, layout, pages]) => ({ ...model, GlyphCodes: smufl.GlyphCodes, MetaData: smufl.MetaData, ...layout, formatMixedScore: pages.formatMixedScore }));
   // OMR 原语暴露（便于脚本化测试/准确率回归，同 __app 约定）。
   win.__omr = import("./omr");
-  // ABC → MusicXML 移植版暴露（便于 scripts/abc-check.mjs 回归，同 __app 约定）。
-  win.__abc2musicxml = import("./abc/abc2xml");
   // 文本谱（番茄 / 有谱）解析与排版暴露，供 pu-*.mjs 回归。
   win.__pu = import("./pu");
   // PPTX 导出（序列化器 + 展开档另排一遍那个 painter）暴露，供 scripts/pptx-export.mjs 批量转出用。
@@ -114,16 +112,16 @@ async function boot() {
     import("./j123/parse"), import("./j123/emit"),
     import("./model/fromjpw"), import("./model/frompu"), import("./model/helpers"),
     import("./model/jianpuinput"), import("./pu"),
-    import("./abcfamily/emitabc.entry"), import("./abc/abc2xml"),
+    import("./abcfamily/emitabc.entry"),
     import("./model/fromxml"), import("./model/toxml"), import("./model/capability"),
     import("./model/jianpuproject"), import("./model/jianpu"), import("./model/tojpw"), import("./model/xmlproject"),
     import("./model/breaks"),
   ]).then((
-    [parse, emit, fromjpw, frompu, helpers, jianpuinput, pu, emitabc, abc2xml,
+    [parse, emit, fromjpw, frompu, helpers, jianpuinput, pu, emitabc,
      fromxml, toxml, capability, jianpuproject, jianpu, tojpw, xmlproject, breaks],
   ) => ({
     ...parse, ...emit, ...fromjpw, ...frompu, ...helpers, ...jianpuinput, pu,
-    ...emitabc, ...abc2xml, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw, ...xmlproject, ...breaks,
+    ...emitabc, ...fromxml, ...toxml, ...capability, ...jianpuproject, ...jianpu, ...tojpw, ...xmlproject, ...breaks,
   }));
   // `.jpwabc` ↔ MusicXML 的读入与导出版面（`engraveScoreDoc`：五线谱引擎排出导出版面，交给写出端）暴露，供 scripts/xml-roundtrip.mjs 回归
   // （写出端只有 `model/toxml.ts`，在 `__j123` 里）。

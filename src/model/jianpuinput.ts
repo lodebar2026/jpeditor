@@ -1,6 +1,6 @@
 // `ScoreDoc` → 简谱排版引擎的输入（`layout/input.ts`）。**只此一份投影**，按形状分支：
 //
-//   `jianpuInputOfXml(song)`        MusicXML 形状（成书重排、ABC 回落）
+//   `jianpuInputOfXml(song)`        MusicXML 形状（成书重排）
 //   `jianpuInputOfDoc(doc, opts)`   简谱形状：文本谱 / 123 / ABC / `.musicxml` 的简谱档（经排版行视图 `pu/slots.ts::docView`）
 //   `jianpuInputOfJpw(doc)`         `.jpwabc`（按原文小节，行内 `$` 换行照原位）
 //

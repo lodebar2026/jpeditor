@@ -1030,9 +1030,8 @@ export function parse123(text: string, options: ParseOptions = {}): ScoreDoc {
 
 /** `.abc` 文本 → `ScoreDoc`（**原生解析**，不经 MusicXML）。
  *
- *  为什么不复用 `abc/abc2xml.ts`：那条路把源字符偏移丢光了，编辑器的双向定位最多到小节级、
- *  往返也只能「原文或全量重写」二选一。见 `docs/模块/源格式-abc家族.md`。
- *  `abc2xml` 仍留着做对照基准与 fallback。 */
+ *  为什么不转 MusicXML 再读：那条路把源字符偏移丢光了，编辑器的双向定位最多到小节级、
+ *  往返也只能「原文或全量重写」二选一。见 `docs/模块/源格式-abc家族.md`。 */
 export function parseAbc(text: string, options: ParseOptions = {}): ScoreDoc {
   return parseAbcFamily(text, DIALECT_ABC, options);
 }

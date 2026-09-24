@@ -28,11 +28,10 @@ import { LONG_IMAGE_WIDTH, PAGE_RATIOS, STAFF_LONG_IMAGE_WIDTH, STAFF_PAPER_DEFA
 import { JpNumber, Lyric as LayoutLyric, TextFrame, type PageItem } from "../layout/pageitem";
 import { colorToCss } from "../common/geom";
 import { MetaData } from "../smufl/smufl";
-import { jianpuInputOfDoc, jianpuInputOfJpw, jianpuInputOfXml } from "../model/jianpuinput";
+import { jianpuInputOfDoc, jianpuInputOfJpw } from "../model/jianpuinput";
 import { phraseCuts, type FitMeasure } from "../pu/phrase";
 import { layoutStaff } from "../mixed/layout";
 import { staffChordSpans } from "../mixed/layoutpass";
-import { abcToMusicXml } from "../abc/abc2xml";
 import type { JpwMeta, JpwRange } from "../omr/types";
 import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
 import { isTauriRuntime, saveBytes } from "./fileio";
@@ -992,19 +991,24 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   /** FormatHost：`.abc` 解析 → 排版 → 渲染。
    *
-   *  **原生解析直出 `ScoreDoc`**（`parseAbc`），不经 `abc2xml → MusicXML` 转一手——
+   *  **原生解析直出 `ScoreDoc`**（`parseAbc`），不经 MusicXML 转一手——
    *  那条路把源字符偏移丢光了，双向定位最多到小节级、往返也只能「原文或全量重写」二选一。
-   *  原生解析读不出音符时**自动回落 abc2xml**（只读，提示降级），沿用项目既有的兜底模式。 */
+   *  读不出音符就报错，不回落。 */
   reloadAbc(text: string): boolean {
     let doc: ScoreDoc;
     try {
       doc = parseAbc(text);
     } catch (e) {
       console.error("ABC 解析失败", e);
-      return this._reloadAbcFallback(text, e instanceof Error ? e.message : String(e));
+      this.setStatus("ABC 解析失败：" + (e instanceof Error ? e.message : String(e)));
+      return false;
     }
     const notes = doc.songs.reduce((n, song) => n + [...eachChord(song)].length, 0);
-    if (notes === 0) return this._reloadAbcFallback(text, "原生解析没读出音符");
+    if (notes === 0) {
+      this._reportDiagnostics("ABC", doc.diagnostics);
+      this.setStatus("ABC 解析失败：没读出音符");
+      return false;
+    }
     this._scoreDoc = { text, doc };
     this._puScoreCache = null;
     this._syncPhraseBase(text);
@@ -1012,26 +1016,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     if (!this._layoutScoreDoc(doc, "ABC")) return false;
     this._reportDiagnostics("ABC", doc.diagnostics);
     return true;
-  }
-
-  /** 原生 ABC 读不动时回落 `abc2xml`：转成 MusicXML 走既有那条路，谱面照样看得到，
-   *  但双向定位降到小节级、存回原文只能原样。**只在这条路上提示降级**。 */
-  private _reloadAbcFallback(text: string, why: string): boolean {
-    try {
-      const xml = abcToMusicXml(text);
-      this._setMixedXml(xml);
-      if (!this.mixedDoc) return false;
-      this._mixedDerivedText = this._mixedDeriveKey(); // 进五线谱就用这份，不再走原生那条（它读不动）
-      const score = jianpuInputOfXml(this.mixedDoc.songs[0]!);
-      this._layoutScore(score, null);
-      this.renderPages();
-      this.setStatus(`ABC 原生解析未成功（${why}），已回落 abc2xml——谱面可看，定位只到小节`);
-      return true;
-    } catch (e) {
-      console.error("ABC 回落也失败", e);
-      this.setStatus("ABC 解析失败：" + (e instanceof Error ? e.message : String(e)));
-      return false;
-    }
   }
 
   /** 原样档这一份 `ScoreDoc` 走不走简谱引擎布局：格式说走（`caps.originalLayout`），
@@ -1808,7 +1792,6 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   private _importBytes(bytes: Uint8Array, name: string): void {
     // ABC 记谱：**原文就是源格式**，原生解析直接进编辑器（`reloadAbc`），不再转 MusicXML。
-    // 原生解析读不动时由 `reloadAbc` 自己回落 abc2xml，这里不预先转。
     if (/\.abc$/i.test(name)) {
       this._dropMixedDoc(); // 原来在五线谱/混排就留在那档：setText → reload 会重新派生
       this._setDocFormat("abc");

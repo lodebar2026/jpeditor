@@ -199,8 +199,8 @@ const J123: FormatAdapter = {
 };
 
 /** ABC —— 与 123 同源的那一支（123 是 ABC 方言）。**原生解析直出 `ScoreDoc`**，
- *  不经 `abc2xml → MusicXML` 转一手——那条路把源字符偏移丢光了，双向定位最多到小节级。
- *  `abc/abc2xml.ts` 留作对照基准与 fallback，见 `docs/模块/源格式-abc家族.md`。 */
+ *  不经 MusicXML 转一手——那条路把源字符偏移丢光了，双向定位最多到小节级。
+ *  见 `docs/模块/源格式-abc家族.md`。 */
 const ABC: FormatAdapter = {
   id: "abc",
   defaultExt: ".abc",
