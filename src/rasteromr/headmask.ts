@@ -339,6 +339,8 @@ const STEM_H = [1.6, 6.5] as const;
 const STEM_H_LONG = 9;
 /** 长干块两个头都要过的得分（比单头那一档严：这里没有「头在端上」的先验）。 */
 const LONG_SCORE_MIN = 0.5;
+/** 长干块里第三个头离已有两头的最小间隔（格）。 */
+const LONG_THIRD_GAP = 0.9;
 /** 填充率：一根符干加一个头，墨占不到包围盒的一半；太实的是黑块、太空的是弧线。 */
 const STEM_FILL = [0.18, 0.72] as const;
 /** 头只可能在符干的**某一端**，从端点往里找这么多格。 */
@@ -421,12 +423,22 @@ export function headFromStemBlock(
     if (!one) return null;
     const two = bandTop(bin, masks, box, sp, step, grid, onLine, [box.y, box.y + box.h], (y) => Math.abs(y - one.y) >= sp * 1.5, (y) => rowSpan(bin, box, y) >= hwL * 0.7);
     if (!two || two.s < LONG_SCORE_MIN) return null;
-    const [top, bot] = one.y < two.y ? [one, two] : [two, one];
+    // **三音和弦**：两头之外，同一根干上还夹着一个（《向主唱新歌》低音 G3/D3/G2 一根带尾的干，
+    // 只摘得出两个）。离已有的头都隔开 0.9 格以上，得分同第二个头那一档
+    const got = [one, two];
+    for (let k = got.length; k < CHORD_MAX; k++) {
+      const more = bandTop(bin, masks, box, sp, step, grid, onLine, [box.y, box.y + box.h], (y) => got.every((g) => Math.abs(y - g.y) >= sp * LONG_THIRD_GAP), (y) => rowSpan(bin, box, y) >= hwL * 0.7);
+      if (!more || more.s < LONG_SCORE_MIN) break;
+      got.push(more);
+    }
+    got.sort((a, b) => a.y - b.y);
+    const top = got[0];
+    const bot = got[got.length - 1];
     const hw0 = Math.round(sp * 1.25);
     const hh0 = Math.round(sp * 0.95);
     return {
       head: { x: Math.round(top.x - hw0 / 2), y: Math.round(top.y - hh0 / 2), w: hw0, h: hh0 },
-      extra: [{ x: Math.round(bot.x - hw0 / 2), y: Math.round(bot.y - hh0 / 2), w: hw0, h: hh0 }],
+      extra: got.slice(1).map((g) => ({ x: Math.round(g.x - hw0 / 2), y: Math.round(g.y - hh0 / 2), w: hw0, h: hh0 })),
       // 干画满整块（两头各伸出去的那截也算）：符尾挂在端上，只画两头之间的话 `bootstrapFlags`
       // 找不到挂符尾的干，十六分、八分整批读成四分，小节跟着错位（万古磐石歌 −2.3）
       stemX: stemColumn(bin, box, top.y, bot.y),
