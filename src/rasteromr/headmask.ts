@@ -335,6 +335,10 @@ export function splitHeadCluster(
  *  单个八分音符的块实测 1.99×3.91 格（带符尾）、1.11×3.85 与 1.11×5.31 格（只有符干）。 */
 const STEM_W = [0.85, 2.6] as const;
 const STEM_H = [1.6, 6.5] as const;
+/** 两头各一个头的长干块的高度上限。 */
+const STEM_H_LONG = 9;
+/** 长干块两个头都要过的得分（比单头那一档严：这里没有「头在端上」的先验）。 */
+const LONG_SCORE_MIN = 0.5;
 /** 填充率：一根符干加一个头，墨占不到包围盒的一半；太实的是黑块、太空的是弧线。 */
 const STEM_FILL = [0.18, 0.72] as const;
 /** 头只可能在符干的**某一端**，从端点往里找这么多格。 */
@@ -382,7 +386,10 @@ export function headFromStemBlock(
   const sp = unit.space;
   const w = box.w / sp;
   const h = box.h / sp;
-  if (w < STEM_W[0] || w > STEM_W[1] || h < STEM_H[0] || h > STEM_H[1]) return null;
+  // **一根长干两头各一个头**（6.5~9 格）：闭合谱低音 A3/F2、A3/D2 一根干穿过整个谱表，
+  // 超过单头那一档的高度上限。这一档要**两头都摘得出头**才收，原来那一档的行为一点不变。
+  const long = h > STEM_H[1] && h <= STEM_H_LONG;
+  if (w < STEM_W[0] || w > STEM_W[1] || h < STEM_H[0] || (h > STEM_H[1] && !long)) return null;
   const fill = area / Math.max(1, box.w * box.h);
   if (fill < STEM_FILL[0] || fill > STEM_FILL[1]) return null;
   // 两端各留一条带，头只在里面找
@@ -406,6 +413,27 @@ export function headFromStemBlock(
       }
     }
   if (!best) return null;
+  if (long) {
+    // 头不一定在端上：两个声部共用一根竖线（上声部的干往上、下声部的往下），头都在中段。
+    // 整根干上找两个：得分最高的一个，再在隔开 1.5 格以外找第二个；那一行的墨都要够一个头宽。
+    const hwL = Math.round(sp * 1.25);
+    const one = bandTop(bin, masks, box, sp, step, grid, onLine, [box.y, box.y + box.h], () => true, (y) => rowSpan(bin, box, y) >= hwL * 0.7);
+    if (!one) return null;
+    const two = bandTop(bin, masks, box, sp, step, grid, onLine, [box.y, box.y + box.h], (y) => Math.abs(y - one.y) >= sp * 1.5, (y) => rowSpan(bin, box, y) >= hwL * 0.7);
+    if (!two || two.s < LONG_SCORE_MIN) return null;
+    const [top, bot] = one.y < two.y ? [one, two] : [two, one];
+    const hw0 = Math.round(sp * 1.25);
+    const hh0 = Math.round(sp * 0.95);
+    return {
+      head: { x: Math.round(top.x - hw0 / 2), y: Math.round(top.y - hh0 / 2), w: hw0, h: hh0 },
+      extra: [{ x: Math.round(bot.x - hw0 / 2), y: Math.round(bot.y - hh0 / 2), w: hw0, h: hh0 }],
+      // 干画满整块（两头各伸出去的那截也算）：符尾挂在端上，只画两头之间的话 `bootstrapFlags`
+      // 找不到挂符尾的干，十六分、八分整批读成四分，小节跟着错位（万古磐石歌 −2.3）
+      stemX: stemColumn(bin, box, top.y, bot.y),
+      stemY0: box.y,
+      stemY1: box.y + box.h,
+    };
+  }
   const hw = Math.round(sp * 1.25);
   const hh = Math.round(sp * 0.95);
   const head = { x: Math.round(best.x - hw / 2), y: Math.round(best.y - hh / 2), w: hw, h: hh };
@@ -472,4 +500,26 @@ function stemColumn(bin: Binary, box: Rect, y0: number, y1: number): number {
     }
   }
   return bx;
+}
+
+/** 一条带里得分最高的头（门槛同单头那一档）。 */
+function bandTop(
+  bin: Binary, masks: HeadMask[], box: Rect, sp: number, step: number,
+  grid: (y: number) => number | null, onLine: (y: number) => boolean, [ya, yb]: [number, number],
+  allowY: (y: number) => boolean = () => true, rowOk: (y: number) => boolean = () => true,
+): { x: number; y: number; s: number } | null {
+  let bb: { x: number; y: number; s: number } | null = null;
+  for (let x = box.x; x <= box.x + box.w; x += step) {
+    const ys = new Set<number>();
+    for (let y = ya; y <= yb; y += sp * 0.25) {
+      const g = grid(y);
+      if (g !== null && g >= ya - sp * 0.3 && g <= yb + sp * 0.3 && allowY(g) && rowOk(g)) ys.add(g);
+    }
+    for (const y of ys) {
+      const m = masks.find((k) => k.onLine === onLine(y)) ?? masks[0];
+      const s = scoreAt(bin, m, x, y);
+      if (s >= (m.pooled ? STEM_SCORE_MIN_POOLED : STEM_SCORE_MIN) && (!bb || s > bb.s)) bb = { x, y, s };
+    }
+  }
+  return bb;
 }

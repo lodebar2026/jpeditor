@@ -808,7 +808,7 @@ export async function recognizeRasterPage(
   // 尺寸像内腔的往外扩一圈就是符头；骑线的头内腔被谱线豁成两半，先并回去。
   // 判据全在 `notehead.ts::hollowHeadsFromHoles`。
   const rawHoles = findHoles(raster.bin, Math.max(4, Math.round(unit.space * unit.space * 0.06)));
-  const holes = mergeHoles(rawHoles, unit);
+  const holes = mergeHoles(rawHoles, unit, onGrid);
   // 和弦字母的**内腔**也是洞（`D`/`G`/`B`/`A` 都有），不挡住就从这一路漏回来
   // ——检测框一并算「已被占」。
   const takenBoxes = [...heads.map((h) => h.box), ...harmonyMasks];
@@ -1544,8 +1544,12 @@ export async function recognizeRasterPage(
       }
       const r = headFromStemBlock(raster.bin, b, c.area, masks, unit, pitchGrid, onLineY);
       if (!r) continue;
+      // 已有符头压着的不重复出（长干两头的那一档：万古磐石歌的 B♭3/B♭2 别的路已认出，再出一遍成了四个音）
+      const dup = (hb: Rect) => [...syms, ...stemHeads].some((s0) => /^notehead/.test(s0.code) && overlapFrac(hb, s0.box) > 0.3);
+      if (dup(r.head)) continue;
       stemHeads.push({ box: r.head, code: "noteheadBlack" });
       for (const e of r.extra) {
+        if (dup(e)) continue;
         stemHeads.push({ box: e, code: "noteheadBlack" });
         ledger.claim(e, "stemblock:noteheadBlack");
       }
@@ -1580,6 +1584,8 @@ export async function recognizeRasterPage(
   const clfNeg: Rect[] = syms.filter((s0) => !/notehead/i.test(s0.code)).map((s0) => s0.box);
   const clf = masks.length ? trainHeadClassifier(raster.bin, masks, unit, onLineY, clfPos, clfNeg) : null;
   const clfHeads: RasterSym[] = [];
+  /** 已有符头压着的位置不再出（「头 + 干」那一路只记账、不标块，这一遍会在同一块里再拆一次）。 */
+  const headTaken = (hb: Rect) => [...syms, ...clfHeads].some((s0) => /^notehead/.test(s0.code) && overlapFrac(hb, s0.box) > 0.3);
   if (clf) {
     for (const c of blobs) {
       if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
@@ -1597,6 +1603,7 @@ export async function recognizeRasterPage(
       const hw = Math.round(unit.space * 1.25);
       const hh = Math.round(unit.space * 0.95);
       const box = { x: Math.round(b.x + b.w / 2 - hw / 2), y: Math.round(gy - hh / 2), w: hw, h: hh };
+      if (headTaken(box)) continue;
       clfHeads.push({ box, code: "noteheadBlack" });
       ledger.claim(box, "clf:noteheadBlack");
     }
@@ -1620,6 +1627,7 @@ export async function recognizeRasterPage(
         );
         if (parts.length < 2) continue;
         for (const pb of parts) {
+          if (headTaken(pb)) continue;
           clfHeads.push({ box: pb, code: "noteheadBlack" });
           ledger.claim(pb, "clfsplit:noteheadBlack");
         }

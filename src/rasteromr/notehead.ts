@@ -361,6 +361,8 @@ const HOLE_W = [0.45, 1.25] as const;
 const HOLE_H = [0.3, 1.0] as const;
 /** 两个孔并成一个内腔：x 上要重叠这么多（窄的那个的比例），纵向缝不超过这么多格。 */
 const HOLE_OVERLAP = 0.6;
+/** 被一条线切开的两半内腔（扁、只隔一条线宽）并起来要的横向重叠。 */
+const HOLE_OVERLAP_CUT = 0.4;
 const HOLE_VGAP = 0.45;
 /** 内腔往外扩多少（线距）——空心符头的圈实测 0.15~0.25 格厚。 */
 const RING = 0.22;
@@ -381,7 +383,7 @@ const INK_STEM = [2.5, 7] as const;
 const MATE_GAP = 3.5;
 
 /** 把被谱线豁开的内腔并回一个。 */
-export function mergeHoles(holes: Rect[], unit: RasterUnit): Rect[] {
+export function mergeHoles(holes: Rect[], unit: RasterUnit, onLine: (y: number) => boolean = () => false): Rect[] {
   const sp = unit.space;
   // **先按尺寸筛一道再并**。页面上最大的一批「孔」是**谱线之间被小节线围住的那些间**
   // （实测 28×20 格一个），不筛就会顺着它们连锁并成整页一个盒（实测并完只剩 155 个、
@@ -398,8 +400,13 @@ export function mergeHoles(holes: Rect[], unit: RasterUnit): Rect[] {
         if (used[j] || sorted[j] === box) continue;
         const r = sorted[j];
         const ov = Math.min(box.x + box.w, r.x + r.w) - Math.max(box.x, r.x);
-        if (ov < Math.min(box.w, r.w) * HOLE_OVERLAP) continue;
         const gap = r.y > box.y ? r.y - (box.y + box.h) : box.y - (r.y + r.h);
+        // **斜椭圆被一条线切开的两半**在 x 上错开，重叠只有四五成（《高举主大能》下加一线的 C4：
+        // 12×5 与 11×5 两半、重叠 0.45）。两半都扁、中间只隔一条线宽的，重叠四成就并。
+        const gapY = r.y > box.y ? box.y + box.h + gap / 2 : r.y + r.h + gap / 2;
+        // 缝要落在谱线/加线网格上：棋盘网纹底本满页是小孔，不卡网格就并出假内腔（父恩广大 −1.8）
+        const lineCut = ov >= Math.min(box.w, r.w) * HOLE_OVERLAP_CUT && gap <= unit.lineThick + 1 && box.h <= sp * 0.4 && r.h <= sp * 0.4 && onLine(gapY);
+        if (!lineCut && ov < Math.min(box.w, r.w) * HOLE_OVERLAP) continue;
         if (gap > sp * HOLE_VGAP) continue;
         const x0 = Math.min(box.x, r.x);
         const y0 = Math.min(box.y, r.y);
