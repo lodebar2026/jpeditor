@@ -1079,8 +1079,9 @@ export async function recognizeRasterPage(
     // 谱面上行首那一段是死的：谱号 + 调号最多占几格，真正的休止在它右边。
     if (nearStaffStart(b, groups, staffLefts, unit)) continue;
     merged.add(c.id);
-    syms.push({ box: b, code: "restQuarter" });
-    ledger.claim(b, "qrest:restQuarter");
+    const code = isEighthRest(nl, b, c.area, unit) ? "rest8th" : "restQuarter";
+    syms.push({ box: b, code });
+    ledger.claim(b, `qrest:${code}`);
   }
 
   // ── 拍号：位置自举 + 模板验 ────────────────────────────────────────────────
@@ -1540,9 +1541,10 @@ export async function recognizeRasterPage(
       // 尺寸又正落在「头 + 干」这一档，被摘出一个假头（《主我敬拜你》第八小节的休止成了 E4）。
       // 与 Maestro 的休止模板比，距离 77；真的「头 + 干（+ 尾）」块一个都比不上。
       const rm = matchTemplate(binSig(nl, b), b.w / unit.space, b.h / unit.space, restTpl);
-      if (rm) {
-        stemHeads.push({ box: b, code: rm.smufl });
-        ledger.claim(b, `rest:${rm.smufl}`);
+      const rs = rm ?? (isEighthRest(nl, b, c.area, unit) ? { smufl: "rest8th" as SmuflName } : null);
+      if (rs) {
+        stemHeads.push({ box: b, code: rs.smufl });
+        ledger.claim(b, `rest:${rs.smufl}`);
         continue;
       }
       const r = headFromStemBlock(raster.bin, b, c.area, masks, unit, pitchGrid, onLineY);
@@ -2463,6 +2465,50 @@ function nearStaffStart(
 }
 
 /** 盒的中心落在某行谱的**中线**附近吗——四分休止是竖着写在谱表正中的。 */
+/** 八分休止的尺寸（格）与填充：顶上一个球、下面一根斜笔。 */
+const EIGHTH_REST_W = [0.85, 1.3] as const;
+const EIGHTH_REST_H = [1.7, 2.4] as const;
+const EIGHTH_REST_FILL = [0.3, 0.5] as const;
+const EIGHTH_REST_SLANT = 0.1;
+
+/**
+ * **八分休止按形状认**：顶上三成有一个够宽的球，下半截每行只有一笔细墨，而且这一笔
+ * **越往下越往左**。「头 + 干」块（符干朝下）下半截也是一笔细墨，可那是竖的，不往左斜。
+ * 《向主唱新歌》伴奏满页八分休止（约 1.1×2.0 格），与模板的距离 97~138，过不了门槛，
+ * 于是被当成「头 + 干」摘出假头、或被当成四分休止收走。
+ */
+function isEighthRest(bin: Binary, b: Rect, area: number, unit: RasterUnit): boolean {
+  const sp = unit.space;
+  const w = b.w / sp;
+  const h = b.h / sp;
+  if (w < EIGHTH_REST_W[0] || w > EIGHTH_REST_W[1] || h < EIGHTH_REST_H[0] || h > EIGHTH_REST_H[1]) return false;
+  const fill = area / Math.max(1, b.w * b.h);
+  if (fill < EIGHTH_REST_FILL[0] || fill > EIGHTH_REST_FILL[1]) return false;
+  const rows: { y: number; x0: number; x1: number; ink: number }[] = [];
+  for (let y = b.y; y < b.y + b.h; y++) {
+    let x0 = -1, x1 = -1, ink = 0;
+    for (let x = b.x; x < b.x + b.w; x++) {
+      if (!bin.data[y * bin.w + x]) continue;
+      if (x0 < 0) x0 = x;
+      x1 = x;
+      ink++;
+    }
+    if (ink) rows.push({ y, x0, x1, ink });
+  }
+  const topRows = rows.filter((r) => r.y < b.y + b.h * 0.35);
+  if (!topRows.length || Math.max(...topRows.map((r) => r.ink)) < sp * 0.55) return false;
+  const low = rows.filter((r) => r.y >= b.y + b.h * 0.55);
+  if (low.length < b.h * 0.3) return false;
+  // 按**跨度**量，不按墨量：符干旁蹭着一截圆滑线的，墨不多、跨度宽（齐来称颂的 G3 −1.3）
+  if (low.some((r) => r.x1 - r.x0 + 1 > sp * 0.4)) return false;
+  // 下半截那一笔中心的斜率（最小二乘，x 对 y）：往下每行左移一成以上像素。实测斜笔 −0.2，符干 0 上下
+  const my = low.reduce((a, r) => a + r.y, 0) / low.length;
+  const mx = low.reduce((a, r) => a + (r.x0 + r.x1) / 2, 0) / low.length;
+  let sxy = 0, syy = 0;
+  for (const r of low) { sxy += (r.y - my) * ((r.x0 + r.x1) / 2 - mx); syy += (r.y - my) ** 2; }
+  return syy > 0 && sxy / syy <= -EIGHTH_REST_SLANT;
+}
+
 function midOfStaff(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
   const cy = box.y + box.h / 2;
   const ys = [...lines].map((l) => l.y).sort((a, b) => a - b);
