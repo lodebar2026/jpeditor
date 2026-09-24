@@ -1819,6 +1819,14 @@ export async function recognizeRasterPage(
     ledger.claim(d, "dot:augmentationDot");
   }
 
+  // **大半落在升降号盒里的符头不要**：调号升号认出来了，同一块又被拆块那一路拆出两个「头」
+  //（《向主唱新歌》两行行首的 F♯ 各多出一个 G5）。临时记号只挨着符头左边，交叠不到七成。
+  {
+    const accs = syms.filter((s0) => isAccidental(s0.code));
+    for (let i = syms.length - 1; i >= 0; i--)
+      if (/^notehead/.test(syms[i].code) && accs.some((a) => overlapFrac(syms[i].box, a.box) > 0.7)) syms.splice(i, 1);
+  }
+
   // **切加线要用最终认出来的全部符头**：除了 `findRasterHeads`，还有按内腔找的、
   // 拆块拆出来的、字典查出来的、碎块并回再判出来的——少算哪一路，那一路的符头
   // 就只能蹭邻居的加线，`findLegers` 判否、整批挂不上谱行。

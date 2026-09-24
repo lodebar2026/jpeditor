@@ -361,6 +361,8 @@ const STEM_SCORE_MIN_POOLED = 0.34;
 const CHORD_REACH = 2.5;
 const CHORD_MAX = 3;
 const CHORD_SCORE_MIN = 0.45;
+/** 上下贴成一串的三度和弦头的得分闸（见用处）。 */
+const CHORD_SCORE_STACKED = 0.35;
 
 /**
  * 从「**符头 + 符干（+ 符尾）并成一块**」的块里把符头摘出来。
@@ -468,7 +470,10 @@ export function headFromStemBlock(
         const m = masks.find((q) => q.onLine === onLine(g)) ?? masks[0];
         const sc = scoreAt(bin, m, x, g);
         // 那一行的墨要有一个头宽：光有符干的地方（线宽那么窄）不收
-        if (sc >= CHORD_SCORE_MIN && (!more || sc > more.s) && rowSpan(bin, box, g) >= hw * 0.7) more = { x, y: g, s: sc };
+        // 紧挨着已收的头一个三度、那一行墨满一个头宽的：三个头上下贴成一串，模板要头的上下是白的，
+        // 各扣一截，只有 0.38 上下（《向主唱新歌》A4/F♯4/D4）。这一档放到 `CHORD_SCORE_STACKED`
+        const stacked = taken.some((t) => Math.abs(t - g) >= sp * 0.8 && Math.abs(t - g) <= sp * 1.2) && rowSpan(bin, box, g) >= hw * 0.95;
+        if (sc >= (stacked ? CHORD_SCORE_STACKED : CHORD_SCORE_MIN) && (!more || sc > more.s) && rowSpan(bin, box, g) >= hw * 0.7) more = { x, y: g, s: sc };
       }
     if (!more) break;
     taken.push(more.y);
