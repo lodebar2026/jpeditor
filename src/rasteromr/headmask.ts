@@ -77,32 +77,47 @@ export function buildHeadMasks(bin: Binary, heads: { box: Rect; code: SmuflName 
  * **空心符头**的模板：拿本页已经认出来的二分、全音符符头平均。
  *
  * 实心那一套（`buildHeadMasks`）每类要二十个样本，空心头一页往往只有十来个，
- * 所以不分「骑线 / 在间」、样本门槛放到 `minSamples`。用途很窄：只在
- * 「块里有内腔、却没认出空心头」的无主块里搜（见 `recognize.ts`「空心头按模板再搜」），
- * 先验够硬，模板糙一点也够用。
+ * 所以样本门槛放到 `minSamples`。用途很窄，都在有内腔的地方用：
+ * 「空心头按模板再搜」（`recognize.ts`，不传 `lineYs`，一张不分类的）与
+ * 按音高位置逐一配模板（`notehead.ts::hollowHeadsByPitch`），先验够硬，模板糙一点也够用。
+ *
+ * 传了 `lineYs` 就**分「骑线 / 在间」两张**。按音高位置逐一配模板时，
+ * 骑线的位置要拿带着谱线的那张比，否则谱线穿过内腔的那几行全算「不该有的墨」。
+ * 某一类样本不够 `minSamples` 时，拿全部样本平均的那张顶上（`onLine` 记成缺的那一类），
+ * 一张也凑不出就返回空。
  */
-export function buildHollowMask(bin: Binary, heads: { box: Rect; code: SmuflName }[], unit: RasterUnit, minSamples = 3): HeadMask | null {
+export function buildHollowMasks(bin: Binary, heads: { box: Rect; code: SmuflName }[], unit: RasterUnit, lineYs: number[], minSamples = 3): HeadMask[] {
   const hollow = heads.filter((h) => h.code === "noteheadHalf" || h.code === "noteheadWhole");
-  if (hollow.length < minSamples) return null;
+  if (hollow.length < minSamples) return [];
   const sp = unit.space;
   const w = Math.max(3, Math.round(sp * WIN_W));
   const h = Math.max(3, Math.round(sp * WIN_H));
-  const sum = new Float32Array(w * h);
-  for (const hd of hollow) {
-    const x0 = Math.round(hd.box.x + hd.box.w / 2 - w / 2);
-    const y0 = Math.round(hd.box.y + hd.box.h / 2 - h / 2);
-    for (let y = 0; y < h; y++) {
-      const sy = y0 + y;
-      if (sy < 0 || sy >= bin.h) continue;
-      for (let x = 0; x < w; x++) {
-        const sx = x0 + x;
-        if (sx >= 0 && sx < bin.w) sum[y * w + x] += bin.data[sy * bin.w + sx];
+  const avg = (list: typeof hollow, onLine: boolean): HeadMask => {
+    const sum = new Float32Array(w * h);
+    for (const hd of list) {
+      const x0 = Math.round(hd.box.x + hd.box.w / 2 - w / 2);
+      const y0 = Math.round(hd.box.y + hd.box.h / 2 - h / 2);
+      for (let y = 0; y < h; y++) {
+        const sy = y0 + y;
+        if (sy < 0 || sy >= bin.h) continue;
+        for (let x = 0; x < w; x++) {
+          const sx = x0 + x;
+          if (sx >= 0 && sx < bin.w) sum[y * w + x] += bin.data[sy * bin.w + sx];
+        }
       }
     }
-  }
-  const p = new Float32Array(w * h);
-  for (let i = 0; i < p.length; i++) p[i] = sum[i] / hollow.length;
-  return { w, h, p, n: hollow.length, onLine: false };
+    const p = new Float32Array(w * h);
+    for (let i = 0; i < p.length; i++) p[i] = sum[i] / list.length;
+    return { w, h, p, n: list.length, onLine };
+  };
+  if (!lineYs.length) return [avg(hollow, false)];
+  const on = hollow.filter((hd) => lineYs.some((y) => Math.abs(y - (hd.box.y + hd.box.h / 2)) <= sp * ON_LINE));
+  const off = hollow.filter((hd) => !on.includes(hd));
+  const all = avg(hollow, false);
+  return [
+    on.length >= minSamples ? avg(on, true) : { ...all, onLine: true },
+    off.length >= minSamples ? avg(off, false) : { ...all, onLine: false },
+  ];
 }
 
 /** 比对得分：**该有墨的地方有多少墨**减去**不该有墨的地方漏出多少**。

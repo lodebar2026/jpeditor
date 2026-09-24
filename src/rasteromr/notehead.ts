@@ -16,6 +16,7 @@ import type { Binary, Component, Rect } from "../omr/types";
 import type { SmuflName } from "../staffomr/glyphs";
 import type { LineSeg } from "./prims";
 import type { RasterUnit } from "./staffline";
+import { scoreAt, type HeadMask } from "./headmask";
 
 /** 认出来的符头。 */
 export interface RasterHead {
@@ -421,7 +422,7 @@ export function hollowHeadsFromHoles(
     // 试过把全音符的宽度门槛单独抬到 1.65：时值 90.3% → 90.5%，但音符 69.60% → 69.52%，
     // 不划算。
     if (HOLE_NEED_STEM && !stem && w < W_WHOLE) continue;
-    // 靠墨柱认下的头标 `weak`：不进空心头模板的样本（`buildHollowMask`）。它们多半拖着
+    // 靠墨柱认下的头标 `weak`：不进空心头模板的样本（`buildHollowMasks`）。它们多半拖着
     // 一根穿过窗口的长干，混进去模板就偏了——善牧恩慈歌两处真二分头认出来，却让模板
     // 再也配不上后面的全音符和弦（音符 90.0% → 89.3%，不进样本 → 91.4%）。
     out.push({ box, code: w >= W_WHOLE && !stem ? "noteheadWhole" : "noteheadHalf", ...(stem === true ? { weak: true } : {}) });
@@ -449,6 +450,138 @@ export function hollowHeadsFromHoles(
     if (!mate) continue;
     out.push({ box: m.box, code: "noteheadHalf" });
     taken.push(m.box);
+  }
+  return out;
+}
+
+// ── 空心头：**按音高位置逐一配模板**（Audiveris 式）────────────────────────
+//
+// 叠成「8」字的三度空心和弦，两个内腔中间只隔两像素细圈，`mergeHoles` 把它们当成
+// 被谱线豁开的一个内腔并掉（齐来称颂 E4/B3、G♯3/E3、C♯4/A3，并出来 1.7~1.8 格高），
+// 过不了内腔尺寸闸。拦合并试过四种都不行（圣哉三一歌伴奏的斜缝内腔一个头切成三四片，
+// 必须并）。Audiveris（`NoteHeadsBuilder.processStaff`）不从内腔反推头，而是沿谱线、间、
+// 加线的每个音高位置逐一配模板，重叠按音级差判（`HeadInter.overlaps`：差 ≥2 级不算重叠）
+// ——三度的两个头在隔两级的两个位置上各自得分，天然分得开。
+//
+// 这里只在**有内腔的地方**这么找：「拿模板去空地里找」对实心头每档都低于不做
+// （`docs/实现/位图五线谱识别/符头与加线.md`），内腔是空心头最硬的先验，留着。
+
+/** 候选区：并过的内腔高过一个头、又不超过两个头（格）。实测真叠头 1.69~1.87 格；
+ *  八分音符的符尾弯回符干、被谱线切成几片再并起来的「孔」1.88~2.87 格（宁静的伯利恒二十多处）。 */
+const STACK_H = [1.0, 2.0] as const;
+/** 候选区的宽度下限（格）：真叠头的内腔 0.93~1.11 格宽；八分符尾弯回符干围出来的窄孔
+ *  0.64~0.88 格（破碎干净版五处，得分也只有 0.30 上下）。 */
+const STACK_W = 0.9;
+// 下面三个门槛是在 `STACK_H` 上限 3.5 格、不要求两个头时扫的；加上那两条与 `STACK_W` 之后，
+// 图片九首合计不变（93.41%），合唱谱两档回到基线以上。
+/** 打分窗口只留中间这么高（格）。整窗 1.5 格高会把叠着的邻头的圈框进来、算成「不该有的墨」，
+ *  间位的头只打到 0.26~0.33 分（线位 0.5~0.7）。扫过整窗 / 1.2 / 1.1 / **1.0** / 0.9 / 0.8：
+ *  九首合计 92.39 / 92.86 / 93.41 / **93.41** / 93.41 / 92.76%，1.0 这一档对下面的门槛最不敏感。 */
+const PITCH_CORE = 1.0;
+/** 模板得分门槛。核心窗下扫过 0.27 / **0.30** / 0.33 / 0.40：93.51 / 93.41 / 93.41 / 92.11%。 */
+const PITCH_SCORE = 0.3;
+/** 内腔佐证：该位置的内腔椭圆里落在原始孔里的白像素占比。扫过 0.35 / 0.40 / 0.45 / **0.50** / 0.55：
+ *  93.23 / 93.23 / 93.23 / **93.41** / 92.76%。低了圣哉三一歌伴奏的斜缝内腔只收半边、
+ *  挡住模板再搜那一路（它两个都认得出）；高了齐来称颂 C4 那种骑加线的头佐证不够（0.54）。 */
+const CAVITY_MIN = 0.5;
+
+/** 一个音高位置：中心 y，以及它是不是线位（含加线位）。 */
+export interface PitchStep {
+  y: number;
+  line: boolean;
+}
+
+export function hollowHeadsByPitch(
+  bin: Binary,
+  nl: Binary,
+  rawHoles: Rect[],
+  holes: Rect[],
+  allMasks: HeadMask[],
+  unit: RasterUnit,
+  stepsIn: (y0: number, y1: number) => PitchStep[],
+  stems: LineSeg[],
+  inStaffBand: (y: number) => boolean,
+  taken: Rect[],
+): { box: Rect; code: SmuflName; weak?: boolean }[] {
+  const sp = unit.space;
+  if (!allMasks.length) return [];
+  const masks = allMasks.map((m) => {
+    const h = Math.min(m.h, Math.max(3, Math.round(sp * PITCH_CORE)));
+    const top = Math.floor((m.h - h) / 2);
+    return { ...m, h, p: m.p.slice(top * m.w, (top + h) * m.w) };
+  });
+  const ring = Math.max(2, Math.round(sp * RING));
+  const out: { box: Rect; code: SmuflName; weak?: boolean }[] = [];
+  const headH = Math.round(sp * 1.1);
+  /** 内腔椭圆的半轴：内腔实测约 1.0×0.8 格。 */
+  const rx = sp * 0.45;
+  const ry = sp * 0.32;
+  const cavity = (cx: number, cy: number): number => {
+    let n = 0;
+    let hit = 0;
+    for (let y = Math.round(cy - ry); y <= Math.round(cy + ry); y++)
+      for (let x = Math.round(cx - rx); x <= Math.round(cx + rx); x++) {
+        if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 > 1) continue;
+        n++;
+        if (x < 0 || y < 0 || x >= bin.w || y >= bin.h || bin.data[y * bin.w + x]) continue;
+        if (rawHoles.some((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)) hit++;
+      }
+    return n ? hit / n : 0;
+  };
+  /** 与已有的头差不到两级（同一位置或相邻半格）、横向又压着的，算同一个头。 */
+  const clash = (b: Rect, list: Rect[]) =>
+    list.some(
+      (t) =>
+        Math.abs(t.y + t.h / 2 - (b.y + b.h / 2)) < sp * 0.75 &&
+        Math.abs(t.x + t.w / 2 - (b.x + b.w / 2)) < (t.w + b.w) / 2 - sp * 0.2,
+    );
+  for (const hole of holes) {
+    const hw = hole.w / sp;
+    const hh = hole.h / sp;
+    if (hw < STACK_W || hw > HOLE_W[1] || hh <= STACK_H[0] || hh > STACK_H[1]) continue;
+    const cx0 = hole.x + hole.w / 2;
+    if (!inStaffBand(hole.y + hole.h / 2)) continue;
+    const bw = hole.w + ring * 2;
+    const cands: { x: number; y: number; s: number }[] = [];
+    for (const st of stepsIn(hole.y - sp * 0.3, hole.y + hole.h + sp * 0.3)) {
+      const m = masks.find((k) => k.onLine === st.line) ?? masks[0];
+      let best: { x: number; s: number } | null = null;
+      for (let x = Math.round(cx0 - sp * 0.2); x <= Math.round(cx0 + sp * 0.2); x++) {
+        const sc = scoreAt(bin, m, x, st.y);
+        if (!best || sc > best.s) best = { x, s: sc };
+      }
+      if (!best || best.s < PITCH_SCORE) continue;
+      if (cavity(best.x, st.y) < CAVITY_MIN) continue;
+      cands.push({ x: best.x, y: st.y, s: best.s });
+    }
+    cands.sort((a, b) => b.s - a.s);
+    const picked: Rect[] = [];
+    for (const c of cands) {
+      const box: Rect = { x: Math.round(c.x - bw / 2), y: Math.round(c.y - headH / 2), w: bw, h: headH };
+      if (clash(box, picked) || clash(box, taken)) continue;
+      picked.push(box);
+    }
+    // 两个内腔并成的区就该认出两个头。只认出一个的：符尾围出来的假孔（宁静的伯利恒），
+    // 或斜缝内腔上面那个头佐证不够（圣哉三一歌伴奏）——收了半边反倒挡住「空心头按模板再搜」
+    // 那一路（它两个都认得出），整区交回去。
+    if (picked.length < 2) continue;
+    // 时值：与 `hollowHeadsFromHoles` 同一套——竖段表的干、墨柱、同干成员
+    for (const box of picked) {
+      let stem: LineSeg | true | null = stemOf(box, stems, unit);
+      if (!stem) {
+        const col = inkColumn(nl, box, unit);
+        const cy = box.y + box.h / 2;
+        const reach = col ? Math.max(cy - col[0], col[1] - cy) : 0;
+        if (reach >= sp * INK_STEM[0] && reach <= sp * INK_STEM[1]) stem = true;
+      }
+      if (!stem) {
+        const through = stemThrough(box, stems, unit);
+        if (through && picked.some((o) => o !== box && Math.abs(o.y - box.y) <= sp * MATE_GAP)) stem = through;
+      }
+      if (!stem && box.w / sp < W_WHOLE) continue;
+      out.push({ box, code: stem ? "noteheadHalf" : "noteheadWhole", weak: true });
+      taken.push(box);
+    }
   }
   return out;
 }

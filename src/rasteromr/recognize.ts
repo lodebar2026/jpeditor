@@ -18,13 +18,13 @@ import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findT
 import type { SPage, Staff, Sym, Tag } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, groupByLeftInk, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
-import { findRasterHeads, hollowHeadsFromHoles, judgeHeadBox, mergeHoles } from "./notehead";
+import { findRasterHeads, hollowHeadsByPitch, hollowHeadsFromHoles, judgeHeadBox, mergeHoles, type PitchStep } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { cutJianpuStrip, eraseInBand, findJianpuBands, jianpuKey, type JianpuStrip } from "./jianpuband";
 import { fuseJianpu, type FuseStats, type JianpuRow } from "./jianpufuse";
 import { findLyricRows, foldLyricChars, isLatinRow, latinCells, mapCharsToCells, stripKey, stripOf, type LyricRow, type LyricStrip, type OcrChar } from "./lyric";
 import { findHoles, traceContours, type ContourMap } from "./contour";
-import { buildHeadMasks, buildHollowMask, headFromStemBlock, splitHeadCluster } from "./headmask";
+import { buildHeadMasks, buildHollowMasks, headFromStemBlock, splitHeadCluster } from "./headmask";
 import { headProb, trainHeadClassifier } from "./headclass";
 import { findStaffLabels, labelKey, normalizeLabel, type LabelStrip } from "./stafflabel";
 import { findHarmonyStrips, harmonyKey, harmonyLine, readHarmonyStrip, type HarmonyStrip, type HarmonyToken } from "./harmony";
@@ -218,6 +218,17 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
     out.push({ box: { x: Math.round(st.cx), y: Math.round(y0), w: Math.round(sp * 1.5), h: Math.round(h) }, code });
   }
   return out;
+}
+
+/** 区间 [y0, y1] 里的全部音高位置（与 `makePitchGrid` 同一张表：每行谱顶线上下各五条加线的线位与间位）。 */
+function makePitchSteps(groups: { lines: { y: number }[]; space: number }[]): (y0: number, y1: number) => PitchStep[] {
+  const steps: PitchStep[] = [];
+  for (const g of groups) {
+    const top = g.lines[0].y;
+    const half = g.space / 2;
+    for (let k = -10; k <= 18; k++) steps.push({ y: top + k * half, line: k % 2 === 0 });
+  }
+  return (y0, y1) => steps.filter((s) => s.y >= y0 && s.y <= y1);
 }
 
 /**
@@ -711,13 +722,20 @@ export async function recognizeRasterPage(
   // 碎成四片），而它的**内腔**还在。所以在**去谱线之前**的图上取全页的孔，
   // 尺寸像内腔的往外扩一圈就是符头；骑线的头内腔被谱线豁成两半，先并回去。
   // 判据全在 `notehead.ts::hollowHeadsFromHoles`。
-  const holes = mergeHoles(findHoles(raster.bin, Math.max(4, Math.round(unit.space * unit.space * 0.06))), unit);
+  const rawHoles = findHoles(raster.bin, Math.max(4, Math.round(unit.space * unit.space * 0.06)));
+  const holes = mergeHoles(rawHoles, unit);
   // 和弦字母的**内腔**也是洞（`D`/`G`/`B`/`A` 都有），不挡住就从这一路漏回来
   // ——检测框一并算「已被占」。
   const takenBoxes = [...heads.map((h) => h.box), ...harmonyMasks];
   // 带宽照 `HOLLOW_BAND`（±3 格）。扫过 ±1.5 / ±2 / ±3 格，三档一样
   // ——这一路的过检不在带边上。
   const stacked: RasterSym[] = hollowHeadsFromHoles(nl, holes, unit, prims.vSegs, inBand, takenBoxes);
+  // 并成一个高内腔的叠置空心和弦：按音高位置逐一配模板（`notehead.ts::hollowHeadsByPitch`），
+  // 模板拿本页已认出的空心头（骑线 / 在间各一张）
+  const lineYs = lines.map((l) => l.y);
+  const hollowSamples = [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked].filter((s0) => !(s0 as { weak?: boolean }).weak);
+  const hollowMasks = buildHollowMasks(raster.bin, hollowSamples, unit, lineYs);
+  stacked.push(...hollowHeadsByPitch(raster.bin, nl, rawHoles, holes, hollowMasks, unit, makePitchSteps(groups), prims.vSegs, inBand, takenBoxes));
 
   // ── 几个实心符头并成一块：按**谱内自举的 mask** 拆开 ─────────────────────
   //
@@ -1351,10 +1369,10 @@ export async function recognizeRasterPage(
   // 低分辨率的全音符（《善牧恩慈歌》线距 11px）两路都认不出：叠成「8」字的三度
   // 两个头并成一块，内腔被谱线切成四片、又是斜缝，过不了内腔那一路的「横宽」闸；
   // 贴着谱线的那个被去谱线切成左右两半。可同一页上别处的空心头是认出来了的——
-  // 拿它们平均出模板（`buildHollowMask`），在**有内腔的无主块**里做匹配追踪。
+  // 拿它们平均出模板（`buildHollowMasks`），在**有内腔的无主块**里做匹配追踪。
   // 先把 x 上重叠、上下贴着的无主块并起来（被切成两半的头要并回一个）。
   {
-    const hollowMask = buildHollowMask(raster.bin, syms.filter((s0) => !(s0 as { weak?: boolean }).weak), unit);
+    const hollowMask = buildHollowMasks(raster.bin, syms.filter((s0) => !(s0 as { weak?: boolean }).weak), unit, [])[0] ?? null;
     if (hollowMask) {
       const free = blobs.filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id) && !merged.has(c.id) && inBand(c.bbox.y + c.bbox.h / 2));
       const used = new Set<number>();
