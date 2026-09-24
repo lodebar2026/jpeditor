@@ -1050,7 +1050,8 @@ export async function recognizeRasterPage(
   // 全曲的 F 都成了还原（调号错一个，测评按「移调」整首平移，音符档掉到两成）。
   // 松到拍号那一档是因为位置先验够硬：紧贴谱号、一串挨着、骑在谱表上。
   // 形状另卡**窄**（宽不过高的 0.5）：拍号数字 0.67 以上，挡得住。
-  // 只吃谁都没认领的块，字典/模板已经认出调号的谱行一块也不动。
+  // 只吃谁都没认领的块（外加字典认成调号区不该有之物的块，见下）；字典已经认出的前几个不动，
+  // 从它们的串尾接着往右认。
   //
   // 另一种丢法是**升号被符头那一路先吃了**：粗体升号的两道横笔又粗又斜，
   // 去掉竖笔后就是两个上下叠着的「黑符头」（《赞美一神》低音谱表两行都是：
@@ -1116,18 +1117,42 @@ export async function recognizeRasterPage(
     const bottom = g.lines[4].y;
     const clef = syms.find((s0) => isClef(s0.code) && s0.box.x < left + unit.space * 4 && s0.box.y < bottom && s0.box.y + s0.box.h > top);
     if (!clef) continue;
-    // 已经有升降号紧跟谱号了：字典那一路认出了调号，不插手
     let edge = clef.box.x + clef.box.w;
     const onStaff = (r: Rect) => r.y < bottom && r.y + r.h > top;
-    if (syms.some((s0) => isAccidental(s0.code) && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + unit.space * KEY_GAP)) continue;
+    // 字典已经认出的那一串先走完，**从串尾接着认**：字典只认出前几个、后面断了的也要补。
+    // 病例《圣哉三一歌伴奏》三个降号：前两个的竖笔被当成线段抹掉、只剩肚子，字典认得；
+    // 第三个的竖笔没抹、与肚子断成两块，竖笔被字典认成 wiggleTrill——以前见字典有就不插手，
+    // 整首少一个降号，A 全成了还原。
+    let fromDict = false;
+    for (;;) {
+      const nx = syms
+        .filter((s0) => isAccidental(s0.code) && onStaff(s0.box) && s0.box.x >= edge - 1 && s0.box.x < edge + unit.space * KEY_GAP)
+        .sort((a, b) => a.box.x - b.box.x)[0];
+      if (!nx) break;
+      edge = nx.box.x + nx.box.w;
+      fromDict = true;
+    }
+    // 字典认成**调号区不该有的东西**（演奏记号之类）的块也算候选：那多半是升降号断出来的半截。
+    // 谱号、升降号、拍号、符头、休止照旧不碰。
+    const dictSym = new Map<number, RasterSym>();
+    for (const c of blobs) {
+      if (!dictClaimed.has(c.id) || claimed.has(c.id) || merged.has(c.id)) continue;
+      const s0 = syms.find((x) => x.box === c.bbox);
+      if (s0 && !isClef(s0.code) && !isAccidental(s0.code) && timeSigDigit(s0.code) < 0 && !/^(notehead|rest)/.test(s0.code)) dictSym.set(c.id, s0);
+    }
     const cand = blobs
-      .filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id) && !merged.has(c.id))
+      .filter((c) => !claimed.has(c.id) && (!dictClaimed.has(c.id) || dictSym.has(c.id)) && !merged.has(c.id))
       .filter((c) => onStaff(c.bbox))
       .sort((a, b) => a.bbox.x - b.bbox.x);
+    const union = (a: Rect, b: Rect): Rect => {
+      const x = Math.min(a.x, b.x);
+      const y = Math.min(a.y, b.y);
+      return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
+    };
     // 串里**逐个**往右认，每一步先看「被当成符头的升号」、再看普通块：齐来称颂的低音谱表
     // 三个升号，第一个是普通块、后两个各被认成一对黑符头，只认一路就断在第二个上。
     // 第一个记号离谱号右缘放到两格：低音谱号的两点在谱号盒外，实测 1.77 格。
-    for (let first = true; ; first = false) {
+    for (let first = !fromDict; ; first = false) {
       const gap = unit.space * (first ? KEY_GAP_FIRST : KEY_GAP);
       const pair = sharpAsHeads(syms, edge, onStaff);
       if (pair && pair.box.x <= edge + gap) {
@@ -1138,22 +1163,42 @@ export async function recognizeRasterPage(
         continue;
       }
       let took = false;
-      for (const c of cand) {
+      const keyTpl = (look.templates ?? []).filter((t) => t.smufl === "accidentalSharp" || t.smufl === "accidentalFlat");
+      // 过得了尺寸闸与模板才算；宽另卡 1.2 格：齐来称颂的拍号「3」与「4」的上半连成一块（1.37×3.2 格），
+      // 紧挨着最后一个升号，宽高比过得了 0.5 那道闸，被当成第四个升号吃掉，拍号就没了
+      const asKey = (b: Rect) => {
+        const w = b.w / unit.space;
+        const h = b.h / unit.space;
+        if (h < 1.8 || h > 3.4 || w < 0.4 || w > h * 0.5 || w > 1.2) return null;
+        return matchTemplate(binSig(nl, b), w, h, keyTpl, TIME_TEMPLATE_DIST);
+      };
+      for (let i = 0; i < cand.length; i++) {
+        const c = cand[i];
         const b = c.bbox;
         if (b.x < edge - 1 || merged.has(c.id)) continue;
         if (b.x > edge + gap) break; // 串断了
-        const w = b.w / unit.space;
-        const h = b.h / unit.space;
-        if (w < 0.6 && h < 0.6) continue; // 噪点、谱号的小尾巴：跳过，不算断串
-        // 宽另卡 1.2 格：齐来称颂的拍号「3」与「4」的上半连成一块（1.37×3.2 格），
-        // 紧挨着最后一个升号，宽高比过得了 0.5 那道闸，被当成第四个升号吃掉，拍号就没了
-        if (h < 1.8 || h > 3.4 || w < 0.4 || w > h * 0.5 || w > 1.2) break;
-        const m = matchTemplate(binSig(nl, b), w, h, (look.templates ?? []).filter((t) => t.smufl === "accidentalSharp" || t.smufl === "accidentalFlat"), TIME_TEMPLATE_DIST);
+        if (b.w / unit.space < 0.6 && b.h / unit.space < 0.6) continue; // 噪点、谱号的小尾巴：跳过，不算断串
+        let box = b;
+        let used = [c];
+        let m = asKey(b);
+        // 单块不像，就与**右边紧挨着、上下有交叠**的下一块并起来再认（降号断成竖笔与肚子两块）
+        if (!m) {
+          const c2 = cand.slice(i + 1).find((d) => !merged.has(d.id) && d.bbox.x >= b.x && d.bbox.x <= b.x + b.w + unit.space * 0.3);
+          if (c2 && c2.bbox.y < b.y + b.h && c2.bbox.y + c2.bbox.h > b.y) {
+            box = union(b, c2.bbox);
+            used = [c, c2];
+            m = asKey(box);
+          }
+        }
         if (!m) break;
-        syms.push({ box: b, code: m.smufl });
-        ledger.claim(b, `key:${m.smufl}`);
-        merged.add(c.id);
-        edge = b.x + b.w;
+        for (const u of used) {
+          const d = dictSym.get(u.id);
+          if (d) syms.splice(syms.indexOf(d), 1);
+          merged.add(u.id);
+        }
+        syms.push({ box, code: m.smufl });
+        ledger.claim(box, `key:${m.smufl}`);
+        edge = box.x + box.w;
         took = true;
         break;
       }
@@ -1463,6 +1508,7 @@ export async function recognizeRasterPage(
   findTails(pg);
   findBarlines(pg);
   const ctx = findClefKeyTime(pg);
+  extendKeyChains(pg, ctx);
   shareKeySignature(ctx);
   makeSystems(pg);
   makeBars(pg);
@@ -1760,6 +1806,32 @@ function foldBilingualLyrics(pg: SPage, lines: LyricLine[]): void {
         l.staff = sys.staves[i];
         l.verse += base;
       }
+    }
+  }
+}
+
+/**
+ * **调号串往右接**：`analyzeAccidental` 串调号要求相邻两个升降号**上下交叠**，
+ * 而位图这边降号的盒收到了肚子上（见 `FLAT_BOWL_TOP`）——三个降号时 E♭ 的肚子在上间、
+ * A♭ 的肚子在下面第二间，一点不交叠，离谱号又超过三格，第三个降号就接不上
+ *（《圣哉三一歌伴奏》整首少一个降号，A 全读成还原）。升号上下对称、盒不收，不受影响。
+ * 这里只补位图这一路：已有调号的谱行，右边**横向紧挨着**（间隙在 0 到自身宽之间，
+ * 与 `analyzeAccidental` 同一条）、谁都没认领的升降号接到串尾。不动 `staffomr`。
+ */
+function extendKeyChains(pg: SPage, ctx: Map<Staff, StaffContext>): void {
+  for (const c of ctx.values()) {
+    if (!c.key.length) continue;
+    const onStaff = (b: Box) => b.top < c.staff.box.bottom && b.bottom > c.staff.box.top;
+    for (;;) {
+      const last = c.key[c.key.length - 1];
+      const nx = pg.symbols.find((s0) => {
+        if (!isAccidental(s0.code) || s0.hasAnyTag() || !onStaff(s0.box)) return false;
+        const dx = s0.box.left - last.box.right;
+        return dx >= 0 && dx <= s0.box.right - s0.box.left;
+      });
+      if (!nx) break;
+      nx.addTag("Key");
+      c.key = [...c.key, nx];
     }
   }
 }
