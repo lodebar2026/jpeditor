@@ -334,6 +334,22 @@ export function findPrimitives(
   const { w, h } = bin;
   const onGrid = ledgerGrid(staffLineYs, unit);
   const atStaffLeft = (x: number) => staffLefts.some((l) => Math.abs(x - l) <= Math.max(3, unit.lineThick * 2));
+  // **正好从一行谱的第一线画到第五线**（两端各 ±0.5 格）、又不在行首四格里的竖段：这是小节线的样子，
+  // 不查孤立性。反复记号的细线右边紧挨着一道粗线（网纹印的粗线还过不了「细」这一闸），
+  // 孤立性判它属于某个符号，整条抽不出来，两小节并成一个（《向主唱新歌》第 14 小节末）。
+  // 谱号的中央竖笔上下都伸出谱表，升号、拍号的竖笔没有一整个谱表高，都不沾这一条。
+  const staffBands: [number, number][] = [];
+  {
+    const ys = [...staffLineYs].sort((a, b) => a - b);
+    for (let i = 0; i + 4 < ys.length; i += 5) staffBands.push([ys[i], ys[i + 4]]);
+  }
+  const spansStaff = (sg: LineSeg) => {
+    const x = (sg.x0 + sg.x1) / 2;
+    if (staffLefts.some((l) => x >= l - unit.space && x <= l + unit.space * 4)) return false;
+    const t = Math.min(sg.y0, sg.y1);
+    const b = Math.max(sg.y0, sg.y1);
+    return staffBands.some(([top, bot]) => Math.abs(t - top) <= unit.space * 0.5 && Math.abs(b - bot) <= unit.space * 0.5);
+  };
   const vr = vRuns(bin);
   const hr = hRuns(bin);
   // 「细」的上限**要卡在谱线与符杠之间**：谱线约 0.15 个线距厚，符杠约 0.5 个。
@@ -383,7 +399,7 @@ export function findPrimitives(
     if (c.bbox.w > thinV * 2) continue;
     const seg = centerLine(vMask, w, c, false);
     // 谱行左缘那条（系统线）免检，其余要判孤立性——谱号的中央竖笔、升号的竖笔不是原语
-    if (!atStaffLeft((seg.x0 + seg.x1) / 2) && !isolated(bin, seg, true)) continue;
+    if (!atStaffLeft((seg.x0 + seg.x1) / 2) && !spansStaff(seg) && !isolated(bin, seg, true)) continue;
     vSegs.push(seg);
   }
 
