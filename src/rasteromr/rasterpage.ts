@@ -22,7 +22,7 @@
 // 过半就是翻了，整幅取反。
 import type { Binary } from "../omr/types";
 import { applyTrackWarp, completeStaffLines, trackCurves } from "./dewarp";
-import { descreen, fillPinholes, halftoneRatio, pinholeRatio, HALFTONE_BAND, HALFTONE_RATIO, PINHOLE_RATIO } from "./descreen";
+import { descreen, dropSpecks, fillPinholes, halftoneRatio, pinholeRatio, HALFTONE_BAND, HALFTONE_RATIO, PINHOLE_RATIO } from "./descreen";
 import { estimateUnit, findStaffLines, groupStaves } from "./staffline";
 
 /** 一页取到的位图，连同它在页面坐标里的位置（识别坐标 ↔ 页面坐标要用）。 */
@@ -171,6 +171,11 @@ function completedAfterDeskew(bin: Binary): number {
  * 网点/网纹的底本就地清理（`descreen.ts`），返回量出来的网点率；
  * 一行谱都找不到时返回 null（没有尺子定窗口，也没有东西要认）。
  */
+/** 64px 见方一块里孤立单像素墨点多过这么多个，这一块（连同四邻）才抹（见 `descreen.ts::dropSpecks`）。
+ *  实测最密一块：求主同住 250、坚固保障 68、向主唱新歌与颂赞与尊贵 54，其余独唱谱 ≤4，合唱谱 ≤8。
+ *  取 40：向主唱新歌中文歌词 +3.0、坚固保障 +1.6（英文 −0.5），别的不动。按全页总数判不行——水印常只占一角。 */
+const SPECK_MIN = 40;
+
 function cleanTexture(bin: Binary, allowDescreen: boolean): number | null {
   const groups = groupStaves(findStaffLines(bin));
   if (!groups.length) return null;
@@ -182,6 +187,10 @@ function cleanTexture(bin: Binary, allowDescreen: boolean): number | null {
   if (halftone > HALFTONE_RATIO && allowDescreen) descreen(bin, space);
   // 网纹填充（符头、谱号里是细交叉网纹）不走去网，只补针孔（`fillPinholes`）
   else if (pinholeRatio(bin, inBand) > PINHOLE_RATIO) fillPinholes(bin);
+  // **网点水印**：浅灰的底纹二值化后是满页的单像素孤点，把歌词行之间的空当填满，
+  // 几行歌词并成一行、和弦行也被卷进歌词带（《求主同住》歌词 0%、和弦 43%）。
+  // 按块看密度，只抹密的那几块（像素内容一变，那一页的 OCR 缓存都要重跑）。
+  dropSpecks(bin, SPECK_MIN);
   return halftone;
 }
 

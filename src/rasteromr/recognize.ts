@@ -633,12 +633,15 @@ export async function recognizeRasterPage(
       const left = Math.max(...groups[i].lines.map((l) => l.left));
       return Math.abs((v.x0 + v.x1) / 2 - left) <= unit.space && Math.min(v.y0, v.y1) <= groups[i - 1].lines[4].y + unit.space * 0.5 && Math.max(v.y0, v.y1) >= groups[i].lines[0].y + unit.space * 0.5;
     });
+  const pageRight = Math.max(...groups.flatMap((g) => g.lines.map((l) => l.right)));
   const harmonyStrips = findHarmonyStrips(
     raster.bin,
     groups.flatMap((g, i) => joinedAbove(i) ? [] : [{
       box: {
         left: Math.max(...g.lines.map((l) => l.left)),
-        right: Math.min(...g.lines.map((l) => l.right)),
+        // 右界取**全页谱线右端的最大值**：网点水印把谱线右段打断，五条线量出来的右端
+        // 多数停在 1018~1233（真右端 1360），取最小值就切不到行尾的和弦（《求主同住》缺三个）
+        right: pageRight,
         top: g.lines[0].y,
       },
       index: i,

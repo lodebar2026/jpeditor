@@ -184,3 +184,53 @@ export function descreen(bin: Binary, space: number): void {
 
 /** 量网点率时谱表上下各带出这么多个线距（歌词/和弦字母不进来，符干与弧线进得来）。 */
 export const HALFTONE_BAND = 2;
+
+/** 分块统计孤点的块边长（像素）。 */
+export const SPECK_TILE = 64;
+
+/**
+ * **孤立的单像素墨点**（八邻域全白）按 `SPECK_TILE` 见方分块计数。浅灰网点水印二值化后成片出这种点，
+ * 可水印常常只占页面一角：按全页总数判，局部密、总数不多的漏掉，满页零星噪点的又会误伤——
+ * 所以按块看**密度**（《求主同住》页中央一片，一块里上百个；合唱谱扫描件一块最多十几个）。
+ */
+export function speckTiles(bin: Binary): { cols: number; rows: number; count: Uint16Array } {
+  const { w, h, data } = bin;
+  const cols = Math.ceil(w / SPECK_TILE);
+  const rows = Math.ceil(h / SPECK_TILE);
+  const count = new Uint16Array(cols * rows);
+  for (let y = 1; y < h - 1; y++)
+    for (let x = 1; x < w - 1; x++)
+      if (data[y * w + x] && isolated(data, w, x, y)) count[((y / SPECK_TILE) | 0) * cols + ((x / SPECK_TILE) | 0)]++;
+  return { cols, rows, count };
+}
+
+/** 只在孤点密度过 `min`（每块个数）的块里、连同它四邻的块，抹掉孤立的单像素墨点。附点、跳音点都有好几个像素宽，碰不到。 */
+export function dropSpecks(bin: Binary, min: number): number {
+  const { w, h, data } = bin;
+  const t = speckTiles(bin);
+  const hot = new Uint8Array(t.cols * t.rows);
+  let n = 0;
+  for (let r = 0; r < t.rows; r++)
+    for (let c = 0; c < t.cols; c++) {
+      if (t.count[r * t.cols + c] < min) continue;
+      n++;
+      for (let dr = -1; dr <= 1; dr++)
+        for (let dc = -1; dc <= 1; dc++) {
+          const rr = r + dr, cc = c + dc;
+          if (rr >= 0 && cc >= 0 && rr < t.rows && cc < t.cols) hot[rr * t.cols + cc] = 1;
+        }
+    }
+  if (!n) return 0;
+  const kill: number[] = [];
+  for (let y = 1; y < h - 1; y++)
+    for (let x = 1; x < w - 1; x++)
+      if (hot[((y / SPECK_TILE) | 0) * t.cols + ((x / SPECK_TILE) | 0)] && data[y * w + x] && isolated(data, w, x, y)) kill.push(y * w + x);
+  for (const i of kill) data[i] = 0;
+  return n;
+}
+
+function isolated(data: Uint8Array, w: number, x: number, y: number): boolean {
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dx = -1; dx <= 1; dx++) if ((dx || dy) && data[(y + dy) * w + x + dx]) return false;
+  return true;
+}

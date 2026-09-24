@@ -216,6 +216,12 @@ function splitRows(band: Component[], sp: number): Component[][] {
  * 只动**太高**的行（高过块高中位数的 1.7 倍），在中间那四成里找覆盖最少的 y，
  * 那里几乎没墨（不到峰值的一成五）才切，递归到切不动为止。
  */
+/** `splitTall` 找谷的范围（行高的比例）与谷底门槛（相对峰值）。原来 0.3~0.7、0.15；
+ *  英文行距只有 30px 时上一行的降部（g、y、p）与下一行的升部（l、h、撇号）搭进谷里，
+ *  谷底到不了一成五（《求主同住》两处两三行英文并成一条）。 */
+const TALL_MID = [0.25, 0.75] as const;
+const TALL_VALLEY = 0.3;
+
 function splitTall(row: Component[]): Component[][] {
   if (row.length < MIN_CELLS * 2) return [row];
   const top = Math.min(...row.map((c) => c.bbox.y));
@@ -226,8 +232,8 @@ function splitTall(row: Component[]): Component[][] {
   for (const c of row) for (let y = c.bbox.y; y < c.bbox.y + c.bbox.h; y++) cov[y - top] += c.bbox.w;
   const peak = Math.max(...cov);
   let at = -1;
-  for (let y = Math.round(H * 0.3); y < Math.round(H * 0.7); y++) if (at < 0 || cov[y] < cov[at]) at = y;
-  if (at < 0 || cov[at] > peak * 0.15) return [row];
+  for (let y = Math.round(H * TALL_MID[0]); y < Math.round(H * TALL_MID[1]); y++) if (at < 0 || cov[y] < cov[at]) at = y;
+  if (at < 0 || cov[at] > peak * TALL_VALLEY) return [row];
   const cut = top + at;
   const up = row.filter((c) => c.cy < cut);
   const dn = row.filter((c) => c.cy >= cut);
@@ -529,12 +535,16 @@ export function latinCells(strip: LyricStrip, chars: OcrChar[]): { box: Rect; ch
   const gaps = keep.slice(1).map((c, i) => c.xFrac - keep[i].xFrac).filter((g) => g > 0).sort((a, b) => a - b);
   const pitch = gaps.length ? gaps[gaps.length >> 1] : 1 / Math.max(1, keep.length);
   const out: { box: Rect; ch: string }[] = [];
+  // 盒高取**条中间一个字高**：条四周留了边，相邻两行英文只隔 30px 时整条高的盒上下各叠一两个像素，
+  // `buildLyricLines` 按纵向重叠把两行并成一行（《求主同住》第 3、4 段英文交错成一串）
+  const hh = Math.min(strip.box.h, Math.max(1, strip.charH));
+  const yy = strip.box.y + (strip.box.h - hh) / 2;
   const boxAt = (x0: number, x1: number, ch: string) => ({
     box: {
       x: strip.box.x + x0 * strip.box.w,
-      y: strip.box.y,
+      y: yy,
       w: Math.max(1, (x1 - x0) * strip.box.w),
-      h: strip.box.h,
+      h: hh,
     },
     ch,
   });
