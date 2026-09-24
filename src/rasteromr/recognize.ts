@@ -1860,11 +1860,11 @@ export async function recognizeRasterPage(
     // 续过的段只进 `SPage`，不回写 `prims`——`findBlobs` 那边仍按原段抹墨，
     // 免得把符头啃掉（见 `extendVSegs` 的说明）。
     // 被并进升降号的竖段要摘掉（留着会被当成符干或小节线）
-    vSegs: extendVSegs(
+    vSegs: splitVoiceStems(extendVSegs(
       nl,
       [...prims.vSegs.filter((v) => !usedSegs.has(v)), ...stemSegs, ...inkStems],
       Math.round(unit.space * 0.35),
-    ),
+    ), headBoxes.map((h) => h.box), unit),
     syms,
     braces: findBraces(nl, prims, unit, staffLefts, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y }))).map((c) => c.bbox),
     sysBrackets: groupByLeftInk(raster.bin, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y, left: Math.max(...g.lines.map((l) => l.left)) })), unit),
@@ -2626,6 +2626,49 @@ function vRunAt(bin: Binary, x: number, y: number): [number, number] | null {
   while (at(a - 1)) a--;
   while (at(b + 1)) b++;
   return [a, b];
+}
+
+/**
+ * **两个声部贴着的头各用一根干**：上声部的头在右缘出朝上的干，下声部的头在左缘出朝下的干，
+ * 两头相距三度时上下贴着，下声部那根干的墨一直连到上面那个头的中心——`buildNotes` 于是把上面那个头
+ * 同时挂到两根干上，出两遍（《向主唱新歌》D4/B3、A4/F4 一共五处）。
+ * 这里把这种干的端点缩回到本声部的头：朝下的干顶端停在「右缘另有朝上干」的头上、
+ * 同一根干上往下 0.6~1.6 格还有头、干从那个头再往下伸 1.5 格以上，就把顶端挪到下面那个头的中心；朝上的对称。
+ * 「再伸 1.5 格」挡的是两个头左缘连成的竖墨（齐来称颂一根朝上的干挂两个头，左缘被当成下干，歌词 96 → 54）。
+ */
+function splitVoiceStems(segs: LineSeg[], heads: Rect[], unit: RasterUnit): LineSeg[] {
+  const sp = unit.space;
+  const tol = sp * 0.3;
+  const xOf = (v: LineSeg) => (v.x0 + v.x1) / 2;
+  const top = (v: LineSeg) => Math.min(v.y0, v.y1);
+  const bot = (v: LineSeg) => Math.max(v.y0, v.y1);
+  const cy = (h: Rect) => h.y + h.h / 2;
+  const vertical = segs.filter((v) => bot(v) - top(v) > sp);
+  return segs.map((v) => {
+    if (bot(v) - top(v) <= sp) return v;
+    const vx = xOf(v);
+    // 朝下的干：挂在头的左缘，顶端落在头里
+    const hTop = heads.find((h) => Math.abs(h.x - vx) <= tol && top(v) >= h.y - tol && top(v) <= h.y + h.h);
+    if (hTop) {
+      const below = heads.filter((h) => h !== hTop && Math.abs(h.x - hTop.x) <= sp * 0.4 && cy(h) - cy(hTop) >= sp * 0.6 && cy(h) - cy(hTop) <= sp * 1.6 && cy(h) <= bot(v));
+      const up = vertical.some((u) => u !== v && Math.abs(xOf(u) - (hTop.x + hTop.w)) <= tol && bot(u) >= hTop.y - tol && bot(u) <= hTop.y + hTop.h + tol && top(u) < hTop.y - sp);
+      if (below.length && up && bot(v) - Math.max(...below.map(cy)) >= sp * 1.5) {
+        const ny = Math.min(...below.map(cy));
+        return { ...v, y0: v.y0 < v.y1 ? ny : v.y0, y1: v.y0 < v.y1 ? v.y1 : ny };
+      }
+    }
+    // 朝上的干：挂在头的右缘，底端落在头里
+    const hBot = heads.find((h) => Math.abs(h.x + h.w - vx) <= tol && bot(v) >= h.y && bot(v) <= h.y + h.h + tol);
+    if (hBot) {
+      const above = heads.filter((h) => h !== hBot && Math.abs(h.x + h.w - (hBot.x + hBot.w)) <= sp * 0.4 && cy(hBot) - cy(h) >= sp * 0.6 && cy(hBot) - cy(h) <= sp * 1.6 && cy(h) >= top(v));
+      const down = vertical.some((u) => u !== v && Math.abs(xOf(u) - hBot.x) <= tol && top(u) >= hBot.y - tol && top(u) <= hBot.y + hBot.h + tol && bot(u) > hBot.y + hBot.h + sp);
+      if (above.length && down && Math.min(...above.map(cy)) - top(v) >= sp * 1.5) {
+        const ny = Math.max(...above.map(cy));
+        return { ...v, y0: v.y0 > v.y1 ? ny : v.y0, y1: v.y0 > v.y1 ? v.y1 : ny };
+      }
+    }
+    return v;
+  });
 }
 
 function midOfStaff(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
