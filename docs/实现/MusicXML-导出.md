@@ -8,12 +8,12 @@
 
 | 文件 | 职责 |
 |---|---|
-| `src/model/toxml.ts::scoreDocToMusicXml` | **唯一写出端**：MusicXML 形状的 `ScoreDoc` → 文本。按固定元素次序序列化，`Measure.raw` 原位吐回 |
+| `src/model/toxml.ts::scoreDocToMusicXml` | **唯一写出端**：MusicXML 形状的 `ScoreDoc` → 文本。按固定元素次序建树，读进来的文档再按原节点回填表层（`OWNS` 之外的属性与子节点） |
 | `src/model/xmlproject.ts::projectForMusicXml` | **投影**：简谱来源留空的语义字段补齐成 MusicXML 形状（见下） |
-| `src/mixed/engrave.ts::engraveScoreDoc` | 版面坐标：五线谱引擎按设置里的纸排一遍，`<defaults>`、分行分页、系统/谱表间距、小节宽、音符 `default-x`、歌词/和弦/文字 `default-y`、标题块写回模型 |
+| `src/mixed/engrave.ts::engraveScoreDoc` | 版面坐标：五线谱引擎按设置里的纸排一遍。纸、分行分页、标题块、弧朝向写回模型；系统/谱表间距、小节宽、音符 `default-x`、符干、歌词/和弦/文字 `default-y` 装进 `EngravedLayout`，经 `ToXmlOptions.layout` 交给写出端 |
 | `src/editor/export.ts::buildMusicXml` | 调度：有底本且没改过给底本，否则整份重写 |
 
-只有这一份写出端、不做底本增量 patch：`ScoreDoc` 加上 `Measure.raw` 装得下 MusicXML 的内容，整份重写不是降采样。
+只有这一份写出端、不做底本增量 patch：语义在 `ScoreDoc`，表层在原节点（`model/xmlsurface.ts`），整份重写不是降采样。
 
 识别结果的两份**直出**（`omr/musicxml.ts`、`staffomr/toxml.ts`）不在此列：那是识别产物的原始出口，
 产出的就是底本。
@@ -142,9 +142,9 @@ MusicXML 的 `beams` 是 `<beam>` 元素、`dots` 是 `<dot>`、长音是 `type=
 
 版面坐标由**五线谱引擎**给（`mixed/engrave.ts::engraveScoreDoc`）：与屏幕上的五线谱同一套——
 同一张纸（设置里五线谱/混排那张，`App.staffPage`）、同一套断行（简谱视图实际排出的行当优选断点，见 [混排](混排.md) 自动铺排）、
-同一套自动铺排，排完把结果写回 `ScoreDoc` 再由写出端序列化。不碰 DOM。
+同一套自动铺排，排出来的坐标装进 `EngravedLayout`（不写进模型，与原文的表层同理），由写出端序列化。不碰 DOM。
 
-- 写回的：`<defaults>`（scaling 7mm/40tenths、page-layout、边距）、每行首小节的 `<print new-system|new-page>` 与
+- 给出的：`<defaults>`（scaling 7mm/40tenths、page-layout、边距，写回模型；`system-layout` 在 `EngravedLayout`）、每行首小节的 `<print new-system|new-page>`（写回模型）与
   `system-layout`（页首 `top-system-distance`、其余 `system-distance`）、多谱表的 `staff-layout`、各小节 `width`、
   音符 `default-x`、猜出来的符干方向（`<stem>`，符杠组已统一）、歌词/和弦 `default-y`、自动放置的速度/文字记号的 `default-y` 与字号、标题块。
 - 源文带来的换行先清掉，一律按排出来的。

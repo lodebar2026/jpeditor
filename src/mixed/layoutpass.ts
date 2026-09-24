@@ -4,7 +4,7 @@
 import { Fraction } from "../common/fraction";
 import { Font } from "../layout/font";
 import { GlyphCodes, type MetaData } from "../smufl/smufl";
-import type { Song } from "../model/doc";
+import { xmlPos } from "../model/xmlsurface";
 import {
   BarGlyph,
   Encoder,
@@ -102,19 +102,8 @@ function autoSlotWidth(durQuarters: number): number {
 }
 
 /** 该 MusicXML 是否自带版面坐标（任一小节有 width 或任一音符有 default-x）。读谱之前就要知道（弧的缺省朝向跟它走），
- *  所以直接看 `ScoreDoc`：音符 x 读自 `note.pos`（休止等无音的取和弦的 `pos`）。 */
-export function hasEmbeddedLayout(song: Song): boolean {
-  for (const part of song.parts) {
-    for (const m of part.measures) {
-      if (m.width !== undefined && m.width > 0) return true;
-      for (const el of m.elements) {
-        if (el.kind !== "chord") continue;
-        if (el.notes.length === 0 ? el.pos?.defaultX !== undefined : el.notes.some((n) => n.pos?.defaultX !== undefined)) return true;
-      }
-    }
-  }
-  return false;
-}
+ *  所以直接看原文的表层（`xmlsurface.ts`）。 */
+export { hasEmbeddedLayout } from "../model/xmlsurface";
 
 type Slot = { offset: Fraction; nat: number; slot: number };
 const slotCache = new WeakMap<StaffLayout, Slot[][]>();
@@ -658,7 +647,7 @@ function updateDataXPos(score: StaffLayout): void {
       const md = part.measures[i];
       if (!md) continue;
       // `<harmony relative-x>`：和弦相对拍位的横向微调（歌本改谱脚本写进 XML 的那种）
-      for (const h of md.harmonies) h.x = mif.getEntPos(h.offset) + (h.src.pos?.relativeX ?? 0);
+      for (const h of md.harmonies) h.x = mif.getEntPos(h.offset) + (xmlPos(h.src)?.relativeX ?? 0);
       for (const t of md.textBlocks) {
         if (t.data.length && t.relative) t.x += mif.getEntPos(t.offset);
       }

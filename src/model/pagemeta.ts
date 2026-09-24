@@ -16,6 +16,7 @@
 // 无 DOM 依赖。
 import type { Defaults, ScoreDoc, Song } from "./doc";
 import { getMeta } from "./metakeys";
+import { defaultsFonts } from "./xmlsurface";
 
 /** 标准纸（pt，竖放）。编辑器纸张表（`style/themes.ts::PAPER_SIZES`）在它之上再加一档「长图」。 */
 export const STANDARD_PAPERS: Readonly<Record<string, readonly [number, number]>> = {
@@ -206,7 +207,7 @@ export function headerFontsOfCredits(song: Song): Partial<Record<HeaderRole, Hea
     const role = headerRoleOfCredit(c.type, c.justify, maxSize > 0 && c.fontSize === maxSize);
     if (!role || out[role]) continue;
     const f: HeaderFontSpec = {};
-    const family = c.fontFamily ?? song.defaults?.wordFont?.family;
+    const family = c.fontFamily ?? defaultsFonts(song).wordFont?.family;
     if (family) f.family = family;
     if (c.fontSize) f.size = c.fontSize;
     if (c.fontWeight === "bold") f.bold = true;

@@ -26,8 +26,9 @@
 //
 // 字段**全部定义**（含五线谱侧），但只填 123 与现有来源给得出的部分。标 `[五线谱]` 的本轮
 // **定义但留空**，等 `ScoreDoc ↔ MusicXML` 直通那一轮再填——先把位置留正确，免得将来改结构。
-// 直通已落地；版面坐标（`Position`、小节宽、符干、`staff-details`）也由 `fromxml.ts` 填上了，
-// 只为整份重写不丢，排版不读。
+// 直通已落地。MusicXML 独有的表层（版面坐标、小节宽、符干、对齐、字体、`<system-layout>`、`<staff-details>`、
+// 读不懂的节点…）**不进本模型**：`fromxml.ts` 把模型对象绑到原节点（`xmlsurface.ts` 旁表），
+// 五线谱引擎经那里的查询函数现读，写出端 `toxml.ts` 通用回填。
 //
 // 枚举一律用**字符串字面量联合**、取值与 MusicXML token 同名：JSON 化干净，且与
 // `score/enums.ts` 的字符串枚举值可直接互转。
@@ -60,18 +61,6 @@ export interface Diagnostic {
 
 /** 元素 id。解析期分配、全文档唯一、**不随数组增删变化**。 */
 export type ElementId = number;
-
-/** [五线谱] 版面坐标（tenths，口径同 MusicXML 的 `default-x/-y`、`relative-x/-y`）。
- *  主要为 `.musicxml` 改动后整份重写不丢版面：`fromxml.ts` 读、`toxml.ts` 写。
- *  混排读其中几项：音符 `default-x`、歌词 `default-y/relative-y`、文字 `default-y/relative-x/relative-y`、
- *  和弦 `default-y/relative-x`、segno `relative-x`（歌本改谱脚本的位置微调就写在这里）。
- *  断行也是「这份谱怎么印」的事实，同理随文档保存（`Print`），见 `docs/待办.md` §3.1。 */
-export interface Position {
-  defaultX?: number;
-  defaultY?: number;
-  relativeX?: number;
-  relativeY?: number;
-}
 
 /** 水平/竖直对齐（`justify` / `halign` / `valign`）。 */
 export type HAlign = "left" | "center" | "right";
@@ -138,7 +127,8 @@ export interface FontSpec {
   style?: string;
 }
 
-/** [五线谱] `<defaults>`：版面默认值。本轮留空。 */
+/** [五线谱] `<defaults>` 里跨格式有人读写的几项：纸、scaling、歌词字号（`pagemeta.ts` 转 123/ABC 的纸与字号）。
+ *  `<system-layout>`、`<staff-layout>`、`<music-font>`、`<word-font>` 等是表层（`xmlsurface.ts::defaultsFonts`）。 */
 export interface Defaults {
   /** `<scaling>`：millimeters / tenths */
   scaling?: { millimeters: number; tenths: number };
@@ -148,13 +138,8 @@ export interface Defaults {
     /** `<page-margins>`，按出现顺序全留（奇偶页分开写时有两份） */
     margins?: { left: number; right: number; top: number; bottom: number; oddEven?: "odd" | "even" | "both" }[];
   };
-  systemLayout?: { systemDistance?: number; topSystemDistance?: number; leftMargin?: number; rightMargin?: number };
-  staffLayout?: { staffDistance?: number };
-  /** `<lyric-font>` / `<word-font>`：歌词与文字的缺省字体（语料 100% 都有） */
+  /** `<lyric-font>`：歌词的缺省字体（语料 100% 都有） */
   lyricFont?: FontSpec;
-  wordFont?: FontSpec;
-  /** `<music-font>`：记号字体；五线谱引擎只取字号（segno/coda 等文字里的记号按它排） */
-  musicFont?: FontSpec;
 }
 
 /** [五线谱] `<part-group>`：SATB 的括号分组。← 123 的 `%%score {(S A) (T B)}` */
@@ -283,10 +268,6 @@ export interface Harmony {
   text?: string;
   /** `<offset>`：相对所修饰音符起点的 divisions（增时线上的和弦由 `xmlproject.ts` 填） */
   offset?: number;
-  /** [五线谱] 见 `Position` */
-  pos?: Position;
-  /** [五线谱] `<kind halign>` */
-  kindHalign?: HAlign;
   /** [五线谱] `<kind use-symbols>` / `<kind parentheses-degrees>` */
   useSymbols?: boolean;
   parenthesesDegrees?: boolean;
@@ -318,8 +299,6 @@ export interface Lyric {
   elision?: string;
   /** 副歌：这一行词被多遍共用（`Lyric.refrain` 的对应物） */
   refrain?: boolean;
-  /** [五线谱] `<text font-family font-size…>`：这一行词自己的字体（歌本里某段换楷体） */
-  font?: FontSpec;
   /** 收尾标点。**并入前一字、不占音符格**（规则在 `common/cjkpunct.ts`） */
   trailingPunctuation?: string;
   /** 印刷段号（`<1.>`）：印在该段歌词首字之前、**不占音符格**。语料 55.6% 这么写 */
@@ -331,10 +310,6 @@ export interface Lyric {
   /** 文本谱同一行曲下**同一段号出现多行歌词**（收尾改写）时，这个字属于 `Print.lyricLines` 的第几行。
    *  只在有歧义时写 */
   lineIndex?: number;
-  /** [五线谱] 见 `Position` */
-  pos?: Position;
-  /** [五线谱] `<lyric justify>` */
-  justify?: HAlign;
   source?: SourceSpan;
 }
 
@@ -498,8 +473,6 @@ export interface Chord {
   cue?: boolean;
   /** [五线谱] `<type size>`：cue / grace-cue / large… */
   typeSize?: string;
-  /** [五线谱] 没有 `Note` 可挂时（休止、节奏音符）的 `<note default-x…>`；有音时坐标在各 `Note.pos` */
-  pos?: Position;
   /** [五线谱] 小节内起点（divisions）：MusicXML 靠 `<backup>`/`<forward>` 挪游标，多声部同一小节里各声部从头排。
    *  **缺省 = 前一个元素的终点**（首个元素为 0）；只在与缺省不同时写。`toxml.ts` 按它补回 `<backup>`/`<forward>` */
   onset?: number;
@@ -520,14 +493,8 @@ export interface Note {
   tie?: { start?: boolean; stop?: boolean };
   /** [五线谱] `<notehead>` */
   notehead?: string;
-  /** [五线谱] 符干方向 */
-  stem?: "up" | "down" | "none" | "double";
-  /** [五线谱] `<stem default-y>`：符干末端 */
-  stemY?: number;
   /** [五线谱] 这个音自己的 `<type size>`（和弦里单个音画小，如「上方音画小」）。首音的另记在 `Chord.typeSize` */
   typeSize?: string;
-  /** [五线谱] 这个音所在 `<note>` 的坐标，见 `Position` */
-  pos?: Position;
 }
 
 /** 无时值占位 `y` 与不可见休止 `x`。
@@ -636,8 +603,6 @@ export interface MeasureAttrs {
   staves?: number;
   /** [五线谱] */
   transpose?: Transpose;
-  /** [五线谱] `<staff-details>`：`print-object="no"` 是空谱表隐藏（混排 `applyStaffVisibility` 读它） */
-  staffDetails?: { staff?: number; printObject?: boolean }[];
 }
 
 /** `<direction>`：挂在小节某个时间点上的指示。 */
@@ -649,10 +614,8 @@ export interface Direction {
    *  丢了它，演唱顺序的跳转落点（segno/coda 的小节内位置）和写回的位置都不对 */
   afterElements?: number;
   /** dynamics / wedge / words / metronome / segno / coda / pedal / octave-shift / rehearsal；
-   *  `sound` 是小节级的 `<sound>`（不在 `<direction>` 里，只有 `sound` 与 `xml`） */
+   *  `sound` 是小节级的 `<sound>`（不在 `<direction>` 里，只有 `sound`；`<swing>` 等子元素在表层） */
   type: string;
-  /** `type: "sound"` 时的原文（`<sound>` 可带 `<swing>` 等子元素），`toxml.ts` 原样写回 */
-  xml?: string;
   /** 力度名（`f` / `mf`…）或文字内容 */
   text?: string;
   /** `<metronome>`：♩=76。`perMinuteText` 是 `<per-minute>` 不是纯数字时的原文（「132 温馨、期盼的」） */
@@ -667,14 +630,6 @@ export interface Direction {
   sound?: { dacapo?: boolean; dalsegno?: string; fine?: boolean; segno?: string; coda?: string; tocoda?: string; tempo?: number };
   voice?: number;
   staff?: number;
-  /** [五线谱] 首个 direction-type 子元素（words/dynamics…）上的坐标，见 `Position` */
-  pos?: Position;
-  /** [五线谱] 同上那个子元素的 `justify` / `halign` / `valign` */
-  justify?: HAlign;
-  halign?: HAlign;
-  valign?: string;
-  /** [五线谱] 同上那个子元素的字体（`words` / `metronome`） */
-  font?: FontSpec;
   /** [五线谱] `<pedal line>` */
   line?: boolean;
   /** [五线谱] 同一 `<direction>` 里其余的子元素（多行诗文写成几个 `<words>`），字段口径同上 */
@@ -687,7 +642,7 @@ export interface Direction {
 /** `Direction.more` 的一项：`<direction-type>` 下的一个子元素。 */
 export type DirectionPart = Pick<
   Direction,
-  "type" | "text" | "tempo" | "spanType" | "wedgeType" | "pos" | "justify" | "halign" | "valign" | "font" | "line"
+  "type" | "text" | "tempo" | "spanType" | "wedgeType" | "line"
 >;
 
 /** `<print>`：版面指示。123 的 `$`（换行）/ `$$`（换页）落在这里。
@@ -700,13 +655,6 @@ export type DirectionPart = Pick<
 export interface Print {
   newSystem?: boolean;
   newPage?: boolean;
-  /** [五线谱] */
-  systemLayout?: { systemDistance?: number; topSystemDistance?: number; leftMargin?: number; rightMargin?: number };
-  /** [五线谱] `<staff-layout number>`：本系统各谱表离上一谱表的距离 */
-  staffLayouts?: { staff?: number; staffDistance?: number }[];
-  staffSpacing?: number;
-  /** `<measure-numbering>` */
-  measureNumbering?: string;
   /** 本系统是全曲第几个系统（0 基）。文本谱**一组不一定含全部声部**，多声部时靠它把各声部的行对回同一组 */
   system?: number;
   /** 印在本系统上方的说明文字行（文本谱 `W:`）。挂在该系统第一个声部的首小节 */
@@ -744,8 +692,6 @@ export interface LyricLineInfo {
 export interface Measure {
   /** 小节号**原文**——可能是 "12a" 这种，不能当数字存 */
   number: string;
-  /** [五线谱] `<measure width>`（tenths），见 `Position` */
-  width?: number;
   /** [五线谱] `<measure implicit="yes">`：弱起等不计小节号的小节 */
   implicit?: boolean;
   /** [五线谱] 小节时长（divisions）。**只在比元素的最远终点更长时写**：`<forward>` 撑出来的空拍（赞美之泉 016 末尾的 `<forward>`） */
@@ -763,10 +709,6 @@ export interface Measure {
   print?: Print;
   /** 行末（最后一个符号之后）的 `InlineItem` */
   trailing?: InlineItem[];
-  /** **读不懂的原样留着**：`fromxml.ts` 把本小节里它不认识的子节点序列化成字符串挂这儿，
-   *  `toxml.ts` 原位吐回去。保存策略是「改动过就全量重写」，全量重写不丢东西**靠的就是这个**，
-   *  不是 patch（见 `docs/待办.md` §1 机制 A）。 */
-  raw?: string[];
   source?: SourceSpan;
 }
 
@@ -782,8 +724,6 @@ export interface Part {
   endBreak?: "system" | "page";
   /** 见 `BreakSource`，按原文顺序 */
   breakSources?: BreakSource[];
-  /** 见 `Measure.raw` */
-  raw?: string[];
 }
 
 // ───────────────────────── 跨元素的东西 ─────────────────────────

@@ -182,12 +182,12 @@ export async function buildMusicXml(app: App): Promise<string> {
 }
 
 /** 当前**源文**经唯一写出端投成 MusicXML（不看混排底本），带上给第三方软件看的版面坐标：
- *  由五线谱引擎按设置里的纸排一遍、坐标写回模型（`mixed/engrave.ts`），与屏幕上的五线谱同一套分行。
+ *  由五线谱引擎按设置里的纸排一遍（`mixed/engrave.ts`），与屏幕上的五线谱同一套分行，坐标交给写出端。
  *  谱里自带版面的原样不动。 */
 export async function sourceMusicXml(app: App): Promise<string> {
   const doc = loadScoreDoc(sourceMusicXmlBare(app));
-  await engraveScoreDoc(doc, app.staffPage);
-  return scoreDocToMusicXml(doc);
+  const layout = await engraveScoreDoc(doc, app.staffPage);
+  return scoreDocToMusicXml(doc, layout ? { layout } : {});
 }
 
 /** 同上，但**不带版面坐标**。文本格式进五线谱/混排走这一份（`App._ensureMixedDoc` 写出后再读回成 `mixedDoc`）：

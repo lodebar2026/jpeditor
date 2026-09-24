@@ -2,9 +2,18 @@
 //
 // ## 为什么敢全量重写
 //
-// 保存策略是「模型未改动 → 原样写回；改动过 → 全量重写」。和弦、力度、多声部、`<print>` 行结构、
-// `<credit>` 版式 `ScoreDoc` 都装得下，**外加 `Measure.raw` 把读不懂的节点原样留着**，
-// 全量重写才是安全的默认路径。
+// 保存策略是「模型未改动 → 原样写回；改动过 → 全量重写」。语义（音、和弦、力度、多声部、`<print>` 行结构、
+// `<credit>` 版式…）从模型写；MusicXML 独有的表层（坐标、符干、对齐、字体、读不懂的属性与子节点）不在模型里，
+// 而在 `fromxml.ts` 绑定的原节点上（`xmlsurface.ts`）——写出时**通用回填**：
+//
+// - 属性：原节点上写出端没写、也不归写出端管（`OWNS[标签].attrs`）的，按原顺序接在后面；
+// - 子节点：写出端写了的逐个配对原节点（有绑定的用绑定，其余按「标签 + 同标签第几个」，个别按编号），递归回填；
+//   原节点里没配上的，标签归写出端管（`OWNS[标签].kids`）就是模型删了它、丢掉，否则原样保留，
+//   插在它原先前面最近一个配上的兄弟之后（原文合法，保住相对次序就合 schema）。
+//
+// 所以 **`fromxml.ts` 每读一个语义字段，这里的 `OWNS` 就要认领它**，否则原节点上那份会被回填、与模型打架
+// （例如 `note@print-object`：改成可见后不能从原节点带回 `no`）。
+// 导出时五线谱引擎排出来的版面（`ToXmlOptions.layout`，`mixed/engrave.ts`）由写出端显式写，回填跳过同名的。
 //
 // ## 元素顺序是硬要求
 //
@@ -28,7 +37,6 @@ import type {
   MeasureAttrs,
   Note,
   Part,
-  Position,
   Print,
   ScoreDoc,
   Song,
@@ -37,6 +45,7 @@ import type {
 import { harmonyXml as chordTextXml } from "../score/harmonyxml";
 import { projectForMusicXml, type ProjectOptions } from "./xmlproject";
 import { SOURCE_ID_PREFIX } from "./helpers";
+import { surfaceOf, type EngravedLayout, type Position, type PrintLayout } from "./xmlsurface";
 
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -45,21 +54,248 @@ const escAttr = (s: string): string => esc(s).replace(/"/g, "&quot;");
 /** 一层缩进两格，与 MuseScore 的输出习惯一致。 */
 const ind = (depth: number): string => "  ".repeat(depth);
 
-class Out {
-  private lines: string[] = [];
-  push(depth: number, text: string): void {
-    this.lines.push(ind(depth) + text);
+// ───────────────────────── 输出树与表层回填 ─────────────────────────
+
+/** 写出端先建树、最后序列化：回填表层要在子节点齐了之后才能配对。 */
+interface XNode {
+  name: string;
+  /** 已拼好的属性串（带前导空格） */
+  attrs: string;
+  kids: XNode[];
+  /** 已转义的文字：`<name>text</name>` */
+  text?: string;
+  /** 原样的一段 XML（可多行，按所在层级重新缩进） */
+  raw?: string;
+  /** 子节点与自己写在同一行（`<dynamics><mf/></dynamics>`） */
+  inline?: boolean;
+  /** 原节点（表层） */
+  sur?: Element;
+  /** 覆盖 `OWNS[name].attrs`（`<credit-words>` 第二行起的版式只从原节点来） */
+  ownAttrs?: readonly string[];
+}
+
+/** 写出端管的属性与子节点：原节点上的这些以模型为准（模型没写就是没有），不回填。
+ *  `kids: "*"` = 子节点全由写出端定。表里没有的标签：属性一个不管、子节点一个不管（没配上的全部回填）。
+ *  `same`：写出端管、但模型不记缺省值的属性——写出端没写、原文写的恰是缺省值时照原文带回（`print-object="yes"`）。
+ *  **只写 `layout`（导出版面）来的不要列**（小节 `width`、`<stem>`、`<system-layout>`…）：模型里没有它们，列了就会丢原文的。 */
+const OWNS: Readonly<Record<string, { attrs?: readonly string[]; kids?: readonly string[] | "*"; same?: Readonly<Record<string, string>> }>> = {
+  "score-partwise": { attrs: ["version"], kids: ["work", "movement-title", "identification", "defaults", "credit", "part-list", "part"] },
+  work: { kids: ["work-number", "work-title"] },
+  identification: { kids: ["creator", "rights", "encoding", "miscellaneous"] },
+  creator: { attrs: ["type"] },
+  encoding: { kids: ["software"] },
+  miscellaneous: { kids: ["miscellaneous-field"] },
+  "miscellaneous-field": { attrs: ["name"] },
+  defaults: { kids: ["scaling", "page-layout"] },
+  scaling: { kids: "*" },
+  "page-layout": { kids: ["page-height", "page-width", "page-margins"] },
+  "page-margins": { attrs: ["type"], kids: "*" },
+  "lyric-font": { attrs: ["font-family", "font-size", "font-weight", "font-style"] },
+  credit: { attrs: ["page"], kids: ["credit-type", "credit-words"] },
+  "credit-words": { attrs: ["default-x", "default-y", "justify", "halign", "font-family", "font-size", "font-weight"] },
+  "part-list": { kids: ["part-group", "score-part"] },
+  "part-group": { attrs: ["type", "number"], kids: ["group-symbol", "group-name", "group-abbreviation", "group-barline"] },
+  "score-part": { attrs: ["id"], kids: ["part-name", "part-abbreviation"] },
+  part: { attrs: ["id"], kids: ["measure"] },
+  measure: {
+    attrs: ["number", "implicit"],
+    kids: ["print", "barline", "attributes", "direction", "harmony", "note", "backup", "forward", "sound"],
+  },
+  print: { attrs: ["new-system", "new-page"] },
+  attributes: { kids: ["divisions", "key", "time", "staves", "clef", "transpose"] },
+  key: { kids: ["cancel", "fifths", "mode", "key-step", "key-alter"] },
+  time: { attrs: ["symbol"], kids: ["beats", "beat-type"] },
+  clef: { attrs: ["number"], kids: ["sign", "line", "clef-octave-change"] },
+  transpose: { kids: ["diatonic", "chromatic", "octave-change"] },
+  note: {
+    attrs: ["print-object"],
+    same: { "print-object": "yes" },
+    kids: [
+      "grace", "cue", "chord", "pitch", "unpitched", "rest", "duration", "tie", "voice", "type", "dot", "accidental",
+      "time-modification", "notehead", "staff", "beam", "notations", "lyric",
+    ],
+  },
+  grace: { attrs: ["slash"] },
+  rest: { attrs: ["measure"] },
+  pitch: { kids: "*" },
+  unpitched: { kids: "*" },
+  tie: { attrs: ["type"] },
+  type: { attrs: ["size"] },
+  accidental: { attrs: ["parentheses"] },
+  "time-modification": { kids: ["actual-notes", "normal-notes"] },
+  beam: { attrs: ["number"] },
+  notations: { kids: ["slur", "tied", "tuplet", "fermata", "arpeggiate", "articulations", "ornaments", "technical"] },
+  slur: { attrs: ["type", "number", "placement", "orientation"] },
+  tied: { attrs: ["type", "number"] },
+  tuplet: { attrs: ["type", "number", "bracket", "placement"] },
+  fermata: { attrs: ["type"], same: { type: "upright" } },
+  articulations: { kids: "*" },
+  ornaments: { kids: "*" },
+  technical: { kids: "*" },
+  lyric: { attrs: ["number", "name"], kids: ["syllabic", "text", "extend", "elision"] },
+  extend: { attrs: ["type"] },
+  harmony: { attrs: ["staff"], kids: ["root", "kind", "bass", "degree", "offset"] },
+  root: { kids: "*" },
+  kind: { attrs: ["text", "use-symbols", "parentheses-degrees"] },
+  bass: { kids: "*" },
+  degree: { kids: "*" },
+  direction: { attrs: ["placement"], kids: ["direction-type", "offset", "staff"] },
+  "direction-type": { kids: "*" },
+  dynamics: { kids: "*" },
+  wedge: { attrs: ["type"] },
+  metronome: { kids: ["beat-unit", "beat-unit-dot", "per-minute"] },
+  bracket: { attrs: ["type", "line-end", "line-type"] },
+  pedal: { attrs: ["type", "line"] },
+  "octave-shift": { attrs: ["type"] },
+  sound: { attrs: ["dacapo", "dalsegno", "fine", "segno", "coda", "tocoda", "tempo"] },
+  barline: { attrs: ["location"], kids: ["bar-style", "ending", "repeat"] },
+  ending: { attrs: ["number", "type", "print-object"], same: { "print-object": "yes" } },
+  repeat: { attrs: ["direction", "times"] },
+};
+
+/** 子节点按编号配对的标签（按「第几个」配会配错：起止交错、层号跳号）。 */
+const MATCH_KEY: Readonly<Record<string, readonly string[]>> = {
+  "part-group": ["type", "number"],
+  slur: ["type", "number"],
+  tied: ["type", "number"],
+  tuplet: ["type", "number"],
+  beam: ["number"],
+  lyric: ["number"],
+  clef: ["number"],
+  "staff-layout": ["number"],
+  "page-margins": ["type"],
+  barline: ["location"],
+};
+
+const attrMap = (attrs: string): Map<string, string> => {
+  const m = new Map<string, string>();
+  for (const a of attrs.matchAll(/\s([\w:.-]+)="([^"]*)"/g)) m.set(a[1]!, a[2]!);
+  return m;
+};
+
+const keyOf = (keys: readonly string[], get: (k: string) => string | null | undefined): string =>
+  keys.map((k) => get(k) ?? "").join("\u0000");
+
+/** 序列化原节点，去掉它在源文件里的整体缩进（按收尾行的缩进左移），再按所在层级重新缩进——
+ *  不去的话每往返一次子行缩进加深一层，重写结果不是定点。 */
+function serializeDedented(el: Element): string {
+  const lines = new XMLSerializer().serializeToString(el).split("\n");
+  if (lines.length < 2) return lines[0]!;
+  const base = /^ */.exec(lines[lines.length - 1]!)![0].length;
+  return lines.map((l, i) => (i === 0 ? l : l.slice(Math.min(base, /^ */.exec(l)![0].length)))).join("\n");
+}
+
+/** 原节点上要接在后面的属性。 */
+function carriedAttrs(n: XNode, sur: Element): string {
+  const written = attrMap(n.attrs);
+  const own = n.ownAttrs ?? OWNS[n.name]?.attrs ?? [];
+  const same = OWNS[n.name]?.same;
+  let out = "";
+  for (const a of Array.from(sur.attributes)) {
+    if (written.has(a.name) || (own.includes(a.name) && same?.[a.name] !== a.value)) continue;
+    out += ` ${a.name}="${escAttr(a.value)}"`;
   }
-  /** 原样塞回一段已序列化的 XML（`raw`）。 */
-  raw(depth: number, xml: string): void {
-    for (const line of xml.split("\n")) this.lines.push(ind(depth) + line);
+  return out;
+}
+
+/** 子节点配对原节点，并把没配上、不归写出端管的原子节点插回去。 */
+function mergeKids(n: XNode, sur: Element): XNode[] {
+  const orig = Array.from(sur.children);
+  const used = new Map<Element, XNode>();
+  for (const k of n.kids) if (k.sur && k.sur.parentElement === sur && !used.has(k.sur)) used.set(k.sur, k);
+  for (const k of n.kids) {
+    if (k.sur || k.raw !== undefined) continue;
+    const keys = MATCH_KEY[k.name];
+    const mine = keys ? keyOf(keys, (a) => attrMap(k.attrs).get(a)) : "";
+    const hit = orig.find((c) => c.tagName === k.name && !used.has(c) && (!keys || keyOf(keys, (a) => c.getAttribute(a)) === mine));
+    if (!hit) continue;
+    k.sur = hit;
+    used.set(hit, k);
   }
-  toString(): string {
-    return this.lines.join("\n");
+  const own = OWNS[n.name]?.kids;
+  if (own === "*") return n.kids;
+  const out = [...n.kids];
+  let head = 0;
+  const placed = new Map<Element, XNode>(used);
+  orig.forEach((c, i) => {
+    if (used.has(c) || own?.includes(c.tagName)) return;
+    const node: XNode = { name: "", attrs: "", kids: [], raw: serializeDedented(c) };
+    let at = -1;
+    for (let j = i - 1; j >= 0 && at < 0; j--) {
+      const prev = placed.get(orig[j]!);
+      if (prev) at = out.indexOf(prev) + 1;
+    }
+    if (at < 0) at = head++;
+    out.splice(at, 0, node);
+    placed.set(c, node);
+  });
+  return out;
+}
+
+function serializeNode(n: XNode, depth: number, lines: string[]): void {
+  if (n.raw !== undefined) {
+    for (const line of n.raw.split("\n")) lines.push(ind(depth) + line);
+    return;
+  }
+  const sur = n.sur;
+  const attrs = sur ? n.attrs + carriedAttrs(n, sur) : n.attrs;
+  const kids = sur && n.text === undefined ? mergeKids(n, sur) : n.kids;
+  if (n.text !== undefined) lines.push(`${ind(depth)}<${n.name}${attrs}>${n.text}</${n.name}>`);
+  else if (kids.length === 0) lines.push(`${ind(depth)}<${n.name}${attrs}/>`);
+  else if (n.inline) {
+    const inner: string[] = [];
+    for (const k of kids) serializeNode(k, 0, inner);
+    lines.push(`${ind(depth)}<${n.name}${attrs}>${inner.join("")}</${n.name}>`);
+  } else {
+    lines.push(`${ind(depth)}<${n.name}${attrs}>`);
+    for (const k of kids) serializeNode(k, depth + 1, lines);
+    lines.push(`${ind(depth)}</${n.name}>`);
   }
 }
 
-/** 版面坐标 → 属性串（带前导空格；没有则空串）。见 `doc.ts::Position`。 */
+class Out {
+  private readonly root: XNode = { name: "", attrs: "", kids: [] };
+  private readonly stack: XNode[] = [this.root];
+
+  private add(n: XNode): XNode {
+    this.stack[this.stack.length - 1]!.kids.push(n);
+    return n;
+  }
+
+  /** 开一个元素（`close` 收口）。`inline`：子节点写在同一行 */
+  open(name: string, attrs = "", sur?: Element, inline = false): XNode {
+    const n = this.add({ name, attrs, kids: [], ...(sur ? { sur } : {}), ...(inline ? { inline } : {}) });
+    this.stack.push(n);
+    return n;
+  }
+
+  close(): void {
+    this.stack.pop();
+  }
+
+  /** 空元素 `<name attrs/>`（原节点有子节点时回填后可能不空） */
+  leaf(name: string, attrs = "", sur?: Element): XNode {
+    return this.add({ name, attrs, kids: [], ...(sur ? { sur } : {}) });
+  }
+
+  /** 文字元素 `<name attrs>text</name>` */
+  text(name: string, text: string | number, attrs = "", sur?: Element): XNode {
+    return this.add({ name, attrs, kids: [], text: typeof text === "string" ? esc(text) : String(text), ...(sur ? { sur } : {}) });
+  }
+
+  /** 原样的一段 XML */
+  raw(xml: string): void {
+    this.add({ name: "", attrs: "", kids: [], raw: xml });
+  }
+
+  toString(): string {
+    const lines: string[] = [];
+    for (const k of this.root.kids) serializeNode(k, 0, lines);
+    return lines.join("\n");
+  }
+}
+
+/** 版面坐标 → 属性串（带前导空格；没有则空串）。 */
 function posAttrs(pos: Position | undefined): string {
   if (!pos) return "";
   const a: string[] = [];
@@ -69,9 +305,6 @@ function posAttrs(pos: Position | undefined): string {
   if (pos.relativeY !== undefined) a.push(`relative-y="${pos.relativeY}"`);
   return a.length ? " " + a.join(" ") : "";
 }
-
-const tag = (name: string, text: string | number): string =>
-  `<${name}>${typeof text === "string" ? esc(text) : text}</${name}>`;
 
 /** 字体 → 属性串（带前导空格；没有则空串）。见 `doc.ts::FontSpec`。 */
 function fontAttrs(f: FontSpec | undefined): string {
@@ -84,79 +317,81 @@ function fontAttrs(f: FontSpec | undefined): string {
   return a.length ? " " + a.join(" ") : "";
 }
 
+/** 写出这一遍的上下文：导出版面（可无）与是否带源 id。 */
+interface Ctx {
+  layout?: EngravedLayout;
+  sourceIds: boolean;
+}
+
 // ───────────────────────── 头部 ─────────────────────────
 
-function writeKey(o: Out, d: number, k: Key): void {
-  o.push(d, "<key>");
-  if (k.cancel !== undefined) o.push(d + 1, tag("cancel", k.cancel));
-  o.push(d + 1, tag("fifths", k.fifths));
-  if (k.mode) o.push(d + 1, tag("mode", k.mode));
+function writeKey(o: Out, k: Key): void {
+  o.open("key");
+  if (k.cancel !== undefined) o.text("cancel", k.cancel);
+  o.text("fifths", k.fifths);
+  if (k.mode) o.text("mode", k.mode);
   for (const a of k.explicitAccidentals ?? []) {
-    o.push(d + 1, tag("key-step", a.step));
-    o.push(d + 1, tag("key-alter", a.alter));
+    o.text("key-step", a.step);
+    o.text("key-alter", a.alter);
   }
-  o.push(d, "</key>");
+  o.close();
 }
 
-function writeTime(o: Out, d: number, t: Time): void {
-  o.push(d, t.symbol ? `<time symbol="${escAttr(t.symbol)}">` : "<time>");
-  o.push(d + 1, tag("beats", t.beats));
-  o.push(d + 1, tag("beat-type", t.beatType));
-  o.push(d, "</time>");
+function writeTime(o: Out, t: Time): void {
+  o.open("time", t.symbol ? ` symbol="${escAttr(t.symbol)}"` : "");
+  o.text("beats", t.beats);
+  o.text("beat-type", t.beatType);
+  o.close();
 }
 
-function writeDefaults(o: Out, d: number, def: Defaults): void {
-  o.push(d, "<defaults>");
-  if (def.scaling) {
-    o.push(d + 1, "<scaling>");
-    o.push(d + 2, tag("millimeters", def.scaling.millimeters));
-    o.push(d + 2, tag("tenths", def.scaling.tenths));
-    o.push(d + 1, "</scaling>");
+type SystemLayout = NonNullable<PrintLayout["systemLayout"]>;
+
+function writeSystemLayout(o: Out, sl: SystemLayout, bothMargins: boolean): void {
+  o.open("system-layout");
+  if (sl.leftMargin !== undefined || sl.rightMargin !== undefined) {
+    o.open("system-margins");
+    if (bothMargins || sl.leftMargin !== undefined) o.text("left-margin", sl.leftMargin ?? 0);
+    if (bothMargins || sl.rightMargin !== undefined) o.text("right-margin", sl.rightMargin ?? 0);
+    o.close();
   }
-  const pl = def.pageLayout;
+  if (sl.systemDistance !== undefined) o.text("system-distance", sl.systemDistance);
+  if (sl.topSystemDistance !== undefined) o.text("top-system-distance", sl.topSystemDistance);
+  o.close();
+}
+
+function writeDefaults(o: Out, def: Defaults | undefined, sl: SystemLayout | undefined): void {
+  if (!def && !sl) return;
+  o.open("defaults");
+  if (def?.scaling) {
+    o.open("scaling");
+    o.text("millimeters", def.scaling.millimeters);
+    o.text("tenths", def.scaling.tenths);
+    o.close();
+  }
+  const pl = def?.pageLayout;
   if (pl) {
-    o.push(d + 1, "<page-layout>");
-    if (pl.pageHeight !== undefined) o.push(d + 2, tag("page-height", pl.pageHeight));
-    if (pl.pageWidth !== undefined) o.push(d + 2, tag("page-width", pl.pageWidth));
+    o.open("page-layout");
+    if (pl.pageHeight !== undefined) o.text("page-height", pl.pageHeight);
+    if (pl.pageWidth !== undefined) o.text("page-width", pl.pageWidth);
     for (const mg of pl.margins ?? []) {
-      o.push(d + 2, `<page-margins type="${mg.oddEven ?? "both"}">`);
-      o.push(d + 3, tag("left-margin", mg.left));
-      o.push(d + 3, tag("right-margin", mg.right));
-      o.push(d + 3, tag("top-margin", mg.top));
-      o.push(d + 3, tag("bottom-margin", mg.bottom));
-      o.push(d + 2, "</page-margins>");
+      o.open("page-margins", ` type="${mg.oddEven ?? "both"}"`);
+      o.text("left-margin", mg.left);
+      o.text("right-margin", mg.right);
+      o.text("top-margin", mg.top);
+      o.text("bottom-margin", mg.bottom);
+      o.close();
     }
-    o.push(d + 1, "</page-layout>");
+    o.close();
   }
-  const sl = def.systemLayout;
-  if (sl) {
-    o.push(d + 1, "<system-layout>");
-    if (sl.leftMargin !== undefined || sl.rightMargin !== undefined) {
-      o.push(d + 2, "<system-margins>");
-      o.push(d + 3, tag("left-margin", sl.leftMargin ?? 0));
-      o.push(d + 3, tag("right-margin", sl.rightMargin ?? 0));
-      o.push(d + 2, "</system-margins>");
-    }
-    if (sl.systemDistance !== undefined) o.push(d + 2, tag("system-distance", sl.systemDistance));
-    if (sl.topSystemDistance !== undefined) {
-      o.push(d + 2, tag("top-system-distance", sl.topSystemDistance));
-    }
-    o.push(d + 1, "</system-layout>");
-  }
-  if (def.staffLayout?.staffDistance !== undefined) {
-    o.push(d + 1, "<staff-layout>");
-    o.push(d + 2, tag("staff-distance", def.staffLayout.staffDistance));
-    o.push(d + 1, "</staff-layout>");
-  }
-  if (def.musicFont) o.push(d + 1, `<music-font${fontAttrs(def.musicFont)}/>`);
-  if (def.wordFont) o.push(d + 1, `<word-font${fontAttrs(def.wordFont)}/>`);
-  if (def.lyricFont) o.push(d + 1, `<lyric-font${fontAttrs(def.lyricFont)}/>`);
-  o.push(d, "</defaults>");
+  if (sl) writeSystemLayout(o, sl, true);
+  if (def?.lyricFont) o.leaf("lyric-font", fontAttrs(def.lyricFont));
+  o.close();
 }
 
-function writeCredit(o: Out, d: number, c: Credit): void {
-  o.push(d, c.page ? `<credit page="${c.page}">` : '<credit page="1">');
-  if (c.type) o.push(d + 1, tag("credit-type", c.type));
+function writeCredit(o: Out, c: Credit): void {
+  const sur = surfaceOf(c);
+  o.open("credit", c.page ? ` page="${c.page}"` : ' page="1"', sur);
+  if (c.type) o.text("credit-type", c.type);
   const attrs: string[] = [];
   if (c.x !== undefined) attrs.push(`default-x="${c.x}"`);
   if (c.y !== undefined) attrs.push(`default-y="${c.y}"`);
@@ -166,60 +401,60 @@ function writeCredit(o: Out, d: number, c: Credit): void {
   if (c.fontSize !== undefined) attrs.push(`font-size="${c.fontSize}"`);
   if (c.fontWeight !== undefined) attrs.push(`font-weight="${escAttr(c.fontWeight)}"`);
   const a = attrs.length ? " " + attrs.join(" ") : "";
-  for (const line of c.words ?? c.text.split("\n")) {
-    o.push(d + 1, `<credit-words${a}>${esc(line)}</credit-words>`);
-  }
-  o.push(d, "</credit>");
+  (c.words ?? c.text.split("\n")).forEach((line, i) => {
+    // 模型只记首个 `<credit-words>` 的版式；有原节点时第二行起的版式全从原节点来（各行字体可以不同）
+    if (i > 0 && sur) o.text("credit-words", line).ownAttrs = [];
+    else o.text("credit-words", line, a);
+  });
+  o.close();
 }
 
 // ───────────────────────── 音符 ─────────────────────────
 
-function harmonyXml(o: Out, d: number, h: Harmony): void {
+function harmonyXml(o: Out, h: Harmony, cx: Ctx): void {
   // 简谱来源只有和弦原文（`"Cm7"`），结构交给和弦文字解析
   if (!h.kind && h.text) {
-    o.push(d, chordTextXml(h.text, h.offset ?? 0));
+    o.raw(chordTextXml(h.text, h.offset ?? 0));
     return;
   }
-  o.push(d, `<harmony${posAttrs(h.pos)}${h.staff !== undefined ? ` staff="${h.staff}"` : ""}>`);
-  o.push(d + 1, "<root>");
-  o.push(d + 2, tag("root-step", h.root.step));
-  if (h.root.alter) o.push(d + 2, tag("root-alter", h.root.alter));
-  o.push(d + 1, "</root>");
+  o.open("harmony", posAttrs(cx.layout?.pos.get(h)) + (h.staff !== undefined ? ` staff="${h.staff}"` : ""), surfaceOf(h));
+  o.open("root");
+  o.text("root-step", h.root.step);
+  if (h.root.alter) o.text("root-alter", h.root.alter);
+  o.close();
   const kindAttrs =
-    (h.kindText !== undefined ? ` text="${escAttr(h.kindText)}"` : "") + (h.kindHalign ? ` halign="${h.kindHalign}"` : "") +
+    (h.kindText !== undefined ? ` text="${escAttr(h.kindText)}"` : "") +
     (h.useSymbols ? ' use-symbols="yes"' : "") + (h.parenthesesDegrees ? ' parentheses-degrees="yes"' : "");
-  o.push(d + 1, `<kind${kindAttrs}>${esc(h.kind)}</kind>`);
+  o.text("kind", h.kind, kindAttrs);
   if (h.bass) {
-    o.push(d + 1, "<bass>");
-    o.push(d + 2, tag("bass-step", h.bass.step));
-    if (h.bass.alter) o.push(d + 2, tag("bass-alter", h.bass.alter));
-    o.push(d + 1, "</bass>");
+    o.open("bass");
+    o.text("bass-step", h.bass.step);
+    if (h.bass.alter) o.text("bass-alter", h.bass.alter);
+    o.close();
   }
   for (const g of h.degrees ?? []) {
-    o.push(d + 1, "<degree>");
-    o.push(d + 2, tag("degree-value", g.value));
-    o.push(d + 2, tag("degree-alter", g.alter));
-    o.push(d + 2, tag("degree-type", g.type));
-    o.push(d + 1, "</degree>");
+    o.open("degree");
+    o.text("degree-value", g.value);
+    o.text("degree-alter", g.alter);
+    o.text("degree-type", g.type);
+    o.close();
   }
-  if (h.offset) o.push(d + 1, tag("offset", h.offset));
-  o.push(d, "</harmony>");
+  if (h.offset) o.text("offset", h.offset);
+  o.close();
 }
 
-function lyricXml(o: Out, d: number, l: Lyric): void {
-  const just = l.justify ? ` justify="${l.justify}"` : "";
+function lyricXml(o: Out, l: Lyric, cx: Ctx): void {
   const number = l.numberText ?? (l.refrain ? "chorus" : String(l.number));
   const name = l.name !== undefined ? ` name="${escAttr(l.name)}"` : "";
-  o.push(d, `<lyric number="${escAttr(number)}"${name}${posAttrs(l.pos)}${just}>`);
-  if (l.syllabic) o.push(d + 1, tag("syllabic", l.syllabic));
-  const lt = (l.leadingPunctuation ?? "") + l.text + (l.trailingPunctuation ?? "");
-  o.push(d + 1, l.font ? `<text${fontAttrs(l.font)}>${esc(lt)}</text>` : tag("text", lt));
-  if (l.extend) o.push(d + 1, l.extendType ? `<extend type="${l.extendType}"/>` : "<extend/>");
-  o.push(d, "</lyric>");
+  o.open("lyric", ` number="${escAttr(number)}"${name}${posAttrs(cx.layout?.pos.get(l))}`, surfaceOf(l));
+  if (l.syllabic) o.text("syllabic", l.syllabic);
+  o.text("text", (l.leadingPunctuation ?? "") + l.text + (l.trailingPunctuation ?? ""));
+  if (l.extend) o.leaf("extend", l.extendType ? ` type="${l.extendType}"` : "");
+  o.close();
 }
 
 /** 一个音符元素上要挂的 `<notations>`（含跨元素记号的起止）。 */
-function notationsXml(o: Out, d: number, n: Chord["notations"], starts: Mark[], stops: Mark[]): void {
+function notationsXml(o: Out, n: Chord["notations"], starts: Mark[], stops: Mark[]): void {
   const has =
     n?.articulations?.length ||
     n?.ornaments?.length ||
@@ -234,117 +469,103 @@ function notationsXml(o: Out, d: number, n: Chord["notations"], starts: Mark[], 
   const order = (m: Mark): number => ["tied", "slur", "tuplet"].indexOf(m.type) * 1000 + (m.number ?? 1);
   starts = [...starts].sort((a, b) => order(a) - order(b));
   stops = [...stops].sort((a, b) => order(a) - order(b));
-  o.push(d, "<notations>");
+  o.open("notations");
   // 同一个音上先收后起（`)(` 接连两条弧：收前一条、起后一条），按编号配对时次序错了就会配成自起自收；
   // 真·自起自收（起止同一个音）的收口放最后
   const self = new Set(starts.filter((m) => stops.includes(m)));
   const writeStop = (m: Mark): void => {
-    if (m.type === "slur") o.push(d + 1, `<slur type="stop" number="${m.number ?? 1}"/>`);
-    else if (m.type === "tied") o.push(d + 1, `<tied type="stop" number="${m.number ?? 1}"/>`);
-    else if (m.type === "tuplet") o.push(d + 1, `<tuplet type="stop" number="${m.number ?? 1}"/>`);
+    if (m.type === "slur" || m.type === "tied" || m.type === "tuplet") {
+      o.leaf(m.type, ` type="stop" number="${m.number ?? 1}"`, surfaceOf(m, "stop"));
+    }
   };
   for (const m of stops) if (!self.has(m)) writeStop(m);
   for (const m of starts) {
     const pl = m.placement ? ` placement="${m.placement}"` : "";
+    const sur = surfaceOf(m, "start");
     if (m.type === "slur") {
       const ori = m.orientation ? ` orientation="${m.orientation}"` : "";
-      o.push(d + 1, `<slur type="start" number="${m.number ?? 1}"${pl}${ori}/>`);
-    } else if (m.type === "tied") o.push(d + 1, `<tied type="start" number="${m.number ?? 1}"/>`);
+      o.leaf("slur", ` type="start" number="${m.number ?? 1}"${pl}${ori}`, sur);
+    } else if (m.type === "tied") o.leaf("tied", ` type="start" number="${m.number ?? 1}"`, sur);
     else if (m.type === "tuplet") {
       const br = m.bracket !== undefined ? ` bracket="${m.bracket ? "yes" : "no"}"` : "";
-      o.push(d + 1, `<tuplet type="start" number="${m.number ?? 1}"${br}${pl}/>`);
+      o.leaf("tuplet", ` type="start" number="${m.number ?? 1}"${br}${pl}`, sur);
     }
   }
   for (const m of stops) if (self.has(m)) writeStop(m);
-  if (n?.fermata) o.push(d + 1, n.fermataInverted ? '<fermata type="inverted"/>' : "<fermata/>");
-  if (n?.arpeggiate) o.push(d + 1, "<arpeggiate/>");
-  if (n?.articulations?.length) {
-    o.push(d + 1, "<articulations>");
-    for (const a of n.articulations) o.push(d + 2, `<${a}/>`);
-    o.push(d + 1, "</articulations>");
+  if (n?.fermata) o.leaf("fermata", n.fermataInverted ? ' type="inverted"' : "");
+  if (n?.arpeggiate) o.leaf("arpeggiate");
+  for (const [tag, list] of [["articulations", n?.articulations], ["ornaments", n?.ornaments], ["technical", n?.technical]] as const) {
+    if (!list?.length) continue;
+    o.open(tag);
+    for (const a of list) o.leaf(a);
+    o.close();
   }
-  if (n?.ornaments?.length) {
-    o.push(d + 1, "<ornaments>");
-    for (const a of n.ornaments) o.push(d + 2, `<${a}/>`);
-    o.push(d + 1, "</ornaments>");
-  }
-  if (n?.technical?.length) {
-    o.push(d + 1, "<technical>");
-    for (const a of n.technical) o.push(d + 2, `<${a}/>`);
-    o.push(d + 1, "</technical>");
-  }
-  o.push(d, "</notations>");
+  o.close();
 }
 
 /** 一个 `Chord` → 一条或多条 `<note>`（和弦音从第二个起带 `<chord/>`）。 */
-function chordXml(o: Out, d: number, ch: Chord, starts: Mark[], stops: Mark[], sourceIds = false): void {
+function chordXml(o: Out, ch: Chord, starts: Mark[], stops: Mark[], cx: Ctx): void {
   let k = 0;
   const writeOne = (note: Note | null, isChordNote: boolean, withNotations: boolean): void => {
     // 源 id（`ToXmlOptions.sourceIds`）：XML 的 id 要唯一，和弦音从第二个起加序号
-    const idAttr = sourceIds ? ` id="${SOURCE_ID_PREFIX}${ch.id}${k++ > 0 ? `-${k - 1}` : ""}"` : "";
-    const attrs = idAttr + posAttrs(note?.pos ?? ch.pos) + (ch.printObject === false ? ' print-object="no"' : "");
-    o.push(d, `<note${attrs}>`);
-    if (ch.grace) o.push(d + 1, ch.grace.slash ? '<grace slash="yes"/>' : "<grace/>");
-    if (ch.cue) o.push(d + 1, "<cue/>");
-    if (isChordNote) o.push(d + 1, "<chord/>");
+    const idAttr = cx.sourceIds ? ` id="${SOURCE_ID_PREFIX}${ch.id}${k++ > 0 ? `-${k - 1}` : ""}"` : "";
+    const attrs = idAttr + posAttrs(cx.layout?.pos.get(note ?? ch)) + (ch.printObject === false ? ' print-object="no"' : "");
+    o.open("note", attrs, surfaceOf(note ?? ch));
+    if (ch.grace) o.leaf("grace", ch.grace.slash ? ' slash="yes"' : "");
+    if (ch.cue) o.leaf("cue");
+    if (isChordNote) o.leaf("chord");
     if (ch.rest) {
-      if (ch.rest.measure) o.push(d + 1, '<rest measure="yes"/>');
-      else o.push(d + 1, "<rest/>");
+      o.leaf("rest", ch.rest.measure ? ' measure="yes"' : "");
     } else if (note?.pitch) {
-      o.push(d + 1, "<pitch>");
-      o.push(d + 2, tag("step", note.pitch.step));
-      if (note.pitch.alter) o.push(d + 2, tag("alter", note.pitch.alter));
-      o.push(d + 2, tag("octave", note.pitch.octave));
-      o.push(d + 1, "</pitch>");
+      o.open("pitch");
+      o.text("step", note.pitch.step);
+      if (note.pitch.alter) o.text("alter", note.pitch.alter);
+      o.text("octave", note.pitch.octave);
+      o.close();
     } else if (ch.rhythm) {
       // 节奏音符（有声无音高）：斜线符头
-      o.push(d + 1, "<unpitched>");
-      o.push(d + 2, tag("display-step", "B"));
-      o.push(d + 2, tag("display-octave", 4));
-      o.push(d + 1, "</unpitched>");
+      o.open("unpitched");
+      o.text("display-step", "B");
+      o.text("display-octave", 4);
+      o.close();
     } else {
-      o.push(d + 1, "<rest/>");
+      o.leaf("rest");
     }
     // 倚音没有 duration（MusicXML 规定）
-    if (!ch.grace) o.push(d + 1, tag("duration", Math.max(0, Math.round(ch.duration.divisions))));
+    if (!ch.grace) o.text("duration", Math.max(0, Math.round(ch.duration.divisions)));
     for (const t of [note?.tie?.start ? "start" : null, note?.tie?.stop ? "stop" : null]) {
-      if (t) o.push(d + 1, `<tie type="${t}"/>`);
+      if (t) o.leaf("tie", ` type="${t}"`);
     }
-    o.push(d + 1, tag("voice", ch.voice));
+    o.text("voice", ch.voice);
     if (ch.duration.type) {
       const size = isChordNote ? note?.typeSize : (ch.typeSize ?? note?.typeSize);
-      o.push(d + 1, size ? `<type size="${escAttr(size)}">${ch.duration.type}</type>` : tag("type", ch.duration.type));
+      o.text("type", ch.duration.type, size ? ` size="${escAttr(size)}"` : "");
     }
-    for (let i = 0; i < ch.duration.dots; i++) o.push(d + 1, "<dot/>");
-    if (note?.accidental) {
-      o.push(d + 1, note.accidentalParentheses ? `<accidental parentheses="yes">${note.accidental}</accidental>` : tag("accidental", note.accidental));
-    }
+    for (let i = 0; i < ch.duration.dots; i++) o.leaf("dot");
+    if (note?.accidental) o.text("accidental", note.accidental, note.accidentalParentheses ? ' parentheses="yes"' : "");
     if (ch.duration.timeMod) {
-      o.push(d + 1, "<time-modification>");
-      o.push(d + 2, tag("actual-notes", ch.duration.timeMod.actual));
-      o.push(d + 2, tag("normal-notes", ch.duration.timeMod.normal));
-      o.push(d + 1, "</time-modification>");
+      o.open("time-modification");
+      o.text("actual-notes", ch.duration.timeMod.actual);
+      o.text("normal-notes", ch.duration.timeMod.normal);
+      o.close();
     }
-    if (note?.stem) {
-      const sy = note.stemY !== undefined ? ` default-y="${note.stemY}"` : "";
-      o.push(d + 1, `<stem${sy}>${note.stem}</stem>`);
-    }
-    if (ch.rhythm && !isChordNote) o.push(d + 1, tag("notehead", "slash"));
-    else if (note?.notehead) o.push(d + 1, tag("notehead", note.notehead));
-    if (ch.staff > 1) o.push(d + 1, tag("staff", ch.staff));
+    const stem = note ? cx.layout?.stems.get(note) : undefined;
+    if (stem) o.text("stem", stem);
+    if (ch.rhythm && !isChordNote) o.text("notehead", "slash");
+    else if (note?.notehead) o.text("notehead", note.notehead);
+    if (ch.staff > 1) o.text("staff", ch.staff);
     // number 是层号：按下标算，不能 indexOf（两层同为 begin 时会都写成 1）
-    (ch.beams ?? []).forEach((b, i) => o.push(d + 1, `<beam number="${i + 1}">${esc(b)}</beam>`));
+    (ch.beams ?? []).forEach((b, i) => o.text("beam", b, ` number="${i + 1}"`));
     // 跨元素记号挂回原来那个音（`Mark.startNote/endNote`），其余记号与歌词挂首音
     const idx = note ? ch.notes.indexOf(note) : 0;
     notationsXml(
       o,
-      d + 1,
       withNotations ? ch.notations : undefined,
       starts.filter((m) => (m.startNote ?? 0) === idx || (idx === 0 && (m.startNote ?? 0) >= ch.notes.length)),
       stops.filter((m) => (m.endNote ?? 0) === idx || (idx === 0 && (m.endNote ?? 0) >= ch.notes.length)),
     );
-    if (withNotations) for (const l of ch.lyrics ?? []) lyricXml(o, d + 1, l);
-    o.push(d, "</note>");
+    if (withNotations) for (const l of ch.lyrics ?? []) lyricXml(o, l, cx);
+    o.close();
   };
 
   if (ch.notes.length === 0) {
@@ -367,174 +588,143 @@ function soundAttrs(s: NonNullable<Direction["sound"]>): string {
   return a.map((x) => " " + x).join("");
 }
 
-function directionXml(o: Out, d: number, dir: Direction): void {
+function directionXml(o: Out, dir: Direction, cx: Ctx): void {
   if (dir.type === "sound") {
-    // 小节级 `<sound>`：有原文给原文，没有（程序造的）按属性写
-    if (dir.xml) o.raw(d, dir.xml);
-    else if (dir.sound) o.push(d, `<sound${soundAttrs(dir.sound)}/>`);
+    // 小节级 `<sound>`：播放语义从模型写，其余属性与子元素（`<swing>`…）由原节点回填
+    const sur = surfaceOf(dir);
+    if (dir.sound || sur) o.leaf("sound", dir.sound ? soundAttrs(dir.sound) : "", sur);
     return;
   }
   const pl = dir.placement ? ` placement="${dir.placement}"` : "";
-  o.push(d, `<direction${pl}>`);
-  o.push(d + 1, "<direction-type>");
-  directionPartXml(o, d + 2, dir);
-  for (const part of dir.more ?? []) directionPartXml(o, d + 2, part);
-  o.push(d + 1, "</direction-type>");
-  if (dir.offset !== undefined) o.push(d + 1, tag("offset", dir.offset));
+  o.open("direction", pl, surfaceOf(dir));
+  o.open("direction-type");
+  directionPartXml(o, dir, surfaceOf(dir, "part"), cx);
+  for (const part of dir.more ?? []) directionPartXml(o, part, surfaceOf(part), cx);
+  o.close();
+  if (dir.offset !== undefined) o.text("offset", dir.offset);
   if (dir.sound) {
     const a = soundAttrs(dir.sound);
-    if (a) o.push(d + 1, `<sound${a}/>`);
+    if (a) o.leaf("sound", a);
   }
-  if (dir.staff !== undefined && dir.staff > 1) o.push(d + 1, tag("staff", dir.staff));
-  o.push(d, "</direction>");
+  if (dir.staff !== undefined && dir.staff > 1) o.text("staff", dir.staff);
+  o.close();
 }
 
 /** `<direction-type>` 下的一个子元素。 */
-function directionPartXml(o: Out, d: number, dir: DirectionPart): void {
-  const lay =
-    posAttrs(dir.pos) +
-    (dir.justify ? ` justify="${dir.justify}"` : "") +
-    (dir.halign ? ` halign="${dir.halign}"` : "") +
-    (dir.valign ? ` valign="${escAttr(dir.valign)}"` : "") +
-    fontAttrs(dir.font);
+function directionPartXml(o: Out, dir: DirectionPart, sur: Element | undefined, cx: Ctx): void {
+  const pos = posAttrs(cx.layout?.pos.get(dir));
+  const fs = cx.layout?.fontSize.get(dir);
+  const lay = pos + (fs !== undefined ? ` font-size="${fs}"` : "");
   switch (dir.type) {
     case "dynamics":
-      o.push(d, `<dynamics${lay}><${dir.text || "mf"}/></dynamics>`);
+      o.open("dynamics", lay, sur, true);
+      o.leaf(dir.text || "mf");
+      o.close();
       break;
     case "words":
     case "rehearsal":
-      o.push(d, `<${dir.type}${lay}>${esc(dir.text ?? "")}</${dir.type}>`);
+      o.text(dir.type, dir.text ?? "", lay, sur);
       break;
     case "wedge":
-      o.push(d, `<wedge type="${dir.spanType === "stop" ? "stop" : dir.wedgeType ?? "crescendo"}"${posAttrs(dir.pos)}/>`);
+      o.leaf("wedge", ` type="${dir.spanType === "stop" ? "stop" : dir.wedgeType ?? "crescendo"}"${pos}`, sur);
       break;
     case "metronome":
-      o.push(d, `<metronome${lay}>`);
-      o.push(d + 1, tag("beat-unit", dir.tempo?.beatUnit ?? "quarter"));
-      if (dir.tempo?.beatUnitDot) o.push(d + 1, "<beat-unit-dot/>");
-      o.push(d + 1, tag("per-minute", dir.tempo?.perMinuteText ?? dir.tempo?.perMinute ?? 90));
-      o.push(d, "</metronome>");
+      o.open("metronome", lay, sur);
+      o.text("beat-unit", dir.tempo?.beatUnit ?? "quarter");
+      if (dir.tempo?.beatUnitDot) o.leaf("beat-unit-dot");
+      o.text("per-minute", dir.tempo?.perMinuteText ?? dir.tempo?.perMinute ?? 90);
+      o.close();
       break;
     case "bracket":
-      // 伴奏括弧（简谱来源才带起止）；MusicXML 读进来的没有 spanType，照旧写空元素
-      if (dir.spanType) {
-        o.push(d, `<bracket type="${dir.spanType}" line-end="down" line-type="solid"/>`);
-      } else {
-        o.push(d, "<bracket/>");
-      }
+      // 伴奏括弧（简谱来源才带起止）；MusicXML 读进来的没有 spanType，照旧写空元素（原文的属性由表层回填）
+      if (dir.spanType) o.leaf("bracket", ` type="${dir.spanType}" line-end="down" line-type="solid"`, sur);
+      else o.leaf("bracket", "", sur);
       break;
     case "pedal":
     case "octave-shift": {
       const line = dir.line !== undefined ? ` line="${dir.line ? "yes" : "no"}"` : "";
-      o.push(d, `<${dir.type} type="${dir.spanType ?? "start"}"${line}${posAttrs(dir.pos)}/>`);
+      o.leaf(dir.type, ` type="${dir.spanType ?? "start"}"${line}${pos}`, sur);
       break;
     }
     default:
-      o.push(d, `<${dir.type}${posAttrs(dir.pos)}/>`);
+      o.leaf(dir.type, pos, sur);
       break;
   }
 }
 
-function barlineXml(o: Out, d: number, b: Barline): void {
-  o.push(d, `<barline location="${b.location === "middle" ? "middle" : b.location}">`);
-  if (b.style) o.push(d + 1, tag("bar-style", b.style));
+function barlineXml(o: Out, b: Barline): void {
+  o.open("barline", ` location="${b.location === "middle" ? "middle" : b.location}"`, surfaceOf(b));
+  if (b.style) o.text("bar-style", b.style);
   if (b.ending) {
     const t = b.ending.type;
     const nums = b.ending.numbers.join(",");
     const po = b.ending.printObject === false ? ' print-object="no"' : "";
-    o.push(d + 1, `<ending number="${nums}" type="${t}"${po}>${esc(b.ending.text ?? nums)}</ending>`);
+    o.text("ending", b.ending.text ?? nums, ` number="${nums}" type="${t}"${po}`);
   }
   if (b.repeat) {
     const times = b.repeatTimes && b.repeatTimes > 2 ? ` times="${b.repeatTimes}"` : "";
-    o.push(d + 1, `<repeat direction="${b.repeat}"${times}/>`);
+    o.leaf("repeat", ` direction="${b.repeat}"${times}`);
   }
-  o.push(d, "</barline>");
+  o.close();
 }
 
-function printXml(o: Out, d: number, p: Print): void {
+function printXml(o: Out, p: Print | undefined, lay: PrintLayout | undefined): void {
+  if (!p && !lay) return;
   const a: string[] = [];
-  if (p.newSystem) a.push('new-system="yes"');
-  if (p.newPage) a.push('new-page="yes"');
-  const attrs = a.length ? " " + a.join(" ") : "";
-  const hasBody = p.systemLayout || p.staffLayouts || p.measureNumbering;
-  if (!hasBody) {
-    o.push(d, `<print${attrs}/>`);
-    return;
-  }
-  o.push(d, `<print${attrs}>`);
-  if (p.systemLayout) {
-    o.push(d + 1, "<system-layout>");
-    const sl = p.systemLayout;
-    if (sl.leftMargin !== undefined || sl.rightMargin !== undefined) {
-      o.push(d + 2, "<system-margins>");
-      if (sl.leftMargin !== undefined) o.push(d + 3, tag("left-margin", sl.leftMargin));
-      if (sl.rightMargin !== undefined) o.push(d + 3, tag("right-margin", sl.rightMargin));
-      o.push(d + 2, "</system-margins>");
-    }
-    if (p.systemLayout.systemDistance !== undefined) {
-      o.push(d + 2, tag("system-distance", p.systemLayout.systemDistance));
-    }
-    if (p.systemLayout.topSystemDistance !== undefined) {
-      o.push(d + 2, tag("top-system-distance", p.systemLayout.topSystemDistance));
-    }
-    o.push(d + 1, "</system-layout>");
-  }
-  for (const sl of p.staffLayouts ?? []) {
+  if (p?.newSystem) a.push('new-system="yes"');
+  if (p?.newPage) a.push('new-page="yes"');
+  o.open("print", a.length ? " " + a.join(" ") : "", p ? surfaceOf(p) : undefined);
+  if (lay?.systemLayout) writeSystemLayout(o, lay.systemLayout, false);
+  for (const sl of lay?.staffLayouts ?? []) {
     const n = sl.staff !== undefined ? ` number="${sl.staff}"` : "";
     if (sl.staffDistance === undefined) {
-      o.push(d + 1, `<staff-layout${n}/>`);
+      o.leaf("staff-layout", n);
       continue;
     }
-    o.push(d + 1, `<staff-layout${n}>`);
-    o.push(d + 2, tag("staff-distance", sl.staffDistance));
-    o.push(d + 1, "</staff-layout>");
+    o.open("staff-layout", n);
+    o.text("staff-distance", sl.staffDistance);
+    o.close();
   }
-  if (p.measureNumbering) o.push(d + 1, tag("measure-numbering", p.measureNumbering));
-  o.push(d, "</print>");
+  o.close();
 }
 
-function attributesXml(o: Out, d: number, attrs: MeasureAttrs): void {
-  o.push(d, "<attributes>");
-  if (attrs.divisions !== undefined) o.push(d + 1, tag("divisions", attrs.divisions));
-  if (attrs.key) writeKey(o, d + 1, attrs.key);
-  if (attrs.time) writeTime(o, d + 1, attrs.time);
-  if (attrs.staves !== undefined) o.push(d + 1, tag("staves", attrs.staves));
+function attributesXml(o: Out, attrs: MeasureAttrs): void {
+  o.open("attributes", "", surfaceOf(attrs));
+  if (attrs.divisions !== undefined) o.text("divisions", attrs.divisions);
+  if (attrs.key) writeKey(o, attrs.key);
+  if (attrs.time) writeTime(o, attrs.time);
+  if (attrs.staves !== undefined) o.text("staves", attrs.staves);
   for (const c of attrs.clefs ?? []) {
-    o.push(d + 1, c.staff ? `<clef number="${c.staff}">` : "<clef>");
-    o.push(d + 2, tag("sign", c.sign));
-    if (c.line !== undefined) o.push(d + 2, tag("line", c.line));
-    if (c.octaveChange !== undefined) o.push(d + 2, tag("clef-octave-change", c.octaveChange));
-    o.push(d + 1, "</clef>");
-  }
-  for (const sd of attrs.staffDetails ?? []) {
-    const a = (sd.staff ? ` number="${sd.staff}"` : "") +
-      (sd.printObject !== undefined ? ` print-object="${sd.printObject ? "yes" : "no"}"` : "");
-    o.push(d + 1, `<staff-details${a}/>`);
+    o.open("clef", c.staff ? ` number="${c.staff}"` : "");
+    o.text("sign", c.sign);
+    if (c.line !== undefined) o.text("line", c.line);
+    if (c.octaveChange !== undefined) o.text("clef-octave-change", c.octaveChange);
+    o.close();
   }
   if (attrs.transpose) {
-    o.push(d + 1, "<transpose>");
-    if (attrs.transpose.diatonic !== undefined) o.push(d + 2, tag("diatonic", attrs.transpose.diatonic));
-    o.push(d + 2, tag("chromatic", attrs.transpose.chromatic));
-    if (attrs.transpose.octaveChange !== undefined) o.push(d + 2, tag("octave-change", attrs.transpose.octaveChange));
-    o.push(d + 1, "</transpose>");
+    o.open("transpose");
+    if (attrs.transpose.diatonic !== undefined) o.text("diatonic", attrs.transpose.diatonic);
+    o.text("chromatic", attrs.transpose.chromatic);
+    if (attrs.transpose.octaveChange !== undefined) o.text("octave-change", attrs.transpose.octaveChange);
+    o.close();
   }
-  o.push(d, "</attributes>");
+  o.close();
 }
 
 function measureXml(
   o: Out,
-  d: number,
   m: Measure,
   marksByStart: Map<number, Mark[]>,
   marksByEnd: Map<number, Mark[]>,
-  sourceIds = false,
+  cx: Ctx,
 ): void {
-  const mAttrs = (m.implicit ? ' implicit="yes"' : "") + (m.width !== undefined ? ` width="${m.width}"` : "");
-  o.push(d, `<measure number="${escAttr(m.number)}"${mAttrs}>`);
+  const width = cx.layout?.widths.get(m);
+  const mAttrs = (m.implicit ? ' implicit="yes"' : "") + (width !== undefined ? ` width="${width}"` : "");
+  o.open("measure", ` number="${escAttr(m.number)}"${mAttrs}`, surfaceOf(m));
   // 顺序是硬要求：print → 左线 → attributes → direction → (harmony/note)* → 右线
-  if (m.print) printXml(o, d + 1, m.print);
-  for (const b of m.barlines ?? []) if (b.location === "left") barlineXml(o, d + 1, b);
-  if (m.attrs) attributesXml(o, d + 1, m.attrs);
+  printXml(o, m.print, cx.layout?.prints.get(m));
+  for (const b of m.barlines ?? []) if (b.location === "left") barlineXml(o, b);
+  if (m.attrs) attributesXml(o, m.attrs);
   // 记号按 afterElements 插回原位（缺省在小节开头；超出元素个数的落到小节末）
   const count = m.elements.length;
   const dirAt = (dir: Direction): number => Math.min(dir.afterElements ?? 0, count);
@@ -542,31 +732,38 @@ function measureXml(
   let cursor = 0;
   let end = 0;
   const moveTo = (target: number): void => {
-    if (target < cursor) o.push(d + 1, `<backup>${tag("duration", cursor - target)}</backup>`);
-    else if (target > cursor) o.push(d + 1, `<forward>${tag("duration", target - cursor)}</forward>`);
+    if (target < cursor) {
+      o.open("backup");
+      o.text("duration", cursor - target);
+      o.close();
+    } else if (target > cursor) {
+      o.open("forward");
+      o.text("duration", target - cursor);
+      o.close();
+    }
     cursor = target;
   };
   const writeLaterAttrs = (i: number): void => {
     for (const la of m.laterAttrs ?? []) {
       if (Math.min(la.afterElements, count) !== i) continue;
       moveTo(la.onset ?? end);
-      attributesXml(o, d + 1, la.attrs);
+      attributesXml(o, la.attrs);
     }
   };
   const writeDir = (dir: Direction): void => {
     if (dir.type !== "sound") moveTo(dir.onset ?? end);
-    directionXml(o, d + 1, dir);
+    directionXml(o, dir, cx);
   };
   const writeHarmony = (h: Harmony, owner: number): void => {
     moveTo(h.onset ?? owner);
-    harmonyXml(o, d + 1, h);
+    harmonyXml(o, h, cx);
   };
   for (const dir of m.directions ?? []) if (dirAt(dir) === 0) writeDir(dir);
   let i = 0;
   for (const el of m.elements) {
     // 小节中间的小节线按 afterElements 插回去，丢了会把两个小节并成一个
     for (const b of m.barlines ?? []) {
-      if (b.location === "middle" && b.afterElements === i) barlineXml(o, d + 1, b);
+      if (b.location === "middle" && b.afterElements === i) barlineXml(o, b);
     }
     if (i > 0) writeLaterAttrs(i);
     if (i > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === i) writeDir(dir);
@@ -577,7 +774,7 @@ function measureXml(
       // 长音中途换和弦（挂在增时线上）：`<harmony>` 排在所辖音符之前，拍位靠 offset
       for (const su of el.sustains ?? []) if (su.harmony) writeHarmony(su.harmony, onset);
       moveTo(onset);
-      chordXml(o, d + 1, el, marksByStart.get(el.id) ?? [], marksByEnd.get(el.id) ?? [], sourceIds);
+      chordXml(o, el, marksByStart.get(el.id) ?? [], marksByEnd.get(el.id) ?? [], cx);
       if (!el.grace) cursor += Math.max(0, Math.round(el.duration.divisions));
       end = cursor;
     } else if (el.spacer === "x" && el.duration) {
@@ -586,12 +783,12 @@ function measureXml(
       moveTo(onset);
       cursor += Math.max(0, Math.round(el.duration.divisions));
       end = cursor;
-      o.push(d + 1, '<note print-object="no">');
-      o.push(d + 2, "<rest/>");
-      o.push(d + 2, tag("duration", Math.max(0, Math.round(el.duration.divisions))));
-      o.push(d + 2, tag("voice", el.voice));
-      if (el.duration.type) o.push(d + 2, tag("type", el.duration.type));
-      o.push(d + 1, "</note>");
+      o.open("note", ' print-object="no"');
+      o.leaf("rest");
+      o.text("duration", Math.max(0, Math.round(el.duration.divisions)));
+      o.text("voice", el.voice);
+      if (el.duration.type) o.text("type", el.duration.type);
+      o.close();
     } else if (el.harmony) {
       // `y` 占位符只为挂和弦（规范 §8.1）——MusicXML 里就是一个孤立的 `<harmony>`
       writeHarmony(el.harmony, onset);
@@ -602,12 +799,11 @@ function measureXml(
   if (count > 0) for (const dir of m.directions ?? []) if (dirAt(dir) === count) writeDir(dir);
   // `<forward>` 撑出来的空拍（`Measure.duration`）：补一个 `<forward>` 把游标推到小节末
   if (m.duration !== undefined && m.duration > cursor) moveTo(m.duration);
-  for (const raw of m.raw ?? []) o.raw(d + 1, raw);
-  for (const b of m.barlines ?? []) if (b.location === "right") barlineXml(o, d + 1, b);
-  o.push(d, "</measure>");
+  for (const b of m.barlines ?? []) if (b.location === "right") barlineXml(o, b);
+  o.close();
 }
 
-function partXml(o: Out, d: number, part: Part, song: Song, sourceIds = false): void {
+function partXml(o: Out, part: Part, song: Song, cx: Ctx): void {
   const byStart = new Map<number, Mark[]>();
   const byEnd = new Map<number, Mark[]>();
   const add = (map: Map<number, Mark[]>, id: number, m: Mark): void => {
@@ -621,9 +817,9 @@ function partXml(o: Out, d: number, part: Part, song: Song, sourceIds = false): 
     add(byStart, m.start, m);
     add(byEnd, m.end, m);
   }
-  o.push(d, `<part id="${escAttr(part.id)}">`);
-  for (const m of part.measures) measureXml(o, d + 1, m, byStart, byEnd, sourceIds);
-  o.push(d, "</part>");
+  o.open("part", ` id="${escAttr(part.id)}"`, surfaceOf(part));
+  for (const m of part.measures) measureXml(o, m, byStart, byEnd, cx);
+  o.close();
 }
 
 export interface ToXmlOptions extends ProjectOptions {
@@ -632,76 +828,76 @@ export interface ToXmlOptions extends ProjectOptions {
   /** 每个 `<note>` 带 `id="jp<源元素 id>"`：文本格式派生五线谱（`export.ts::sourceMusicXmlBare`）读回后，
    *  `fromxml` 把它记成 `Chord.srcId`，五线谱上点的音才对得回代码区。**只给这条内部路径用**，导出文件不带。 */
   sourceIds?: boolean;
+  /** 导出版面（`mixed/engrave.ts::engraveScoreDoc` 排出来的坐标、小节宽、系统间距、符干），键是本文档的模型对象 */
+  layout?: EngravedLayout;
 }
 
 /** `ScoreDoc` → MusicXML 文本（含 XML 声明与 DOCTYPE）。**MusicXML 的唯一写出端**：
- *  简谱来源先经 `xmlproject.ts` 投成 MusicXML 形状，MusicXML 读进来的原样序列化。 */
+ *  简谱来源先经 `xmlproject.ts` 投成 MusicXML 形状，MusicXML 读进来的原样序列化（表层从原节点回填）。 */
 export function scoreDocToMusicXml(doc: ScoreDoc, options: ToXmlOptions = {}): string {
   const src = doc.songs[options.song ?? 0];
   if (!src) throw new Error("这份文档里没有曲子");
   const song = projectForMusicXml(src, options);
+  const cx: Ctx = { sourceIds: options.sourceIds === true, ...(options.layout ? { layout: options.layout } : {}) };
   // 文本格式投影出来的一律署上本应用（<encoding><software>）：混排引擎据此认 `<harmony><offset>` 等本写出端的写法
   const projected = song !== src;
   const o = new Out();
-  o.push(0, '<?xml version="1.0" encoding="UTF-8"?>');
-  o.push(
-    0,
+  o.raw('<?xml version="1.0" encoding="UTF-8"?>');
+  o.raw(
     '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" ' +
       '"http://www.musicxml.org/dtds/partwise.dtd">',
   );
-  o.push(0, '<score-partwise version="3.1">');
+  o.open("score-partwise", ' version="3.1"', surfaceOf(song));
   if (song.work.number || song.work.title) {
-    o.push(1, "<work>");
-    if (song.work.number) o.push(2, tag("work-number", song.work.number));
-    if (song.work.title) o.push(2, tag("work-title", song.work.title));
-    o.push(1, "</work>");
+    o.open("work");
+    if (song.work.number) o.text("work-number", song.work.number);
+    if (song.work.title) o.text("work-title", song.work.title);
+    o.close();
   }
-  if (song.work.movementTitle) o.push(1, tag("movement-title", song.work.movementTitle));
+  if (song.work.movementTitle) o.text("movement-title", song.work.movementTitle);
   if (song.identification || song.meta || projected) {
-    o.push(1, "<identification>");
-    for (const c of song.identification?.creators ?? []) {
-      o.push(2, `<creator type="${escAttr(c.type)}">${esc(c.text)}</creator>`);
-    }
-    if (song.identification?.rights) o.push(2, tag("rights", song.identification.rights));
-    o.push(2, "<encoding>");
-    for (const sw of song.identification?.software ?? ["jpeditor"]) o.push(3, tag("software", sw));
-    o.push(2, "</encoding>");
+    o.open("identification");
+    for (const c of song.identification?.creators ?? []) o.text("creator", c.text, ` type="${escAttr(c.type)}"`);
+    if (song.identification?.rights) o.text("rights", song.identification.rights);
+    o.open("encoding");
+    for (const sw of song.identification?.software ?? ["jpeditor"]) o.text("software", sw);
+    o.close();
     // 扩展 meta（`model/metakeys.ts`）。schema 顺序：creator*, rights*, encoding?, source?, relation*, miscellaneous?
     const meta = Object.entries(song.meta ?? {});
     if (meta.length) {
-      o.push(2, "<miscellaneous>");
+      o.open("miscellaneous");
       for (const [name, vals] of meta) {
-        for (const v of vals) o.push(3, `<miscellaneous-field name="${escAttr(name)}">${esc(v)}</miscellaneous-field>`);
+        for (const v of vals) o.text("miscellaneous-field", v, ` name="${escAttr(name)}"`);
       }
-      o.push(2, "</miscellaneous>");
+      o.close();
     }
-    o.push(1, "</identification>");
+    o.close();
   }
-  if (song.defaults) writeDefaults(o, 1, song.defaults);
-  for (const c of song.credits ?? []) writeCredit(o, 1, c);
+  writeDefaults(o, song.defaults, cx.layout?.systemLayout);
+  for (const c of song.credits ?? []) writeCredit(o, c);
 
-  o.push(1, "<part-list>");
+  o.open("part-list");
   const groups = song.partGroups ?? [];
   for (const g of groups) {
-    o.push(2, `<part-group type="start" number="${escAttr(g.number)}">`);
-    if (g.symbol) o.push(3, tag("group-symbol", g.symbol));
-    if (g.name) o.push(3, tag("group-name", g.name));
-    if (g.abbrev) o.push(3, tag("group-abbreviation", g.abbrev));
-    if (g.groupBarline) o.push(3, tag("group-barline", "yes"));
-    o.push(2, "</part-group>");
+    o.open("part-group", ` type="start" number="${escAttr(g.number)}"`);
+    if (g.symbol) o.text("group-symbol", g.symbol);
+    if (g.name) o.text("group-name", g.name);
+    if (g.abbrev) o.text("group-abbreviation", g.abbrev);
+    if (g.groupBarline) o.text("group-barline", "yes");
+    o.close();
   }
   for (const p of song.parts) {
-    o.push(2, `<score-part id="${escAttr(p.id)}">`);
+    o.open("score-part", ` id="${escAttr(p.id)}"`, surfaceOf(p, "score-part"));
     // MuseScore 兼容：`<part-name>` 留空并 print-object="no"（见 MusicXML-导出.md）
-    if (p.name) o.push(3, tag("part-name", p.name));
-    else o.push(3, '<part-name print-object="no"/>');
-    if (p.abbrev) o.push(3, tag("part-abbreviation", p.abbrev));
-    o.push(2, "</score-part>");
+    if (p.name) o.text("part-name", p.name);
+    else o.leaf("part-name", ' print-object="no"');
+    if (p.abbrev) o.text("part-abbreviation", p.abbrev);
+    o.close();
   }
-  for (const g of groups) o.push(2, `<part-group type="stop" number="${escAttr(g.number)}"/>`);
-  o.push(1, "</part-list>");
+  for (const g of groups) o.leaf("part-group", ` type="stop" number="${escAttr(g.number)}"`);
+  o.close();
 
-  for (const p of song.parts) partXml(o, 1, p, song, options.sourceIds);
-  o.push(0, "</score-partwise>");
+  for (const p of song.parts) partXml(o, p, song, cx);
+  o.close();
   return o.toString() + "\n";
 }

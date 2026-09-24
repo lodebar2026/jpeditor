@@ -1,5 +1,6 @@
 // 导出 MusicXML 的版面坐标：由五线谱引擎排一遍（与屏幕上的五线谱同一套——同纸、同断行、同自动铺排），
-// 把排出来的结果写回 `ScoreDoc`，再由唯一写出端 `model/toxml.ts` 序列化。
+// 排出来的坐标、小节宽、系统间距、符干装进 `EngravedLayout`（**不写进模型**，与原文的表层一样不进 `ScoreDoc`），
+// 交给唯一写出端 `model/toxml.ts`（`ToXmlOptions.layout`）。纸、scaling、标题块、换行、弧的朝向这些模型本来就有的照旧写回模型。
 //
 // 以前导出另有一套 DOM 上的版面注入（A4 常量表、每行 4 小节、音符按小节宽均分），与这里的自动铺排判据两份，
 // 屏幕上与 MuseScore 里的分行对不上；导出的文件再读回来，那些粗坐标还会压过自动铺排（行首音压在谱号下）。
@@ -7,31 +8,35 @@
 //
 // 谱里已经带版面（有 `<defaults>`，或小节宽/音符 default-x）的一字不改：作者给的版面比我们排的更贴切。
 
-import type { HAlign, Position, ScoreDoc, Song } from "../model/doc";
+import type { HAlign, ScoreDoc, Song } from "../model/doc";
+import { emptyEngravedLayout, noteStem, type EngravedLayout, type Position } from "../model/xmlsurface";
 import { LCR, type MixedOptions, type StaffLayout, type Sys } from "./model";
 import { ScorePainter } from "../layout/painter";
 
 const r1 = (v: number): number => Math.round(v * 10) / 10;
-const at = (pos: Position | undefined, set: Position): Position => ({ ...(pos ?? {}), ...set });
 
-/** 给 `doc` 第一首补上版面坐标（就地改）。谱里已带版面、或排不出来时返回 false、不动它。 */
-export async function engraveScoreDoc(doc: ScoreDoc, page: MixedOptions["page"]): Promise<boolean> {
+/** 给 `doc` 第一首排出导出版面：纸、标题块、换行、弧朝向就地写回模型，坐标等表层装进返回的 `EngravedLayout`
+ *  （交给 `scoreDocToMusicXml(doc, { layout })`）。谱里已带版面、或排不出来时返回 null、不动它。 */
+export async function engraveScoreDoc(doc: ScoreDoc, page: MixedOptions["page"]): Promise<EngravedLayout | null> {
   const song = doc.songs[0];
-  if (!song || song.defaults) return false;
+  if (!song || song.defaults) return null;
   const mp = new ScorePainter();
   await mp.load({ view: "staff", doc, page, hideBarNumber: false });
   const placed = mp.staffPlacement;
   mp.dispose();
-  if (!placed?.score.autoLayout || placed.score.song !== song) return false;
-  writeLayout(song, placed.score, placed.systems);
-  return true;
+  if (!placed?.score.autoLayout || placed.score.song !== song) return null;
+  return writeLayout(song, placed.score, placed.systems);
 }
 
 function writeLayout(
   song: Song,
   score: StaffLayout,
   systems: readonly { sys: Sys; page: number; top: number }[],
-): void {
+): EngravedLayout {
+  const out = emptyEngravedLayout();
+  const at = (obj: object, set: Position): void => {
+    out.pos.set(obj, { ...(out.pos.get(obj) ?? {}), ...set });
+  };
   const d = score.defaults;
   song.defaults = {
     scaling: { millimeters: 7, tenths: 40 }, // = DEFAULT_SCALING：自动铺排的谱都按它排
@@ -40,8 +45,8 @@ function writeLayout(
       pageHeight: r1(d.pageHeight),
       margins: [{ left: d.leftMargin, right: d.rightMargin, top: d.topMargin, bottom: d.bottomMargin, oddEven: "both" }],
     },
-    systemLayout: { leftMargin: 0, rightMargin: 0 },
   };
+  out.systemLayout = { leftMargin: 0, rightMargin: 0 };
   // 标题块：`autoLayoutHeader` 排的，已含标题那条（MuseScore 只要有 <credit> 就不再看 <work-title>）
   const justify = (j: LCR): HAlign => (j === LCR.Center ? "center" : j === LCR.Right ? "right" : "left");
   song.credits = score.credits.map((c) => ({
@@ -60,8 +65,6 @@ function writeLayout(
       if (!m.print) continue;
       delete m.print.newSystem;
       delete m.print.newPage;
-      delete m.print.systemLayout;
-      delete m.print.staffLayouts;
       if (Object.keys(m.print).length === 0) delete m.print;
     }
   }
@@ -78,9 +81,8 @@ function writeLayout(
         return st && staff + k > 0 && st.distance > 0 ? [{ staff: k + 1, staffDistance: r1(st.distance) }] : [];
       });
       staff += layout.staves.length;
-      m.print = {
-        ...(m.print ?? {}),
-        ...(i > 0 ? (newPage ? { newPage: true } : { newSystem: true }) : {}),
+      m.print = { ...(m.print ?? {}), ...(i > 0 ? (newPage ? { newPage: true } : { newSystem: true }) : {}) };
+      const pl = {
         ...(pi === 0
           ? {
             systemLayout: !prev || newPage
@@ -90,6 +92,7 @@ function writeLayout(
           : {}),
         ...(staffLayouts.length ? { staffLayouts } : {}),
       };
+      if (Object.keys(pl).length) out.prints.set(m, pl);
     });
   });
 
@@ -111,32 +114,32 @@ function writeLayout(
     const layout = score.parts[pi]!;
     part.measures.forEach((m, mi) => {
       const mif = score.measures[mi];
-      if (mif) m.width = r1(mif.width);
+      if (mif) out.widths.set(m, r1(mif.width));
       const md = layout.measures[mi];
       if (!md) return;
       for (const ch of md.chords) {
         for (const nt of ch.notes) {
           if (nt.x < 0) continue;
-          if (nt.src) nt.src.pos = at(nt.src.pos, { defaultX: r1(nt.x) });
-          else ch.src.pos = at(ch.src.pos, { defaultX: r1(nt.x) });
-          // 统一过的符杠组方向写明，第三方软件不另猜
-          if (nt.src && !ch.rest && ch.noteType.toFloat() < four && nt.src.stem === undefined) {
-            nt.src.stem = ch.stemUp ? "up" : "down";
+          at(nt.src ?? ch.src, { defaultX: r1(nt.x) });
+          // 统一过的符杠组方向写明，第三方软件不另猜（原文写了 `<stem>` 的由表层回填）
+          if (nt.src && !ch.rest && ch.noteType.toFloat() < four && !noteStem(nt.src)) {
+            out.stems.set(nt.src, ch.stemUp ? "up" : "down");
           }
         }
       }
-      for (const l of md.lyrics) l.src.pos = at(l.src.pos, { defaultY: r1(l.y) });
-      for (const h of md.harmonies) h.src.pos = at(h.src.pos, { defaultY: r1(h.y) });
+      for (const l of md.lyrics) at(l.src, { defaultY: r1(l.y) });
+      for (const h of md.harmonies) at(h.src, { defaultY: r1(h.y) });
       // 自动放置的速度/文字记号：高度，连同自动铺排统一过的字号（歌词字号，pt）
       const textPt = r1(score.defaults.lyricFont.size * score.scaling);
       for (const t of md.textBlocks) {
         if (!t.autoY || !t.src) continue;
         for (const item of [t.src, ...(t.src.more ?? [])]) {
           if (item.type !== "words" && item.type !== "metronome") continue;
-          item.pos = at(item.pos, { defaultY: r1(t.y) });
-          item.font = { ...(item.font ?? {}), size: textPt };
+          at(item, { defaultY: r1(t.y) });
+          out.fontSize.set(item, textPt);
         }
       }
     });
   }
+  return out;
 }

@@ -17,7 +17,7 @@
 |---|---|---|
 | 简谱引擎（`layout/`：`.jpwabc` 两档、各格式展开档、成书） | `model/jianpuinput.ts` 投影出只读输入（`layout/input.ts`），按 MusicXML 形状 / 简谱形状 / `.jpwabc` 三个分支 | `Line` / `NoteEntry`（符杠分组、段落词挪位记在引擎里，不写回输入） |
 | 文本谱原样档（`layout/original/compose.ts`） | 排版行视图 `pu/slots.ts::docView` | `layout/original/place.ts` 的定位结构 |
-| 五线谱混排（`mixed/`） | `mixed/layout.ts::layoutStaff` 建版面态 | `StaffLayout` 及各 `*Layout` 节点（`src` 引用模型元素） |
+| 五线谱混排（`mixed/`） | `mixed/layout.ts::layoutStaff` 建版面态；MusicXML 原文的坐标/符干/字体经 `xmlsurface.ts` 查询 | `StaffLayout` 及各 `*Layout` 节点（`src` 引用模型元素） |
 | 试听 / MIDI | `playdoc.ts::playSourceOfDoc` / `playsong.ts::playSourceOfSong` | `score/timeline.ts` |
 | 断句 | `phrasedoc.ts` / `phrasesong.ts` 拼断句输入（带 `idOf`） | `score/phrase.ts` |
 
@@ -28,10 +28,11 @@
 
 | 文件 | 作用 |
 |---|---|
-| `src/model/doc.ts` | 类型定义（897 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
+| `src/model/doc.ts` | 类型定义（883 行）。层级：`ScoreDoc → Song → Part → Measure → Element` |
 | `src/model/helpers.ts` | 遍历/查询/构造 |
 | `src/model/jianpu.ts` | **简谱语义层**：音高↔度数、相对调号临时记号延续（`AccidentalCarry`，两个方向共用）、`attrsAt`、减时线/增时线/附点（`jianpuShape`）、和弦原文、旋律取音、延音线/跨元素记号按 id 找对端 |
-| `src/model/fromxml.ts` | ← MusicXML（**直通**，读不懂的挂 `Measure.raw` 原样留着） |
+| `src/model/fromxml.ts` | ← MusicXML（**直通**：语义进模型，每个模型对象绑到原节点） |
+| `src/model/xmlsurface.ts` | **MusicXML 表层**：模型外的旁表（WeakMap，对象 → 原节点）+ 查询函数（`xmlPos`、`measureWidth`、`noteStem`、`xmlAlign`、`xmlFont`、`staffDetailsOf`、`printLayout`、`defaultsFonts`），五线谱引擎从这里读；导出版面的 `EngravedLayout` 也定义在这 |
 | `src/model/toxml.ts` | → MusicXML（**唯一写出端**，全量序列化） |
 | `src/model/xmlproject.ts` | 简谱来源 → MusicXML 形状的投影（音高、divisions、记号原名、跨行小节…），`toxml.ts` 先过它 |
 | `src/model/deconames.ts` | 音符记号的别名表（`decoKey`）：拼音短名 / ABC 名 / MusicXML 名 / 中文名 → 文本谱短名。模型里原名照存，简谱排版、文本谱写出、MusicXML 投影用前先归一 |
@@ -78,14 +79,16 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 - 五线谱侧字段（`clef`/`staves`/`transpose`/`pedal`/`octaveShift`/`partGroups`/`defaults`/`technical`）
   **已由 `fromxml.ts` 填充**（`scripts/staff-fields-check.mjs` 的合成夹具逐样断言过，
   真实语料 1035 份的填充率也在那里）。
-- **`Measure.raw` 是「全量重写不丢东西」的支点**：`fromxml.ts` 不认识的子节点序列化后挂在它上面，
-  `toxml.ts` 原位吐回去。没有它，全量重写就会丢东西。
-- **版面坐标也在模型里**：`raw` 只留认不出的**子节点**、不留属性，`<stem>` 这种 `<note>` 的子节点也管不到，
-  所以坐标另立字段——`Position`（`default-x/-y`、`relative-x/-y`）挂在 `Note` / `Chord`（无音的休止）/ `Lyric` / `Harmony` /
-  `Direction` 上，外加 `Measure.width/implicit`、`Note.stem/stemY`、`Chord.cue/typeSize`、`Lyric.justify`、`Harmony.kindHalign`、
-  `Direction.justify/halign/valign`、`MeasureAttrs.staffDetails`。**只为往返，排版不读**；简谱来源不填，导出字节不变。
-  `layout-attr-check` 568 份「改一个音 → 整份重写」这几类逐份计数一致；它另列的「仍丢」表（字体族、slur 贝塞尔与 placement、
-  fermata/ending 坐标、`<defaults>` 字体、小节级 `<sound tempo>`…）是还没进模型的。
+- **MusicXML 的表层不进模型**（与「派生量不存」同一原则，见 [../待办.md](../待办.md) §3.1）：版面坐标、小节宽、符干、
+  `justify/halign/valign`、歌词与文字的字体、`<print>` 的系统/谱表间距、`<staff-details>`、`<defaults>` 的 `word-font/music-font/system-layout`，
+  以及写出端不认识的一切属性与子节点，都留在原节点上——`fromxml.ts` 把模型对象（`Song`/`Part`/`Measure`/`Print`/`MeasureAttrs`/`Chord`/`Note`/
+  `Lyric`/`Harmony`/`Direction`/`Barline`/`Credit`/`Mark` 两端）绑过去（`xmlsurface.ts`，WeakMap，不在模型里、不随克隆走）。
+  五线谱引擎经查询函数现读；写出端 `toxml.ts` 先建树，再按 `OWNS`（写出端管的属性/子节点）之外**通用回填**原节点。
+  留在模型里的只有跨格式有人读写的：`Print.newSystem/newPage`、`Measure.implicit`、`Chord.cue/typeSize`（试听跳过、选旋律音）、
+  `Defaults.scaling/pageLayout/lyricFont`（转 123/ABC 的纸与字号）、`Credit` 各字段（识别、页眉字体）。
+  `layout-attr-check` 568 份「改一个音 → 整份重写」：点名的坐标逐份计数一致，**其余全部元素与属性逐份不降**
+  （只有写出端的语义归一除外：`<elision>` 并字、`<group-barline>`、起止同音的 `<tied>`）。
+  **`fromxml.ts` 新读一个语义字段，要在 `OWNS` 里认领**，否则原节点那份会被回填、与模型打架。
 - `Harmony.kindText` 的**空串要留**：`<kind text="">` 是「不印后缀」，与缺省不同（混排按 `null` / `""` 分）。
 - **换行口径是 MusicXML 的**：`Print.newSystem/newPage` 表示「本小节**起**新系统」。源码的 `$` 写在小节之后，
   解析器先按「之后」收集、收尾经 `helpers.ts::breaksAfterToStart` 翻过来；写出端用 `breakAfter` 反向。

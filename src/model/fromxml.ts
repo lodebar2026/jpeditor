@@ -5,13 +5,13 @@
 // 简谱与五线谱两个引擎要的东西（和弦、力度、多声部、版面坐标）`ScoreDoc` 都装得下，
 // 所以 MusicXML 只读这一遍，两个引擎都从它取。
 //
-// ## 读不懂的怎么办：`raw` 原样留着
+// ## 表层不进模型：绑到原节点
 //
-// 保存策略是「模型未改动 → 原样写回；改动过 → **全量重写**」（见 `docs/待办.md` §1 机制 A）。
-// 全量重写不丢东西，靠的不是 patch，而是**读得全 + 读不懂的原样留着**：
-// 凡本文件不认识的子节点，序列化成字符串挂到最近的 `raw` 上，`toxml.ts` 原位吐回去。
-//
-// 混排只读本模型（`mixed/layout.ts`），它要的字段这里都得读到。
+// 保存策略是「模型未改动 → 原样写回；改动过 → **全量重写**」。全量重写不丢东西，靠的不是 patch：
+// 这里只读**语义**进模型，同时把每个模型对象绑到它的原始 DOM 节点（`xmlsurface.ts::bindSurface`）。
+// 版面坐标、符干、对齐、字体、读不懂的属性与子节点都留在原节点上——五线谱引擎经 `xmlsurface.ts` 的查询函数现读，
+// 写出端 `toxml.ts` 把写出端不管的那些通用回填。**新读一个语义字段时，记得在 `toxml.ts::OWNS` 里认领它**，
+// 否则原节点上的那份会被回填、与模型打架。
 //
 // **要 DOM**（`DOMParser`），所以只能在浏览器里跑；Node 侧的脚本走 `harness.mjs` 起页面。
 
@@ -39,7 +39,6 @@ import type {
   Part,
   PartGroup,
   Pitch,
-  Position,
   Print,
   ScoreDoc,
   Song,
@@ -51,6 +50,7 @@ import { IdGen, SOURCE_ID_PREFIX, emptyDoc, emptySong } from "./helpers";
 import { assignDegrees } from "./jianpu";
 import { addMeta } from "./metakeys";
 import { child, childText, children } from "../score/xmldom";
+import { bindSurface } from "./xmlsurface";
 
 const num = (el: Element | null, tag: string): number | undefined => {
   const t = el ? childText(el, tag) : null;
@@ -59,17 +59,6 @@ const num = (el: Element | null, tag: string): number | undefined => {
   return Number.isFinite(v) ? v : undefined;
 };
 
-const serialize = (el: Element): string => new XMLSerializer().serializeToString(el);
-
-/** 序列化并去掉源文件里的整体缩进（按收尾行的缩进左移），`toxml.ts` 按自己的层级重新缩进——
- *  不去的话每往返一次子行缩进加深一层，重写结果不是定点。 */
-function serializeDedented(el: Element): string {
-  const lines = serialize(el).split("\n");
-  if (lines.length < 2) return lines[0]!;
-  const base = /^ */.exec(lines[lines.length - 1]!)![0].length;
-  return lines.map((l, i) => (i === 0 ? l : l.slice(Math.min(base, /^ */.exec(l)![0].length)))).join("\n");
-}
-
 const attrNum = (el: Element, name: string): number | undefined => {
   const t = el.getAttribute(name);
   if (t === null || t === "") return undefined;
@@ -77,33 +66,10 @@ const attrNum = (el: Element, name: string): number | undefined => {
   return Number.isFinite(v) ? v : undefined;
 };
 
-/** 版面坐标属性；一个都没有时返回 `undefined`（不在模型里留空对象）。 */
-function readPos(el: Element): Position | undefined {
-  const p: Position = {};
-  const dx = attrNum(el, "default-x");
-  const dy = attrNum(el, "default-y");
-  const rx = attrNum(el, "relative-x");
-  const ry = attrNum(el, "relative-y");
-  if (dx !== undefined) p.defaultX = dx;
-  if (dy !== undefined) p.defaultY = dy;
-  if (rx !== undefined) p.relativeX = rx;
-  if (ry !== undefined) p.relativeY = ry;
-  return Object.keys(p).length ? p : undefined;
-}
-
 const readAlign = (el: Element, name: string): HAlign | undefined => {
   const v = el.getAttribute(name);
   return v === "left" || v === "center" || v === "right" ? v : undefined;
 };
-
-/** 收集 `parent` 下**不在 `known` 里**的直接子节点，序列化后原样留着。 */
-function rawOf(parent: Element, known: readonly string[]): string[] | undefined {
-  const out: string[] = [];
-  for (const c of Array.from(parent.children)) {
-    if (!known.includes(c.tagName)) out.push(serialize(c));
-  }
-  return out.length ? out : undefined;
-}
 
 // ───────────────────────── 头部 ─────────────────────────
 
@@ -187,33 +153,8 @@ function readDefaults(el: Element): Defaults {
     if (margins.length) page.margins = margins;
     d.pageLayout = page;
   }
-  const sl = child(el, "system-layout");
-  if (sl) {
-    const sys: NonNullable<Defaults["systemLayout"]> = {};
-    const sd = num(sl, "system-distance");
-    const td = num(sl, "top-system-distance");
-    if (sd !== undefined) sys.systemDistance = sd;
-    if (td !== undefined) sys.topSystemDistance = td;
-    const mg = child(sl, "system-margins");
-    if (mg) {
-      const lm = num(mg, "left-margin");
-      const rm = num(mg, "right-margin");
-      if (lm !== undefined) sys.leftMargin = lm;
-      if (rm !== undefined) sys.rightMargin = rm;
-    }
-    d.systemLayout = sys;
-  }
-  const stl = child(el, "staff-layout");
-  if (stl) {
-    const sd = num(stl, "staff-distance");
-    if (sd !== undefined) d.staffLayout = { staffDistance: sd };
-  }
-  const mf = child(el, "music-font");
-  if (mf) d.musicFont = readFont(mf);
   const lf = child(el, "lyric-font");
   if (lf) d.lyricFont = readFont(lf);
-  const wf = child(el, "word-font");
-  if (wf) d.wordFont = readFont(wf);
   return d;
 }
 
@@ -229,12 +170,6 @@ function readFont(el: Element): FontSpec {
   const st = el.getAttribute("font-style");
   if (st !== null) f.style = st;
   return f;
-}
-
-/** 同 `readFont`，但三个属性都没有时返回 `undefined`（文字元素上不留空对象） */
-function readFontAttrs(el: Element): FontSpec | undefined {
-  const f = readFont(el);
-  return Object.keys(f).length ? f : undefined;
 }
 
 function readCredits(root: Element): Credit[] {
@@ -263,6 +198,7 @@ function readCredits(root: Element): Credit[] {
     if (ha) cr.halign = ha;
     const page = c.getAttribute("page");
     if (page) cr.page = Number(page);
+    bindSurface(cr, c);
     out.push(cr);
   }
   return out;
@@ -325,10 +261,6 @@ function readHarmony(el: Element): Harmony {
   const kt = kindEl?.getAttribute("text");
   // `text=""` 是「不印 kind 后缀」，与缺省不同（混排按 null / "" 分），空串也要留
   if (kt !== null && kt !== undefined) h.kindText = kt;
-  const kh = kindEl ? readAlign(kindEl, "halign") : undefined;
-  if (kh) h.kindHalign = kh;
-  const pos = readPos(el);
-  if (pos) h.pos = pos;
   const bassEl = child(el, "bass");
   if (bassEl) {
     h.bass = {
@@ -350,6 +282,7 @@ function readHarmony(el: Element): Harmony {
   if (kindEl?.getAttribute("parentheses-degrees") === "yes") h.parenthesesDegrees = true;
   const st = attrNum(el, "staff");
   if (st !== undefined) h.staff = st;
+  bindSurface(h, el);
   return h;
 }
 
@@ -373,12 +306,7 @@ function readLyrics(noteEl: Element): Lyric[] {
     }
     const el2 = childText(l, "elision");
     if (el2 !== null) lr.elision = el2;
-    const pos = readPos(l);
-    if (pos) lr.pos = pos;
-    const just = readAlign(l, "justify");
-    if (just) lr.justify = just;
-    const tf = texts[0] ? readFontAttrs(texts[0]) : undefined;
-    if (tf) lr.font = tf;
+    bindSurface(lr, l);
     out.push(lr);
   }
   return out;
@@ -418,7 +346,7 @@ function readNotations(noteEl: Element, marks: MarkSink, id: number, into: Notat
       const number = Number(s.getAttribute("number") ?? 1);
       const kind = tag === "tuplet" ? "tuplet" : tag === "tied" ? "tied" : "slur";
       if (type === "start") marks.open(kind, number, id, s, noteIndex);
-      else if (type === "stop") marks.close(kind, number, id, noteIndex);
+      else if (type === "stop") marks.close(kind, number, id, s, noteIndex);
     }
   }
   return Object.keys(n).length ? n : undefined;
@@ -444,7 +372,7 @@ class MarkSink {
     this.open_.set(k, list);
   }
 
-  close(type: Mark["type"], number: number, id: number, note: number): void {
+  close(type: Mark["type"], number: number, id: number, el: Element, note: number): void {
     const k = `${type}#${number}`;
     const list = this.open_.get(k);
     const started = list?.pop();
@@ -464,6 +392,8 @@ class MarkSink {
       if (actual !== undefined) m.tupletActual = actual;
       if (normal !== undefined) m.tupletNormal = normal;
     }
+    bindSurface(m, started.el, "start");
+    bindSurface(m, el, "stop");
     this.marks.push(m);
   }
 }
@@ -512,6 +442,7 @@ function readBarline(el: Element, elementCount: number): Barline {
     if (end.getAttribute("print-object") === "no") b.ending.printObject = false;
   }
   if (b.location === "middle") b.afterElements = elementCount;
+  bindSurface(b, el);
   return b;
 }
 
@@ -526,7 +457,15 @@ function readDirection(el: Element): Direction | null {
   if (pl === "above" || pl === "below") d.placement = pl;
   const st = num(el, "staff");
   if (st !== undefined) d.staff = st;
-  if (items.length > 1) d.more = items.slice(1).map(readDirectionPart);
+  if (items.length > 1) {
+    d.more = items.slice(1).map((it) => {
+      const part = readDirectionPart(it);
+      bindSurface(part, it);
+      return part;
+    });
+  }
+  bindSurface(d, el);
+  bindSurface(d, first, "part");
   const sound = child(el, "sound");
   if (sound) {
     const s = readSound(sound);
@@ -538,16 +477,6 @@ function readDirection(el: Element): Direction | null {
 /** `<direction-type>` 下的一个子元素（words / dynamics / wedge…）。 */
 function readDirectionPart(first: Element): DirectionPart {
   const d: DirectionPart = { type: first.tagName };
-  const pos = readPos(first);
-  if (pos) d.pos = pos;
-  const just = readAlign(first, "justify");
-  if (just) d.justify = just;
-  const ha = readAlign(first, "halign");
-  if (ha) d.halign = ha;
-  const va = first.getAttribute("valign");
-  if (va) d.valign = va;
-  const font = readFontAttrs(first);
-  if (font) d.font = font;
   switch (first.tagName) {
     case "dynamics":
       d.text = first.firstElementChild?.tagName ?? "";
@@ -606,43 +535,13 @@ function readSound(sound: Element): Direction["sound"] {
   }
 }
 
-function readPrint(el: Element): Print | undefined {
+/** 元素在就给一个 `Print`（哪怕只有版式、模型里是空对象）：它的表层（`<system-layout>` 等）挂在上面 */
+function readPrint(el: Element): Print {
   const p: Print = {};
   if (el.getAttribute("new-system") === "yes") p.newSystem = true;
   if (el.getAttribute("new-page") === "yes") p.newPage = true;
-  const sl = child(el, "system-layout");
-  if (sl) {
-    const sys: NonNullable<Print["systemLayout"]> = {};
-    const sd = num(sl, "system-distance");
-    const td = num(sl, "top-system-distance");
-    if (sd !== undefined) sys.systemDistance = sd;
-    if (td !== undefined) sys.topSystemDistance = td;
-    const mg = child(sl, "system-margins");
-    if (mg) {
-      const lm = num(mg, "left-margin");
-      const rm = num(mg, "right-margin");
-      if (lm !== undefined) sys.leftMargin = lm;
-      if (rm !== undefined) sys.rightMargin = rm;
-    }
-    if (Object.keys(sys).length) p.systemLayout = sys;
-  }
-  const staffLayouts = children(el, "staff-layout").map((s) => {
-    const out: NonNullable<Print["staffLayouts"]>[number] = {};
-    const n = attrNum(s, "number");
-    if (n !== undefined) out.staff = n;
-    const sd = num(s, "staff-distance");
-    if (sd !== undefined) out.staffDistance = sd;
-    return out;
-  });
-  if (staffLayouts.length) p.staffLayouts = staffLayouts;
-  const mn = child(el, "measure-numbering");
-  if (mn?.textContent) p.measureNumbering = mn.textContent;
-  return Object.keys(p).length ? p : undefined;
+  return p;
 }
-
-const KNOWN_MEASURE_CHILDREN = [
-  "attributes", "note", "backup", "forward", "barline", "direction", "harmony", "print", "sound",
-];
 
 /** 一个 `<measure>` → `Measure`。`<backup>`/`<forward>` 按声部分轨，解析后消失。 */
 function readMeasure(
@@ -651,9 +550,10 @@ function readMeasure(
   marks: MarkSink,
 ): Measure {
   const m: Measure = { number: el.getAttribute("number") ?? "", elements: [] };
-  const width = attrNum(el, "width");
-  if (width !== undefined) m.width = width;
+  bindSurface(m, el);
   if (el.getAttribute("implicit") === "yes") m.implicit = true;
+  /** 首个元素之前的 `<attributes>` 合并成一份 `m.attrs`，表层也并进第一个节点（后面几个的子节点挪过去） */
+  let firstAttrs: Element | null = null;
   /** 和弦符号先攒着，挂到它后面第一个元素上（MusicXML 的 `<harmony>` 在音符之前）。
    *  一个长音中途换和弦时音符前会连着好几个（后面的带 offset），**全留着**——只留最后一个会丢和弦 */
   let pendingHarmonies: Harmony[] = [];
@@ -691,19 +591,12 @@ function readMeasure(
         if (staves !== undefined) a.staves = staves;
         const tr = child(c, "transpose");
         if (tr) a.transpose = readTranspose(tr);
-        const details = children(c, "staff-details");
-        if (details.length) {
-          a.staffDetails = details.map((sd) => {
-            const out: NonNullable<MeasureAttrs["staffDetails"]>[number] = {};
-            const n = sd.getAttribute("number");
-            if (n) out.staff = Number(n);
-            const po = sd.getAttribute("print-object");
-            if (po) out.printObject = po !== "no";
-            return out;
-          });
-        }
-        if (m.elements.length === 0) m.attrs = { ...(m.attrs ?? {}), ...a };
-        else {
+        if (m.elements.length === 0) {
+          m.attrs = { ...(m.attrs ?? {}), ...a };
+          if (!firstAttrs) firstAttrs = c;
+          else for (const k of Array.from(c.children)) firstAttrs.appendChild(k.cloneNode(true));
+        } else {
+          bindSurface(a, c);
           const later: NonNullable<Measure["laterAttrs"]>[number] = { afterElements: m.elements.length, attrs: a };
           if (cursor !== end) later.onset = cursor;
           (m.laterAttrs ??= []).push(later);
@@ -716,7 +609,11 @@ function readMeasure(
         break;
       case "print": {
         const p = readPrint(c);
-        if (p) m.print = { ...(m.print ?? {}), ...p };
+        if (m.print) Object.assign(m.print, p);
+        else {
+          m.print = p;
+          bindSurface(p, c);
+        }
         break;
       }
       case "direction": {
@@ -727,8 +624,9 @@ function readMeasure(
         break;
       }
       case "sound": {
-        // 小节级 `<sound>`（不在 `<direction>` 里）：语料 568 份都用它记曲首速度。原文留着，写回逐字节
-        const d: Direction = { type: "sound", xml: serializeDedented(c) };
+        // 小节级 `<sound>`（不在 `<direction>` 里）：语料 568 份都用它记曲首速度。子元素（`<swing>`…）在表层
+        const d: Direction = { type: "sound" };
+        bindSurface(d, c);
         const s = readSound(c);
         if (s) d.sound = s;
         if (m.elements.length > 0) d.afterElements = m.elements.length;
@@ -759,17 +657,7 @@ function readMeasure(
             if (t.getAttribute("type") === "stop") note.tie.stop = true;
           }
         }
-        const notePos = readPos(c);
-        const stemEl = child(c, "stem");
-        if (pitchEl) {
-          if (notePos) note.pos = notePos;
-          if (stemEl) {
-            const dir = stemEl.textContent?.trim();
-            if (dir === "up" || dir === "down" || dir === "none" || dir === "double") note.stem = dir;
-            const sy = attrNum(stemEl, "default-y");
-            if (sy !== undefined) note.stemY = sy;
-          }
-        }
+        if (pitchEl) bindSurface(note, c);
         const noteSize = child(c, "type")?.getAttribute("size");
         if (noteSize) note.typeSize = noteSize;
         if (isChordNote && last) {
@@ -791,7 +679,7 @@ function readMeasure(
         };
         const srcId = sourceIdOf(c.getAttribute("id"));
         if (srcId !== null) ch.srcId = srcId;
-        if (!pitchEl && notePos) ch.pos = notePos;
+        bindSurface(ch, c);
         // 节奏音符（有声无音高）：写出端 toxml.ts 写成 `<unpitched>`
         if (!pitchEl && child(c, "unpitched")) ch.rhythm = true;
         if (child(c, "cue")) ch.cue = true;
@@ -872,8 +760,7 @@ function readMeasure(
     m.elements.push(sp);
   });
   if (reach > maxEnd) m.duration = reach;
-  const raw = rawOf(el, KNOWN_MEASURE_CHILDREN);
-  if (raw) m.raw = raw;
+  if (m.attrs && firstAttrs) bindSurface(m.attrs, firstAttrs);
   return m;
 }
 
@@ -888,6 +775,7 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
   const doc = emptyDoc("musicxml");
   doc.source = xmlText;
   const song: Song = emptySong();
+  bindSurface(song, root);
   const ids = new IdGen();
   const marks = new MarkSink();
 
@@ -937,10 +825,14 @@ export function loadScoreDoc(xmlText: string): ScoreDoc {
     ? readPartGroups(partList)
     : { groups: [], names: new Map<string, { name?: string; abbrev?: string }>() };
   if (groups.length) song.partGroups = groups;
+  const scoreParts = new Map((partList ? children(partList, "score-part") : []).map((sp) => [sp.getAttribute("id") ?? "", sp]));
 
   for (const p of children(root, "part")) {
     const id = p.getAttribute("id") ?? "";
     const part: Part = { id, measures: [] };
+    bindSurface(part, p);
+    const sp = scoreParts.get(id);
+    if (sp) bindSurface(part, sp, "score-part");
     marks.nextPart();
     const nm = names.get(id);
     if (nm?.name) part.name = nm.name;

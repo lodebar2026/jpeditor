@@ -510,7 +510,7 @@ function mergeEmptyMeasures(part: Part): void {
   const out: Measure[] = [];
   let carry: Measure | null = null;
   for (const m of part.measures) {
-    if (m.elements.length === 0 && !m.raw?.length) {
+    if (m.elements.length === 0) {
       carry = carry ? mergeInto(carry, m) : m;
       continue;
     }

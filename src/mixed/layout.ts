@@ -81,6 +81,7 @@ import {
   type PrintInput,
 } from "./layoutpass";
 import { melodyChords, topNote } from "../model/jianpu";
+import { defaultsFonts, measureWidth, noteStem, printLayout, staffDetailsOf, xmlAlign, xmlFont, xmlPos } from "../model/xmlsurface";
 
 /** Bravura Text 里 segno/coda 相对 Bravura 同一字形的大小（见 processSegno） */
 const BRAVURA_TEXT_SCALE = 0.8;
@@ -304,7 +305,8 @@ class DocPartLoader {
     if (dur.compareTo(mif.dur) > 0) mif.dur = dur;
     mif.number = m.number;
     if (m.implicit) mif.implicit = true;
-    if (m.width !== undefined) mif.width = m.width;
+    const width = measureWidth(m);
+    if (width !== undefined) mif.width = width;
 
     const md = this.part.newMeasure();
     md.measureInfo = mif;
@@ -432,12 +434,13 @@ class DocPartLoader {
 
     const pitch = note?.pitch;
     if (!ch.rest && pitch) nt.writtenPitch = pitch.octave * 7 + (STEP_DIATONIC[pitch.step] ?? 0) + this.transposeSteps;
-    nt.x = (note ? note.pos : src.pos)?.defaultX ?? -1;
+    nt.x = xmlPos(note ?? src)?.defaultX ?? -1;
 
-    if (note?.stem !== undefined) {
-      ch.stemUp = note.stem === "up";
+    const stem = noteStem(note);
+    if (stem) {
+      ch.stemUp = stem.dir === "up";
       this.stemNotes.add(nt);
-      if (note.stemY !== undefined) this.stemYMap.set(nt, note.stemY);
+      if (stem.y !== undefined) this.stemYMap.set(nt, stem.y);
     } else if (this.voiceStem.size > 0 && k === 0 && !ch.rest && ch.noteType.compareTo(new Fraction(4)) < 0
                && this.voiceStem.has(`${src.staff}:${src.voice}`)) {
       // 同一谱表并存两个声部（ABC `&` 的临时多声部）：按声部定方向，不按音高猜。
@@ -445,7 +448,7 @@ class DocPartLoader {
       ch.stemUp = this.voiceStem.get(`${src.staff}:${src.voice}`)!;
       this.stemNotes.add(nt);
       this.forcedStem.add(ch);
-    } else if (k === 0 && !ch.rest && ch.noteType.compareTo(new Fraction(4)) < 0 && !src.notes.some((n) => n.stem !== undefined)) {
+    } else if (k === 0 && !ch.rest && ch.noteType.compareTo(new Fraction(4)) < 0 && !src.notes.some((n) => noteStem(n))) {
       // 整个和弦都没有 <stem> 且需符干（非全音符）的谱（如 OMR 生成、未给符干方向）：按首音相对中线
       // 位置定默认方向（中线 line=-4 及以上朝下，其下朝上），并登记以便 calcStemLen 给长度。
       // **和弦里只有部分音写了 <stem> 时不猜**：musicpp parser.cpp:1586 只按写了 <stem> 的音定方向，
@@ -502,12 +505,14 @@ class DocPartLoader {
       lrc.offset = ch.offset;
       lrc.x = nt.x;
 
-      let y = l.pos?.defaultY ?? -1;
-      const ry = l.pos?.relativeY;
+      const pos = xmlPos(l);
+      let y = pos?.defaultY ?? -1;
+      const ry = pos?.relativeY;
       if (ry !== undefined) y += ry;
       lrc.y = y;
-      lrc.font = l.font?.family || l.font?.size
-        ? new Font(l.font.family ?? this.score.defaults.lyricFont.family, l.font.size ? l.font.size / this.score.scaling : this.score.defaults.lyricFont.size)
+      const lf = xmlFont(l);
+      lrc.font = lf?.family || lf?.size
+        ? new Font(lf.family ?? this.score.defaults.lyricFont.family, lf.size ? lf.size / this.score.scaling : this.score.defaults.lyricFont.size)
         : this.score.defaults.lyricFont;
       // parser.cpp:2576：lrcHWID 时歌词字体开 hwid（→ OpenType `halt`），标点占半身
       lrc.compress = this.score.options.lrcHWID ? "halfwidth" : "clreq";
@@ -742,11 +747,11 @@ class DocPartLoader {
           if (this.processMetronome(blk, item)) hasText = true;
           break;
         case "segno":
-          this.processSegno(blk, false, item.pos);
+          this.processSegno(blk, false, xmlPos(item));
           hasText = true;
           break;
         case "coda":
-          this.processSegno(blk, true, item.pos);
+          this.processSegno(blk, true, xmlPos(item));
           hasText = true;
           break;
         case "wedge":
@@ -773,8 +778,8 @@ class DocPartLoader {
       tick: md.measureInfo.offset.plus(tick),
       staff,
       type: ty,
-      relX: el.pos?.relativeX ?? null,
-      defY: el.pos?.defaultY ?? null,
+      relX: xmlPos(el)?.relativeX ?? null,
+      defY: xmlPos(el)?.defaultY ?? null,
     });
   }
 
@@ -782,7 +787,7 @@ class DocPartLoader {
   private collectPedal(el: DirectionPart, md: PartMeasureLayout, tick: Fraction, staff: number): void {
     // 仅处理 start/stop 配对（sostenuto/change 等不绘制）。
     if (el.spanType !== "start" && el.spanType !== "stop") return;
-    const dy = el.pos?.defaultY;
+    const dy = xmlPos(el)?.defaultY;
     this.pedalPts.push({
       mif: md.measureInfo,
       tick: md.measureInfo.offset.plus(tick),
@@ -868,34 +873,37 @@ class DocPartLoader {
 
   /** <words> 文本（如「(副歌)」），对应 loader.cpp::processWords。 */
   private processWords(blk: MeasureText, w: DirectionPart): boolean {
-    const dy = w.pos?.defaultY;
+    const pos = xmlPos(w);
+    const dy = pos?.defaultY;
     if (dy !== undefined) blk.y = dy;
-    const ry = w.pos?.relativeY;
+    const ry = pos?.relativeY;
     if (ry !== undefined) blk.y += ry;
     // x 口径同 parser.cpp::processTextPos：有 relative-x 就相对拍位（updateDataXPos 再加拍位 x）；
     // 只有 default-x 就是小节内坐标、不加拍位（Sibelius 写的就是小节内坐标）。
     // 一律加拍位的话，《求主藉异象激动我》的「(副歌)」default-x=-1 会被推到首音上、压住简谱的「5」
-    const rx = w.pos?.relativeX;
-    const dx = w.pos?.defaultX;
+    const rx = pos?.relativeX;
+    const dx = pos?.defaultX;
     if (rx !== undefined) blk.x = rx;
     else if (dx !== undefined && !blk.data.length) {
       blk.x = dx;
       blk.relative = false;
     }
-    if (w.justify === "right") blk.justify = LCR.Right;
-    else if (w.justify === "center") blk.justify = LCR.Center;
+    const { justify } = xmlAlign(w);
+    if (justify === "right") blk.justify = LCR.Right;
+    else if (justify === "center") blk.justify = LCR.Center;
     const text = w.text ?? "";
     if (!text) return false;
-    blk.add(text, this.makeWordsFont(w.font));
+    blk.add(text, this.makeWordsFont(xmlFont(w)));
     return true;
   }
 
   /** <dynamics>（如 <mf/>、<sfz/>），对应 loader.cpp::processDynamic。
    *  标准力度子元素名逐字母转成 Bravura 力度字形。 */
   private processDynamic(blk: MeasureText, dyn: DirectionPart): boolean {
-    const dy = dyn.pos?.defaultY;
+    const pos = xmlPos(dyn);
+    const dy = pos?.defaultY;
     if (dy !== undefined) blk.y = dy;
-    const rx = dyn.pos?.relativeX;
+    const rx = pos?.relativeX;
     if (rx !== undefined) blk.x = rx;
     const font = new Font("Bravura", 16 / this.score.scaling);
     const glyphs = dyn.text ? convertDynamicsStr(dyn.text) : "";
@@ -906,9 +914,9 @@ class DocPartLoader {
 
   /** <metronome>（<beat-unit> + <per-minute>），对应 loader.cpp::processMetronome。 */
   private processMetronome(blk: MeasureText, met: DirectionPart): boolean {
-    const dy = met.pos?.defaultY;
+    const dy = xmlPos(met)?.defaultY;
     if (dy !== undefined) blk.y = dy;
-    const wordFont = this.makeWordsFont(met.font);
+    const wordFont = this.makeWordsFont(xmlFont(met));
     // webview 只注册了 "Bravura" @font-face（styles.css）；"BravuraText" 未注册会回退成
     // 缺字形的方框。Bravura 含同一套 metNote 字形，故用 Bravura。
     const noteFont = new Font("Bravura", wordFont.size);
@@ -938,7 +946,7 @@ class DocPartLoader {
   private processHarmony(src: Harmony, md: PartMeasureLayout, tick: Fraction): void {
     const h = md.newHarmony(src);
     h.offset = tick;
-    h.y = src.pos?.defaultY ?? -1;
+    h.y = xmlPos(src)?.defaultY ?? -1;
   }
 
   private processBarline(b: Barline, mif: MeasureLayout): void {
@@ -1166,7 +1174,8 @@ class DocPartLoader {
 // ---------------- 版面输入与声部分组（ScoreDoc → layoutpass） ----------------
 
 function printInput(p: NonNullable<Measure["print"]>): PrintInput {
-  const sl = p.systemLayout;
+  const lay = printLayout(p);
+  const sl = lay?.systemLayout;
   return {
     newPage: p.newPage === true,
     newSystem: p.newSystem === true,
@@ -1180,7 +1189,7 @@ function printInput(p: NonNullable<Measure["print"]>): PrintInput {
           systemDistance: sl.systemDistance ?? null,
         }
       : null,
-    staffLayouts: (p.staffLayouts ?? []).map((s) => ({ number: s.staff ?? 1, staffDistance: s.staffDistance ?? null })),
+    staffLayouts: (lay?.staffLayouts ?? []).map((s) => ({ number: s.staff ?? 1, staffDistance: s.staffDistance ?? null })),
   };
 }
 
@@ -1188,7 +1197,7 @@ function layoutInputOf(song: Song): LayoutInput {
   return song.parts.map((part) =>
     part.measures.map((m) => ({
       prints: m.print ? [printInput(m.print)] : [],
-      staffDetails: [m.attrs, ...(m.laterAttrs ?? []).map((la) => la.attrs)].flatMap((a) => a?.staffDetails ?? []).map((d) => ({
+      staffDetails: [m.attrs, ...(m.laterAttrs ?? []).map((la) => la.attrs)].flatMap((a) => staffDetailsOf(a)).map((d) => ({
         number: d.staff ?? 1,
         printObject: d.printObject === undefined ? null : d.printObject ? "yes" : "no",
       })),
@@ -1266,10 +1275,11 @@ export function layoutStaff(doc: ScoreDoc, options: MixedOptions): StaffLayout {
       score.defaults.lyricFont = new Font(family, ptToTenths(sz));
     }
     // parser.cpp 取 <music-font font-size> 当 musicTextFont 的字号（pt，不按 scaling 折算——用时再除）
-    if (def.musicFont?.size) score.defaults.musicTextFont = new Font(score.defaults.musicTextFont.family, def.musicFont.size);
-    if (def.wordFont) {
-      const family = def.wordFont.family ?? score.defaults.wordFont.family;
-      const sz = def.wordFont.size || score.defaults.wordFont.size;
+    const { musicFont, wordFont } = defaultsFonts(song);
+    if (musicFont?.size) score.defaults.musicTextFont = new Font(score.defaults.musicTextFont.family, musicFont.size);
+    if (wordFont) {
+      const family = wordFont.family ?? score.defaults.wordFont.family;
+      const sz = wordFont.size || score.defaults.wordFont.size;
       score.defaults.wordFont = new Font(family, ptToTenths(sz));
     }
   }

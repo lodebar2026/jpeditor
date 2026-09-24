@@ -33,6 +33,7 @@ import { playDataOfSong } from "./playsong";
 import { linesOfVoice, marksAt, nextSyllables, takesLyric, voiceNumbers } from "../pu/ast";
 import type { LyricLine, Mark, NoteElement, PuSong, ScoreLine } from "../pu/ast";
 import { decoKey } from "./deconames";
+import { xmlAlign, xmlFont } from "./xmlsurface";
 
 // ───────────────────────── 构造 ─────────────────────────
 
@@ -472,8 +473,8 @@ function directionMarks(d: Direction): JDirection[] {
       res.push({
         text: t,
         music: false,
-        italic: it.font?.style === "italic",
-        ...(it.justify === "right" ? { atBarEnd: true } : {}),
+        italic: xmlFont(it)?.style === "italic",
+        ...(xmlAlign(it).justify === "right" ? { atBarEnd: true } : {}),
       });
     } else if (it.type === "segno" || it.type === "coda") {
       res.push({ text: it.type === "segno" ? GlyphCodes.segno : GlyphCodes.coda, music: true, italic: false });

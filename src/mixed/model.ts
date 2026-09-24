@@ -14,6 +14,7 @@ import { MIXED_PUNCT, type CompressMode } from "../common/cjkpunct";
 import { MetaData, GlyphCodes } from "../smufl/smufl";
 import type { Chord as DocChord, Direction as DocDirection, Harmony as DocHarmony, Lyric as DocLyric, Mark as DocMark, Note as DocNote, Song } from "../model/doc";
 import { beamCount } from "../model/jianpu";
+import { xmlAlign } from "../model/xmlsurface";
 import type { HeaderFonts } from "../style/header";
 
 const STEP_CHROMATIC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -1020,7 +1021,8 @@ export class LyricLayout {
     return this.chord.src.staff - 1;
   }
   get halign(): LCR {
-    return this.src.justify === "right" ? LCR.Right : this.src.justify === "left" ? LCR.Left : LCR.Center;
+    const { justify } = xmlAlign(this.src);
+    return justify === "right" ? LCR.Right : justify === "left" ? LCR.Left : LCR.Center;
   }
 
   get empty(): boolean {
