@@ -491,6 +491,70 @@ export interface PitchStep {
   line: boolean;
 }
 
+/** 按音高位置配模板的公用件：核心窗模板、内腔佐证、「同一个头」判定、定干。 */
+function pitchScorer(bin: Binary, nl: Binary, rawHoles: Rect[], allMasks: HeadMask[], unit: RasterUnit, stems: LineSeg[]) {
+  const sp = unit.space;
+  const masks = allMasks.map((m) => {
+    const h = Math.min(m.h, Math.max(3, Math.round(sp * PITCH_CORE)));
+    const top = Math.floor((m.h - h) / 2);
+    return { ...m, h, p: m.p.slice(top * m.w, (top + h) * m.w) };
+  });
+  /** 内腔椭圆的半轴：内腔实测约 1.0×0.8 格。 */
+  const rx = sp * 0.45;
+  const ry = sp * 0.32;
+  /** 该位置的内腔椭圆里，落在原始孔里的白像素占比。 */
+  const cavity = (cx: number, cy: number): number => {
+    let n = 0;
+    let hit = 0;
+    for (let y = Math.round(cy - ry); y <= Math.round(cy + ry); y++)
+      for (let x = Math.round(cx - rx); x <= Math.round(cx + rx); x++) {
+        if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 > 1) continue;
+        n++;
+        if (x < 0 || y < 0 || x >= bin.w || y >= bin.h || bin.data[y * bin.w + x]) continue;
+        if (rawHoles.some((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)) hit++;
+      }
+    return n ? hit / n : 0;
+  };
+  /** 在 y 这个位置、x 从 xa 到 xb 扫，取骑线/在间对应模板的最高分。 */
+  const best = (st: PitchStep, xa: number, xb: number): { x: number; s: number } | null => {
+    const m = masks.find((k) => k.onLine === st.line) ?? masks[0];
+    let b: { x: number; s: number } | null = null;
+    for (let x = Math.round(xa); x <= Math.round(xb); x++) {
+      const sc = scoreAt(bin, m, x, st.y);
+      if (!b || sc > b.s) b = { x, s: sc };
+    }
+    return b;
+  };
+  /** 与已有的头差不到两级（同一位置或相邻半格）、横向又压着的，算同一个头。 */
+  const clash = (b: Rect, list: Rect[]) =>
+    list.some(
+      (t) =>
+        Math.abs(t.y + t.h / 2 - (b.y + b.h / 2)) < sp * 0.75 &&
+        Math.abs(t.x + t.w / 2 - (b.x + b.w / 2)) < (t.w + b.w) / 2 - sp * 0.2,
+    );
+  /** 时值：与 `hollowHeadsFromHoles` 同一套——竖段表的干、墨柱、同干成员。没干又不够宽的返回 null。 */
+  const codeOf = (box: Rect, picked: Rect[]): { code: SmuflName; ink?: LineSeg } | null => {
+    let stem: LineSeg | true | null = stemOf(box, stems, unit);
+    let ink: LineSeg | undefined;
+    if (!stem) {
+      const col = inkColumn(nl, box, unit);
+      const cy = box.y + box.h / 2;
+      const reach = col ? Math.max(cy - col[0], col[1] - cy) : 0;
+      if (col && reach >= sp * INK_STEM[0] && reach <= sp * INK_STEM[1]) {
+        stem = true;
+        ink = { x0: col[2], y0: col[0], x1: col[2], y1: col[1], lw: unit.lineThick, maxLw: unit.lineThick * 2 };
+      }
+    }
+    if (!stem) {
+      const through = stemThrough(box, stems, unit);
+      if (through && picked.some((o) => o !== box && Math.abs(o.y - box.y) <= sp * MATE_GAP)) stem = through;
+    }
+    if (!stem && box.w / sp < W_WHOLE) return null;
+    return { code: stem ? "noteheadHalf" : "noteheadWhole", ink };
+  };
+  return { cavity, best, clash, codeOf };
+}
+
 export function hollowHeadsByPitch(
   bin: Binary,
   nl: Binary,
@@ -505,36 +569,10 @@ export function hollowHeadsByPitch(
 ): { box: Rect; code: SmuflName; weak?: boolean }[] {
   const sp = unit.space;
   if (!allMasks.length) return [];
-  const masks = allMasks.map((m) => {
-    const h = Math.min(m.h, Math.max(3, Math.round(sp * PITCH_CORE)));
-    const top = Math.floor((m.h - h) / 2);
-    return { ...m, h, p: m.p.slice(top * m.w, (top + h) * m.w) };
-  });
+  const { cavity, best, clash, codeOf } = pitchScorer(bin, nl, rawHoles, allMasks, unit, stems);
   const ring = Math.max(2, Math.round(sp * RING));
   const out: { box: Rect; code: SmuflName; weak?: boolean }[] = [];
   const headH = Math.round(sp * 1.1);
-  /** 内腔椭圆的半轴：内腔实测约 1.0×0.8 格。 */
-  const rx = sp * 0.45;
-  const ry = sp * 0.32;
-  const cavity = (cx: number, cy: number): number => {
-    let n = 0;
-    let hit = 0;
-    for (let y = Math.round(cy - ry); y <= Math.round(cy + ry); y++)
-      for (let x = Math.round(cx - rx); x <= Math.round(cx + rx); x++) {
-        if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 > 1) continue;
-        n++;
-        if (x < 0 || y < 0 || x >= bin.w || y >= bin.h || bin.data[y * bin.w + x]) continue;
-        if (rawHoles.some((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)) hit++;
-      }
-    return n ? hit / n : 0;
-  };
-  /** 与已有的头差不到两级（同一位置或相邻半格）、横向又压着的，算同一个头。 */
-  const clash = (b: Rect, list: Rect[]) =>
-    list.some(
-      (t) =>
-        Math.abs(t.y + t.h / 2 - (b.y + b.h / 2)) < sp * 0.75 &&
-        Math.abs(t.x + t.w / 2 - (b.x + b.w / 2)) < (t.w + b.w) / 2 - sp * 0.2,
-    );
   for (const hole of holes) {
     const hw = hole.w / sp;
     const hh = hole.h / sp;
@@ -544,15 +582,10 @@ export function hollowHeadsByPitch(
     const bw = hole.w + ring * 2;
     const cands: { x: number; y: number; s: number }[] = [];
     for (const st of stepsIn(hole.y - sp * 0.3, hole.y + hole.h + sp * 0.3)) {
-      const m = masks.find((k) => k.onLine === st.line) ?? masks[0];
-      let best: { x: number; s: number } | null = null;
-      for (let x = Math.round(cx0 - sp * 0.2); x <= Math.round(cx0 + sp * 0.2); x++) {
-        const sc = scoreAt(bin, m, x, st.y);
-        if (!best || sc > best.s) best = { x, s: sc };
-      }
-      if (!best || best.s < PITCH_SCORE) continue;
-      if (cavity(best.x, st.y) < CAVITY_MIN) continue;
-      cands.push({ x: best.x, y: st.y, s: best.s });
+      const b = best(st, cx0 - sp * 0.2, cx0 + sp * 0.2);
+      if (!b || b.s < PITCH_SCORE) continue;
+      if (cavity(b.x, st.y) < CAVITY_MIN) continue;
+      cands.push({ x: b.x, y: st.y, s: b.s });
     }
     cands.sort((a, b) => b.s - a.s);
     const picked: Rect[] = [];
@@ -565,32 +598,94 @@ export function hollowHeadsByPitch(
     // 或斜缝内腔上面那个头佐证不够（圣哉三一歌伴奏）——收了半边反倒挡住「空心头按模板再搜」
     // 那一路（它两个都认得出），整区交回去。
     if (picked.length < 2) continue;
-    // 时值：与 `hollowHeadsFromHoles` 同一套——竖段表的干、墨柱、同干成员
     for (const box of picked) {
-      let stem: LineSeg | true | null = stemOf(box, stems, unit);
-      if (!stem) {
-        const col = inkColumn(nl, box, unit);
-        const cy = box.y + box.h / 2;
-        const reach = col ? Math.max(cy - col[0], col[1] - cy) : 0;
-        if (reach >= sp * INK_STEM[0] && reach <= sp * INK_STEM[1]) stem = true;
-      }
-      if (!stem) {
-        const through = stemThrough(box, stems, unit);
-        if (through && picked.some((o) => o !== box && Math.abs(o.y - box.y) <= sp * MATE_GAP)) stem = through;
-      }
-      if (!stem && box.w / sp < W_WHOLE) continue;
-      out.push({ box, code: stem ? "noteheadHalf" : "noteheadWhole", weak: true });
+      const c = codeOf(box, picked);
+      if (!c) continue;
+      out.push({ box, code: c.code, weak: true });
       taken.push(box);
     }
   }
   return out;
 }
 
+// ── 空心头：**沿加线按音高位置配模板** ──────────────────────────────────────
+//
+// 谱表外骑着加线的斜缝空心头（赞美三一真神末三小节：C4、C4/A3、C4/G3、D4/C4 二度错排），
+// 内腔是一道斜缝，被加线横着切成左上、右下两截，两截横向几乎不交叠，`mergeHoles` 并不起来，
+// 两端又被干封住；按内腔找、按模板再搜都认不出。Audiveris 在加线上也是逐位置配模板：
+// 这里拿**没压着头的加线**当候选，在它本身和上下两个间位上逐位置打分，x 沿加线扫。
+
+/** 加线候选的长度（格）：一个头宽出一点到两个头（二度错排）。 */
+const LEDGER_LEN = [1.2, 2.8] as const;
+/** 加线上的头的模板得分门槛。扫过 0.25 / 0.30 / **0.35** / 0.40：九首合计 94.53 / 94.53 / **94.53** / 94.43%；
+ *  合唱谱（内腔 0.25 时）0.30 那档干净版按 staff 映射掉 0.08 点（加线旁的误收）；0.35 配内腔 0.30/0.35，
+ *  干净档 85.43 → 85.50%、扫描档不降。 */
+const LEDGER_SCORE = 0.35;
+/** 加线上的头的内腔佐证：斜缝被切成小片，比叠头那一路（0.5）低——赞美三一真神那几个真头实测 0.36~0.39。
+ *  扫过 0.15 / 0.25 / **0.30** / 0.35，九首与合唱谱都一样，取离真头留点余量的一档。 */
+const LEDGER_CAVITY = 0.3;
+
+export function hollowHeadsOnLedgers(
+  bin: Binary,
+  nl: Binary,
+  rawHoles: Rect[],
+  allMasks: HeadMask[],
+  unit: RasterUnit,
+  ledgers: { x0: number; x1: number; y: number }[],
+  stepsIn: (y0: number, y1: number) => PitchStep[],
+  stems: LineSeg[],
+  taken: Rect[],
+  /** 出参：靠墨柱判出来的干（竖段表里没有，`buildNotes` 定时值要用）。 */
+  inkStems: LineSeg[],
+): { box: Rect; code: SmuflName; weak?: boolean }[] {
+  const sp = unit.space;
+  if (!allMasks.length) return [];
+  const { cavity, best, codeOf } = pitchScorer(bin, nl, rawHoles, allMasks, unit, stems);
+  const out: { box: Rect; code: SmuflName; weak?: boolean }[] = [];
+  const bw = Math.round(sp * 1.3);
+  const headH = Math.round(sp * 1.1);
+  const picked: Rect[] = [];
+  const cands: { x: number; y: number; s: number }[] = [];
+  for (const l of ledgers) {
+    const len = (l.x1 - l.x0) / sp;
+    if (len < LEDGER_LEN[0] || len > LEDGER_LEN[1]) continue;
+    for (const st of stepsIn(l.y - sp * 0.7, l.y + sp * 0.7)) {
+      const b = best(st, l.x0 + sp * 0.4, l.x1 - sp * 0.4);
+      if (!b || b.s < LEDGER_SCORE) continue;
+      const cv = cavity(b.x, st.y);
+      if (cv < LEDGER_CAVITY) continue;
+      cands.push({ x: b.x, y: st.y, s: b.s });
+    }
+  }
+  cands.sort((a, b) => b.s - a.s);
+  // 二度错排的两个头（m15 的 D4/C4）横向只差一个头宽，`clash` 的「横向压着」会把它们判成同一个；
+  // 相邻音级（差半格）只在横向差不到 0.6 个头宽时才算重叠——照 Audiveris `HeadInter.overlaps`
+  const second = (b: Rect, list: Rect[]) =>
+    list.some((t) => {
+      const dy = Math.abs(t.y + t.h / 2 - (b.y + b.h / 2));
+      const dx = Math.abs(t.x + t.w / 2 - (b.x + b.w / 2));
+      return dy < sp * 0.25 ? dx < (t.w + b.w) / 2 - sp * 0.2 : dy < sp * 0.75 && dx < ((t.w + b.w) / 2) * 0.6;
+    });
+  for (const c of cands) {
+    const box: Rect = { x: Math.round(c.x - bw / 2), y: Math.round(c.y - headH / 2), w: bw, h: headH };
+    if (second(box, picked) || second(box, taken)) continue;
+    picked.push(box);
+  }
+  for (const box of picked) {
+    const c = codeOf(box, picked);
+    if (!c) continue;
+    out.push({ box, code: c.code, weak: true });
+    if (c.ink) inkStems.push(c.ink);
+    taken.push(box);
+  }
+  return out;
+}
+
 /**
  * 竖段表之外、直接在图上量的符干：盒左右缘附近各列，从盒中心往上下沿墨走（断口 ≤2 像素），
- * 取纵向最长的一列，返回 `[上端, 下端]`。
+ * 取纵向最长的一列，返回 `[上端, 下端, 列 x]`。
  */
-function inkColumn(nl: Binary, b: Rect, unit: RasterUnit): [number, number] | null {
+function inkColumn(nl: Binary, b: Rect, unit: RasterUnit): [number, number, number] | null {
   const tol = Math.round(Math.max(unit.lineThick * 2, unit.space * 0.25));
   const cy = Math.round(b.y + b.h / 2);
   const at = (x: number, y: number) => x >= 0 && y >= 0 && x < nl.w && y < nl.h && nl.data[y * nl.w + x] === 1;
@@ -604,12 +699,12 @@ function inkColumn(nl: Binary, b: Rect, unit: RasterUnit): [number, number] | nu
     }
     return last;
   };
-  let best: [number, number] | null = null;
+  let best: [number, number, number] | null = null;
   for (const edge of [b.x, b.x + b.w]) {
     for (let x = Math.round(edge) - tol; x <= Math.round(edge) + tol; x++) {
       const top = walk(x, -1);
       const bottom = walk(x, 1);
-      if (!best || bottom - top > best[1] - best[0]) best = [top, bottom];
+      if (!best || bottom - top > best[1] - best[0]) best = [top, bottom, x];
     }
   }
   return best;

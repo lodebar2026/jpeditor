@@ -12,13 +12,14 @@ import type { Binary } from "../omr/types";
 import type { Box } from "../staffomr/model";
 import type { Component, Rect } from "../omr/types";
 import { findBarlines, findNoteheads, findStaves, findStems, findTails, makeBars, makeSystems, unknownObjs } from "../staffomr/page";
-import { isAccidental, isClef, timeSigDigit, type SmuflName } from "../staffomr/glyphs";
-import { buildNotes, checkBars, findClefKeyTime, keyFifths, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
+import { accidentalAlter, isAccidental, isClef, timeSigDigit, type SmuflName } from "../staffomr/glyphs";
+import { buildNotes, calcAlters, checkBars, findClefKeyTime, keyFifths, lastTimeSignature, type BeamShape, type StaffContext, type StaffNote, type StemInfo, type BarCheck } from "../staffomr/notedata";
 import { attachDynamicTexts, attachNotations, attachWedges, findNotations, findTuplets } from "../staffomr/notations";
 import type { SPage, Staff, Sym, Tag } from "../staffomr/model";
+import { overlapY } from "../staffomr/model";
 import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adapt";
 import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, groupByLeftInk, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
-import { findRasterHeads, hollowHeadsByPitch, hollowHeadsFromHoles, judgeHeadBox, mergeHoles, type PitchStep } from "./notehead";
+import { findRasterHeads, hollowHeadsByPitch, hollowHeadsFromHoles, hollowHeadsOnLedgers, judgeHeadBox, mergeHoles, type PitchStep } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
 import { cutJianpuStrip, eraseInBand, findJianpuBands, jianpuKey, type JianpuStrip } from "./jianpuband";
 import { fuseJianpu, type FuseStats, type JianpuRow } from "./jianpufuse";
@@ -34,7 +35,7 @@ import { findRasterSlurs } from "./slur";
 import { ContourLedger } from "./ledger";
 import { attachHarmonies, attachLyrics, buildLyricLines, type LyricLine } from "../staffomr/textanalyze";
 import { attachSlurs, markSlurNotes, reconnectSlurs, type SlurArc } from "../staffomr/slur";
-import { estimateUnit, findStaffLines, groupStaves, traceLeft, type RasterUnit } from "./staffline";
+import { estimateUnit, findStaffLines, groupStaves, traceLeft, type RasterUnit, type StaffLineRun } from "./staffline";
 import { completeStaffLines } from "./dewarp";
 import { rasterizePage, type RasterPage } from "./rasterpage";
 
@@ -216,6 +217,43 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
     const anchor = far + toward * offset * sp;
     const y0 = toward > 0 ? anchor : anchor - h;
     out.push({ box: { x: Math.round(st.cx), y: Math.round(y0), w: Math.round(sp * 1.5), h: Math.round(h) }, code });
+  }
+  return out;
+}
+
+/**
+ * 加线候选（`hollowHeadsOnLedgers` 用）：每行谱上下第 1~4 条加线的位置上，**直接在原图上**找横向墨段
+ *（上下各放一像素，断口 ≤ 1 像素）。不用 `prims.hSegs`：骑在加线上的空心头，那几列的纵向墨是
+ * 圈 + 加线一整条，过不了横笔画「细」的那道闸，加线抽不出来（赞美三一真神 m16 的 C4）。
+ * 真假交给模板得分与内腔佐证。
+ */
+function ledgerCandidates(bin: Binary, groups: { lines: StaffLineRun[]; space: number }[]): { x0: number; x1: number; y: number }[] {
+  const out: { x0: number; x1: number; y: number }[] = [];
+  for (const g of groups) {
+    const left = Math.max(...g.lines.map((l) => l.left));
+    const right = Math.min(...g.lines.map((l) => l.right));
+    const ys: number[] = [];
+    for (let k = 1; k <= 4; k++) ys.push(g.lines[0].y - k * g.space, g.lines[4].y + k * g.space);
+    for (const fy of ys) {
+      const y = Math.round(fy);
+      if (y < 1 || y >= bin.h - 1) continue;
+      const ink = (x: number) => !!(bin.data[(y - 1) * bin.w + x] || bin.data[y * bin.w + x] || bin.data[(y + 1) * bin.w + x]);
+      let start = -1;
+      let miss = 0;
+      for (let x = Math.max(0, Math.round(left)); x <= Math.min(bin.w - 1, Math.round(right)) + 1; x++) {
+        const on = x <= Math.min(bin.w - 1, Math.round(right)) && ink(x);
+        if (on) {
+          if (start < 0) start = x;
+          miss = 0;
+          continue;
+        }
+        if (start >= 0 && ++miss > 1) {
+          out.push({ x0: start, x1: x - miss, y: fy });
+          start = -1;
+          miss = 0;
+        }
+      }
+    }
   }
   return out;
 }
@@ -736,6 +774,10 @@ export async function recognizeRasterPage(
   const hollowSamples = [...heads.map((h) => ({ box: h.box, code: h.code })), ...stacked].filter((s0) => !(s0 as { weak?: boolean }).weak);
   const hollowMasks = buildHollowMasks(raster.bin, hollowSamples, unit, lineYs);
   stacked.push(...hollowHeadsByPitch(raster.bin, nl, rawHoles, holes, hollowMasks, unit, makePitchSteps(groups), prims.vSegs, inBand, takenBoxes));
+  // 谱表外骑加线的斜缝空心头：沿加线逐位置配同一组模板（`notehead.ts::hollowHeadsOnLedgers`）
+  // 竖段表里没有、靠墨柱判出来的干：只进 `SPage`（与 `stemSegs` 同理），`buildNotes` 定时值要它
+  const inkStems: LineSeg[] = [];
+  stacked.push(...hollowHeadsOnLedgers(raster.bin, nl, rawHoles, hollowMasks, unit, ledgerCandidates(raster.bin, groups), makePitchSteps(groups), prims.vSegs, takenBoxes, inkStems));
 
   // ── 几个实心符头并成一块：按**谱内自举的 mask** 拆开 ─────────────────────
   //
@@ -1107,42 +1149,65 @@ export async function recognizeRasterPage(
         if (dy >= 0.7 && dy <= 1.3 && Math.abs(a.box.x - b.box.x) <= sp * 0.3) sets.push([a, b]);
       }
     for (const a of hs) sets.push([a]);
-    const bin = keyBin;
-    const at = (x: number, y: number) => y >= 0 && y < bin.h && !!bin.data[y * bin.w + x];
     for (const set of sets) {
-      const x0 = Math.min(...set.map((s0) => s0.box.x));
-      const x1 = Math.max(...set.map((s0) => s0.box.x + s0.box.w));
-      const u0 = set[0].box.y;
-      const u1 = set[set.length - 1].box.y + set[set.length - 1].box.h - 1;
-      const cols: number[] = [];
-      let y0 = u0;
-      let y1 = u1;
-      let over = 0;
-      let up = 0;
-      let down = 0;
-      for (let x = x0; x < x1; x++) {
-        let ok = true;
-        // 竖笔一两像素的抖动算连着
-        for (let y = u0; y <= u1 && ok; y++) ok = at(x, y) || at(x - 1, y) || at(x + 1, y);
-        if (!ok) continue;
-        cols.push(x);
-        let t = u0;
-        let d = u1;
-        while (at(x, t - 1)) t--;
-        while (at(x, d + 1)) d++;
-        over = Math.max(over, u0 - t, d - u1);
-        up = Math.max(up, u0 - t);
-        down = Math.max(down, d - u1);
-        y0 = Math.min(y0, t);
-        y1 = Math.max(y1, d);
-      }
-      if (!cols.length || cols[cols.length - 1] - cols[0] < sp * 0.4) continue;
-      // 一对：竖笔探出不过一格。单个：另一道横笔还挂在竖笔上，下探可到一格半，
-      // 但**上下都要探出去**——带干的音只往一头伸，而且一伸就是两格半以上
-      if (set.length === 2 ? over > sp : over > sp * 1.6 || up < sp * 0.3 || down < sp * 0.3) continue;
-      return { heads: set, box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 + 1 } };
+      const box = sharpBox(set);
+      if (box) return { heads: set, box };
     }
     return null;
+  }
+  /** 这一对（或一个）黑符头其实是升号吗：原图上有两根竖笔贯穿，且探出不多。是就返回升号的盒。 */
+  /** 两个头的盒里，上下贯穿的竖笔之间有没有**不贯穿**的列（升号两根竖笔中间是空的）。 */
+  function hasGapColumn(set: RasterSym[]): boolean {
+    const bin = keyBin;
+    const x0 = Math.min(...set.map((s0) => s0.box.x));
+    const x1 = Math.max(...set.map((s0) => s0.box.x + s0.box.w));
+    const u0 = set[0].box.y;
+    const u1 = set[set.length - 1].box.y + set[set.length - 1].box.h - 1;
+    const full: boolean[] = [];
+    for (let x = x0; x < x1; x++) {
+      let ok = true;
+      for (let y = u0; y <= u1 && ok; y++) ok = !!bin.data[y * bin.w + x];
+      full.push(ok);
+    }
+    const first = full.indexOf(true);
+    const last = full.lastIndexOf(true);
+    return first >= 0 && full.slice(first, last + 1).some((f) => !f);
+  }
+  function sharpBox(set: RasterSym[]): Rect | null {
+    const sp = keySp;
+    const bin = keyBin;
+    const at = (x: number, y: number) => y >= 0 && y < bin.h && !!bin.data[y * bin.w + x];
+    const x0 = Math.min(...set.map((s0) => s0.box.x));
+    const x1 = Math.max(...set.map((s0) => s0.box.x + s0.box.w));
+    const u0 = set[0].box.y;
+    const u1 = set[set.length - 1].box.y + set[set.length - 1].box.h - 1;
+    const cols: number[] = [];
+    let y0 = u0;
+    let y1 = u1;
+    let over = 0;
+    let up = 0;
+    let down = 0;
+    for (let x = x0; x < x1; x++) {
+      let ok = true;
+      // 竖笔一两像素的抖动算连着
+      for (let y = u0; y <= u1 && ok; y++) ok = at(x, y) || at(x - 1, y) || at(x + 1, y);
+      if (!ok) continue;
+      cols.push(x);
+      let t = u0;
+      let d = u1;
+      while (at(x, t - 1)) t--;
+      while (at(x, d + 1)) d++;
+      over = Math.max(over, u0 - t, d - u1);
+      up = Math.max(up, u0 - t);
+      down = Math.max(down, d - u1);
+      y0 = Math.min(y0, t);
+      y1 = Math.max(y1, d);
+    }
+    if (!cols.length || cols[cols.length - 1] - cols[0] < sp * 0.4) return null;
+    // 一对：竖笔探出不过一格。单个：另一道横笔还挂在竖笔上，下探可到一格半，
+    // 但**上下都要探出去**——带干的音只往一头伸，而且一伸就是两格半以上
+    if (set.length === 2 ? over > sp : over > sp * 1.6 || up < sp * 0.3 || down < sp * 0.3) return null;
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 + 1 };
   }
   for (const g of groups) {
     const left = Math.max(...g.lines.map((l) => l.left));
@@ -1236,6 +1301,57 @@ export async function recognizeRasterPage(
         break;
       }
       if (!took) break;
+    }
+  }
+
+  // ── 谱中的升号被当成两个黑符头 ───────────────────────────────────────────
+  //
+  // 与调号那段同一个病（粗体升号的两道横笔去掉竖笔后就是两个上下叠着的黑头），只是出在谱中：
+  // 齐来称颂 m14 低音那个 E♯3 的升号成了一对 D3/F♯3 黑头，多出两个音、升号也丢了。
+  // 几何判据同 `sharpBox`；谱中没有「紧贴谱号」那条先验，另要**右边 1.5 格内有个同高的符头**
+  //（升号中心与头中心差不到四分之一格）——那是它要升的音。只认成对的，单个的太像带干的头。
+  for (let i = 0; i < syms.length; i++) {
+    const a = syms[i];
+    if (a.code !== "noteheadBlack") continue;
+    const b = syms.find((s0) => s0 !== a && s0.code === "noteheadBlack" && Math.abs(s0.box.x - a.box.x) <= keySp * 0.3 && (s0.box.y - a.box.y) / keySp >= 0.7 && (s0.box.y - a.box.y) / keySp <= 1.3);
+    if (!b) continue;
+    const box = sharpBox([a, b]);
+    if (!box) continue;
+    // 升号的两根竖笔之间是空的；上下贴着的两个实心头（三度和弦）每一列都有墨，`sharpBox` 分不开
+    //（善牧恩慈歌线距 11px，m2 的一对黑头被当成升号）
+    if (!hasGapColumn([a, b])) continue;
+    const cy = box.y + box.h / 2;
+    const right = box.x + box.w;
+    const owner = syms.some((s0) => s0 !== a && s0 !== b && /^notehead/.test(s0.code) && s0.box.x >= right - 2 && s0.box.x - right <= keySp * 1.5 && Math.abs(s0.box.y + s0.box.h / 2 - cy) <= keySp / 4);
+    if (!owner) continue;
+    syms.splice(syms.indexOf(b), 1);
+    syms.splice(syms.indexOf(a), 1, { box, code: "accidentalSharp" });
+    ledger.claim(box, "acc:accidentalSharp");
+  }
+
+  // ── 谱中没人认领的升降还原号：按位置先验配模板 ───────────────────────────
+  //
+  // 字典认不出、也没人认领的块，**右边 1.5 格内有个同高的符头**（升/还原看盒中心，降看肚子），
+  // 形状又像升降号（高 1.8~3.4 格、宽 0.4~1.2 格），就拿模板配（门槛见 `LOOSE_ACC_DIST`）。病例齐来称颂 m5 那个 D♯4 的升号，两道横笔分得开，
+  // 字典不认，整块没人要。
+  {
+    const accTpl = (look.templates ?? []).filter((t) => t.smufl === "accidentalSharp" || t.smufl === "accidentalFlat" || t.smufl === "accidentalNatural");
+    const sp = unit.space;
+    for (const c of blobs) {
+      if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
+      const b = c.bbox;
+      const w = b.w / sp;
+      const h = b.h / sp;
+      if (h < 1.8 || h > 3.4 || w < 0.4 || w > 1.2) continue;
+      if (syms.some((s0) => overlapFrac(b, s0.box) > 0.3)) continue;
+      const m = matchTemplate(binSig(nl, b), w, h, accTpl, LOOSE_ACC_DIST);
+      if (!m) continue;
+      const py = m.smufl === "accidentalFlat" ? b.y + (b.h * (1 + FLAT_BOWL_TOP)) / 2 : b.y + b.h / 2;
+      const right = b.x + b.w;
+      if (!syms.some((s0) => /^notehead/.test(s0.code) && s0.box.x >= right - 2 && s0.box.x - right <= sp * LOOSE_ACC_GAP && Math.abs(s0.box.y + s0.box.h / 2 - py) <= sp / 4)) continue;
+      merged.add(c.id);
+      syms.push({ box: b, code: m.smufl });
+      ledger.claim(b, `acc:${m.smufl}`);
     }
   }
 
@@ -1520,7 +1636,7 @@ export async function recognizeRasterPage(
     // 被并进升降号的竖段要摘掉（留着会被当成符干或小节线）
     vSegs: extendVSegs(
       nl,
-      [...prims.vSegs.filter((v) => !usedSegs.has(v)), ...stemSegs],
+      [...prims.vSegs.filter((v) => !usedSegs.has(v)), ...stemSegs, ...inkStems],
       Math.round(unit.space * 0.35),
     ),
     syms,
@@ -1531,6 +1647,7 @@ export async function recognizeRasterPage(
 
   findNoteheads(pg);
   findStems(pg);
+  tagLooseStems(pg);
   // 符尾**按位置自举**，不查字典（见 `bootstrapFlags`）
   for (const f of bootstrapFlags(nl, pg, prims.beams, unit)) {
     ledger.claim(f.box, `flag:${f.code}`);
@@ -1541,6 +1658,7 @@ export async function recognizeRasterPage(
   findTails(pg);
   findBarlines(pg);
   const ctx = findClefKeyTime(pg);
+  demoteMidKeys(pg, ctx);
   extendKeyChains(pg, ctx);
   shareKeySignature(ctx);
   makeSystems(pg);
@@ -1554,6 +1672,7 @@ export async function recognizeRasterPage(
   const beams = toBeamShapes(prims.beams);
   const stems: StemInfo[] = [];
   const notes = buildNotes(pg, ctx, beams, stems);
+  attachAccidentalsByPitch(pg, ctx, notes);
   splitUnisons(notes, stems);
   findTuplets(pg, beams, stems, notes);
 
@@ -1593,6 +1712,7 @@ export async function recognizeRasterPage(
     pg.objs.push(...objs);
     // `merge = false`：记号已经按和弦文法切好了，别再按左右相接拼一次
     attachHarmonies(pg, notes, objs, false);
+    liftHarmonies(notes, pg.normalStaffSpace || pg.space);
   }
 
   // ── 歌词 ────────────────────────────────────────────────────────────────
@@ -1871,6 +1991,131 @@ function extendKeyChains(pg: SPage, ctx: Map<Staff, StaffContext>): void {
 }
 
 /**
+ * **和弦挂到同一拍的上声部**。`attachHarmonies` 只按 x 远近挑音，同一拍上下两个声部的头
+ * 横向只差几个像素，谁近谁得；挂到下声部，写出来就排在 `<backup>` 后面，与 GT 的次序对不上
+ *（圣哉三一歌伴奏 m5、m15：头的干一补上、时值一改，和弦就跳到了下声部，和弦档 100% → 86.7%）。
+ * 和弦记号印在谱表上方，归上面那个音：同一谱行、x 差不到半格、位置更高又没挂和弦的音，挪过去。
+ * 只补位图这一路，不动 `staffomr`。
+ */
+function liftHarmonies(notes: StaffNote[], sp: number): void {
+  for (const n of notes) {
+    if (!n.chord || n.rest) continue;
+    let top: StaffNote | null = null;
+    for (const m of notes) {
+      if (m === n || m.rest || m.chord || m.staff !== n.staff || Math.abs(m.x - n.x) >= sp * 0.5) continue;
+      if (m.sym.box.top >= (top ?? n).sym.box.top) continue;
+      top = m;
+    }
+    if (!top) continue;
+    top.chord = n.chord;
+    n.chord = undefined;
+  }
+}
+
+/**
+ * **`findStems` 漏挂的符干**（位图路补，不动 `staffomr`）。那边两道判据在细线扫描件上太紧：
+ *   - 符头边缘离竖段中线要不到**两倍谱线粗**：齐来称颂谱线一两个像素，窗口两像素半，
+ *     符头盒偏出两像素半就挂不上；
+ *   - 头要在竖段**一端**（一格之内）：叠置和弦里靠干尾那个头在中段，单看它判不过。
+ * 这里对没挂标记的竖段，窗口放到 0.2 格，按贴着它的**整组头**判：最上那个头贴上端、或最下那个贴下端，
+ * 且竖段从那组头往外伸出一格半以上（小节线擦过符头时头在它中段，挡得住）；
+ * 或者左右两侧各贴一个头、上下都伸出去（两个声部共线的干，见下）。
+ * 病例齐来称颂末三小节低音的附点二分和弦，干在盒左缘往下伸四格，读成全音符。
+ */
+function tagLooseStems(pg: SPage): void {
+  const sp = pg.normalStaffSpace || pg.space;
+  const heads = pg.symbols.filter((s0) => s0.ownerStaff && (s0.code === "noteheadBlack" || s0.code === "noteheadHalf"));
+  for (const l of pg.segs) {
+    if (!l.isV || l.hasAnyTag()) continue;
+    const on = heads.filter((n) => overlapY(l.box, n.box) && (Math.abs(n.box.left - l.cx) < sp * 0.2 || Math.abs(n.box.right - l.cx) < sp * 0.2));
+    if (!on.length) continue;
+    const top = Math.min(...on.map((n) => (n.box.top + n.box.bottom) / 2));
+    const bottom = Math.max(...on.map((n) => (n.box.top + n.box.bottom) / 2));
+    const upEnd = Math.abs(top - l.top) <= sp && l.bottom - bottom >= sp * 1.5;
+    const downEnd = Math.abs(bottom - l.bottom) <= sp && top - l.top >= sp * 1.5;
+    // 二度错排的两个声部：左边的头朝上的干（贴右缘）与右边的头朝下的干（贴左缘）在同一列，
+    // 连成一根两头都伸出去的竖段，两个头都落在中段（赞美三一真神 m15 的 D4/C4）。
+    // 小节线擦过符头不会左右两侧各贴一个
+    const twoSides =
+      on.some((n) => Math.abs(n.box.right - l.cx) < sp * 0.2) &&
+      on.some((n) => Math.abs(n.box.left - l.cx) < sp * 0.2) &&
+      top - l.top >= sp * 1.5 &&
+      l.bottom - bottom >= sp * 1.5;
+    if (upEnd || downEnd || twoSides) l.addTag("Stem");
+  }
+}
+
+/**
+ * **曲中「转调」其实是临时记号**：`analyzeAccidental` 把紧跟小节线两格内、没挂上符头的升降号
+ * 当成曲中转调的调号。可这本谱的临时记号离符头有 0.6~1.1 格，挂不上（见 `attachAccidentalsByPitch`），
+ * 小节线后第一个音的升号就被当成了调号（齐来称颂 m5 的 D♯4：第一行高音谱表成了四个升号，
+ * 整首音高掉到两成）。这里把**不接在谱号那一串后面**、右边 1.5 格内又有同高符头的调号升降号
+ * 从 `ctx.key` 里摘出来，交给临时记号那一步。标记摘不掉（`staffomr` 不动），挂靠那一步按 `ctx.key` 认。
+ */
+function demoteMidKeys(pg: SPage, ctx: Map<Staff, StaffContext>): void {
+  const sp = pg.normalStaffSpace || pg.space;
+  const heads = pg.symbols.filter((s0) => s0.hasTag("Note"));
+  for (const c of ctx.values()) {
+    if (!c.clef || !c.key.length) continue;
+    let edge = c.clef.box.right;
+    const keep: Sym[] = [];
+    for (const [i, k] of c.key.entries()) {
+      const chained = k.box.left - edge <= sp * (i === 0 ? KEY_GAP_FIRST : KEY_GAP);
+      const right = k.box.right;
+      const owned = heads.some((n) => Math.abs(n.py - k.py) <= sp / 4 && n.box.left >= right - 2 && n.box.left - right <= sp * LOOSE_ACC_GAP);
+      if (!chained && owned) continue;
+      keep.push(k);
+      if (chained) edge = k.box.right;
+    }
+    c.key = keep;
+  }
+}
+
+/** 临时记号离符头最远多少格还算它的（见 `attachAccidentalsByPitch`）。 */
+const LOOSE_ACC_GAP = 1.5;
+/**
+ * 谱中无主块配升降号模板的签名距离上限（见「谱中没人认领的升降还原号」）。
+ * 实测真升号 46~68（齐来称颂 m5、赞美三一真神 m8/m9），误配的最近一个 87（善牧恩慈歌线距 11px
+ * 的一截竖笔），再往上是 102~180 一大片；拍号那一档 180 太松，通用的 90 也挡不住 87。
+ */
+const LOOSE_ACC_DIST = 80;
+
+/**
+ * **临时记号按音高找主人**（位图路整个重分一遍，不动 `staffomr`）。两处不合用：
+ *   - `analyzeAccidental` 要记号右缘到符头左缘不到半格、`buildNotes` 套用时又卡一格之内——
+ *     齐来称颂这本谱实测 0.62~1.13 格（m3 E♯3、m7 D♯4、m13 的 C♮4 与 D♯3），认出来了也挂不上，全按调号读；
+ *   - `buildNotes` 套用只看**盒子上下交叠**，升号盒有三格高，和弦里下面那个音也被盖进去
+ *    （赞美三一真神 m8 F♯3 的升号给了 B2、m9 F♯3 的给了 D3）。
+ * 这里按**同高**（中心差 ≤ 四分之一格；降号盒已收到肚子上）找右边第一个音，间隙放到 1.5 格：
+ * 和弦里错开排的记号（还原号在上、升号在左下）各找各的。调号（`ctx.key`）不参与，重分完重算变音。
+ */
+function attachAccidentalsByPitch(pg: SPage, ctx: Map<Staff, StaffContext>, notes: StaffNote[]): void {
+  const sp = pg.normalStaffSpace || pg.space;
+  const keys = new Set([...ctx.values()].flatMap((c) => c.key));
+  for (const n of notes) n.accidental = null;
+  const taken = new Set<Sym>();
+  for (const a of pg.symbols) {
+    if (!isAccidental(a.code) || keys.has(a)) continue;
+    let best: StaffNote | null = null;
+    let bd = Infinity;
+    for (const n of notes) {
+      if (n.rest || taken.has(n.sym)) continue;
+      if (Math.abs(n.sym.py - a.py) > sp / 4) continue;
+      const gap = n.sym.box.left - a.box.right;
+      if (gap < -2 || gap > sp * LOOSE_ACC_GAP || gap >= bd) continue;
+      best = n;
+      bd = gap;
+    }
+    if (!best) continue;
+    // 同一个头拆出来的同音两声部一起填
+    for (const n of notes) if (n.sym === best.sym) n.accidental = accidentalAlter(a.code);
+    taken.add(best.sym);
+    a.addTag("Accidental");
+  }
+  calcAlters(pg, ctx, notes);
+}
+
+/**
  * **调号不全的谱行照抄同页的**：整首不转调是常态，同页各行调号本该一样。
  * 取**至少两行认得一模一样**的调号里最长的那个，一个都没认出、或只认出同类（全升/全降）
  * 前几个的谱行照它补齐。
@@ -2034,16 +2279,28 @@ function findDots(bin: Binary, syms: RasterSym[], unit: RasterUnit): Rect[] {
       }
     return found;
   };
+  /** 点落在这个头的附点窗口里吗。 */
+  const inWindow = (b: Rect, d: Rect) => {
+    const cx = d.x + d.w / 2;
+    const cy = d.y + d.h / 2;
+    const hy = b.y + b.h / 2;
+    return cx > b.x + b.w + sp * 0.05 && cx < b.x + b.w + sp * 1.3 && cy > hy - sp * 0.85 && cy < hy + sp * 0.35;
+  };
   for (const hd of heads) {
     const b = hd.box;
     const cy = b.y + b.h / 2;
     for (const d of blobsIn(b.x + b.w + sp * 0.05, cy - sp * 0.85, b.x + b.w + sp * 1.3, cy + sp * 0.35)) {
       if (out.some((o) => overlapFrac(o, d) > 0)) continue;
       if (syms.some((s0) => overlapFrac(d, s0.box) > 0.3)) continue;
-      // 反复记号的两点：同一列上下一格处还有一个点
+      // 反复记号的两点：同一列上下一格处还有一个点。
+      // 但**和弦的附点**也是这样上下一格排着：另一个点若落在同列**另一个头**的附点窗口里，
+      // 它就有自己的主人、不是反复记号（齐来称颂 m4/m17~m19、赞美三一真神 m5/m8 的附点二分和弦
+      // 以前全被这条毙掉，读成二分或全音符）
       const dcx = d.x + d.w / 2;
       const dcy = d.y + d.h / 2;
-      const twins = blobsIn(dcx - sp * 0.5, dcy - sp * 1.5, dcx + sp * 0.5, dcy + sp * 1.5).filter((o) => Math.abs(o.y + o.h / 2 - dcy) > sp * 0.6);
+      const twins = blobsIn(dcx - sp * 0.5, dcy - sp * 1.5, dcx + sp * 0.5, dcy + sp * 1.5)
+        .filter((o) => Math.abs(o.y + o.h / 2 - dcy) > sp * 0.6)
+        .filter((o) => !heads.some((h2) => h2 !== hd && h2.box.x < b.x + b.w && h2.box.x + h2.box.w > b.x && inWindow(h2.box, o)));
       if (twins.length) continue;
       out.push(d);
     }
