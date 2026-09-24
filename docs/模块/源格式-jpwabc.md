@@ -17,7 +17,6 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
 | `jianpuInputOfJpw(doc)` | `src/model/jianpuinput.ts` | `ScoreDoc` → 简谱引擎输入（按原文小节；小节中间的 `$` 照原位换行） |
 | `emitJpwabc(doc)` | `src/model/tojpw.ts` | `ScoreDoc` → `.jpwabc` 文本（只写第一声部）。写出端 `writeJpwabc` 只经输入接口读谱 |
 | `TokenData` | `src/jpword/tokens.ts` | 整份文件的行级分词，**仅供语法高亮**（`.Voice` 段复用 `lexVoice`） |
-| `hanconv` | `src/jpword/hanconv.ts` | 简繁转换（只转 `.Title` 字段值与 `.Words` 歌词） |
 
 `.Voice` 正文只是一串平铺的 token（音符、小节线、换行、字符串、拍号、前奏括号），没有嵌套结构，
 所以只有词法、没有语法树；音符内部的拆解在 `fromjpw.ts::readNote` 按 token 文本再做。词法规则见
@@ -55,8 +54,6 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
   整份按 `emitJpwabc` 重出会把写出端装不下的东西（样式、`.Layout` 的分页描述）一并抹掉；
   歌词在 `.Words` 里按小节/音符号锚定、与行结构无关，所以只重切 `.Voice` 的行就够。
   `.Layout` 里按行号记的 `BreakPoints` 跟着行结构作废，重排时去掉（换页改由 `$(true,0,0,true)` 原位表达）。
-- 简繁转换要把非 ASCII 内容字符**抽出拼成整串**再送词表（跨过 `/`、`-`、`()`），否则
-  `日光/之下` 会被拆开导致词汇级转换失效；长度对不上退回逐字转换，绝不错位。
 
 ## 回归
 
@@ -67,6 +64,8 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
 - 装不下和弦、力度、多声部、副标题、曲号（**刻意不扩语法**）
 - `{C:…}` 会污染音符解析；`::`/`:|:` 抛错——两条均语料 0 例，优先级低（R6）
 - 写出端不写房号与反复记号（分遍经 `.Repeat` 表达）
+- `jpwToScoreDoc` 不读 `SubTitle` 与文字型 `Expression`（「热烈欢快地」），多于音符数的歌词音节在 `assignLyrics` 截掉：
+  这些不进模型，谱面不画、简繁转换也不转（语料里 3 首有 `SubTitle`，2 首有多出的歌词行）
 
 ## 词法器
 

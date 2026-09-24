@@ -47,6 +47,7 @@
 | `src/model/phrasedoc.ts` / `src/pu/phrasesong.ts` | 断句输入（MusicXML 形状 / 简谱形状），同一份小节视图也满足演唱顺序的输入 |
 | `src/model/playdoc.ts` / `src/model/playsong.ts` | **演唱顺序**（`PlayData`）、试听输入（`PlaySource`）与 `.jpwabc` 写出端输入：反复、房号、跳转、多段歌词逐段、`Song.playOrder`；推理本体在 `score/playorder.ts`。回归 `playorder-check --cmp` |
 | `src/model/capability.ts` | **格式能力表**：每种格式装得下什么 + `planSave`（另存为会丢什么） |
+| `src/model/hanconv.ts` | **简繁转换**（五种格式通用）：`textGroups` 枚举人读的文字、`convertScoreDoc` 改模型、`convertSourceText` 只改原文里的字；词表加载在 `src/common/hanconv.ts`（opencc-js 按方向动态 import） |
 
 Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli`）。
 
@@ -111,6 +112,15 @@ Node 侧经 `src/cli/j123.ts` → `dist-cli/j123.js` 使用（`npm run build:cli
 - **只给编辑用的原文位置**：`Chord/Sustain/Space.attachedSources`（和弦名、装饰、注记各自的原文）、`Mark.openSource/closeSource`
   （弧的 `(` 与 `)`）、`Part.breakSources`（`$`、`$(…)`、`[fenye]`）。可视化编辑按它们选中、删除挂在音符上的记号与换行符；
   排版、写出端、试听都不读，比对类回归（`pu-scoredoc-check`）要忽略它们。
+- **简繁转换以模型为准**（`model/hanconv.ts`）：
+  - 转什么：`textGroups` 枚举人读的文字（标题、署名、版权、页眉页脚、备注、有排版角色的 meta、声部名、段落词、文字指示、
+    `W:` 行、歌词及其标点）。和弦、调号拍号、字体族、纸张等代码类值不碰——转了会认不出（字体名 `宋体`→`宋體` 就找不到）。
+  - 按什么上下文：头部每个字段一组；歌词同一声部、同一段号（文本谱再按 `lineIndex`）**整首**按元素顺序连成一组，
+    不按系统切，词组跨音节、跨行都能按词转。整串转换后长度变了就逐片、再逐字，仍对不齐的片不动——**逐片等长**，写回才不错位。
+  - 写回原文：有源区间的片在区间内找原文字替换（`.jpwabc` 的 `W1-6:` 复制成几段、共用区间，认作一处）；
+    没有区间的（头部多数字段）在原文里找第一处没被占的原字符串，整串找不到（原文有转义，`.jpwabc` 署名的 `\n`）就按非 ASCII 连续段依次找。
+    改完重新解析、逐片对期望：对不上时只留有区间的编辑，搜来的按片逐个试加，结构不变且对上的片变多才留
+    （误改中文键名之类会被撤回）。原文里不进模型的字（注释、模型丢掉的内容）不转。
 - **`Chord.srcId`（派生模型才有）**：文本格式进五线谱/混排时写成 MusicXML 再读回，元素 id 另编一套；写出时 `<note id="jp<源 id>">`
   （`ToXmlOptions.sourceIds`，只这条内部路径开）、`fromxml` 读回成 `srcId`，五线谱与代码区靠它互相定位。导出文件不带。
 

@@ -33,7 +33,8 @@ import { phraseCuts, type FitMeasure } from "../pu/phrase";
 import { layoutStaff } from "../mixed/layout";
 import { staffChordSpans } from "../mixed/layoutpass";
 import type { JpwMeta, JpwRange } from "../omr/types";
-import { convertJpwabc, detectDirection, type HanDirection } from "../jpword/hanconv";
+import { loadConverter, type HanDirection } from "../common/hanconv";
+import { convertScoreDoc, convertSourceText, detectHanDirection } from "../model/hanconv";
 import { isTauriRuntime, saveBytes } from "./fileio";
 import { DOC_EXT, acceptAttr, is123File, isPuFile } from "../common/filetypes";
 import { formatOf, type DocFormatId, type FormatAdapter, type FormatHost } from "./formats";
@@ -2108,14 +2109,16 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   }
 
   /**
-   * 整篇简繁转换：改写源码文本本身（单个 CodeMirror transaction，Ctrl+Z 可整体撤销）。
-   * dir = "auto" 时按当前文本字形自动判定方向。
+   * 整篇简繁转换（`model/hanconv.ts`，以 ScoreDoc 为准，五种格式通用）。
+   * 文本格式只改原文里文字所在的位置（单个 CodeMirror transaction，Ctrl+Z 可整体撤销）；
+   * `.musicxml` 没有代码区，改模型后整份重写（`editScoreDoc`）。dir = "auto" 时按文字字形自动判定方向。
    */
   async convertHanzi(dir: "auto" | HanDirection): Promise<void> {
-    if (this.mode !== "jp") return;
-    if (!this.adapter.caps.hanConvert) {
-      // convertJpwabc 认的是 .Title/.Words 段结构，文本谱是另一套语法
-      this.setStatus("文本谱暂不支持整篇简繁转换");
+    if (this.mode === "recognize") return;
+    const parse = this._hanParser();
+    const doc = parse ? this._tryParse(parse, this.getText()) : null;
+    if (!parse || !doc) {
+      this.setStatus("谱面解析不出来，无法简繁转换");
       return;
     }
     const btn = this._hanziBtnEl;
@@ -2125,12 +2128,22 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       btn.textContent = "加载中";
     }
     try {
+      const d = dir === "auto" ? detectHanDirection(doc, await loadConverter("t2s")) : dir;
+      const conv = await loadConverter(d);
+      const done = d === "s2t" ? "已转为繁体" : "已转为简体";
+      if (this.docFormat === "musicxml") {
+        this.editScoreDoc((doc) => convertScoreDoc(doc, conv));
+        this.setStatus(done);
+        return;
+      }
       const text = this.getText();
-      const d = dir === "auto" ? await detectDirection(text) : dir;
-      const out = await convertJpwabc(text, d);
-      if (this._origLayoutText) this._origLayoutText = await convertJpwabc(this._origLayoutText, d);
-      if (out !== text) this.setText(out);
-      this.setStatus(d === "s2t" ? "已转为繁体" : "已转为简体");
+      const res = convertSourceText(text, parse, conv);
+      // 乐句重排前的原文（切回原样时用）同样转，解析不出来就留着
+      if (this._origLayoutText && this._tryParse(parse, this._origLayoutText)) {
+        this._origLayoutText = convertSourceText(this._origLayoutText, parse, conv).text;
+      }
+      if (res.text !== text) this.setText(res.text);
+      this.setStatus(res.missed > 0 ? `${done}（${res.missed} 处未能写回原文）` : done);
     } catch (e) {
       console.error("hanzi conversion failed", e);
       this.setStatus("简繁转换失败");
@@ -2139,6 +2152,24 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         btn.disabled = false;
         btn.textContent = label;
       }
+    }
+  }
+
+  /** 简繁转换用的解析：`.jpwabc` 走 `jpwToScoreDoc`，其余用格式自己的 `toScoreDoc`。 */
+  private _hanParser(): ((text: string) => ScoreDoc) | null {
+    if (this.docFormat !== "jpwabc") return this.adapter.toScoreDoc ?? null;
+    return (text) => {
+      const f = JpwFile.fromString(text);
+      if (!f) throw new Error("jpwabc 解析失败");
+      return jpwToScoreDoc(f);
+    };
+  }
+
+  private _tryParse(parse: (text: string) => ScoreDoc, text: string): ScoreDoc | null {
+    try {
+      return parse(text);
+    } catch {
+      return null;
     }
   }
 
