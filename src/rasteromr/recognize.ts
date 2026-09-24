@@ -1181,7 +1181,15 @@ export async function recognizeRasterPage(
     if (best?.code === "timeSig9" && bestNot9 && bestNot9.d - best.d < NINE_MARGIN) best = bestNot9;
     return best && { box: b, code: best.code };
   };
+  // **第二趟：照同页已认出的拍号补缺**（Audiveris `TimeColumn`：一个系统里每行谱的拍号必须同值）。
+  // 缺拍号的那行，允许已被符头那几路认领的块（休止、和弦字母除外）进候选（Audiveris 先认行首段、再找符头；
+  // 我们的顺序反过来，粗体 4/4 一整块被并块拆分那一路拆成两个黑头——《欢然颂主》高音谱表），
+  // 但只认与已认出的拍号**同值、x 对齐**（1.5 格内）的那一对；认中了，盒里的假头随下面「盖过字典」一并删掉。
+  const timeFound: { x: number; codes: string }[] = [];
+  const timeDone = new Set<(typeof groups)[number]>();
+  for (const pass of [0, 1])
   for (const g of groups) {
+    if (timeDone.has(g) || (pass === 1 && !timeFound.length)) continue;
     const left = Math.max(...g.lines.map((l) => l.left));
     const mid = g.lines[2].y;
     const top = g.lines[0].y;
@@ -1192,10 +1200,11 @@ export async function recognizeRasterPage(
     // `csymParensRightTall`（大括号）形状相近，认错了照样要能被拍号盖过。
     const cands = blobs.filter((c) => {
       const b = c.bbox;
-      if (claimed.has(c.id) || merged.has(c.id)) return false;
+      if ((claimed.has(c.id) && !(pass === 1 && !restIds.has(c.id) && !harmonyIds.has(c.id))) || merged.has(c.id)) return false;
       const dc = dictClaimed.has(c.id) ? look.lookup(binSig(nl, b), b.w / unit.space, b.h / unit.space) : null;
       if (dc && (isClef(dc) || isAccidental(dc))) return false;
       if (b.x < left || b.x > left + unit.space * 14) return false;
+      if (pass === 1 && !timeFound.some((t) => Math.abs(t.x - b.x) <= unit.space * 1.5)) return false;
       return b.y + b.h > top - unit.space * 0.5 && b.y < bottom + unit.space * 0.5;
     });
     if (!cands.length) continue;
@@ -1262,6 +1271,7 @@ export async function recognizeRasterPage(
         }
       }
       if (!hits.length) continue;
+      if (pass === 1 && !timeFound.some((t) => t.codes === hits.map((h0) => h0.code).join("/") && Math.abs(t.x - box.x) <= unit.space * 1.5)) continue;
       // 拍号**盖过字典**（与谱号同一条）：落在它盒里的字典结果作废，那是被切开的碎块
       for (let k = syms.length - 1; k >= 0; k--) {
         const s0 = syms[k].box;
@@ -1270,6 +1280,8 @@ export async function recognizeRasterPage(
       syms.push(...hits);
       for (const hit of hits) ledger.claim(hit.box, `time:${hit.code}`);
       for (const id of col.ids) merged.add(id);
+      timeFound.push({ x: box.x, codes: hits.map((h0) => h0.code).join("/") });
+      timeDone.add(g);
       break; // 一行谱只有一个拍号
     }
   }
