@@ -110,22 +110,18 @@ export interface RoleDecl {
   baselineAdjust?: number;
 }
 
-/** 纸张名（`PAPER_SIZES` 的键，「长图」是其中一档）或投影片尺寸。 */
+/** 纸：`.ss` 的 `@page`，键一套（`paper orientation size margin mirror ink background`），各排版器各取所需。 */
 export interface PageDecl {
-  /** 实际纸张（原样档、五线谱/混排）。与 `w`/`h` 二选一：给了 paper 就按纸走；
-   *  `style/paper.ts::CUSTOM_PAPER`（「自定义」）时尺寸在 `w`/`h`（谱里自带的非标准纸）。 */
+  /** 实际纸张（原样档、五线谱/混排）。`style/paper.ts::CUSTOM_PAPER`（「自定义」）时尺寸在 `size`（谱里自带的非标准纸）。 */
   paper?: string;
   /** 纸的方向。缺省竖放；横放 = 宽高对调（`style/paper.ts::resolvePaper`）。 */
   orientation?: "portrait" | "landscape";
-  /** 投影片尺寸（展开档，pt）。 */
-  w?: number;
-  h?: number;
+  /** 尺寸 `宽 高`：展开档的投影片（pt）、自定义纸（pt）、歌本的纸（混排歌本是 tenths，成书是 pt）。 */
+  size?: [number, number];
   /** 前景色（谱面笔画与文字），ARGB。 */
   ink?: number;
   /** 背景色（纸），ARGB。**唯一四档通吃**：它铺的是纸不是谱，排版器不认识它。 */
   background?: number;
-  /** 歌本的纸：`size: 宽 高`（混排歌本是 tenths，成书是 pt）。 */
-  size?: number[];
   /** 页边距：一个数（四边同）或 `上 外 下 内`（成书，配 `mirror`）；编辑器是 `上 右 下 左`（pt）。 */
   margin?: number | number[];
   /** 对开页镜像：奇数页内侧（装订边）在左。 */

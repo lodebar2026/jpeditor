@@ -463,7 +463,7 @@ function paintPage(c: OriginalCtx, page: PlacedPage, pageIndex: number): Group {
   return root;
 }
 
-/** 页脚区域（`original.ss` 的 `song-foot`）。按页宽算右缘，所以 `shiftX` 与 paintHeader 同口径。 */
+/** 页脚区域（`original.ss` 的 `song-foot`）。按页宽算右缘，所以 `shiftX` 与 paintHeader 同口径；字号按 `as 角色` 取（`footerSize`）。 */
 function layoutFooters(c: OriginalCtx, shiftX: number): { page: number; bottom: number; items: TextFrame[] }[] {
   const region = c.doc ? builtinOf(c.doc.dialect).foot : null;
   const placed = c.placed;
@@ -487,7 +487,7 @@ function layoutFooters(c: OriginalCtx, shiftX: number): { page: number; bottom: 
       pageNo: 1,
       content: { left: m.page.margin.left, right: c.pageWidth - m.page.longImageMargin - shiftX },
       dy: low + m.size.lyric,
-      sizeOf: () => m.size.header,
+      sizeOf: (role) => footerSize(m, role),
       measure: (_r, t, size) => font(size).measureText(t),
       fontMetrics: (_r, size) => ({ ascent: -font(size).metrics.ascent, height: size }),
     });
@@ -501,6 +501,13 @@ function layoutFooters(c: OriginalCtx, shiftX: number): { page: number; bottom: 
     out.push({ page: i, bottom: low + m.size.lyric + res.span, items });
   });
   return out;
+}
+
+/** 模板角色 → 字号：原样文档布局的字号在 `JianpuMetrics.size`，角色名与字段同名（`header`、`lyric`、`note`…）。 */
+function footerSize(m: OriginalCtx["metrics"], role: string): number {
+  const v = (m.size as Record<string, number | undefined>)[role];
+  if (typeof v !== "number") throw new Error(`原样文档布局的模板认不出角色 ${role}（可用：${Object.keys(m.size).join(" ")}）`);
+  return v;
 }
 
 /** 头部文字需要的最小页宽（标题居中、词曲右对齐，页面太窄会挤在一起）。 */

@@ -175,7 +175,7 @@ export interface BookLayoutOpts {
 }
 
 /** 目录与索引页的几何（pt，由 stats.ts 从原书目录/索引页实测）。排法仍在 `bookparts.ts::tocPages`，
- *  样式表里写在 `@template toc`（`title-baseline`、`entry { … }`、`index { … }`）。 */
+ *  样式表里写在 `@toc`（键表 `style/keys.ts::TOC_KEYS`）。 */
 export interface TocRule {
   /** 引导点字符。 */
   leader: string;

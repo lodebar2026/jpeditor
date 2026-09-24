@@ -422,10 +422,10 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
 
   /** 展开档的投影片尺寸（`PAGE_RATIOS` 那几张）。 */
   get pageW(): number {
-    return this.styleOf("expanded").page.w ?? PAGE_RATIOS["16:9"][0];
+    return this.styleOf("expanded").page.size?.[0] ?? PAGE_RATIOS["16:9"][0];
   }
   get pageH(): number {
-    return this.styleOf("expanded").page.h ?? PAGE_RATIOS["16:9"][1];
+    return this.styleOf("expanded").page.size?.[1] ?? PAGE_RATIOS["16:9"][1];
   }
   /** 当前档的简谱字号（展开档三个都能调；原样档**只调基础字号**，标题与词曲按出厂比例派生，见 `style/jianpu.ts`）。
    *  排版器、设置面板、帮助示例都只认「当前档」。 */
@@ -557,7 +557,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   }): void {
     const mode = this.layoutMode;
     if (opts.pageW || opts.pageH) {
-      this._setStyle("expanded", undefined, { page: { ...(opts.pageW ? { w: opts.pageW } : {}), ...(opts.pageH ? { h: opts.pageH } : {}) } });
+      this._setStyle("expanded", undefined, { page: { size: [opts.pageW || this.pageW, opts.pageH || this.pageH] } });
     }
     // 原样档的纸要在重排之前定好——排版时按长图灌 continuousPage
     if (opts.jpPaper && isPaper(opts.jpPaper)) this._setStyle("original", "jianpu", { page: { paper: opts.jpPaper } });

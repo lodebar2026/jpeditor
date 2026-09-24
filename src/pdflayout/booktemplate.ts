@@ -4,7 +4,7 @@
 // 无 DOM 依赖（`scripts/rebuild.mjs` 在 Node 侧用）。
 import type { StyleRole } from "../style/sheet";
 import type { ComponentFn, Placed } from "../style/template";
-import type { Expr } from "../style/ss";
+import { parseAvoid } from "../style/ss";
 import type { BookStyle } from "./bookstyle";
 import type { DrawItem } from "./drawlist";
 import { keyMeterItems, textItem, type KeyMeterSpec, type Measure } from "./bookparts";
@@ -12,26 +12,6 @@ import { keyMeterItems, textItem, type KeyMeterSpec, type Measure } from "./book
 /** 模板排出来的东西 → DrawList 图元（文字走 `textItem`，与原先手写的 `put()` 字段顺序一致）。 */
 export function placedToDrawItems(placed: readonly Placed[]): DrawItem[] {
   return placed.map((p) => (p.kind === "raw" ? (p.item as DrawItem) : textItem(p.text, p.role as StyleRole, p.size, p.x, p.y, p.align)));
-}
-
-/** `avoid: chord note gap 1.5 scan 60` → 要让开的角色、净距、只看基线下方多高。 */
-function avoidSpec(e: Expr | undefined): { roles: Set<string>; gap: number; scan: number } | null {
-  if (!e) return null;
-  const items = e.k === "seq" ? e.items : [e];
-  const roles = new Set<string>();
-  let gap = 0;
-  let scan = Infinity;
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i]!;
-    if (it.k !== "id") continue;
-    const nxt = items[i + 1];
-    if ((it.v === "gap" || it.v === "scan") && nxt?.k === "num") {
-      if (it.v === "gap") gap = nxt.v;
-      else scan = nxt.v;
-      i++;
-    } else roles.add(it.v);
-  }
-  return { roles, gap, scan };
 }
 
 /**
@@ -48,8 +28,8 @@ export function keyMeterComponent(style: BookStyle, measure: Measure, km: KeyMet
   return ({ x, y, cell }) => {
     if (!km) return [];
     const items = keyMeterItems(style, km, x, y, measure, size);
-    const av = avoidSpec(cell.props.avoid);
-    if (!av) return items;
+    if (!cell.props.avoid) return items;
+    const av = parseAvoid(cell.props.avoid);
     const boxOf = (it: DrawItem): { x0: number; x1: number; top: number; bot: number } => {
       const x0 = it.t === "rect" ? it.x : it.t === "text" ? (it.xs?.[0] ?? it.box?.x ?? 0) : 0;
       const w = it.t === "rect" ? it.w : it.t === "text" ? measure(it.role, it.text, it.size) : 0;

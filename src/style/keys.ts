@@ -136,3 +136,29 @@ export const BREAK_KEYS: Record<string, KeyDef> = {
 export function keysOfBlock(block: "jianpu" | "staff" | "break"): Record<string, KeyDef> {
   return block === "jianpu" ? JIANPU_KEYS : block === "staff" ? STAFF_KEYS : BREAK_KEYS;
 }
+
+/** `@flow` 的键。`song-start` 归混排歌本（`pdflayout/songbook.ts`），其余是成书的起排位置（→ `BookStyle.titleBlock`）。 */
+export const FLOW_KEYS: Record<string, string | null> = {
+  "song-start": null,
+  "number-baseline": "numberBaseline",
+  "first-system-top": "firstSystemTop",
+  "cont-system-top": "contSystemTop",
+  "mid-start-gap": "midStartGap",
+  "footer-baseline": "footerBaseline",
+};
+
+/** `@toc`：成书目录与索引页的几何（→ `BookStyle.toc`，排法在 `pdflayout/bookparts.ts::tocPages`）。
+ *  混排歌本的目录走模板区域 `@template toc`，不读这一块。`leader` 是字符串，其余是裸数（pt）。 */
+export const TOC_KEYS: Record<string, string> = {
+  "title-baseline": "titleBaseline",
+  "heading-gap-above": "headingGapAbove",
+  "heading-gap-below": "headingGapBelow",
+  leader: "leader",
+  "entry-line-height": "lineGap",
+  "entry-first-baseline": "firstBaseline",
+  "left-edge": "left",
+  "right-edge": "right",
+  "index-columns": "indexColumns",
+  "index-line-height": "indexLineGap",
+  "index-first-baseline": "indexFirstBaseline",
+};

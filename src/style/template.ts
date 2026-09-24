@@ -42,6 +42,8 @@ export interface ComponentCall {
   role: string;
   size: number;
   cell: Cell;
+  /** 同一行里文字格已排出的字（组件格总是排在文字格之后，目录的 `leader()` 靠它找左边文字的右缘）。 */
+  row: readonly PlacedText[];
   env: RegionEnv;
 }
 
@@ -139,7 +141,7 @@ export const FILTERS: Readonly<Record<string, Filter>> = {
   "unescape-newline": map((t) => t.replace(/\\n/g, "\n")),
   "dash-empty": (vals) => vals.filter((v) => v.text.trim() !== "-"),
   /** 去掉括号及其中内容（中英文括号都算），可以有多对。 */
-  "strip-parens": map((t) => {
+  "drop-parens": map((t) => {
     let s = t;
     for (;;) {
       const m = /[(（][^()（）]*[)）]/.exec(s);
@@ -148,13 +150,13 @@ export const FILTERS: Readonly<Record<string, Filter>> = {
     }
   }),
   /** `甲（乙）` → 两行（500 首页眉的分类名）。 */
-  "split-paren": (vals) =>
+  "paren-to-line": (vals) =>
     vals.flatMap((v) => {
       const m = /^(.+?)[（(](.+?)[）)]$/.exec(v.text);
       return m ? [{ ...v, text: m[1]! }, { ...v, text: m[2]! }] : [v];
     }),
-  /** 每项按换行拆成多行，去空白行。 */
-  lines: (vals) =>
+  /** 每项按换行拆成多行，每行去首尾空白，去空白行。 */
+  "lines-trim": (vals) =>
     vals.flatMap((v) =>
       v.text
         .split(/\r?\n/)
@@ -162,7 +164,7 @@ export const FILTERS: Readonly<Record<string, Filter>> = {
         .filter(Boolean)
         .map((text) => ({ ...v, text })),
     ),
-  /** 拆行但保留显式行首缩进；只去行尾空白和空行。 */
+  /** 同 `lines-trim`，但保留显式行首缩进；只去行尾空白和空行。 */
   "lines-indent": (vals) =>
     vals.flatMap((v) =>
       v.text
@@ -272,8 +274,7 @@ export function layoutRegion(region: Region | undefined, env: RegionEnv): Region
       const top = evalNum(row.props.top, env);
       const rowTop = base !== undefined ? dy : top !== undefined ? dy + top : cursor + (content > 0 ? gap : 0);
       let rowH = 0;
-      for (const cell of row.cells) {
-        const got = layoutBlockCell(region, cell, rowTop, base, left, right, odd, env);
+      for (const got of inRowOrder(row.cells, (cell, texts) => layoutBlockCell(region, cell, rowTop, base, left, right, odd, env, texts))) {
         items.push(...got.items);
         rowH = Math.max(rowH, got.height);
       }
@@ -294,8 +295,7 @@ export function layoutRegion(region: Region | undefined, env: RegionEnv): Region
     const rowY = base + dy;
     let rowLast = rowY;
     let any = false;
-    for (const cell of row.cells) {
-      const got = layoutCell(cell, rowY, left, right, odd, env);
+    for (const got of inRowOrder(row.cells, (cell, texts) => layoutCell(cell, rowY, left, right, odd, env, texts))) {
       if (got.items.length) any = true;
       items.push(...got.items);
       rowLast = Math.max(rowLast, got.lastY);
@@ -305,6 +305,22 @@ export function layoutRegion(region: Region | undefined, env: RegionEnv): Region
     lastY = rowLast;
   }
   return { items, span: firstY === undefined || lastY === undefined ? 0 : lastY - firstY };
+}
+
+/** 一行里的格：先排文字格、再排组件格（组件拿得到同行文字），结果仍按格的书写顺序返回。 */
+function inRowOrder<T extends { items: Placed[] }>(cells: readonly Cell[], lay: (cell: Cell, texts: readonly PlacedText[]) => T): T[] {
+  const isComponent = (c: Cell): boolean => c.lines.some((l) => l.content.kind === "component");
+  const out: T[] = new Array<T>(cells.length);
+  const texts: PlacedText[] = [];
+  cells.forEach((c, i) => {
+    if (isComponent(c)) return;
+    out[i] = lay(c, texts);
+    for (const p of out[i]!.items) if (p.kind === "text") texts.push(p);
+  });
+  cells.forEach((c, i) => {
+    if (isComponent(c)) out[i] = lay(c, texts);
+  });
+  return out;
 }
 
 /** `extent` 里的 `content` 换成内容高再求值。 */
@@ -343,6 +359,7 @@ function layoutBlockCell(
   right: number,
   odd: boolean,
   env: RegionEnv,
+  rowTexts: readonly PlacedText[],
 ): { items: Placed[]; height: number } {
   const items: Placed[] = [];
   const { align, edge } = slotEdge(cell.slot, left, right, odd);
@@ -358,7 +375,7 @@ function layoutBlockCell(
       const fn = env.components?.[line.content.name];
       if (!fn) throw new Error(`模板用了组件 ${line.content.name}()，调用方没给实现`);
       const cy = y ?? (base !== undefined ? rowTop + base : rowTop);
-      for (const it of fn({ args: line.content.args, x, y: cy, role, size, cell, env })) items.push({ kind: "raw", item: it });
+      for (const it of fn({ args: line.content.args, x, y: cy, role, size, cell, row: rowTexts, env })) items.push({ kind: "raw", item: it });
       continue;
     }
     const texts = expandText(line.content.parts, env).flatMap((t) => t.split("\n"));
@@ -377,7 +394,7 @@ function layoutBlockCell(
   return { items, height };
 }
 
-function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: boolean, env: RegionEnv): { items: Placed[]; lastY: number } {
+function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: boolean, env: RegionEnv, texts: readonly PlacedText[]): { items: Placed[]; lastY: number } {
   const items: Placed[] = [];
   const { align, edge } = slotEdge(cell.slot, left, right, odd);
   const cdx = cell.props.dx;
@@ -393,7 +410,7 @@ function layoutCell(cell: Cell, rowY: number, left: number, right: number, odd: 
     if (line.content.kind === "component") {
       const fn = env.components?.[line.content.name];
       if (!fn) throw new Error(`模板用了组件 ${line.content.name}()，调用方没给实现`);
-      for (const it of fn({ args: line.content.args, x, y: y0, role, size, cell, env })) items.push({ kind: "raw", item: it });
+      for (const it of fn({ args: line.content.args, x, y: y0, role, size, cell, row: texts, env })) items.push({ kind: "raw", item: it });
       continue;
     }
     for (const text of expandText(line.content.parts, env)) {

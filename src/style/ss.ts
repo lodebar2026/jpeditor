@@ -5,8 +5,9 @@
 //
 // 无 DOM 依赖（Node CLI 与浏览器两侧都要 import）。
 import type { StyleContext, StyleRule } from "./cascade";
-import { keysOfBlock } from "./keys";
+import { FLOW_KEYS, TOC_KEYS, keysOfBlock } from "./keys";
 import { STYLE_ROLES, TEMPLATE_ROLES, type DeepPartial, type FontRef, type StyleSheet } from "./sheet";
+import { FILTERS } from "./template";
 
 // ───────────────────────── AST ─────────────────────────
 
@@ -53,16 +54,25 @@ export interface Row {
 export interface Region {
   props: Record<string, Expr>;
   rows: Row[];
-  /** 目录的 `entry { … }` 这类具名子块 */
-  blocks?: Record<string, Region>;
 }
 
-export type RegionName = "song-head" | "song-foot" | "page-header" | "page-footer" | "toc";
+export const REGION_NAMES = ["song-head", "song-foot", "page-header", "page-footer", "toc"] as const;
+export type RegionName = (typeof REGION_NAMES)[number];
+
+/** 区域、行、格认得的属性（消费端是 `template.ts::layoutRegion` 与各调用方）。认不出的解析期就报 `行:列`。 */
+const REGION_PROPS = new Set(["flow", "align-x", "inset", "display", "line-height", "extent", "gap-after"]);
+/** `step`/`repeat`：按条目重复的行（目录，`pdflayout/songbook.ts::tocPages`）。 */
+const ROW_PROPS = new Set(["baseline", "top", "gap-before", "step", "repeat"]);
+const CELL_PROPS = new Set(["content", "role", "at", "dx", "dy", "line-height", "avoid"]);
+/** 模板组件：实现由调用方经 `RegionEnv.components` 注入。 */
+const COMPONENTS = new Set(["key-meter", "leader"]);
 
 /** `StyleSheet.template`：模板区域、装页、具名字体。 */
 export interface TemplateSheet {
   regions?: Partial<Record<string, Region>>;
   flow?: Record<string, Expr>;
+  /** `@toc` 成书目录几何（键见 `keys.ts::TOC_KEYS`）。 */
+  toc?: Record<string, Expr>;
   /** `@font-face` 具名字体，解析期就归一化成 `FontRef`（角色的 `font:` 引它）。 */
   fonts?: Record<string, FontRef>;
 }
@@ -211,6 +221,9 @@ const KNOWN_ROLES = new Set<string>([...STYLE_ROLES, ...TEMPLATE_ROLES]);
 /** `@font-face` 认得的属性（`FontRef`）。 */
 const FONT_FACE_PROPS = new Set(["family", "file", "face", "mode", "bold"]);
 
+/** `@page` 认得的属性（`PageDecl`）。 */
+const PAGE_PROPS = new Set(["paper", "orientation", "size", "margin", "mirror", "ink", "background"]);
+
 /** `@media` 认得的维度（`StyleContext`）。 */
 const MEDIA_DIMS = new Set(["mode", "engine", "paged", "page", "verse"]);
 
@@ -267,29 +280,45 @@ class Parser {
   private atRule(when: StyleContext): void {
     const at = this.next() as Extract<Tok, { t: "at" }>;
     switch (at.v) {
-      case "flow":
-        this.push(when, { template: { flow: this.declBlock() } });
+      case "flow": {
+        const pos: Positions = {};
+        const decls = this.declBlock(pos);
+        for (const k of Object.keys(decls)) if (!(k in FLOW_KEYS)) this.fail(`@flow 认不出的键 ${k}（键名见 src/style/keys.ts::FLOW_KEYS）`, pos[k]);
+        this.push(when, { template: { flow: decls } });
         return;
+      }
+      case "toc": {
+        const pos: Positions = {};
+        const decls = this.declBlock(pos);
+        for (const k of Object.keys(decls)) if (!(k in TOC_KEYS)) this.fail(`@toc 认不出的键 ${k}（键名见 src/style/keys.ts::TOC_KEYS）`, pos[k]);
+        this.push(when, { template: { toc: decls } });
+        return;
+      }
       case "font-face": {
         const name = this.expectId();
-        const decls = this.declBlock();
+        const pos: Positions = {};
+        const decls = this.declBlock(pos);
         const face: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(decls)) {
-          if (!FONT_FACE_PROPS.has(k)) this.fail(`@font-face 认不出属性 ${k}`, at);
+          if (!FONT_FACE_PROPS.has(k)) this.fail(`@font-face 认不出属性 ${k}`, pos[k]);
           face[k] = exprValue(v);
         }
         if (typeof face.family !== "string") this.fail(`@font-face ${name} 缺 family`, at);
         this.push(when, { template: { fonts: { [name]: face as unknown as FontRef } } });
         return;
       }
-      case "page":
-        this.push(when, { page: pageDecl(this.declBlock()) as DeepPartial<StyleSheet>["page"] });
+      case "page": {
+        const pos: Positions = {};
+        const decls = this.declBlock(pos);
+        this.push(when, { page: this.pageDecl(decls, pos) as DeepPartial<StyleSheet>["page"] });
         return;
+      }
       case "jianpu":
       case "staff":
       case "break": {
         const table = keysOfBlock(at.v);
-        const decls = this.declBlock();
+        const pos: Positions = {};
+        const decls = this.declBlock(pos);
         const blk: Record<string, unknown> = {};
         const overrides: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(decls)) {
@@ -297,7 +326,7 @@ class Parser {
             blk.preset = exprWord(v);
             continue;
           }
-          if (!table[k]) this.fail(`@${at.v} 认不出的键 ${k}（键名见 src/style/keys.ts；字体写在角色上，如 note { font: hei }）`, at);
+          if (!table[k]) this.fail(`@${at.v} 认不出的键 ${k}（键名见 src/style/keys.ts；字体写在角色上，如 note { font: hei }）`, pos[k]);
           overrides[k] = exprLength(v);
         }
         if (Object.keys(overrides).length) blk.overrides = overrides;
@@ -308,7 +337,9 @@ class Parser {
         this.fail("`@pu` 已删：原样文档布局也读 `@jianpu`（键表里的 original 一列）", at);
         break;
       case "template": {
+        const nameTok = this.peek();
         const name = this.expectId();
+        if (!(REGION_NAMES as readonly string[]).includes(name)) this.fail(`认不出的模板区域 ${name}（区域：${REGION_NAMES.join(" ")}）`, nameTok);
         this.push(when, { template: { regions: { [name]: this.regionBlock() } } } as DeepPartial<StyleSheet>);
         return;
       }
@@ -365,7 +396,8 @@ class Parser {
     for (const role of roles) this.push(when, { roles: { [role]: roleDecl(decls) } } as DeepPartial<StyleSheet>);
   }
 
-  private declBlock(): Record<string, Expr> {
+  /** `{ 名: 值; … }`。`pos` 给了就记下每个名字的位置（白名单报错用）。 */
+  private declBlock(pos?: Positions): Record<string, Expr> {
     this.expectP("{");
     const out: Record<string, Expr> = {};
     while (!this.isP("}")) {
@@ -373,6 +405,7 @@ class Parser {
         this.next();
         continue;
       }
+      if (pos) pos[this.peek().v] = this.peek();
       const name = this.expectId();
       this.expectP(":");
       out[name] = this.exprList(() => this.isP(";") || this.isP("}"));
@@ -382,7 +415,7 @@ class Parser {
     return out;
   }
 
-  /** `@template` 体：属性声明、`row(…) { … }`、具名子块 `entry { … }`、槽位（区域级直接写槽位 = 一行）。 */
+  /** `@template` 体：区域属性与 `row(…) { … }`。槽位只能写在 row 里。 */
   private regionBlock(): Region {
     this.expectP("{");
     const reg: Region = { props: {}, rows: [] };
@@ -398,11 +431,8 @@ class Parser {
         reg.rows.push(this.rowBlock());
         continue;
       }
-      if (this.peek(1).t === "p" && this.peek(1).v === "{") {
-        const name = this.expectId();
-        (reg.blocks ??= {})[name] = this.subRegion();
-        continue;
-      }
+      if ((SLOTS as readonly string[]).includes(t.v)) this.fail(`槽位 ${t.v} 要写在 row { } 里`);
+      if (!REGION_PROPS.has(t.v)) this.fail(`模板区域认不出属性 ${t.v}（区域属性：${[...REGION_PROPS].join(" ")}）`);
       const name = this.expectId();
       this.expectP(":");
       reg.props[name] = this.exprList(() => this.isP(";") || this.isP("}"));
@@ -412,18 +442,14 @@ class Parser {
     return reg;
   }
 
-  /** 具名子块（目录的 `entry`）：槽位写法同 row，其余是属性。 */
-  private subRegion(): Region {
-    const row = this.rowBody();
-    return { props: row.props, rows: row.cells.length ? [{ props: {}, cells: row.cells }] : [] };
-  }
-
   private rowBlock(): Row {
     const props: Record<string, Expr> = {};
     if (this.isP("(")) {
       this.next();
       while (!this.isP(")")) {
+        const nameTok = this.peek();
         const name = this.expectId();
+        if (!ROW_PROPS.has(name)) this.fail(`row 认不出属性 ${name}（行属性：${[...ROW_PROPS].join(" ")}）`, nameTok);
         this.expectP(":");
         props[name] = this.exprList(() => this.isP(";") || this.isP(")"));
         if (this.isP(";")) this.next();
@@ -442,44 +468,45 @@ class Parser {
         this.next();
         continue;
       }
+      const nameTok = this.peek();
       const name = this.expectId();
       const slot = (SLOTS as readonly string[]).includes(name) ? (name as Slot) : null;
       if (slot && this.isP("{")) {
-        const decls = this.declBlock();
+        const pos: Positions = {};
+        const decls = this.declBlock(pos);
         const cell: Cell = { slot, lines: [], props: {} };
         let role: string | undefined;
         let at: Expr | undefined;
         for (const [k, v] of Object.entries(decls)) {
+          if (!CELL_PROPS.has(k)) this.fail(`槽位认不出属性 ${k}（格属性：${[...CELL_PROPS].join(" ")}）`, pos[k]);
           if (k === "content") continue;
-          if (k === "role") role = exprWord(v);
+          if (k === "role") role = this.roleName(exprWord(v), pos[k]!);
           else if (k === "at") at = v;
-          else cell.props[k] = v;
+          else {
+            if (k === "avoid") parseAvoid(v, pos[k]);
+            cell.props[k] = v;
+          }
         }
         const content = decls.content;
-        if (!content) this.fail(`槽位 ${slot} 的块里要写 content`);
+        if (!content) this.fail(`槽位 ${slot} 的块里要写 content`, nameTok);
         const items = content.k === "list" ? content.items : [content];
-        for (const it of items) {
-          const line = this.lineOf(it);
-          if (role !== undefined && line.role === undefined) line.role = role;
-          if (at !== undefined && line.at === undefined) line.at = at;
-          cell.lines.push(line);
-        }
+        cell.lines = items.map((it) => this.lineOf(it, pos.content!));
+        // `role:` 相当于写在最后一行之后的 `as`，同样往前继承
+        inheritRole(cell.lines, role);
+        for (const line of cell.lines) if (at !== undefined && line.at === undefined) line.at = at;
+        cell.lines = cell.lines.map(canonLine);
         row.cells.push(cell);
         continue;
       }
+      if (!slot && !ROW_PROPS.has(name)) this.fail(`row 里要槽位（${SLOTS.join(" ")}）或行属性，却是 ${name}`, nameTok);
       this.expectP(":");
       const v = this.exprList(() => this.isP(";") || this.isP("}"));
       if (this.isP(";")) this.next();
       if (slot) {
         const items = v.k === "list" ? v.items : [v];
-        const lines = items.map((it) => this.lineOf(it));
-        // `as` 写在最后一行时往前继承（`left: "a", "b" as credit;`）
-        let last: string | undefined;
-        for (let k = lines.length - 1; k >= 0; k--) {
-          if (lines[k]!.role !== undefined) last = lines[k]!.role;
-          else if (last !== undefined) lines[k]!.role = last;
-        }
-        row.cells.push({ slot, lines, props: {} });
+        const lines = items.map((it) => this.lineOf(it, nameTok));
+        inheritRole(lines, undefined);
+        row.cells.push({ slot, lines: lines.map(canonLine), props: {} });
       } else {
         row.props[name] = v;
       }
@@ -489,15 +516,18 @@ class Parser {
   }
 
   /** 槽位里的一行：`内容 [as 角色] [at 表达式]`。 */
-  private lineOf(e: Expr): CellLine {
+  private lineOf(e: Expr, tok: Tok): CellLine {
     const items = e.k === "seq" ? e.items : [e];
     const head = items[0];
-    if (!head) this.fail("槽位里是空的");
-    const line: CellLine = { content: contentOf(head, this.peek()) };
+    if (!head) this.fail("槽位里是空的", tok);
+    const line: CellLine = { content: contentOf(head, tok) };
+    if (line.content.kind === "component" && !COMPONENTS.has(line.content.name)) {
+      this.fail(`认不出的组件 ${line.content.name}()（组件：${[...COMPONENTS].join(" ")}）`, tok);
+    }
     for (let k = 1; k < items.length; k++) {
       const w = items[k]!;
       if (w.k === "id" && w.v === "as" && items[k + 1]?.k === "id") {
-        line.role = (items[k + 1] as { v: string }).v;
+        line.role = this.roleName((items[k + 1] as { v: string }).v, tok);
         k++;
       } else if (w.k === "id" && w.v === "at" && items[k + 1]) {
         // `at` 后面到下一个关键字为止是表达式
@@ -505,10 +535,49 @@ class Parser {
         while (items[k + 1] && !(items[k + 1]!.k === "id" && ["as", "at"].includes((items[k + 1] as { v: string }).v))) rest.push(items[++k]!);
         line.at = rest.length === 1 ? rest[0]! : { k: "seq", items: rest };
       } else {
-        this.fail("槽位里的一行只能写 `内容 [as 角色] [at 位置]`");
+        this.fail("槽位里的一行只能写 `内容 [as 角色] [at 位置]`", tok);
       }
     }
     return line;
+  }
+
+  private roleName(role: string, tok: Tok): string {
+    if (!KNOWN_ROLES.has(role)) this.fail(`认不出的角色 ${role}（角色表见 src/style/sheet.ts::STYLE_ROLES / TEMPLATE_ROLES）`, tok);
+    return role;
+  }
+
+  /** `@page` 声明 → `PageDecl`：键白名单，值的形状在这里查。 */
+  private pageDecl(decls: Record<string, Expr>, pos: Positions): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(decls)) {
+      const where = pos[k];
+      if (!PAGE_PROPS.has(k)) this.fail(`@page 认不出属性 ${k}（属性：${[...PAGE_PROPS].join(" ")}）`, where);
+      const val = exprValue(v);
+      const nums = (x: unknown): x is number[] => Array.isArray(x) && x.every((n) => typeof n === "number");
+      switch (k) {
+        case "size":
+          if (!nums(val) || val.length !== 2) this.fail("@page size 要写两个数：宽 高", where);
+          break;
+        case "margin":
+          if (typeof val !== "number" && !(nums(val) && val.length === 4)) this.fail("@page margin 要写一个数或四个数", where);
+          break;
+        case "mirror":
+          if (typeof val !== "boolean") this.fail("@page mirror 只收 true / false", where);
+          break;
+        case "orientation":
+          if (val !== "portrait" && val !== "landscape") this.fail("@page orientation 只收 portrait / landscape", where);
+          break;
+        case "ink":
+        case "background":
+          if (typeof val !== "number") this.fail(`@page ${k} 要写颜色 #rrggbb / #aarrggbb`, where);
+          break;
+        case "paper":
+          if (typeof val !== "string") this.fail("@page paper 要写纸名", where);
+          break;
+      }
+      out[k] = val;
+    }
+    return out;
   }
 
   // —— 表达式 ——
@@ -600,6 +669,60 @@ class Parser {
   }
 }
 
+type Positions = Record<string, Tok>;
+
+/** 没写 `as` 的行取本槽位**其后**最近的 `as`；其后都没有就取 `fallback`（块写法的 `role:`）。 */
+function inheritRole(lines: CellLine[], fallback: string | undefined): void {
+  let next = fallback;
+  for (let k = lines.length - 1; k >= 0; k--) {
+    if (lines[k]!.role !== undefined) next = lines[k]!.role;
+    else if (next !== undefined) lines[k]!.role = next;
+  }
+}
+
+/** 字段顺序固定（content → role → at），写法不同、意思相同的两份解析结果逐字节一致。 */
+function canonLine(l: CellLine): CellLine {
+  const out: CellLine = { content: l.content };
+  if (l.role !== undefined) out.role = l.role;
+  if (l.at !== undefined) out.at = l.at;
+  return out;
+}
+
+/** `avoid: chord note gap 1.5 scan 60` 的形状：要让开的角色、净距（`gap`）、只看基线下方多高（`scan`）。 */
+export interface AvoidSpec {
+  roles: Set<string>;
+  gap: number;
+  scan: number;
+}
+
+/** 解开 `avoid`。解析期用它校验（给 `tok` 就报 `行:列`），`pdflayout/booktemplate.ts` 排版时用它取值。 */
+export function parseAvoid(e: Expr, tok?: { line: number; col: number }): AvoidSpec {
+  const bad = (msg: string): never => {
+    throw new SsError(`avoid ${msg}（写法：avoid: 角色… [gap 数] [scan 数]）`, tok?.line ?? 0, tok?.col ?? 0);
+  };
+  const items = e.k === "seq" ? e.items : [e];
+  const roles = new Set<string>();
+  let gap = 0;
+  let scan = Infinity;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]!;
+    if (it.k !== "id") bad(`里认不出 ${printExpr(it)}`);
+    const v = (it as { v: string }).v;
+    if (v === "gap" || v === "scan") {
+      const nxt = items[i + 1];
+      if (nxt?.k !== "num") bad(`的 ${v} 后面要跟数`);
+      if (v === "gap") gap = (nxt as { v: number }).v;
+      else scan = (nxt as { v: number }).v;
+      i++;
+    } else {
+      if (!KNOWN_ROLES.has(v)) bad(`里认不出角色 ${v}`);
+      roles.add(v);
+    }
+  }
+  if (roles.size === 0) bad("至少写一个角色");
+  return { roles, gap, scan };
+}
+
 function tokLen(t: Tok): number {
   switch (t.t) {
     case "str":
@@ -645,7 +768,7 @@ export function parseInterp(s: string, tok?: { line: number; col: number }): Tex
       lit = "";
       const [path, ...fs] = s.slice(i + 1, end).split("|").map((x) => x.trim());
       const filters = fs.filter(Boolean).map((f) => {
-        if (!/^[a-z][a-z0-9-]*$/.test(f)) throw new SsError(`认不出的过滤器 ${f}`, tok?.line ?? 0, tok?.col ?? 0);
+        if (!Object.prototype.hasOwnProperty.call(FILTERS, f)) throw new SsError(`认不出的过滤器 ${f}（过滤器：${Object.keys(FILTERS).join(" ")}）`, tok?.line ?? 0, tok?.col ?? 0);
         return f;
       });
       parts.push({ path: path!, filters });
@@ -712,11 +835,6 @@ function roleDecl(decls: Record<string, Expr>): Record<string, unknown> {
   return out;
 }
 
-function pageDecl(decls: Record<string, Expr>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(decls)) out[k] = exprValue(v);
-  return out;
-}
 
 
 // ───────────────────────── 入口 ─────────────────────────
@@ -799,27 +917,27 @@ function printRegionBody(reg: Region, ind: string): string[] {
     for (const cell of row.cells) L.push(...printCell(cell, ind + "  "));
     L.push(`${ind}}`);
   }
-  for (const [name, b] of Object.entries(reg.blocks ?? {})) {
-    L.push(`${ind}${name} {`);
-    L.push(...printDecls(b.props, ind + "  "));
-    for (const row of b.rows) for (const cell of row.cells) L.push(...printCell(cell, ind + "  "));
-    L.push(`${ind}}`);
-  }
   return L;
 }
 
+function printLine(l: CellLine, role: boolean, at: boolean): string {
+  return `${printContent(l.content)}${role && l.role ? ` as ${l.role}` : ""}${at && l.at ? ` at ${printExpr(l.at)}` : ""}`;
+}
+
+/** 块形式里全格一致的 role / at 写成 `role:` / `at:`，逐行不同的写在各行上（`内容 as 角色 at 位置`）。 */
 function printCell(cell: Cell, ind: string): string[] {
   const simple = Object.keys(cell.props).length === 0;
-  if (simple) {
-    const lines = cell.lines.map((l) => `${printContent(l.content)}${l.role ? ` as ${l.role}` : ""}${l.at ? ` at ${printExpr(l.at)}` : ""}`);
-    return [`${ind}${cell.slot}: ${lines.join(", ")};`];
-  }
+  if (simple) return [`${ind}${cell.slot}: ${cell.lines.map((l) => printLine(l, true, true)).join(", ")};`];
+  const same = (f: (l: CellLine) => string | undefined): string | undefined => {
+    const v = cell.lines[0] ? f(cell.lines[0]) : undefined;
+    return v !== undefined && cell.lines.every((l) => f(l) === v) ? v : undefined;
+  };
+  const role = same((l) => l.role);
+  const atStr = same((l) => (l.at ? printExpr(l.at) : undefined));
   const L = [`${ind}${cell.slot} {`];
-  L.push(`${ind}  content: ${cell.lines.map((l) => printContent(l.content)).join(", ")};`);
-  const role = cell.lines[0]?.role;
+  L.push(`${ind}  content: ${cell.lines.map((l) => printLine(l, role === undefined, atStr === undefined)).join(", ")};`);
   if (role) L.push(`${ind}  role: ${role};`);
-  const at = cell.lines[0]?.at;
-  if (at) L.push(`${ind}  at: ${printExpr(at)};`);
+  if (atStr) L.push(`${ind}  at: ${atStr};`);
   L.push(...printDecls(cell.props, ind + "  "));
   L.push(`${ind}}`);
   return L;
@@ -859,6 +977,7 @@ function printSet(set: DeepPartial<StyleSheet>, ind: string): string[] {
     L.push(`${ind}@template ${name} {`, ...printRegionBody(reg as Region, ind + "  "), `${ind}}`);
   }
   if (tpl?.flow) L.push(`${ind}@flow {`, ...printDecls(tpl.flow, ind + "  "), `${ind}}`);
+  if (tpl?.toc) L.push(`${ind}@toc {`, ...printDecls(tpl.toc, ind + "  "), `${ind}}`);
   return L;
 }
 

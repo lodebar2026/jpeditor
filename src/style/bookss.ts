@@ -10,7 +10,7 @@
 //   roles               角色 { font; size; align-mode; baseline-adjust; color }
 //   metrics / layout    @jianpu 与 @break 的逻辑键（style/keys.ts 的 book 一列）
 //   titleBlock          @flow { number-baseline; first-system-top; cont-system-top; mid-start-gap; footer-baseline }
-//   toc                 @template toc { title-baseline; heading-gap-above/below; entry { … } index { … } }
+//   toc                 @toc { title-baseline; heading-gap-above/below; leader; entry-*; left-edge; right-edge; index-* }
 //
 // **数值原样进出**：`*Em` 字段在样式表里写 `em` 单位，读回时只剥单位、不乘字号；文本 ↔ double
 // 用的是 `String(number)` / `Number(raw)`，两边逐位还原。**不补默认值**：样式表没写的字段就不出现，
@@ -19,36 +19,11 @@
 // 无 DOM 依赖。
 import type { BookStyle, RoleStyle } from "../pdflayout/bookstyle";
 import type { Expr } from "./ss";
-import { BREAK_KEYS, JIANPU_KEYS, type KeyDef } from "./keys";
+import { BREAK_KEYS, FLOW_KEYS, JIANPU_KEYS, TOC_KEYS, type KeyDef } from "./keys";
 import { STYLE_ROLES, type AlignMode, type StyleRole, type StyleSheet } from "./sheet";
 
-/** `@flow` 键 → `titleBlock` 字段。 */
-const FLOW_KEYS: Record<string, keyof BookStyle["titleBlock"]> = {
-  "number-baseline": "numberBaseline",
-  "first-system-top": "firstSystemTop",
-  "cont-system-top": "contSystemTop",
-  "mid-start-gap": "midStartGap",
-  "footer-baseline": "footerBaseline",
-};
-
-/** `@template toc` 的属性 → `toc` 字段。区域上一层、`entry { }`、`index { }` 三处。 */
-const TOC_REGION: Record<string, keyof BookStyle["toc"]> = {
-  "title-baseline": "titleBaseline",
-  "heading-gap-above": "headingGapAbove",
-  "heading-gap-below": "headingGapBelow",
-};
-const TOC_ENTRY: Record<string, keyof BookStyle["toc"]> = {
-  leader: "leader",
-  "line-height": "lineGap",
-  "first-baseline": "firstBaseline",
-  "left-edge": "left",
-  "right-edge": "right",
-};
-const TOC_INDEX: Record<string, keyof BookStyle["toc"]> = {
-  columns: "indexColumns",
-  "line-height": "indexLineGap",
-  "first-baseline": "indexFirstBaseline",
-};
+/** `@flow` 里成书读的键 → `titleBlock` 字段（`song-start` 归混排歌本）。 */
+const TITLE_BLOCK_KEYS = Object.entries(FLOW_KEYS).filter((e): e is [string, string] => e[1] !== null);
 
 const bookKeys = (table: Record<string, KeyDef>): [string, KeyDef][] => Object.entries(table).filter(([, d]) => d.book);
 
@@ -99,17 +74,10 @@ export function bookStyleOf(sheet: StyleSheet, id: string): BookStyle {
   out.layout = layout;
 
   const toc: Record<string, unknown> = {};
-  const region = sheet.template?.regions?.toc;
-  const pick = (props: Record<string, Expr> | undefined, table: Record<string, string>, where: string) => {
-    for (const [k, e] of Object.entries(props ?? {})) {
-      const field = table[k];
-      if (!field) continue; // 目录区域的其他属性（混排歌本的 title 等）归模板排版
-      toc[field] = field === "leader" ? exprText(e, `${where} ${k}`) : exprNumber(e, `${where} ${k}`);
-    }
-  };
-  pick(region?.props, TOC_REGION, "@template toc");
-  pick(region?.blocks?.entry?.props, TOC_ENTRY, "@template toc entry");
-  pick(region?.blocks?.index?.props, TOC_INDEX, "@template toc index");
+  for (const [k, e] of Object.entries(sheet.template?.toc ?? {})) {
+    const field = TOC_KEYS[k]!;
+    toc[field] = field === "leader" ? exprText(e, `@toc ${k}`) : exprNumber(e, `@toc ${k}`);
+  }
   out.toc = toc;
 
   const titleBlock: Record<string, unknown> = {};
@@ -214,22 +182,13 @@ export function printBookSs(style: BookStyle): string {
   block("break", BREAK_KEYS);
 
   const tb = style.titleBlock as unknown as Record<string, number | undefined>;
-  const flow = Object.entries(FLOW_KEYS).filter(([, f]) => tb[f] !== undefined).map(([k, f]) => `${k}: ${num(tb[f]!, `titleBlock.${f}`)};`);
+  const flow = TITLE_BLOCK_KEYS.filter(([, f]) => tb[f] !== undefined).map(([k, f]) => `${k}: ${num(tb[f]!, `titleBlock.${f}`)};`);
   if (flow.length) L.push(`@flow { ${flow.join(" ")} }`, "");
 
   const toc = style.toc as unknown as Record<string, number | string | undefined>;
-  const props = (table: Record<string, string>) =>
-    Object.entries(table)
-      .filter(([, f]) => toc[f] !== undefined)
-      .map(([k, f]) => `${k}: ${typeof toc[f] === "string" ? str(toc[f] as string) : num(toc[f] as number, `toc.${f}`)};`);
-  const region = props(TOC_REGION);
-  const entry = props(TOC_ENTRY);
-  const index = props(TOC_INDEX);
-  if (region.length || entry.length || index.length) {
-    L.push("@template toc {", ...region.map((x) => `  ${x}`));
-    if (entry.length) L.push(`  entry { ${entry.join(" ")} }`);
-    if (index.length) L.push(`  index { ${index.join(" ")} }`);
-    L.push("}", "");
-  }
+  const tocBody = Object.entries(TOC_KEYS)
+    .filter(([, f]) => toc[f] !== undefined)
+    .map(([k, f]) => `${k}: ${typeof toc[f] === "string" ? str(toc[f] as string) : num(toc[f] as number, `toc.${f}`)};`);
+  if (tocBody.length) L.push(`@toc { ${tocBody.join(" ")} }`, "");
   return L.join("\n");
 }

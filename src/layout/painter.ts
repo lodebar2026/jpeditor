@@ -256,8 +256,8 @@ export class ScorePainter {
     let h: number;
     let pageHeights: number[] = [];
     if (req.view === "expanded") {
-      w = req.style?.page.w ?? 960;
-      h = req.style?.page.h ?? 540;
+      w = req.style?.page.size?.[0] ?? 960;
+      h = req.style?.page.size?.[1] ?? 540;
       layoutExpandedPages(layout, req.score, w, h, req.breakDesc);
     } else {
       w = req.page?.w ?? 0;

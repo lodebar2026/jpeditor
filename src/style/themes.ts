@@ -61,7 +61,7 @@ export const THEMES: Record<ThemeId, StyleLayer> = {
     {
       set: {
         roles: { note: { size: PPTX_PAGE.fontSize }, title: { size: PPTX_PAGE.titleSize }, credit: { size: PPTX_PAGE.creditSize } },
-        page: { w: PPTX_PAGE.w, h: PPTX_PAGE.h, ink: INK, background: PAPER_WHITE },
+        page: { size: [PPTX_PAGE.w, PPTX_PAGE.h], ink: INK, background: PAPER_WHITE },
         jianpu: { preset: "pptx" },
       },
     },

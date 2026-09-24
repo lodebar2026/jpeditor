@@ -13,7 +13,7 @@ import { PAPER_SIZES } from "./themes";
 
 export type Orientation = "portrait" | "landscape";
 
-/** 不在纸张表里的尺寸（谱里自带的非标准纸）记成这个名字，尺寸在 `w`/`h`。 */
+/** 不在纸张表里的尺寸（谱里自带的非标准纸）记成这个名字，尺寸在 `size`。 */
 export const CUSTOM_PAPER = "自定义";
 
 /** 纸的实际尺寸（pt，已按方向转好）。`null` = 长图（不分页）；`undefined` = 没写纸。 */
@@ -21,7 +21,7 @@ export function resolvePaper(page: PageDecl): { w: number; h: number } | null | 
   const name = page.paper;
   if (name === undefined) return undefined;
   let wh: readonly [number, number] | null | undefined = PAPER_SIZES[name];
-  if (wh === undefined) wh = page.w && page.h ? [page.w, page.h] : undefined;
+  if (wh === undefined) wh = page.size;
   if (wh === null) return null;
   if (wh === undefined) return undefined;
   const [a, b] = wh;
@@ -43,7 +43,7 @@ export function pageDeclOfSize(w: number, h: number): PageDecl {
   const std = standardPaperOf(w, h);
   if (std) return { paper: std.name, orientation: std.landscape ? "landscape" : "portrait" };
   const [a, b] = w > h ? [h, w] : [w, h];
-  return { paper: CUSTOM_PAPER, w: a, h: b, orientation: w > h ? "landscape" : "portrait" };
+  return { paper: CUSTOM_PAPER, size: [a, b], orientation: w > h ? "landscape" : "portrait" };
 }
 
 /** 谱里自带的纸 → 纸张声明（MusicXML `<page-layout>` 优先，其次 123/ABC 的 `I:meta page …`，见 `model/pagemeta.ts`）。 */

@@ -28,8 +28,8 @@ import type { StyleRole, StyleSheet } from "../style/sheet";
 import { fontOfRole as roleFont } from "../style/fonts";
 import { applyStaffStyle } from "../style/staff";
 import { computeStyleForPaper, THEMES } from "../style/themes";
-import type { Expr, Region } from "../style/ss";
-import { evalNum, expandText, layoutRegion, songFields, type Placed, type RegionEnv } from "../style/template";
+import type { Expr, Region, Row } from "../style/ss";
+import { evalNum, layoutRegion, songFields, type ComponentFn, type Placed, type RegionEnv } from "../style/template";
 import { resolveLength } from "../style/units";
 import { applyManifestSong, type ManifestSong } from "./manifest";
 import { pageItemsToDrawPage } from "./browser";
@@ -177,11 +177,9 @@ function songLayout(xml: string, entry: ManifestSong, input: SongbookInput, meta
 }
 
 function pageSize(sheet: StyleSheet): { w: number; h: number; margin: number } {
-  const p = sheet.page as Record<string, unknown>;
-  const size = p.size;
-  const [w, h] = Array.isArray(size) ? (size as number[]) : [1322, 1870];
-  const margin = typeof p.margin === "number" ? p.margin : 75;
-  return { w: w!, h: h!, margin };
+  const [w, h] = sheet.page.size ?? [1322, 1870];
+  const margin = typeof sheet.page.margin === "number" ? sheet.page.margin : 75;
+  return { w, h, margin };
 }
 
 /** flowLayout（util/layout.cpp:6）。 */
@@ -365,24 +363,15 @@ function exprFlag(s: SongLayout, key: string): boolean {
 // ───────────────────────── 目录（genTOC） ─────────────────────────
 
 /**
- * 目录页（A4 pt 口径，`@template toc`）。条目 = `entry` 子块：左格文字 `at x`、右格页码 `at x`、`leader: dots to x`。
- * 点线：能塞多少个「.」就塞多少，右端贴 `to`，比基线高 0.3 个字号（genTOC 原式）。
+ * 目录页（A4 pt 口径，`@template toc`）。普通行只排在首页（页题）；`repeat: toc` 的行按条目逐条重复：
+ * 首条基线 = 行的 `baseline`，每条下移 `step`，过了页底另起一页、回到 `baseline`。
+ * 条目里的 `leader(dots, 到)` 组件是点线：能塞多少个「.」就塞多少，右端贴 `到`，比基线高 0.3 个字号（genTOC 原式）。
  */
 function tocPages(sheet: StyleSheet, titles: string[], starts: number[], families: Record<string, string>, used: Set<string>): DrawPage[] {
   const region = sheet.template?.regions?.toc as Region | undefined;
   if (!region) return [];
-  const entry = region.blocks?.entry;
   const W = A4_PT.w;
   const H = A4_PT.h;
-  const env = (fields: Record<string, string>): RegionEnv => ({
-    field: songFields(undefined, fields),
-    pageNo: 1,
-    content: { left: 0, right: W },
-    pageWidth: W,
-    sizeOf: (role) => (resolveLength(sheet.roles[role as keyof StyleSheet["roles"]]?.size, { em: 12, sp: 6, pt: 1 }) ?? 12),
-    measure: (role, text, size) => fontOfRole(sheet, families, role, size).measureText(text),
-  });
-  const e0 = env({});
   const text = (t: string, role: string, x: number, y: number, size: number): DrawItem => {
     const font = fontOfRole(sheet, families, role, size);
     used.add(font.family);
@@ -394,6 +383,35 @@ function tocPages(sheet: StyleSheet, titles: string[], starts: number[], familie
     }
     return { t: "text", y, text: t, size, role: font.family as never, align: "pen", xs };
   };
+  const measure = (role: string, t: string, size: number): number => fontOfRole(sheet, families, role, size).measureText(t);
+  const leader: ComponentFn = ({ args, y, role, size, row }) => {
+    if (args[0]?.k !== "id" || args[0].v !== "dots" || args[1] === undefined) throw new Error("目录点线写 leader(dots, 右端 x)");
+    const to = evalNum(args[1], e0)!;
+    // 贴着左边最靠右的那段字；减法顺序照原式（`到 − 字宽 − 起点`），浮点逐位一致
+    const space = Math.min(to, ...row.filter((p) => p.x < to).map((p) => to - measure(p.role, p.text, p.size) - p.x));
+    let dots = "";
+    for (let j = 0; j < (space * 5) / size; j++) {
+      if (measure(role, dots + ".", size) > space) break;
+      dots += ".";
+    }
+    return [text(dots, role, to - measure(role, dots, size), y - size * 0.3, size)];
+  };
+  const env = (fields: Record<string, string>): RegionEnv => ({
+    field: songFields(undefined, fields),
+    pageNo: 1,
+    content: { left: 0, right: W },
+    pageWidth: W,
+    sizeOf: (role) => (resolveLength(sheet.roles[role as keyof StyleSheet["roles"]]?.size, { em: 12, sp: 6, pt: 1 }) ?? 12),
+    measure,
+    components: { leader },
+  });
+  const e0 = env({});
+  const toItems = (placed: readonly Placed[]): DrawItem[] =>
+    placed.map((p) => {
+      if (p.kind === "raw") return p.item as DrawItem;
+      const x = p.align === "center" ? p.x - measure(p.role, p.text, p.size) / 2 : p.align === "right" ? p.x - measure(p.role, p.text, p.size) : p.x;
+      return text(p.text, p.role, x, p.y, p.size);
+    });
   const pages: DrawPage[] = [];
   let items: DrawItem[] = [];
   const newPage = (): void => {
@@ -401,52 +419,24 @@ function tocPages(sheet: StyleSheet, titles: string[], starts: number[], familie
     pages.push({ pageNo: pages.length + 1, w: W, h: H, meta: { kind: "toc", songs: [] }, items });
   };
   newPage();
-  // 页题
-  const titleSeq = region.props.title;
-  if (titleSeq) {
-    const parts = titleSeq.k === "seq" ? titleSeq.items : [titleSeq];
-    const str = parts[0]?.k === "str" ? parts[0].v : "";
-    const asIdx = parts.findIndex((p) => p.k === "id" && p.v === "as");
-    const role = asIdx >= 0 ? exprWord(parts[asIdx + 1]) ?? "frontTitle" : "frontTitle";
-    const size = e0.sizeOf(role);
-    const w = fontOfRole(sheet, families, role, size).measureText(str);
-    items.push(text(str, role, W / 2 - w / 2, evalNum(region.props["title-baseline"], e0) ?? 60, size));
-  }
-  if (!entry) return pages;
-  const leftCell = entry.rows[0]?.cells.find((c) => c.slot === "left");
-  const rightCell = entry.rows[0]?.cells.find((c) => c.slot === "right");
-  const role = leftCell?.lines[0]?.role ?? "toc";
-  const size = e0.sizeOf(role);
-  const lh = evalNum(entry.props["line-height"], e0, role) ?? size * 1.5;
-  const first = evalNum(entry.props["first-baseline"], e0) ?? 100;
-  const leaderSeq = entry.props.leader;
-  const leaderTo = leaderSeq?.k === "seq" ? evalNum(leaderSeq.items[2], e0) : undefined;
-  let y = first;
-  titles.forEach((title, i) => {
-    if (y > H - 40) {
-      newPage();
-      y = first;
-    }
-    const f = env({ "toc.seq": String(i + 1), "toc.pad": i < 9 ? " " : "", "work.title": title, "toc.page": String(starts[i] ?? "") });
-    const leftX = leftCell?.lines[0]?.at ? evalNum(leftCell.lines[0].at, f)! : 100;
-    const leftText = leftCell?.lines[0]?.content.kind === "text" ? expandText(leftCell.lines[0].content.parts, f).join("") : title;
-    items.push(text(leftText, role, leftX, y, size));
-    if (leaderTo !== undefined) {
-      const font = fontOfRole(sheet, families, role, size);
-      const space = leaderTo - font.measureText(leftText) - leftX;
-      let dots = "";
-      for (let j = 0; j < (space * 5) / size; j++) {
-        if (font.measureText(dots + ".") > space) break;
-        dots += ".";
+  const isRepeat = (r: Row): boolean => r.props.repeat !== undefined;
+  items.push(...toItems(layoutRegion({ ...region, rows: region.rows.filter((r) => !isRepeat(r)) }, e0).items));
+  for (const row of region.rows.filter(isRepeat)) {
+    if (exprWord(row.props.repeat) !== "toc") throw new Error("目录区域的重复行只认 repeat: toc");
+    const role = row.cells.flatMap((c) => c.lines).find((l) => l.content.kind === "text")?.role ?? "toc";
+    const first = evalNum(row.props.baseline, e0);
+    const step = evalNum(row.props.step, e0, role);
+    if (first === undefined || step === undefined) throw new Error("目录的重复行要写 baseline 与 step");
+    let y = first;
+    titles.forEach((title, i) => {
+      if (y > H - 40) {
+        newPage();
+        y = first;
       }
-      items.push(text(dots, role, leaderTo - font.measureText(dots), y - size * 0.3, size));
-    }
-    const rl = rightCell?.lines[0];
-    if (rl && rl.content.kind === "text") {
-      const rx = rl.at ? evalNum(rl.at, f)! : leaderTo !== undefined ? leaderTo + 5 : W - 90;
-      items.push(text(expandText(rl.content.parts, f).join(""), role, rx, y, size));
-    }
-    y += lh;
-  });
+      const f = env({ "toc.seq": String(i + 1), "toc.pad": i < 9 ? " " : "", "work.title": title, "toc.page": String(starts[i] ?? "") });
+      items.push(...toItems(layoutRegion({ ...region, rows: [{ ...row, props: { ...row.props, baseline: { k: "num", v: y } } }] }, f).items));
+      y += step;
+    });
+  }
   return pages;
 }
