@@ -358,6 +358,8 @@ const TIME_TEMPLATE_DIST = 180;
 const KEY_SELF_DIST = 120;
 /** 几何闸收下的实心头，矮于这个数（线距的倍数）又压在符杠中线上的，是杠头。 */
 const BEAM_STUMP_H = 0.65;
+/** 结构还原号：两根竖笔的间距（格）。 */
+const NAT_GAP = [0.35, 0.8] as const;
 /** 按角色限定认拍号数字（见拍号那一段）：分子只在 2~9 里挑，分母只在 2、4、8 里挑。
  *  距离上限：万古磐石歌的铅字「3」到 `timeSig3` 186/214，齐来谢主歌分母「4」181/230，
  *  万古磐石歌分母「4」246/275（去线切得最狠）。 */
@@ -1060,6 +1062,54 @@ export async function recognizeRasterPage(
       usedSegs.add(v);
       break;
     }
+  }
+
+  // **两道横笔压在谱线上的还原号**：横笔与谱线重合，去线后只剩两根竖笔、切成几块碎墨，
+  // 字典与上面那条都认不出（《向主唱新歌》高音谱表的 F♮ 三处，读成调号里的 F♯）。
+  // 按结构认：从无主的窄碎块出发，在去线图上沿列量出整根竖笔；右边 0.35~0.8 格处另有一根，
+  // 左高右低错开、纵向搭上一格以上，两根之间在**原图**上有两道横墨（整行从左笔连到右笔），
+  // 各比谱线厚、相隔 0.6 格以上。
+  // 字典认领过的窄块也当种子：竖笔单独一块时字典会把它认成 `wiggleTrill` 之类
+  for (const c of blobs) {
+    if (claimed.has(c.id) || merged.has(c.id)) continue;
+    const b = c.bbox;
+    if (b.w > unit.space * 0.4 || b.h < unit.space * 0.3) continue;
+    const sx = b.x + Math.floor(b.w / 2);
+    const seed = vRunAt(nl, sx, b.y + Math.floor(b.h / 2));
+    if (!seed) continue;
+    let hit: Rect | null = null;
+    for (const side of [1, -1]) {
+      for (let dx = Math.round(unit.space * NAT_GAP[0]); dx <= unit.space * NAT_GAP[1] && !hit; dx++) {
+        const ox = sx + side * dx;
+        const [lx, rx] = side > 0 ? [sx, ox] : [ox, sx];
+        // 搭档那根：在种子的纵向范围里找一行有墨的地方起量
+        let other: [number, number] | null = null;
+        for (let y = seed[0]; y <= seed[1] && !other; y++) if (nl.data[y * nl.w + ox]) other = vRunAt(nl, ox, y);
+        if (!other) continue;
+        const [L, R] = side > 0 ? [seed, other] : [other, seed];
+        if (L[1] - L[0] < unit.space * 1.5 || R[1] - R[0] < unit.space * 1.5 || L[1] - L[0] > unit.space * 3.4 || R[1] - R[0] > unit.space * 3.4) continue;
+        if (R[0] - L[0] < unit.space * 0.3 || R[1] - L[1] < unit.space * 0.3) continue;
+        const ya = Math.max(L[0], R[0]);
+        const yb = Math.min(L[1], R[1]);
+        if (yb - ya < unit.space) continue;
+        const bars = crossRuns(raster.bin, lx, rx, Math.round(ya - unit.space * 0.3), Math.round(yb + unit.space * 0.3));
+        const thick = bars.filter((r) => r[1] - r[0] + 1 >= Math.max(unit.lineThick + 2, unit.space * 0.25));
+        if (thick.length < 2 || thick[thick.length - 1][0] - thick[0][1] < unit.space * 0.6) continue;
+        const x0 = lx - Math.round(unit.lineThick);
+        hit = { x: x0, y: L[0], w: rx + Math.round(unit.lineThick) - x0 + 1, h: R[1] - L[0] + 1 };
+      }
+      if (hit) break;
+    }
+    if (!hit) continue;
+    const box = hit;
+    // 盒里的碎符号（竖笔认成的装饰音之类）换掉；与盒大片相交的别的符号在，就不认
+    const inner = syms.filter((s0) => overlapFrac(s0.box, box) > 0.8 && s0.box.w * s0.box.h < box.w * box.h * 0.5);
+    if (syms.some((s0) => !inner.includes(s0) && overlapFrac(box, s0.box) > 0.3)) continue;
+    for (const s0 of inner) syms.splice(syms.indexOf(s0), 1);
+    syms.push({ box, code: "accidentalNatural" });
+    ledger.claim(box, "accid:accidentalNatural");
+    for (const c2 of blobs) if (!claimed.has(c2.id) && overlapFrac(c2.bbox, box) > 0.8) merged.add(c2.id);
+    for (const v of prims.vSegs) if ((v.x0 + v.x1) / 2 >= box.x && (v.x0 + v.x1) / 2 <= box.x + box.w && Math.min(v.y0, v.y1) >= box.y - 2 && Math.max(v.y0, v.y1) <= box.y + box.h + 2) usedSegs.add(v);
   }
 
   // ── 四分休止：**位置 + 形状自举**，字典兜不住 ──────────────────────────
@@ -2550,6 +2600,32 @@ function fillAround(bin: Binary, b: Rect, unit: RasterUnit): { box: Rect; area: 
   }
   if (maxX < 0) return null;
   return { box: { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 }, area: seen.size };
+}
+
+/** `[x0,x1]` 整段都是墨的那些行，连成段返回（`[起行, 止行]`）。 */
+function crossRuns(bin: Binary, x0: number, x1: number, y0: number, y1: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (let y = Math.max(0, y0); y <= Math.min(bin.h - 1, y1); y++) {
+    let full = true;
+    for (let x = x0; x <= x1 && full; x++) if (!bin.data[y * bin.w + x]) full = false;
+    if (!full) continue;
+    const last = out[out.length - 1];
+    if (last && last[1] === y - 1) last[1] = y;
+    else out.push([y, y]);
+  }
+  return out;
+}
+
+/** 列 `x` 上过 `(x,y)` 的竖墨段（允许左右各偏一像素续上）。 */
+function vRunAt(bin: Binary, x: number, y: number): [number, number] | null {
+  const ink = (xx: number, yy: number) => yy >= 0 && yy < bin.h && xx >= 0 && xx < bin.w && !!bin.data[yy * bin.w + xx];
+  const at = (yy: number) => ink(x, yy) || ink(x - 1, yy) || ink(x + 1, yy);
+  if (!at(y)) return null;
+  let a = y;
+  let b = y;
+  while (at(a - 1)) a--;
+  while (at(b + 1)) b++;
+  return [a, b];
 }
 
 function midOfStaff(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
