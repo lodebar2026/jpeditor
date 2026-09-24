@@ -270,6 +270,11 @@ export function bootstrapClefs(
           // 搭桥进来的也不许探到谱表底线半格以下：谱号的碎块不往下长，那是方括号下端的弯钩
           // （赞美三一真神第一行低音谱号借一个墨点把它并进来，盒高 5.1 格，被判成高音谱号）
           if (!onSeed && b.y + b.h > bottom + space * 0.5) continue;
+          // 与种子 x 重叠的也要防一种：**从底线往下、又往种子左边甩出去**的块，是方括号下端的弯钩
+          // （万古磐石歌末行放大后，钩子从底线往左下甩出 1.3 格，盒高拉到 5.3 格判成高音谱号）。
+          // 谱号自己探出谱表的那截（高音谱号的尾巴）在谱号正下方，不往左伸。
+          // 只管底下：谱表上方左边的小碎块也有（破碎扫描件三处），一并剔掉反而少认一批音（−0.2）。
+          if (b.y >= bottom - space * 0.25 && b.y + b.h > bottom + space * 0.8 && b.x < sd.x - space * 0.5) continue;
           const x0 = Math.min(box.x, b.x);
           const y0 = Math.min(box.y, b.y);
           box = { x: x0, y: y0, w: Math.max(box.x + box.w, b.x + b.w) - x0, h: Math.max(box.y + box.h, b.y + b.h) - y0 };

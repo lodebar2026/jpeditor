@@ -126,7 +126,9 @@ export function findLyricRows(blobs: Component[], staves: LyricStaff[], unit: Ra
   const heights = raw.flatMap((r) => r.blocks.map((c) => c.bbox.h)).sort((a, b) => a - b);
   const charW = heights.length ? heights[Math.min(heights.length - 1, Math.floor(heights.length * 0.85))] : sp;
   for (const r of raw) {
-    const near = r.cells.filter((c) => c.w >= charW * 0.7 && c.w <= charW * 1.3);
+    // 扁格不算：竖笔被当成线段抽走之后，「王」「万」「之」的横笔各自成一格（善牧恩慈歌放大后
+    // 第一段那行十来个 40×2 的扁格），宽度正好一个字，把字高的中位数压到下限，整行被当成页脚小字剔掉。
+    const near = r.cells.filter((c) => c.w >= charW * 0.7 && c.w <= charW * 1.3 && c.h >= c.w * 0.5);
     const charH = Math.max(median(near.map((c) => c.h)), sp * CHAR_MIN);
     // **字格按全页字宽重并**（见 `squareCells`）：汉字等宽，左右结构的字偏旁隔得开时
     // 第一遍那个 `mergeToChars`（按偏旁高的 0.28 当缝）并不回来。

@@ -80,8 +80,21 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   const h: number = best.height;
   const packed = Math.ceil(w / 8) * h;
   const kind: RasterPage["kind"] = best.data.length === packed ? (best.kind === 1 ? "gray1" : "mask") : "rgb";
-  const bin = decodeImage(best, w, h);
+  let bin = decodeImage(best, w, h);
   if (!bin) return null;
+  // **线距太小的彩色底本先放大一倍再二值化**。手机拍/低分辨率扫描的诗歌本（齐来谢主歌、
+  // 万古磐石歌整页 1100px 宽，线距 11px、线宽 2px）去谱线之后，调号降号与低音谱号碎成
+  // 三五像素的小块，位置自举与模板都认不回来（齐来谢主歌八行谱只认出两个降号、一个低音谱号
+  // 被当成全音符）。灰度上双线性放大再走 Sauvola，笔画在阈值那一步就成形了
+  //（齐来谢主歌音符 21% → 72%）。只放细线的（`UPSCALE_THIN`）；1-bit 的底本没有灰度可插，不放。
+  let up = 1;
+  if (kind === "rgb") {
+    const u0 = estimateUnit(prepared(bin));
+    if (u0 && u0.space < UPSCALE_SPACE && u0.lineThick / u0.space < UPSCALE_THIN) {
+      const big = decodeImage(best, w, h, SAUVOLA_K, 2);
+      if (big) (bin = big), (up = 2);
+    }
+  }
   // **细线扫描件补竖向断口**：高分辨率彩色扫描（320dpi 的敬拜万世之王）小节线、符干只有
   // 一两像素、灰度 150~210，`SAUVOLA_K` 那一档阈值约 144，切成虚线——小节线认不出，
   // 简谱行靠「与谱表小节线同 x」也定不了位。放松阈值整页重来试过：谱线跟着变粗，
@@ -91,7 +104,7 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   let faint = false;
   if (kind === "rgb") {
     const u = estimateUnit(prepared(bin));
-    const soft = u && u.lineThick / u.space < FAINT_RATIO ? decodeImage(best, w, h, SAUVOLA_K_FAINT) : null;
+    const soft = u && u.lineThick / u.space < FAINT_RATIO ? decodeImage(best, w, h, SAUVOLA_K_FAINT, up) : null;
     if (soft && u) mergeVertical(bin, soft, Math.round(u.space * VERT_RUN)), (faint = true);
   }
 
@@ -100,7 +113,7 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   // 整页乐谱的墨不可能过半（实测约一成），过半就是反的，整幅取反。
   let ink = 0;
   for (let i = 0; i < bin.data.length; i++) ink += bin.data[i];
-  if (ink > w * h * INK_FLIP_RATIO) for (let i = 0; i < bin.data.length; i++) bin.data[i] ^= 1;
+  if (ink > bin.w * bin.h * INK_FLIP_RATIO) for (let i = 0; i < bin.data.length; i++) bin.data[i] ^= 1;
 
   // **半调网点的底本先去网**（`descreen.ts`）。整页抖动印刷的谱（心领那本）符头是
   // 打散的网点，填充率那一档全过不去——实测整页 83 个音符只认出 20 个。
@@ -108,14 +121,7 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   // 做一遍只是把细节磨掉（门槛与两档的实测值见 `HALFTONE_RATIO`）。
   // 位置在推平之前：网点会把逐列游程打断，推平那一步也指望这张图是实的。
   // 一行谱都没找到的页面（封面、歌词页）不做：没有尺子定窗口，也没有东西要认。
-  const groups = groupStaves(findStaffLines(bin));
-  const space = median(groups.map((g) => g.space));
-  const inBand = (y: number) =>
-    groups.some((g) => y > g.lines[0].y - g.space * HALFTONE_BAND && y < g.lines[4].y + g.space * HALFTONE_BAND);
-  const halftone = space > 0 ? halftoneRatio(bin, inBand) : 0;
-  if (halftone > HALFTONE_RATIO) descreen(bin, space);
-  // 网纹填充（符头、谱号里是细交叉网纹）不走去网，只补针孔（`fillPinholes`）
-  else if (space > 0 && pinholeRatio(bin, inBand) > PINHOLE_RATIO) fillPinholes(bin);
+  let halftone = cleanTexture(bin, true);
 
   // **先按逐列的黑白游程把弯的谱线推平**（`dewarp.ts`），再让 `deskew` 收拾残余的整页倾斜。
   //
@@ -125,9 +131,15 @@ export async function rasterizePage(page: any, OPS: any): Promise<RasterPage | n
   // 逐列偏移量全是噪声。
   dewarpPage(bin);
   deskew(bin);
+  // 推平之前行投影一行谱都找不到的页（父恩广大那张扫描件谱线微弯，推平前一行都不成），
+  // 网纹那一步就没做（网纹符头 166 个音只认出 15 个）；推平之后有尺子了，补做一次——**只补针孔，不去网**。
+  // 这一档是低分辨率扫描件（齐来谢主歌线距 11px），谱线细得断成点，孤立点把网点率
+  // 虚抬到 0.263、刚过门槛；真去了网，调号降号与拍号糊成一团、汉字笔画粘死
+  //（歌词 75% → 45%），而它本来就不是网点印刷。
+  if (halftone == null) halftone = cleanTexture(bin, false);
 
   const vp = page.getViewport({ scale: 1 });
-  return { bin, kind, halftone, faint, scale: vp.width / w, pageWidth: vp.width, pageHeight: vp.height };
+  return { bin, kind, halftone: halftone ?? 0, faint, scale: vp.width / bin.w, pageWidth: vp.width, pageHeight: vp.height };
 }
 
 /** 行投影找出来的谱行数不到逐列游程看见的这个比例，才判这一页「弯得行投影已经废了」。 */
@@ -153,6 +165,24 @@ function completedAfterDeskew(bin: Binary): number {
   deskew(straight);
   const lines = findStaffLines(straight);
   return completeStaffLines(straight, lines, groupStaves(lines)).groups.length;
+}
+
+/**
+ * 网点/网纹的底本就地清理（`descreen.ts`），返回量出来的网点率；
+ * 一行谱都找不到时返回 null（没有尺子定窗口，也没有东西要认）。
+ */
+function cleanTexture(bin: Binary, allowDescreen: boolean): number | null {
+  const groups = groupStaves(findStaffLines(bin));
+  if (!groups.length) return null;
+  const space = median(groups.map((g) => g.space));
+  if (!(space > 0)) return null;
+  const inBand = (y: number) =>
+    groups.some((g) => y > g.lines[0].y - g.space * HALFTONE_BAND && y < g.lines[4].y + g.space * HALFTONE_BAND);
+  const halftone = halftoneRatio(bin, inBand);
+  if (halftone > HALFTONE_RATIO && allowDescreen) descreen(bin, space);
+  // 网纹填充（符头、谱号里是细交叉网纹）不走去网，只补针孔（`fillPinholes`）
+  else if (pinholeRatio(bin, inBand) > PINHOLE_RATIO) fillPinholes(bin);
+  return halftone;
 }
 
 export function dewarpPage(bin: Binary): boolean {
@@ -297,7 +327,7 @@ export function deskew(bin: Binary): number {
  * 而长度是三者唯一都给得出、且互不相同的量。
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function decodeImage(obj: any, w: number, h: number, k = SAUVOLA_K): Binary | null {
+function decodeImage(obj: any, w: number, h: number, k = SAUVOLA_K, up = 1): Binary | null {
   const src: Uint8Array | Uint8ClampedArray = obj.data;
   const data = new Uint8Array(w * h);
   const packed = Math.ceil(w / 8) * h;
@@ -318,8 +348,37 @@ function decodeImage(obj: any, w: number, h: number, k = SAUVOLA_K): Binary | nu
     // Rec.601 luma（与 `src/omr/preprocess.ts::toGray` 同一口径）
     gray[i] = step === 1 ? src[p] : (src[p] * 0.299 + src[p + 1] * 0.587 + src[p + 2] * 0.114) | 0;
   }
+  if (up > 1) {
+    const big = upsample(gray, w, h, up);
+    const out = new Uint8Array(w * up * h * up);
+    sauvola(big, w * up, h * up, out, k);
+    return { w: w * up, h: h * up, data: out };
+  }
   sauvola(gray, w, h, data, k);
   return { w, h, data };
+}
+
+/** 灰度图双线性放大 `up` 倍（像素中心对齐）。 */
+function upsample(gray: Uint8Array, w: number, h: number, up: number): Uint8Array {
+  const W = w * up;
+  const H = h * up;
+  const out = new Uint8Array(W * H);
+  for (let Y = 0; Y < H; Y++) {
+    const fy = Math.min(h - 1, Math.max(0, (Y + 0.5) / up - 0.5));
+    const y0 = Math.floor(fy);
+    const y1 = Math.min(h - 1, y0 + 1);
+    const ty = fy - y0;
+    for (let X = 0; X < W; X++) {
+      const fx = Math.min(w - 1, Math.max(0, (X + 0.5) / up - 0.5));
+      const x0 = Math.floor(fx);
+      const x1 = Math.min(w - 1, x0 + 1);
+      const tx = fx - x0;
+      const a = gray[y0 * w + x0] * (1 - tx) + gray[y0 * w + x1] * tx;
+      const b = gray[y1 * w + x0] * (1 - tx) + gray[y1 * w + x1] * tx;
+      out[Y * W + X] = (a * (1 - ty) + b * ty + 0.5) | 0;
+    }
+  }
+  return out;
 }
 
 /** Sauvola 局部阈值的窗口半径（占页宽的比例）与参数。
@@ -331,6 +390,15 @@ const SAUVOLA_R = 128;
 const SAUVOLA_K_FAINT = 0.2;
 /** 从松阈值图里取回的竖笔，纵向游程至少几格（小节线 4 格、符干 3 格；谱线与字的竖笔短得多）。 */
 const VERT_RUN = 1.5;
+/** 彩色底本线距（像素）小于这个数就先放大一倍再二值化（见 `rasterizePage`）。 */
+const UPSCALE_SPACE = 14;
+/**
+ * 放大还要**谱线细**（线宽/线距低于这个数）。三本 11px 的诗歌本线宽都是 2px（0.18），
+ * 放大才有救；望十架那份合唱扫描件线距 11.5~12px 但多数页线宽 3px（0.26），墨本来就粗，
+ * 放大之后谱号、符头反倒糊成一片（扫描档音符 68.3% → 64.2%）。它有两页线宽 2px，
+ * 那两页放大是赚的（整份 60.8% → 61.4%）。
+ */
+const UPSCALE_THIN = 0.22;
 /** 线宽/线距低于这个数算细线扫描件。实测敬拜万世之王 0.053，其余彩色底本 0.067（坚固保障）以上。 */
 const FAINT_RATIO = 0.06;
 

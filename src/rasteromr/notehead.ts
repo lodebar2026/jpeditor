@@ -138,6 +138,8 @@ export function findRasterHeads(
    * **形状**才分得开——而且模板顺带把全音符与二分音符分开了（不必再拿宽度猜）。
    */
   matchHollow: ((box: Rect) => { smufl: SmuflName; dist: number } | null) | null = null,
+  /** 「这个 y 在谱表五条线之外、隔着至少一格吗」——只在那里查「底是开口的弧」（延长记号）。 */
+  offStaff: (y: number) => boolean = () => false,
 ): RasterHead[] {
   const sp = unit.space;
   const out: RasterHead[] = [];
@@ -168,6 +170,12 @@ export function findRasterHeads(
     if (fill >= FILL_SOLID) code = "noteheadBlack";
     else {
       if (w < W_HOLLOW_MIN) continue;
+      // **底是开口的弧不是符头**：延长记号（弧 + 下面一个点，点是另一块）40×22、宽高比 1.8，
+      // 尺寸、宽高比、离谱表的距离都过闸，善牧恩慈歌放大后被收成谱表上方的 B5 全音符。
+      // 真符头是闭合的一圈：中间那几列上下都有墨。只看够一整个头高的——骑线的空心头被去线切开，
+      // 上半截本来就是一道弧（那一路交给碎块并回）；也只看谱表外隔一格以上的：斜椭圆的二分头
+      // 底笔不一定在一行里横满中段，谱表里照查会误伤（圣哉三一歌伴奏 −0.6、齐来谢主歌 −1.3）。
+      if (h >= OPEN_ARC_H && offStaff(b.y + b.h / 2) && openBelow(bin, b)) continue;
       // **模板当附加证据，不当硬闸。** 只拿模板收（距离 ≤ `TEMPLATE_DIST`）实测更差
       //（音符 65.57% → 64.70%、小节自检 33.2% → 27.1%）：位图上的空心符头被去线
       // 切过一道、又与符干残根连着，签名与 Maestro 那份干净模板差得过闸的不到一半。
@@ -186,6 +194,29 @@ export function findRasterHeads(
     out.push({ comp: c, box: b, code, fill, stem, ledger });
   }
   return out;
+}
+
+/** 空心候选够这么高（线距的倍数）才查「底是不是开口的」。 */
+const OPEN_ARC_H = 0.8;
+
+/**
+ * 盒中间那几列（宽的 35%~65%）：顶部四分之一里有一行把这段**整条填满**、底部四分之一里一行也没有
+ * ——一道朝下开口的弧。按「整条填满」而不按「有墨」：延长记号的点落在盒底正中，
+ * 可它只有 0.3 格宽，横不过中间那一段；圈的底笔是连着横过去的。
+ */
+function openBelow(bin: Binary, b: Rect): boolean {
+  const x0 = Math.round(b.x + b.w * 0.35);
+  const x1 = Math.round(b.x + b.w * 0.65);
+  const band = Math.max(1, Math.round(b.h / 4));
+  const fullRow = (y0: number, y1: number) => {
+    for (let y = Math.max(0, y0); y < Math.min(bin.h, y1); y++) {
+      let all = true;
+      for (let x = x0; x <= x1 && all; x++) all = x >= 0 && x < bin.w && !!bin.data[y * bin.w + x];
+      if (all) return true;
+    }
+    return false;
+  };
+  return fullRow(b.y, b.y + band) && !fullRow(b.y + b.h - band, b.y + b.h);
 }
 
 /**

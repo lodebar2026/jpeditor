@@ -333,6 +333,10 @@ const END_BAND = 1.3;
  *  干净档音符 84.82 / 84.94 / 84.93 / 84.98 / 84.88%
  *  ——扫描档在 0.40 见顶，干净档在 0.45 见顶但两者只差 0.04（噪声量级），取 0.40。 */
 const STEM_SCORE_MIN = 0.40;
+/** 同一根符干上再找和弦头：从端上那个头往里找多远（格）、最多几个头、得分闸。 */
+const CHORD_REACH = 2.5;
+const CHORD_MAX = 3;
+const CHORD_SCORE_MIN = 0.45;
 
 /**
  * 从「**符头 + 符干（+ 符尾）并成一块**」的块里把符头摘出来。
@@ -357,7 +361,7 @@ export function headFromStemBlock(
   unit: RasterUnit,
   grid: (y: number) => number | null,
   onLine: (y: number) => boolean,
-): { head: Rect; stemX: number; stemY0: number; stemY1: number } | null {
+): { head: Rect; extra: Rect[]; stemX: number; stemY0: number; stemY1: number } | null {
   const sp = unit.space;
   const w = box.w / sp;
   const h = box.h / sp;
@@ -388,15 +392,53 @@ export function headFromStemBlock(
   const hw = Math.round(sp * 1.25);
   const hh = Math.round(sp * 0.95);
   const head = { x: Math.round(best.x - hw / 2), y: Math.round(best.y - hh / 2), w: hw, h: hh };
+  // **同一根符干上的和弦**：头在哪一端，就从那一端再往里找别的头（万古磐石歌放大后，
+  // 三度、五度的两个头共用一根带符尾的干，连成 2.2×5.1 格的一块，只摘得出端上那个，
+  // 上面的 B♭4、下面的 F3 整批漏掉）。只找「贴着第一个头的 x、纵向隔开至少 0.8 格」的，
+  // 得分闸更严——这里已经不是端点，符尾、弧线蹭过的地方也在范围里。
+  const atTop = best.y - box.y < box.y + box.h - best.y;
+  const extra: Rect[] = [];
+  const taken = [best.y];
+  for (let k = 0; k < CHORD_MAX - 1; k++) {
+    let more: { x: number; y: number; s: number } | null = null;
+    const ya = atTop ? best.y : best.y - sp * CHORD_REACH;
+    const yb = atTop ? best.y + sp * CHORD_REACH : best.y;
+    for (let x = Math.round(best.x - sp * 0.4); x <= best.x + sp * 0.4; x += step)
+      for (let y = ya; y <= yb; y += sp * 0.25) {
+        const g = grid(y);
+        if (g === null || g < ya || g > yb || taken.some((t) => Math.abs(t - g) < sp * 0.8)) continue;
+        const m = masks.find((q) => q.onLine === onLine(g)) ?? masks[0];
+        const sc = scoreAt(bin, m, x, g);
+        // 那一行的墨要有一个头宽：光有符干的地方（线宽那么窄）不收
+        if (sc >= CHORD_SCORE_MIN && (!more || sc > more.s) && rowSpan(bin, box, g) >= hw * 0.7) more = { x, y: g, s: sc };
+      }
+    if (!more) break;
+    taken.push(more.y);
+    extra.push({ x: Math.round(more.x - hw / 2), y: Math.round(more.y - hh / 2), w: hw, h: hh });
+  }
   // 符干：头在上端就往下走，在下端就往上走。
   // **要续到符头中心**——`findStems` 的硬判据是「符干与符头纵向相交」，
   // 停在符头边缘上，`extendVSegs` 那 0.35 格续不进去，段就挂不上 `Stem` 标记，
   // `bootstrapFlags` 只看挂上标记的段，符尾于是一个都补不出来（八分整批读成四分）。
-  const up = best.y - box.y < box.y + box.h - best.y; // 头在上端
+  const up = atTop; // 头在上端
   const stemX = stemColumn(bin, box, up ? head.y + head.h : box.y, up ? box.y + box.h : head.y);
   const stemY0 = up ? best.y : box.y;
   const stemY1 = up ? box.y + box.h : best.y;
-  return { head, stemX, stemY0, stemY1 };
+  return { head, extra, stemX, stemY0, stemY1 };
+}
+
+/** 块里第 `y` 行最左到最右的墨的跨度（像素）。光有符干的行只有线宽那么宽，有头的行一整个头宽。 */
+function rowSpan(bin: Binary, box: Rect, y: number): number {
+  const yy = Math.round(y);
+  if (yy < 0 || yy >= bin.h) return 0;
+  let a = -1;
+  let b = -1;
+  for (let x = Math.max(0, box.x); x < Math.min(bin.w, box.x + box.w); x++)
+    if (bin.data[yy * bin.w + x]) {
+      if (a < 0) a = x;
+      b = x;
+    }
+  return a < 0 ? 0 : b - a + 1;
 }
 
 /** 块里 `[y0,y1)` 那一段最密的那一列（符干的 x）。 */

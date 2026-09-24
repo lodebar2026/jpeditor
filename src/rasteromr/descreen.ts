@@ -90,7 +90,10 @@ export function pinholeRatio(bin: Binary, rows?: (y: number) => boolean): number
 }
 
 /**
- * **补针孔**（就地改 `bin`）：八邻域里至少六个是墨的白点补成墨，补两遍。
+ * **补针孔**（就地改 `bin`）：八邻域里至少六个是墨、**或上下左右四邻全是墨**的白点补成墨，补两遍。
+ *
+ * 四邻那一条是给**棋盘格抖动**的网纹（父恩广大、晨曦破晓那本：符头里一像素一格黑白相间）：
+ * 那里的白点上下左右都是墨、四个斜角却是白的，八邻域只凑得到四五个，六个那道闸补不上。
  *
  * 网纹填充的页面不能走 `descreen`：那边的密度窗口按线距取（线距 17.5px 时 11px 见方），
  * 汉字笔画、升号糊成一团，空心符头也被填实（实测齐来称颂 151 个音认出 154 个、
@@ -104,9 +107,9 @@ export function fillPinholes(bin: Binary): void {
       for (let x = 1; x < w - 1; x++) {
         const i = y * w + x;
         if (data[i]) continue;
-        const n =
-          data[i - w - 1] + data[i - w] + data[i - w + 1] + data[i - 1] + data[i + 1] + data[i + w - 1] + data[i + w] + data[i + w + 1];
-        if (n >= 6) add.push(i);
+        const n4 = data[i - w] + data[i - 1] + data[i + 1] + data[i + w];
+        const n = n4 + data[i - w - 1] + data[i - w + 1] + data[i + w - 1] + data[i + w + 1];
+        if (n >= 6 || n4 === 4) add.push(i);
       }
     }
     if (!add.length) break;

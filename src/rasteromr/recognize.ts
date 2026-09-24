@@ -21,6 +21,7 @@ import { buildRasterPage, makeSymObj, makeTextObj, type RasterSym } from "./adap
 import { binSig, blobImage, extendVSegs, findBlobs, findBraces, findPrimitives, groupByLeftInk, ledgerGrid, removeStaffLines, type BeamQuad, type LineSeg, type RasterPrims } from "./prims";
 import { findRasterHeads, hollowHeadsByPitch, hollowHeadsFromHoles, hollowHeadsOnLedgers, judgeHeadBox, mergeHoles, type PitchStep } from "./notehead";
 import { bootstrapClefs, matchTemplate, RasterGlyphLookup, type BootStaff } from "./rasterglyphs";
+import { sigDistance } from "../omr/glyphdict";
 import { cutJianpuStrip, eraseInBand, findJianpuBands, jianpuKey, type JianpuStrip } from "./jianpuband";
 import { fuseJianpu, type FuseStats, type JianpuRow } from "./jianpufuse";
 import { findLyricRows, foldLyricChars, isLatinRow, latinCells, mapCharsToCells, stripKey, stripOf, type LyricRow, type LyricStrip, type OcrChar } from "./lyric";
@@ -204,8 +205,8 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
     // 细线页仍用原尖端，避免把附近的弧线误认成符尾。
     let offset = 0;
     const reach = unit.lineThick > sp * 0.2 ? Math.min(sp * 0.5, unit.lineThick * 2) : 0;
-    while (frac(offset, offset + 0.35) < FLAG_TIP && offset * sp < reach) offset += 1 / sp;
-    if (frac(offset, offset + 0.35) < FLAG_TIP || frac(offset, offset + FLAG_Y) < FLAG_INK) continue;
+    while (frac(offset, offset + FLAG_TIP_Y) < FLAG_TIP && offset * sp < reach) offset += 1 / sp;
+    if (frac(offset, offset + FLAG_TIP_Y) < FLAG_TIP || frac(offset, offset + FLAG_Y) < FLAG_INK) continue;
     const up = far < hy;
     // **第二个钩**：十六分的两道钩沿符干错开约一格。只认出第一道的话
     // 十六分整批读成八分（实测补上第一道之后 `16th→eighth` 一下涨到 171 处）。
@@ -347,6 +348,17 @@ const KEY_GAP_FIRST = 2.0;
 
 /** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
 const TIME_TEMPLATE_DIST = 180;
+/** 几何闸收下的实心头，矮于这个数（线距的倍数）又压在符杠中线上的，是杠头。 */
+const BEAM_STUMP_H = 0.65;
+/** 按角色限定认拍号数字（见拍号那一段）：分子只在 2~9 里挑，分母只在 2、4、8 里挑。
+ *  距离上限：万古磐石歌的铅字「3」到 `timeSig3` 186/214，齐来谢主歌分母「4」181/230，
+ *  万古磐石歌分母「4」246/275（去线切得最狠）。 */
+const NUM_DIGITS = [2, 3, 4, 5, 6, 7, 8, 9] as const;
+const DEN_DIGITS = [2, 4, 8] as const;
+const TIME_NUM_DIST = 230;
+const TIME_DEN_DIST = 300;
+/** 派生的「9」要比别的数字近出这么多才采信（见 `digitOf`）。 */
+const NINE_MARGIN = 30;
 
 /** 空心符头允许离谱表多远（线距的倍数）。见 `inBand` 那段的说明。 */
 const HOLLOW_BAND = 3.0;
@@ -382,6 +394,13 @@ const FLAG_Y = 1.5;
  * 不是「这里墨很多」。
  */
 const FLAG_TIP = 0.05;
+/**
+ * 那一小截的**纵向长度**（线距的倍数）。原来 0.35：合唱谱那套符尾在尖端就贴着符干。
+ * 万古磐石歌那种老铅字的符尾从尖端**细细地**长出来，往下 0.3 格才变粗（放大后线距 22px，
+ * 尖端 8 行里符干右侧只有一两个像素），八分整批读成四分。
+ * 扫过 0.35 / 0.5 / **0.6**：万古磐石歌时值 22.4 / 23.0 / **31.6**%，别的曲子与合唱谱不动。
+ */
+const FLAG_TIP_Y = 0.6;
 /** 第二道钩（十六分）的门槛。比第一道**严**：那一段窗口里还可能扫到下一个音的符干或符头。 */
 const FLAG_INK2 = 0.3;
 
@@ -703,6 +722,9 @@ export async function recognizeRasterPage(
   // 三格是拐点。
   const inBand = (y: number) =>
     groups.some((g) => y > g.lines[0].y - unit.space * HOLLOW_BAND && y < g.lines[4].y + unit.space * HOLLOW_BAND);
+  /** 中心在某行谱五条线之外、隔着至少一格（延长记号只在这里出现）。 */
+  const offStaff = (y: number) =>
+    !groups.some((g) => y > g.lines[0].y - unit.space && y < g.lines[4].y + unit.space);
   const matchHollow = look.templates
     ? (box: Rect) => matchTemplate(binSig(nl, box), box.w / unit.space, box.h / unit.space, look.templates!)
     : null;
@@ -751,7 +773,21 @@ export async function recognizeRasterPage(
     restSyms.push({ box: b, code: restKind(b, lines, unit) });
   }
 
-  const heads = findRasterHeads(nl, blobs.filter((c) => !restIds.has(c.id) && !harmonyIds.has(c.id)), prims.vSegs, unit, onGrid, inBand, matchHollow);
+  /** 块的中心压在某条符杠的中线上（半个杠厚以内）：那是提走符杠之后剩下的杠头，不是符头。 */
+  const onBeamLine = (b: Rect) => {
+    const cxb = b.x + b.w / 2;
+    const cyb = b.y + b.h / 2;
+    return prims.beams.some((q) => {
+      if (cxb < Math.min(q.x0, q.x1) || cxb > Math.max(q.x0, q.x1)) return false;
+      const t = q.x1 === q.x0 ? 0 : (cxb - q.x0) / (q.x1 - q.x0);
+      return Math.abs(cyb - (q.y0 + (q.y1 - q.y0) * t)) <= Math.max(q.lw, unit.space * 0.25);
+    });
+  };
+  // 几何闸那一路同样要剔杠头：善牧恩慈歌放大后，符杠左端提剩的一截 0.86×0.6 格，
+  // 刚好卡过实心头的尺寸下限，出了个 F5。只剔**矮**的（不到 0.65 格）：贴着符杠、又被去线
+  // 削扁的真头中心也会落在杠的中线上（宁静的伯利恒三个 1.1×0.72 格的，门槛 0.75 时被剔掉）。
+  const heads = findRasterHeads(nl, blobs.filter((c) => !restIds.has(c.id) && !harmonyIds.has(c.id)), prims.vSegs, unit, onGrid, inBand, matchHollow, offStaff)
+    .filter((hd) => hd.code !== "noteheadBlack" || hd.box.h >= unit.space * BEAM_STUMP_H || !onBeamLine(hd.box));
   const claimed = new Set([...heads.map((h) => h.comp.id), ...restIds, ...harmonyIds]);
 
   // ── 空心符头：按**内腔（洞）**再找一遍 ───────────────────────────────────
@@ -1035,6 +1071,27 @@ export async function recognizeRasterPage(
   // 按连通块查必然是碎的——实测宁静 p1 那个 4/4 切成 1.60×2.76 与 1.60×1.71
   // 两个**互相重叠**的盒。所以照谱号那条路走：先按位置圈出候选、
   // 把碎块并回上下两个盒，再拿模板签名验。
+  /** 拍号数字模板，外加由「6」转 180° 派生的「9」（Maestro 那本没出现过 9，字形上 9 就是倒过来的 6）。 */
+  const digitTpl = (look.templates ?? []).filter((t) => timeSigDigit(t.smufl) >= 0);
+  digitTpl.push(...digitTpl.filter((t) => t.smufl === "timeSig6").map((t) => ({ ...t, smufl: "timeSig9" as SmuflName, sig: t.sig.slice().reverse() })));
+  /** 在 `allowed` 这几个数字里取签名最近的；尺寸只卡高度（宽度随字体差得多，签名按长边归一、不拉伸）。 */
+  const digitOf = (b: Rect, allowed: readonly number[], maxDist: number): RasterSym | null => {
+    const h = b.h / unit.space;
+    const sig = binSig(nl, b);
+    let best: { code: SmuflName; d: number } | null = null;
+    let bestNot9: { code: SmuflName; d: number } | null = null;
+    for (const t of digitTpl) {
+      if (!allowed.includes(timeSigDigit(t.smufl)) || Math.abs(t.h - h) > 0.2 + 0.12 * t.h) continue;
+      const d = sigDistance(t.sig, sig);
+      if (d > maxDist) continue;
+      if (!best || d < best.d) best = { code: t.smufl, d };
+      if (t.smufl !== "timeSig9" && (!bestNot9 || d < bestNot9.d)) bestNot9 = { code: t.smufl, d };
+    }
+    // 派生的「9」不是真字形，要**明显**近过别的数字才采信：万古磐石歌的铅字「3」上头带个球，
+    // 到 9 是 179、到 3 是 186，几乎打平；晨曦破晓真的 9 是 139 对 240。
+    if (best?.code === "timeSig9" && bestNot9 && bestNot9.d - best.d < NINE_MARGIN) best = bestNot9;
+    return best && { box: b, code: best.code };
+  };
   for (const g of groups) {
     const left = Math.max(...g.lines.map((l) => l.left));
     const mid = g.lines[2].y;
@@ -1102,7 +1159,18 @@ export async function recognizeRasterPage(
         // ——旧字体（《善牧恩慈歌》那种铅字本）的「4」只有 1.1 格宽，过不了 `timeSig4`
         // 模板的宽度闸，却以 141/166 的距离过了放宽到 180 的 `timeSig1`，整首读成 1/1。
         // 拒掉之后下游按缺省拍号办，比错成 1/1 强得多（1/1 让每个四分音符都「满小节」）。
-        if (two[0] && two[1] && timeSigDigit(two[0].code) >= 2) hits.push(two[0], two[1]);
+        // 分母同理只认 2、4、8：齐来谢主歌放大后分母「4」到 `timeSig1` 170、到 `timeSig4` 181，读成 4/1。
+        if (two[0] && two[1] && timeSigDigit(two[0].code) >= 2 && (DEN_DIGITS as readonly number[]).includes(timeSigDigit(two[1].code))) hits.push(two[0], two[1]);
+        else {
+          // **按角色限定再认一次**：别的书的数字字形与 Maestro 差得远（万古磐石歌、齐来谢主歌的
+          // 铅字「3」「4」只有 1.1~1.2 格宽，模板 1.5~1.6 格），过不了尺寸闸，最近的又总是
+          // 一根竖笔的 `timeSig1`。可位置先验已经钉死了这两格里是什么：分子是 2~9，
+          // 分母只有 2、4、8。于是只在合法的数字里取最近、尺寸只卡高度；分子认得出才认分母，
+          // 分母再放宽一档（被第二、四线横穿，去线切掉的最多）。
+          const num = digitOf(up, NUM_DIGITS, TIME_NUM_DIST);
+          const den = num ? digitOf(dn, DEN_DIGITS, TIME_DEN_DIST) : null;
+          if (num && den) hits.push(num, den);
+        }
       }
       if (!hits.length) continue;
       // 拍号**盖过字典**（与谱号同一条）：落在它盒里的字典结果作废，那是被切开的碎块
@@ -1391,6 +1459,10 @@ export async function recognizeRasterPage(
       const r = headFromStemBlock(raster.bin, b, c.area, masks, unit, pitchGrid, onLineY);
       if (!r) continue;
       stemHeads.push({ box: r.head, code: "noteheadBlack" });
+      for (const e of r.extra) {
+        stemHeads.push({ box: e, code: "noteheadBlack" });
+        ledger.claim(e, "stemblock:noteheadBlack");
+      }
       stemSegs.push({ x0: r.stemX, y0: r.stemY0, x1: r.stemX, y1: r.stemY1, lw: unit.lineThick, maxLw: unit.lineThick * 2 });
       ledger.claim(r.head, "stemblock:noteheadBlack");
     }
@@ -1432,16 +1504,7 @@ export async function recognizeRasterPage(
       if (w < CLF_W[0] || w > CLF_W[1] || h < CLF_H[0] || h > CLF_H[1]) continue;
       // 符杠的断头不是符头：块的中心压在某条符杠的中线上（半个杠厚以内）
       //（《是谁》朝下八分音符的符杠末端 1.06×0.48 格，判别器给过了，出了个 B3）
-      const cxb = b.x + b.w / 2;
-      const cyb = b.y + b.h / 2;
-      if (
-        prims.beams.some((q) => {
-          if (cxb < Math.min(q.x0, q.x1) || cxb > Math.max(q.x0, q.x1)) return false;
-          const t = q.x1 === q.x0 ? 0 : (cxb - q.x0) / (q.x1 - q.x0);
-          return Math.abs(cyb - (q.y0 + (q.y1 - q.y0) * t)) <= Math.max(q.lw, unit.space * 0.25);
-        })
-      )
-        continue;
+      if (onBeamLine(b)) continue;
       const gy = pitchGrid(b.y + b.h / 2);
       if (gy === null) continue;
       if (headProb(clf, raster.bin, masks, unit, b, gy, onLineY(gy)) < CLF_P) continue;
