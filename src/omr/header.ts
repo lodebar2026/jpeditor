@@ -27,8 +27,10 @@ export interface HeaderInfo {
   credits: string[];
   /** 调号五度圈数（识别到 "1=♭B" 等时给出，否则 undefined→上游用默认 0）。 */
   fifths?: number;
-  /** 速度（♩=NN），仅进 MusicXML（当前下游导入器不读 tempo，故不进 .jpwabc）。 */
+  /** 速度（♩=NN）→ `Song.tempos`。 */
   tempo?: number;
+  /** 速度的拍单位（`♩.=60` 为 3/8）；缺省即四分 1/4。→ `Song.tempoBeat`。 */
+  tempoBeat?: { num: number; den: number };
   /** 拍号分子/分母（识别到 "4/4" 等时给出，否则 undefined→上游用默认 4/4）。 */
   beats?: number;
   beatType?: number;
@@ -173,10 +175,13 @@ export function fifthsToKey(f: number | undefined): string {
 /** 一组连通块的并集包围盒（源图像素坐标）。 */
 const unionBox = (cs: Component[]): Rect => unionRects(cs.map((c) => c.bbox));
 
+/** 斜杠式拍号的几何：斜笔与左右的数字块（各 1~2 块，按 x 排）。 */
+interface SlashGroup { slash: Component; left: Component[]; right: Component[] }
+
 /** 从页眉小字区解析调号("1=♭B")与速度("♩=76")。OCR 常把 ♭→b、♩→J；页眉碎片散落，
  *  故按碎片就地匹配、必要时空间最近邻配对，避免跨列拼接误配。 */
 interface MetaInfo {
-  fifths?: number; tempo?: number; beats?: number; beatType?: number;
+  fifths?: number; tempo?: number; tempoDotted?: boolean; beats?: number; beatType?: number;
   meters?: { beats: number; beatType: number }[]; meterNote?: string;
   fifthsLine?: HLine; tempoLine?: HLine; timeBBox?: Rect;
 }
@@ -261,8 +266,9 @@ function parseMeta(lines: HLine[]): MetaInfo {
 
   // 速度：含 "=NN" 的碎片（♩/J 常与数字同块，如 "J=76"）。
   for (const l of lines) {
-    const t = l.text.match(/[=＝]\s*(\d{2,3})\b/);
-    if (t) { const bpm = parseInt(t[1], 10); if (bpm >= 30 && bpm <= 300) { res.tempo = bpm; res.tempoLine = l; break; } }
+    // 附点四分 `♩.=60`：♩ 常读成 J，附点读成 `.`/`·`
+    const t = l.text.match(/(?:[♩Jj]\s*([.·．]))?\s*[=＝]\s*(\d{2,3})\b/);
+    if (t) { const bpm = parseInt(t[2], 10); if (bpm >= 30 && bpm <= 300) { res.tempo = bpm; res.tempoDotted = !!t[1]; res.tempoLine = l; break; } }
   }
 
   // 混合拍：并排印着好几个竖排拍号（"4/4 3/4 5/4 混合拍"）。det 把上下两排各读成一行
@@ -587,7 +593,7 @@ export async function recognizeHeader(
    *  从左到右「`1` `=`」「上标升降号 + 音名」「拍号」「♩=速度」。两个锚点：
    *  - **`=`**：两道上下对齐的扁横，左边紧挨一个读得出 1 的块——`二`/`三` 的横笔、`♩=95` 的 `=` 都靠这一条挡掉；
    *    音名组取 `=` 右侧紧挨着的块。
-   *  - **拍号**：几何法认出的页眉分数拍号（geoMeters），音名组取它左侧紧挨着的块（不写 `1=` 的谱）。 */
+   *  - **拍号**：几何法认出的页眉分数拍号（geoMeters）或斜杠式拍号，音名组取它左侧紧挨着的块（不写 `1=` 的谱）。 */
   /** 斜杠 `/`：墨集中在右上—左下那条对角带上（左上、右下两角基本空着）。 */
   function isSlash(b: Rect): boolean {
     let diag = 0, off = 0;
@@ -601,41 +607,173 @@ export async function recognizeHeader(
     return diag >= 8 && off <= diag * 0.15;
   }
 
-  async function keyByGlyphs(titleLine: HLine | null): Promise<{ fifths: number; bbox: Rect } | undefined> {
+  /** `=` 的一道横：扁、薄、不比一个字宽。 */
+  function isBar(k: Component): boolean {
+    return k.bbox.w >= k.bbox.h * 2.5 && k.bbox.h <= numH * 0.25 && k.bbox.w >= numH * 0.2 && k.bbox.w <= numH * 1.2;
+  }
+
+  /** 页眉里第一谱行之上、中心在 xMax 左边、yMin 以下的字号大小的块（高不过 maxH 字号），按 x 排好。 */
+  function glyphPool(xMax: number, yMin: number, maxH = 2): Component[] {
+    const yMax = firstStaffTopY - numH * 0.1;
+    return comps
+      .filter((k) => rcyOf(k.bbox) >= yMin && rcyOf(k.bbox) <= yMax && k.cx < xMax && k.bbox.h <= numH * maxH && k.bbox.w <= numH * 2)
+      .sort((a, b) => a.bbox.x - b.bbox.x);
+  }
+
+  /** 池里的 `=`：两道上下对齐的扁横。 */
+  function eqSigns(pool: Component[]): Rect[] {
+    const bars = pool.filter(isBar);
+    const out: Rect[] = [];
+    for (const a of bars) for (const b of bars) {
+      const dy = rcyOf(b.bbox) - rcyOf(a.bbox);
+      if (a === b || dy <= 0 || dy > numH * 0.5 || overlapRatioX(a.bbox, b.bbox) < 0.6) continue;
+      out.push(unionRect(a.bbox, b.bbox));
+    }
+    return out;
+  }
+
+  /** 从 edge 起沿 dir 方向取紧挨着的块（至多 max 块），碰到横线、skip 里的块或比字宽还大的空当就停；
+   *  超过 max 块返回空（不是一个孤立的符号组）。 */
+  function chainFrom(pool: Component[], edge: number, dir: 1 | -1, band: Rect, firstGap: number,
+    max = 3, skip: (k: Component) => boolean = () => false): Component[] {
+    const cands = pool
+      .filter((k) => !isBar(k) && !skip(k) && (dir > 0 ? k.bbox.x >= edge : k.bbox.x + k.bbox.w <= edge))
+      .filter((k) => k.bbox.y <= band.y + band.h && k.bbox.y + k.bbox.h >= band.y)
+      .sort((a, b) => dir * (a.bbox.x - b.bbox.x));
+    const group: Component[] = [];
+    let cur = edge;
+    for (const k of cands) {
+      const gap = dir > 0 ? k.bbox.x - cur : cur - (k.bbox.x + k.bbox.w);
+      const gh = group.length ? Math.max(...group.map((g) => g.bbox.h)) : 0;
+      if (gap > (group.length ? Math.max(4, gh * 0.6) : firstGap)) break;
+      group.push(k);
+      cur = dir > 0 ? Math.max(cur, k.bbox.x + k.bbox.w) : Math.min(cur, k.bbox.x);
+      if (group.length > max) return [];
+    }
+    return dir > 0 ? group : group.reverse();
+  }
+
+  /** 斜杠式拍号的几何：一块斜笔、左右半个字号内各有同高的数字块（分子/分母可两位：`12/8`）。 */
+  function slashGroups(pool: Component[]): SlashGroup[] {
+    const out: SlashGroup[] = [];
+    for (const sl of pool) {
+      const sb = sl.bbox;
+      if (sb.h < numH * 0.4 || sb.w > sb.h * 0.8 || !isSlash(sb)) continue;
+      const digitLike = (k: Component) => k !== sl && k.bbox.h >= sb.h * 0.5 && k.bbox.h <= sb.h * 1.5 && overlapRatioY(k.bbox, sb) >= 0.5;
+      // 各取最近的一块（间隙 ≤ 半个字号）；紧贴着（≤0.3 斜杠高）还有一块就是两位数
+      const gapOf = (k: Component, edge: number, dir: 1 | -1) => (dir > 0 ? k.bbox.x - edge : edge - (k.bbox.x + k.bbox.w));
+      const nearest = (edge: number, dir: 1 | -1, maxGap: number, not?: Component) => pool
+        .filter((k) => k !== not && !isBar(k) && digitLike(k) && gapOf(k, edge, dir) >= -2 && gapOf(k, edge, dir) <= maxGap)
+        .sort((p, q) => gapOf(p, edge, dir) - gapOf(q, edge, dir))[0];
+      const side = (dir: 1 | -1): Component[] => {
+        const a = nearest(dir > 0 ? sb.x + sb.w : sb.x, dir, numH * 0.5);
+        if (!a) return [];
+        const b = nearest(dir > 0 ? a.bbox.x + a.bbox.w : a.bbox.x, dir, sb.h * 0.3, a);
+        return !b ? [a] : dir > 0 ? [a, b] : [b, a];
+      };
+      const left = side(-1), right = side(1);
+      if ((globalThis as { __omrDebug?: boolean }).__omrDebug) console.log("[header/slash]", `${sb.x},${sb.y} ${sb.w}x${sb.h}`, left.length, right.length);
+      if (left.length && right.length) out.push({ slash: sl, left, right });
+    }
+    return out;
+  }
+
+  /** **斜杠式拍号按字形读**（`4/4`、`6/8`、`12/8`）：斜杠左右的数字逐块按 0–9 读，拼成数，
+   *  合法拍号才收。det 文本行那路要整行读对才认得出，小字、与调号挤在一起时常读散。
+   *  左边紧贴斜杠的两块未必都是分子（`E4/4` 的 E 也贴得很近）：两位读不通就只取贴斜杠那一块。
+   *  **会改写 `g.left`** 为实际的分子块（读不出时只留贴斜杠那块）——调号锚点二从它左边找音名。 */
+  async function slashMeters(groups: SlashGroup[]): Promise<{ beats: number; beatType: number; bbox: Rect }[]> {
+    const out: { beats: number; beatType: number; bbox: Rect }[] = [];
+    for (const g of groups) {
+      const adj = g.left.slice(-1);
+      if (!ocr.recognizeNumerals) { g.left = adj; continue; }
+      const ds = await ocr.recognizeNumerals(bin, [...g.left, ...g.right].map((k) => k.bbox));
+      const dn = ds.slice(g.left.length);
+      const beatType = dn.some((d) => d === undefined) ? NaN : Number(dn.join(""));
+      let up = ds.slice(0, g.left.length);
+      if (up.some((d) => d === undefined) || !validBeats(Number(up.join("")))) { up = up.slice(-1); g.left = adj; }
+      const beats = up.some((d) => d === undefined) ? NaN : Number(up.join(""));
+      if (!validBeats(beats) || !validBeatType(beatType)) { g.left = adj; continue; }
+      out.push({ beats, beatType, bbox: unionRects([...g.left, g.slash, ...g.right].map((k) => k.bbox)) });
+    }
+    return out;
+  }
+
+  /** 速度记号里的音符 ♩：竖长、符头在下（底部三成的平均墨宽明显大于上半截）、上半截有竖笔。
+   *  只需与数字 `1` 分开——带底衬线的 `1` 只有最后一两行宽，平均下来仍窄。数字模型分不开这两个
+   * （♩ 整个读成 1），只能靠形状。 */
+  function isNoteGlyph(b: Rect): boolean {
+    if (b.h < numH * 0.5 || b.h < b.w * 1.6) return false;
+    const x0 = Math.round(b.x), x1 = Math.round(b.x + b.w), y0 = Math.round(b.y), y1 = Math.round(b.y + b.h);
+    const inkW = (y: number) => { let n = 0; for (let x = x0; x < x1; x++) if (bin.data[y * bin.w + x]) n++; return n; };
+    const avg = (ya: number, yb: number) => { let s = 0; for (let y = ya; y < yb; y++) s += inkW(y); return s / Math.max(1, yb - ya); };
+    const h = y1 - y0;
+    const top = avg(y0, y0 + Math.round(h * 0.5)), bottom = avg(y1 - Math.round(h * 0.3), y1);
+    return top >= 1 && bottom >= top * 2 && bottom >= b.w * 0.5;
+  }
+
+  /** **速度 `♩=NN` 按字形读**：`=` 左边紧挨一个音符 ♩（中间可夹附点；`=` 的中线落在它的纵向范围里），
+   *  右边 2~3 位数字按 0–9 读。
+   *  搜整个页眉宽（速度有印在右侧的）。附点四分记拍单位 3/8（同 ABC `Q:3/8=60`）。 */
+  async function tempoByGlyphs(): Promise<{ bpm: number; beat: { num: number; den: number }; bbox: Rect } | undefined> {
+    if (!ocr.recognizeNumerals) return undefined;
+    // ♩ 连符干比数字高得多（再次将我更新的 ♩ 超过两个字号），高度上限放宽
+    const pool = glyphPool(bin.w, 0, 4);
+    const dbg = (globalThis as { __omrDebug?: boolean }).__omrDebug;
+    for (const eq of eqSigns(pool)) {
+      const gapL = (k: Component, edge: number) => edge - (k.bbox.x + k.bbox.w);
+      const leftOf = (edge: number, maxGap: number) => pool
+        .filter((k) => !isBar(k) && gapL(k, edge) >= -1 && gapL(k, edge) <= maxGap && rcyOf(eq) >= k.bbox.y && rcyOf(eq) <= k.bbox.y + k.bbox.h)
+        .sort((p, q) => gapL(p, edge) - gapL(q, edge))[0];
+      // 先找 ♩（留出附点的空当），再看它与 `=` 之间有没有附点：小而近圆的一块、落在 ♩ 下半截——
+      // 附点比 `=` 的中线低，不能与 ♩ 同一条纵向判据找。
+      const note = leftOf(eq.x, numH * 1.2);
+      const nr = note ? note.bbox.x + note.bbox.w : 0;
+      const dot = note && pool.find((k) => k !== note && k.bbox.w <= numH * 0.35 && k.bbox.h <= numH * 0.35 &&
+        k.bbox.w <= k.bbox.h * 1.8 && k.bbox.h <= k.bbox.w * 1.8 && k.bbox.x >= nr - 1 && k.bbox.x + k.bbox.w <= eq.x + 1 &&
+        rcyOf(k.bbox) >= note.bbox.y + note.bbox.h * 0.5 && rcyOf(k.bbox) <= note.bbox.y + note.bbox.h);
+      const dotted = !!dot;
+      if (note && (dot ? dot.bbox.x - nr > numH * 0.5 || eq.x - (dot.bbox.x + dot.bbox.w) > numH * 0.8 : eq.x - nr > numH * 0.8)) continue;
+      if (dbg) console.log("[header/tempoEq]", `eq ${eq.x},${eq.y} ${eq.w}x${eq.h}`, note ? `note ${note.bbox.x},${note.bbox.y} ${note.bbox.w}x${note.bbox.h} ${isNoteGlyph(note.bbox)}` : "no-note", dotted ? "dotted" : "");
+      if (!note || !isNoteGlyph(note.bbox)) continue;
+      // 数字逐位往右取：第一位要与 `=` 同一排，其后各位与第一位同高同排——速度常紧挨着印在拍号下面
+      //（天上有粮 `♩=110` 的 0 顶着 `4/4` 的分母 4），按块链着取会把拍号也带进来。
+      const digits: Component[] = [];
+      for (let edge = eq.x + eq.w; digits.length <= 3; ) {
+        const ref = digits[0];
+        const next = pool
+          .filter((k) => !isBar(k) && k.bbox.x >= edge - 1 && k.bbox.h >= numH * 0.4 && (ref
+            ? overlapRatioY(k.bbox, ref.bbox) >= 0.6 && Math.abs(k.bbox.h - ref.bbox.h) <= ref.bbox.h * 0.3
+            : rcyOf(eq) >= k.bbox.y && rcyOf(eq) <= k.bbox.y + k.bbox.h))
+          .sort((p, q) => p.bbox.x - q.bbox.x)[0];
+        if (!next || next.bbox.x - edge > (ref ? Math.max(4, ref.bbox.h * 0.6) : numH * 0.8)) break;
+        digits.push(next);
+        edge = next.bbox.x + next.bbox.w;
+      }
+      if (dbg) console.log("[header/tempoChain]", digits.map((k) => `${k.bbox.x},${k.bbox.y} ${k.bbox.w}x${k.bbox.h}`).join(" | "));
+      if (digits.length < 2 || digits.length > 3) continue;
+      const ds = await ocr.recognizeNumerals(bin, digits.map((k) => k.bbox));
+      if (dbg) console.log("[header/tempoDigits]", ds.join(","));
+      if (ds.some((d) => d === undefined)) continue;
+      const bpm = Number(ds.join(""));
+      if (bpm < 30 || bpm > 300) continue;
+      return { bpm, beat: dotted ? { num: 3, den: 8 } : { num: 1, den: 4 }, bbox: unionRects([note.bbox, eq, ...digits.map((k) => k.bbox)]) };
+    }
+    return undefined;
+  }
+
+  async function keyByGlyphs(titleLine: HLine | null, slashes: SlashGroup[]): Promise<{ fifths: number; bbox: Rect } | undefined> {
     const xMax = titleLine ? titleLine.cx : bin.w / 2;
     const yMin = titleLine ? titleLine.bbox.y : 0, yMax = firstStaffTopY - numH * 0.1;
     const inMeter = (k: Component) => !!geoMeters?.some((m) => overlapRatioX(m.bbox, k.bbox) > 0.5 &&
       rcyOf(k.bbox) >= m.bbox.y && rcyOf(k.bbox) <= m.bbox.y + m.bbox.h);
-    const pool = comps
-      .filter((k) => rcyOf(k.bbox) >= yMin && rcyOf(k.bbox) <= yMax && k.cx < xMax && k.bbox.h <= numH * 2 && k.bbox.w <= numH * 2)
-      .sort((a, b) => a.bbox.x - b.bbox.x);
-    const isBar = (k: Component) => k.bbox.w >= k.bbox.h * 2.5 && k.bbox.h <= numH * 0.25 && k.bbox.w >= numH * 0.2 && k.bbox.w <= numH * 1.2;
-    const bars = pool.filter(isBar);
+    const pool = glyphPool(xMax, yMin);
     const dbg = (globalThis as { __omrDebug?: boolean }).__omrDebug;
     /** 从 `from` 起沿 dir 方向取紧挨着的块（1~3 块），碰到横线、拍号块或比字宽还大的空当就停。 */
-    const chain = (edge: number, dir: 1 | -1, band: Rect, firstGap: number): Component[] => {
-      const cands = pool
-        .filter((k) => !isBar(k) && !inMeter(k) && (dir > 0 ? k.bbox.x >= edge : k.bbox.x + k.bbox.w <= edge))
-        .filter((k) => k.bbox.y <= band.y + band.h && k.bbox.y + k.bbox.h >= band.y)
-        .sort((a, b) => dir * (a.bbox.x - b.bbox.x));
-      const group: Component[] = [];
-      let cur = edge;
-      for (const k of cands) {
-        const gap = dir > 0 ? k.bbox.x - cur : cur - (k.bbox.x + k.bbox.w);
-        const gh = group.length ? Math.max(...group.map((g) => g.bbox.h)) : 0;
-        if (gap > (group.length ? Math.max(4, gh * 0.6) : firstGap)) break;
-        group.push(k);
-        cur = dir > 0 ? Math.max(cur, k.bbox.x + k.bbox.w) : Math.min(cur, k.bbox.x);
-        if (group.length > 3) return [];
-      }
-      return dir > 0 ? group : group.reverse();
-    };
+    const chain = (edge: number, dir: 1 | -1, band: Rect, firstGap: number) => chainFrom(pool, edge, dir, band, firstGap, 3, inMeter);
 
     // 锚点一：`1` `=`（音名在右）；也有反着印的 `C=1`（从前所珍爱，音名在左、`1` 在右）
-    for (const a of bars) for (const b of bars) {
-      const dy = rcyOf(b.bbox) - rcyOf(a.bbox);
-      if (a === b || dy <= 0 || dy > numH * 0.5 || overlapRatioX(a.bbox, b.bbox) < 0.6) continue;
-      const eq = unionRect(a.bbox, b.bbox);
+    for (const eq of eqSigns(pool)) {
       for (const dir of [1, -1] as const) {
         const gapTo = (k: Component) => (dir > 0 ? eq.x - (k.bbox.x + k.bbox.w) : k.bbox.x - (eq.x + eq.w));
         const one = pool
@@ -660,17 +798,8 @@ export async function recognizeHeader(
       if (rcyOf(m.bbox) < yMin || rcyOf(m.bbox) > yMax || m.bbox.x + m.bbox.w / 2 > xMax) continue;
       starts.push({ x: m.bbox.x, band: { x: m.bbox.x, y: m.bbox.y + m.bbox.h * 0.2, w: m.bbox.w, h: m.bbox.h * 0.6 }, what: `${m.beats}/${m.beatType}` });
     }
-    for (const sl of pool) {
-      const sb = sl.bbox;
-      if (sb.h < numH * 0.4 || sb.w > sb.h * 0.8 || !isSlash(sb)) continue;
-      const side = (dir: 1 | -1) => pool.filter((k) => k !== sl && !isBar(k) &&
-        (dir > 0 ? k.bbox.x - (sb.x + sb.w) : sb.x - (k.bbox.x + k.bbox.w)) >= -2 &&
-        (dir > 0 ? k.bbox.x - (sb.x + sb.w) : sb.x - (k.bbox.x + k.bbox.w)) <= numH * 0.5 &&
-        k.bbox.h >= sb.h * 0.5 && k.bbox.h <= sb.h * 1.5 && overlapRatioY(k.bbox, sb) >= 0.5)
-        .sort((p, q) => dir * (p.bbox.x - q.bbox.x))[0];
-      const l = side(-1), r = side(1);
-      if (dbg) console.log("[header/keySlash]", `${sb.x},${sb.y} ${sb.w}x${sb.h}`, l ? "L" : "-", r ? "R" : "-");
-      if (!l || !r) continue;
+    for (const s of slashes) {
+      const l = s.left[0], r = s.right[s.right.length - 1];
       starts.push({ x: l.bbox.x, band: unionRect(l.bbox, r.bbox), what: "slash" });
     }
     for (const st of starts.sort((a, b) => a.x - b.x)) {
@@ -896,8 +1025,11 @@ export async function recognizeHeader(
     // 调号**按单字符 + 位置为主**（keyByGlyphs：`1=` 或拍号当锚点，字符集封闭、语义全在几何）；
     // 认不出才用 det 文本行（parseMeta）——「D 大调」这类不写 `1=`、也不挨着拍号的写法（8085）只有文本路认得。
     // testdata 52 首两路都认出的逐首一致。
+    // 斜杠式拍号先读（keyByGlyphs 的锚点二要用它改写过的分子块）：与调号同一个池——标题中线左侧、标题那一排往下。
+    const slashes = slashGroups(glyphPool(titleLine ? titleLine.cx : bin.w / 2, titleLine ? titleLine.bbox.y : 0));
+    const glyphSlash = await slashMeters(slashes);
     const textFifths = meta.fifths;
-    const g = await keyByGlyphs(titleLine);
+    const g = await keyByGlyphs(titleLine, slashes);
     const glyphKeyBox = g?.bbox;
     if (g) { probe("key.glyphs"); meta.fifths = g.fifths; }
     else if (meta.fifths !== undefined) probe("key.text");
@@ -905,15 +1037,38 @@ export async function recognizeHeader(
     if ((globalThis as { __keyGlyphProbe?: boolean }).__keyGlyphProbe) {
       console.log("[keyProbe]", JSON.stringify({ text: textFifths ?? null, glyph: g?.fifths ?? null, bbox: g?.bbox ?? null, numH }));
     }
+    // 速度同样**按字形为主**（tempoByGlyphs：`=` 左边是 ♩、右边数字按 0–9 读），认不出才用 det 文本行。
+    const tg = await tempoByGlyphs();
+    // 字形拍号：竖排（geoMeters）+ 斜杠式，按 x 排，框交叠的只留竖排那个
+    const glyphMeters = [...(geoMeters ?? []),
+      ...glyphSlash.filter((m) => !geoMeters?.some((q) => overlapRatioX(q.bbox, m.bbox) > 0 && overlapRatioY(q.bbox, m.bbox) > 0))]
+      .sort((a, b) => a.bbox.x - b.bbox.x);
+    if ((globalThis as { __metaGlyphProbe?: boolean }).__metaGlyphProbe) {
+      const ms = (xs?: { beats: number; beatType: number }[]) => (xs ?? []).map((m) => `${m.beats}/${m.beatType}`).join(" ");
+      console.log("[metaProbe]", JSON.stringify({
+        textMeter: ms(meta.meters), glyphMeter: ms(glyphMeters), slash: ms(glyphSlash),
+        textTempo: meta.tempo === undefined ? null : `${meta.tempoDotted ? "3/8" : "1/4"}=${meta.tempo}`,
+        glyphTempo: tg ? `${tg.beat.num}/${tg.beat.den}=${tg.bpm}` : null,
+      }));
+    }
     out.fifths = meta.fifths;
-    out.tempo = meta.tempo;
+    if (tg) {
+      probe("tempo.glyphs");
+      out.tempo = tg.bpm;
+      if (tg.beat.den !== 4) out.tempoBeat = tg.beat;
+    } else if (meta.tempo !== undefined) {
+      probe("tempo.text");
+      out.tempo = meta.tempo;
+      if (meta.tempoDotted) out.tempoBeat = { num: 3, den: 8 };
+    }
     out.beats = meta.beats;
     out.beatType = meta.beatType;
     out.meters = meta.meters;
     out.meterNote = meta.meterNote;
     const keyBox = glyphKeyBox ?? meta.fifthsLine?.bbox;
     if (meta.fifths !== undefined && keyBox) out.regions.push({ text: `1=${fifthsToKey(meta.fifths)}`, bbox: keyBox });
-    if (meta.tempo !== undefined && meta.tempoLine) out.regions.push({ text: `♩=${meta.tempo}`, bbox: meta.tempoLine.bbox });
+    const tempoBox = tg?.bbox ?? meta.tempoLine?.bbox;
+    if (out.tempo !== undefined && tempoBox) out.regions.push({ text: `♩${out.tempoBeat ? "." : ""}=${out.tempo}`, bbox: tempoBox });
     // 署名只印一个名字、不带「词/曲」的：迦南诗选每页右上角都印着「迦南诗歌」，与调号同一排、
     // 位置正是别的歌本印「作词/作曲」的地方，上面几条认职能词的规则一条都挨不上，整行被丢掉。
     // 判据：纯汉字短行（2~8 字）、不是标题/副标题、**整行落在页面右侧 40% 里**、与调号行同一排、
@@ -948,16 +1103,18 @@ export async function recognizeHeader(
     // 紧框单独读；det 却是整片页眉缩到 960 边长再检测，小号拍号数字的框常只套住半截——迦南诗选
     // 1773/1784 上面那个 4 只框到中下截（{155,195,14,14}，字实为 {153,187,20,26}），读成 "2"，
     // 拍号成了 2/4。38 张实测几何法认出的竖排拍号无一读错，与 det 不一致的两处都是几何法对。
-    // det 那路只在它**数出来的更多**时胜出：斜杠式、与调号同块的写法几何法根本不触发。
-    if (geoMeters && geoMeters.length > 0 && geoMeters.length >= (meta.meters?.length ?? 0)) {
-      probe(geoMeters.length > (meta.meters?.length ?? 0) ? "meter.geoMore" : "meter.geoTie");
-      out.meters = geoMeters.map((m) => ({ beats: m.beats, beatType: m.beatType }));
-      out.beats = geoMeters[0].beats;
-      out.beatType = geoMeters[0].beatType;
+    // 斜杠式拍号同样按字形读（slashMeters：斜杠左右的数字逐块按 0–9 读），与竖排的合成「字形拍号」。
+    // det 那路只在它**数出来的更多**时胜出：与调号同块、斜杠读不开的写法字形路不触发。
+    if (glyphMeters.length > 0 && glyphMeters.length >= (meta.meters?.length ?? 0)) {
+      probe(glyphMeters.length > (meta.meters?.length ?? 0) ? "meter.geoMore" : "meter.geoTie");
+      if (glyphSlash.length) probe("meter.slash");
+      out.meters = glyphMeters.map((m) => ({ beats: m.beats, beatType: m.beatType }));
+      out.beats = glyphMeters[0].beats;
+      out.beatType = glyphMeters[0].beatType;
       // 拍号说明（「混合拍」）照旧从 det 文本里取：det 那路没凑出拍号，meterNote 也就没给。
       // 说明后面常还印着速度（1727《主为我》det 读成 `1=c4混合拍J=75`），故容一段速度标记再收尾。
       out.meterNote ??= ls.map((l) => /([一-鿿]{1,4}拍)\s*(?:[♩♪Jj]?\s*[=＝]\s*\d{1,3})?\s*$/.exec(l.text.trim())?.[1]).find(Boolean);
-      const bbox = geoMeters.map((m) => m.bbox).reduce((a, b) => unionRect(a, b));
+      const bbox = glyphMeters.map((m) => m.bbox).reduce((a, b) => unionRect(a, b));
       out.regions.push({ text: out.meters.map((m) => `${m.beats}/${m.beatType}`).join(" "), bbox });
       return;
     }

@@ -96,6 +96,7 @@ export const GlyphCodes = {
   dynamicNiente: String.fromCharCode(0xe526),
   // Metronome（节拍记号音符）
   metNoteQuarterUp: String.fromCharCode(0xeca5),
+  metAugmentationDot: String.fromCharCode(0xecb7),
 };
 
 const codeToName: Record<string, string> = {
@@ -174,6 +175,7 @@ const codeToName: Record<string, string> = {
   [GlyphCodes.dynamicZ]: "dynamicZ",
   [GlyphCodes.dynamicNiente]: "dynamicNiente",
   [GlyphCodes.metNoteQuarterUp]: "metNoteQuarterUp",
+  [GlyphCodes.metAugmentationDot]: "metAugmentationDot",
 };
 
 export function glyphCodeName(c: string): string | undefined {

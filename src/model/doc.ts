@@ -656,7 +656,7 @@ export interface Direction {
   /** 力度名（`f` / `mf`…）或文字内容 */
   text?: string;
   /** `<metronome>`：♩=76。`perMinuteText` 是 `<per-minute>` 不是纯数字时的原文（「132 温馨、期盼的」） */
-  tempo?: { beatUnit?: NoteType; perMinute?: number; perMinuteText?: string };
+  tempo?: { beatUnit?: NoteType; beatUnitDot?: boolean; perMinute?: number; perMinuteText?: string };
   /** wedge / pedal / octave-shift 的起止，与 `Mark` 配对用 */
   spanType?: "start" | "stop" | "continue";
   /** `<wedge type>`：crescendo / diminuendo */
@@ -910,6 +910,9 @@ export interface Song {
   timeNote?: string;
   /** 速度：数字为 BPM，字符串为文字术语（「欢快地」）。两者可并存 */
   tempos?: (number | string)[];
+  /** `tempos` 里数字速度的拍单位（附点四分 `♩.=60` 为 3/8，同 ABC `Q:3/8=60`）。缺省即四分 1/4。
+   *  `.jpwabc` 与文本谱写不下拍单位，写出时换成四分等值（`model/jianpu.ts::quarterTempos`）。 */
+  tempoBeat?: { num: number; den: number };
   /** [五线谱] */
   defaults?: Defaults;
   /** [五线谱] */

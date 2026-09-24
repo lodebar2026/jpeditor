@@ -34,7 +34,7 @@ import { DYNAMICS, TERMS } from "../pu/glyph";
 import { STEPS, keyAlter, tonicStep } from "../score/jppitch";
 import { PU_LYRIC_PUNCTUATION } from "../common/cjkpunct";
 import { projectForJianpu } from "./jianpuproject";
-import { fillDegreesFromPitch, harmonyText, keySpelling, melodyLane, topNote } from "./jianpu";
+import { fillDegreesFromPitch, harmonyText, keySpelling, melodyLane, quarterTempos, topNote } from "./jianpu";
 import { ownIds, ownMarks, systemRanges, type SystemRange } from "./emitutil";
 import { relayoutDocBreaks } from "./relayout";
 import { decoKey } from "./deconames";
@@ -133,7 +133,7 @@ function headerLines(song: Song, d: DialectSpec, opts: EmitPuOptions): string[] 
     const note = song.timeNote ? ` ${song.timeNote}` : "";
     L.push(`${tonic}=${key}${meter}${meter ? note : ""}`);
   }
-  if (song.tempos?.length) L.push(`${h.tempoField}:${song.tempos.join(" ")}`);
+  if (song.tempos?.length) L.push(`${h.tempoField}:${quarterTempos(song).join(" ")}`);
   if (d.emit.pageFields) {
     for (const [field, arr] of [
       ["TL", pt?.topLeft], ["TR", pt?.topRight],

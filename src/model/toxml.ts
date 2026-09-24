@@ -411,6 +411,7 @@ function directionPartXml(o: Out, d: number, dir: DirectionPart): void {
     case "metronome":
       o.push(d, `<metronome${lay}>`);
       o.push(d + 1, tag("beat-unit", dir.tempo?.beatUnit ?? "quarter"));
+      if (dir.tempo?.beatUnitDot) o.push(d + 1, "<beat-unit-dot/>");
       o.push(d + 1, tag("per-minute", dir.tempo?.perMinuteText ?? dir.tempo?.perMinute ?? 90));
       o.push(d, "</metronome>");
       break;

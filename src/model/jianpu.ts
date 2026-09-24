@@ -393,3 +393,11 @@ export function tieTargets(part: Part): Map<Note, { chord: Chord; note: Note }> 
   }
   return out;
 }
+
+/** 速度按**四分等值**：`tempoBeat` 为 3/8（附点四分）时 `♩.=60` → 90。试听与写不下拍单位的
+ *  格式（`.jpwabc`、文本谱只认 ♩）都取这一份，速度快慢才不变；文字术语原样。 */
+export function quarterTempos(song: Song): (number | string)[] {
+  const b = song.tempoBeat;
+  if (!b || b.num * 4 === b.den) return [...(song.tempos ?? [])];
+  return (song.tempos ?? []).map((t) => (typeof t === "number" ? Math.round((t * 4 * b.num) / b.den) : t));
+}

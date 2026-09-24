@@ -456,6 +456,13 @@ export function paddleOcrBackend(): OcrBackend {
         return opts?.rhythm && /^[XxＸｘ×]$/.test(text) ? RHYTHM_DIGIT : 0;
       });
     },
+    async recognizeNumerals(bin: Binary, rects: Rect[]): Promise<(number | undefined)[]> {
+      if (!rects.length) return [];
+      await ensureSession();
+      const src = surfaceFromBinary(bin);
+      const texts = await recognizeDigitCells(rects.map((r) => cellOf(src, bin, r)));
+      return texts.map((t) => (/^[0-9]$/.test(t) ? Number(t) : undefined));
+    },
     async rankDigits(bin: Binary, rects: Rect[]): Promise<number[][]> {
       if (!rects.length) return [];
       await ensureSession();

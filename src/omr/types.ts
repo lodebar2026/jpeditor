@@ -156,6 +156,7 @@ export interface RecognizedScore {
   subtitle?: string;
   credits?: string[]; // 著作者整行文本（作词/作曲…），→ `identification.creators`（123 `C:`）
   tempo?: number; // 速度 ♩=NN → `Song.tempos`（123 `Q:1/4=NN`）
+  tempoBeat?: { num: number; den: number }; // 速度的拍单位（附点四分 `♩.=` 为 3/8），缺省四分 → `Song.tempoBeat`
   headerRegions?: TextRegion[]; // 页眉文本的源图定位（识别模式按原位叠加）
   lyricRegions?: TextRegion[]; // 歌词单字的源图定位+字号（识别模式按原图位置/大小叠加）
   chordRegions?: TextRegion[]; // 和弦记号的源图定位（识别模式按原位叠加）

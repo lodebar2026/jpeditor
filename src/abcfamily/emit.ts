@@ -577,7 +577,8 @@ export abstract class AbcFamilyEmitter {
     if (mt) L.push(`M:${mt}`);
     L.push(...this.headerExtra(song));
     for (const t of song.tempos ?? []) {
-      L.push(typeof t === "number" ? `Q:1/4=${t}` : `Q:"${t}"`);
+      const beat = song.tempoBeat ? `${song.tempoBeat.num}/${song.tempoBeat.den}` : "1/4";
+      L.push(typeof t === "number" ? `Q:${beat}=${t}` : `Q:"${t}"`);
     }
     // 页眉页脚（文本谱的 `XL/XR/TL/TR/BL/BC/BR`）。ABC 没有对应字段，走它的 `I:` 扩展点——
     // 规范 §3 写明未识别的 `I:` 会被忽略，所以这样扩展是安全的。语料里 绝大多数用到，不能丢。

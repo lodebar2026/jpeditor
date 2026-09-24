@@ -49,6 +49,7 @@ import {
   parseLinebreak,
   parsePlayOrder,
   parseTempo,
+  parseTempoBeat,
   parseTime,
   parseTimes,
   type FieldLine,
@@ -1314,11 +1315,15 @@ function applyField(
       }
       break;
     }
-    case "Q":
+    case "Q": {
       // **追加不覆盖**：源里常有两条（`Q:1/4=130` 与 `Q:"热情地"`），
       // 直接赋值会让后一条把前一条顶掉，往返一轮速度就丢了
       song.tempos = [...(song.tempos ?? []), ...parseTempo(f.value)];
+      // 拍单位（`Q:3/8=60` 附点四分）另记，缺省四分
+      const tb = parseTempoBeat(f.value);
+      if (tb) song.tempoBeat = tb;
       break;
+    }
     case "V":
       startPart(f.voice ?? 1);
       break;

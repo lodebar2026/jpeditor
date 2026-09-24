@@ -18,11 +18,11 @@
 
 import type {
   Barline, BeamVal, Chord, Direction, Element, ElementId, Lyric, Mark, Measure, Notations, Part,
-  SourceOrnament, Song,
+  NoteType, SourceOrnament, Song,
 } from "./doc";
 import { SIMPLE_DIVISIONS } from "./doc";
 import { Fraction, lcm } from "../common/fraction";
-import { AccidentalCarry } from "./jianpu";
+import { AccidentalCarry, quarterTempos } from "./jianpu";
 import { MusicCommon } from "../score/jppitch";
 import { typeOfDuration } from "../score/xmlutil";
 import { DYNAMICS, TERMS } from "../pu/glyph";
@@ -218,12 +218,22 @@ function creditsOf(song: Song): NonNullable<Song["credits"]> {
   return out;
 }
 
+/** 速度拍单位的分母 → MusicXML `beat-unit`（1/8 → eighth）。 */
+const UNIT_OF_DEN: Readonly<Record<number, NoteType>> = { 1: "whole", 2: "half", 4: "quarter", 8: "eighth", 16: "16th" };
+
 function tempoDirection(song: Song, first: Measure): void {
-  const bpm = song.tempos?.find((t): t is number => typeof t === "number" && t >= 20 && t <= 400);
-  if (bpm === undefined) return;
+  const i = song.tempos?.findIndex((t) => typeof t === "number" && t >= 20 && t <= 400) ?? -1;
+  if (i < 0) return;
   if (first.directions?.some((d) => d.type === "metronome")) return;
+  const bpm = song.tempos![i] as number, qpm = quarterTempos(song)[i] as number;
+  // 拍单位：附点四分（3/8）→ quarter + beat-unit-dot；其余只认单纯音符（1/8、1/2…），认不出的按四分
+  const b = song.tempoBeat;
+  const dotted = !!b && b.num === 3;
+  const unit = b ? UNIT_OF_DEN[dotted ? b.den / 2 : b.den / b.num] : undefined;
   (first.directions ??= []).unshift({
-    type: "metronome", placement: "above", tempo: { beatUnit: "quarter", perMinute: bpm }, sound: { tempo: bpm },
+    type: "metronome", placement: "above",
+    tempo: { beatUnit: unit ?? "quarter", ...(dotted && unit ? { beatUnitDot: true } : {}), perMinute: unit ? bpm : qpm },
+    sound: { tempo: qpm },
   });
 }
 

@@ -1259,9 +1259,15 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   const meterCores = new Set<DigitCore>();
   const meterLines = new Set<Component>();
   if (meterCands.length) {
-    const vals = await ocr.recognizeDigits(bin, meterCands.flatMap((m) => [m.up.bbox, m.dn.bbox]));
+    const rects = meterCands.flatMap((m) => [m.up.bbox, m.dn.bbox]);
+    const vals = await ocr.recognizeDigits(bin, rects);
+    // 0–7 之外的数（分母 8、分子 9）另按 0–9 读。分子只收 9：粗体小字的 3 常读成 8（1940），
+    // recognizeDigits 的闭环改判能把它改回 3，0–9 那路不改——分子 8 的拍号又少见，宁取前者。
+    const wide = ocr.recognizeNumerals ? await ocr.recognizeNumerals(bin, rects) : [];
     meterCands.forEach((m, i) => {
-      const beats = vals[2 * i] ?? 0, beatType = vals[2 * i + 1] ?? 0;
+      const wb = wide[2 * i], wt = wide[2 * i + 1];
+      const beats = wb === 9 ? 9 : vals[2 * i] ?? 0;
+      const beatType = wt !== undefined && validMeter(1, wt) ? wt : vals[2 * i + 1] ?? 0;
       if (!validMeter(beats, beatType)) return;
       probe("meterCandidates");
       meterMarks.push({ x: rcx(m.bbox), beats, beatType, bbox: m.bbox });
@@ -1960,7 +1966,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
   // det 框里那个真和弦 `Am` 不会被 header 采纳，故不在禁区里。
   let title: string | undefined, subtitle: string | undefined, credits: string[] | undefined;
   let number: string | undefined, numberSide: RecognizedScore["numberSide"];
-  let fifths = 0, tempo: number | undefined;
+  let fifths = 0, tempo: number | undefined, tempoBeat: RecognizedScore["tempoBeat"];
   let beats = 4, beatType = 4;
   let meters: RecognizedScore["meters"], meterNote: string | undefined;
   let headerRegions: RecognizedScore["headerRegions"];
@@ -1971,7 +1977,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
     if (h.fifths !== undefined) fifths = h.fifths;
     if (h.beats !== undefined && h.beatType !== undefined) { beats = h.beats; beatType = h.beatType; }
     meters = h.meters; meterNote = h.meterNote;
-    tempo = h.tempo;
+    tempo = h.tempo; tempoBeat = h.tempoBeat;
     headerRegions = h.regions.length ? h.regions : undefined;
   }
 
@@ -2068,7 +2074,7 @@ export async function recognizeJianpu(bin: Binary, ocr: OcrBackend): Promise<Rec
 
   const dotDiam = dotSizes.length ? median(dotSizes) : undefined;
 
-  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, number, numberSide, title, subtitle, credits, tempo, headerRegions, lyricRegions, chordRegions, stanzaRegions, dotDiam };
+  return { key: "C", fifths, beats, beatType, meters, meterNote, rows: useRows, number, numberSide, title, subtitle, credits, tempo, tempoBeat, headerRegions, lyricRegions, chordRegions, stanzaRegions, dotDiam };
 }
 
 

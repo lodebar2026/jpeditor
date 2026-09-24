@@ -567,6 +567,7 @@ function readDirectionPart(first: Element): DirectionPart {
       const pm = num(first, "per-minute");
       d.tempo = {};
       if (bu) d.tempo.beatUnit = bu as NoteType;
+      if (first.getElementsByTagName("beat-unit-dot").length) d.tempo.beatUnitDot = true;
       if (pm !== undefined) d.tempo.perMinute = pm;
       const pmText = childText(first, "per-minute");
       if (pmText !== null && (pm === undefined || String(pm) !== pmText.trim())) d.tempo.perMinuteText = pmText;

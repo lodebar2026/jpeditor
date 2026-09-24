@@ -21,7 +21,7 @@ import type {
   JBreak, JChord, JCredit, JDirection, JKey, JLyric, JMeasure, JNote, JScore, JTime,
 } from "../layout/input";
 import { measureDuration } from "../layout/input";
-import { AccidentalCarry, continuesMeasure, degreeFromPitch } from "./jianpu";
+import { AccidentalCarry, continuesMeasure, degreeFromPitch, quarterTempos } from "./jianpu";
 import type {
   Barline, Chord as DocChord, Direction, DirectionPart, ElementId, Harmony, Measure as DocMeasure, MeasureAttrs,
   Mark as DocMark, Note as DocNote, Part as DocPart, Pitch, ScoreDoc, Song,
@@ -979,7 +979,7 @@ export function jianpuInputOfJpw(doc: ScoreDoc): JScore | null {
   layoutTimes(measures, true);
 
   const playData = playDataOfSong(doc, 0) ?? new PlayData();
-  const tempo = song.tempos?.[0];
+  const tempo = quarterTempos(song)[0];
   playData.tempo = typeof tempo === "number" ? tempo : 0;
   return { parts: [{ measures }], title: song.work.title ?? "", credit, playData };
 }

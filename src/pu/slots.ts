@@ -39,6 +39,7 @@ import { getMeta } from "../model/metakeys";
 import type { Dialect } from "./dialect";
 import { projectForJianpu } from "../model/jianpuproject";
 import { decoKey } from "../model/deconames";
+import { quarterTempos } from "../model/jianpu";
 import type {
   Barline,
   Chord,
@@ -524,7 +525,7 @@ function toMetadata(song: Song): Metadata {
     meta.meters.push({ numerator: t.beats, denominator: t.beatType, parenthesized: t.parenthesized ?? false });
   }
   if (song.timeNote !== undefined) meta.timeNote = song.timeNote;
-  for (const t of song.tempos ?? []) meta.tempos.push(t);
+  for (const t of quarterTempos(song)) meta.tempos.push(t);
   meta.remarks.push(...(song.remarks ?? []));
   const pt = song.pageText;
   if (pt) {

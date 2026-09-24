@@ -259,6 +259,14 @@ export function parseTempo(value: string): (number | string)[] {
   return out;
 }
 
+/** `Q:3/8=60` 的拍单位（附点四分）；没写单位或就是 1/4 时 undefined（缺省四分）。 */
+export function parseTempoBeat(value: string): { num: number; den: number } | undefined {
+  const m = /(\d+)\s*\/\s*(\d+)\s*=\s*\d+/.exec(value.replace(/"[^"]*"/g, ""));
+  if (!m) return undefined;
+  const num = Number(m[1]), den = Number(m[2]);
+  return num > 0 && den > 0 && num * 4 !== den ? { num, den } : undefined;
+}
+
 // ───────────────────────── I: 指令 ─────────────────────────
 
 export interface Instruction {

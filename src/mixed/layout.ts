@@ -914,7 +914,7 @@ class DocPartLoader {
     const noteFont = new Font("Bravura", wordFont.size);
     let any = false;
     if (met.tempo?.beatUnit !== undefined) {
-      blk.add(metNoteGlyph(met.tempo.beatUnit), noteFont, true);
+      blk.add(metNoteGlyph(met.tempo.beatUnit) + (met.tempo.beatUnitDot ? GlyphCodes.metAugmentationDot : ""), noteFont, true);
       any = true;
     }
     const pm = met.tempo?.perMinuteText?.trim() ?? (met.tempo?.perMinute !== undefined ? String(met.tempo.perMinute) : undefined);

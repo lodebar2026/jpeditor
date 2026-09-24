@@ -385,6 +385,7 @@ export function recognizedToDoc(score: RecognizedScore, numOf?: Map<ElementId, J
     .map(creatorOf);
   if (creators.length) song.identification = { creators };
   if (score.tempo) song.tempos = [score.tempo];
+  if (score.tempo && score.tempoBeat) song.tempoBeat = score.tempoBeat;
 
   const doc = emptyDoc("omr");
   doc.songs.push(song);
