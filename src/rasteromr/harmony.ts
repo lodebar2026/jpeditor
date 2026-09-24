@@ -30,6 +30,8 @@ import { blankNonChord } from "../omr/chordline";
  *  上界 3.2 格：《坚固保障》的和弦字母印在顶线上方 1.6 格处、字高约一格。
  *  再往上是上一个系统的歌词。 */
 const BAND_TOP = 3.2;
+/** 带里切不出条时再试的带顶（顶线上方几格）。 */
+const BAND_TOP_HIGH = 4.5;
 const BAND_BOTTOM = 1.0;
 /** 混排谱：简谱行上沿往上这么多格（《是谁》和弦字母下沿离简谱带上沿 0.2 格、字高 1.3 格）。 */
 const JP_BAND = 3.0;
@@ -261,6 +263,13 @@ export function findHarmonyStrips(
     // OCR 把 E♭ 读成「El」。只有**多数**条都顶到时才挪——偶尔一个印得高的字母（延长记号上方）
     // 照旧靠往上长解决，其余谱行的条一个像素不变（缓存指纹不动）。
     if (!jp && r.grown >= 2 && r.grown * 2 >= r.strips.length) r = cut(Math.max(0, r.top));
+    // **带里几乎切不出条**：钢琴伴奏右手音符用到 C6、D6，和弦行被顶到顶线上方 3.3 格开外
+    //（《恩友歌伴奏》35 个和弦一个都没切出来，带里只剩符头与小节号的碎块）。
+    // 把带顶提到 `BAND_TOP_HIGH` 再切一遍，条多出一倍以上才用它。
+    if (!jp && r.strips.length < 3) {
+      const r2 = cut(Math.max(0, Math.round(st.box.top - sp * BAND_TOP_HIGH)));
+      if (r2.strips.length >= 3 && r2.strips.length >= r.strips.length * 2) r = r2;
+    }
     out.push(...r.strips);
   }
   return out;
