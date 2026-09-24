@@ -468,7 +468,8 @@ export function mapCharsToCells(strip0: LyricStrip, chars: OcrChar[]): { box: Re
  *  判据是**连字符**：歌词是逐音节排在音符下面的（`Mas-ter`、`Up-on`、`bul-wark`），
  *  一整行下来必带；书眉、版权、脚注一个也没有。
  *  代价是整行全是单音节词的歌词行会漏掉（实测主，差遣我有一行 `takeupthecross;`），
- *  拿它换掉六行书眉，划算。 */
+ *  拿它换掉六行书眉，划算。**紧挨着带连字符的拉丁行**的那几行不要连字符（见 `recognize.ts`，
+ *  《奇异恩典》四段英文里有一半行没有连字符）。 */
 const LATIN_FRAC = 0.9;
 const LATIN_MIN = 20;
 const LATIN_MIN_HYPHEN = 1;
@@ -489,7 +490,7 @@ const LATIN_CH = /[A-Za-z'\u2019\-\u2013\u2014,.;:!?]/;
 const SPACE_GAP = 0.7;
 
 /** 这一行是拉丁歌词吗。 */
-export function isLatinRow(chars: OcrChar[]): boolean {
+export function isLatinRow(chars: OcrChar[], needHyphen = true): boolean {
   let latin = 0;
   let cjk = 0;
   for (const c of chars) {
@@ -497,7 +498,7 @@ export function isLatinRow(chars: OcrChar[]): boolean {
     else if (/[\u4e00-\u9fff]/.test(c.ch)) cjk++;
   }
   const hyphens = chars.filter((c) => /[-\u2013\u2014]/.test(c.ch)).length;
-  return latin >= LATIN_MIN && hyphens >= LATIN_MIN_HYPHEN && latin / (latin + cjk) >= LATIN_FRAC;
+  return latin >= LATIN_MIN && (!needHyphen || hyphens >= LATIN_MIN_HYPHEN) && latin / (latin + cjk) >= LATIN_FRAC;
 }
 
 /**

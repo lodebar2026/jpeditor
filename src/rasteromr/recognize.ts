@@ -347,6 +347,8 @@ const LYRIC_MIN_H = 0.4;
 const KEY_GAP_FIRST = 2.0;
 /** 调号串里后一个记号的左缘可以伸进前一个右缘多少格。 */
 const KEY_OVERLAP = 0.5;
+/** 不带连字符的拉丁行离带连字符的那行多近（字高的倍数）算同一块歌词。 */
+const LATIN_CHAIN = 2.5;
 /** 上下贴着的两个头（`isStackedPair`）拆分时每个头的得分门槛。 */
 const PAIR_SCORE_MIN = 0.4;
 
@@ -1914,6 +1916,27 @@ export async function recognizeRasterPage(
     // 本页歌词条字高的中位数（只算命中缓存的条）：页脚小字与歌词字号差着三倍
     const hitH = (ocr ? lyricStrips : []).filter((st) => ocr!.get(stripKey(st))).map((st) => st.charH).sort((a, b) => a - b);
     const medH = hitH.length ? hitH[hitH.length >> 1] : 0;
+    // **拉丁行的连字符闸只卡种子**：同一谱行下、上下紧挨着（2.5 个字高以内）一条带连字符的拉丁行的，
+    // 过得了前两道闸就不要连字符——整行单音节词的歌词行常有（《奇异恩典》四段英文一半行没有连字符，
+    // 漏掉的行让后面各段整体错位，拉丁歌词 20%）。书眉不会紧挨着歌词块；版权行会（晨曦破晓末行下面），
+    // 但字号小：比相邻拉丁行矮两成以上的不链。
+    const latinStrips = new Set<LyricStrip>();
+    {
+      const cand = (ocr ? lyricStrips : []).filter((st) => { const ch = ocr!.get(stripKey(st)); return ch && isLatinRow(ch, false); });
+      for (const st of cand) if (isLatinRow(ocr!.get(stripKey(st))!)) latinStrips.add(st);
+      const yOf = (st: LyricStrip) => Math.min(...stripRow.get(st)!.cells.map((c) => c.y));
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const st of cand) {
+          if (latinStrips.has(st)) continue;
+          const r = stripRow.get(st)!;
+          if ([...latinStrips].some((o) => stripRow.get(o)!.staffIndex === r.staffIndex && st.charH >= o.charH * 0.8 && Math.abs(yOf(o) - yOf(st)) <= Math.max(o.charH, st.charH) * LATIN_CHAIN)) {
+            latinStrips.add(st);
+            grew = true;
+          }
+        }
+      }
+    }
     for (const strip of ocr ? lyricStrips : []) {
       const chars = ocr!.get(stripKey(strip));
       if (!chars) continue; // 缓存没命中：这一条没跑过 OCR，宁可留空不编造
@@ -1926,7 +1949,7 @@ export async function recognizeRasterPage(
       if (strip.cells.length <= 3 && foldLyricChars(chars).length < strip.cells.length * 0.5) continue;
       // **拉丁行绕开字格**：字格那一套是按汉字等宽见方切的，英文词宽差着数倍。
       // 逐字造盒、按间距补词间空格，断词断音节交给 `splitSyllables`（见 `lyric.ts`）。
-      const latin = isLatinRow(chars);
+      const latin = latinStrips.has(strip);
       // 拉丁行也算：齐来称颂英文第一行紧贴低音谱表，「we」的 e 被收成空心符头，还配上了加线
       if (latin || chars.some((c) => /\p{Script=Han}/u.test(c.ch))) readRows.push(stripRow.get(strip)!);
       if (latin) latinRows.add(stripRow.get(strip)!);
