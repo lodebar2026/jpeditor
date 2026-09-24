@@ -156,12 +156,13 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
  * 已经把层数算进时值了（`calcBeamLevels`），再补个符尾反而把十六分压回八分
  *（`buildStems` 里「有符尾的符干不接符杠」）。
  */
-function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterUnit): RasterSym[] {
+function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterUnit, avoid: Rect[] = []): RasterSym[] {
   const sp = unit.space;
   const out: RasterSym[] = [];
   // **只看实心符头**：空心符头（二分/全音符）本来就不带符尾，
   // 给它安一个会把二分读成八分。
   const heads = pg.symbols.filter((s) => s.hasTag("Note") && s.code === "noteheadBlack");
+  const lineYs = pg.staves.flatMap((stf) => stf.lineYs);
   for (const st of pg.segsWithTag("Stem")) {
     const on = heads.filter(
       (s) => (Math.abs(s.box.left - st.cx) < sp / 3 || Math.abs(s.box.right - st.cx) < sp / 3) && s.box.top < st.bottom && st.top < s.box.bottom,
@@ -211,14 +212,61 @@ function bootstrapFlags(bin: Binary, pg: SPage, beams: BeamQuad[], unit: RasterU
     const up = far < hy;
     // **第二个钩**：十六分的两道钩沿符干错开约一格。只认出第一道的话
     // 十六分整批读成八分（实测补上第一道之后 `16th→eighth` 一下涨到 171 处）。
-    const two = frac(offset + 1.0, offset + 2.2) >= FLAG_INK2;
+    // 窗口截在最近的符头边缘之前：朝下的短符干上，符头就在符干右边，离尖端一格多就罩到它
+    //（《主我敬拜你》朝下的八分整批读成十六分）。截下来不到 0.6 格的就不看第二道钩。
+    const room = Math.abs(hy - far) / sp - 0.6;
+    const twoEnd = Math.min(offset + 2.2, room);
+    // 还要**右缘轮廓有两个峰**：从尖端往符头走，逐行量钩的最右缘，先涨后落（第一道钩）再涨起来（第二道）
+    // 才是两道钩。一道长钩（《主我敬拜你》的八分符尾有 2.3 格长）外沿也会填满第二道钩的窗口，但右缘只有一个峰。
+    // 低分辨率放大的万古磐石歌两道钩在干边粘成一段，靠这一条。谱线那几行不算。
+    // 或者**贴着干的那一窄条里墨分成两段**（两道钩各自连在干上，右缘对齐的字体靠这一条：来敬拜荣耀王）。
+    const hookRuns = () => {
+      const x0 = Math.round(st.cx + unit.lineThick);
+      const x1 = Math.round(st.cx + sp * 0.35);
+      let runs = 0;
+      let gap = 2;
+      for (let dy = offset * sp; dy < Math.min(offset + 2.4, room) * sp; dy++) {
+        const y = Math.round(far + toward * dy);
+        if (y < 0 || y >= bin.h || lineYs.some((ly) => Math.abs(ly - y) <= unit.lineThick)) continue;
+        let ink = false;
+        for (let x = Math.max(0, x0); x <= Math.min(x1, bin.w - 1) && !ink; x++) if (bin.data[y * bin.w + x]) ink = true;
+        if (ink) {
+          if (gap >= 2) runs++;
+          gap = 0;
+        } else gap++;
+      }
+      return runs;
+    };
+    const twoPeaks = () => {
+      const x0 = Math.round(st.cx + unit.lineThick);
+      const x1 = Math.round(st.cx + sp * 1.2);
+      const prom = sp * HOOK_PROM;
+      let max = -1;
+      let dip = Infinity;
+      for (let dy = offset * sp; dy < Math.min(offset + 2.4, room) * sp; dy++) {
+        const y = Math.round(far + toward * dy);
+        if (y < 0 || y >= bin.h || lineYs.some((ly) => Math.abs(ly - y) <= unit.lineThick)) continue;
+        let r = -1;
+        for (let x = Math.min(x1, bin.w - 1); x >= Math.max(0, x0); x--) if (bin.data[y * bin.w + x]) { r = x; break; }
+        if (r < 0) continue;
+        if (dip < Infinity && r - dip >= prom) return true;
+        if (r > max) max = r;
+        if (max - r >= prom) dip = Math.min(dip, r);
+      }
+      return false;
+    };
+    const two = twoEnd - (offset + 1.0) >= 0.6 && frac(offset + 1.0, twoEnd) >= FLAG_INK2 && (twoPeaks() || hookRuns() >= 2);
     const code = two ? (up ? "flag16thUp" : "flag16thDown") : up ? "flag8thUp" : "flag8thDown";
     const h = sp * (two ? 2.2 : 1.5);
     // 出块也从**连接点**起算：`offset` 找到的才是符尾真正长出来的地方，
     // 还按符干末端 `far` 出块的话，粗线扫描件上整块会偏出半格。
     const anchor = far + toward * offset * sp;
     const y0 = toward > 0 ? anchor : anchor - h;
-    out.push({ box: { x: Math.round(st.cx), y: Math.round(y0), w: Math.round(sp * 1.5), h: Math.round(h) }, code });
+    const fbox = { x: Math.round(st.cx), y: Math.round(y0), w: Math.round(sp * 1.5), h: Math.round(h) };
+    // **和弦字母不是符尾**：符干朝上顶到和弦行时，窗口里那点墨是「C/E」的 E、「Csus4」的 sus
+    //（《主我敬拜你》三处，八分附点、附点二分都读成了带尾的八分）
+    if (avoid.some((m) => overlapFrac(fbox, m) > FLAG_AVOID)) continue;
+    out.push({ box: fbox, code });
   }
   return out;
 }
@@ -415,6 +463,10 @@ const FLAG_TIP = 0.05;
 const FLAG_TIP_Y = 0.6;
 /** 第二道钩（十六分）的门槛。比第一道**严**：那一段窗口里还可能扫到下一个音的符干或符头。 */
 const FLAG_INK2 = 0.3;
+/** 两道钩的右缘轮廓中间要凹下去这么多格。 */
+const HOOK_PROM = 0.15;
+/** 符尾窗口与和弦字母条交叠超过这一成就不认。 */
+const FLAG_AVOID = 0.2;
 
 /**
  * **几个音共用的那条长加线，要按符头切成短段补进去。**
@@ -1897,7 +1949,7 @@ export async function recognizeRasterPage(
   findStems(pg);
   tagLooseStems(pg);
   // 符尾**按位置自举**，不查字典（见 `bootstrapFlags`）
-  for (const f of bootstrapFlags(nl, pg, prims.beams, unit)) {
+  for (const f of bootstrapFlags(nl, pg, prims.beams, unit, harmonyMasks)) {
     ledger.claim(f.box, `flag:${f.code}`);
     const { obj, sym } = makeSymObj(pg.objs.length + pg.segs.length + 1, f, unit.height);
     pg.objs.push(obj);
