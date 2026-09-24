@@ -5,7 +5,7 @@
 // 复用本项目的 PageItem/Group/GraphicPath/GraphicLine/TextFrame，
 // 所以「导出 PPTX」那条路（collectShapes 认这几种图元）不用改就能吃这些页面。
 //
-// 数字用系统字体按**墨迹居中**于步进锚点（字号取样式值 digitSize），
+// 数字用系统字体按**墨迹居中**于步进锚点（字号取样式值 size.note），
 // 圆点与线段自绘——位置逐点对齐原版，字形则是规范字形。
 //
 // 入口只收 `ScoreDoc`：先经 `pu/slots.ts::docView` 线性化成排版行（排版几何都按行写成），再定位、绘制。
@@ -22,9 +22,12 @@ import { jpBarlineItems, jpDot, jpTimeSigItems } from "../jpglyph";
 import type { BarlineSpec } from "../entry";
 import { BarStyle } from "../../score/enums";
 import type { Metadata, NoteElement } from "../../pu/ast";
-import PU_BOOK from "../../style/books/pu-original.ss?raw";
+import ORIGINAL_SS from "../../style/books/original.ss?raw";
+import ORIGINAL_SHIGE_SS from "../../style/books/original-shige.ss?raw";
 import { computeStyleForPaper } from "../../style/themes";
 import { parseSs, type Region } from "../../style/ss";
+import { jianpuMetricsOf } from "../../style/original";
+import type { Dialect } from "../../pu/dialect";
 
 import { layoutRegion, songFields } from "../../style/template";
 import { emptyMetadata } from "../../pu/ast";
@@ -45,7 +48,7 @@ import {
   type LyricMeasure,
 } from "./place";
 import { BRACE_GLYPHS } from "./brace";
-import { applyDocOptions, applyUserOptions, metricsFor, noteMarkGap, jianpuGraceMetrics, jianpuGraceNotes, jianpuSlurStyle, withDigitInk, type JianpuGrid, type JianpuMetrics, type JianpuUserOptions } from "./metrics";
+import { applyDocOptions, applyUserOptions, noteMarkGap, jianpuGraceMetrics, jianpuGraceNotes, jianpuSlurStyle, withDigitInk, type JianpuGrid, type JianpuMetrics, type JianpuUserOptions } from "./metrics";
 import { ACCOMP_BRACKET, ACCIDENTAL_GLYPH, BARLINE_MARKS, BRACKET, DYNAMICS, ORNAMENTS, TERMS } from "../../pu/glyph";
 
 /**
@@ -299,10 +302,10 @@ const PU_BARLINE_SPEC: Record<string, BarlineSpec | undefined> = {
   "repeat-both": { repeatBackward: true, repeatForward: true },
 };
 
-/** 方言版式 → 谱面自带的 `FontSize:` / `Margin:`（手动字号那层之前的全部）。 */
+/** 方言版式（内置方言表）→ 谱面自带的 `FontSize:` / `Margin:`（手动字号那层之前的全部）。 */
 function docMetricsOf(view: DocView): JianpuMetrics {
   const meta0 = view.songs[0]?.metadata;
-  const m = metricsFor(view.dialect);
+  const m = builtinOf(view.dialect).metrics;
   return applyDocOptions(m, meta0?.fontSizes ?? [], meta0?.margins ?? []);
 }
 
@@ -460,9 +463,9 @@ function paintPage(c: OriginalCtx, page: PlacedPage, pageIndex: number): Group {
   return root;
 }
 
-/** 页脚区域（`pu-original.ss` 的 `song-foot`）。按页宽算右缘，所以 `shiftX` 与 paintHeader 同口径。 */
+/** 页脚区域（`original.ss` 的 `song-foot`）。按页宽算右缘，所以 `shiftX` 与 paintHeader 同口径。 */
 function layoutFooters(c: OriginalCtx, shiftX: number): { page: number; bottom: number; items: TextFrame[] }[] {
-  const region = PU_FOOT();
+  const region = c.doc ? builtinOf(c.doc.dialect).foot : null;
   const placed = c.placed;
   if (!region || !c.doc || !placed) return [];
   const m = c.metrics;
@@ -1374,7 +1377,7 @@ function paintSyllables(c: OriginalCtx,
 }
 
 
-/** 原样文档排版的外部配置：面板那一层（字号 / 纸 / 长图，见 `style/pu.ts`）与前景色（null = 出厂墨色）。 */
+/** 原样文档排版的外部配置：面板那一层（字号 / 纸 / 长图，见 `style/original.ts`）与前景色（null = 出厂墨色）。 */
 export interface OriginalDocumentConfig {
   readonly user: JianpuUserOptions | null;
   readonly ink: number | null;
@@ -1480,12 +1483,16 @@ export function layoutOriginalDocument(source: ScoreDoc, cfg: OriginalDocumentCo
   };
 }
 
-/** 内置的文本谱页脚模板（解析一次）。 */
-let puFoot: Region | null | undefined;
-function PU_FOOT(): Region | null {
-  if (puFoot === undefined) {
-    const sheet = computeStyleForPaper([parseSs(PU_BOOK).rules], { engine: "pu" });
-    puFoot = (sheet.template?.regions?.["song-foot"] as Region | undefined) ?? null;
+/** 内置样式表：公共底表 `original.ss`，诗歌本方言再叠 `original-shige.ss`（番茄 = 出厂值，没有叠加表）。
+ *  各方言解析一次：出度量（`jianpuMetricsOf`）与页脚区域。 */
+const BUILTIN_SS: Record<Dialect, string[]> = { tomato: [ORIGINAL_SS], shige: [ORIGINAL_SS, ORIGINAL_SHIGE_SS] };
+const builtinCache = new Map<Dialect, { metrics: JianpuMetrics; foot: Region | null }>();
+function builtinOf(dialect: Dialect): { metrics: JianpuMetrics; foot: Region | null } {
+  let hit = builtinCache.get(dialect);
+  if (!hit) {
+    const sheet = computeStyleForPaper(BUILTIN_SS[dialect].map((src) => parseSs(src).rules), { engine: "pu" });
+    hit = { metrics: jianpuMetricsOf(sheet), foot: (sheet.template?.regions?.["song-foot"] as Region | undefined) ?? null };
+    builtinCache.set(dialect, hit);
   }
-  return puFoot;
+  return hit;
 }

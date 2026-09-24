@@ -12,7 +12,6 @@
 // 行内算完自然宽度后再整体拉伸/压缩到版心宽度（两端对齐）。
 
 import type { HeaderFonts } from "../../style/header";
-import type { Dialect } from "../../pu/dialect";
 import { SlurTieBase, type SlurStyle } from "../pageitem";
 import type { GraceMetrics, GraceNote } from "../../common/gracenote";
 import type { NoteElement } from "../../pu/ast";
@@ -263,68 +262,6 @@ export function cloneMetrics<T extends JianpuMetrics>(m: T): T {
 /** 把一组里的数都乘上 k（没给的可选项跳过）。 */
 function scaleGroup(g: Record<string, number | undefined>, k: number): void {
   for (const key of Object.keys(g)) if (g[key] !== undefined) g[key] = g[key]! * k;
-}
-
-/**
- * 诗歌本的尺寸按**诗歌本 App 自己导出的《圣哉三一歌》长图**逐项量得
- * （四声部、四段歌词、四个 system；底本在本地 `testdata/pu/ref/圣哉三一歌.pdf`）。
- * 量法：抽出内嵌位图 → 二值化 → 连通域；以数字「1」的墨迹高为 1 个单位（原版 17.9pt，
- * 底本上 119px），曲行锚点取数字墨迹的竖直中心（= painter 画数字的锚点），
- * 歌词基线取汉字墨迹反推（**字号不等于墨迹**，PingFang SC 的「圣/哉/清」墨迹分别是
- * 字号的 0.829 / 0.905 / 0.917，三条路都指向字号 24.6）。
- *
- * 以数字墨迹高为 1，与番茄的对照：
- *   歌词墨迹  番茄 0.82 / 诗歌本 1.15（底本实测；实际落值见 lyric 那行）
- *   小节线高  番茄 1.62 / 诗歌本 1.90
- *   词行间距  番茄 1.51 / 诗歌本 1.68（同上）
- *   声部间距  番茄 2.57 / 诗歌本 2.07
- * 「原版」既然是各复刻各的，尺寸就按方言分开，不取折中。
- *
- * 落值一律取整、取不了整就落到 .5——这些数是拿一首曲子量的，多余的小数位是假精度。
- * **有意不跟底本**的几处（别照实测「改回去」，缘由见 docs/实现/文本谱.md）：
- * 整体版面缩放、歌词字号与行距、增时线与附点的 y、八度点位置、附点的横向距离、
- * 弧线的粗细与弧高。
- */
-function applyShige(base: JianpuMetrics): JianpuMetrics {
-  const m = cloneMetrics(base);
-  // 底本的数字是**粗**的：中部笔画 / 墨迹高 = 0.227，苹方常规只有 0.126、黑体更细（0.111）。
-  // 各系统字体里最接近的是 Helvetica/Arial Bold（0.21）。
-  m.font.note = "Helvetica Neue, Helvetica, Arial, PingFang SC, sans-serif";
-  // 墨迹高同样是 17.9；Helvetica Neue 粗体「1」墨迹占字号 0.700，折成字号 25.57，落到 .5
-  m.size.note = 25.5;
-  // 底本量得字号 24.5（汉字墨迹 ≈ 0.846 字号 → 1.15 × 数字墨迹）、行距 29.6，
-  // 这里**有意都往上放**：实际渲染下 24.5 的歌词偏小，字号回 27 之后行距也得跟着回 35，
-  // 否则四段歌词叠起来会挤。字号与行距是一对，改一个必须改另一个。
-  m.size.lyric = 27;
-  m.size.verseNum = 27; // 底本上段号比歌词小 2.5%，差得太少，不单列
-  m.size.chord = 19; // 底本的和弦全隐藏，量不到，沿用旧值
-  m.note.barlineHeight = 34;
-  m.stroke.doubleBarlineGap = 3.5;
-  m.note.beamWidth = 1.5; // 减时线更细
-  m.note.dashWidth = 3; // 增时线反过来更粗更长
-  m.note.dashHalfLength = 4;
-  // 纵向：由「小节线段的竖直中心」反推——比按墨迹带估行距可靠得多
-  m.lyricSpacing.lyricGap = 44; // 歌词字块比数字高，不多让就会顶到低八度点
-  m.lyricSpacing.lyricStack = 35; // 与 size.lyric 是一对（底本 29.6，配 24.5 的字号）
-  m.spacing.voiceGap = 37;
-  // system 之间：末行歌词与下一组之间**只空一行字**（用户口径；65、55 都嫌大）——
-  // 歌词墨迹底 → 下一组数字墨迹顶 = 一行歌词字高（size.lyric 27），与页首 → 首行同口径。
-  // 折回基线距 = 歌词墨迹下伸（实测 ≈ 0.15 字号 ≈ 4）+ 27 + 数字半高 9 ≈ 40。
-  // 36 时实测只有 23（当初漏了歌词下伸那一截）。随面板字号等比缩放（spacing 组）。
-  // 带和弦/记号的组由 groupHeadroom 另外让位，不靠这个值。
-  m.spacing.systemGap = 40;
-  return m;
-}
-
-/** 各方言对基础度量的修正。番茄用原值，故是恒等；加方言在这张表里补一项，不要写 if。 */
-const DIALECT_TWEAK: Record<Dialect, (m: JianpuMetrics) => JianpuMetrics> = {
-  tomato: (m) => m,
-  shige: applyShige,
-};
-
-/** 方言的版式。派生量还没有（要量字体），排版前经 `withDigitInk` 定稿。 */
-export function metricsFor(dialect: Dialect = "tomato"): JianpuMetrics {
-  return DIALECT_TWEAK[dialect](JIANPU_DEFAULTS);
 }
 
 /** 定稿：按数字字体实测的「墨迹高 ÷ 字号」算出数字墨迹高，再把减时线、八度点贴上去。

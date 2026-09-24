@@ -5,7 +5,7 @@
 > 数据项（`SongMeta`）见 [../模块/模型-scoredoc.md](../模块/模型-scoredoc.md)。
 >
 > 状态：解析/写出（`src/style/ss.ts`）、模板排版（`src/style/template.ts`）、`hymn500` 与 `kl2020` 两份歌本已落地；
-> `pu-original`、编辑器接入待做，见 [../待办.md](../待办.md) §2.3；语法本身的收敛（认不出的名字要报错等）记在 `docs/ss-收敛待办.md`（本地，不入库）。
+> 原样文档布局的内置表 `original` / `original-shige` 已落地，编辑器接入待做，见 [../待办.md](../待办.md) §2.3；语法本身的收敛（认不出的名字要报错等）记在 `docs/ss-收敛待办.md`（本地，不入库）。
 
 ## 0. 为什么模板和样式放一个文件
 
@@ -26,7 +26,7 @@
 | `hymn500-measured.ss` + `hymn500.ss`（不在本仓库） | 诗歌 500 首成书（`engine: book`）：前者是统计生成的实测部分（§10），后者是模板与手调常量，按序叠 | 现有 `rebuild.mjs` 输出逐字节不变 |
 | `kl2020.ss`（不在本仓库） | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF |
 | `kl2020-flow.ss`（不在本仓库） | 同上的**接排版叠加表**（只含与单曲版的差异，清单 `styleByFlow.continue` 指过来） | 1219 接排版 PDF |
-| `src/style/books/pu-original.ss` | 文本谱原样档（`engine: pu`）：目前只有页脚区域，页头仍是 `paintHeader` | 展开档指纹与 page-check 不变 |
+| `src/style/books/original.ss` + `original-shige.ss` | 原样文档布局（`engine: pu`；文本谱、MusicXML、多声部 123/ABC 的原样档）：前者是公共底表（页脚区域，页头仍是 `paintHeader`），后者叠诗歌本方言与出厂（番茄）的差异 | 原样档指纹与 page-check 不变 |
 
 ## 1. 词法
 
@@ -55,7 +55,7 @@
 
 | 块 | 管什么 | 各模式落到 |
 |---|---|---|
-| `@jianpu` | **简谱内容**：减时线、八度点、附点、简谱调号拍号、歌词开关 | 展开 / 原样 / 成书 → `LayoutOptions`；混排 → `MixedOptions` 的简谱层 |
+| `@jianpu` | **简谱内容**：减时线、八度点、附点、简谱调号拍号、歌词开关 | 展开 / 原样 / 成书 → `LayoutOptions`；混排 → `MixedOptions` 的简谱层；原样文档布局 → `JianpuMetrics` |
 | `@staff` | **五线谱内容**：谱表、符干符杠、小节线、和弦、SMuFL 记号 | 五线谱 / 混排 → `MixedOptions` |
 
 混排里的那层简谱也归 `@jianpu`——写样式表不必知道内部是哪个排版器在跑。模式差异用 `@media (mode: …)` 限定。
@@ -77,7 +77,9 @@
   （基准是音符字号；`lyric-gap` `slur-thickness` `barline` `final-barline` 按歌词字号），线宽类（`bracket-width`、
   `repeat-dot-diameter`）写裸数 pt。例：`@jianpu { system-gap: 0.8575em; beam-top: 0.1393em; verse-numbers: auto; }`。
   数值原样存进字段、不在读样式表时乘字号，所以重排结果逐位不变。
-- 以前的 `@pu` 已删：文本谱原样档照原版实测，不由样式表逐字段覆盖（`@media (engine: pu)` 这一维仍在）。
+- **原样文档布局**（文本谱、MusicXML、多声部 123/ABC 的原样档）也读 `@jianpu`：`keys.ts` 的 `original` 一列，只给内置方言表用到的键配了
+  （`beam-width` `lyric-gap` `lyric-stack` `system-gap`，及只有这一路有的 `voice-gap` `barline-height` `double-barline-gap` `dash-width` `dash-half-length`）。
+  裸数 pt，`em` = 音符字号。字号字体照常写在角色上（`note { size; family }`、`lyric` `verseNum` `chord { size }`…）。以前的 `@pu` 块已删。
 
 ### 2.2 `@media` 维度
 
@@ -279,7 +281,7 @@ block 用 `line-height`（倍数）那两套已经合并——同一件事分两
 - `hymn500-measured.ss`：统计生成的实测部分（纸、字体、角色、`@jianpu` / `@break` / `@flow`、目录几何）。
 - `hymn500.ss`：fixed 区域（基线写实测数）+ `key-meter()` 组件（避让首行和弦）。
 - `src/style/books/kl2020.ss`：block 区域（标题块、页脚块按原排版程序与成品实测）、`@font-face` 字体文件、目录区域。
-- `src/style/books/pu-original.ss`：文本谱页脚（BL/BC/BR，`dash-empty` 去 `-` 占位）。
+- `src/style/books/original.ss`：原样文档布局的页脚（BL/BC/BR，`dash-empty` 去 `-` 占位）；`original-shige.ss`：诗歌本方言的度量差异。
 
 ## 10. 成书：样式表就是全部，没有 json
 

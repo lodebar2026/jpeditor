@@ -1,4 +1,4 @@
-// 样式表对外的名字 → 两把尺子的内部字段。
+// 样式表对外的名字 → 各把尺子的内部字段（`layout` 简谱引擎、`mixed` 混排、`book` 成书、`original` 原样文档布局）。
 //
 // `.ss` 里只见**逻辑键**（kebab-case，按谱面内容分），`LayoutOptions` / `MixedOptions`
 // 的字段名（`jpBeamTopY`、`lineWidths.stem`、`musicppJpTimeSig`…）不外露：
@@ -25,6 +25,9 @@ export interface KeyDef {
    *  字段名以 `Em` 结尾的，样式表里**必须**写 `em` 单位（基准是字号，不是墨迹高），数值原样存进字段（不乘字号，浮点逐位不变）；
    *  其余长度写裸数（pt）。成书这一路由 `style/bookss.ts` 读，不经 `LayoutOptions` 的覆写。 */
   book?: string;
+  /** 原样文档布局 `JianpuMetrics` 上的路径（`note.beamWidth`…）；缺 = 那一路不读。只给内置方言表
+   *  （`style/books/original-*.ss`）用到的键配了这一列，由 `style/original.ts::jianpuMetricsOf` 读。 */
+  original?: string;
   /** 不支持的那一侧的说法，进报错信息。 */
   note?: string;
 }
@@ -42,14 +45,14 @@ export const ROLE_FONTS: Partial<Record<StyleRole, { layout?: string; mixed?: st
  *  `final-barline` 按歌词字号——`style/book.ts::applyBookPreset` 原来就是这么乘的。 */
 export const JIANPU_KEYS: Record<string, KeyDef> = {
   "note-bold": { kind: "bool", layout: "noteBold", note: "混排的简谱数字不单独加粗" },
-  "beam-width": { kind: "len", layout: "jpBeamWidth", mixed: "lineWidths.jpBeam" },
+  "beam-width": { kind: "len", layout: "jpBeamWidth", mixed: "lineWidths.jpBeam", original: "note.beamWidth" },
   "beam-top": { kind: "len", layout: "jpBeamTop", book: "metrics.divLineGapEm" },
   "beam-dist": { kind: "len", layout: "jpBeamDist", mixed: "beamDistJP", book: "metrics.divLineStepEm" },
   "octave-dot-dist": { kind: "len", layout: "jpStackGap", mixed: "octaveDotDist", book: "metrics.stackGapEm" },
-  "system-gap": { kind: "len", layout: "maxLineDist", book: "metrics.systemGapEm" },
+  "system-gap": { kind: "len", layout: "maxLineDist", book: "metrics.systemGapEm", original: "spacing.systemGap" },
   "note-step": { kind: "len", book: "metrics.noteStepEm", note: "音符步距只有成书断句用" },
-  "lyric-gap": { kind: "len", layout: "lyricGap", book: "metrics.lyricGapEm" },
-  "lyric-stack": { kind: "len", layout: "lyricStack", book: "metrics.lyricToLyricEm" },
+  "lyric-gap": { kind: "len", layout: "lyricGap", book: "metrics.lyricGapEm", original: "lyricSpacing.lyricGap" },
+  "lyric-stack": { kind: "len", layout: "lyricStack", book: "metrics.lyricToLyricEm", original: "lyricSpacing.lyricStack" },
   "chord-gap": { kind: "len", layout: "chordGap", book: "metrics.chordToNoteEm" },
   "chord-plain": { kind: "bool", layout: "chordPlainText", book: "metrics.chordPlain" },
   "bracket-width": { kind: "len", layout: "bracketWidth", book: "metrics.bracketWidth" },
@@ -81,6 +84,12 @@ export const JIANPU_KEYS: Record<string, KeyDef> = {
   "legacy-hwid-glyphs": { kind: "bool", mixed: "musicppHwidGlyphs", note: "同上" },
   "lrc-half-punct": { kind: "bool", mixed: "lrcHWID", note: "纯简谱的歌词标点按上下文挤压" },
   "chinese-hyphen": { kind: "bool", mixed: "chineseHyphen", note: "纯简谱不画中文连字符" },
+  // 以下只有原样文档布局（`layout/original/`）有：多声部、按实测落值的小节线与增时线
+  "voice-gap": { kind: "len", original: "spacing.voiceGap", note: "只有原样文档布局排多声部" },
+  "barline-height": { kind: "len", original: "note.barlineHeight", note: "只有原样文档布局单给小节线高" },
+  "double-barline-gap": { kind: "len", original: "stroke.doubleBarlineGap", note: "同上" },
+  "dash-width": { kind: "len", original: "note.dashWidth", note: "只有原样文档布局单给增时线尺寸" },
+  "dash-half-length": { kind: "len", original: "note.dashHalfLength", note: "同上" },
 };
 
 /** `@staff`：五线谱内容。纯简谱那几档整块不适用（简谱的小节线宽写在 `@jianpu` 的 `barline`）。 */

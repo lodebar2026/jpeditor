@@ -16,7 +16,7 @@
 // 但**入口只收 `ScoreDoc`**。`scripts/pu-scoredoc-check.mjs` 把视图与解析器的语法树（`parsePuAst`）
 // 逐字段比对（含曲行/歌词行/文字行的原文区间，乐句重排靠它们改写原文），证明这份铺排对全语料文本谱无损。
 //
-// `dialect` 缺省填 `"shige"` 只是为了让下游取到一份印刷观感的度量（`metricsFor`），
+// `dialect` 缺省填 `"shige"` 只是为了让下游取到一份印刷观感的度量（内置表 `style/books/original-shige.ss`），
 // **不表示 123 是诗歌本方言**。
 
 import type {

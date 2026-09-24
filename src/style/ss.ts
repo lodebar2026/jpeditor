@@ -305,7 +305,7 @@ class Parser {
         return;
       }
       case "pu":
-        this.fail("`@pu` 已删：文本谱原样档照原版实测，不由样式表逐字段覆盖", at);
+        this.fail("`@pu` 已删：原样文档布局也读 `@jianpu`（键表里的 original 一列）", at);
         break;
       case "template": {
         const name = this.expectId();

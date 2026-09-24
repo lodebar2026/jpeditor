@@ -1,4 +1,4 @@
-// 样式表：一份谱「长什么样」的唯一描述。四把尺子（简谱 `LayoutOptions`、文本谱 `PuMetrics`、
+// 样式表：一份谱「长什么样」的唯一描述。四把尺子（简谱 `LayoutOptions`、原样文档布局 `JianpuMetrics`、
 // 成书 `BookStyle`、五线谱 `MixedOptions`）都由适配器从这里取值，见 `style/jianpu.ts` 等。
 //
 // 形状对着 CSS：角色（选择器）→ 声明块；级联见 `cascade.ts`，命名主题见 `themes.ts`，单位见 `units.ts`。
