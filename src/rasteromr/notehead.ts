@@ -41,6 +41,8 @@ export interface RasterHead {
 
 /** 符头宽度的上下限（线距的倍数）。实心符头约 1.3 格宽、1.0 格高。 */
 const W_MIN = 0.85;
+/** 窄块借符干补宽度的下限（线距的倍数）：比这更窄的是残片，不借。 */
+const NARROW_W = 0.6;
 /** 上限 1.85。**全音符本身就有 1.70 格宽**（`glyphmap.json` 的 Maestro 模板），
  *  写死 1.7 等于把它卡在门口。留一点余量到 1.85。
  *  （更早试过 1.95，那时还没按宽度分全/二分，多检出的两百多个块全是噪声。） */
@@ -145,7 +147,20 @@ export function findRasterHeads(
   const out: RasterHead[] = [];
   for (const c of blobs) {
     const t = trimLedger(bin, c.bbox, unit);
-    const b = t.box;
+    let b = t.box;
+    // **窄头被抽走符干之后更窄**：粗体铅字本的符头本来就只有一格上下（《主我敬拜你》14px、线距 14.6px），
+    // 贴着的符干被当成竖段抽走，块只剩 10px（0.68 格），过不了宽度下限。
+    // 块边上真贴着一根符干的，把符干那几列算回头宽再判——不贴着符干的窄块照旧不收。
+    if (b.w / sp < W_MIN && b.w / sp >= NARROW_W && b.h / sp >= H_MIN && t.area / Math.max(1, b.w * b.h) >= FILL_SOLID) {
+      const s0 = stemOf(b, stems, unit);
+      if (s0) {
+        const sx = (s0.x0 + s0.x1) / 2;
+        const half = Math.max(1, (s0.lw ?? unit.lineThick) / 2);
+        const x0 = Math.min(b.x, Math.round(sx - half));
+        const x1 = Math.max(b.x + b.w, Math.round(sx + half));
+        if ((x1 - x0) / sp >= W_MIN) b = { ...b, x: x0, w: x1 - x0 };
+      }
+    }
     const w = b.w / sp;
     const h = b.h / sp;
     // **高度上限要把粘着的谱线截扣掉**（与整小节休止那道闸同一个机理）。
@@ -158,7 +173,8 @@ export function findRasterHeads(
     if (w < W_MIN || w > W_MAX || h < H_MIN || hFit > H_MAX) continue;
     // 太扁太长的不是符头（是横段残渣、连线）
     if (b.w > b.h * 2.2) continue;
-    const fill = t.area / Math.max(1, b.w * b.h);
+    // 填充率按**原块**算：上面借进来的符干那几列不在 `t.area` 里
+    const fill = t.area / Math.max(1, t.box.w * t.box.h);
     if (fill < 0.3) continue; // 太空：是弧线的一段、方框
     const stem = stemOf(b, stems, unit);
     // 剪掉了列，且高度落在谱线网格的延长线上 → 那两截细横笔是加线

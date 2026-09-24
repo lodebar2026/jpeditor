@@ -348,6 +348,8 @@ const KEY_GAP_FIRST = 2.0;
 
 /** 拍号数字与模板的签名距离上限。见 `bootstrapTimeSig` 那段的说明。 */
 const TIME_TEMPLATE_DIST = 180;
+/** 调号串里按「前一个记号」认下一个的签名距离上限（同一本同一种记号，比模板近得多）。 */
+const KEY_SELF_DIST = 120;
 /** 几何闸收下的实心头，矮于这个数（线距的倍数）又压在符杠中线上的，是杠头。 */
 const BEAM_STUMP_H = 0.65;
 /** 按角色限定认拍号数字（见拍号那一段）：分子只在 2~9 里挑，分母只在 2、4、8 里挑。
@@ -836,6 +838,7 @@ export async function recognizeRasterPage(
   const split: RasterSym[] = [];
   /** 已经被认成**单个**符头、但要作废的那些（块里其实装着两三个头）。 */
   const dropHead = new Set<number>();
+  const restTpl = (look.templates ?? []).filter((t) => t.smufl === "restQuarter" || t.smufl === "rest8th");
   if (masks.length) {
     for (const c of blobs) {
       if (claimed.has(c.id)) continue;
@@ -1318,6 +1321,7 @@ export async function recognizeRasterPage(
     // 串里**逐个**往右认，每一步先看「被当成符头的升号」、再看普通块：齐来称颂的低音谱表
     // 三个升号，第一个是普通块、后两个各被认成一对黑符头，只认一路就断在第二个上。
     // 第一个记号离谱号右缘放到两格：低音谱号的两点在谱号盒外，实测 1.77 格。
+    let prevKey: { box: Rect; code: SmuflName; sig: Uint8Array } | null = null;
     for (let first = !fromDict; ; first = false) {
       const gap = unit.space * (first ? KEY_GAP_FIRST : KEY_GAP);
       const pair = sharpAsHeads(syms, edge, onStaff);
@@ -1336,7 +1340,19 @@ export async function recognizeRasterPage(
         const w = b.w / unit.space;
         const h = b.h / unit.space;
         if (h < 1.8 || h > 3.4 || w < 0.4 || w > h * 0.5 || w > 1.2) return null;
-        return matchTemplate(binSig(nl, b), w, h, keyTpl, TIME_TEMPLATE_DIST);
+        // 串里后面的记号不会比前一个矮一截：拍号 C 的上半弧（2.2 格）紧挨着最后一个升号（3.0 格），
+        // 模板距离 156 过得了拍号那道宽闸，被当成第五个升号（《主使我喜乐》四个升号认成五个）
+        if (prevKey && b.h < prevKey.box.h * 0.8) return null;
+        const sig = binSig(nl, b);
+        const m = matchTemplate(sig, w, h, keyTpl, TIME_TEMPLATE_DIST);
+        if (m) return m;
+        // 模板尺寸闸没过、却与**前一个已认出的记号**一般大、签名也像：粗体铅字本的升号比模板高
+        // （3.3 格，模板 2.7 格的容差到 3.2），同一串里前面的认得、这一个卡在闸上
+        if (prevKey && Math.abs(b.h - prevKey.box.h) <= prevKey.box.h * 0.15 && Math.abs(b.w - prevKey.box.w) <= prevKey.box.w * 0.3) {
+          const d = sigDistance(sig, prevKey.sig);
+          if (d <= KEY_SELF_DIST) return { smufl: prevKey.code, dist: d };
+        }
+        return null;
       };
       for (let i = 0; i < cand.length; i++) {
         const c = cand[i];
@@ -1364,6 +1380,7 @@ export async function recognizeRasterPage(
         }
         syms.push({ box, code: m.smufl });
         ledger.claim(box, `key:${m.smufl}`);
+        prevKey = { box, code: m.smufl, sig: binSig(nl, box) };
         edge = box.x + box.w;
         took = true;
         break;
@@ -1456,6 +1473,15 @@ export async function recognizeRasterPage(
       // 已经被别的路（谱号自举、拍号自举）出成 sym 的块不碰
       const b = c.bbox;
       if (syms.some((s0) => overlapFrac(b, s0.box) > 0.5)) continue;
+      // **长得像休止的块先按休止收**：粗体铅字本的四分休止（1.0×3.1 格）字典里没有这一类，
+      // 尺寸又正落在「头 + 干」这一档，被摘出一个假头（《主我敬拜你》第八小节的休止成了 E4）。
+      // 与 Maestro 的休止模板比，距离 77；真的「头 + 干（+ 尾）」块一个都比不上。
+      const rm = matchTemplate(binSig(nl, b), b.w / unit.space, b.h / unit.space, restTpl);
+      if (rm) {
+        stemHeads.push({ box: b, code: rm.smufl });
+        ledger.claim(b, `rest:${rm.smufl}`);
+        continue;
+      }
       const r = headFromStemBlock(raster.bin, b, c.area, masks, unit, pitchGrid, onLineY);
       if (!r) continue;
       stemHeads.push({ box: r.head, code: "noteheadBlack" });
@@ -1724,6 +1750,8 @@ export async function recognizeRasterPage(
   demoteMidKeys(pg, ctx);
   extendKeyChains(pg, ctx);
   shareKeySignature(ctx);
+  keyFromChords(pg, ctx, harmonies.map((h) => h.text), unit);
+  fixFlatReadAsSix(harmonies, ctx);
   makeSystems(pg);
   makeBars(pg);
   // 段的认领：**只记挂上标记的**（谱线/加线/符干/小节线/系统线/符尾）。
@@ -2188,6 +2216,67 @@ function attachAccidentalsByPitch(pg: SPage, ctx: Map<Staff, StaffContext>, note
  *   - 齐来称颂的低音谱表三个升号，后两个在调号那一步已被别的路认领（当成符头），
  *     两行低音谱表只认出一个，G# 全读成 G。
  */
+/**
+ * **全页一个调号都没认出、和弦却指向别的调**：按和弦拼写补调号。
+ *
+ * 病例《主我敬拜你》（粗体铅字本）：F 大调的那一个降号印得极小、压在高音谱号右侧的弯钩上，
+ * 与谱号连成一块，按块分不出来；六行全按 C 大调读，B♭ 全成了 B。可谱面上的和弦是
+ * F、C/E、Dm、B♭、Gm7、C7……——**和弦的根音与低音是按调拼写的**，B♭ 这种拼写本身就说明了调。
+ *
+ * 做法：数根音与斜线后的低音，挑能容纳最多个的调（同分取升降号少的）。
+ * 只在三件事都成立时才补：全页没有任何调号、和弦记号至少六个、那个调比 C 大调多容纳至少两个、
+ * 带升降号拼写的根音至少两次、且容纳了八成以上——临时变化的和弦（副属和弦的根音）只是零星几个，推不动。
+ */
+function keyFromChords(pg: SPage, ctx: Map<Staff, StaffContext>, texts: string[], unit: { space: number; height: number }): void {
+  const all = [...ctx.values()];
+  if (!all.length || all.some((c) => c.key.length)) return;
+  const notes: string[] = [];
+  for (const t of texts)
+    for (const m of t.matchAll(/(^|\/)([A-G])([#b♯♭]?)/g)) notes.push(m[2] + (m[3] === "#" || m[3] === "♯" ? "#" : m[3] ? "b" : ""));
+  if (notes.length < 6) return;
+  const scale = (f: number) =>
+    new Set(
+      "CDEFGAB".split("").map((l) =>
+        f > 0 && "FCGDAEB".slice(0, f).includes(l) ? l + "#" : f < 0 && "BEADGCF".slice(0, -f).includes(l) ? l + "b" : l,
+      ),
+    );
+  const score = (f: number) => {
+    const sc = scale(f);
+    return notes.filter((n) => sc.has(n)).length;
+  };
+  let best = 0;
+  for (let f = -6; f <= 6; f++) if (score(f) > score(best) || (score(f) === score(best) && Math.abs(f) < Math.abs(best))) best = f;
+  // 带升降号拼写的根音（B♭、F♯……）至少出现两次，才算和弦「说出了」调号；
+  // 差额只要两个：OCR 常把 B♭ 读岔成 B6 之类，抵掉一个（《主我敬拜你》39 比 37）
+  const spelled = notes.filter((n) => n.length === 2 && scale(best).has(n)).length;
+  if (best === 0 || spelled < 2 || score(best) < score(0) + 2 || score(best) < notes.length * 0.8) return;
+  const code: SmuflName = best > 0 ? "accidentalSharp" : "accidentalFlat";
+  for (const c of all) {
+    if (!c.clef) continue;
+    const cb = c.clef.box;
+    c.key = Array.from({ length: Math.abs(best) }, (_, i) => {
+      const box = { x: cb.right + 1 + i * unit.space * 0.8, y: cb.top, w: unit.space * 0.7, h: unit.space * 2.5 };
+      return makeSymObj(pg.objs.length + pg.segs.length + 1 + i, { box, code }, unit.height).sym;
+    });
+  }
+}
+
+/**
+ * **和弦根音的降号读成了 6**：OCR 把「B♭」读成「B6」（《主我敬拜你》F 大调，B♭ 和弦两处都是）。
+ * 调号定了之后按调纠：根音字母的**本音不在调内、降音在调内**，后面紧跟的 6 就是那个降号。
+ * 调内有这个本音的（C 大调的 B6、G 大调的 E6）不动——那可能真是六和弦。
+ */
+function fixFlatReadAsSix(harmonies: HarmonyToken[], ctx: Map<Staff, StaffContext>): void {
+  const c0 = [...ctx.values()].find((c) => c.key.length);
+  const f = c0 ? keyFifths(c0.key) : 0;
+  if (f >= 0) return;
+  const flats = "BEADGCF".slice(0, -f);
+  for (const h of harmonies) {
+    const m = /^([A-G])6(.*)$/.exec(h.text);
+    if (m && flats.includes(m[1])) h.text = `${m[1]}b${m[2]}`;
+  }
+}
+
 function shareKeySignature(ctx: Map<Staff, StaffContext>): void {
   const all = [...ctx.values()];
   const sigOf = (c: StaffContext) => c.key.map((k) => k.code).join(",");

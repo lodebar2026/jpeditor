@@ -26,6 +26,8 @@ export interface HeadMask {
   p: Float32Array;
   n: number;
   onLine: boolean;
+  /** 两类合并平均出来的那张（样本不够分类时的兜底，见 `buildHeadMasks`）。 */
+  pooled?: boolean;
 }
 
 /** 模板窗口（线距的倍数）——比符头本身大一圈，把周围该空的地方也学进去。 */
@@ -70,8 +72,21 @@ export function buildHeadMasks(bin: Binary, heads: { box: Rect; code: SmuflName 
     for (let i = 0; i < p.length; i++) p[i] = b.sum[i] / b.n;
     out.push({ w, h, p, n: b.n, onLine: b.onLine });
   }
+  // **两类都凑不够、合起来够**：一页只有六行单旋律的短歌（《主我敬拜你》四十来个实心头，
+  // 骑线与在间各二十上下），一张模板都出不来，「头 + 干 + 尾连成一块」那一路整页空转
+  // ——这本的符尾从干底弯回来贴着头，带尾的八分整批漏掉。合起来平均一张顶上（`onLine` 随多的那类），
+  // 查找时本来就有「找不到同类用第一张」的回退。
+  const pooled = buckets[0].n + buckets[1].n;
+  if (!out.length && pooled >= MIN_POOLED) {
+    const p = new Float32Array(w * h);
+    for (let i = 0; i < p.length; i++) p[i] = (buckets[0].sum[i] + buckets[1].sum[i]) / pooled;
+    out.push({ w, h, p, n: pooled, onLine: buckets[0].n >= buckets[1].n, pooled: true });
+  }
   return out;
 }
+
+/** 两类都不够 `MIN_SAMPLES` 时，合起来至少这么多才出一张合并模板。 */
+const MIN_POOLED = 12;
 
 /**
  * **空心符头**的模板：拿本页已经认出来的二分、全音符符头平均。
@@ -333,6 +348,8 @@ const END_BAND = 1.3;
  *  干净档音符 84.82 / 84.94 / 84.93 / 84.98 / 84.88%
  *  ——扫描档在 0.40 见顶，干净档在 0.45 见顶但两者只差 0.04（噪声量级），取 0.40。 */
 const STEM_SCORE_MIN = 0.40;
+/** 合并模板（`pooled`）糊一些，同一个头得分低一截：《主我敬拜你》带尾八分的头 0.37，别处最高 0.30。 */
+const STEM_SCORE_MIN_POOLED = 0.34;
 /** 同一根符干上再找和弦头：从端上那个头往里找多远（格）、最多几个头、得分闸。 */
 const CHORD_REACH = 2.5;
 const CHORD_MAX = 3;
@@ -385,7 +402,7 @@ export function headFromStemBlock(
       for (const y of ys) {
         const m = masks.find((k) => k.onLine === onLine(y)) ?? masks[0];
         const s = scoreAt(bin, m, x, y);
-        if (s >= STEM_SCORE_MIN && (!best || s > best.s)) best = { x, y, s };
+        if (s >= (m.pooled ? STEM_SCORE_MIN_POOLED : STEM_SCORE_MIN) && (!best || s > best.s)) best = { x, y, s };
       }
     }
   if (!best) return null;

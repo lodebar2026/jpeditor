@@ -275,6 +275,13 @@ export function bootstrapClefs(
           // 谱号自己探出谱表的那截（高音谱号的尾巴）在谱号正下方，不往左伸。
           // 只管底下：谱表上方左边的小碎块也有（破碎扫描件三处），一并剔掉反而少认一批音（−0.2）。
           if (b.y >= bottom - space * 0.25 && b.y + b.h > bottom + space * 0.8 && b.x < sd.x - space * 0.5) continue;
+          // 调号第一个升降号**擦着谱号右缘**：粗体铅字本排得紧，F# 左缘伸进高音谱号上端的弯钩下面，
+          // x 上重叠一两个像素就并进来，盒子宽到 3.6 格、调号少一个（《主使我喜乐》四个升号只认出两个）。
+          // 谱号自己的碎块与盒子重叠大半；升降号只擦边、又落在种子右半边。
+          // 宽度下限 0.8 格：扫描件里谱号下半截断出来的细碎块（0.45~0.74 格）也擦边，要照旧并进来
+          //（不设下限时合唱谱扫描档音符 68.88 → 67.30%、歌词 64.94 → 57.21%）。
+          const ov = Math.min(box.x + box.w, b.x + b.w) - Math.max(box.x, b.x);
+          if (b.x > sd.x + sd.w * 0.5 && ov <= space * 0.25 && b.h >= space * 1.8 && b.h <= space * 3.6 && b.w >= space * 0.8 && b.w <= space * 1.2) continue;
           const x0 = Math.min(box.x, b.x);
           const y0 = Math.min(box.y, b.y);
           box = { x: x0, y: y0, w: Math.max(box.x + box.w, b.x + b.w) - x0, h: Math.max(box.y + box.h, b.y + b.h) - y0 };

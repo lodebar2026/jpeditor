@@ -341,15 +341,52 @@ export function foldLyricChars(chars: OcrChar[]): OcrChar[] {
 }
 
 /**
+ * **OCR 读出的字比字格多时**，把宽到约两个字的格等分开，最多补 `extra` 格。
+ *
+ * 粗体铅字本词是两字一组排的（「我要 称谢 称谢」），组内两字几乎贴着，
+ * `squareCells` 按「缝不过 0.35 字宽、合起来不过 1.4 字宽」并不开它们，却也切不开：
+ * 两字本就粘成一块。字数比格数多，单调对齐只能丢字——《主使我喜乐》每个「我要」丢一个「我」。
+ * 分割那一步一律等分粘连字实测是净亏（见 `findLyricRows` 的记账），这里只在 OCR 字数佐证时才分。
+ */
+function splitWideCells(strip: LyricStrip, extra: number): LyricStrip {
+  const unit = strip.charH;
+  if (!(unit > 0)) return strip;
+  const wide = strip.cells
+    .map((c, i) => ({ i, k: Math.min(3, Math.round(c.box.w / unit)) }))
+    .filter((e) => e.k >= 2 && strip.cells[e.i].box.w >= unit * 1.7)
+    .sort((a, b) => strip.cells[b.i].box.w - strip.cells[a.i].box.w);
+  const parts = new Map<number, number>();
+  for (const e of wide) {
+    if (extra <= 0) break;
+    const k = Math.min(e.k, extra + 1);
+    parts.set(e.i, k);
+    extra -= k - 1;
+  }
+  if (!parts.size) return strip;
+  const cells: LyricStrip["cells"] = [];
+  strip.cells.forEach((c, i) => {
+    const k = parts.get(i) ?? 1;
+    for (let t = 0; t < k; t++) {
+      const x0 = c.x0 + ((c.x1 - c.x0) * t) / k;
+      const x1 = c.x0 + ((c.x1 - c.x0) * (t + 1)) / k;
+      const bw = c.box.w / k;
+      cells.push({ x0, x1, box: { x: c.box.x + bw * t, y: c.box.y, w: bw, h: c.box.h } });
+    }
+  });
+  return { ...strip, cells };
+}
+
+/**
  * OCR 的字符序列 → 逐字格的字符。
  *
  * 字数与字格数相同就**按序号一一对应**（最稳）；否则按位置取**最近**的字格。
  * 不能要求「落在字格区间内」——`xFrac` 是 CTC 估出来的位置，误差常有半个字，
  * 实测那样会丢掉近一半的字（1221 个字里丢 566）。
  */
-export function mapCharsToCells(strip: LyricStrip, chars: OcrChar[]): { box: Rect; ch: string }[] {
-  const out = strip.cells.map((c) => ({ box: c.box, ch: "" }));
+export function mapCharsToCells(strip0: LyricStrip, chars: OcrChar[]): { box: Rect; ch: string }[] {
   const keep = foldLyricChars(chars);
+  const strip = keep.length > strip0.cells.length ? splitWideCells(strip0, keep.length - strip0.cells.length) : strip0;
+  const out = strip.cells.map((c) => ({ box: c.box, ch: "" }));
   if (!keep.length) return out;
   if (keep.length === strip.cells.length) {
     keep.forEach((c, i) => (out[i].ch = c.ch));
