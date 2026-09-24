@@ -31,6 +31,7 @@
 | `src/abcfamily/parsedialect.ts` | **组装期钩子**：时值换算、token→`Note`、`K:` 解析、`-` 的语义、默认音长、代码换行算不算谱面换行 |
 | `src/abcfamily/emit.ts` | **写出基类** `AbcFamilyEmitter`：字段头、声部、歌词对位、小节线与房号、Mark 索引、符杠分组连写、`I:` 扩展、`I:playorder` |
 | `src/abcfamily/emit123.ts` / `emitabc.ts` | 两个方言的写出 |
+| `src/abcfamily/abcpitch.ts` | ABC 音名 + 绝对临时记号 ↔ 实际音高（读 `resolveAbcPitches` / 写 `withAbcPitches`），见下「关键判据」 |
 | `src/j123/lex.ts` / `emit.ts` | **薄壳**，保留 `lexMusicLine` / `emit123` / `emitSong` 的函数形态给既有调用方 |
 | `src/j123/parse.ts` | 组装：小节切分、时值累计、符杠分组、Mark 配对、歌词对位、`I:playorder` 回填。`parse123` 与 `parseAbc` 都是 `parseAbcFamily` 的薄壳 |
 
@@ -67,9 +68,14 @@
   **转正判据：回落率 < 1%**（`abc-native-check.mjs`）。
 - **解析侧刻意不对称**：写出端两个方言都由 `abcfamily` 出，读入端只有 `abcfamily` 一条，
   `abc2xml` 平行留着。这不是遗漏，是拿覆盖面换来的保险。
-- **ABC 只给绝对音高，简谱那侧要度数**：`parseAbcFamily` 收尾时用
-  `jianpu.ts::degreeFromPitch` 补出 `degree`。**不许在别处另写一份换算**——
-  那一处与 `jppitch.ts` 同源，「两份实现一旦漂移，往返数字就会错」。
+- **ABC 只给音名，简谱那侧要度数；两边的临时记号口径不同**，换算都在 `abcfamily/abcpitch.ts`，读写共用一份状态规则：
+  ABC 的记号是**绝对**的、管到本小节末、只管**同音名同八度**（§4.2：`K:F` 里 `B` 是 B♭、`=B` 是 B 本位、`^B` 是 B♯）；
+  简谱的记号**相对调号**、按**唱名**延续（`jianpu.ts::AccidentalCarry`）。
+  读入：`resolveAbcPitches` 把音名 + 面上记号换成实际音高，度数再由 `assignDegrees` 推（面上的简谱记号由 `AccidentalCarry.mark` 定）。
+  以前只按面上记号填 `alter`、度数直接 `degreeFromPitch`：`K:F` 的 `B` 投成 MusicXML 是 B 本位，`=B` 读成「还原到调号」。
+  写出：简谱形状的来源（123/文本谱/`.jpwabc`，只有度数）由 `withAbcPitches` 在克隆上补实际音高、按 ABC 规则重定记号；
+  以前没有这一步，另存为 ABC 全曲写成 `C`。**八度口径与 `jppitch.ts` 同源，不许在别处另写一份**。
+  回归：`abc-roundtrip.mjs` 的「简谱形状 → ABC」一组（testdata + 500 首，逐音实际音高不变，读回的度数换回音高也不变）。
 - **落单的 `]` 读成收尾线**：规范里没有，但野外的 ABC 常这么写（`… z2]`）。
   `[|]`/`|]` 与和弦 `[CEG]`、行内字段 `[K:G]` 都在它之前被吃掉，所以走到那一步的一定是收尾线。
 - **ABC 末小节不写换行标记**：那是个真换行，末尾多一个就成空行，而 **ABC 的空行会终止曲体**，

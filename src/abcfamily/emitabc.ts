@@ -7,6 +7,7 @@ import { SIMPLE_DIVISIONS, type Chord, type Element, type Key, type Note, type S
 import { AbcFamilyEmitter } from "./emit";
 import { keySpelling, nominalQuarters } from "../model/jianpu";
 import { isXmlShaped } from "../model/xmlproject";
+import { withAbcPitches } from "./abcpitch";
 
 /** ABC §4.13 里不随拍号变的默认比例（`parsedialect.ts::tupletNormalAbc`）。 */
 const ABC_FIXED_TUPLET: Readonly<Record<number, number>> = { 2: 3, 3: 2, 4: 3, 6: 2, 8: 3 };
@@ -66,18 +67,16 @@ const GRACE_LEN: Readonly<Record<string, string>> = { quarter: "2", eighth: "", 
 export class EmitterAbc extends AbcFamilyEmitter {
   protected readonly versionLine = "%abc-2.1";
 
-  /** MusicXML 形状的歌先换时值口径，否则 `L:1/8` 下写出的是原始 divisions（八分写成 `E1/8`）。 */
+  /** MusicXML 形状的歌先换时值口径，否则 `L:1/8` 下写出的是原始 divisions（八分写成 `E1/8`）；
+   *  简谱形状的（只有度数）先补音高与 ABC 口径的记号（`abcpitch.ts`）。 */
   override emitSong(song: Song, fallbackNumber?: number): string {
-    return super.emitSong(isXmlShaped(song) ? withAbcDivisions(song) : song, fallbackNumber);
+    return super.emitSong(isXmlShaped(song) ? withAbcDivisions(song) : withAbcPitches(song), fallbackNumber);
   }
 
   /** 音名 + 八度：第 4 八度大写、第 5 八度小写，再往外用 `'` 与 `,`（ABC §4.1）。 */
   protected noteText(n: Note): string {
     const p = n.pitch;
-    if (!p) {
-      // 只有简谱度数、没有绝对音高——写不出 ABC 音名，留给调用方报降级
-      return n.degree ? "C" : "";
-    }
+    if (!p) return ""; // 度数已由 `withAbcPitches` 换成音高
     let s = n.accidental ? ACC_TEXT[n.accidental] ?? "" : "";
     const oct = p.octave;
     s += oct >= 5 ? p.step.toLowerCase() : p.step;

@@ -39,7 +39,7 @@ import type {
   Sustain,
 } from "../model/doc";
 import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "../model/helpers";
-import { fillDegreesFromPitch } from "../model/jianpu";
+import { resolveAbcPitches } from "../abcfamily/abcpitch";
 import { addMeta, creatorOf, isMetaKey } from "../model/metakeys";
 import type { BreakKind } from "../model/helpers";
 import {
@@ -1099,11 +1099,9 @@ export function parseAbcFamily(
       }
     }
     pendingLyrics = [];
-    // **ABC 只给绝对音高，简谱那一侧要度数**（排版、`emit123`、播放都按度数走）。
-    // 换算走 `helpers.ts::degreeFromPitch`——那一处与 `jppitch.ts` 同源，
-    // 「两份实现一旦漂移，往返数字就会错」，所以不许在这里另写一份。
-    // 反方向（度数 → 音高）留到 `ScoreDoc ↔ MusicXML` 直通那一轮一起补。
-    if (ctx.d.id === "abc") fillDegreesFromPitch(song);
+    // **ABC 只给音名，简谱那一侧要度数**（排版、`emit123`、播放都按度数走）。
+    // 先按调号与小节内延续把音名换成实际音高，度数再从音高推（`abcpitch.ts`，写出端同一份规则）。
+    if (ctx.d.id === "abc") resolveAbcPitches(song);
     for (const part of song.parts) breaksAfterToStart(part, ctx.breakAfter);
     ctx.breakAfter.clear();
     song.marks = marks;
