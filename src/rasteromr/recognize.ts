@@ -783,6 +783,20 @@ export async function recognizeRasterPage(
     restIds.add(c.id);
     restSyms.push({ box: b, code: restKind(b, lines, unit) });
   }
+  // **斜笔被抽成竖段的八分休止**：斜笔陡，原语那一步当竖段提走，块图里只剩上头的球
+  //（《向主唱新歌》高音谱表下声部一排八分休止，球被歌词行收走）。拿球在去线图上把整个连通域
+  // 回填出来，再按八分休止的形状判（`isEighthRest`）。
+  for (const c of blobs) {
+    if (restIds.has(c.id)) continue;
+    const b = c.bbox;
+    if (b.w > unit.space * 0.8 || b.h > unit.space * 1.0 || b.h < unit.space * 0.4) continue;
+    if (!inBand(b.y + b.h / 2)) continue;
+    const full = fillAround(nl, b, unit);
+    if (!full || full.box.h < b.h * 1.8) continue;
+    if (!isEighthRest(nl, full.box, full.area, unit)) continue;
+    restIds.add(c.id);
+    restSyms.push({ box: full.box, code: "rest8th" });
+  }
 
   /** 块的中心压在某条符杠的中线上（半个杠厚以内）：那是提走符杠之后剩下的杠头，不是符头。 */
   const onBeamLine = (b: Rect) => {
@@ -2507,6 +2521,35 @@ function isEighthRest(bin: Binary, b: Rect, area: number, unit: RasterUnit): boo
   let sxy = 0, syy = 0;
   for (const r of low) { sxy += (r.y - my) * ((r.x0 + r.x1) / 2 - mx); syy += (r.y - my) ** 2; }
   return syy > 0 && sxy / syy <= -EIGHTH_REST_SLANT;
+}
+
+/** 从块里的墨出发，在去线图上 8 连通回填整个连通域；出了窗口（左右各 1 格、上 0.5 格、下 2.6 格）就不算。 */
+function fillAround(bin: Binary, b: Rect, unit: RasterUnit): { box: Rect; area: number } | null {
+  const sp = unit.space;
+  const x0 = Math.max(0, Math.floor(b.x - sp));
+  const y0 = Math.max(0, Math.floor(b.y - sp * 0.5));
+  const x1 = Math.min(bin.w - 1, Math.ceil(b.x + b.w + sp));
+  const y1 = Math.min(bin.h - 1, Math.ceil(b.y + sp * 2.6));
+  const seen = new Set<number>();
+  const stack: number[] = [];
+  for (let y = b.y; y < b.y + b.h && !stack.length; y++)
+    for (let x = b.x; x < b.x + b.w; x++)
+      if (bin.data[y * bin.w + x]) { stack.push(y * bin.w + x); seen.add(y * bin.w + x); break; }
+  let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
+  while (stack.length) {
+    const i = stack.pop()!;
+    const x = i % bin.w;
+    const y = (i - x) / bin.w;
+    if (x <= x0 || x >= x1 || y <= y0 || y >= y1) return null;
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const j = i + dy * bin.w + dx;
+        if (!seen.has(j) && bin.data[j]) { seen.add(j); stack.push(j); }
+      }
+  }
+  if (maxX < 0) return null;
+  return { box: { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 }, area: seen.size };
 }
 
 function midOfStaff(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
