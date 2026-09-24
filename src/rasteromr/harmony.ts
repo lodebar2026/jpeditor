@@ -22,6 +22,7 @@ import type { Binary, Rect } from "../omr/types";
 import type { RasterUnit } from "./staffline";
 import type { OcrChar } from "./lyric";
 import { CHORD_TOKEN_RE } from "../staffomr/textanalyze";
+import { blankNonChord } from "../omr/chordline";
 
 /** 带的窗口（线距的倍数）：顶线上方这一段。
  *
@@ -51,6 +52,9 @@ const LOW_CLEAR = 0.15;
 const RUN_GAP = 0.15;
 /** 碰到带顶的簇最多往上长几格。 */
 const GROW_UP = 1.5;
+/** 往上长出这么多格才算「字大半在带外」（见 `findHarmonyStrips` 的整行重切）。
+ *  顶到带顶只长几个像素的很常见（坚固保障一行 11 条全顶到，只长 0.2 格），那不用重切。 */
+const GROW_BIG = 1.0;
 
 /** 整块落在 `yB` 行以下的连通块抹掉（八连通，就地改）。 */
 function dropBelow(band: Uint8Array, W: number, H: number, yB: number): void {
@@ -163,7 +167,7 @@ export function findHarmonyStrips(
   const out: HarmonyStrip[] = [];
   for (const st of staves) {
     const jp = st.ceiling != null;
-    const y0 = Math.max(0, Math.round(jp ? st.ceiling! - sp * JP_BAND : st.box.top - sp * BAND_TOP));
+    const yTop = Math.max(0, Math.round(jp ? st.ceiling! - sp * JP_BAND : st.box.top - sp * BAND_TOP));
     /** 原来的带底：簇要有墨落在它上面才算。 */
     const yB = Math.max(0, Math.round(jp ? st.ceiling! : st.box.top - sp * BAND_BOTTOM));
     // **带底下探到顶线上方**（`LOW_CLEAR`）：全音符小节上方的和弦字母印得低（《赞美一神》「阿们」
@@ -175,70 +179,89 @@ export function findHarmonyStrips(
     const y1 = jp ? Math.min(bin.h, Math.round(yB + sp * JP_BELOW)) : Math.max(yB, Math.round(st.box.top - sp * LOW_CLEAR));
     const x0 = Math.max(0, Math.round(st.box.left));
     const x1 = Math.min(bin.w, Math.round(st.box.right));
-    if (y1 - y0 < 4 || x1 - x0 < 8) continue;
-    const band = withoutRisers(bin, x0, x1, y0, y1, Math.ceil(sp * RISER_DEPTH), jp ? -1 : y1);
-    if (!jp) dropBelow(band, x1 - x0, y1 - y0, yB - y0);
-    const at = (x: number, y: number) => band[(y - y0) * (x1 - x0) + (x - x0)];
-    // 列投影 → 游程 → 按空白并成簇
-    const col = new Int32Array(x1 - x0);
-    for (let y = y0; y < y1; y++)
-      for (let x = x0; x < x1; x++) if (at(x, y)) col[x - x0]++;
-    const gap = Math.max(2, Math.round(sp * CLUSTER_GAP));
-    const runs: [number, number][] = [];
-    let s = -1;
-    for (let i = 0; i <= col.length; i++) {
-      const ink = i < col.length && col[i] > 0;
-      if (ink && s < 0) s = i;
-      if (!ink && s >= 0) {
-        const last = runs[runs.length - 1];
-        if (last && s - last[1] - 1 < gap) last[1] = i - 1;
-        else runs.push([s, i - 1]);
-        s = -1;
-      }
-    }
-    for (const [a, b] of runs) {
-      if (b - a + 1 < sp * MIN_W) continue;
-      // 纵向也裁紧：条越紧，rec 越准
-      let ya = y1;
-      let yb = y0;
-      let ink = 0;
+    if (y1 - yTop < 4 || x1 - x0 < 8) continue;
+    // 切一遍：带顶在 `y0`。回报有几条顶到带顶、往上长出一格以上（`GROW_BIG`），以及长到的最高处
+    const cut = (y0: number) => {
+      const strips: HarmonyStrip[] = [];
+      let grown = 0;
+      let top = y0;
+      const band = withoutRisers(bin, x0, x1, y0, y1, Math.ceil(sp * RISER_DEPTH), jp ? -1 : y1);
+      if (!jp) dropBelow(band, x1 - x0, y1 - y0, yB - y0);
+      const at = (x: number, y: number) => band[(y - y0) * (x1 - x0) + (x - x0)];
+      // 列投影 → 游程 → 按空白并成簇
+      const col = new Int32Array(x1 - x0);
       for (let y = y0; y < y1; y++)
-        for (let x = x0 + a; x <= x0 + b; x++)
-          if (at(x, y)) {
-            ink++;
-            if (y < ya) ya = y;
-            if (y > yb) yb = y;
-          }
-      if (ink < MIN_INK || yb < ya) continue;
-      const rowInk = (y: number) => {
-        for (let x = x0 + a; x <= x0 + b; x++) if (y >= y0 ? at(x, y) : bin.data[y * bin.w + x]) return true;
-        return false;
-      };
-      {
-        // **只留最上面一段**：和弦记号只有一行，同簇里下面隔开的是延长记号
-        //（《赞美一神》延长记号上方的 G 与记号并成一条，OCR 读成「5」）
-        const cut = Math.max(2, Math.round(sp * RUN_GAP));
-        let blank = 0;
-        for (let y = ya; y <= yb; y++) {
-          if (rowInk(y)) blank = 0;
-          else if (++blank >= cut) {
-            yb = y - blank;
-            break;
-          }
+        for (let x = x0; x < x1; x++) if (at(x, y)) col[x - x0]++;
+      const gap = Math.max(2, Math.round(sp * CLUSTER_GAP));
+      const runs: [number, number][] = [];
+      let s = -1;
+      for (let i = 0; i <= col.length; i++) {
+        const ink = i < col.length && col[i] > 0;
+        if (ink && s < 0) s = i;
+        if (!ink && s >= 0) {
+          const last = runs[runs.length - 1];
+          if (last && s - last[1] - 1 < gap) last[1] = i - 1;
+          else runs.push([s, i - 1]);
+          s = -1;
         }
-        while (yb > ya && !rowInk(yb)) yb--;
-        // **碰到带顶的往上长**：延长记号上方的和弦字母印得高，顶上被带顶切掉
-        if (!jp && ya === y0) while (ya > 0 && ya > y0 - sp * GROW_UP && rowInk(ya - 1)) ya--;
       }
-      const box = { x: x0 + a, y: ya, w: b - a + 1, h: yb - ya + 1 };
-      const data = new Uint8Array(box.w * box.h);
-      for (let y = 0; y < box.h; y++)
-        for (let x = 0; x < box.w; x++) {
-          const py = box.y + y;
-          data[y * box.w + x] = py >= y0 ? at(box.x + x, py) : bin.data[py * bin.w + box.x + x];
+      for (const [a, b] of runs) {
+        if (b - a + 1 < sp * MIN_W) continue;
+        // 纵向也裁紧：条越紧，rec 越准
+        let ya = y1;
+        let yb = y0;
+        let ink = 0;
+        for (let y = y0; y < y1; y++)
+          for (let x = x0 + a; x <= x0 + b; x++)
+            if (at(x, y)) {
+              ink++;
+              if (y < ya) ya = y;
+              if (y > yb) yb = y;
+            }
+        if (ink < MIN_INK || yb < ya) continue;
+        const rowInk = (y: number) => {
+          for (let x = x0 + a; x <= x0 + b; x++) if (y >= y0 ? at(x, y) : bin.data[y * bin.w + x]) return true;
+          return false;
+        };
+        {
+          // **只留最上面一段**：和弦记号只有一行，同簇里下面隔开的是延长记号
+          //（《赞美一神》延长记号上方的 G 与记号并成一条，OCR 读成「5」）
+          const cut = Math.max(2, Math.round(sp * RUN_GAP));
+          let blank = 0;
+          for (let y = ya; y <= yb; y++) {
+            if (rowInk(y)) blank = 0;
+            else if (++blank >= cut) {
+              yb = y - blank;
+              break;
+            }
+          }
+          while (yb > ya && !rowInk(yb)) yb--;
+          // **碰到带顶的往上长**：延长记号上方的和弦字母印得高，顶上被带顶切掉
+          if (!jp && ya === y0) while (ya > 0 && ya > y0 - sp * GROW_UP && rowInk(ya - 1)) ya--;
+          if (y0 - ya >= sp * GROW_BIG) {
+            grown++;
+            top = Math.min(top, ya);
+          }
         }
-      out.push({ w: box.w, h: box.h, data, box, staff: st.index });
-    }
+        const box = { x: x0 + a, y: ya, w: b - a + 1, h: yb - ya + 1 };
+        const data = new Uint8Array(box.w * box.h);
+        for (let y = 0; y < box.h; y++)
+          for (let x = 0; x < box.w; x++) {
+            const py = box.y + y;
+            data[y * box.w + x] = py >= y0 ? at(box.x + x, py) : bin.data[py * bin.w + box.x + x];
+          }
+        strips.push({ w: box.w, h: box.h, data, box, staff: st.index });
+      }
+      return { strips, grown, top };
+    };
+    let r = cut(yTop);
+    // **整行和弦字排得高**：多数条都顶到带顶、往上长过，就把带顶挪到它们长到的最高处再切一遍。
+    // 列投影只看带里的墨，字露在带外的部分左右边界算不进来：《圣哉三一歌伴奏》和弦字在顶线上方
+    // 2.7~4.7 格（音符高、和弦行跟着抬），带里只剩字脚，♭ 的肚子、「7」的上半、F 的横画都被切掉，
+    // OCR 把 E♭ 读成「El」。只有**多数**条都顶到时才挪——偶尔一个印得高的字母（延长记号上方）
+    // 照旧靠往上长解决，其余谱行的条一个像素不变（缓存指纹不动）。
+    if (!jp && r.grown >= 2 && r.grown * 2 >= r.strips.length) r = cut(Math.max(0, r.top));
+    out.push(...r.strips);
   }
   return out;
 }
@@ -258,6 +281,9 @@ export interface HarmonyToken {
   text: string;
   box: Rect;
   staff: number;
+  /** 文本才有：`mark` = 记号词（Fine、D.C.、段落词，`blankNonChord` 认的），不算和弦行里的「杂文」；
+   *  `word` = 其余单词与汉字串（署名、表情术语）。见 `harmonyLine`。 */
+  kind?: "mark" | "word";
 }
 
 /**
@@ -285,37 +311,111 @@ function normalizeChordText(s: string): string {
 const fixTail = (s: string): string => s.replace(/(?<=[A-G][#b]?)[iíjl]$/, "7");
 
 /**
- * 一条的 OCR 字符序列 → 一个个和弦记号。
+ * 一条的 OCR 字符序列 → 和弦记号 + 文本。
  *
- * **靠文法切**：`CHORD_TOKEN_RE` 要求根音是大写 A–G，从左往右贪心地咬，咬不动就跳一个字符。
- * 每个记号的 x 由它头尾两个字符的 `xFrac` 定；字数对不上（归一化删过字）就整条当一个记号的盒。
+ * 与简谱那一路（`omr/chordline.ts`）同一套文法与记号词表：
+ *   1. **记号词先认成文本**：`blankNonChord` 抹掉的段落词、跳转记号（Fine、D.C.、D.S.、To Coda）、
+ *      调号拍号、方括号注——它们的字母恰好都是合法根音，不先拿走就被贪心吃成和弦
+ *     （《颂赞与尊贵》的「Fine」成了 F）。抹掉的每一段交出来当文本。
+ *   2. **根音大写、从左往右贪心地咬**（`CHORD_TOKEN_RE`），咬不动的跳过：小节号、
+ *      延长记号读成的 `S`（`DS`）这类杂字只是跳过，不交出去——和弦带里不会有单个的非根音大写字母。
+ *   3. **和小写字母粘在一起的是单词，不是和弦**：和弦除了自己的后缀（m、maj、dim…，文法已咬进去）
+ *      不与小写字母连写。咬出来的记号前面紧挨着小写字母（上一个记号的尾巴除外，`DmG` 要断回 `Dm`+`G`），
+ *      或后面紧跟着咬不进去的小写字母，整串字母收成文本（带往上挪后收进来的署名「(John B. Dykes)」）。
+ *
+ * 每个记号 / 文本的 x 由它头尾两个字符的 `xFrac` 定；文本按 OCR 原字符交出（空格、标点照留）。
  */
-export function harmonyTokens(strip: HarmonyStrip, chars: OcrChar[]): HarmonyToken[] {
-  const kept: { ch: string; xFrac: number }[] = [];
-  for (const c of chars) {
-    const t = normalizeChordText(c.ch);
-    for (const ch of t) kept.push({ ch, xFrac: c.xFrac });
-  }
-  const raw = fixTail(kept.map((c) => c.ch).join(""));
-  const out: HarmonyToken[] = [];
+const HAN = /\p{Script=Han}/u;
+
+export function readHarmonyStrip(strip: HarmonyStrip, chars: OcrChar[]): { chords: HarmonyToken[]; texts: HarmonyToken[] } {
+  const chords: HarmonyToken[] = [];
+  const texts: HarmonyToken[] = [];
   const px = (frac: number) => strip.box.x + frac * strip.box.w;
+  const boxOf = (f0: number, f1: number): Rect => {
+    const x0 = px(f0);
+    const x1 = px(f1);
+    return { x: Math.min(x0, x1), y: strip.box.y, w: Math.max(1, Math.abs(x1 - x0)), h: strip.box.h };
+  };
+  const textOf = (a: number, b: number) => chars.slice(a, b + 1).map((c) => c.ch).join("").trim();
+  // 1. 记号词：按字符等长抹（一个 OCR 字符一格，抹掉的格子就是记号词的字）
+  const orig = chars.map((c) => (c.ch.length === 1 ? c.ch : c.ch[0] ?? " ")).join("");
+  const blanked = blankNonChord(orig);
+  const isWord = chars.map((c, k) => blanked[k] === " " && c.ch.trim() !== "");
+  for (let k = 0; k < chars.length; ) {
+    if (!isWord[k]) {
+      k++;
+      continue;
+    }
+    let e = k;
+    while (e + 1 < chars.length && (isWord[e + 1] || (chars[e + 1].ch.trim() === "" && isWord[e + 2]))) e++;
+    texts.push({ text: textOf(k, e), box: boxOf(chars[k].xFrac, chars[e].xFrac), staff: strip.staff, kind: "mark" });
+    k = e + 1;
+  }
+  // 2、3. 其余的字归一后贪心咬；`src` 是归一前在 `chars` 里的下标
+  const kept: { ch: string; xFrac: number; src: number }[] = [];
+  chars.forEach((c, src) => {
+    if (isWord[src]) {
+      kept.push({ ch: " ", xFrac: c.xFrac, src }); // 占一格隔开，免得两边粘起来
+      return;
+    }
+    for (const ch of normalizeChordText(c.ch)) kept.push({ ch, xFrac: c.xFrac, src });
+  });
+  const raw = fixTail(kept.map((c) => c.ch).join(""));
+  const letter = (i: number) => i >= 0 && i < raw.length && /[A-Za-z]/.test(raw[i]);
+  let chordEnd = -1; // 上一个和弦记号结束的位置（它后面紧跟的大写根音不算「粘着字母」）
   let i = 0;
   while (i < raw.length) {
     const m = CHORD_TOKEN_RE.exec(raw.slice(i));
-    if (!m || !m[0]) {
-      i++;
+    const len = m?.[0].length ?? 0;
+    // 只看**小写**：前面的大写杂字（`SD` 里延长记号读成的 S）不算粘着
+    const glued = /[a-z]/.test(raw[i - 1] ?? "") && chordEnd !== i;
+    if (len && !glued && !/[a-z]/.test(raw[i + len] ?? "")) {
+      chords.push({ text: m![0], box: boxOf(kept[i].xFrac, kept[i + len - 1].xFrac), staff: strip.staff });
+      i += len;
+      chordEnd = i;
       continue;
     }
-    const a = i;
-    const b = i + m[0].length - 1;
-    i += m[0].length;
-    const x0 = px(kept[a].xFrac);
-    const x1 = px(kept[b].xFrac);
-    out.push({
-      text: m[0],
-      box: { x: Math.min(x0, x1), y: strip.box.y, w: Math.max(1, Math.abs(x1 - x0)), h: strip.box.h },
-      staff: strip.staff,
-    });
+    if (HAN.test(raw[i])) {
+      // 汉字串（署名「刘廷芳译」、表情术语）：和弦里除了「或/升/降」不会有汉字，整串收成文本
+      let b = i;
+      while (b + 1 < raw.length && HAN.test(raw[b + 1])) b++;
+      texts.push({ text: textOf(kept[i].src, kept[b].src), box: boxOf(kept[i].xFrac, kept[b].xFrac), staff: strip.staff, kind: "word" });
+      i = b + 1;
+      continue;
+    }
+    if (letter(i)) {
+      // 一整串字母；紧挨在前面的和弦记号不退回（归一化删了空白，`Am Fine` 与 `AmFine` 分不开）
+      let a = i;
+      while (letter(a - 1) && a - 1 >= chordEnd) a--;
+      let b = i;
+      while (letter(b + 1)) b++;
+      // 带小写的才是单词，整串收走；单个 / 全大写的非根音字母是杂字，只跳过这一个（`SD` 里还有 D）
+      if (/[a-z]/.test(raw.slice(a, b + 1))) {
+        texts.push({ text: textOf(kept[a].src, kept[b].src), box: boxOf(kept[a].xFrac, kept[b].xFrac), staff: strip.staff, kind: "word" });
+        i = b + 1;
+        continue;
+      }
+    }
+    i++;
   }
-  return out;
+  texts.sort((p, q) => p.box.x - q.box.x);
+  return { chords, texts };
+}
+
+/**
+ * **整行判**：一行谱上方和弦带里的条合起来，是和弦行还是文本行。
+ *
+ * 单条判不了：词曲署名「(John B. Dykes)」被列投影切成 `(John`、`B.`、`Dykes)` 三条，
+ * 中间那条单看就是一个 B 和弦。与简谱那一路的 `isAnnotationLine` 同一口径——看和弦记号
+ * 覆盖了多少字：两个以上和弦要占 85% 以上，只有一个和弦时不许有别的单词。
+ * 记号词（`mark`：Fine、D.C.）与数字（小节号）不计——它们本来就与和弦同处一带。
+ * 判成文本行的，行里咬出来的「和弦」一律改记文本（原样的记号文字）。
+ */
+export function harmonyLine(chords: HarmonyToken[], texts: HarmonyToken[]): { chords: HarmonyToken[]; texts: HarmonyToken[] } {
+  const cc = chords.reduce((n, t) => n + t.text.length, 0);
+  const wc = texts.filter((t) => t.kind === "word").reduce((n, t) => n + (t.text.match(/[A-Za-z]|\p{Script=Han}/gu)?.length ?? 0), 0);
+  const isChordLine = chords.length >= 2 ? cc / (cc + wc) >= 0.85 : chords.length === 1 && wc === 0;
+  if (isChordLine || !chords.length) return { chords, texts };
+  const all = [...texts, ...chords.map((t): HarmonyToken => ({ ...t, kind: "word" }))].sort((p, q) => p.box.x - q.box.x);
+  return { chords: [], texts: all };
 }

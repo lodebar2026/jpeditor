@@ -27,7 +27,7 @@ import { findHoles, traceContours, type ContourMap } from "./contour";
 import { buildHeadMasks, buildHollowMask, headFromStemBlock, splitHeadCluster } from "./headmask";
 import { headProb, trainHeadClassifier } from "./headclass";
 import { findStaffLabels, labelKey, normalizeLabel, type LabelStrip } from "./stafflabel";
-import { findHarmonyStrips, harmonyKey, harmonyTokens, type HarmonyStrip, type HarmonyToken } from "./harmony";
+import { findHarmonyStrips, harmonyKey, harmonyLine, readHarmonyStrip, type HarmonyStrip, type HarmonyToken } from "./harmony";
 import { findRasterWedges, type RasterWedge } from "./wedge";
 import { groupDynamics, type RasterDynamic } from "./dynamics";
 import { findRasterSlurs } from "./slur";
@@ -89,6 +89,8 @@ export interface RasterPageResult {
   jianpuFix?: FuseStats | null;
   /** 切出来的和弦记号（缓存里查得到才有）。已挂到音符的 `chord` 上。 */
   harmonies: HarmonyToken[];
+  /** 和弦带里认出的文本（不是和弦的字母串，见 `readHarmonyStrip`）。 */
+  harmonyTexts: HarmonyToken[];
   /** 谱行下标 → 规范化的声部名（`S1`/`A`/`P`…）。缓存里查得到才有。 */
   staffLabels: Map<number, string>;
   /**
@@ -129,6 +131,7 @@ const empty = (page: SPage, raster: RasterPage | null, unit: RasterUnit | null, 
   harmonyStrips: [],
   jianpuStrips: [],
   harmonies: [],
+  harmonyTexts: [],
   staffLabels: new Map(),
   lyricStats: { rows: 0, hit: 0, parity: 0 },
   carryTime,
@@ -569,20 +572,32 @@ export async function recognizeRasterPage(
     unit,
   );
   const harmonies: HarmonyToken[] = [];
+  /** 和弦带里认出来的**文本**（词曲署名、Fine 之类）：不进和弦，单独交出去。 */
+  const harmonyTexts: HarmonyToken[] = [];
   const harmonyIds = new Set<number>();
   const harmonyMasks: Rect[] = [];
   {
+    // 一行谱一行：先逐条读，再按整行判是和弦行还是文本行（`harmonyLine`）
+    const lines = new Map<number, { strip: HarmonyStrip; chords: HarmonyToken[] }[]>();
+    const lineTexts = new Map<number, HarmonyToken[]>();
     for (const strip of harmonyStrips) {
       const chars = opts.harmonyOcr?.get(harmonyKey(strip));
       if (!chars?.length) continue; // 缓存没命中：这条没跑过 OCR，宁可不认领
-      // 切不出和弦记号的条也不认领：闭合谱低音谱表的顶上那条带里是带加线的高音符头
-      //（《赞美一神》男高 D4/E4），OCR 读出几个字符、文法一个也不收，整条认领就把符头吃了
-      const toks = harmonyTokens(strip, chars);
-      if (!toks.length) continue;
-      harmonies.push(...toks);
+      const { chords, texts } = readHarmonyStrip(strip, chars);
+      if (!lines.has(strip.staff)) lines.set(strip.staff, []), lineTexts.set(strip.staff, []);
+      lines.get(strip.staff)!.push({ strip, chords });
+      lineTexts.get(strip.staff)!.push(...texts);
+    }
+    for (const [staff, rows] of lines) {
+      const r = harmonyLine(rows.flatMap((x) => x.chords), lineTexts.get(staff)!);
+      harmonyTexts.push(...r.texts);
+      if (!r.chords.length) continue;
+      harmonies.push(...r.chords);
+      // 切不出和弦记号的条不认领：闭合谱低音谱表的顶上那条带里是带加线的高音符头
+      //（《赞美一神》男高 D4/E4），OCR 读出几个字符、文法一个也不收，整条认领就把符头吃了。
       // **认领按条的盒，不按切出来的记号**：记号的 x 是 CTC 估的，误差常有半个字；
       // 条的盒是列投影裁紧的，正是要挡掉的那一簇墨。
-      harmonyMasks.push(strip.box);
+      for (const x of rows) if (x.chords.length) harmonyMasks.push(x.strip.box);
     }
     // 条贴着墨迹裁，往外放半格容下笔画的毛边
     const pad = unit.space * 0.5;
@@ -1763,6 +1778,7 @@ export async function recognizeRasterPage(
     jianpuStrips,
     jianpuFix,
     harmonies,
+    harmonyTexts,
     labelStrips,
     staffLabels,
     wedges,

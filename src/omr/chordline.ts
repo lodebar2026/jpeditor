@@ -25,11 +25,13 @@ const CN_SECTION_RE = /(副歌|主歌|前奏|间奏|尾奏|尾声|过门|引子|
 /** 把段落方框词与方括号注抹成**等长**空格：和弦切词要保住字符下标（换算源图 x 用），
  *  不能像 isAnnotationLine 那样变长替换。不抹的话 `Verse` 里的 e、`Coda` 里的 C/d/a
  *  都是合法根音，会被贪心吃成 E、C、D、A 四个凭空的和弦（「主祢真伟大」的 Verse/Coda 行）。 */
-const blankNonChord = (s: string): string =>
+export const blankNonChord = (s: string): string =>
   s.replace(BRACKET_RE, (m) => " ".repeat(m.length))
+    // 跳转记号先于段落词：`SECTION_RE` 里也有 fine/coda，先抹它就把 `D.C. al Fine` 拆散了，
+    // 剩下的 `D.C.` 才被 `JUMP_RE` 认走、`al` 留在原地
+    .replace(JUMP_RE, (m) => " ".repeat(m.length))
     .replace(SECTION_RE, (m) => " ".repeat(m.length))
     .replace(CN_SECTION_RE, (m) => " ".repeat(m.length))
-    .replace(JUMP_RE, (m) => " ".repeat(m.length))
     .replace(KEY_METER_RE, (m) => " ".repeat(m.length));
 // 中文谱常把备选和弦写成 `F或C`，升降根音也可能写成 `升F` / `降B`。这些少量汉字属于
 // 和弦语法而非歌词；先折成分隔符再做根音形态判断。除此以外只要含汉字，仍按真歌词处理。
