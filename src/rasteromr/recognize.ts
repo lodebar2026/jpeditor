@@ -808,7 +808,10 @@ export async function recognizeRasterPage(
   // 尺寸像内腔的往外扩一圈就是符头；骑线的头内腔被谱线豁成两半，先并回去。
   // 判据全在 `notehead.ts::hollowHeadsFromHoles`。
   const rawHoles = findHoles(raster.bin, Math.max(4, Math.round(unit.space * unit.space * 0.06)));
-  const holes = mergeHoles(rawHoles, unit, onGrid);
+  // 缝落在谱线或加线上都算（`onGrid` 只管谱表外的加线位置）：《高举主大能》第三线上的 B4 二分头
+  // 被第三线切成 10×5 与 13×5 两半，谱线上的不认就并不回来，头盒只剩下半截、读低一格
+  const onLineOrGrid = (y: number) => onGrid(y) || gridYs.some((ly) => Math.abs(ly - y) <= unit.space * 0.25);
+  const holes = mergeHoles(rawHoles, unit, onLineOrGrid);
   // 和弦字母的**内腔**也是洞（`D`/`G`/`B`/`A` 都有），不挡住就从这一路漏回来
   // ——检测框一并算「已被占」。
   const takenBoxes = [...heads.map((h) => h.box), ...harmonyMasks];
