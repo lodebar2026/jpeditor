@@ -1891,7 +1891,7 @@ export function computePhraseBreaks(part: PhrasePart, opts: PhraseOptions = {}):
     // 只看结果是猜不出来的（175 的「能大力，」是靠它看出两个断点代价被钳成了同一个 0）。
     if (typeof window !== "undefined" && (window as any).__phraseDebug !== undefined) {
       (window as any).__phraseDebug = cand.map((idx, i) => ({
-        i, mi: flat[idx].mi, isLast: flat[idx].isLast,
+        i, idx, mi: flat[idx].mi, isLast: flat[idx].isLast,
         text: mainLyricText(flat[idx].chord),
         next: idx + 1 < K ? mainLyricText(flat[idx + 1].chord) : "",
         score: scoreAt(idx), head: headPenalty(idx),
@@ -2175,8 +2175,52 @@ export function computePhraseBreaks(part: PhrasePart, opts: PhraseOptions = {}):
         if (near.length && overRatio(near[0].nb) < overRatio(best.nb)) best = { score: near[0].score, nb: near[0].nb };
       }
     }
+    /**
+     * **收气休止留在上一行**（line-check 的 D5）：断点落在带句读标点的字上、下一行却从
+     * 同一小节里的休止起头，那口气就被甩到了行首。`headPenalty` 的 (b2) 罚过这种断点，
+     * 可罚分只经 `weak` 取了均值，两套断法在 `quality` 上只差几分，DP 挑哪套近乎掷硬币
+     * ——019《拥戴祂为王》前后两半同一句 `|3- 0 0_ 5_|`，后半断在 `0` 之后、前半断在
+     * 「在，」之后（两套只差三四分，不到爬山门槛 `HILL_MIN_GAIN`，改不过来）。
+     * 所以逐个检查选中的断点：是这种形态就试着挪到那串休止之后（同一小节内、仍是候选），
+     * 挪过去的行首不再是 D5（凑成标准弱起 / 半拍休止凑整拍 / 整小节起头）才算数。
+     * **只要不比原方案差出噪声量级**（`HILL_MIN_GAIN`）就挪——这一刀是判据要求的，
+     * 不是为了赚分；D8 与「放得下」两道闸照 `improve` 的口径，不许挪差。
+     */
+    if (CONTENT_ONLY) {
+      const breathThrown = (idx: number): boolean => {
+        const nx = flat[idx + 1];
+        if (!nx || !nx.chord.rest || nx.chord === chordsPer[nx.mi][0]) return false;
+        // 标点常被 `punctAfter` 顺延到后面的休止上，字自己反倒是 0，两样都认（同 (b2)）
+        if (!(punctAfter[idx] > 0 || lyricPunctScore(flat[idx].chord) > 0)) return false;
+        const head = headDurAfter(idx);
+        if (pickupStd > 0 && Math.abs(head - pickupStd) < 0.01) return false;
+        const headRest = nx.chord.duration?.toFloat() ?? 0;
+        return !(headRest <= 0.5 && Math.abs(head - Math.round(head)) < 0.01);
+      };
+      const bs = boundsOf(best.nb);
+      let q = quality(best.nb);
+      for (let k = 1; k + 1 < bs.length; k++) {
+        if (cutSet.has(bs[k])) continue;
+        const idx = cand[bs[k] - 1];
+        if (!breathThrown(idx)) continue;
+        const from = bs[k];
+        let pick = -1;
+        let pickQ = q + HILL_MIN_GAIN;
+        for (let j = idx + 1; j < K && flat[j].mi === flat[idx].mi && flat[j].chord.rest; j++) {
+          const b = cand.indexOf(j) + 1;
+          if (b <= from || b >= bs[k + 1] || breathThrown(j) || !decentCut(b)) continue;
+          bs[k] = b;
+          const nb = nbOf(bs);
+          const qb = quality(nb);
+          if (qb < pickQ && segRatio(nb) >= Math.min(D8_RATIO, segRatio(best.nb))
+              && overflows(nb) <= overflows(best.nb)) { pick = b; pickQ = qb; }
+          bs[k] = from;
+        }
+        if (pick > 0) { bs[k] = pick; best = { score: pickQ, nb: nbOf(bs) }; q = pickQ; }
+      }
+    }
     // @ts-ignore 调试钩子：**手里这套断点值多少分**。页面里先把断点的 flat 下标写进
-    // `window.__tryPlan`（`__phraseDebug` 那份表里的 `i`），排完读 `window.__tryPlanQ`。
+    // `window.__tryPlan`（`__phraseDebug` 那份表里的 `idx`），排完读 `window.__tryPlanQ`。
     // 与 `__qDebug` 配着用：那份摊开的是「被生成出来的方案」，这个回答的是
     // 「我想要的那套断法为什么没选上」——171《回家吧》就是靠它认出用户那套 16/16/16/20
     // 其实 q = 2.0（全曲最优），只是 DP 在 4 行那一档压根没生成过它（于是有了 `improve`）。

@@ -1425,8 +1425,9 @@ export class Line {
       if (seg.m.endingLeft) {
         flush(false);
         // 有原文就照原文画（MusicXML `<ending>` 的元素文本），否则按房号集合拼「1.2.3.」。
-        num = seg.m.endingText
-          ?? (seg.m.endingNum && seg.m.endingNum.size ? [...seg.m.endingNum].sort((a, b) => a - b).join(".") + "." : "");
+        // 纯数字的原文只把房号间的分隔统一成半角句点（`1, 2` / `1、2` / `1·2` → `1.2`），尾点照原文。
+        num = seg.m.endingText != null ? normEndingText(seg.m.endingText)
+          : (seg.m.endingNum && seg.m.endingNum.size ? [...seg.m.endingNum].sort((a, b) => a - b).join(".") + "." : "");
       }
       if (num === null) continue;
       notes.push(...seg.notes);
@@ -1994,6 +1995,14 @@ export class Layout {
   shiftToMargin(): void {
     for (const pg of this.pages) pg.x += this.options.marginLeft;
   }
+}
+
+/** 房号原文规整：只由数字与分隔（逗号/顿号/中点/空格/句点）组成时，数字之间统一用半角句点，
+ *  尾点照原文（原书 `1.2` / `3` 不带尾点）；含别的字（`Fine`、`D.C.`…）原样返回。 */
+function normEndingText(text: string): string {
+  if (!/^[\d\s.,，、·]+$/.test(text) || !/\d/.test(text)) return text;
+  const t = text.trim();
+  return (t.match(/\d+/g) ?? []).join(".") + (t.endsWith(".") ? "." : "");
 }
 
 function substringAfter(s: string, delim: string): string {
