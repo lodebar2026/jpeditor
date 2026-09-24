@@ -1490,7 +1490,7 @@ const builtinCache = new Map<Dialect, { metrics: JianpuMetrics; foot: Region | n
 function builtinOf(dialect: Dialect): { metrics: JianpuMetrics; foot: Region | null } {
   let hit = builtinCache.get(dialect);
   if (!hit) {
-    const sheet = computeStyleForPaper(BUILTIN_SS[dialect].map((src) => parseSs(src).rules), { engine: "pu" });
+    const sheet = computeStyleForPaper(BUILTIN_SS[dialect].map((src) => parseSs(src).rules), { engine: "original" });
     hit = { metrics: jianpuMetricsOf(sheet), foot: (sheet.template?.regions?.["song-foot"] as Region | undefined) ?? null };
     builtinCache.set(dialect, hit);
   }

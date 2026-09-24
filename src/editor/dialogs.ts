@@ -465,7 +465,7 @@ export function showOptionsDialog(app: App): void {
   );
   // 纸张栏（纸 + 方向 + 边距）：简谱原样、文本谱原样、五线谱/混排三档各记各的；
   // 五线谱/混排自己一张纸（出厂 A4），不借原样档那张长图
-  const paperEngine: PaperEngine | null = isMixed ? "staff" : isPu ? "pu" : isJianpu ? "jianpu" : null;
+  const paperEngine: PaperEngine | null = isMixed ? "staff" : isPu ? "original" : isJianpu ? "jianpu" : null;
   const paperUi = paperEngine ? paperGroup(app, paperEngine) : null;
 
   // ---- 每页行数（写进文档 .Layout 段，只有 jpwabc 有这个段）----

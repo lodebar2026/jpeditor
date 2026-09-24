@@ -69,7 +69,7 @@ export interface StaffPaintRequest {
 export interface DocumentPaintRequest {
   readonly view: "original";
   readonly doc: ScoreDoc;
-  /** computed 样式表（`engine: "pu"` 那份）：面板字号、纸 / 长图、前景色。null = 版式原样。 */
+  /** computed 样式表（`engine: "original"` 那份）：面板字号、纸 / 长图、前景色。null = 版式原样。 */
   readonly style: StyleSheet | null;
 }
 

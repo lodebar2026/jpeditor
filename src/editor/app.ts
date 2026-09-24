@@ -61,8 +61,8 @@ import {
 } from "./settings";
 export type { OmrFormat } from "../omr";
 
-/** 有纸张设置的三把尺子：简谱原样档、文本谱原样档、五线谱/混排。 */
-export type PaperEngine = "jianpu" | "pu" | "staff";
+/** 有纸张设置的三把尺子：简谱原样档、原样文档布局（文本谱等的原样档）、五线谱/混排。 */
+export type PaperEngine = "jianpu" | "original" | "staff";
 /** 纸张栏的一次选择：纸名 + 方向 + 边距（`[上, 右, 下, 左]` pt，null = 自动），或跟随文件。 */
 export type PaperChoice = "follow" | { paper: string; orientation: "portrait" | "landscape"; margin: number[] | null };
 
@@ -85,7 +85,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
    *  **不要在这里再长出 `docFormat === …` 的三目式**。 */
   docFormat: DocFormatId = "jpwabc";
   /** 文本谱当前的排版输出：`slide` = 展开、`print` = 原样（名字沿用存量设置）。 */
-  puProfile: "print" | "slide" = "slide";
+  originalProfile: "print" | "slide" = "slide";
   /** 简谱版面档：`normal` = 当前观感；`pptx` = 排版重构之前的笔画（导出 PPTX 用的那一档）。 */
   jpProfile: JpProfileName = "pptx";
   /** 最近一次排版用的 `.Layout` 分页描述（导出 PPTX 按展开档另排一遍时要用同一份）。 */
@@ -154,7 +154,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   // ---- 渲染设置（应用级，不属于文档）：一律经样式层（src/style/）----
   /** 用户层：每个主题一层规则，**两档各记一套**（用户口径：「区分 展开/原样的字号设置」）。
    *  展开档（主题 projection）的字号、比例、配色两种格式共用，规则不带限定；
-   *  原样档（主题 print）的纸与字号 `.jpwabc` 与文本谱各记各的（`engine` 限定），配色共用。 */
+   *  原样档（主题 print）的纸与字号简谱引擎与原样文档布局各记各的（`engine: jianpu` / `original` 限定），配色共用。 */
   private _userLayers: Record<"projection" | "print" | "staff" | "header", StyleRule[]> = { projection: [], print: [], staff: [], header: [] };
   // `header`：页眉四项（标题/副标题/经文/词曲作者）的字体字号，**各档共用一份**，叠在各档用户层之上（`style/header.ts`）
 
@@ -162,7 +162,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
    *  曲内层（谱里自带的纸，`style/paper.ts`）只垫在原样档下面：展开档是投影片，不认纸。 */
   styleOf(mode: JianpuLayoutMode, engine: StyleEngine = "jianpu"): StyleSheet {
     const theme = themeOfMode(mode);
-    const page = theme === "print" && !(engine === "jianpu" || engine === "pu" ? this._userSetsPaper(engine) : false) ? this._docLayer() : [];
+    const page = theme === "print" && !(engine === "jianpu" || engine === "original" ? this._userSetsPaper(engine) : false) ? this._docLayer() : [];
     return computeStyleForPaper(
       [THEMES[theme], this._bookLayer, page, this._docHeaderLayer(theme === "print"), this._userLayers[theme], this._userLayers.header],
       { mode, engine },
@@ -480,11 +480,11 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   }
   /** 文本谱「原样」档的纸。 */
   get puPaper(): string {
-    return this.styleOf("original", "pu").page.paper ?? "长图";
+    return this.styleOf("original", "original").page.paper ?? "长图";
   }
   /** 文本谱原样档音符数字的字号（pt）。0 = 跟随版式量到的原尺寸。 */
   get puFontSize(): number {
-    const v = this.styleOf("original", "pu").roles.note?.size;
+    const v = this.styleOf("original", "original").roles.note?.size;
     return typeof v === "number" ? v : 0;
   }
   mixedHideBarNumber = false; // 混排：隐藏小节号
@@ -561,12 +561,12 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     }
     // 原样档的纸要在重排之前定好——排版时按长图灌 continuousPage
     if (opts.jpPaper && isPaper(opts.jpPaper)) this._setStyle("original", "jianpu", { page: { paper: opts.jpPaper } });
-    if (opts.puPaper && isPaper(opts.puPaper)) this._setStyle("original", "pu", { page: { paper: opts.puPaper } });
+    if (opts.puPaper && isPaper(opts.puPaper)) this._setStyle("original", "original", { page: { paper: opts.puPaper } });
     if (opts.staffPaper && isPaper(opts.staffPaper)) this._userLayers.staff = upsertRule(this._userLayers.staff, undefined, { page: { paper: opts.staffPaper } });
     for (const [engine, choice] of Object.entries(opts.paper ?? {}) as [PaperEngine, PaperChoice][]) this._setPaper(engine, choice);
     if (opts.staffSize) this._setStaffSize(opts.staffSize);
     if (opts.puFontSize !== undefined) {
-      this._setStyle("original", "pu", { roles: { note: { size: Math.min(200, Math.max(0, opts.puFontSize)) } } });
+      this._setStyle("original", "original", { roles: { note: { size: Math.min(200, Math.max(0, opts.puFontSize)) } } });
     }
     if (opts.color !== undefined) this._setStyle(mode, undefined, { page: { ink: opts.color } });
     if (opts.bgColor !== undefined) this._setStyle(mode, undefined, { page: { background: opts.bgColor } });
@@ -632,7 +632,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     };
     if (s.zoom) this.zoom = s.zoom;
     if (s.jpProfile === "normal" || s.jpProfile === "pptx") this.jpProfile = s.jpProfile;
-    if (s.puProfile === "print" || s.puProfile === "slide") this.puProfile = s.puProfile;
+    if (s.originalProfile === "print" || s.originalProfile === "slide") this.originalProfile = s.originalProfile;
     this._applyZoom();
     this._applyPageBg();
   }
@@ -650,7 +650,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
       playSpeed: this.playback.speed,
       omrFormat: this.omr.format,
       jpProfile: this.jpProfile,
-      puProfile: this.puProfile,
+      originalProfile: this.originalProfile,
       showFormatMarks: this.visual.showFormatMarks,
       beatCheck: this.visual.beatCheck,
       noteSound: this.visual.noteSound,
@@ -1056,7 +1056,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
         }
         this._layoutScore(score, null);
       } else {
-        this.painter.loadSync({ view: "original", doc, style: this.styleOf("original", "pu") });
+        this.painter.loadSync({ view: "original", doc, style: this.styleOf("original", "original") });
       }
     } catch (e) {
       console.error(`${what}排版失败`, e);
@@ -1366,26 +1366,26 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
   }
 
   /** 文本谱版面切换（原版 / PPT）。 */
-  setPuProfile(profile: "print" | "slide"): void {
-    if (this.puProfile === profile) return;
-    this.puProfile = profile;
+  setOriginalProfile(profile: "print" | "slide"): void {
+    if (this.originalProfile === profile) return;
+    this.originalProfile = profile;
     this._applyPageBg(); // 同 setJpProfile：配色两档各记各的，纸底那层不经排版器
     this._syncViewModeButtons();
     this.saveSettings();
-    if (this.adapter.profileKnob === "pu") this.reload(this.getText());
+    if (this.adapter.profileKnob === "original") this.reload(this.getText());
   }
 
   /** 当前档下切「展开」/「原样」该做什么——按文档格式分派：文本谱换整套 metrics
    *  （print/slide），简谱只换笔画常量（normal/pptx）。 */
   setProfile(slide: boolean): void {
-    if (this.adapter.profileKnob === "pu") this.setPuProfile(slide ? "slide" : "print");
+    if (this.adapter.profileKnob === "original") this.setOriginalProfile(slide ? "slide" : "print");
     else this.setJpProfile(slide ? "pptx" : "normal");
   }
 
-  /** 当前是哪一种排版输出（文本谱看 puProfile，简谱看 jpProfile——那两个只是引擎内部的尺寸档名）。 */
+  /** 当前是哪一种排版输出（原样文档布局那几种格式看 originalProfile，简谱看 jpProfile——那两个只是引擎内部的尺寸档名）。 */
   get layoutMode(): JianpuLayoutMode {
     const slide =
-      this.adapter.profileKnob === "pu" ? this.puProfile === "slide" : this.jpProfile === "pptx";
+      this.adapter.profileKnob === "original" ? this.originalProfile === "slide" : this.jpProfile === "pptx";
     return slide ? "expanded" : "original";
   }
 
@@ -1471,7 +1471,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     // 没有代码区的格式（`.musicxml`）把代码区收起来
     document.getElementById("body")?.classList.toggle("no-code", !this.adapter.caps.textEditor);
     if (this.mode === "mixed") this._syncMixedReadOnly(); // 混排档里换格式：只读随格式走
-    // 两种格式各记一个档位（jpProfile / puProfile），换格式可能就换了档：下次重排按新档取样式
+    // 两种格式各记一个档位（jpProfile / originalProfile），换格式可能就换了档：下次重排按新档取样式
     this._syncViewModeButtons();
     this._syncFormatLabel();
   }
@@ -1969,7 +1969,7 @@ export class App implements OmrHost, PlaybackHost, FormatHost, FormatSwitchHost,
     this.formats.sync();
     if (!ok) return;
     const now = targetSpec(target).docFormat;
-    const engine: PaperEngine | null = now === "jpwabc" ? "jianpu" : now === "pu" ? "pu" : null;
+    const engine: PaperEngine | null = now === "jpwabc" ? "jianpu" : now === "pu" ? "original" : null;
     if (!engine) return;
     if (page && isPaper(page.paper)) {
       const choice: PaperChoice = { paper: page.paper!, orientation: page.orientation ?? "portrait", margin: pageMargins(page) ?? null };

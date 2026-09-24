@@ -26,7 +26,7 @@
 | `hymn500-measured.ss` + `hymn500.ss`（不在本仓库） | 诗歌 500 首成书（`engine: book`）：前者是统计生成的实测部分（§10），后者是模板与手调常量，按序叠 | 现有 `rebuild.mjs` 输出逐字节不变 |
 | `kl2020.ss`（不在本仓库） | 声合为一 KL2020（`engine: mixed`） | 单曲版 PDF |
 | `kl2020-flow.ss`（不在本仓库） | 同上的**接排版叠加表**（只含与单曲版的差异，清单 `styleByFlow.continue` 指过来） | 1219 接排版 PDF |
-| `src/style/books/original.ss` + `original-shige.ss` | 原样文档布局（`engine: pu`；文本谱、MusicXML、多声部 123/ABC 的原样档）：前者是公共底表（页脚区域，页头仍是 `paintHeader`），后者叠诗歌本方言与出厂（番茄）的差异 | 原样档指纹与 page-check 不变 |
+| `src/style/books/original.ss` + `original-shige.ss` | 原样文档布局（`engine: original`；文本谱、MusicXML、多声部 123/ABC 的原样档）：前者是公共底表（页脚区域，页头仍是 `paintHeader`），后者叠诗歌本方言与出厂（番茄）的差异 | 原样档指纹与 page-check 不变 |
 
 ## 1. 词法
 
@@ -86,7 +86,7 @@
 | 维度 | 取值 | 说明 |
 |---|---|---|
 | `mode` | `expanded` `original` `staff` `mixed` | 排版档位 |
-| `engine` | `jianpu` `pu` `book` `staff` | 哪个排版器在吃样式 |
+| `engine` | `jianpu` `original` `book` `staff` | 哪个排版器在吃样式：简谱引擎、原样文档布局（文本谱、MusicXML、多声部 123/ABC 的原样档）、成书、五线谱/混排。`original` 与 `mode` 的同名值是两个维度，互不相干 |
 | `paged` | `true` `false` | 分页（有实际纸张）还是长图。由算出来的 `@page` 纸反推（级联两趟，见 `themes.ts::computeStyleForPaper`） |
 | `page` / `verse` | `left` `right` `first` / 段号 | 只实现了匹配，还没有消费者 |
 

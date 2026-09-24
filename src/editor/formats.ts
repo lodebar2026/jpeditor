@@ -85,9 +85,9 @@ export interface FormatAdapter {
   label(host: FormatHost): string;
   /** 文档标题（另存为的默认文件名）。 */
   title(host: FormatHost): string;
-  /** 用哪个档位旋钮记「展开/原样」：`jp` = `jpProfile`(normal/pptx)、`pu` = `puProfile`(print/slide)。
+  /** 用哪个档位旋钮记「展开/原样」：`jp` = `jpProfile`(normal/pptx)、`original` = `originalProfile`(print/slide)。
    *  两种格式各记各的档，换格式可能就换了档。 */
-  profileKnob: "jp" | "pu";
+  profileKnob: "jp" | "original";
   caps: FormatCaps;
   /** 解析 → 排版 → 渲染。失败返回 false（文本保留不动）。 */
   reload(host: FormatHost, text: string): boolean;
@@ -164,7 +164,7 @@ const PU: FormatAdapter = {
       .find((m) => m !== null);
     return first ? first[1]!.trim() : "";
   },
-  profileKnob: "pu",
+  profileKnob: "original",
   caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalLayout: "document" },
   reload: (host, text) => host.reloadPu(text),
   toScoreDoc: (text) => parsePu(text),
@@ -173,7 +173,7 @@ const PU: FormatAdapter = {
 };
 
 /** 123 —— 简谱主格式。原生解析直出 `ScoreDoc`；排版直接吃 `ScoreDoc`。
- *  档位旋钮跟文本谱同一个（`puProfile`）：两者的原样档都可走原样文档布局、展开档都投影成简谱引擎输入。 */
+ *  档位旋钮跟文本谱同一个（`originalProfile`）：两者的原样档都可走原样文档布局、展开档都投影成简谱引擎输入。 */
 const J123: FormatAdapter = {
   id: "123",
   defaultExt: ".123",
@@ -190,7 +190,7 @@ const J123: FormatAdapter = {
       .find((m) => m !== null);
     return first ? first[1]!.trim() : "";
   },
-  profileKnob: "pu",
+  profileKnob: "original",
   caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalLayout: "jianpu" },
   reload: (host, text) => host.reload123(text),
   toScoreDoc: parse123,
@@ -218,7 +218,7 @@ const ABC: FormatAdapter = {
       .find((m) => m !== null);
     return first ? first[1]!.trim() : "";
   },
-  profileKnob: "pu",
+  profileKnob: "original",
   caps: { hanConvert: false, textEditor: true, layout: "scoredoc", phraseRelayout: true, originalLayout: "jianpu" },
   reload: (host, text) => host.reloadAbc(text),
   toScoreDoc: parseAbc,
@@ -241,7 +241,7 @@ const MUSICXML: FormatAdapter = {
     const m = /<(?:work-title|movement-title)>([^<]*)</.exec(host.getText());
     return m ? m[1]!.trim() : "";
   },
-  profileKnob: "pu",
+  profileKnob: "original",
   caps: { textEditor: false, layout: "scoredoc", phraseRelayout: false, hanConvert: false, originalLayout: "document" },
   reload: (host, text) => host.reloadMusicXml(text),
   // MusicXML 只给绝对音高，简谱排版要度数

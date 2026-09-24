@@ -14,7 +14,7 @@ import { emptySheet, mergeStyle, type DeepPartial, type StyleSheet } from "./she
 /** 排版模式（档位）。 */
 export type StyleMode = "expanded" | "original" | "staff" | "mixed";
 /** 哪把尺子在吃这份样式。四把尺子口径不同，面板本来就分开记文本谱与 `.jpwabc` 的纸与字号。 */
-export type StyleEngine = "jianpu" | "pu" | "book" | "staff";
+export type StyleEngine = "jianpu" | "original" | "book" | "staff";
 
 export interface StyleContext {
   mode?: StyleMode;
