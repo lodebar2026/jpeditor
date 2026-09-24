@@ -3,24 +3,23 @@
 // Produces a contiguous list of {type,text} tokens covering the whole document
 // (including whitespace as Space tokens), so offsets can be accumulated.
 
-import { CharStream, CommonTokenStream } from "antlr4";
-import JpwabcLexer from "./parser/JpwabcLexer.js";
+import { lexVoice, type JpwTok } from "./lex";
 
-// custom token types (must not collide with ANTLR lexer types 1..12)
+// 行级 token 类型；`.Voice` 里的 token 直接用词法器的类型（`JpwTok`）
 export const TokType = {
-  Space: 98,
-  Unknown: 99,
-  Text: 100,
-  Lrc: 101,
-  LrcSpec: 102,
-  Slash: 103,
-  MetaValue: 104,
-  MetaKey: 105,
-  SectionName: 106,
+  Space: "space",
+  Unknown: "unknown",
+  Text: "text",
+  Lrc: "lrc",
+  LrcSpec: "lrcspec",
+  Slash: "slash",
+  MetaValue: "metaval",
+  MetaKey: "metakey",
+  SectionName: "section",
 } as const;
 
 export interface TokenInfo {
-  type: number;
+  type: JpwTok | (typeof TokType)[keyof typeof TokType];
   text: string;
 }
 
@@ -44,7 +43,7 @@ export class TokenData {
     while (lid < lines.length) {
       const l = lines[lid];
       if (l.startsWith("//")) {
-        res.add({ type: JpwabcLexer.LINE_COMMENT, text: l });
+        res.add({ type: "comment", text: l });
         res.newLine();
         lid++;
       } else if (l.startsWith(".")) {
@@ -89,21 +88,14 @@ export class TokenData {
   }
 }
 
-// .Voice: tokenize via the ANTLR lexer, emitting Space for skipped gaps.
+// .Voice: tokenize via lexVoice; whitespace and skipped (unrecognized) chars become Space.
 function parseVoiceTokens(res: TokenData, txt: string): void {
-  const chars = new CharStream(txt);
-  const lexer = new JpwabcLexer(chars);
-  lexer.removeErrorListeners();
-  const tokStrm = new CommonTokenStream(lexer);
-  tokStrm.fill();
   let last = 0;
-  for (const t of tokStrm.tokens) {
-    if (t.type === -1 /* EOF */) continue;
-    const startIndex = (t as unknown as { start: number }).start;
-    const stopIndex = (t as unknown as { stop: number }).stop;
-    if (startIndex > last) res.space(txt.substring(last, startIndex));
-    res.add({ type: t.type, text: t.text ?? "" });
-    last = stopIndex + 1;
+  for (const t of lexVoice(txt)) {
+    if (t.type === "ws") continue;
+    if (t.start > last) res.space(txt.substring(last, t.start));
+    res.add({ type: t.type, text: t.text });
+    last = t.end;
   }
   if (txt.length > last) res.space(txt.substring(last));
 }
@@ -153,11 +145,11 @@ function parseTitleTokens(res: TokenData, txt: string): void {
 }
 
 // token type -> CSS class (from CodeEditor.kt `classes`)
-export const tokenClass: Record<number, string> = {
-  [JpwabcLexer.Note]: "note",
-  [JpwabcLexer.Return]: "break",
-  [JpwabcLexer.Barline]: "barline",
-  [JpwabcLexer.LINE_COMMENT]: "comment",
+export const tokenClass: Partial<Record<TokenInfo["type"], string>> = {
+  note: "note",
+  return: "break",
+  barline: "barline",
+  comment: "comment",
   [TokType.Text]: "text",
   [TokType.Lrc]: "lrc",
   [TokType.Slash]: "slash",

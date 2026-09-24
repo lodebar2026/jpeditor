@@ -168,7 +168,7 @@ export function spliceComments(oldText: string, oldDoc: ScoreDoc, newText: strin
 
 // ───────────────────────── .jpwabc ─────────────────────────
 
-/** `.Voice` 里的换行标记（`Return: '$' ParamList?`，见 `jpword/Jpwabc.g4`）。 */
+/** `.Voice` 里的换行标记（`$` ParamList?，见 `jpword/lex.ts`）。 */
 const BREAK_RE = /\$(\([^)]*\))?/g;
 const BREAK_LINE = "$(true)";
 const BREAK_PAGE = "$(true,0,0,true)";

@@ -11,21 +11,24 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
 | 函数 | 文件 | 作用 |
 |---|---|---|
 | `JpwFile.fromString(s)` | `src/jpword/jpwfile.ts:283` | 文本 → 分段（失败返回 null） |
-| `parseVoiceText(text)` | `src/jpword/parse.ts:9` | `.Voice` 正文 → ANTLR 树 |
+| `lexVoice(text)` | `src/jpword/lex.ts` | `.Voice` 正文 → token 序列（含空白/注释，带偏移与行列） |
+| `parseVoiceText(text)` | `src/jpword/parse.ts` | 去掉空白/注释的 token 序列；落单 `[` `]` 返回 null |
 | `jpwToScoreDoc(f)` | `src/model/fromjpw.ts` | `JpwFile` → `ScoreDoc`（音符/小节线带 `SourceSpan`）。谱面、试听、转 123/ABC、导出、能力表、双向定位索引都走它 |
 | `jianpuInputOfJpw(doc)` | `src/model/jianpuinput.ts` | `ScoreDoc` → 简谱引擎输入（按原文小节；小节中间的 `$` 照原位换行） |
 | `emitJpwabc(doc)` | `src/model/tojpw.ts` | `ScoreDoc` → `.jpwabc` 文本（只写第一声部）。写出端 `writeJpwabc` 只经输入接口读谱 |
-| `TokenData` | `src/jpword/tokens.ts:27` | 分词器，**仅供语法高亮**，非语义解析 |
+| `TokenData` | `src/jpword/tokens.ts` | 整份文件的行级分词，**仅供语法高亮**（`.Voice` 段复用 `lexVoice`） |
 | `hanconv` | `src/jpword/hanconv.ts` | 简繁转换（只转 `.Title` 字段值与 `.Words` 歌词） |
 
-文法 `src/jpword/Jpwabc.g4`；生成码 `src/jpword/parser/`，**勿手改**，每文件首行 `// @ts-nocheck`。
+`.Voice` 正文只是一串平铺的 token（音符、小节线、换行、字符串、拍号、前奏括号），没有嵌套结构，
+所以只有词法、没有语法树；音符内部的拆解在 `fromjpw.ts::readNote` 按 token 文本再做。词法规则见
+[../格式/jpwabc.md](../格式/jpwabc.md)「4. 音乐体」的词法表。
 
 ## 吃什么吐什么
 
 ```
 .jpwabc 文本（UTF-16LE+BOM 或 UTF-8）
   → JpwFile（TitleSection / VoiceSection / WordsSection / RepeatSection / LayoutSection）
-  → ANTLR 树
+  → .Voice token 序列（lex.ts）
   → ScoreDoc（fromjpw.ts：先切「源文小节」、歌词按它落点，再落成模型小节）
   ├→ jianpuInputOfJpw → ScorePainter（原样 / 展开），和弦带元素 id
   ├→ playSourceOfSong → 试听 / MIDI
@@ -42,7 +45,7 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
   `|:|` 连写在源文小节里是一个空小节（歌词落点照样数它），落模型时并进下一小节左线（160、D01、J14）。
 - **`$` 写在小节中间**（弱起谱的乐句尾，500 首里 300 份有）：模型里小节级换行照「这一小节之后」记一份，
   另在前一个和弦上记 `Chord.lineBreakAfter`，简谱引擎据此原位换行；`$` 与小节线的先后（`$ |` / `| $`）不区分，换行一律落在小节线之后。
-- **往返三样用文法里已有的产生式**（不动 `.g4`，原版 JP-Word 读到会忽略、不报错）：曲中**转拍号**写 `4/4`、
+- **往返三样用词法里已有的 token**（不扩语法，原版 JP-Word 读到会忽略、不报错）：曲中**转拍号**写 `4/4`、
   **转调**写 `"1=G"`（同步更新调号状态，否则转调后半首音高全错）、**倚音**写 `{6,}`。
 - `fromjpw` **不填绝对音高**（`.jpwabc` 只有度数），导出 MusicXML 由投影层按度数 + 调号推。
 - **歌词段锚点 `W2@m,n` 的小节序号**：只有小节**中间**的换行才算开出一个小节，小节末的不算——读入端（`assignLyrics`）
@@ -65,17 +68,18 @@ JP-Word `.jpwabc` 的分段、词法语法解析，`.jpwabc` → `ScoreDoc`（�
 - `{C:…}` 会污染音符解析；`::`/`:|:` 抛错——两条均语料 0 例，优先级低（R6）
 - 写出端不写房号与反复记号（分遍经 `.Repeat` 表达）
 
-## 重生成解析器
+## 词法器
 
-改了 `src/jpword/Jpwabc.g4` 后（需 JDK，本机在 `/opt/homebrew/opt/openjdk/bin`）：
+`lex.ts` 忠实复刻原 JP-Word 的词法定义（原为 ANTLR 文法，已改手写、去掉依赖）：每条规则一个 sticky 正则，
+在当前位置全部试一遍，**取最长匹配，等长按规则先后**。几处要靠这条规矩才切得对：
 
-```bash
-java -jar /tmp/antlr-4.13.2-complete.jar -Dlanguage=TypeScript -o /tmp/gen -visitor src/jpword/Jpwabc.g4
-# 把生成的 *.ts 拷到 src/jpword/parser/，给每个文件首行加 `// @ts-nocheck`
-```
+- 单独的 `(` 是前奏开始，`(1` 是带弧起的音符（长者胜）；单独的 `)` 等长时归前奏结束（规则在前）。
+- `[|]` 是小节线，`[135]` 起头的是和弦音符，`|[1.` 是带房号的小节线。
+- `3/4` 是拍号而不是音符 `3`（长者胜）。
 
-运行时用 npm 的 `antlr4` 包（浏览器构建），导入写 `from "antlr4"`、生成文件用 `./X.js` 后缀（bundler 解析到 `.ts`）。
-生成码**勿手改**。
+改规则时，正则里同一 token 的各分支要**长的写在前**（JS 正则是有序选择、不保证最长）。
+与原实现的唯一差别在出错恢复：哪条规则都认不出的字符，这里只跳过 1 个；原实现会连同已读进的前缀一起跳过。
+两者都不报错、静默丢弃，真实语料 582 段 `.Voice` 无一例触发。
 
 ## 与原 Kotlin 的对应
 

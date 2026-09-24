@@ -22,8 +22,7 @@
 - 测试语料与 GT（`testdata/`）只留本地，不入库；`testdata/` 只放语料与 GT，回归基线、快照、报告等派生数据放本地私有仓库。
   各模块页的「回归」一节同此。
 - 提交信息用简要中文，不要 `Co-Authored-By` 尾注。
-- TS 严格模式 + `noUnusedLocals/Parameters`；生成代码用 `// @ts-nocheck` 豁免。
-- ANTLR 生成码在 `src/jpword/parser/`，**勿手改**；重生成步骤见 [源格式-jpwabc](docs/模块/源格式-jpwabc.md)。
+- TS 严格模式 + `noUnusedLocals/Parameters`。
 - **PUA 码位用 `String.fromCharCode(0x...)`**，切勿在源码里写字面 PUA 字符（Write 工具会损坏字节）。
 - 数 XML 元素的正则一律写 `<name[ >]`（否则 `<note>` 会命中 `<notehead>`）。
 - `window.__app` / `window.__book` 运行时暴露（`src/main.ts`）供无头校验用。

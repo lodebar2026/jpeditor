@@ -1,4 +1,4 @@
-// `.jpwabc` 的音符 token（`jpword/Jpwabc.g4` 的 `Note`）：
+// `.jpwabc` 的音符 token（`jpword/lex.ts` 的 `note`）：
 // `[( {…}]* [# b #b] 数字 [' ,]* [- 或 _ .] [{C:…}] [)]*`
 //
 // 与 123 不同的三处：

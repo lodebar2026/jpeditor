@@ -11,7 +11,7 @@
 // 曲首 `|:|` 连写在源文小节里是一个空小节（歌词落点照样数它，口径不能变），落模型时并掉。
 
 import { JpwFile, RepeatSection, type Section } from "../jpword/jpwfile";
-import type { Token } from "antlr4";
+import type { JpwToken } from "../jpword/lex";
 import { MusicCommon, applyJpPitch, type JpKeyState } from "../score/jppitch";
 import { SIMPLE_DIVISIONS, type Barline, type BeamVal, type Chord, type Lyric, type Mark, type Measure, type Part, type PlayPass, type ScoreDoc, type Song, type SourceSpan, type Sustain } from "./doc";
 import { IdGen, breaksAfterToStart, emptyDoc, emptySong } from "./helpers";
@@ -145,14 +145,12 @@ export interface SrcMeasure {
   timeChange: boolean;
 }
 
-/** ANTLR 规则的区间 → 原文 `SourceSpan`（`.Voice` 正文是各行以 `\n` 拼的，行号经 `Section.lineOffsets` 折回） */
-function spanOf(sec: Section, start: Token, stop: Token | undefined): SourceSpan | undefined {
-  const i = start.line - 1;
-  const lineOffset = sec.lineOffsets[i];
-  const lineNo = sec.lineNos[i];
+/** `.Voice` token → 原文 `SourceSpan`（`.Voice` 正文是各行以 `\n` 拼的，行号经 `Section.lineOffsets` 折回） */
+function spanOf(sec: Section, t: JpwToken): SourceSpan | undefined {
+  const lineOffset = sec.lineOffsets[t.line];
+  const lineNo = sec.lineNos[t.line];
   if (lineOffset === undefined || lineNo === undefined) return undefined;
-  const length = stop ? Math.max(0, stop.stop - start.start + 1) : start.stop - start.start + 1;
-  return { line: lineNo, column: start.column, offset: lineOffset + start.column, length };
+  return { line: lineNo, column: t.column, offset: lineOffset + t.column, length: t.end - t.start };
 }
 
 /** 一个音符 token。 */
@@ -252,13 +250,8 @@ function readVoice(sec: VoiceSectionLike, fifths: number, time: { beats: number;
     return m;
   };
 
-  for (const e of sec.voiceData.entry_list()) {
-    const noteCtx = e.note();
-    const barlineCtx = e.barline();
-    const linebreakCtx = e.linebreak();
-    const timesigCtx = e.timesig();
-    const textCtx = e.text();
-    if (noteCtx) {
+  for (const tok of sec.voiceData) {
+    if (tok.type === "note") {
       if (mea === null || newMeasure) {
         mea = open();
         newMeasure = false;
@@ -276,17 +269,17 @@ function readVoice(sec: VoiceSectionLike, fifths: number, time: { beats: number;
           pendingKey = null;
         }
       }
-      const nt = readNote(noteCtx.Note().getText(), stat);
-      nt.source = spanOf(sec, noteCtx.start, noteCtx.stop);
+      const nt = readNote(tok.text, stat);
+      nt.source = spanOf(sec, tok);
       if (nt.tupletEnd || nt.tupletBegin) tupNotes.push(nt);
       mea.entries.push(nt);
-    } else if (barlineCtx) {
+    } else if (tok.type === "barline") {
       // 曲首就写小节线（`|:3_ …`）：开一个小节收它，不置 newMeasure
       if (mea === null) {
         mea = open();
         newMeasure = false;
       }
-      const txt = barlineCtx.Barline().getText();
+      const txt = tok.text;
       const bar: SrcBar = { kind: "bar", style: "regular" };
       switch (txt) {
         case "|": bar.style = "regular"; break;
@@ -297,23 +290,23 @@ function readVoice(sec: VoiceSectionLike, fifths: number, time: { beats: number;
         case ":|": bar.style = "light-heavy"; bar.repeat = "backward"; break;
         default: throw new Error(`bad barline: ${txt}`);
       }
-      bar.source = spanOf(sec, barlineCtx.start, barlineCtx.stop);
+      bar.source = spanOf(sec, tok);
       mea.entries.push(bar);
       newMeasure = mea.entries.length > 1;
       stat.alter = {};
-    } else if (timesigCtx) {
-      const m2 = /^(\d+)\/(\d+)/.exec(timesigCtx.TimeSig().getText());
+    } else if (tok.type === "timesig") {
+      const m2 = /^(\d+)\/(\d+)/.exec(tok.text);
       if (m2) pendingTime = { beats: parseInt(m2[1]!, 10), beatType: parseInt(m2[2]!, 10) };
-    } else if (textCtx) {
-      const m2 = /^"1=([#b]?[A-G])"$/.exec(textCtx.STRING().getText());
+    } else if (tok.type === "string") {
+      const m2 = /^"1=([#b]?[A-G])"$/.exec(tok.text);
       if (m2) pendingKey = MusicCommon.keyNameToFifth(m2[1]!);
-    } else if (linebreakCtx) {
-      const ret = linebreakCtx.Return().getText();
+    } else if (tok.type === "return") {
+      const ret = tok.text;
       const args = substringBefore(substringAfter(ret, "("), ")").split(",");
       mea?.entries.push({
         kind: "break",
         page: args.length >= 4 && args[3]!.toLowerCase() === "true",
-        source: spanOf(sec, linebreakCtx.start, linebreakCtx.stop),
+        source: spanOf(sec, tok),
       });
     }
   }
@@ -334,7 +327,7 @@ function readVoice(sec: VoiceSectionLike, fifths: number, time: { beats: number;
   return out;
 }
 
-type VoiceSectionLike = Section & { voiceData: import("../jpword/parse").VoiceContext };
+type VoiceSectionLike = Section & { voiceData: JpwToken[] };
 
 /** 歌词落点：按源文小节数，小节中间的换行也让小节序号加一。 */
 function assignLyrics(measures: readonly SrcMeasure[], f: JpwFile): void {

@@ -102,7 +102,7 @@ jianpu + staff (Western) notation** typeset from MusicXML, MusicXML import & exp
 - [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)（Apache-2.0）—— OMR 里数字与歌词的
   识别模型；推理运行时用 [onnxruntime-web](https://github.com/microsoft/onnxruntime) 与
   [tesseract.js](https://github.com/naptha/tesseract.js)
-- [CodeMirror 6](https://codemirror.net/)、[ANTLR 4](https://www.antlr.org/)、
+- [CodeMirror 6](https://codemirror.net/)、
   [Tauri 2](https://tauri.app/)、[Vite](https://vite.dev/)、[TypeScript](https://www.typescriptlang.org/)
   —— 编辑器 / 解析 / 桌面外壳 / 构建
 - [opencc-js](https://github.com/nk2028/opencc-js)（简繁转换）、

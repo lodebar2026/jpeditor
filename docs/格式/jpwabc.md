@@ -10,7 +10,7 @@
 
 | 位置 | 性质 |
 |---|---|
-| `src/jpword/Jpwabc.g4`（116 行） | **唯一形式文法**（ANTLR 4），只覆盖 `.Voice` 段。生成码在 `src/jpword/parser/`，**勿手改** |
+| `src/jpword/lex.ts` | **唯一形式定义**：`.Voice` 段的词法规则（沿用原 JP-Word 的 ANTLR 文法，见 §4 词法表） |
 | `src/jpword/jpwfile.ts` | **段落层规范**：哪些段头合法、各段的行语法 |
 | `src/editor/help.ts:276-407` | 面向用户的记谱法说明（事实上的用户手册） |
 | `src/model/tojpw.ts` / `fromjpw.ts` | **事实上的可用子集**：写出端只产生哪些记号、读入端只处理哪些 |
@@ -44,12 +44,34 @@
 
 ## 4. 音乐体（`.Voice`）
 
-文法核心两行：
+`.Voice` 正文是一串平铺的 token，空白分隔、`//` 起行尾注释，**取最长匹配，等长按下表先后**
+（原 JP-Word 的 ANTLR 文法，实现在 `src/jpword/lex.ts`）：
 
-```antlr
-fragment Pitch : ( ('b'|'#'|'#b')? [0-7] ([,'gd])* ) | ('x' UniChar?) | ( 'X' (UniChar?));
-Duration : '-'+ | ('_'+ '.'*) | ('.'* '_'+) | '.'+ ;
-```
+| token | 定义 |
+|---|---|
+| 前奏开始 / 结束 | `(` Control? ／ `)` Control? |
+| 音符 | SlurStart\* Control? Tuplet? Articulations? Grace? (Pitch \| Chord) Duration? Control? `)`\* |
+| 小节线 | BarlineType Control? House? |
+| 换行 | `$` ParamList? |
+| 拍号 | Integer `/` Integer Control? |
+| 字符串 | `"` … `"`（转义：`\` 后接 `sbtnfr"'\` 之一，或 `\x`hhhh、`\0`dddd） |
+
+| 片段 | 定义 |
+|---|---|
+| Pitch | (`b` \| `#` \| `#b`)? `[0-7]` `[,'gd]`\* ｜ `x`/`X` UniChar? |
+| Duration | `-`+ ｜ `_`+ `.`\* ｜ `.`\* `_`+ ｜ `.`+ |
+| SlurStart | `(` ｜ `{(` (`,` Float? ｜ `0:0,` Float `,` Integer) `}` |
+| Tuplet | `{(` 一位数字 `}` |
+| Articulations | `{` 奏法 (`,` 奏法)\* `}`，奏法 = `DunYin` `BoYin` `YanYin` `ZhongYin` |
+| Grace ／ Chord | `{` Pitch+ `}` ／ `[` Pitch+ `]` |
+| BarlineType | `\|` `\|\|` `\|]` `[\|]` `:\|` `\|:` `:\|:` `::` |
+| House | `[结束句` ｜ `[` 数字+ `.` |
+| Control | `{C:` Number ParamList? (`,` 控制类型)\* `}` ｜ `{C:0,,}`；控制类型 = `None` `UnderlineOnly` `Other` `All` `Connect` `Unconnect` |
+| Number | Integer（数字+）｜ Float（`[-+]?` 数字\* `.` 数字+） |
+| ParamList | `(` (`true` \| `false` \| Number \| `,`)\* `)`（true/false 不分大小写） |
+| UniChar | `\x`hhhh ｜ U+0100–U+DBFF 的单个码元 |
+
+落单的 `[` `]` 使整段解析失败；哪条规则都认不出的字符静默跳过。
 
 | 写法 | 含义 | 语料占比 |
 |---|---|---|

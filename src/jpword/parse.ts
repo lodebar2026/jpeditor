@@ -1,27 +1,14 @@
-// Thin wrapper over the ANTLR-generated lexer/parser (faithful to Jpwabc.g4).
-// Mirrors VoiceSection.parse() in jpwfile.kt.
+// `.Voice` 正文 → token 序列（去掉空白与注释）。对应 jpwfile.kt 的 VoiceSection.parse()。
 
-import { CharStream, CommonTokenStream } from "antlr4";
-import JpwabcLexer from "./parser/JpwabcLexer.js";
-import JpwabcParser, { VoiceContext } from "./parser/JpwabcParser.js";
+import { lexVoice, type JpwToken } from "./lex";
 
-/** Parse a .Voice section body into the ANTLR VoiceContext (entry* tree). */
-export function parseVoiceText(text: string): VoiceContext | null {
-  const chars = new CharStream(text);
-  const lexer = new JpwabcLexer(chars);
-  lexer.removeErrorListeners();
-  const tokens = new CommonTokenStream(lexer);
-  const parser = new JpwabcParser(tokens);
-  parser.removeErrorListeners();
-  try {
-    const voice = parser.voice();
-    // require full consumption (mirrors strm.index()!=strm.size() check)
-    if (chars.index !== chars.size) return null;
-    return voice;
-  } catch {
-    return null;
+/** 解析 `.Voice` 正文；出现落单的 `[` / `]` 时返回 null（原实现同样判解析失败）。 */
+export function parseVoiceText(text: string): JpwToken[] | null {
+  const out: JpwToken[] = [];
+  for (const t of lexVoice(text)) {
+    if (t.type === "ws" || t.type === "comment") continue;
+    if (t.type === "lbrack" || t.type === "rbrack" || t.type === "rbrace") return null;
+    out.push(t);
   }
+  return out;
 }
-
-export { JpwabcLexer, JpwabcParser };
-export type { VoiceContext };

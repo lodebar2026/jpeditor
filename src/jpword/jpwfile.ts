@@ -2,7 +2,8 @@
 // The TokenData/highlight tokenizer (parseTokens) is deferred to Phase 2;
 // this module covers the semantic parse used by model/fromjpw.ts.
 
-import { parseVoiceText, type VoiceContext } from "./parse";
+import { parseVoiceText } from "./parse";
+import type { JpwToken } from "./lex";
 
 export abstract class Section {
   lines: string[] = [];
@@ -69,7 +70,7 @@ export class RepeatSection extends Section {
 }
 
 export class VoiceSection extends Section {
-  voiceData!: VoiceContext;
+  voiceData!: JpwToken[];
   override parse(): boolean {
     const text = this.lines.join("\n");
     const voice = parseVoiceText(text);
