@@ -20,7 +20,7 @@ import type {
   SustainElement,
   VoiceGroup,
 } from "../../pu/ast";
-import { contentWidth, puGraceMetrics, puGraceNotes, puSlurRise, type PuMetrics } from "./metrics";
+import { contentWidth, jianpuGraceMetrics, jianpuGraceNotes, jianpuSlurRise, type JianpuGrid } from "./metrics";
 import { graceAdvance } from "../../common/gracenote";
 import { elementQuarters, takesLyric, tupletRatios } from "../../pu/ast";
 import { paginate, type SystemBlock } from "../../jianpu/vertical";
@@ -134,7 +134,7 @@ export interface PlacedPage {
 
 export interface PlacedScore {
   pages: PlacedPage[];
-  metrics: PuMetrics;
+  metrics: JianpuGrid;
   /** 内容最下沿（连续长图模式据此定页高） */
   contentBottom: number;
   /** 内容最右沿（行内坐标；连续长图模式据此定页宽） */
@@ -187,7 +187,7 @@ function placeColumns(
   scale: number,
   stretchable: boolean,
   width: number,
-  m: PuMetrics,
+  m: JianpuGrid,
   measure: LyricMeasure | undefined,
 ): void {
   const natural = Math.max(...lines.map((l) => l.width), 1);
@@ -219,7 +219,7 @@ function placeColumns(
     return lo;
   };
   // 歌词约束：同声部同一段里相邻两个有字的符号，列距至少 D
-  const gap = m.lyricSize * LYRIC_MIN_GAP_EM;
+  const gap = m.size.lyric * LYRIC_MIN_GAP_EM;
   const need = new Map<number, Array<{ from: number; d: number }>>();
   lines.forEach((l, vi) => {
     const verses = lyrics[vi]?.length ?? 0;
@@ -309,7 +309,7 @@ function assignLyrics(items: PlacedItem[], lyrics: readonly LyricLine[]): void {
 /** 算一行的自然布局（x 从 0 起），返回符号序列与自然总宽。 */
 function layoutVoiceLine(
   voice: ScoreLine,
-  m: PuMetrics,
+  m: JianpuGrid,
   ctx: BeatCtx = {},
 ): { items: PlacedItem[]; width: number; groups: number[]; tail: number } {
   // 只有音符/增时线/小节线占位；`~`/`^` 与内联层不进步进序列。
@@ -370,36 +370,36 @@ function layoutVoiceLine(
     const next = flat[i + 1];
     let advance: number;
     if (next === undefined) {
-      advance = el.kind === "barline" ? 0 : m.stepPlain;
+      advance = el.kind === "barline" ? 0 : m.note.noteStep;
     } else if (el.kind === "barline" || next.kind === "barline") {
-      advance = m.stepBarline;
+      advance = m.note.barlineSpace;
     } else {
-      advance = isBeamed(el) && isBeamed(next) && groups[i] === groups[i + 1] ? m.stepBeamed : m.stepPlain;
+      advance = isBeamed(el) && isBeamed(next) && groups[i] === groups[i + 1] ? m.note.beamedNoteStep : m.note.noteStep;
     }
-    if (el.kind === "note") advance += m.stepPerDot * el.dots;
+    if (el.kind === "note") advance += m.note.augDotStep * el.dots;
     // `&sbf` 的小节线后面要挤进一个连谱号（它离音符 1.41 个墨迹高），所以额外让出
     // 一个半墨迹高——按倍数加不行，行被压缩后连谱号会压到小节线上
     if (el.kind === "barline" && el.ornaments.some((o) => o.name === "sbf")) {
-      advance += m.digitInkHeight * 1.5;
+      advance += m.ink.noteHeight * 1.5;
     }
     // 变音记号写在数字前，得给它让出位置
-    if (next?.kind === "note" && next.accidental !== undefined) advance += m.accidentalWidth;
+    if (next?.kind === "note" && next.accidental !== undefined) advance += m.stroke.accidentalSpace;
     // 前倚音也排在数字左边，同样要让位——不让的话倚音会挤在前后两个音符正中间，
     // 看起来像挂在了左边那个音符上（原版给它让出的正是这么多）
     // 宽度走公共那一份（带升降号的倚音要多占一截，不是「颗数 × 常数」）
     if (next?.kind === "note" && next.graceBefore.length > 0) {
-      advance += graceAdvance(puGraceNotes(next.graceBefore), puGraceMetrics(m));
+      advance += graceAdvance(jianpuGraceNotes(next.graceBefore), jianpuGraceMetrics(m));
     }
     if (el.kind === "note" && el.graceAfter.length > 0) {
-      advance += graceAdvance(puGraceNotes(el.graceAfter), puGraceMetrics(m));
+      advance += graceAdvance(jianpuGraceNotes(el.graceAfter), jianpuGraceMetrics(m));
     }
-    if (splitEnd.has(i)) advance += m.digitInkHeight * 1.05;
+    if (splitEnd.has(i)) advance += m.ink.noteHeight * 1.05;
     // 两个符号之间夹着并排块的话，中间要放得下一个花括号（原版给的间距比普通小节线宽 0.75）
     if (next !== undefined) {
       const nextAt = voice.elements.indexOf(next);
       for (const at of splitAt) {
         if (at > srcIndex && at < nextAt) {
-          advance += m.digitInkHeight * 1.05;
+          advance += m.ink.noteHeight * 1.05;
           break;
         }
       }
@@ -498,7 +498,7 @@ function beatGroups(items: PlacedItem[], ctx: BeatCtx = {}): { groups: number[];
 function computeUnderlines(
   voice: ScoreLine,
   items: PlacedItem[],
-  m: PuMetrics,
+  m: JianpuGrid,
   groupAt: number[],
 ): PlacedUnderline[] {
   // 源码里的 `~`（强制连）/`^`（强制断）按它在元素序列里的位置生效
@@ -527,8 +527,8 @@ function computeUnderlines(
       if (!runStart || !runEnd) return;
       out.push({
         level,
-        x0: runStart.x - m.underlineHalfSpan,
-        x1: runEnd.x + m.underlineHalfSpan,
+        x0: runStart.x - m.note.beamHalfSpan,
+        x1: runEnd.x + m.note.beamHalfSpan,
       });
       runStart = null;
       runEnd = null;
@@ -553,48 +553,48 @@ function computeUnderlines(
 }
 
 /** 和弦/注释那一行**墨迹顶**（相对音符基线，负为上）：基线在 annotationY，字往上长。 */
-function annotationTop(m: PuMetrics): number {
-  return m.annotationY - m.annotationSize * 0.9;
+function annotationTop(m: JianpuGrid): number {
+  return m.note.chordY - m.size.chord * 0.9;
 }
 
 /**
  * 一组曲行头顶需要留多少空间——记号是往上画的（弧线、跳房子、渐强渐弱、装饰音、
  * 临时伴奏），不预留就会压到上一组的歌词。
  */
-function groupHeadroom(group: VoiceGroup, m: PuMetrics): number {
-  let top = m.annotationY; // 注释/和弦这一槽是常备的
+function groupHeadroom(group: VoiceGroup, m: JianpuGrid): number {
+  let top = m.note.chordY; // 注释/和弦这一槽是常备的
   const consider = (v: number): void => {
     if (v < top) top = v;
   };
   for (const voice of group.voices) {
     for (const mark of voice.marks) {
       const level = Math.max(1, mark.level);
-      if (mark.type === "volta") consider(m.laneVolta - (level - 1) * m.laneLevelStep);
+      if (mark.type === "volta") consider(m.note.voltaY - (level - 1) * m.note.levelStep);
       else if (mark.type === "crescendo" || mark.type === "decrescendo") {
-        consider(m.laneWedge - (level - 1) * m.laneLevelStep - m.wedgeMouth / 2);
+        consider(m.note.hairpinY - (level - 1) * m.note.levelStep - m.note.hairpinOpening / 2);
       } else {
-        consider(-m.digitInkHeight / 2 - m.slurStackGap - (level - 1) * m.laneSlurStep - puSlurRise(m));
+        consider(-m.ink.noteHeight / 2 - m.note.slurGap - (level - 1) * m.note.slurLevelStep - jianpuSlurRise(m));
       }
     }
     for (const el of voice.elements) {
-      if (el.kind === "inline-layer") consider(m.layerY - m.digitInkHeight * 0.6);
+      if (el.kind === "inline-layer") consider(m.note.cueY - m.ink.noteHeight * 0.6);
       // 和弦/注释画在 annotationY 那条**基线**上，字还要往上长一截——只留 annotationY
       // 的话，system 间距一收紧（gapGroup 按无和弦的底本量得）和弦就顶进上一组的低音点。
       // 再往上让一个数字高：只让到墨迹顶是「不打架」，两组之间还得看得出是两组。
       if (el.kind === "note" && (el.chord || el.annotation)) {
-        consider(annotationTop(m) - m.digitInkHeight);
+        consider(annotationTop(m) - m.ink.noteHeight);
       }
-      if (el.kind === "sustain" && el.chord) consider(annotationTop(m) - m.digitInkHeight);
+      if (el.kind === "sustain" && el.chord) consider(annotationTop(m) - m.ink.noteHeight);
       if (el.kind === "note" || el.kind === "sustain" || el.kind === "barline") {
         for (const orn of el.ornaments) {
           // 换气的 V 有自己的高度（照原版放在基线上方两个墨迹高），不走记号槽
-          if (orn.name === "hx") consider(-m.digitInkHeight * 1.05);
-          else consider(m.laneOrnament - orn.level * m.laneLevelStep - m.digitInkHeight * 0.7);
+          if (orn.name === "hx") consider(-m.ink.noteHeight * 1.05);
+          else consider(m.note.ornamentY - orn.level * m.note.levelStep - m.ink.noteHeight * 0.7);
         }
       }
     }
   }
-  if (group.texts.length > 0) consider(m.textLineY);
+  if (group.texts.length > 0) consider(m.note.wordsY);
   return -top;
 }
 
@@ -603,20 +603,20 @@ function groupHeadroom(group: VoiceGroup, m: PuMetrics): number {
  * 组间用 groupHeadroom，组内声部之间用这个——否则四声部谱里第 3 声部的弧线
  * 会画进它上方的歌词块。
  */
-function voiceHeadroom(voice: ScoreLine, m: PuMetrics): number {
+function voiceHeadroom(voice: ScoreLine, m: JianpuGrid): number {
   let top = 0;
   const consider = (v: number): void => {
     if (v < top) top = v;
   };
   for (const mark of voice.marks) {
     const level = Math.max(1, mark.level);
-    if (mark.type === "volta") consider(m.laneVolta - (level - 1) * m.laneLevelStep);
+    if (mark.type === "volta") consider(m.note.voltaY - (level - 1) * m.note.levelStep);
     else if (mark.type === "crescendo" || mark.type === "decrescendo") {
-      consider(m.laneWedge - (level - 1) * m.laneLevelStep - m.wedgeMouth / 2);
+      consider(m.note.hairpinY - (level - 1) * m.note.levelStep - m.note.hairpinOpening / 2);
     } else {
       // 弧线现在贴着音符堆叠顶（见 placeMarks），头顶只需留这么高
-      // （puSlurRise 与 painter 实际画的弧同源，见 metrics.ts::puSlurStyle）
-      consider(-m.digitInkHeight / 2 - m.slurStackGap - (level - 1) * m.laneSlurStep - puSlurRise(m));
+      // （jianpuSlurRise 与 painter 实际画的弧同源，见 metrics.ts::jianpuSlurStyle）
+      consider(-m.ink.noteHeight / 2 - m.note.slurGap - (level - 1) * m.note.slurLevelStep - jianpuSlurRise(m));
     }
   }
   for (const el of voice.elements) {
@@ -624,8 +624,8 @@ function voiceHeadroom(voice: ScoreLine, m: PuMetrics): number {
     if (el.kind === "sustain" && el.chord) consider(annotationTop(m)); // 增时线上的和弦同样要留头顶
     if (el.kind === "note" || el.kind === "sustain" || el.kind === "barline") {
       for (const orn of el.ornaments) {
-        if (orn.name === "hx") consider(-m.digitInkHeight * 1.05);
-        else consider(m.laneOrnament - orn.level * m.laneLevelStep - m.digitInkHeight * 0.7);
+        if (orn.name === "hx") consider(-m.ink.noteHeight * 1.05);
+        else consider(m.note.ornamentY - orn.level * m.note.levelStep - m.ink.noteHeight * 0.7);
       }
     }
   }
@@ -637,10 +637,10 @@ function voiceHeadroom(voice: ScoreLine, m: PuMetrics): number {
  * 有几个高八度点就抬到最上面那个点的上缘。弧线据此定位——与 .jpwabc 谱面同一规则
  * （见 layout.ts 的 NoteEntry.entryTop / slurRung），固定槽位会离音符太远。
  */
-export function stackTop(el: MusicElement | undefined, m: PuMetrics): number {
-  const inkTop = -m.digitInkHeight / 2;
+export function stackTop(el: MusicElement | undefined, m: JianpuGrid): number {
+  const inkTop = -m.ink.noteHeight / 2;
   if (el?.kind !== "note" || el.octave <= 0) return inkTop;
-  return m.octaveUpY - (el.octave - 1) * m.octaveDotGap - m.octaveDotRadius;
+  return m.ink.octaveUpY - (el.octave - 1) * m.note.octaveDotDist - m.note.dotRadius;
 }
 
 
@@ -649,17 +649,17 @@ export function stackTop(el: MusicElement | undefined, m: PuMetrics): number {
  * 低音点的落点与 `painter` 里画点用的是同一个公式（`.jpwabc` 的 entryBottom 规则），
  * 两处必须一致，否则歌词避让会按错的底算。
  */
-export function noteInkBottom(note: NoteElement, m: PuMetrics): number {
+export function noteInkBottom(note: NoteElement, m: JianpuGrid): number {
   const beams = Math.max(0, Math.round(Math.log2(note.duration / 4)));
   const beamBottom =
     beams > 0
-      ? m.underlineY + (beams - 1) * m.underlineGap + m.underlineWidth
-      : m.digitInkHeight / 2;
-  if (note.octave >= 0) return Math.max(m.digitInkHeight / 2, beamBottom);
+      ? m.ink.beamTopY + (beams - 1) * m.note.beamDist + m.note.beamWidth
+      : m.ink.noteHeight / 2;
+  if (note.octave >= 0) return Math.max(m.ink.noteHeight / 2, beamBottom);
   // 减时线下缘到低音点让的净距 = 数字墨迹底到低音点的净距（见 metrics.ts::alignNoteMarks）
-  const dotGap = m.octaveDownY - m.digitInkHeight / 2;
-  const firstDot = Math.max(m.octaveDownY, beamBottom + dotGap);
-  return firstDot + (-note.octave - 1) * m.octaveDotGap + m.octaveDotRadius;
+  const dotGap = m.ink.octaveDownY - m.ink.noteHeight / 2;
+  const firstDot = Math.max(m.ink.octaveDownY, beamBottom + dotGap);
+  return firstDot + (-note.octave - 1) * m.note.octaveDotDist + m.note.dotRadius;
 }
 
 /**
@@ -683,8 +683,8 @@ function braceStartX(voices: readonly PlacedVoice[]): number | null {
 }
 
 /** 一行里最低的墨迹（歌词要据此下推，免得贴到低音点上）。 */
-function lineInkBottom(items: readonly PlacedItem[], m: PuMetrics): number {
-  let bottom = m.digitInkHeight / 2;
+function lineInkBottom(items: readonly PlacedItem[], m: JianpuGrid): number {
+  let bottom = m.ink.noteHeight / 2;
   for (const it of items) {
     if (it.element.kind !== "note" || it.element.hidden) continue;
     const b = noteInkBottom(it.element, m);
@@ -694,7 +694,7 @@ function lineInkBottom(items: readonly PlacedItem[], m: PuMetrics): number {
 }
 
 /** 把记号的元素下标区间换算成行内 x 区间。 */
-function placeMarks(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): PlacedMark[] {
+function placeMarks(voice: ScoreLine, items: PlacedItem[], m: JianpuGrid): PlacedMark[] {
   if (items.length === 0) return [];
   const first = items[0]!;
   const last = items[items.length - 1]!;
@@ -724,13 +724,13 @@ function placeMarks(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Placed
     // 与 .jpwabc 的 addSlurTie 一致——不再往外扩半个音符宽。
     // 端点还挂着别的弧线时各自内缩 dx（= 字号/14），免得两条弧首尾顶在一起。
     const isArc = mark.type === "slur" || mark.type === "tuplet";
-    const dx = isArc ? m.digitInkHeight / 0.7 / 14 : 0;
+    const dx = isArc ? m.ink.noteHeight / 0.7 / 14 : 0;
     const chainedLeft = voice.marks.some((o) => o !== mark && o.end === mark.start);
     const chainedRight = voice.marks.some((o) => o !== mark && o.start === mark.end);
     // 渐强渐弱要**包住**起止音符（原版里楔尖就落在音符下方），所以往外扩半个字宽；
     // 跳房子同样往外扩；弧线相反，端点落在墨迹中心。
     const isWedge = mark.type === "crescendo" || mark.type === "decrescendo";
-    const spread = isWedge ? m.digitInkHeight * 0.55 : m.underlineHalfSpan;
+    const spread = isWedge ? m.ink.noteHeight * 0.55 : m.note.beamHalfSpan;
     const padLeft = isArc ? (chainedLeft ? dx : 0) : -spread;
     const padRight = isArc ? (chainedRight ? dx : 0) : -spread;
     // 跳房子的横线**贴着两侧的小节线**（原版：起点 = 前一条小节线 +2、终点 = 后一条
@@ -738,7 +738,7 @@ function placeMarks(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Placed
     let vx0: number | null = null;
     let vx1: number | null = null;
     if (mark.type === "volta") {
-      const gap = m.digitInkHeight * 0.12;
+      const gap = m.ink.noteHeight * 0.12;
       for (const it of items) {
         if (it.element.kind !== "barline") continue;
         if (it.x <= a.x) vx0 = it.x + gap;
@@ -747,8 +747,8 @@ function placeMarks(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Placed
     }
     const placed: PlacedMark = {
       mark,
-      x0: openLeft ? a.x - m.stepPlain * 0.5 : (vx0 ?? a.x + padLeft),
-      x1: openRight ? b.x + m.stepPlain * 0.5 : (vx1 ?? b.x - padRight),
+      x0: openLeft ? a.x - m.note.noteStep * 0.5 : (vx0 ?? a.x + padLeft),
+      x1: openRight ? b.x + m.note.noteStep * 0.5 : (vx1 ?? b.x - padRight),
       level,
       openLeft,
       openRight,
@@ -758,7 +758,7 @@ function placeMarks(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Placed
     if (mark.type === "slur" || mark.type === "tuplet") {
       // 取两端里更高的那个堆叠顶，再让开一个 stackGap；嵌套层按 level 继续上移
       const top = Math.min(stackTop(a.element, m), stackTop(b.element, m));
-      placed.y = top - m.slurStackGap - (level - 1) * m.laneSlurStep;
+      placed.y = top - m.note.slurGap - (level - 1) * m.note.slurLevelStep;
     }
     // 只有**两端都**落在并排块的下行里，这个记号才跟着下移；跨过并排块的（比如
     // 从块前一直画到块后的跳房子）另行处理，见下面的「抬到上行之上」
@@ -772,7 +772,7 @@ function placeMarks(voice: ScoreLine, items: PlacedItem[], m: PuMetrics): Placed
 function placeLayers(
   voice: ScoreLine,
   items: PlacedItem[],
-  m: PuMetrics,
+  m: JianpuGrid,
   ctx: BeatCtx = {},
 ): PlacedLayer[] {
   const out: PlacedLayer[] = [];
@@ -795,8 +795,8 @@ function placeLayers(
     if (el.role !== "voice" || hostAt < 0) {
       // `{bz}`：上方另排一小行，按 layerScale 缩小
       for (const it of laid.items) {
-        it.x = originX + it.x * m.layerScale;
-        it.advance *= m.layerScale;
+        it.x = originX + it.x * m.ratio.cueScale;
+        it.advance *= m.ratio.cueScale;
         it.syllables = [];
       }
       out.push({ layer: el, items: laid.items, underlines: computeUnderlines(inner, laid.items, m, laid.groups) });
@@ -805,7 +805,7 @@ function placeLayers(
 
     // `{dsb}`：并排块。括起的内容排在上行，主旋律从 host 起**等时长**的一段排在下行，
     // 两行同字号、按拍位对齐（原版里两行结构本就一致）。
-    const split = m.digitInkHeight * 1.552;
+    const split = m.ink.noteHeight * 1.552;
     let total = 0;
     for (const it of laid.items) total += it.beats;
     let acc = 0;
@@ -860,17 +860,17 @@ function placeLayers(
       dy: -split,
       line: inner,
       marks,
-      braceTop: -split - m.digitInkHeight * 0.64,
-      braceBottom: split + m.digitInkHeight * 0.64,
+      braceTop: -split - m.ink.noteHeight * 0.64,
+      braceBottom: split + m.ink.noteHeight * 0.64,
     };
     // 花括号画在并排段与单行段的交界上，开口朝着并排的两行；一直排到行末就只有左边那个
-    if (hostAt > 0) placed.braceLeftX = items[hostAt]!.x - m.digitInkHeight * 1.55;
+    if (hostAt > 0) placed.braceLeftX = items[hostAt]!.x - m.ink.noteHeight * 1.55;
     if (tailHasNote) {
       // 右花括号收在并排段最后一个音符之后、那条小节线**之前**。间距与左括号对称：
       // 离相邻音符 1.07、离小节线 0.48 个墨迹高（《太阳出来喜洋洋》里多处一致）
       let noteEnd = lastAt;
       while (noteEnd > hostAt && items[noteEnd]!.element.kind === "barline") noteEnd -= 1;
-      placed.braceRightX = items[noteEnd]!.x + m.digitInkHeight * 1.07;
+      placed.braceRightX = items[noteEnd]!.x + m.ink.noteHeight * 1.07;
     }
     out.push({ layer: el, items: laid.items, underlines, split: placed });
   });
@@ -882,16 +882,16 @@ function placeLayers(
  */
 export function layoutSong(
   song: PuSong,
-  m: PuMetrics,
+  m: JianpuGrid,
   songIndex = 0,
   headerBottom = 0,
   measure?: LyricMeasure,
 ): PlacedPage[] {
   // 可用宽度要扣掉左内边距和末个音符的字形半宽，这样两端对齐后
   // 最后一个音符的墨迹右缘正好落在版心右缘上
-  const width = contentWidth(m) - m.bodyLeftPad - m.digitInkHeight * 0.6;
+  const width = contentWidth(m) - m.page.systemIndent - m.ink.noteHeight * 0.6;
 
-  const bottomLimit = m.pageHeight - m.marginBottom;
+  const bottomLimit = m.page.height - m.page.margin.bottom;
   // 拍号一路带过来：头部 `1=D4/4 3/4 5/4` 这类混合拍只有首个是起头拍号，其余由曲中
   // 的 `"p:3/4"` 逐小节改写（`BarlineElement.temporaryMeter`），故要跨行延续。
   // 只有减时线分组用得着（见 beatGroups）。
@@ -912,14 +912,14 @@ export function layoutSong(
       let y = 0;
       // 记号往上画，先给这一组留够头顶空间
       const head = groupHeadroom(group, m);
-      const baseHead = -m.annotationY;
+      const baseHead = -m.note.chordY;
       if (head > baseHead) y += head - baseHead;
       // `W:` 文字行与和弦同处头顶那一槽，让位口径也同和弦（见 groupHeadroom）：墨迹顶再往上让一个数字高。
       // 只让到基线（textLineY）的话，字顶正落在上一组的组间距里——gapGroup 收到「只空一行」之后，
       // 上一组没有歌词时文字行就压到它的音符与小节线上（小兔子乖乖「前奏」压「引子」那行 16pt）。
       // 不改 groupHeadroom：首组离页首的「空一行」按文字行墨迹顶另算（layoutSong 的 firstTop），那边不该多出这一截。
       if (group.texts.length > 0) {
-        y += Math.max(0, -(m.textLineY - m.textLineSize * 0.85) + m.digitInkHeight - head);
+        y += Math.max(0, -(m.note.wordsY - m.size.words * 0.85) + m.ink.noteHeight - head);
       }
 
       const beatCtx: BeatCtx = {
@@ -942,9 +942,9 @@ export function layoutSong(
       const natural = Math.max(...laidOut.map((l) => l.width), 1);
       const fill = natural / width;
       const stretchable =
-        m.justify && !(group === lastGroup && fill < m.justifyMinFill);
+        m.justify.enable && !(group === lastGroup && fill < m.justify.lastLineMinFill);
       const scale = stretchable
-        ? Math.min(width / natural, m.maxStretch)
+        ? Math.min(width / natural, m.justify.maxHorizontalScale)
         : Math.min(1, width / natural);
 
       // 音节先挂上（只按序号对到跟词的符号上），列位置要看字宽
@@ -956,7 +956,7 @@ export function layoutSong(
       placeColumns(laidOut, group.voices.map((v) => v.lyrics), scale, stretchable, width, m, measure);
 
       const voices: PlacedVoice[] = [];
-      let textY = y + m.textLineY;
+      let textY = y + m.note.wordsY;
       laidOut.forEach((l, vi) => {
         const voice = group.voices[vi]!;
         const underlines = computeUnderlines(voice, l.items, m, l.groups);
@@ -965,8 +965,8 @@ export function layoutSong(
         // 免得歌词字顶贴到低音点上。
         const inkBottom = lineInkBottom(l.items, m);
         const firstLyric = Math.max(
-          m.gapMusicLyric,
-          inkBottom + m.slurStackGap + m.lyricSize * 0.8,
+          m.lyricSpacing.lyricGap,
+          inkBottom + m.note.slurGap + m.size.lyric * 0.8,
         );
         const lyricY0 = firstLyric;
         // 内联层要先排：`{dsb}` 会给主旋律那一段打上 dy，减时线与记号都得跟着走
@@ -981,7 +981,7 @@ export function layoutSong(
           if (at?.dy !== undefined) u.dy = at.dy;
         }
         const lyricY = voice.lyrics.map(
-          (_, li) => y + lyricY0 + splitDrop + li * m.gapLyricLyric,
+          (_, li) => y + lyricY0 + splitDrop + li * m.lyricSpacing.lyricStack,
         );
         const marks = placeMarks(voice, l.items, m);
         // 并排块的上行会顶到跳房子/记号的高度，跨过它的记号要整体抬到上行之上。
@@ -995,10 +995,10 @@ export function layoutSong(
           // 只抬到**刚好让开上行**为止：原版里跳房子的线就贴在上行弧线上方一点点，
           // 整块抬一个行距会高得离谱
           const innerTop = sp.dy - voiceHeadroom(sp.line, m);
-          const need = innerTop - m.digitInkHeight * 0.15;
+          const need = innerTop - m.ink.noteHeight * 0.15;
           for (const mk of marks) {
             if (mk.dy !== undefined || mk.x1 < lx0 || mk.x0 > lx1) continue;
-            const lane = mk.mark.type === "volta" ? m.laneVolta : (mk.y ?? m.laneSlur);
+            const lane = mk.mark.type === "volta" ? m.note.voltaY : (mk.y ?? m.note.slurY);
             const d = Math.min(0, need - lane);
             if (mk.mark.type === "volta") voltaLift = Math.min(voltaLift, d);
             else if (d < 0) mk.dy = d;
@@ -1024,13 +1024,13 @@ export function layoutSong(
         const hasLyrics = voice.lyrics.length > 0;
         // 并排块把主旋律压低了半个行距，下一声部要连这一段一起让开
         const consumed = hasLyrics
-          ? lyricY0 + splitDrop + (voice.lyrics.length - 1) * m.gapLyricLyric
+          ? lyricY0 + splitDrop + (voice.lyrics.length - 1) * m.lyricSpacing.lyricStack
           : splitDrop;
-        let after = isLast ? m.gapGroup : hasLyrics ? m.gapLyricMusic : m.gapVoice;
+        let after = isLast ? m.spacing.systemGap : hasLyrics ? m.spacing.voiceGap : m.spacing.voiceGap;
         // 下一声部头顶的弧线/记号也要让开，否则会画进上面的歌词或音符里
         const next = group.voices[vi + 1];
         if (next) {
-          after = Math.max(after, voiceHeadroom(next, m) + m.digitInkHeight * 0.6);
+          after = Math.max(after, voiceHeadroom(next, m) + m.ink.noteHeight * 0.6);
         }
         y += consumed + after;
       });
@@ -1056,12 +1056,12 @@ export function layoutSong(
   // 1.18/4 em × 字号 2.2 墨迹高，见 compose.ts::paintBrace）。末声部底下有歌词时歌词块早把它盖住；
   // 展开档里末声部这一遍没词（同一首歌的 Q2）时，上一组的下花头会压到下一组的上花头。
   // 只在真会相压时把上一块往下撑——不压的一点不动，原样档的行距是对过原书的。
-  const braceReach = m.digitInkHeight * (0.85 + (1.18 / 4) * 2.2);
+  const braceReach = m.ink.noteHeight * (0.85 + (1.18 / 4) * 2.2);
   for (let i = 0; i + 1 < blocks.length; i++) {
     const a = blocks[i]!;
     const b = blocks[i + 1]!.group;
     if (!a.group.hasBrace || !b.hasBrace) continue;
-    const need = a.group.braceBottom + 2 * braceReach - b.braceTop + m.digitInkHeight * 0.3;
+    const need = a.group.braceBottom + 2 * braceReach - b.braceTop + m.ink.noteHeight * 0.3;
     if (a.bottom < need) a.bottom = need;
   }
   // 首页要让过标题/词曲/调号那一整块——头部行数因谱而异，写死会压到正文
@@ -1069,23 +1069,23 @@ export function layoutSong(
   // （歌词字高，与 system 间距同口径）：墨迹顶取首声部数字/高八度点、和弦等头顶记号、`W:` 文字行里
   // 最高的那个——只按数字顶算，首组头顶有「引子」这类文字行时一行空隙就被吃掉了。
   // 不再拿 bodyTop 兜底（兜底会把「只空一行」重新撑大）；没传页首（0）时才用 bodyTop。
-  let firstTop = m.marginTop + m.bodyTop;
+  let firstTop = m.page.margin.top + m.page.firstSystemTop;
   const g0 = blocks[0]?.group;
   if (headerBottom > 0 && g0) {
     const base = g0.voices[0]?.y ?? 0;
-    let inkTop = base - m.digitInkHeight / 2;
+    let inkTop = base - m.ink.noteHeight / 2;
     for (const el of g0.voices[0]?.voice.elements ?? []) inkTop = Math.min(inkTop, base + stackTop(el, m));
     // 头顶槽位默认常备一行和弦（annotationY），真有和弦/记号时 groupHeadroom 才会超过它
     const head = groupHeadroom(g0.group, m);
-    if (head > -m.annotationY + 1e-6) inkTop = Math.min(inkTop, base - head);
-    if (g0.group.texts.length > 0) inkTop = Math.min(inkTop, g0.textY - m.textLineSize * 0.85);
-    firstTop = headerBottom + m.lyricSize - inkTop;
+    if (head > -m.note.chordY + 1e-6) inkTop = Math.min(inkTop, base - head);
+    if (g0.group.texts.length > 0) inkTop = Math.min(inkTop, g0.textY - m.size.words * 0.85);
+    firstTop = headerBottom + m.size.lyric - inkTop;
   }
-  const otherTop = m.marginTop + m.bodyTop * 0.35;
+  const otherTop = m.page.margin.top + m.page.firstSystemTop * 0.35;
   const laid = paginate(blocks, {
     pageTop: (i) => (i === 0 ? firstTop : otherTop),
     // 连续长图不按高度分页，页高随内容长
-    bottom: m.continuous ? Infinity : bottomLimit,
+    bottom: m.page.longImage ? Infinity : bottomLimit,
     gap: 0,
   });
   if (laid.length === 0) return [{ groups: [], song: songIndex, firstOfSong: true }];
@@ -1172,7 +1172,7 @@ function alignVoices(lines: Array<{ items: PlacedItem[]; width: number }>): void
 /** 排一整份文档（可含多首「一首多唱」）。 */
 export function layoutDocument(
   songs: readonly PuSong[],
-  m: PuMetrics,
+  m: JianpuGrid,
   headerBottoms: readonly number[] = [],
   measure?: LyricMeasure,
 ): PlacedScore {
@@ -1180,13 +1180,13 @@ export function layoutDocument(
   songs.forEach((song, i) => pages.push(...layoutSong(song, m, i, headerBottoms[i] ?? 0, measure)));
 
   // 连续长图：所有页面首尾相接成一张，源里的 `[fenye]` 只当作一段额外留白
-  if (m.continuous && pages.length > 1) {
+  if (m.page.longImage && pages.length > 1) {
     const merged: PlacedPage = { groups: [], song: 0, firstOfSong: true };
     let offset = 0;
     for (const [i, pg] of pages.entries()) {
       if (i > 0) {
         const top = pg.groups[0]?.voices[0]?.y ?? 0;
-        offset = lowestOf(merged) + m.gapGroup * 1.4 - top;
+        offset = lowestOf(merged) + m.spacing.systemGap * 1.4 - top;
         for (const g of pg.groups) shiftGroup(g, offset);
       }
       merged.groups.push(...pg.groups);

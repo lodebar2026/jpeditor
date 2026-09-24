@@ -25,8 +25,8 @@ import { layoutStaffPages, PAGE_HEIGHT_FALLBACK } from "../mixed/staffpages";
 import { STAFF_CHORD, STAFF_SYSTEM, type StaffChordData, type StaffSystemData } from "../mixed/prims";
 import { layoutOriginalDocument, type OriginalDocumentLayout } from "./original/compose";
 import type { PlacedPage } from "./original/place";
-import type { PuMetrics } from "./original/metrics";
-import { puUserOptionsOf } from "../style/pu";
+import type { JianpuGrid } from "./original/metrics";
+import { jianpuUserOptionsOf } from "../style/original";
 
 // ---------------------------------------------------------------- 请求与资源
 
@@ -302,7 +302,7 @@ export class ScorePainter {
    *  简谱引擎的 `layout` / `score` 保留不动（标题等取用）；`jianpuView` 记成原样档，PPTX 因此不会拿旧引擎页复用。 */
   private _documentCommit(req: DocumentPaintRequest): () => void {
     const r = layoutOriginalDocument(req.doc, {
-      user: req.style ? puUserOptionsOf(req.style) : null,
+      user: req.style ? jianpuUserOptionsOf(req.style) : null,
       ink: req.style?.page.ink ?? null,
     });
     const result: LayoutResult = {
@@ -432,7 +432,7 @@ export class ScorePainter {
   }
 
   /** 原样文档这一路定稿的度量（方言版式 + 谱内指令 + 面板那层；样式快照脚本核对用）；别的路为 null。 */
-  get documentMetrics(): PuMetrics | null {
+  get documentMetrics(): JianpuGrid | null {
     return this.original?.metrics ?? null;
   }
 
