@@ -4,18 +4,22 @@
 // - **音名 ↔ 唱名**按这个位置的调号换算，八度口径与 `model/jianpu.ts::degreeFromPitch` 同源
 //   （改完读回来点数不变）。
 // - **时值相对 `L:`**，没有增时线：二分音符写成 `C2`，在动作层里当作「带一条增时线」（`inlineSustains`）。
-// - **升降号是绝对的**（`^F` 是 F 升，与调号无关），这里原样保留，不按调号折算。
+// - **升降号是绝对的**（`^F` 是 F 升，与调号无关；`abcfamily/abcpitch.ts`），动作层的却相对调号（简谱口径）：
+//   按这个位置的调号折算——`K:F` 里对 4（B♭）按升号写 `=B`，按还原号写 `_B`。小节内延续两边各管各的，不在这里折算。
 // 换行就是代码行末（`lineBreak` 为空串），`w:` 对紧挨在前的那条代码行；延音线写 `-`。
 
 import type { EditorState } from "@codemirror/state";
 import type { Accidental, ScoreDoc } from "../../../model/doc";
-import { jpTonicOctaveShift, tonicStep } from "../../../score/jppitch";
+import { jpTonicOctaveShift, keyAlter, tonicStep } from "../../../score/jppitch";
 import { type EditDialect, keyFifthsAt, type NoteCtx, type NoteDuration, type NoteToken } from "../dialect";
 import { colonFields } from "../header";
 
 const STEPS = "CDEFGAB";
 const ACC_OF: Record<string, Accidental> = { "^^": "double-sharp", __: "double-flat", "^": "sharp", _: "flat", "=": "natural" };
-const ACC_TEXT: Partial<Record<Accidental, string>> = { "double-sharp": "^^", "double-flat": "__", sharp: "^", flat: "_", natural: "=" };
+const ALTER_TEXT: Record<number, string> = { 2: "^^", [-2]: "__", 1: "^", [-1]: "_", 0: "=" };
+const ACC_ALTER: Record<Accidental, number> = { "double-sharp": 2, "double-flat": -2, sharp: 1, flat: -1, natural: 0 };
+/** 相对调号的偏移 → 简谱记号（偏移 0 是「还原到调号」） */
+const ACC_BY_OFFSET: Record<number, Accidental> = { 2: "double-sharp", [-2]: "double-flat", 1: "sharp", [-1]: "flat", 0: "natural" };
 
 const NOTE_RE = /^(\^\^|__|\^|_|=)?([A-Ga-g])([',]*)(\d*)(\/*)(\d*)$/;
 const REST_RE = /^z(\d*)(\/*)(\d*)$/;
@@ -104,8 +108,13 @@ export const DIALECT_ABC: EditDialect = {
     const oct = (/[a-g]/.test(letter) ? 5 : 4) + [...marks].reduce((n, c) => n + (c === "'" ? 1 : -1), 0);
     const wr = STEPS.indexOf(letter.toUpperCase()) + oct * 7;
     const b = tonicStep(nc.fifths);
+    let acc: Accidental | null = null;
+    if (m![1]) {
+      acc = ACC_BY_OFFSET[ACC_ALTER[ACC_OF[m![1]]!] - keyAlter(((wr % 7) + 7) % 7, nc.fifths)] ?? null;
+      if (!acc) return null; // 偏出调号两个半音以上（`K:D` 里的 `__F`），简谱记号写不出
+    }
     return {
-      acc: m![1] ? ACC_OF[m![1]]! : null,
+      acc,
       degree: ((((wr - b) % 7) + 7) % 7) + 1,
       octave: Math.floor((wr - b) / 7) - 4 + jpTonicOctaveShift(nc.fifths),
       ...base,
@@ -114,8 +123,9 @@ export const DIALECT_ABC: EditDialect = {
   printNote(t: NoteToken, nc: NoteCtx) {
     const len = lenText(quartersOf(t) / nc.unitQuarters);
     if (t.degree === 0) return `${t.pre}z${len}${t.post}`;
-    const acc = t.acc ? ACC_TEXT[t.acc] ?? "" : "";
-    return `${t.pre}${acc}${letterOf(wrOf(t.degree, t.octave, nc.fifths))}${len}${t.post}`;
+    const wr = wrOf(t.degree, t.octave, nc.fifths);
+    const acc = t.acc ? ALTER_TEXT[keyAlter(((wr % 7) + 7) % 7, nc.fifths) + ACC_ALTER[t.acc]] ?? "" : "";
+    return `${t.pre}${acc}${letterOf(wr)}${len}${t.post}`;
   },
   noteParts(src: string) {
     // 附点在 ABC 里是时值数字（`3/2`），没有单独的符号可选
