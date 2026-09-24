@@ -325,6 +325,10 @@ const HOLE_RATIO = 1.2;
 /** 二分符头一定带符干（全音符才不带，靠宽度分）。放开这一条实测音符 69.57% → 67.81%。 */
 const HOLE_NEED_STEM = true;
 const FILL_RING = [0.3, 0.75] as const;
+/** 图上量出的墨柱往一头伸出多长（格）才算符干：够一根干，又不是花括号、谱号那种长竖笔。 */
+const INK_STEM = [2.5, 7] as const;
+/** 叠置空心和弦里两个头的中心最多隔几格（闭合谱两声部同干可到八度多，3.5 格）。 */
+const MATE_GAP = 3.5;
 
 /** 把被谱线豁开的内腔并回一个。 */
 export function mergeHoles(holes: Rect[], unit: RasterUnit): Rect[] {
@@ -373,10 +377,10 @@ export function hollowHeadsFromHoles(
   stems: LineSeg[],
   inStaffBand: (y: number) => boolean,
   taken: Rect[],
-): { box: Rect; code: SmuflName }[] {
+): { box: Rect; code: SmuflName; weak?: boolean }[] {
   const sp = unit.space;
   const ring = Math.max(2, Math.round(sp * RING));
-  const out: { box: Rect; code: SmuflName }[] = [];
+  const out: { box: Rect; code: SmuflName; weak?: boolean }[] = [];
   /** 过了尺寸与填充、只差「符干一端」那道闸的：叠置和弦里夹在中间的头（见下）。 */
   const midStem: { box: Rect; stem: LineSeg }[] = [];
   for (const hole of holes) {
@@ -399,7 +403,16 @@ export function hollowHeadsFromHoles(
     if (fill < FILL_RING[0] || fill > FILL_RING[1]) continue;
     // 已经认出来的符头不重复收
     if (taken.some((t) => overlaps(t, box, sp * 0.4))) continue;
-    const stem = stemOf(box, stems, unit);
+    let stem: LineSeg | true | null = stemOf(box, stems, unit);
+    if (!stem) {
+      // 竖段表里没有的干：闭合谱男声 B3 往下一根干穿过整个谱表到 G♯2（齐来称颂），
+      // 长得像小节线，没进竖段表。照 Audiveris `HeadLinker` 的做法直接在图上沿盒边量墨柱，
+      // 往一头伸出 2.5~7 格就算有干。
+      const col = inkColumn(nl, box, unit);
+      const cy = box.y + box.h / 2;
+      const reach = col ? Math.max(cy - col[0], col[1] - cy) : 0;
+      if (reach >= sp * INK_STEM[0] && reach <= sp * INK_STEM[1]) stem = true;
+    }
     if (!stem) {
       const through = stemThrough(box, stems, unit);
       if (through) midStem.push({ box, stem: through });
@@ -408,21 +421,65 @@ export function hollowHeadsFromHoles(
     // 试过把全音符的宽度门槛单独抬到 1.65：时值 90.3% → 90.5%，但音符 69.60% → 69.52%，
     // 不划算。
     if (HOLE_NEED_STEM && !stem && w < W_WHOLE) continue;
-    out.push({ box, code: w >= W_WHOLE && !stem ? "noteheadWhole" : "noteheadHalf" });
+    // 靠墨柱认下的头标 `weak`：不进空心头模板的样本（`buildHollowMask`）。它们多半拖着
+    // 一根穿过窗口的长干，混进去模板就偏了——善牧恩慈歌两处真二分头认出来，却让模板
+    // 再也配不上后面的全音符和弦（音符 90.0% → 89.3%，不进样本 → 91.4%）。
+    out.push({ box, code: w >= W_WHOLE && !stem ? "noteheadWhole" : "noteheadHalf", ...(stem === true ? { weak: true } : {}) });
     taken.push(box);
   }
   // **叠置空心和弦**：符干从一端的头穿过另一个头往外伸（齐来称颂 A4/E4 二分和弦，
   // 干从 E4 起、穿过 A4 再往上两格），夹在中段的那个头过不了「符头在符干一端」。
   // 同一根干上 2.2 格内已有收下的空心头，它就是和弦的一员。
+  //
+  // 同干的另一个头只要**碰到这根干**就算（干常常只到那个头的中线上一两像素，
+  // 「穿过中线」差一像素就落空），相隔放到 3.5 格（齐来称颂男声 A3/C♯3 隔 2.5 格）。
+  // 这就是 Audiveris 的「符头柱」：两头都伸出去的是柱中段，由柱端那个连上干的头来定。
+  const tol = Math.max(unit.lineThick * 2, sp * 0.25);
   for (const m of midStem) {
     if (taken.some((t) => overlaps(t, m.box, sp * 0.4))) continue;
     const cy = m.box.y + m.box.h / 2;
-    const mate = out.some((o) => stemThrough(o.box, [m.stem], unit) && Math.abs(o.box.y + o.box.h / 2 - cy) <= sp * 2.2);
+    const top = Math.min(m.stem.y0, m.stem.y1);
+    const bottom = Math.max(m.stem.y0, m.stem.y1);
+    const x = (m.stem.x0 + m.stem.x1) / 2;
+    const mate = out.some((o) => {
+      if (Math.abs(x - o.box.x) > tol && Math.abs(x - (o.box.x + o.box.w)) > tol) return false;
+      if (bottom < o.box.y || top > o.box.y + o.box.h) return false;
+      return Math.abs(o.box.y + o.box.h / 2 - cy) <= sp * MATE_GAP;
+    });
     if (!mate) continue;
     out.push({ box: m.box, code: "noteheadHalf" });
     taken.push(m.box);
   }
   return out;
+}
+
+/**
+ * 竖段表之外、直接在图上量的符干：盒左右缘附近各列，从盒中心往上下沿墨走（断口 ≤2 像素），
+ * 取纵向最长的一列，返回 `[上端, 下端]`。
+ */
+function inkColumn(nl: Binary, b: Rect, unit: RasterUnit): [number, number] | null {
+  const tol = Math.round(Math.max(unit.lineThick * 2, unit.space * 0.25));
+  const cy = Math.round(b.y + b.h / 2);
+  const at = (x: number, y: number) => x >= 0 && y >= 0 && x < nl.w && y < nl.h && nl.data[y * nl.w + x] === 1;
+  const walk = (x: number, dir: number): number => {
+    let last = cy;
+    for (let y = cy, miss = 0; miss <= 2 && y >= 0 && y < nl.h; y += dir) {
+      if (at(x, y)) {
+        last = y;
+        miss = 0;
+      } else miss++;
+    }
+    return last;
+  };
+  let best: [number, number] | null = null;
+  for (const edge of [b.x, b.x + b.w]) {
+    for (let x = Math.round(edge) - tol; x <= Math.round(edge) + tol; x++) {
+      const top = walk(x, -1);
+      const bottom = walk(x, 1);
+      if (!best || bottom - top > best[1] - best[0]) best = [top, bottom];
+    }
+  }
+  return best;
 }
 
 /** 贴着盒左右缘、纵向穿过盒的竖段（不管盒在段的哪一截）。 */

@@ -1354,7 +1354,7 @@ export async function recognizeRasterPage(
   // 拿它们平均出模板（`buildHollowMask`），在**有内腔的无主块**里做匹配追踪。
   // 先把 x 上重叠、上下贴着的无主块并起来（被切成两半的头要并回一个）。
   {
-    const hollowMask = buildHollowMask(raster.bin, syms, unit);
+    const hollowMask = buildHollowMask(raster.bin, syms.filter((s0) => !(s0 as { weak?: boolean }).weak), unit);
     if (hollowMask) {
       const free = blobs.filter((c) => !claimed.has(c.id) && !dictClaimed.has(c.id) && !merged.has(c.id) && inBand(c.bbox.y + c.bbox.h / 2));
       const used = new Set<number>();
