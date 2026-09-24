@@ -1956,6 +1956,11 @@ export async function recognizeRasterPage(
       // 拉丁行也算：齐来称颂英文第一行紧贴低音谱表，「we」的 e 被收成空心符头，还配上了加线
       if (latin || chars.some((c) => /\p{Script=Han}/u.test(c.ch))) readRows.push(stripRow.get(strip)!);
       if (latin) latinRows.add(stripRow.get(strip)!);
+      // **只认出一个字的不是歌词行**：谱表与歌词之间的一横被切成一条、认成「一」，占掉第 1 段，
+      // 后面几段整体下移（《高举主大能》第二系统）
+      // 行里的笔画照样当字剔（上面已进 `readRows`），只是不出歌词：直接跳过的话，那一行被收成符头的
+      // 笔画留下来成了假音（齐来称颂 −1.3、父恩广大 −0.6）
+      if (!latin && foldLyricChars(chars).length <= 1) continue;
       const cells = latin ? latinCells(strip, chars) : mapCharsToCells(strip, chars);
       // 「字数 == 格数」这个结构指标只对汉字行有意义（拉丁行压根不切格）
       if (!latin && foldLyricChars(chars).length === strip.cells.length) lyricStats.parity++;
