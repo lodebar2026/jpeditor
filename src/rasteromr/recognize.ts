@@ -1489,7 +1489,10 @@ export async function recognizeRasterPage(
     // 串里**逐个**往右认，每一步先看「被当成符头的升号」、再看普通块：齐来称颂的低音谱表
     // 三个升号，第一个是普通块、后两个各被认成一对黑符头，只认一路就断在第二个上。
     // 第一个记号离谱号右缘放到两格：低音谱号的两点在谱号盒外，实测 1.77 格。
-    let prevKey: { box: Rect; code: SmuflName; sig: Uint8Array } | null = null;
+    // 字典已认出的串尾也算「前一个」：后面的记号按它比大小、比签名
+    const lastDict = [...taken].sort((a, b) => b.box.x - a.box.x)[0];
+    let prevKey: { box: Rect; code: SmuflName; sig: Uint8Array } | null =
+      lastDict && (lastDict.code === "accidentalFlat" || lastDict.code === "accidentalSharp") ? { box: lastDict.box, code: lastDict.code, sig: binSig(nl, lastDict.box) } : null;
     for (let first = !fromDict; ; first = false) {
       const gap = unit.space * (first ? KEY_GAP_FIRST : KEY_GAP);
       const pair = sharpAsHeads(syms, edge, onStaff);
@@ -1549,6 +1552,42 @@ export async function recognizeRasterPage(
             m = asKey(box);
           }
         }
+        // 还不像，就把**同一列**（一格宽）里的碎块整列并起来：细笔画的降号被谱线切成上下几截，
+        // 截与截之间空着去掉的那条线（所信有根基：B♭ 断在中线上下、隔 0.46 格，D♭ 碎成四块）
+        if (!m) {
+          // 左缘都要在头一块左缘半格以内：再往右就是下一个记号的碎块了（所信有根基第一行 A♭ 右边贴着 D♭ 的竖笔）
+          const col = cand.filter((d) => !merged.has(d.id) && Math.abs(d.bbox.x - b.x) <= unit.space * 0.4 && d.bbox.x + d.bbox.w <= b.x + unit.space);
+          // 并出来的要在**去线之前**的图上有一根贯通八成高的竖笔（升降号都有）：
+          // C 拍号被谱线切成几块，并起来尺寸像降号，可它的弧贯通不了（我一生要赞美你）
+          if (col.length >= 2) {
+            const u = col.map((d) => d.bbox).reduce(union);
+            const m2 = longestVRun(raster.bin, u) >= u.h * 0.8 ? asKey(u) : null;
+            if (m2) {
+              box = u;
+              used = col;
+              m = m2;
+            }
+          }
+        }
+        // 还不像、又比前一个记号宽出一截、高出一截：是**两个斜叠着粘在一起**的同类记号
+        //（所信有根基低音谱表，E♭ 的肚子贴上 A♭ 的竖笔顶，连成 1.18×3.21 格一块；两个错开一高一低，竖着切不开）。
+        // 只认前一个已认出的那一类，两半的盒按中段墨最少的那一列粗分（下游只数个数）
+        if (!m && prevKey && b.w >= prevKey.box.w * 1.3 && b.w <= prevKey.box.w * 2.0 && b.h >= prevKey.box.h * 1.1 && b.h <= prevKey.box.h * 1.9) {
+          const halves = splitAt(nl, b) ?? [
+            { x: b.x, y: b.y, w: Math.round(b.w / 2), h: b.h },
+            { x: b.x + Math.round(b.w / 2), y: b.y, w: b.w - Math.round(b.w / 2), h: b.h },
+          ];
+          const d = dictSym.get(c.id);
+          if (d) syms.splice(syms.indexOf(d), 1);
+          merged.add(c.id);
+          for (const h of halves) {
+            syms.push({ box: h, code: prevKey.code });
+            ledger.claim(h, `key:${prevKey.code}`);
+          }
+          edge = Math.max(edge, b.x + b.w);
+          took = true;
+          break;
+        }
         if (!m) break;
         for (const u of used) {
           const d = dictSym.get(u.id);
@@ -1593,6 +1632,11 @@ export async function recognizeRasterPage(
     const ks = syms.filter((s0) => isAccidental(s0.code) && inKey(s0));
     if (ks.some((s0) => s0.code === "accidentalSharp") && !ks.some((s0) => s0.code === "accidentalFlat"))
       for (const s0 of ks) if (s0.code === "accidentalNatural") s0.code = "accidentalSharp";
+    // 调号里升降也不混排：**少数服从多数**。细笔画的降号肚子只剩一圈细边，
+    // 肚子右缘与竖笔数成两根（所信有根基四个降号里第三个 A♭ 读成升号）
+    const nf = ks.filter((s0) => s0.code === "accidentalFlat").length;
+    const ns = ks.filter((s0) => s0.code === "accidentalSharp").length;
+    if (nf && ns && nf !== ns) for (const s0 of ks) if (s0.code === "accidentalFlat" || s0.code === "accidentalSharp") s0.code = nf > ns ? "accidentalFlat" : "accidentalSharp";
   }
 
   // ── 谱中的升号被当成两个黑符头 ───────────────────────────────────────────
@@ -2461,8 +2505,8 @@ function attachAccidentalsByPitch(pg: SPage, ctx: Map<Staff, StaffContext>, note
 
 /**
  * **调号不全的谱行照抄同页的**：整首不转调是常态，同页各行调号本该一样。
- * 取**至少两行认得一模一样**的调号里最长的那个，一个都没认出、或只认出同类（全升/全降）
- * 前几个的谱行照它补齐。
+ * 取**至少两行认得一模一样**的调号里最长的那个，一个都没认出、或只认出同类（全升/全降，
+ * 可夹着认岔的还原号）前几个的谱行照它补齐。
  *
  *   - 颂赞与尊贵第一行的降号贴着高音谱号，去谱线后残留的一行墨把两者连成一块，
  *     被谱号盒整个吞掉；导出取第一行的调号，整首按 C 大调读、再按调号差移调，字母全错。
@@ -2546,7 +2590,12 @@ function shareKeySignature(ctx: Map<Staff, StaffContext>): void {
   if (!best) return;
   const kind = best.key[0].code;
   if (best.key.some((k) => k.code !== kind)) return;
-  for (const c of all) if (c.key.length < best.key.length && c.key.every((k) => k.code === kind)) c.key = best.key;
+  // 串里混着**还原号**的也照补：行首谱号后面的调号不会有还原号（取消记号印在转调前的小节线处），
+  // 那是粘连的升降号认岔了——万福泉源歌第一行三个降号挤在一起，前两个连成一块读成还原号，
+  // 这一行（也就是整首高音声部）只剩一个降号
+  for (const c of all)
+    if (c.key.length <= best.key.length && c.key.every((k) => k.code === kind || k.code === "accidentalNatural") && c.key.filter((k) => k.code === kind).length < best.key.length)
+      c.key = best.key;
 }
 
 /** 两个盒的交叠占 `a` 的比例。 */
@@ -2917,6 +2966,65 @@ function nearRestLine(box: { y: number; h: number }, lines: { y: number }[], uni
     for (const k of [1, 2]) if (Math.abs(cy - ys[i + k]) <= unit.space * 0.6) return true;
   }
   return false;
+}
+
+/**
+ * 把一块**横向粘连的两个记号**在中段（30%~70%）墨最少的那一列切开，两半各按墨收紧外框。
+ * 切不出两块像样的（任一半没墨、或切口那列墨不比两侧少）返回 null。
+ */
+function splitAt(bin: Binary, box: Rect): [Rect, Rect] | null {
+  const ink = (x: number, y0: number, y1: number) => {
+    let n = 0;
+    for (let y = y0; y < y1; y++) if (bin.data[y * bin.w + x]) n++;
+    return n;
+  };
+  const colInk = (x: number) => ink(x, box.y, box.y + box.h);
+  let cut = -1;
+  let best = Infinity;
+  for (let x = box.x + Math.round(box.w * 0.3); x <= box.x + Math.round(box.w * 0.7); x++) {
+    const n = colInk(x);
+    if (n < best) {
+      best = n;
+      cut = x;
+    }
+  }
+  if (cut < 0) return null;
+  const peak = (x0: number, x1: number) => {
+    let m = 0;
+    for (let x = x0; x < x1; x++) m = Math.max(m, colInk(x));
+    return m;
+  };
+  if (best * 2 > Math.min(peak(box.x, cut), peak(cut + 1, box.x + box.w))) return null;
+  const a = inkBox(bin, box.x, cut, box.y, box.y + box.h);
+  const c = inkBox(bin, cut + 1, box.x + box.w, box.y, box.y + box.h);
+  return a && c ? [a, c] : null;
+}
+
+/** 盒里最长的一段竖直连续墨（像素）。 */
+function longestVRun(bin: Binary, box: Rect): number {
+  let best = 0;
+  for (let x = Math.max(0, box.x); x < Math.min(bin.w, box.x + box.w); x++) {
+    let run = 0;
+    for (let y = Math.max(0, box.y); y < Math.min(bin.h, box.y + box.h); y++) {
+      run = bin.data[y * bin.w + x] ? run + 1 : 0;
+      if (run > best) best = run;
+    }
+  }
+  return best;
+}
+
+/** `[x0,x1) × [y0,y1)` 里墨的外框；没墨返回 null。 */
+function inkBox(bin: Binary, x0: number, x1: number, y0: number, y1: number): Rect | null {
+  let l = Infinity, r = -1, t = Infinity, b = -1;
+  for (let y = Math.max(0, y0); y < Math.min(bin.h, y1); y++)
+    for (let x = Math.max(0, x0); x < Math.min(bin.w, x1); x++)
+      if (bin.data[y * bin.w + x]) {
+        l = Math.min(l, x);
+        r = Math.max(r, x);
+        t = Math.min(t, y);
+        b = Math.max(b, y);
+      }
+  return r < 0 ? null : { x: l, y: t, w: r - l + 1, h: b - t + 1 };
 }
 
 /** 块里**通高的竖笔**有几根：连续墨长过块高 55% 的列，按相邻成组数组数（隔一列以上算两根）。 */
