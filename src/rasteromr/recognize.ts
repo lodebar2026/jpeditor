@@ -1943,11 +1943,11 @@ export async function recognizeRasterPage(
     // 续过的段只进 `SPage`，不回写 `prims`——`findBlobs` 那边仍按原段抹墨，
     // 免得把符头啃掉（见 `extendVSegs` 的说明）。
     // 被并进升降号的竖段要摘掉（留着会被当成符干或小节线）
-    vSegs: splitVoiceStems(extendVSegs(
+    vSegs: snapHollowToStems(syms, splitVoiceStems(extendVSegs(
       nl,
       [...prims.vSegs.filter((v) => !usedSegs.has(v)), ...stemSegs, ...inkStems],
       Math.round(unit.space * 0.35),
-    ), headBoxes.map((h) => h.box), unit),
+    ), headBoxes.map((h) => h.box), unit), unit),
     syms,
     braces: findBraces(nl, prims, unit, staffLefts, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y }))).map((c) => c.bbox),
     sysBrackets: groupByLeftInk(raster.bin, groups.map((g) => ({ top: g.lines[0].y, bottom: g.lines[4].y, left: Math.max(...g.lines.map((l) => l.left)) })), unit),
@@ -2752,6 +2752,42 @@ function splitVoiceStems(segs: LineSeg[], heads: Rect[], unit: RasterUnit): Line
     }
     return v;
   });
+}
+
+/**
+ * **空心头的盒缘收到它的干上**：按内腔外扩一圈得来的头盒比墨宽，干常落在盒里离边缘三四个像素，
+ * `findStems` 挂得上（两倍线宽），`buildStems` 认头却只容四分之一格，于是干有了、头没归上，
+ * 下游把「没干的空心头」当全音符（《主我敬拜你》附点二分读成附点全音符）。只动 x，不动 y（音高不变）。
+ * 原地改 `syms` 里的盒，原样返回竖段。
+ */
+function snapHollowToStems(syms: RasterSym[], segs: LineSeg[], unit: RasterUnit): LineSeg[] {
+  const sp = unit.space;
+  for (const s0 of syms) {
+    if (s0.code !== "noteheadHalf") continue;
+    const b = s0.box;
+    for (const v of segs) {
+      const vx = (v.x0 + v.x1) / 2;
+      const top = Math.min(v.y0, v.y1);
+      const bot = Math.max(v.y0, v.y1);
+      if (bot - top < sp * 2 || bot < b.y || top > b.y + b.h) continue;
+      const cy = b.y + b.h / 2;
+      // 头在干的一端（与 findStems 同口径），**另一端不能已有别的符头**：符杠与谱线之间的空隙也会被当成
+      // 内腔认出个「空心头」，它挂的那根干下端本有自己的黑头（坚固保障小节数 19 → 18）
+      if (Math.abs(cy - top) > sp && Math.abs(cy - bot) > sp) continue;
+      const farY = Math.abs(cy - top) < Math.abs(cy - bot) ? bot : top;
+      if (syms.some((o) => o !== s0 && /^notehead/.test(o.code) && Math.abs(o.box.y + o.box.h / 2 - farY) <= sp && o.box.x - sp * 0.5 <= vx && vx <= o.box.x + o.box.w + sp * 0.5)) continue;
+      if (vx > b.x + b.w - sp * 0.35 && vx < b.x + b.w) {
+        s0.box = { ...b, w: Math.round(vx) - b.x };
+        break;
+      }
+      if (vx > b.x && vx < b.x + sp * 0.35) {
+        const nx = Math.round(vx);
+        s0.box = { ...b, x: nx, w: b.x + b.w - nx };
+        break;
+      }
+    }
+  }
+  return segs;
 }
 
 function midOfStaff(box: { y: number; h: number }, lines: { y: number }[], unit: RasterUnit): boolean {
