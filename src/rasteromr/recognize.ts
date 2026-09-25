@@ -962,12 +962,17 @@ export async function recognizeRasterPage(
   for (const s0 of split) ledger.claim(s0.box, "cluster:noteheadBlack");
   for (const s0 of restSyms) ledger.claim(s0.box, "rest:restHBar");
   const dictClaimed = new Set<number>();
+  const metIds = new Set<number>();
   for (const c of blobs) {
     if (claimed.has(c.id)) continue;
     const code = look.lookup(binSig(nl, c.bbox), c.bbox.w / unit.space, c.bbox.h / unit.space);
     if (!code) continue;
     // **演奏记号贴着音符**：离所有谱表都四格半开外的「保持音」「断奏」是歌词字的横笔、点
     //（《赞美一神》「上」「军」底下那一横，吃掉之后那个字就从歌词行里缺了）
+    // **复合音符字形先记下**：字典里 `metNote*` 这几类是「头 + 干（+ 尾）」连成一块的音符，
+    // 按类名定时值会把带尾的八分当四分（《主我敬拜你》五处）。「头 + 干」那一路再试一次，
+    // 摘得出头就换成它（符干进 SPage、符尾照常补），摘不出才留字典这一个（颂赞与尊贵的 A4 四分）。
+    if (code.startsWith("metNote")) metIds.add(c.id);
     if (code.startsWith("artic") && !groups.some((g) => c.bbox.y + c.bbox.h > g.lines[0].y - unit.space * ARTIC_REACH && c.bbox.y < g.lines[4].y + unit.space * ARTIC_REACH)) continue; // 不记账：留给歌词
     dictClaimed.add(c.id);
     // **半/全休止要按位置验一道**：它的字形是个 1.27×0.51 格的小实心矩形，
@@ -1663,10 +1668,13 @@ export async function recognizeRasterPage(
   const stemSegs: LineSeg[] = [];
   if (masks.length) {
     for (const c of blobs) {
-      if (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id)) continue;
+      const met = metIds.has(c.id) && !merged.has(c.id);
+      if (!met && (claimed.has(c.id) || dictClaimed.has(c.id) || merged.has(c.id))) continue;
       // 已经被别的路（谱号自举、拍号自举）出成 sym 的块不碰
       const b = c.bbox;
-      if (syms.some((s0) => overlapFrac(b, s0.box) > 0.5)) continue;
+      const metSym = met ? syms.find((s0) => s0.box === b || (s0.code.startsWith("metNote") && overlapFrac(b, s0.box) > 0.9)) : undefined;
+      if (met && !metSym) continue;
+      if (syms.some((s0) => s0 !== metSym && overlapFrac(b, s0.box) > 0.5)) continue;
       // **长得像休止的块先按休止收**：粗体铅字本的四分休止（1.0×3.1 格）字典里没有这一类，
       // 尺寸又正落在「头 + 干」这一档，被摘出一个假头（《主我敬拜你》第八小节的休止成了 E4）。
       // 与 Maestro 的休止模板比，距离 77；真的「头 + 干（+ 尾）」块一个都比不上。
@@ -1682,6 +1690,7 @@ export async function recognizeRasterPage(
       // 已有符头压着的不重复出（长干两头的那一档：万古磐石歌的 B♭3/B♭2 别的路已认出，再出一遍成了四个音）
       const dup = (hb: Rect) => [...syms, ...stemHeads].some((s0) => /^notehead/.test(s0.code) && overlapFrac(hb, s0.box) > 0.3);
       if (dup(r.head)) continue;
+      if (metSym) syms.splice(syms.indexOf(metSym), 1);
       stemHeads.push({ box: r.head, code: "noteheadBlack" });
       for (const e of r.extra) {
         if (dup(e)) continue;
